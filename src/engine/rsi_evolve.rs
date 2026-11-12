@@ -3650,7 +3650,9 @@ async fn run_loop(
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
                 target_focus_objective(&current["input"])]),
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            "generatorBinarySha256":record["generatorBinarySha256"],
+            "generatorModel":current["input"]["model"],
+            "generatorProviderId":current["input"]["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
         let evaluation_profile_sha=
@@ -3706,7 +3708,22 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
-        generation["requestedModel"]=input["model"].clone();
+        generation["requestedModel"]=current["input"]["model"].clone();
+        generation["requestedProviderId"]=current["input"]["providerId"].clone();
+        generation["apiModelPolicy"]=current["input"]["rsiApiRoutePolicy"].clone();
+        let api_route_usage=session.map(|id|context.state.store.api_route_usage(
+            id,current["input"]["providerId"].as_str().unwrap_or(""),
+            current["input"]["model"].as_str().unwrap_or("")))
+            .unwrap_or(Value::Null);
+        generation["apiRouteUsage"]=api_route_usage.clone();
+        generation["apiRouteExecutionVerified"]=json!(
+            current["input"]["rsiAdaptiveApiRouting"]==true
+            && current["input"]["rsiApiRoutePolicy"]["chosen"]["model"]
+                ==current["input"]["model"]
+            && current["input"]["rsiApiRoutePolicy"]["chosen"]["providerId"]
+                ==current["input"]["providerId"]
+            && api_route_usage["matchedExactProviderModelSession"]==true
+        );
         // The meta-policy was chosen by the compiled generator BEFORE it
         // observed this generation's result. Keep it separate from measured
         // feedback to avoid look-ahead and let later descendants learn.
