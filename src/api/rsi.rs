@@ -551,6 +551,16 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         }
         input["reasoningEffort"] = json!(effort);
     }
+    if input["rsiAdaptiveApiRouting"]==true {
+        let original=input["rsiOriginalApiRoute"].clone();
+        input["rsiApprovedApiRoutes"]=
+            match crate::engine::rsi_api_route_learning::authorized(
+                &state,&original,&body["approvedApiRoutes"],
+                body["localOnly"]==true) {
+                Ok(routes)=>routes,
+                Err(message)=>return error(message)
+            };
+    }
     if continuous {
         let limits=match crate::engine::rsi_evolve::limits(&body){Ok(v)=>v,Err(e)=>return error(e)};
         let policy=body["selectionPolicy"].as_str().unwrap_or("manual");
