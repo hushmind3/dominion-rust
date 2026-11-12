@@ -4796,6 +4796,35 @@ async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
+        // Completed real descendants contribute evidence to NEXT-METHOD
+        // productivity, never to an already frozen current generation.
+        // The durable rsi_generation rows outlive campaigns and are replayed
+        // again in the next rebuilt binary before any method preference.
+        if let Some(profile)=crate::engine::rsi_meta_controller::comparison_profile(
+            &current["input"]) {
+            let all=context.state.store.all("rsi_generation");
+            let observed=all.iter().filter(|g|
+                g["sourceBranch"]==current["input"]["rsiSourceBranch"]
+                && g["objectiveId"]==crate::engine::memory::stable_id(&[
+                    current["input"]["rsiObjective"].as_str().unwrap_or("")
+                ])
+                && g["knowledgePartition"]==
+                    research_scope(&current["input"]).partition_key
+                && g["generatorProviderId"]==current["input"]["providerId"]
+                && g["generatorModel"]==current["input"]["model"])
+                .cloned().collect::<Vec<_>>();
+            let comparison=crate::engine::rsi_successor_productivity::compare(
+                &context.state,&observed,&profile,
+                generation_domain_for_productivity(&current));
+            record["methodSuccessorProductivity"]=json!({
+                "source":comparison["source"],"status":comparison["status"],
+                "selectionEligible":comparison["selectionEligible"],
+                "winnerRevision":comparison["winnerRevision"],
+                "matchedWins":comparison["matchedWins"],
+                "comparedContexts":comparison["comparedContexts"],
+                "causalSuperiorityProven":false
+            });
+        }
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
         let no_edit = candidate_id.is_none() && novel_source_bytes==0;
@@ -5654,7 +5683,8 @@ fn sub2_edit_policy_reward(g:&Value)->f64 {
 /// compiled child learns from its own executed receipts AND persisted earlier
 /// campaigns with the same branch, objective, partition and model identity.
 fn inherited_edit_policy(
-    state:&AppState,input:&Value,history:&[Value],selected_model:&Value
+    state:&AppState,input:&Value,history:&[Value],
+    selected_model:&Value,domain:&str,
 )->Value{
     let objective=crate::engine::memory::stable_id(&[
         input["rsiObjective"].as_str().unwrap_or("")
@@ -5683,7 +5713,15 @@ fn inherited_edit_policy(
     if rows.len()>128 {
         rows=rows.split_off(rows.len()-128);
     }
-    crate::engine::rsi_edit_genome::evolve(&rows,sub2_edit_policy_reward)
+    let generated=crate::engine::rsi_edit_genome::evolve(&rows,sub2_edit_policy_reward);
+    // Prefer a policy only after it produced more independently adopted
+    // FIRST rebuilt successors than a control in >=2 matched source contexts.
+    // This decision is compiled into the current child's executable policy,
+    // not a recommendation authored by the older campaign coordinator.
+    if let Some(profile)=crate::engine::rsi_meta_controller::comparison_profile(input){
+        crate::engine::rsi_successor_productivity::choose(
+            state,&rows,generated,&profile,domain)
+    }else{generated}
 }
 
 /// Compute the NEXT system architecture proposal inside the currently
@@ -5963,7 +6001,7 @@ fn compiled_system_generation_plan(
             input["rsiObjective"].as_str().unwrap_or("")
         ]));
     let edit_policy=inherited_edit_policy(state,input,history,
-        &model_route["selected"]);
+        &model_route["selected"],&domain);
     Ok(json!({
         "source":"compiled_descendant_system_controller_v3",
         "generatorCommit":commit,
