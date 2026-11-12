@@ -4502,8 +4502,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let descendant_prompt=if job["input"]["rsiSystemEvolution"]==true {
         let source=job["input"]["rsiSourceDir"].as_str()
             .ok_or("후손 소스 폴더가 없습니다.")?.to_string();
+        // The agent's compiled source is normally the same checkout that it
+        // edits. In a downstream A/B episode both generators edit IDENTICAL
+        // subject bytes, while their own executable source revisions differ.
+        // Never mistake the common subject for the candidate's intelligence.
+        let generator_source=job["input"]["rsiGeneratorSourceDir"]
+            .as_str().unwrap_or(&source).to_string();
         let blueprint=crate::engine::rsi_system::blueprint(
-            Path::new(&source),&commit,&history);
+            Path::new(&generator_source),&commit,&history);
         if blueprint!=job["input"]["rsiSystemBlueprint"] {
             return Err("후손 소스 자기모형이 컴파일된 계획과 일치하지 않습니다.".into());
         }
@@ -4538,9 +4544,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
                 .map(str::to_string)).unwrap_or_default();
-        format!("{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
-            crate::engine::rsi_system::instruction(&blueprint,&owner),
-            expected,owner,capsule(&observed,3500),
+        let assigned=job["input"]["rsiObjective"].as_str().unwrap_or(&owner);
+        format!("{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nCAMPAIGN OBJECTIVE: {}\n\nCURRENT ASSIGNED TASK: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+            crate::engine::rsi_system::instruction(&blueprint,assigned),
+            expected,owner,assigned,capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
