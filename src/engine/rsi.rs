@@ -491,8 +491,20 @@ fn generation_proof(state:&AppState,generation:&Value)
 /// generated an improvement, even if it independently passes A/B evaluation.
 /// Independently replay the real API route, owner-selected model and origin
 /// of the candidate. A written generation JSON field is not a usage receipt.
-pub(crate) fn model_route_replayed(state:&AppState,g:&Value)->bool {
-    if !model_driven_generation_provenance(g) {return false;}
+/// A route can be audited even when its independently tested source
+/// candidate loses. Failures are observations; only adopted final-byte
+/// model edits become proof of actual model-driven recursive improvement.
+pub(crate) fn model_route_audited(state:&AppState,g:&Value)->bool {
+    if g["candidateOrigin"]!="model_driven_detached_worktree"
+        || g["apiRouteExecutionVerified"]!=true
+        || g["apiRouteSessionExclusive"]!=true
+        || g["apiRouteUsage"]["matchedExactProviderModelSession"]!=true
+        || g["requestedProviderId"]!=g["generatorProviderId"]
+        || g["requestedModel"]!=g["generatorModel"]
+        || g["tokenUsage"]["calls"].as_u64().unwrap_or(0)==0
+        || g["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)==0 {
+        return false;
+    }
     let (Some(id),Some(job_id),Some(session),Some(provider),Some(model))=(
         g["candidateId"].as_str(),g["jobId"].as_str(),
         g["apiRouteSessionId"].as_str(),g["requestedProviderId"].as_str(),
@@ -516,6 +528,10 @@ pub(crate) fn model_route_replayed(state:&AppState,g:&Value)->bool {
     let Ok(routes)=state.store.session_model_routes(session)else{return false};
     routes.len()==1 && routes[0]["providerId"]==provider
         && routes[0]["model"]==model
+}
+
+pub(crate) fn model_route_replayed(state:&AppState,g:&Value)->bool {
+    model_driven_generation_provenance(g) && model_route_audited(state,g)
 }
 
 pub(crate) fn model_driven_generation_provenance(g:&Value)->bool {
