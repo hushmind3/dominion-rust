@@ -830,7 +830,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "history":[],"activeGenerationJobId":null,"createdAt":chrono::Utc::now().to_rfc3339(),
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
-        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":max_streak_seed>=3,
+        "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,
+        "capabilityDemonstrated":false,"systemCapabilityDemonstrated":false,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -4395,12 +4396,21 @@ async fn run_loop(
         let mut evidence_record=record.clone();
         evidence_record["history"].as_array_mut()
             .ok_or("세대 목록 손상")?.push(generation.clone());
-        record["capabilityDemonstrated"] = json!(max_streak >= 3
+        // A native patch chain can prove LIMITED RSI, never whole-system
+        // intelligence replacement. Publish the stricter distinct verdict,
+        // requiring a descendant-authored architecture, implementation and
+        // independently adopted evidence across all six core components.
+        let system_proven=input["rsiSystemEvolution"]==true
+            && max_streak>=3
             && crate::engine::rsi::campaign_capability_proven(
                 &context.state,&evidence_record)
-            && (input["rsiSystemEvolution"]!=true
-                || crate::engine::rsi_system::system_capability_proven(
-                    &context.state,&evidence_record["history"])));
+            && crate::engine::rsi_system::system_capability_proven(
+                &context.state,&evidence_record["history"]);
+        record["systemCapabilityDemonstrated"]=json!(system_proven);
+        record["capabilityDemonstrated"]=json!(max_streak>=3
+            && crate::engine::rsi::campaign_capability_proven(
+                &context.state,&evidence_record)
+            && (input["rsiSystemEvolution"]!=true || system_proven));
         // Persist the real outcome of the newly executed recovery policy.
         // A ranking score or a source write is not a validated improvement;
         // this is the observed action utility that the next built generator
