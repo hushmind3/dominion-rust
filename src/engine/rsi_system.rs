@@ -132,7 +132,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
-        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
+        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. At least one accepted generation must INVENT a new executable method with rsi_method_propose, and a compiled successor must actually EXECUTE and verify it; registration alone earns no evidence. Propose that reusable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
