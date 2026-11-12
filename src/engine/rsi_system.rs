@@ -1058,13 +1058,17 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
                     && other["targetRole"]==edge["sourceRole"]
                     && other["isolatedGains"].as_u64().unwrap_or(0)>0))
         .count()/2;
-    json!({"evaluationProfileId":profile["id"],"evaluationProfileSha256":profile["sha256"],"verifiedSystemGenerations":verified,"verifiedLineageLength":chain,"rebuiltHandoffs":handoffs,
+    // Preserve the entire handoff evidence schema while avoiding the
+    // compiler macro recursion limit on a monolithic JSON literal.
+    let evidence_parts = [
+        json!({"evaluationProfileId":profile["id"],"evaluationProfileSha256":profile["sha256"],"verifiedSystemGenerations":verified,"verifiedLineageLength":chain,"rebuiltHandoffs":handoffs,
         "sourceChangedComponents":covered,"requiredComponents":required,"missingComponents":missing,
         "metaImprovementObserved":meta_gain,"inventedMethodTransferred":method_transfer,
         "crossSubsystemPairedEffects":cross,
         "reciprocalSubsystemPairsObserved":reciprocal_pairs,
         "crossSubsystemEvidenceSha256":interaction["sha256"],
-        "crossGenerationTransferGraphSha256":transfer["sha256"],
+}),
+        json!({"crossGenerationTransferGraphSha256":transfer["sha256"],
         "acceptedReciprocalRevisions":reciprocal["completedCycles"],
         "acceptedReciprocalLineageSha256":reciprocal["sha256"],
         "reciprocalCycleEvidence":reciprocal["cycles"],
@@ -1079,7 +1083,8 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "openImprovementLineageSha256":open_programs["sha256"],
         "openImprovementSourceEvidence":open_programs["steps"],
         "openImprovementProgramRewrites":open_programs["rewrites"],
-        "learnedImprovementPrincipleCount":principle_rows.len(),
+}),
+        json!({"learnedImprovementPrincipleCount":principle_rows.len(),
         "independentlySupportedTransferablePrinciples":
             principle_learning["transferFeatures"].as_array()
                 .map(|features|features.iter().filter(|row|
@@ -1093,7 +1098,8 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "independentlyImprovedTaskCases":improved_task_cases,
         "independentlyImprovedDescendantCases":improved_descendant_cases,
         "learnedPrincipleModels":principle_rows,
-        "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
+}),
+        json!({"crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         // A source adoption streak is not enough to demonstrate that the
         // improvement method actually learns to make BETTER descendants.
         // Require observed cross-role task improvement and an independently
@@ -1103,7 +1109,14 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
             && improved_descendant_cases>0
             && (open_programs["executedProgramRewrites"].as_u64().unwrap_or(0)>0
                 || experiment_methods["completedMethodCycles"].as_u64().unwrap_or(0)>0),
-        "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
+        "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"}),
+    ];
+    let mut evidence = json!({});
+    for part in evidence_parts {
+        evidence.as_object_mut().expect("handoff evidence object")
+            .extend(part.as_object().expect("evidence segment").clone());
+    }
+    evidence
 }
 
 #[cfg(test)]
