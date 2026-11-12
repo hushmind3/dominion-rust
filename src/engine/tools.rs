@@ -75,6 +75,22 @@ pub fn definitions() -> Vec<Value> {
             "design":text("Concrete executable new architecture or learning/control algorithm to implement"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "newComponents":json!({"type":"array","maxItems":8,
+                "description":"Invented intelligence roles that must be source-written AND wired into the running compiled agent before adoption",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},
+                    "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                    "purpose":{"type":"string"},
+                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4},
+                    "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4}
+                },"required":["role","domain","purpose","sourcePaths","integrationPaths"]}}),
+            "interactionEdges":json!({"type":"array","maxItems":12,
+                "description":"New mutual-improvement mechanisms that connect actual changed components with observable consequences",
+                "items":{"type":"object","properties":{
+                    "fromRole":{"type":"string"},"toRole":{"type":"string"},
+                    "fromPath":{"type":"string"},"toPath":{"type":"string"},
+                    "mechanism":{"type":"string"},"observable":{"type":"string"}
+                },"required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
             "nextTargetFiles":json!({"type":"array","items":{"type":"string"},"maxItems":3,"description":"Next child's source targets after this design is adopted"}),
             "methodHypothesis":text("Optional new recursive design/editing method and its causal rationale"),
             "actionProgram":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":8,"description":"Optional grounding/editing tool sequence. Independent adoption is required before inheritance."}),
