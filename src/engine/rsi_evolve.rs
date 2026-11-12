@@ -3204,6 +3204,7 @@ async fn run_loop(
             planner.arg("--rsi-plan-generation").arg(&plan_path)
                 .current_dir(&lab)
                 .env("DOMINION_DATA",&context.state.config.data_dir)
+                .env("DOMINION_WORKSPACE",&lab)
                 .env_remove("DOMINION_DESKTOP_PARENT");
             let output=command(context,planner,Duration::from_secs(30)).await;
             let _=std::fs::remove_file(&plan_path);
@@ -4136,7 +4137,7 @@ mod paired_descendant_target_tests {
 fn system_evolution_target_hint(input:&Value, attempt:u64)->Option<String> {
     if paired_descendant_target(input) {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
-    } else if attempt==1 {
+    } else if attempt==1 && input["rsiAutonomous"]==true {
         Some("improver".into())
     } else {None}
 }
@@ -4188,9 +4189,13 @@ mod system_evolution_handoff_tests {
     use super::*;
     #[test]
     fn measured_descendant_targets_survive_but_stale_parent_hints_do_not() {
-        let first=json!({"rsiSystemEvolution":true,"rsiSelectedDomain":"memory"});
+        let first=json!({"rsiSystemEvolution":true,"rsiAutonomous":true,"rsiSelectedDomain":"memory"});
         assert_eq!(system_evolution_target_hint(&first,1),Some("improver".into()));
         assert_eq!(system_evolution_target_hint(&first,2),None);
+        let explicit=json!({"rsiSystemEvolution":true,"rsiAutonomous":false,
+            "rsiObjective":"Improve memory","rsiSelectedDomain":"memory"});
+        assert_eq!(system_evolution_target_hint(&explicit,1),None,
+            "the owner\'s explicit goal must outrank default improver seed");
         let measured=json!({"rsiSystemEvolution":true,"rsiSourceScopeExpanded":true,
             "rsiSelectedDomain":"context",
             "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
