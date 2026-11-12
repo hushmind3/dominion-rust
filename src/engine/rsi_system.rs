@@ -15,6 +15,43 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
+/// Inventory every compilable agent/frontend source under the selected
+/// experimental revision, not merely a hand-picked optimization fixture.
+/// An inventory hash changes when ANY generation changes the executable
+/// system's source graph; the prompt can remain short without losing lineage.
+fn source_inventory(root:&Path)->Vec<Value> {
+    let Ok(root)=fs::canonicalize(root) else {return Vec::new()};
+    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let mut rows=Vec::new();
+    while let Some(directory)=pending.pop() {
+        let Ok(entries)=fs::read_dir(&directory) else {continue};
+        for entry in entries.flatten() {
+            let Ok(file)=fs::canonicalize(entry.path()) else {continue};
+            if !file.starts_with(&root){continue;}
+            if file.is_dir() {
+                pending.push(file);
+                continue;
+            }
+            if !file.is_file(){continue;}
+            let Some(relative)=file.strip_prefix(&root).ok()
+                .and_then(|p|p.to_str()) else {continue};
+            if !crate::engine::rsi::safe_path(relative){continue;}
+            let allowed=matches!(file.extension().and_then(|e|e.to_str()),
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+            if !allowed {continue;}
+            let Ok(bytes)=fs::read(&file) else {continue};
+            if bytes.len()>2_000_000 {continue;}
+            rows.push(json!({"path":relative,
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),
+                "bytes":bytes.len()}));
+            if rows.len()>=2048 {break;}
+        }
+        if rows.len()>=2048 {break;}
+    }
+    rows.sort_by(|a,b|a["path"].as_str().cmp(&b["path"].as_str()));
+    rows
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -46,10 +83,15 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "regressions":generation["evaluation"]["metrics"]["regressions"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
+    let files=source_inventory(root);
+    let fingerprint=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&files).unwrap_or_default()));
     json!({
         "source":"compiled_descendant_system_blueprint_v1",
         "generatorCommit":revision,
         "architecture":components,
+        "sourceInventory":files,
+        "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
         "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["pairedRevalidated"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
@@ -103,6 +145,46 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         self_model["generatorCommit"],owner_objective,components,history,inherited)
 }
 
+
+/// Behavioral successor instruction derived from *observed* episodes, not
+/// model optimism. The rebuilt descendant uses the outcome to choose whether
+/// to discover, implement, repair, change approach or transfer an adopted gain.
+pub(crate) fn improvement_directive(history:&[Value])->Value {
+    let Some(previous)=history.last() else {
+        return json!({"mode":"discover","sourceGenerationId":null,
+            "reason":"no_recorded_generation"});
+    };
+    let observed=previous["evaluation"]["metrics"]["eligible"]==true;
+    let has_patch=previous["candidateId"].is_string();
+    let new_findings=previous["newFindings"].as_u64().unwrap_or(0);
+    let prior=previous["improvementDirective"]["mode"].as_str().unwrap_or("");
+    let failed_build=previous["evaluation"]["verdict"]=="build_failed"
+        || previous["error"].as_str().is_some_and(|s|
+            s.contains("build") || s.contains("compiler") || s.contains("compile"));
+    let mode=if previous["accepted"]==true && observed {
+        "extend_verified_capability"
+    }else if failed_build {
+        if prior=="repair_counterexample"{"change_approach"}else{"repair_counterexample"}
+    }else if has_patch {
+        if prior=="revise_candidate"{"change_approach"}else{"revise_candidate"}
+    }else if new_findings>0 {
+        if prior=="implement_research"{"change_approach"}else{"implement_research"}
+    }else{"change_approach"};
+    json!({
+        "sourceGenerationId":previous["id"],
+        "mode":mode,"domain":previous["domain"],
+        "previousAccepted":previous["accepted"]==true && observed,
+        "previousVerdict":previous["evaluation"]["verdict"],
+        "previousCandidateId":previous["candidateId"],
+        "previousFocusFiles":previous["focusFiles"].as_array()
+            .map(|a|a.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "previousError":previous["error"].as_str().unwrap_or("")
+            .chars().take(500).collect::<String>(),
+        "researchArtifactHashes":previous["knowledgeArtifactHashes"].as_array()
+            .map(|a|a.iter().take(6).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "newFindings":new_findings
+    })
+}
 
 /// A model-authored design is an unproven experiment. It cannot modify the
 /// frozen evaluator or steer successors unless source changes are adopted.

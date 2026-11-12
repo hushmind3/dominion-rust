@@ -3191,8 +3191,9 @@ async fn run_loop(
         // plans the next system-evolution task. The resident coordinator owns
         // budgets, frozen evaluation and promotion; these fields are mutable
         // runtime policy and must be allowed to evolve with source revisions.
-        if input["rsiSystemEvolution"]==true
-            && input["rsiFocusFiles"].as_array().is_none_or(|files|files.is_empty()) {
+        if input["rsiSystemEvolution"]==true {
+            record["phase"]=json!("planning_next_generator");
+            save(context,record)?;
             let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
             std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
             let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
@@ -3216,7 +3217,18 @@ async fn run_loop(
             }
             let plan:Value=serde_json::from_slice(&output.stdout)
                 .map_err(|e|format!("후손 계획 출력 형식 오류: {e}"))?;
-            if plan["generatorCommit"]!=head {return Err("후손 계획과 실행 소스 커밋이 다릅니다.".into());}
+            if plan["source"]!="compiled_descendant_system_controller_v2"
+                || plan["generatorCommit"]!=head
+                || plan["historyCount"].as_u64()!=Some(history.len() as u64) {
+                return Err("후손 계획과 실행 소스·세대 계보가 다릅니다.".into());
+            }
+            if plan["systemBlueprint"]["generatorCommit"]!=head
+                || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
+                || plan["systemBlueprint"]["architecture"].as_array()
+                    .is_none_or(|items|items.len()!=7)
+                || !plan["improvementDirective"].is_object() {
+                return Err("후손 시스템 자기모형·실패 학습·계보가 일치하지 않습니다.".into());
+            }
             let domain=plan["domain"].as_str()
                 .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
             let focus=plan["focusFiles"].as_array()
@@ -3228,28 +3240,41 @@ async fn run_loop(
                         &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none())) {
                 return Err("후손이 허용되지 않은 소스 파일을 선택했습니다.".into());
             }
-            if plan["systemBlueprint"]["source"]!="compiled_descendant_system_blueprint_v1"
-                || plan["systemBlueprint"]["generatorCommit"]!=head
-                || plan["systemBlueprint"]["architecture"].as_array()
-                    .is_none_or(|roles|roles.len()<6) {
-                return Err("후손 자체 생성 시스템 자기모형의 출처가 다릅니다.".into());
-            }
-            child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
-            child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSelectedDomain"]=json!(domain);
             child_input["rsiTargetDomain"]=json!(domain);
             child_input["rsiTargetPlan"]=json!({
                 "domain":domain,"selection":plan["selection"],
                 "strategy":plan["strategy"],"generatorCommit":head
             });
-            child_input["rsiFocusFiles"]=json!(focus);
-            child_input["rsiAutoFocus"]=json!(true);
+            let explicit_owner_focus=input["rsiFocusFiles"].as_array()
+                .is_some_and(|files|!files.is_empty());
+            if !explicit_owner_focus {
+                child_input["rsiFocusFiles"]=json!(focus);
+                child_input["rsiAutoFocus"]=json!(true);
+            }
             child_input["rsiFocusSelection"]=json!({
-                "source":"rebuilt_descendant_controller",
+                "source":if explicit_owner_focus {"owner_selected"} else {"rebuilt_descendant_controller"},
                 "domain":domain,"candidates":plan["ranked"],
                 "sourceIndexId":child_input["rsiIndexId"],
                 "generatorCommit":head
             });
+            child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+            child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+            if !plan["archiveSelection"].is_null() {
+                let id=plan["archiveSelection"]["candidateId"].as_str()
+                    .ok_or("후손 보관소 후보 ID가 없습니다.")?;
+                let candidate=context.state.store.get("rsi_candidate",id)
+                    .ok_or("후손 보관소 후보가 현재 기록에 없습니다.")?;
+                if candidate["patchSha256"]!=plan["archiveSelection"]["patchSha256"]
+                    || candidate["baseCommit"]!=head
+                    || candidate["pairedComparisonComplete"]!=true {
+                    return Err("후손 보관소 선택의 실제 패치·출처가 맞지 않습니다.".into());
+                }
+            }
+            child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
+            child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
+            child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
+            child_input["rsiControllerPlan"]=plan.clone();
             context.state.store.audit("rsi.descendant_controller_plan",json!({
                 "campaignId":context.job_id,"attempt":attempt,
                 "generatorCommit":head,"domain":domain,
@@ -3258,7 +3283,9 @@ async fn run_loop(
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
-        child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        if input["rsiSystemEvolution"]!=true {
+            child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        }
         context.state.store.audit("rsi.edit_method_selected",json!({
             "campaignId":context.job_id,"attempt":attempt,
             "generatorCommit":head,"policy":child_input["rsiEditPolicy"]
@@ -4187,15 +4214,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
     history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
     let objective=selection_objective(input);
-    let inherited=if input["selectionPolicy"]=="automatic"
-        && !paired_descendant_target(input) {
-        crate::engine::rsi_system::inherited_domain(&history)
-    } else { None };
+    let successor_hint=system_evolution_target_hint(input,
+        snapshot["attempt"].as_u64().unwrap_or(0))
+        .or_else(||if input["rsiAutonomous"]==true {
+            crate::engine::rsi_system::inherited_domain(&history)
+        }else{None});
+    let trial=if paired_descendant_target(input) {None} else {
+        input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
+    };
     let (domain,selection,strategy)=select_generation_strategy(
-        &state,&history,&objective,None,None,
-        system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
-            .or(inherited),
-        commit);
+        &state,&history,&objective,None,trial,successor_hint,commit);
     let mut source_input=input.clone();
     source_input["rsiTargetDomain"]=json!(domain);
     source_input["rsiSelectedDomain"]=json!(domain);
@@ -4207,14 +4235,22 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         .filter(|p|crate::engine::rsi::safe_path(p))
         .take(8).collect::<Vec<_>>();
     let source=input["rsiSourceDir"].as_str()
-        .ok_or("후손 시스템의 소스 경로가 없습니다.")?;
-    let blueprint=crate::engine::rsi_system::blueprint(
+        .ok_or("후손 시스템 소스 위치가 없습니다.")?;
+    let system_blueprint=crate::engine::rsi_system::blueprint(
         Path::new(source),commit,&history);
+    let directive=crate::engine::rsi_system::improvement_directive(&history);
+    let archive=crate::engine::rsi_archive::select(
+        &state,&history,commit,&input["rsiFrozenCases"]);
+    let edit_policy=learned_edit_method(&state,input,&history);
     println!("{}",json!({
-        "generatorCommit":commit,"domain":domain,
-        "selection":selection,"strategy":strategy,
+        "source":"compiled_descendant_system_controller_v2",
+        "generatorCommit":commit,"historyCount":history.len(),
+        "domain":domain,"selection":selection,"strategy":strategy,
         "focusFiles":focus,"ranked":ranked,
-        "systemBlueprint":blueprint
+        "systemBlueprint":system_blueprint,
+        "improvementDirective":directive,
+        "archiveSelection":archive,
+        "editPolicy":edit_policy
     }));
     Ok(())
 }
