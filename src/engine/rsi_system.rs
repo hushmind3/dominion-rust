@@ -104,6 +104,47 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
 }
 
 
+
+/// Behavioral successor instruction derived from *observed* episodes, not
+/// model optimism. The rebuilt descendant uses the outcome to choose whether
+/// to discover, implement, repair, change approach or transfer an adopted gain.
+pub(crate) fn improvement_directive(history:&[Value])->Value {
+    let Some(previous)=history.last() else {
+        return json!({"mode":"discover","sourceGenerationId":null,
+            "reason":"no_recorded_generation"});
+    };
+    let observed=previous["evaluation"]["metrics"]["eligible"]==true;
+    let has_patch=previous["candidateId"].is_string();
+    let new_findings=previous["newFindings"].as_u64().unwrap_or(0);
+    let prior=previous["improvementDirective"]["mode"].as_str().unwrap_or("");
+    let failed_build=previous["evaluation"]["verdict"]=="build_failed"
+        || previous["error"].as_str().is_some_and(|s|
+            s.contains("build") || s.contains("compiler") || s.contains("compile"));
+    let mode=if previous["accepted"]==true && observed {
+        "extend_verified_capability"
+    }else if failed_build {
+        if prior=="repair_counterexample"{"change_approach"}else{"repair_counterexample"}
+    }else if has_patch {
+        if prior=="revise_candidate"{"change_approach"}else{"revise_candidate"}
+    }else if new_findings>0 {
+        if prior=="implement_research"{"change_approach"}else{"implement_research"}
+    }else{"change_approach"};
+    json!({
+        "sourceGenerationId":previous["id"],
+        "mode":mode,"domain":previous["domain"],
+        "previousAccepted":previous["accepted"]==true && observed,
+        "previousVerdict":previous["evaluation"]["verdict"],
+        "previousCandidateId":previous["candidateId"],
+        "previousFocusFiles":previous["focusFiles"].as_array()
+            .map(|a|a.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "previousError":previous["error"].as_str().unwrap_or("")
+            .chars().take(500).collect::<String>(),
+        "researchArtifactHashes":previous["knowledgeArtifactHashes"].as_array()
+            .map(|a|a.iter().take(6).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+        "newFindings":new_findings
+    })
+}
+
 /// A model-authored design is an unproven experiment. It cannot modify the
 /// frozen evaluator or steer successors unless source changes are adopted.
 pub(crate) fn propose(
@@ -262,6 +303,23 @@ mod tests {
         assert!(propose(&state,"session",&request).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn measured_outcomes_change_successors_without_rewarding_research_only_generations() {
+        assert_eq!(improvement_directive(&[])["mode"],"discover");
+        let research=json!({"id":"g1","accepted":false,"newFindings":3,
+            "candidateId":null,"domain":"harness"});
+        assert_eq!(improvement_directive(&[research.clone()])["mode"],"implement_research");
+        let mut attempted=research.clone();
+        attempted["improvementDirective"]=json!({"mode":"implement_research"});
+        assert_eq!(improvement_directive(&[attempted])["mode"],"change_approach");
+        let accepted=json!({"id":"g2","accepted":true,"candidateId":"real-candidate",
+            "evaluation":{"metrics":{"eligible":true}}});
+        assert_eq!(improvement_directive(&[research,accepted])["mode"],"extend_verified_capability");
+        let unverified=json!({"id":"fake","accepted":true,
+            "evaluation":{"metrics":{"eligible":false}},"candidateId":null});
+        assert_ne!(improvement_directive(&[unverified])["mode"],"extend_verified_capability");
+    }
+
     #[test]
     fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
         let base=json!({"generatorCommit":"parent","jobId":"worker",
