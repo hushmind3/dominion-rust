@@ -39,6 +39,7 @@ pub mod rsi_causal_ecology;
 pub mod rsi_recursive_laboratory;
 pub mod rsi_principle_learner;
 pub mod rsi_model_learning;
+pub mod rsi_weight_cycle;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod recovery;
