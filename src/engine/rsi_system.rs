@@ -77,7 +77,6 @@ pub(crate) fn architecture_frontier(
 )->Vec<Value>{
     use std::collections::{BTreeMap,BTreeSet};
     let mut verified_roles=BTreeSet::<String>::new();
-    let mut attempts=BTreeMap::<String,u64>::new();
     let mut source_attempts=BTreeMap::<String,u64>::new();
     for generation in history {
         for path in generation["focusFiles"].as_array().into_iter().flatten()
@@ -107,8 +106,14 @@ pub(crate) fn architecture_frontier(
         }
     }
     let mut frontier=Vec::<Value>::new();
+    // The independent whole-system completion gate requires SIX core
+    // intelligence roles. Frontend is a seventh, optional application role;
+    // do not spend the scarce first generations there while a core is missing.
+    let complete_core=["algorithms","harness","memory","learning","tools",
+        "improvement_methods"].iter().all(|role|verified_roles.contains(*role));
     for component in blueprint["architecture"].as_array().into_iter().flatten() {
         let Some(role)=component["role"].as_str() else {continue;};
+        if role=="frontend" && !complete_core {continue;}
         let Some(domain)=architecture_role_domain(role) else {continue;};
         let touched=verified_roles.contains(role);
         let mut available=component["representativeSources"].as_array()
@@ -138,7 +143,6 @@ pub(crate) fn architecture_frontier(
         });
         let Some((path,hash,bytes))=available.first().copied() else {continue;};
         let prior=source_attempts.get(path).copied().unwrap_or(0);
-        *attempts.entry(role.to_string()).or_default()+=prior;
         frontier.push(json!({
             "role":role,"domain":domain,"path":path,
             "sourceSha256":hash,"sourceBytes":bytes,
