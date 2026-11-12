@@ -91,8 +91,8 @@ fn design_implemented(design:&Value,changed:&[Value])->bool {
         for file in files {
             let Some(path)=file.as_str().filter(|p|crate::engine::rsi::safe_path(p))
                 else{return false;};
-            if !targets.iter().any(|entry|entry==path)
-                || !changed.iter().any(|entry|entry==path)
+            if !targets.iter().any(|entry|entry.as_str()==Some(path))
+                || !changed.iter().any(|entry|entry.as_str()==Some(path))
                 || !mapped.insert(path.to_string()) {return false;}
         }
     }
@@ -106,7 +106,10 @@ fn design_implemented(design:&Value,changed:&[Value])->bool {
 pub(crate) fn inherited_stage(
     history:&[Value],frontier:&[Value]
 )->Option<Value>{
-    let prior=history.last()?;
+    // Failed experiments do not erase an adopted model-authored program:
+    // the binary still runs the LAST accepted revision. A new accepted
+    // revision supersedes the programme, whether or not it authored one.
+    let prior=history.iter().rev().find(|g|g["accepted"]==true)?;
     let design=&prior["systemDesign"];
     if prior["accepted"]!=true
         || prior["evaluation"]["metrics"]["eligible"]!=true
@@ -117,20 +120,31 @@ pub(crate) fn inherited_stage(
             .as_object()?.keys().map(|key|json!(key)).collect::<Vec<_>>().as_slice())
     {return None;}
     let stages=design["successorStages"].as_array()?;
-    stages.iter().find_map(|stage|{
+    let previous=history.iter().skip_while(|generation|
+        generation["id"]!=prior["id"]).skip(1).collect::<Vec<_>>();
+    // A compiled successor schedules the PREDECESSOR'S stages from live
+    // outcomes. Repeating a failed source target incurs a cost; a different
+    // model-proposed stage may win next, without the resident coordinator
+    // inventing the next strategy or claiming a quality gain.
+    stages.iter().filter_map(|stage|{
         let role=stage["role"].as_str()?;
         let domain=stage["domain"].as_str()?;
         let path=stage["path"].as_str()?;
         if !crate::engine::rsi_evolve::DOMAINS.contains(&domain){return None;}
         let actual=frontier.iter().find(|row|
             row["path"]==path && row["role"]==role && row["domain"]==domain)?;
-        Some(json!({"role":role,"domain":domain,"path":path,
+        let failures=previous.iter().filter(|g|
+            g["accepted"]!=true && g["focusFiles"].as_array()
+                .is_some_and(|files|files.iter().any(|f|f.as_str()==Some(path))))
+            .count();
+        Some((failures,json!({"role":role,"domain":domain,"path":path,
             "sourceSha256":actual["sourceSha256"],
             "objective":stage["objective"],
             "sourceDesignId":design["id"],
             "predecessorCommit":prior["acceptedCommit"],
-            "qualityProven":false}))
-    })
+            "failedAttemptsSinceAdoption":failures,
+            "qualityProven":false})))
+    }).min_by_key(|(failures,_)|*failures).map(|(_,stage)|stage)
 }
 
 /// DGM/AlphaEvolve-style architecture frontier, evaluated by the descendant
@@ -292,7 +306,8 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         if design["generatorCommit"]!=generation["generatorCommit"]
             || design["generationJobId"]!=generation["jobId"] {continue;}
         for role in design_roles(design) {
-            if components.iter().any(|existing|existing["role"]==role) {continue;}
+            if components.iter().any(|existing|
+                existing["role"].as_str()==Some(role.as_str())) {continue;}
             let Some(files)=design_role_files(design,&role) else{continue;};
             let mut sources=Vec::new();
             for entry in files {
@@ -598,7 +613,8 @@ pub(crate) fn propose(
 /// Reuse the model's target only when its *source change*, not its
 /// explanation, was independently evaluated and adopted.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
-    let previous=history.last()?;
+    // The verified successor domain survives inconclusive later attempts.
+    let previous=history.iter().rev().find(|g|g["accepted"]==true)?;
     let design=&previous["systemDesign"];
     if previous["accepted"]!=true
         || previous["evaluation"]["metrics"]["eligible"]!=true
