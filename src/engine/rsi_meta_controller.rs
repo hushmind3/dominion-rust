@@ -259,8 +259,18 @@ pub(crate) fn synthesize(
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
         else{"open_ended_mechanism_discovery"};
-    let alternatives=ranked.iter().take(6)
+    let mut alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
+    // Guarantee that the method-learning source itself is reachable when
+    // enough independent transfer counterexamples require a new policy.
+    // This is still a source-indexed frontier option, not a forced win.
+    if !alternatives.iter().any(|row|
+        row["target"]["path"]=="src/engine/rsi_meta_controller.rs") {
+        if let Some((method,_))=ranked.iter().find(|(row,_)|
+            row["target"]["path"]=="src/engine/rsi_meta_controller.rs"){
+            alternatives.push(method.clone());
+        }
+    }
     // This native successor policy changes source focus, execution mode,
     // and tool admission. An accepted model-authored successorStage overrides it.
     let path=target["path"].as_str().unwrap_or("");
@@ -517,6 +527,47 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
         "causalSuperiorityProven":false,
         "isolationRequired":true
     });
+    // Repeated independently assessed negative transfers can become a
+    // source-bound experiment on HOW the descendant selects future methods.
+    // A recent self-edit cooldown prevents repeated meta-only generations.
+    let negative_method=learning.iter().filter(|row|
+        row["negativeTransferSignal"]==true
+            && row["observedTransferTrials"].as_u64().unwrap_or(0)>=3
+            && row["matchedControlTrials"].as_u64().unwrap_or(0)>=3).count();
+    let recent_meta_attempts=history.iter().rev().take(4).filter(|g|
+        g["focusFiles"].as_array().is_some_and(|files|
+            files.iter().any(|path|
+                path=="src/engine/rsi_meta_controller.rs"))).count();
+    if negative_method>0 && recent_meta_attempts<2 {
+        if let Some(repair)=alternatives.iter().find(|row|
+            row["target"]["path"]=="src/engine/rsi_meta_controller.rs").cloned() {
+            let target=repair["target"].clone();
+            policy["target"]=target.clone();
+            policy["selectionEvidence"]=repair.clone();
+            policy["alternatives"]=json!(alternatives);
+            policy["taskOutcomeForecast"]=repair["outcomeForecast"].clone();
+            policy["forecast"]["acceptanceProbability"]=
+                repair["predictedAdoptionProbability"].clone();
+            policy["forecast"]["uncertainty"]=repair["uncertainty"].clone();
+            for field in ["role","domain","path","sourceSha256"] {
+                policy["controlPolicy"][field]=target[field].clone();
+            }
+            policy["nextMutualRedesign"]=policy["mutualDevelopmentGraph"]["edges"]
+                .as_array().into_iter().flatten()
+                .find(|edge|edge["to"]==target["role"])
+                .cloned().unwrap_or(Value::Null);
+            policy["mode"]=json!("repair_own_transfer_method");
+            policy["metaRepairChosen"]=json!(true);
+            policy["metaRepairReason"]=json!("observed_negative_transfer_against_matched_control");
+            policy["peerMethodTransfer"]=Value::Null;
+            policy["revision"]=json!(format!("{:x}",Sha256::digest(
+                serde_json::to_vec(&json!([
+                    original_revision,policy["target"],policy["controlPolicy"],
+                    policy["peerMethodLearning"],policy["mode"]
+                ])).unwrap_or_default())));
+            return policy;
+        }
+    }
     if !transferred{
         if !learning.is_empty(){
             policy["revision"]=json!(format!("{:x}",Sha256::digest(
@@ -724,7 +775,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Predicted downstream outcomes={} and proposed executable control policy={}.\n\
         Next mutually developing subsystem link={} (observed succession, NOT causal proof).\n\
-        If mode=repair_own_prediction_mechanism, redesign the editable prediction/search rule ITSELF using observed prediction errors, not the benchmark scorer. Before editing call rsi_system_plan with expectedOutcomes probabilities (candidateCaptured, adoption, metaImprovement, regression), then let independent assessment calibrate this proposal.\n\
+        If mode=repair_own_prediction_mechanism, redesign the editable prediction/search rule ITSELF using observed prediction errors, not the benchmark scorer. If mode=repair_own_transfer_method, redesign the executable donor-method matching, experimental isolation, or negative-transfer selection rule in src/engine/rsi_meta_controller.rs using measured recipient and matched-control outcomes; do not edit the frozen evaluator. Before editing call rsi_system_plan with expectedOutcomes probabilities (candidateCaptured, adoption, metaImprovement, regression), then let independent assessment calibrate this proposal.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
@@ -1141,6 +1192,37 @@ mod tests{
             ["negativeTransferSignal"],true);
         assert!(instruction(&suppressed).contains("OBSERVATIONAL NEGATIVE TRANSFER"));
         assert!(!peer_instruction(&peer,&suppressed).contains("ISOLATED"));
+        // Repeated negative transfer now redirects the executable
+        // descendant to rewrite the transferable-method selector itself.
+        let mut meta_ready=original.clone();
+        meta_ready["alternatives"].as_array_mut().unwrap().push(json!({
+            "role":"improvement_methods","score":0.40,
+            "target":target("improvement_methods","improver",
+                "src/engine/rsi_meta_controller.rs"),
+            "outcomeForecast":{"adoption":0.30},
+            "predictedAdoptionProbability":0.30,"uncertainty":0.4
+        }));
+        let method_repair=evolve_from_peer_methods(
+            meta_ready.clone(),&peer,&matched);
+        assert_eq!(method_repair["mode"],"repair_own_transfer_method");
+        assert_eq!(method_repair["metaRepairChosen"],true);
+        assert_eq!(method_repair["target"]["path"],
+            "src/engine/rsi_meta_controller.rs");
+        assert_eq!(method_repair["controlPolicy"]["path"],
+            "src/engine/rsi_meta_controller.rs");
+        assert_eq!(method_repair["peerMethodTransfer"],Value::Null);
+        assert!(peer_instruction(&peer,&method_repair).is_empty());
+        assert!(instruction(&method_repair).contains(
+            "redesign the executable donor-method matching"));
+        // A recent pair of real attempts at rewriting this source stops
+        // a meta-level feedback loop from consuming the entire campaign.
+        let mut cooldown=matched.clone();
+        cooldown.extend((0..2).map(|i|json!({
+            "jobId":format!("meta-repair-{i}"),
+            "focusFiles":["src/engine/rsi_meta_controller.rs"]
+        })));
+        let cooled=evolve_from_peer_methods(meta_ready,&peer,&cooldown);
+        assert_ne!(cooled["mode"],"repair_own_transfer_method");
         let mut repair=original.clone();
         repair["metaRepairChosen"]=json!(true);
         assert_eq!(evolve_from_peer_methods(repair.clone(),&peer,&[])["target"],
