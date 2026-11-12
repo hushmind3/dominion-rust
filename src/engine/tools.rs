@@ -60,7 +60,7 @@ pub fn definitions() -> Vec<Value> {
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
         tool("rsi_system_plan", "Propose a causal redesign of the active agent's algorithms, harness, memory, learning, tools or improvement method. Requires actual source changes and independent verification.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]}),
+            "component":text("Existing or newly invented intelligence subsystem role (ASCII letters, digits, underscore, hyphen; max 64 characters)"),
             "hypothesis":text("Observed limitation, causal reason and falsifiable outcome"),
             "design":text("New executable architecture or algorithm to implement"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}),
