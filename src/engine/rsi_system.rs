@@ -228,7 +228,7 @@ pub(crate) fn peer_lineage_references(
             .filter_map(Value::as_str).take(24) {
             let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
             if let Some(hash)=current {
-                same_bytes+=usize::from(generation["acceptedSourceHashes"][path].as_str()==Some(&hash));
+                same_bytes+=usize::from(generation["acceptedSourceHashes"][path].as_str()==Some(hash.as_str()));
                 aligned.push(path.to_string());
             }
         }
