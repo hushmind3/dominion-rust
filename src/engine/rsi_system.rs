@@ -988,12 +988,13 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let missing=required.iter().filter(|role|!covered.contains(**role)).copied().collect::<Vec<_>>();
     let interaction=crate::engine::rsi_interaction::influence_graph(history,&[]);
     let reciprocal=crate::engine::rsi_mutual_program::completed_cycles(history);
+    let reflexive=crate::engine::rsi_reflexive::completed(history);
     let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
     let edges=interaction["edges"].as_array().cloned().unwrap_or_default();
     let cross=edges.iter().filter(|edge|
         edge["sourceRole"]!=edge["targetRole"]
             && edge["isolatedGains"].as_u64().unwrap_or(0)>0).count();
-    let reciprocal=edges.iter().filter(|edge|
+    let reciprocal_pairs=edges.iter().filter(|edge|
         edge["sourceRole"]!=edge["targetRole"]
             && edge["isolatedGains"].as_u64().unwrap_or(0)>0
             && edges.iter().any(|other|
@@ -1005,12 +1006,15 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "sourceChangedComponents":covered,"requiredComponents":required,"missingComponents":missing,
         "metaImprovementObserved":meta_gain,"inventedMethodTransferred":method_transfer,
         "crossSubsystemPairedEffects":cross,
-        "reciprocalSubsystemPairsObserved":reciprocal,
+        "reciprocalSubsystemPairsObserved":reciprocal_pairs,
         "crossSubsystemEvidenceSha256":interaction["sha256"],
         "crossGenerationTransferGraphSha256":transfer["sha256"],
         "acceptedReciprocalRevisions":reciprocal["completedCycles"],
         "acceptedReciprocalLineageSha256":reciprocal["sha256"],
         "reciprocalCycleEvidence":reciprocal["cycles"],
+        "acceptedReflexiveLoops":reflexive["completedLoops"],
+        "reflexiveLineageSha256":reflexive["sha256"],
+        "verifiedMetaCapabilityMetaCycles":reflexive["loops"],
         "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
