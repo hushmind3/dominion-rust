@@ -150,8 +150,8 @@ mod tests {
             "candidateId":job,"accepted":good,
             "acceptedCommit":if good{json!("c".repeat(40))}else{Value::Null},
             "evaluation":{"metrics":{"eligible":good,"holdoutEvidence":[{
-                "id":"frozen","baselinePass":false,"candidatePass":good,
-                "metricGains":0,"metricRegressions":if good{0}else{1}
+                "id":"frozen","baselinePass":!good,"candidatePass":good,
+                "metricGains":0,"metricRegressions":0
             }]}}})
     }
     #[test]
