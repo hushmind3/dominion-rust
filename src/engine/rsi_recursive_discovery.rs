@@ -220,6 +220,75 @@ pub(crate) fn completed_cycles(history:&[Value])->Value {
     out
 }
 
+/// Frozen supervisor validates ONLY documented, independently adopted
+/// source/commit facts. It must not require the new compiled successor's
+/// scientific experiment-ranking or completion-counting ALGORITHM to equal
+/// an old resident implementation.
+fn verify_completed_lineage(ledger:&Value,history:&[Value])->bool{
+    let mut unsigned=ledger.clone();
+    let Some(body)=unsigned.as_object_mut()else{return false};
+    body.remove("revision");
+    if ledger["source"]!="four_independently_adopted_recursive_discovery_steps_v1"
+        || ledger["revision"]!=hash(&unsigned)
+        || ledger["qualityOrCausalityProven"]!=false
+        || ledger["allStepsMustBeAcceptedInRealCommitChain"]!=true {
+        return false;
+    }
+    let Some(cycles)=ledger["cycles"].as_array()
+        .filter(|v|v.len()<=16)else{return false};
+    if ledger["completedCycles"].as_u64().is_none_or(|n|
+        n < cycles.len() as u64 || n > history.len() as u64){return false;}
+    let mut unique=BTreeSet::<String>::new();
+    cycles.iter().all(|cycle|{
+        let (Some(role),Some(path),Some(origin))=(
+            cycle["introducedRole"].as_str(),
+            cycle["introducedSource"].as_str(),
+            cycle["originSource"].as_str())else{return false;};
+        let Some(birth)=history.iter().find(|g|adopted(g)
+            && g["acceptedCommit"]==cycle["inventedSourceCommit"]
+            && g["acceptedSourceHashes"][path].is_string()
+            && g["acceptedSourceHashes"][origin].is_string()
+            && g["systemDesign"]["moduleIntroductions"].as_array().is_some_and(
+                |rows|rows.iter().any(|module|
+                    module["role"]==role
+                    && module["newFiles"].as_array().is_some_and(
+                        |files|files.iter().any(|p|p.as_str()==Some(path)))
+                    && module["integrationFiles"].as_array().is_some_and(
+                        |files|files.iter().any(|p|p.as_str()==Some(origin))))))
+            else{return false;};
+        let Some(born_commit)=birth["acceptedCommit"].as_str()else{return false;};
+        let Some(grown)=adopted_step(history,born_commit,role,path,
+            "develop_invented_capability")else{return false;};
+        let Some(grown_commit)=grown["acceptedCommit"].as_str()else{return false;};
+        let Some(returned)=adopted_step(history,grown_commit,
+            "improvement_methods",origin,"return_to_origin")
+            else{return false;};
+        let Some(returned_commit)=returned["acceptedCommit"].as_str()
+            else{return false;};
+        let Some(method)=history.iter().find(|g|adopted(g)
+            && g["acceptedCommit"]==cycle["rewrittenImproverCommit"]
+            && g["recursiveDiscovery"]["phase"]=="rewrite_discovery_method"
+            && g["recursiveDiscovery"]["target"]["role"]=="improvement_methods"
+            && g["recursiveDiscovery"]["target"]["path"].as_str().is_some_and(|p|
+                matches!(p,"src/engine/rsi_recursive_discovery.rs"|
+                    "src/engine/rsi_causal_curriculum.rs"|
+                    "src/engine/rsi_meta_controller.rs")))
+            else{return false;};
+        let Some(method_path)=method["recursiveDiscovery"]["target"]["path"]
+            .as_str() else{return false;};
+        let after=adopted_step(history,returned_commit,"improvement_methods",
+            method_path,"rewrite_discovery_method");
+        unique.insert(born_commit.to_string())
+            && cycle["developedSourceCommit"]==grown["acceptedCommit"]
+            && cycle["returnedSourceCommit"]==returned["acceptedCommit"]
+            && after.is_some_and(|g|g["acceptedCommit"]==method["acceptedCommit"])
+            && cycle["adoptionCount"]==4
+            && cycle["newCompiledPolicyInherited"]==true
+            && cycle["endToEndGainProven"]==false
+            && cycle["unboundedSelfImprovementProven"]==false
+    })
+}
+
 /// The currently COMPILED descendant owns source focus and whether to invent
 /// a new topology or continue a verified earlier invention. No resident
 /// predecessor can recompute this ranking with an obsolete meta-algorithm.
@@ -359,7 +428,7 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
         || plan["revision"]!=hash(&unsigned)
         || plan["generatorCommit"]!=commit
         || plan["historyCount"].as_u64()!=Some(history.len() as u64)
-        || plan["completedRecursiveCycles"]!=completed_cycles(history)
+        || !verify_completed_lineage(&plan["completedRecursiveCycles"],history)
         || plan["openTopologySha256"]!=topology["sha256"]
         || plan["factorialEvidenceSha256"]!=factorial["sha256"]
         || plan["mutualCurriculumRevision"]!=mutual["revision"]
