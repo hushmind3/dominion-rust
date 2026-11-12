@@ -136,7 +136,9 @@ fn select_scoped(
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
     for generation in history {
-        if generation["accepted"] == true || generation["verification"]["checksPassed"] != true {
+        if generation["accepted"] == true
+            || (generation["verification"]["checksPassed"]!=true
+                && generation["staticChecksPassed"]!=true) {
             continue;
         }
         let Some(id) = generation["candidateId"].as_str() else {
