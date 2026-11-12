@@ -3036,6 +3036,9 @@ async fn run_loop(
             crate::engine::rsi_model_ecology::validate(
                 &context.state,&plan["modelPolicy"],input,
                 plan["domain"].as_str().unwrap_or(""),&head)?;
+            crate::engine::rsi_archive::validate_selected(
+                &context.state,&plan["archiveSelection"],&head,
+                &child_input["rsiFrozenCases"])?;
             crate::engine::rsi_lineage_transfer::validate(
                 &context.state,&plan["peerLineages"],&context.job_id,
                 &child_input,child_input["rsiIndexId"].as_str().unwrap_or(""))?;
@@ -3047,6 +3050,11 @@ async fn run_loop(
             crate::engine::rsi_intervention_lab::validate_receipts(
                 &context.state,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
                 &plan["factorialExperiment"])?;
+            // Enforce the compiled child's actual parent decision,
+            // subject to the unchanged previous-generation evidence gate.
+            child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
+            child_input["rsiInheritedCandidateId"]=
+                plan["archiveSelection"]["candidateId"].clone();
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
@@ -4335,6 +4343,11 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         &state,&history,&objective,None,None,selected,revision);
     let model_policy=crate::engine::rsi_model_ecology::plan(
         &state,&history,&parent["input"],&domain,revision);
+    // The archive search law runs in THIS rebuilt descendant binary.
+    // A previous-generation coordinator may verify the selected parent's
+    // original evidence but cannot silently replace its learned ranking.
+    let archive_selection=crate::engine::rsi_archive::select(
+        &state,&history,revision,&parent["input"]["rsiFrozenCases"]);
     let mut focus=parent["input"].clone();
     focus["rsiTargetDomain"]=json!(domain);
     focus["rsiIndexId"]=campaign["planIndexId"].clone();
@@ -4426,6 +4439,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "rankedFiles":ranked,"systemBlueprint":blueprint,
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "archiveSelection":archive_selection,
         "modelPolicy":model_policy,
         "metaPolicy":meta,
         "peerLineages":peers,"comparativeMode":comparative_mode,
@@ -4501,6 +4515,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let plan=&job["input"]["rsiDescendantPlan"];
         crate::engine::rsi_system::validate_plan_evidence(
             &state,root,plan,job["input"]["rsiIndexId"].as_str().unwrap_or(""))?;
+        crate::engine::rsi_archive::validate_selected(
+            &state,&plan["archiveSelection"],&commit,
+            &job["input"]["rsiFrozenCases"])?;
         crate::engine::rsi_intervention_lab::validate(
             &plan["factorialExperiment"],
             plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
@@ -4516,6 +4533,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiSystemBlueprint"]!=model
             || plan["metaPolicy"]!=job["input"]["rsiMetaPolicy"]
             || plan["architectureTarget"]!=job["input"]["rsiArchitectureTarget"]
+            || plan["archiveSelection"]!=job["input"]["rsiArchiveSelection"]
+            || job["input"]["rsiInheritedCandidateId"]!=plan["archiveSelection"]["candidateId"]
             || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]
             || plan["symbioticCurriculum"]!=job["input"]["rsiSymbioticCurriculum"]
             || plan["factorialExperiment"]!=job["input"]["rsiFactorialExperiment"]{

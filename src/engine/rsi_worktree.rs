@@ -264,6 +264,14 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
+    if input["rsiDescendantPlan"].is_object() {
+        let verified=&input["rsiArchiveSelection"];
+        crate::engine::rsi_archive::validate_selected(
+            &context.state,verified,base,&input["rsiFrozenCases"])?;
+        if verified["candidateId"]!=input["rsiInheritedCandidateId"] {
+            return Err("후손 계획의 탐색 부모와 적용 대상이 다릅니다.".into());
+        }
+    }
     if let Some(id)=input["rsiInheritedCandidateId"].as_str().filter(|id|!id.is_empty()) {
         if let Err(error)=inherit_neutral_patch(context,&path,base,id).await {
             let _=git(&source,&["worktree","remove","--force",name]).await;
