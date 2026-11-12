@@ -118,6 +118,7 @@ export function SelfImprovementPage(){
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>('automatic')
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
  const [settingsOpen,setSettingsOpen]=useState(false)
+ const [setupMode,setSetupMode]=useState(false)
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
  const [install,setInstall]=useState<InstallJob|null>(null)
@@ -127,7 +128,7 @@ export function SelfImprovementPage(){
   let alive=true
   void get<{id:string;title?:string;detail?:string;suggestedRequest?:string}>('/api/rsi/issues/'+encodeURIComponent(issueId)).then(issue=>{
    if(!alive)return
-   setReportedIssue(issue);setRequest((issue.suggestedRequest||'문제를 진단하고 검증된 수정을 만든다')+'\n'+(issue.detail||''));
+   setSetupMode(true);setReportedIssue(issue);setRequest((issue.suggestedRequest||'문제를 진단하고 검증된 수정을 만든다')+'\n'+(issue.detail||''));
    setJobId('');setCampaign(null);setInstall(null);setVerify(null)
    try{localStorage.removeItem(SAVED)}catch{}
   }).catch(e=>{if(alive)setError((e as Error).message)})
@@ -141,11 +142,11 @@ export function SelfImprovementPage(){
   }
  },[providers.value,providerId])
  useEffect(()=>{
-  if(!jobId&&catalogue.value.campaigns.length){
+  if(!jobId&&!issueId&&!setupMode&&catalogue.value.campaigns.length){
    const active=catalogue.value.campaigns.find(item=>!terminal(item.status))
    setJobId((active||catalogue.value.campaigns[0]).id)
   }
- },[jobId,catalogue.value])
+ },[jobId,issueId,setupMode,catalogue.value])
  useEffect(()=>{
   if(!jobId)return
   let alive=true
@@ -171,7 +172,8 @@ export function SelfImprovementPage(){
  const research=campaign?.history?.reduce((n,row)=>n+(row.newFindings||0),0)||0
  const inherited=campaign?.history?.filter((row,index,rows)=>rows.slice(0,index).some(prior=>prior.acceptedCommit&&prior.acceptedCommit===row.generatorCommit)).length||0
  const backToSetup=()=>{
-  setSettingsOpen(true);setError('')
+  setSetupMode(true);setJobId('');setCampaign(null);setInstall(null);setVerify(null);setSettingsOpen(true);setError('')
+  try{localStorage.removeItem(SAVED)}catch{}
   window.scrollTo({top:0,behavior:'smooth'})
  }
  const start=async(continuing=false)=>{
@@ -182,7 +184,7 @@ export function SelfImprovementPage(){
     providerId,model,...(!continuing&&reportedIssue?{issueId:reportedIssue.id}:{}),evaluationProfileId:continuing?campaign?.evaluationProfile?.id||'default':evaluationProfileId,localOnly:localOnly||workload==='night',...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
     selectionPolicy:selection,evolutionTarget:'system',applyWhenFinished:true,expandAfterGain:true,nativeInduction:false,reasoningEffort:'low',maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
-   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
+   setSetupMode(false);setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
