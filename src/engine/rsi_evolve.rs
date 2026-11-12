@@ -3023,6 +3023,12 @@ async fn run_loop(
                 || plan["systemBlueprint"]["architecture"].as_array().is_none_or(|v|v.len()!=7) {
                 return Err("후손 계획의 소스·세대·색인·전체 시스템 계보 불일치".into());
             }
+            crate::engine::rsi_system::validate_plan_evidence(
+                &context.state,&lab,&plan,
+                child_input["rsiIndexId"].as_str().unwrap_or(""))?;
+            crate::engine::rsi_lineage_transfer::validate(
+                &context.state,&plan["peerLineages"],&context.job_id,
+                &child_input,child_input["rsiIndexId"].as_str().unwrap_or(""))?;
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
@@ -4256,32 +4262,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let refreshed_history=crate::engine::rsi_system::revalidated_history(&state,&history);
         let root=Path::new(job["input"]["rsiSourceDir"].as_str()
             .ok_or("후손 소스가 없습니다.")?);
-        let model=crate::engine::rsi_system::blueprint(root,&commit,&refreshed_history);
-        let frontier=crate::engine::rsi_system::architecture_frontier(
-            &state,&model,&refreshed_history,
-            job["input"]["rsiIndexId"].as_str().unwrap_or(""),root);
         let plan=&job["input"]["rsiDescendantPlan"];
-        let allowed_domains=candidate_domains(&objective);
-        let inherited_domain=if job["input"]["selectionPolicy"]=="automatic"{
-            crate::engine::rsi_system::inherited_domain(&refreshed_history)
-        }else{None};
-        let raw_meta=crate::engine::rsi_meta_controller::synthesize(
-            &refreshed_history,&frontier,&allowed_domains,inherited_domain.as_deref());
-        let expected_stage=crate::engine::rsi_system::inherited_stage(
-            &refreshed_history,&frontier);
-        let expected_meta=crate::engine::rsi_meta_controller::apply_successor_stage(
-            raw_meta,&expected_stage);
-        let expected_target=expected_meta["target"].clone();
-        if plan["successorStage"]!=expected_stage
-            || job["input"]["rsiSuccessorStage"]!=expected_stage
-            || plan["metaPolicy"]!=expected_meta
-            || job["input"]["rsiMetaPolicy"]!=expected_meta
-            || plan["architectureFrontier"]!=json!(frontier)
-            || plan["architectureTarget"]!=expected_target
-            || job["input"]["rsiArchitectureTarget"]!=expected_target
-            || plan["sourceTreeSha256"]!=model["sourceTree"]["sourceTreeSha256"]
-            || plan["systemBlueprint"]!=model {
-            return Err("후손의 실제 소스 구조·개선 계보와 실행 계획이 불일치합니다.".into());
+        crate::engine::rsi_system::validate_plan_evidence(
+            &state,root,plan,job["input"]["rsiIndexId"].as_str().unwrap_or(""))?;
+        // The source blueprint still anchors this binary's exact inherited
+        // revision, but source ranking and meta synthesis are intentionally
+        // not replayed by an unmodified predecessor policy.
+        let model=crate::engine::rsi_system::blueprint(root,&commit,&refreshed_history);
+        if plan["systemBlueprint"]!=model
+            || job["input"]["rsiSystemBlueprint"]!=model
+            || plan["metaPolicy"]!=job["input"]["rsiMetaPolicy"]
+            || plan["architectureTarget"]!=job["input"]["rsiArchitectureTarget"]
+            || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]{
+            return Err("후손 바이너리·설계 revision·작업 입력이 다릅니다.".into());
         }
     }
     let (mut domain, mut domain_selection, mut strategy)=if let Some((domain,selection,strategy))=&compiled_plan {

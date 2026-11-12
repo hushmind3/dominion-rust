@@ -339,6 +339,77 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     })
 }
 
+
+/// The frozen boundary validates source ownership, indexed hashes and exact
+/// donor lineage. It must not rerun the child's editable source-ranker or
+/// metacognitive selection algorithm: doing so would prevent genuine
+/// self-modification of the improver itself.
+pub(crate) fn validate_plan_evidence(
+    state:&crate::state::AppState,root:&Path,plan:&Value,index_id:&str
+)->Result<(),String>{
+    let root=fs::canonicalize(root).map_err(|e|e.to_string())?;
+    if plan["indexId"]!=index_id
+        || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTree"]["sourceTreeSha256"]
+        || plan["systemBlueprint"]["sourceTree"]["sourceTreeSha256"].as_str()
+            .is_none_or(|sha|sha.len()!=64
+                || !sha.bytes().all(|b|b.is_ascii_hexdigit())) {
+        return Err("후손 자기모형의 실제 소스 지문 또는 색인이 일치하지 않습니다.".into());
+    }
+    let frontier=plan["architectureFrontier"].as_array()
+        .filter(|rows|rows.len()<=32)
+        .ok_or("후손 전체 시스템 구조 근거가 없거나 비정상적으로 큽니다.")?;
+    let ranked=plan["rankedFiles"].as_array()
+        .filter(|rows|rows.len()<=32)
+        .ok_or("후손 코드 대상 목록이 범위를 벗어났습니다.")?;
+    // All source facts are verified at the current detached revision.
+    // Ranked scores, role assignment and source-search strategy are mutable
+    // intelligence and deliberately NOT reconstructed by the supervisor.
+    for row in frontier.iter().chain(ranked.iter()) {
+        let path=row["path"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path))
+            .ok_or("후손이 허용되지 않은 소스 경로를 선택했습니다.")?;
+        let hash=row["sourceSha256"].as_str()
+            .or_else(||row["sourceHash"].as_str())
+            .filter(|sha|sha.len()==64
+                && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+            .ok_or("선택된 소스의 원본 해시가 없습니다.")?;
+        if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+            .as_deref()!=Some(hash){
+            return Err(format!("후손 소스 색인이 실제 revision과 다릅니다: {path}"));
+        }
+        let file=fs::canonicalize(root.join(path))
+            .map_err(|e|format!("후손 소스 경로 없음: {path}: {e}"))?;
+        if !file.starts_with(&root)||!file.is_file(){
+            return Err("소스 범위를 벗어난 자기수정 대상입니다.".into());
+        }
+        let bytes=fs::read(&file).map_err(|e|e.to_string())?;
+        if format!("{:x}",Sha256::digest(&bytes))!=hash{
+            return Err(format!("실제 후손 코드가 기록된 해시와 다릅니다: {path}"));
+        }
+    }
+    let target=&plan["architectureTarget"];
+    let meta=&plan["metaPolicy"];
+    if meta["target"]!=*target || meta["revision"].as_str()
+        .is_none_or(|s|s.len()!=64||!s.bytes().all(|b|b.is_ascii_hexdigit())){
+        return Err("후손 메타 판단의 설계 대상 또는 실행 revision이 불일치합니다.".into());
+    }
+    if target.is_object(){
+        if !frontier.iter().any(|row|row==target){
+            return Err("후손이 전체 시스템 소스에 없는 대상을 선택했습니다.".into());
+        }
+    }else if !target.is_null(){
+        return Err("후손 선택의 데이터 형식이 올바르지 않습니다.".into());
+    }
+    let stage=&plan["successorStage"];
+    if stage.is_object() && (
+        stage["source"]!="rebound_verified_model_successor_program_v1"
+        || stage["path"]!=target["path"]
+        || stage["sourceSha256"]!=target["sourceSha256"]){
+        return Err("모델이 작성한 후손 실행 단계가 실제 소스와 다릅니다.".into());
+    }
+    Ok(())
+}
+
 /// A system-generation *model* chooses the actual design and edits. The
 /// descendant's source-grounded map is context, not a fixed list of allowed
 /// mutations. The code index and source-edit tools still cover the repository.
