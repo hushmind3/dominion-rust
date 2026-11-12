@@ -446,9 +446,21 @@ pub async fn finish(
     let patch=String::from_utf8_lossy(&raw.stdout).to_string();
     let patch_size=patch.len();
     let patch_sha=digest(&patch);
-    let inherited_unchanged=input["rsiFailedPatchRecovery"]["candidateId"]
-        .as_str().and_then(|id|context.state.store.get("rsi_candidate",id))
+    let inherited_parent=input["rsiFailedPatchRecovery"]["candidateId"]
+        .as_str().or_else(||input["rsiInheritedCandidateId"].as_str());
+    let inherited_unchanged=inherited_parent
+        .and_then(|id|context.state.store.get("rsi_candidate",id))
         .is_some_and(|prior|prior["patchSha256"]==patch_sha);
+    // A neutral stepping stone is already in the detached worktree before
+    // the new model calls tools. A changed diff is not sufficient proof of
+    // a descendant edit unless the newly executed tool left a written
+    // source receipt in THIS session.
+    let archived_source_edited=context.state.store.all("execution_operation")
+        .iter().any(|op|op["sessionId"]==session_id
+            && op["status"]=="completed"
+            && matches!(op["tool"].as_str(),
+                Some("workspace_write"|"workspace_replace"|"workspace_replace_function"))
+            && op["result"]["written"]==true);
     // A restored parent diff already exists before this generation runs.
     // Count a descendant improvement attempt only if its final diff differs.
     let novel_diff_bytes=if inherited_unchanged {0}else{patch_size};
@@ -458,6 +470,9 @@ pub async fn finish(
     let mut unsafe_audit=Value::Null;
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if input["rsiInheritedCandidateId"].is_string()
+        && !archived_source_edited {
+        capture_error="영구 아카이브의 중립 패치만 복원되었고 이번 후손의 실제 소스 편집이 없습니다.".into();
     } else if inherited_unchanged {
         // Git diff is unchanged from the source patch restored before the
         // child started. The inherited failure cannot be relabeled as a new
@@ -552,6 +567,9 @@ pub async fn finish(
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "novelDiffBytes":novel_diff_bytes,
         "inheritedPatchUnchanged":inherited_unchanged,
+        "inheritedCandidateId":input["rsiInheritedCandidateId"],
+        "inheritedCandidateActuallyEdited":input["rsiInheritedCandidateId"].is_string()
+            && archived_source_edited && !inherited_unchanged,
         "checks":checks,"checksPassed":all_checks_pass,
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
