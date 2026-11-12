@@ -708,7 +708,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // candidate directly; the very same independent compiler and held-out
     // judge must still decide whether to adopt that candidate. Unknown code
     // shapes continue through the ordinary model-driven generation.
-    let native_candidate=if let Some(worktree)=&rsi_workspace {
+    let native_candidate=if input["rsiSystemEvolution"]!=true {
+        if let Some(worktree)=&rsi_workspace {
         match crate::engine::rsi_mutation::induce(
             &context.state,&context.job_id,&input,&worktree.source,&worktree.path
         ){
@@ -720,7 +721,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 None
             }
         }
-    } else {None};
+    } else {None}
+    }else {None};
     let mut message=if native_candidate.is_some(){
         Ok(None)
     }else{
@@ -837,7 +839,8 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
                 && result["reason"]=="no_valid_candidate"
                 && result["rsi"]["diffBytes"].as_u64().unwrap_or(0)==0
                 && result["rsi"]["sourceClean"]==true);
-        if model_failed_to_edit && input["rsiFailedPatchRecovery"]["candidateId"].is_null() {
+        if input["rsiSystemEvolution"]!=true && model_failed_to_edit
+            && input["rsiFailedPatchRecovery"]["candidateId"].is_null() {
             match crate::engine::rsi_mutation::induce(
                 &context.state,&context.job_id,&input,&worktree.source,&worktree.path
             ) {
