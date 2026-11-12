@@ -231,6 +231,57 @@ pub(crate) fn curriculum(
         "qualityProven":false,"causalEffectProven":false})
 }
 
+/// Immutable source-identity/provenance check. A newly compiled descendant
+/// owns the ranking and curriculum strategy, while the resident gate ensures
+/// each named subsystem really belongs to the pinned architecture checkout.
+pub(crate) fn validate_curriculum(
+    plan:&Value,primary:&Value,frontier:&[Value]
+)->Result<(),String>{
+    if plan["source"]!="compiled_mutual_intelligence_curriculum_v1"
+        || plan["primary"]!=*primary
+        || plan["qualityProven"]!=false
+        || plan["causalEffectProven"]!=false {
+        return Err("후손의 상호지능 개선 계획 출처가 다릅니다.".into());
+    }
+    let recorded=format!("{:x}",Sha256::digest(serde_json::to_vec(&json!([
+        plan["primary"],plan["complement"],plan["transitionEvidence"],plan["recursiveLoop"]
+    ])).unwrap_or_default()));
+    if plan["revision"].as_str()!=Some(recorded.as_str()) {
+        return Err("후손의 상호개선 계획 지문이 변경됐습니다.".into());
+    }
+    let partner=&plan["complement"];
+    if partner.is_null(){
+        if plan["recursiveLoop"].as_array().is_none_or(|rows|!rows.is_empty()){
+            return Err("빈 상호개선 계획이 후손 실행 단계까지 선언했습니다.".into());
+        }
+        return Ok(());
+    }
+    if partner["source"]!="compiled_symbiotic_pair_candidate_v1"
+        || partner["causalEffectProven"]!=false
+        || partner["fromRole"]!=primary["role"]
+        || partner["fromPath"]!=primary["path"]
+        || partner["fromSha256"]!=primary["sourceSha256"]
+        || partner["fromRole"]==partner["toRole"]
+        || !frontier.iter().any(|row|
+            row["role"]==partner["toRole"] && row["path"]==partner["toPath"]
+                && row["sourceSha256"]==partner["toSha256"]) {
+        return Err("후손의 상호개선 상대 소스·역할이 현재 인덱스와 다릅니다.".into());
+    }
+    let phases=plan["recursiveLoop"].as_array().filter(|items|items.len()==3)
+        .ok_or("후손 상호개선 프로그램이 3단계가 아닙니다.")?;
+    let expected=["mutate_primary","make_complementary_capability_improve_primary",
+        "transfer_improved_method_back_to_primary"];
+    for (step,name) in phases.iter().zip(expected){
+        if step["phase"]!=name {return Err("후손의 상호개선 순환 순서 오류".into());}
+    }
+    if phases[0]["role"]!=partner["fromRole"]
+        || phases[1]["role"]!=partner["toRole"]
+        || phases[2]["role"]!=partner["fromRole"] {
+        return Err("후손 상호개선 프로그램에 원래 지능으로 돌아오는 단계가 없습니다.".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn instruction(program:&Value)->String{
     let c=&program["complement"];
     if !c.is_object(){return String::new();}

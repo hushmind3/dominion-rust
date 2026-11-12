@@ -255,6 +255,75 @@ pub(crate) fn synthesize(
     })
 }
 
+/// A successful donor from another verified campaign can influence the
+/// offspring's NEXT exploration target. It never supplies an adoption label
+/// or a copied executable patch.
+pub(crate) fn integrate_peer_evidence(mut policy:Value,peers:&Value)->Value{
+    let Some(donors)=peers["references"].as_array() else{return policy};
+    let Some(mut alternatives)=policy["alternatives"].as_array().cloned() else{return policy};
+    for candidate in &mut alternatives{
+        let Some(role)=candidate["role"].as_str() else{continue};
+        let mut bonus=0.0_f64;
+        let mut references=Vec::new();
+        for donor in donors {
+            if donor["source"]!="paired_cross_campaign_design_reference_v1"
+                || donor["automaticPatchReuse"]!=false
+                || donor["roles"].as_array().is_none_or(|rows|
+                    !rows.iter().any(|value|value.as_str()==Some(role))) {continue;}
+            let identical=donor["identicalSourceFiles"].as_u64().unwrap_or(0).min(4);
+            let candidate_bonus=0.10+0.015*identical as f64;
+            bonus=bonus.max(candidate_bonus);
+            if let Some(id)=donor["candidateId"].as_str(){
+                references.push(id.to_owned());
+            }
+        }
+        let prior=candidate["score"].as_f64().unwrap_or(0.0);
+        candidate["score"]=json!(prior+bonus);
+        candidate["crossLineageExplorationBonus"]=json!(bonus);
+        candidate["peerDesignReferences"]=json!(references.into_iter().take(4).collect::<Vec<_>>());
+    }
+    alternatives.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
+        .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str())));
+    let Some(winner)=alternatives.first().cloned() else{return policy};
+    let prior=policy["revision"].clone();
+    policy["target"]=winner["target"].clone();
+    policy["selectionEvidence"]=winner.clone();
+    policy["alternatives"]=json!(alternatives);
+    policy["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+    policy["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    policy["peerEvidenceSha256"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(peers).unwrap_or_default())));
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([prior,policy["alternatives"],
+            policy["peerEvidenceSha256"]])).unwrap_or_default())));
+    policy
+}
+
+/// A next-generation algorithm written by the model may override WHICH
+/// source-grounded task the compiled child tries. The frozen supervisor
+/// checks re-bound path/hash and cannot choose the new ranking policy.
+pub(crate) fn apply_successor_stage(mut policy:Value,stage:&Value)->Value{
+    if stage["source"]!="rebound_verified_model_successor_program_v1"{return policy;}
+    let winner=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]["role"]==stage["role"]
+            && row["target"]["domain"]==stage["domain"]
+            && row["target"]["path"]==stage["path"]
+            && row["target"]["sourceSha256"]==stage["sourceSha256"])
+        .cloned();
+    let Some(winner)=winner else{return policy};
+    let previous=policy["revision"].clone();
+    policy["target"]=winner["target"].clone();
+    policy["selectionEvidence"]=winner.clone();
+    policy["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+    policy["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    policy["mode"]=json!("model_written_successor_method_executed_as_target");
+    policy["successorStage"]=stage.clone();
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([previous,stage,winner])).unwrap_or_default())));
+    policy
+}
+
 /// A frozen-case digest distinguishes compatible comparisons from coincidental
 /// success labels. An absent suite never admits peers into the archive.
 pub(crate) fn comparison_profile(input:&Value)->Option<String>{
