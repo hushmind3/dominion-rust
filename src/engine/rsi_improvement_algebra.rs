@@ -341,6 +341,9 @@ mod tests{
         ];
         let plan=compile(&hist,&frontier,&c);
         assert_eq!(plan["operators"].as_array().unwrap().len(),3);
+        // Count is captured before into_iter() consumes candidates.
+        assert_eq!(plan["candidateCount"],3);
+        assert_eq!(plan["rankedCandidates"].as_array().unwrap().len(),3);
         assert_eq!(plan["cycle"]["edges"].as_array().unwrap().len(),3);
         assert!(valid(&plan,&frontier,&c,hist.len()));
     }
