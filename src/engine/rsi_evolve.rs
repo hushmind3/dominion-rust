@@ -3331,6 +3331,13 @@ async fn run_loop(
                     &plan["factorialExperiment"],&plan["coupledPortfolio"]) {
                 return Err("후손의 실험 설계 및 재귀과학 프로그램이 소스와 불일치합니다.".into());
             }
+            if !crate::engine::rsi_improvement_algebra::valid(
+                &plan["improvementAlgebra"],
+                plan["architectureFrontier"].as_array()
+                    .ok_or("개선 대수의 실제 소스 역할 근거 없음")?,
+                &head,history.len()) {
+                return Err("후손 개선 대수의 규칙 출처·실행 소스가 유효하지 않습니다.".into());
+            }
             if plan["successorStage"].is_object()
                 && (plan["successorStage"]["source"]!=
                     "rebound_verified_model_successor_program_v1"
@@ -3380,6 +3387,7 @@ async fn run_loop(
             child_input["rsiCoupledPortfolio"]=plan["coupledPortfolio"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
+            child_input["rsiImprovementAlgebra"]=plan["improvementAlgebra"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
@@ -3624,6 +3632,7 @@ async fn run_loop(
         generation["coupledPortfolio"]=current["input"]["rsiCoupledPortfolio"].clone();
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
+        generation["improvementAlgebraPlan"]=current["input"]["rsiImprovementAlgebra"].clone();
         // Only compare holdout records from identical frozen case/profile
         // definitions and the same actual compiled generator commit.
         let frozen_profile=json!([
@@ -4452,8 +4461,15 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&interaction_graph,DOMAINS,commit);
     let science=crate::engine::rsi_recursive_scientist::plan(
         &history,&frontier,&factorial,&coupled_portfolio,commit);
+    // Independently adopted model-authored improvement operators can compose
+    // across any number of roles; no fixed scientist stage is needed.
+    let algebra=crate::engine::rsi_improvement_algebra::compile(
+        &history,&frontier,commit);
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    if science_active && science["phase"]!="discover_new_mechanism" {
+    let algebra_active=science_active && algebra["selected"]["target"].is_object();
+    if algebra_active {
+        architecture_target=algebra["selected"]["target"].clone();
+    }else if science_active && science["phase"]!="discover_new_mechanism" {
         if let Some(first)=science["focus"].as_array().and_then(|f|f.first()){
             architecture_target=first.clone();
         }
@@ -4471,7 +4487,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let successor_hint=if paired || owner_focus {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
     }else{
-        (if science_active && science["phase"]!="discover_new_mechanism" {
+        (if algebra_active || (science_active
+            && science["phase"]!="discover_new_mechanism") {
             architecture_target["domain"].as_str()
         }else{None}).map(str::to_string)
             .or_else(||successor_stage["domain"].as_str().map(str::to_string))
@@ -4480,7 +4497,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
                 input,snapshot["attempt"].as_u64().unwrap_or(0)))
     };
     let objective=selection_objective(input);
-    let trial=if paired || (science_active
+    let trial=if paired || algebra_active || (science_active
         && science["phase"]!="discover_new_mechanism") {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
     };
@@ -4553,10 +4570,31 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             insertion+=1;
         }
     }
+    // An accepted source-written operator chooses the actual next edit,
+    // regardless of whether it was called A, B, C, or invented this week.
+    // Its method code becomes the target when previous executions regress.
+    if algebra_active {
+        let row=&algebra["selected"]["target"];
+        if let (Some(path),Some(sha))=(row["path"].as_str(),row["sourceSha256"].as_str()) {
+            if crate::engine::rsi::safe_path(path)
+                && source_root.join(path).is_file()
+                && crate::engine::code_index::indexed_source_hash(
+                    &state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                    .as_deref()==Some(sha) {
+                ranked.retain(|entry|entry["path"]!=path);
+                ranked.insert(0,json!({
+                    "path":path,"sourceHash":sha,"role":row["role"],
+                    "domain":row["domain"],"sourceIndexId":input["rsiIndexId"],
+                    "source":"compiled_model_authored_improvement_algebra"
+                }));
+            }
+        }
+    }
     // The generated experiment is an actual editing decision, not just
     // appended prompt text. Isolated experiments MUST focus only one role;
     // accepted-source recursive stages take priority over older guesses.
-    if science_active && science["phase"]!="discover_new_mechanism" {
+    if science_active && !algebra_active
+        && science["phase"]!="discover_new_mechanism" {
         let members=science["focus"].as_array().cloned().unwrap_or_default();
         for member in members.into_iter().rev(){
             let Some(path)=member["path"].as_str()
@@ -4575,8 +4613,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }));
         }
     }
-    let focus=if science_active && matches!(science["phase"].as_str(),
-        Some("isolate_left"|"isolate_right")) {
+    let focus=if algebra_active
+        || (science_active && matches!(science["phase"].as_str(),
+        Some("isolate_left"|"isolate_right"))) {
         ranked.iter().take(1).filter_map(|row|row["path"].as_str())
             .collect::<Vec<_>>()
     }else {
@@ -4635,6 +4674,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "coupledPortfolio":coupled_portfolio,
         "factorialExperiment":factorial,
         "recursiveScientificProgram":science,
+        "improvementAlgebra":algebra,
         "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
@@ -4851,10 +4891,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &history,frontier,&observed_influence,DOMAINS,&commit);
         let science_expected=crate::engine::rsi_recursive_scientist::plan(
             &history,frontier,&factor_expected,portfolio,&commit);
+        let algebra_expected=crate::engine::rsi_improvement_algebra::compile(
+            &history,frontier,&commit);
         if job["input"]["rsiFactorialExperiment"]!=factor_expected
             || job["input"]["rsiRecursiveScientificProgram"]!=science_expected
             || job["input"]["rsiControllerPlan"]["factorialExperiment"]!=factor_expected
             || job["input"]["rsiControllerPlan"]["recursiveScientificProgram"]!=science_expected
+            || job["input"]["rsiControllerPlan"]["improvementAlgebra"]!=algebra_expected
+            || job["input"]["rsiImprovementAlgebra"]!=algebra_expected
+            || !crate::engine::rsi_improvement_algebra::valid(
+                &algebra_expected,frontier,&commit,history.len())
             || !crate::engine::rsi_factorial::valid(
                 &factor_expected,frontier,&commit,history.len(),&observed_influence)
             || !crate::engine::rsi_recursive_scientist::valid(
@@ -5001,9 +5047,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_factorial::instruction(
                 &job["input"]["rsiFactorialExperiment"])
         }else{String::new()};
+        let algebra_instruction=if science_enabled {
+            crate::engine::rsi_improvement_algebra::instruction(
+                &job["input"]["rsiImprovementAlgebra"])
+        }else{String::new()};
         let peer_context=format!(
-            "RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
-            scientific_instruction,factorial_instruction,
+            "OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            algebra_instruction,scientific_instruction,factorial_instruction,
             job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
             capsule(&independent_effects,2400),capsule(&combined_sources,1600));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
