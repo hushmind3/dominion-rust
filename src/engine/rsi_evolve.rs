@@ -1037,6 +1037,10 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
             && input["rsiSuccessorStage"]["executionPolicy"]=="grounded_edit"
             && input["rsiSuccessorStage"]["path"]==input["rsiFocusFiles"][0])
         || (input["rsiSystemEvolution"]==true
+            && input["rsiFactorialCurriculum"]["selected"]["isolationRequired"]==true
+            && input["rsiFactorialCurriculum"]["selected"]["target"]["path"]
+                ==input["rsiFocusFiles"][0])
+        || (input["rsiSystemEvolution"]==true
             && !input["rsiSuccessorStage"].is_object()
             && input["rsiMetaActionPolicy"]["executionPolicy"]=="grounded_edit"
             && input["rsiMetaActionPolicy"]["path"]==input["rsiFocusFiles"][0])
@@ -1063,6 +1067,12 @@ fn bind_action_to_source(
     state:&AppState,input:&mut Value,history:&[Value]
 ) -> bool {
     if input["rsiAutoFocus"]!=true {return false;}
+    // Never collapse A+B joint experiments into a single meta edit.
+    // Actual verification requires BOTH independently witnessed file writes.
+    if input["rsiSystemEvolution"]==true
+        && input["rsiFactorialCurriculum"]["selected"]["phase"]=="test_joint" {
+        return false;
+    }
     let method_repair=pending_method_recovery_domain(input).is_some();
     let learned_action=matches!(input["rsiActionDirective"]["mode"].as_str(),
         Some("repair_failed_edit"|"repair_failed_case"|"revise_candidate"|
@@ -1078,8 +1088,18 @@ fn bind_action_to_source(
                     .as_deref()==input["rsiSuccessorStage"]["sourceSha256"].as_str())
             .map(str::to_string)
     }else{None};
+    let factorial_path=if input["rsiSystemEvolution"]==true
+        && input["rsiFactorialCurriculum"]["selected"]["isolationRequired"]==true {
+        let target=&input["rsiFactorialCurriculum"]["selected"]["target"];
+        target["path"].as_str().filter(|path|
+            crate::engine::rsi::safe_path(path)
+            && crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                .as_deref()==target["sourceSha256"].as_str())
+            .map(str::to_string)
+    }else{None};
     let meta_path=if input["rsiSystemEvolution"]==true
         && !input["rsiSuccessorStage"].is_object()
+        && factorial_path.is_none()
         && input["rsiMetaActionPolicy"]["executionPolicy"]=="grounded_edit" {
         input["rsiMetaActionPolicy"]["path"].as_str()
             .filter(|path|crate::engine::rsi::safe_path(path)
@@ -1088,7 +1108,7 @@ fn bind_action_to_source(
             .map(str::to_string)
     }else{None};
     if !learned_action && !method_repair && stage_path.is_none()
-        && meta_path.is_none() {return false}
+        && factorial_path.is_none() && meta_path.is_none() {return false}
     let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str)
         .find(|path|crate::engine::rsi::safe_path(path)
@@ -1110,7 +1130,8 @@ fn bind_action_to_source(
             .map(str::to_string)
     } else {None};
     let Some(target)=repair_path.clone().or(stage_path.clone())
-        .or(meta_path.clone()).or(failed_path.clone()).or(first)
+        .or(factorial_path.clone()).or(meta_path.clone())
+        .or(failed_path.clone()).or(first)
         else {return false};
     let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
         else {return false};
@@ -1122,6 +1143,8 @@ fn bind_action_to_source(
         if repair_path.is_some() {"learned_executable_method"}
         else if stage_path.as_deref()==Some(target.as_str()) {
             "inherited_descendant_execution_policy"
+        }else if factorial_path.as_deref()==Some(target.as_str()){
+            "compiled_factorial_intervention_control"
         }else if meta_path.as_deref()==Some(target.as_str()){
             "editable_meta_forecast_control"
         }else{"learned_action_policy"});
@@ -5726,8 +5749,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let peer_instruction=crate::engine::rsi_meta_controller::peer_instruction(
             &job["input"]["rsiPeerLineages"]);
-        let mutual_instruction=crate::engine::rsi_mutual_evolution::instruction(
-            &job["input"]["rsiMutualCurriculum"]);
+        let mutual_instruction=if job["input"]["rsiFactorialCurriculum"]
+            ["selected"]["isolationRequired"]==true {
+            String::new()
+        }else{
+            crate::engine::rsi_mutual_evolution::instruction(
+                &job["input"]["rsiMutualCurriculum"])
+        };
         let factorial_instruction=crate::engine::rsi_causal_curriculum::instruction(
             &job["input"]["rsiFactorialCurriculum"]);
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
