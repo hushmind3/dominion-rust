@@ -92,14 +92,15 @@ if(mode==='probe'){
       // The anonymous model caps a response near 1500 output tokens. Low
       // reasoning effort leaves room for an executable workspace_replace call.
       reasoningEffort:'low',
-      request:"Improve DOMINION's current self-improvement algorithm and then transfer a measured improvement into memory. Start from the unchanged current source. Find repeated allocation, scans, or redundant work in self-improvement policy selection and owner-fact retrieval. Preserve policy features, provenance checks and ranking semantics. Inspect source before editing; use small SHA-bound edits. Use independently measured development feedback to repair unsuccessful candidates. The runtime can also try native source transformations, whose provenance must stay separate from model edits. Do not modify tests, evaluators, fixtures, or report an unevaluated proposal as an improvement.",
-      // Reserve capacity for a genuine second-generation correction of a
-      // compiler-passing but zero-gain source candidate. No paid model.
-      focusFiles:[],expandAfterGain:true,nativeInduction:true,stopAfterProof:true,maxAttempts:6,
+      request:"Redesign the DOMINION intelligence system recursively: algorithms, agent harness, memory, learning, tools and the improvement method itself. Inspect the current compiled successor architecture and real failure history, propose a causal source-level system design, write and verify the actual multi-module changes, and let the rebuilt descendant design its next change. The external evaluator alone judges success. Prefer a genuinely new system capability over a prewritten source mutation; preserve independent paired holdouts, model budget, and owner-controlled production deployment.",
+      // Test actual compiled successor design -> source edit -> rebuild ->
+      // independent A/B -> successor re-design, with no native mutation shortcut.
+      // Uses the anonymous public model gateway; no paid API token.
+      focusFiles:[],evolutionTarget:'system',expandAfterGain:true,nativeInduction:false,stopAfterProof:true,maxAttempts:6,
       tokenBudget:520000,timeBudgetSeconds:6000
     };
     trace.submittedRequest={...request};
-    trace.evaluationScope='current_source_frozen_native_suite';
+    trace.evaluationScope='whole_system_compiled_successor_and_cross_domain_meta';
     trace.historicalBugRestored=false;
     const queued=await call('/api/rsi/start',request);
     trace.jobId=queued.id;
