@@ -460,10 +460,16 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
             }
         }
     }
-    let selected=inherited_targets.first().cloned().or_else(||frontier.first().cloned());
-    let focus=if !inherited_targets.is_empty() {
+    let staged=inherited_stage(history,&frontier);
+    let selected=staged.as_ref().map(|row|row["target"].clone())
+        .filter(Value::is_object)
+        .or_else(||inherited_targets.first().cloned())
+        .or_else(||frontier.first().cloned());
+    let focus=if staged.is_some() {
+        selected.as_ref().map(|t|vec![t.clone()]).unwrap_or_default()
+    }else if !inherited_targets.is_empty() {
         inherited_targets
-    } else {
+    }else{
         selected.as_ref().map(|t|vec![t.clone()]).unwrap_or_default()
     };
     json!({
@@ -472,6 +478,7 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
         "sourceTreeSha256":model["sourceTreeSha256"],
         "frontier":frontier,
         "researchArchive":archive,
+        "inheritedStage":staged,
         "target":selected,
         "focus":focus,
         "decisionOwner":"current_compiled_descendant",
@@ -559,6 +566,59 @@ pub(crate) fn inherited_program(history:&[Value])->Option<Value>{
     }))
 }
 
+
+/// An independently accepted model may teach its next compiled descendant
+/// a branching, failure-aware METHOD rather than a fixed editing tool list.
+/// The compiled child itself chooses between staged redesign hypotheses.
+pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Option<Value>{
+    let last_adopted=history.iter().rposition(|g|g["accepted"]==true)?;
+    let ancestor=&history[last_adopted];
+    let design=accepted_model_design(ancestor)?;
+    let stages=design["successorStages"].as_array()?;
+    let later=&history[last_adopted+1..];
+    stages.iter().enumerate().filter_map(|(index,stage)|{
+        let path=stage["path"].as_str()?;
+        let role=stage["role"].as_str()?;
+        let domain=stage["domain"].as_str()?;
+        let target=frontier.iter().find(|row|
+            row["path"]==path && row["role"]==role && row["domain"]==domain)?;
+        let failures=later.iter().filter(|g|g["accepted"]!=true
+            && g["focusFiles"].as_array().is_some_and(|files|
+                files.iter().any(|file|file.as_str()==Some(path)))).count() as i64;
+        let wins=later.iter().filter(|g|g["accepted"]==true
+            && g["focusFiles"].as_array().is_some_and(|files|
+                files.iter().any(|file|file.as_str()==Some(path)))).count() as i64;
+        let policy=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+        let max_retries=stage["maxRetries"].as_i64().unwrap_or(2).clamp(0,8);
+        if policy=="repair_failed" && failures>max_retries{return None;}
+        let prior=stage["priority"].as_i64().unwrap_or(0).clamp(-20,20);
+        let gain=match policy {
+            "avoid_failed"=>-3*failures,
+            "repair_failed"=>if failures==0{0}else{2*failures},
+            "explore_novel"=>if wins>0{-4*wins}else{3},
+            "repeat_verified"=>4*wins,
+            _=>return None
+        };
+        let score=prior+gain-2*failures.min(3);
+        Some((score,index,json!({
+            "source":"adopted_descendant_method_stage_v1",
+            "sourceDesignId":design["id"],
+            "predecessorCommit":ancestor["acceptedCommit"],
+            "stageIndex":index,
+            "target":target,
+            "role":role,"domain":domain,
+            "path":path,"sourceSha256":target["sourceSha256"],
+            "objective":stage["objective"],
+            "learningPolicy":policy,
+            "executionPolicy":stage["executionPolicy"],
+            "failedAttemptsSinceAdoption":failures,
+            "adoptedAttemptsSinceAdoption":wins,
+            "qualityProven":false
+        })))
+    }).max_by(|a,b|a.0.cmp(&b.0).then_with(||b.1.cmp(&a.1)))
+        .map(|(_,_,plan)|plan)
+}
+
 /// The next compiled intelligence worker receives its own source-grounded
 /// research agenda and actual inherited experimental editing method. The
 /// model remains free to reject the hypothesis and implement a better one.
@@ -596,6 +656,7 @@ pub(crate) fn agenda_instruction(agenda:&Value)->String{
         executable method. The first action must still be actual source \
         observation and the method must write implementation, not prose.\n\
         Previous independently adopted hypothesis: {}.\n\
+        If inheritedStage is present, implement its model-authored, failure-adapted         objective using the indicated executionPolicy rather than blindly         repeating the previous attempt. This whole method can itself be         edited inside the next compiled meta-controller.\n\
         Self-selected source research frontier:\n{}\n        Persisted previous research (only adopted source gains are verified):\n{}",
         target["role"],target["domain"],target["reason"],
         target["path"],target["sourceSha256"],focus,
@@ -780,6 +841,39 @@ pub(crate) fn propose(
         .is_none_or(|path|!intelligence_editable_path(path))) {
         return Err("다음 세대의 목표 파일은 허용된 소스 3개 이하여야 합니다.".into());
     }
+    let stages=body["successorStages"].as_array().cloned().unwrap_or_default();
+    if stages.len()>10 {
+        return Err("후손의 새로운 개선 프로그램은 최대 10단계입니다.".into());
+    }
+    let mut stage_ids=BTreeSet::new();
+    for stage in &stages{
+        let role=stage["role"].as_str().filter(|r|valid_role(r))
+            .ok_or("후손 단계의 지능 구성요소가 유효하지 않습니다.")?;
+        let domain=stage["domain"].as_str().filter(|d|
+            crate::engine::rsi_evolve::DOMAINS.contains(d))
+            .ok_or("후손 단계의 탐색 분야가 유효하지 않습니다.")?;
+        let file=stage["path"].as_str().filter(|p|intelligence_editable_path(p))
+            .ok_or("후손 단계의 소스 경로가 유효하지 않습니다.")?;
+        if !stage_ids.insert((role.to_string(),domain.to_string(),file.to_string())){
+            return Err("중복된 개선 단계".into());
+        }
+        let path=root.join(file);
+        if !path.is_file() && !target_set.contains(file){
+            return Err("후손의 개선 단계는 실재하거나 이번 세대가 생성할 소스를 가리켜야 합니다.".into());
+        }
+        let learning=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+        if !matches!(learning,"avoid_failed"|"repair_failed"|"explore_novel"|"repeat_verified")
+            || !matches!(stage["executionPolicy"].as_str().unwrap_or("grounded_edit"),
+                "grounded_edit"|"meta_rewrite_first"|"cross_component_revision"
+                |"repair_then_edit") {
+            return Err("후손 개선 단계의 학습·실행 정책 오류".into());
+        }
+        if !stage["objective"].as_str().is_some_and(|v|v.len()>=15 && v.len()<=1200)
+            || !stage["priority"].as_i64().is_none_or(|v|(-20..=20).contains(&v))
+            || !stage["maxRetries"].as_i64().is_none_or(|v|(0..=8).contains(&v)) {
+            return Err("후손 단계의 가설·우선순위 또는 재시도 한도 오류".into());
+        }
+    }
     let method_hypothesis=body["methodHypothesis"].as_str().unwrap_or("");
     if method_hypothesis.len()>1200 {
         return Err("개선 방법의 인과 설명이 너무 깁니다.".into());
@@ -788,7 +882,7 @@ pub(crate) fn propose(
         .ok_or("후손 소스 버전이 없습니다.")?;
     let revision=format!("{:x}",Sha256::digest(json!([
         generator,component,&roles,domain,hypothesis,design,targets,
-        &component_files,&body["actionProgram"],&next_files,method_hypothesis
+        &component_files,&body["actionProgram"],&stages,&next_files,method_hypothesis
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),
@@ -800,6 +894,7 @@ pub(crate) fn propose(
         "hypothesis":hypothesis,"design":design,"targetFiles":targets,
         "methodHypothesis":method_hypothesis,
         "actionProgram":body["actionProgram"],
+        "successorStages":stages,
         "observedSources":observed,
         "qualityProven":false,"adopted":false
     });
