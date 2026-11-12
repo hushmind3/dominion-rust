@@ -215,7 +215,10 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
                 proposed=json!({
                     "role":candidate,"domain":"improver",
                     "improvesRole":ar,
-                    "suggestedPath":format!("src/engine/rsi_{}.rs",candidate),
+                    "purpose":format!(
+                        "Build a compiled intelligence component that learns why improving {} changes {}, and uses those experiments to improve the next descendant's generation method.",
+                        ar,br),
+                    "sourcePaths":[format!("src/engine/rsi_{}.rs",candidate)],
                     "integrationPaths":["src/engine/mod.rs"],
                     "fromRole":ar,"toRole":br,
                     "fromPath":a["path"],"toPath":b["path"],
