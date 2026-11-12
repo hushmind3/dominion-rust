@@ -1,0 +1,118 @@
+name: Sub4 model-authored whole intelligence RSI
+# Independent live evaluation: an actual coding model must write the next
+# generation's code, not a fixed source operator or a mocked model answer.
+on:
+  workflow_dispatch:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - .github/workflows/sub4-system-live-rsi.yml
+      - scripts/sub4-live-rsi.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sub4-system-live-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  live-recursive-design:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    env:
+      SUB4_MODEL_KIND: ollama
+      SUB4_MODEL_NAME: qwen2.5-coder:7b-instruct
+      SUB4_SYSTEM_GOAL: '1'
+      SUB4_NATIVE_INDUCTION: '0'
+      SUB4_EXPECT_COMPLETION: '1'
+      SUB4_CAMPAIGN_SECONDS: '3300'
+      SUB4_RUN_DEADLINE_MS: '3700000'
+      SUB4_OLLAMA_URL: http://127.0.0.1:11434
+      OLLAMA_CONTEXT_LENGTH: '16384'
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_KEEP_ALIVE: '65m'
+      DOMINION_PORT: '43179'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      DOMINION_BACKUP_INTERVAL_SECS: '0'
+      DOMINION_SOURCE_WORKSPACE: ${{ github.workspace }}
+    steps:
+      - name: Checkout current Sub4 generation and exact source lineage
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify the compiled descendant architecture and real model script
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node --check scripts/sub4-live-rsi.mjs
+          cargo test --release --locked --bin dominion-rust new_descendant_discovers_unmodified_core_modules_from_real_index -- --nocapture
+          cargo test --release --locked --bin dominion-rust compiled_descendant_plan_cannot_be_overruled_by_parent_policy -- --nocapture
+          cargo build --release --locked --bin dominion-rust
+      - name: Install an actual coding model with 16k context
+        run: |
+          curl -fsSL https://ollama.com/install.sh -o "$RUNNER_TEMP/ollama-install.sh"
+          sh "$RUNNER_TEMP/ollama-install.sh"
+          # Override Ollama's default 4k context by restarting its daemon.
+          sudo systemctl disable --now ollama
+          nohup ollama serve > "$RUNNER_TEMP/sub4-ollama.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags
+          if grep -Fq 'bind: address already in use' "$RUNNER_TEMP/sub4-ollama.log"; then
+            echo 'Ollama custom-context process not running' >&2
+            exit 1
+          fi
+          ollama pull "$SUB4_MODEL_NAME"
+      - name: Launch the exact newly built native Rust source and ledger
+        run: |
+          mkdir -p "$RUNNER_TEMP/sub4-live/data/rsi-build" "$RUNNER_TEMP/sub4-live/workspace"
+          echo "DOMINION_DATA=$RUNNER_TEMP/sub4-live/data" >> "$GITHUB_ENV"
+          echo "DOMINION_WORKSPACE=$RUNNER_TEMP/sub4-live/workspace" >> "$GITHUB_ENV"
+          echo "SUB4_LIVE_REPORT=$RUNNER_TEMP/sub4-live/whole-system-receipt.json" >> "$GITHUB_ENV"
+          ln -s "$GITHUB_WORKSPACE/target" "$RUNNER_TEMP/sub4-live/data/rsi-build/generator"
+          DOMINION_DATA="$RUNNER_TEMP/sub4-live/data" DOMINION_WORKSPACE="$RUNNER_TEMP/sub4-live/workspace" \
+            nohup ./target/release/dominion-rust > "$RUNNER_TEMP/sub4-live/engine.log" 2>&1 &
+      - name: Run real model-written system redesign and frozen paired validation
+        run: node scripts/sub4-live-rsi.mjs run
+      - name: Summarize real lineage evidence even on failure
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import {existsSync,readFileSync,appendFileSync} from 'node:fs';
+          const file=process.env.SUB4_LIVE_REPORT;
+          if(!file||!existsSync(file)){console.log('No real model report produced');process.exit(0)}
+          const result=JSON.parse(readFileSync(file,'utf8'));
+          const lines=['### Sub4 real model-authored whole-system RSI',
+            'Model: '+result.model,
+            'Status: '+result.status,
+            'Real model calls: '+result.actualModelCalls,
+            'Verified source write calls: '+result.sourceWriteCalls,
+            'Accepted generations: '+result.acceptedGenerations,
+            'Core systems with verified adopted code: '+(result.wholeSystemEvidence?.verifiedCoreComponents||[]).join(', '),
+            'Rebuilt successors planning actual edits: '+(result.wholeSystemEvidence?.rebuiltSuccessorsWithExecutedPlans??0),
+            'Completion proven: '+result.completionProof?.complete];
+          console.log(lines.join('\n'));
+          if(process.env.GITHUB_STEP_SUMMARY)appendFileSync(process.env.GITHUB_STEP_SUMMARY,lines.join('\n')+'\n');
+          NODE
+      - name: Preserve unedited real model failures and independent evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub4-real-model-whole-system-${{ github.run_id }}
+          retention-days: 21
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/sub4-live/whole-system-receipt.json
+            ${{ runner.temp }}/sub4-live/engine.log
+            ${{ runner.temp }}/sub4-ollama.log
+            ${{ runner.temp }}/sub4-live/data/rsi-paired/**/candidate.patch
+            ${{ runner.temp }}/sub4-live/data/rsi-paired/**/plan.json
+            ${{ runner.temp }}/sub4-live/data/rsi-paired/**/report.json
