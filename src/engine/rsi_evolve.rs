@@ -6374,7 +6374,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 job["input"]["rsiModelRoute"]["selectedEvidence"])
         }else{String::new()};
         let peer_instruction=crate::engine::rsi_meta_controller::peer_instruction(
-            &job["input"]["rsiPeerLineages"]);
+            &job["input"]["rsiPeerLineages"],&job["input"]["rsiMetaPolicy"]);
         let mutual_instruction=if job["input"]["rsiFactorialCurriculum"]
             ["selected"]["isolationRequired"]==true {
             String::new()
