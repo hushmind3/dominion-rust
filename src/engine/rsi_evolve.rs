@@ -3386,7 +3386,7 @@ async fn run_loop(
             }
             let pair=&plan["negativeTransferPlan"]["selected"];
             if input["rsiAutonomous"]==true
-                && input["rsiFocusFiles"].as_array().is_none_or(|rows|!rows.is_empty())
+                && input["rsiFocusFiles"].as_array().is_none_or(|rows|rows.is_empty())
                 && !paired_descendant_target(&child_input)
                 && pair.is_object() {
                 let expected=[&pair["victim"],&pair["source"]];
