@@ -87,7 +87,7 @@ fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     Ok(paths.into_iter().collect())
 }
 
-fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
+pub(crate) fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
     let rows = value.as_array().ok_or("평가 계획 cases 배열이 필요합니다.")?;
     if rows.len() < 2 || rows.len() > 128 {
         return Err("평가 계획은 2~128개의 독립 사례를 포함해야 합니다.".into());
@@ -430,6 +430,33 @@ fn measured_capability_metrics(state:&AppState,candidate:&Value)->Option<Value> 
         return None;
     }
     Some(recomputed)
+}
+
+/// Independently replay full and NEUTRAL paired experiments, not just
+/// adopted improvements. The persisted Pareto archive may inherit a neutral
+/// stepping stone, but may never claim its own source-quality improvement.
+pub(crate) fn replayed_pair_metrics(state:&AppState,candidate:&Value)->Option<Value>{
+    let id=candidate["id"].as_str()?;
+    let receipt=state.store.get("rsi_pair",&format!("rsi-pair-{id}"))?;
+    let evaluation=&candidate["evaluation"];
+    let report=&receipt["report"];
+    let plan=candidate["cases"].as_array()?;
+    let measured=report["cases"].as_array()?;
+    if receipt["candidateId"]!=candidate["id"]
+        || receipt["runner"]!="local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"]!=evaluation["evidenceSha256"]
+        || report["reportSha256"]!=receipt["evidenceSha256"]
+        || report["baseCommit"]!=candidate["baseCommit"]
+        || report["patchSha256"]!=candidate["patchSha256"]
+        || report["oracleVersion"]!=candidate["oracleVersion"]
+        || report["baselineBuildOk"]!=true
+        || report["candidateBuildOk"]!=true {return None;}
+    let recalculated=evaluate_cases(plan,measured,candidate["target"].as_str()?).ok()?;
+    (recalculated==evaluation["metrics"]
+        && recalculated==receipt["metrics"]
+        && recalculated["verdict"]==evaluation["verdict"]
+        && recalculated["verdict"]==receipt["verdict"])
+        .then_some(recalculated)
 }
 
 /// Independently replay the candidate-bound baseline/candidate measurements.
