@@ -65,7 +65,7 @@ pub fn definitions() -> Vec<Value> {
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
         tool("rsi_system_plan", "Design executable improvements across one or several intelligence subsystems. For a coupled design set component=system, specify components and componentFiles assigning EACH target file to exactly one role, then really edit EVERY target. successorStages is a program handed to the REBUILT descendant for its next design decisions; a plan alone never earns evidence.", object(json!({
-            "component":text("Existing subsystem (algorithms, harness, memory, learning, tools, improvement_methods, frontend), new named intelligence role, or 'system' for coupled redesign"),
+            "component":text("Existing subsystem (algorithms, harness, memory, learning, tools, models, improvement_methods, frontend), new intelligence role, or 'system' for coupled redesign (Rust and Python)"),
             "components":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":16,
                 "description":"For component=system, all redesign roles including any new modules"}),
             "componentFiles":json!({"type":"object","description":"For component=system map each role to its own nonempty list of files from targetFiles; files cannot be credited twice",

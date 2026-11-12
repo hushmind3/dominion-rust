@@ -12,6 +12,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -20,33 +21,34 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 /// An inventory hash changes when ANY generation changes the executable
 /// system's source graph; the prompt can remain short without losing lineage.
 fn source_inventory(root:&Path)->Vec<Value> {
-    let Ok(root)=fs::canonicalize(root) else {return Vec::new()};
-    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
+    let mut pending=vec![root.join("src-tauri").join("src"),
+        root.join("web").join("src"),root.join("src")];
     let mut rows=Vec::new();
-    while let Some(directory)=pending.pop() {
-        let Ok(entries)=fs::read_dir(&directory) else {continue};
-        for entry in entries.flatten() {
-            let Ok(file)=fs::canonicalize(entry.path()) else {continue};
-            if !file.starts_with(&root){continue;}
-            if file.is_dir() {
-                pending.push(file);
-                continue;
-            }
-            if !file.is_file(){continue;}
-            let Some(relative)=file.strip_prefix(&root).ok()
-                .and_then(|p|p.to_str()) else {continue};
+    while let Some(dir)=pending.pop(){
+        let Ok(entries)=fs::read_dir(&dir) else{continue};
+        let mut entries=entries.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|e|e.file_name());
+        let mut children=Vec::new();
+        for entry in entries{
+            let Ok(path)=fs::canonicalize(entry.path()) else{continue};
+            if !path.starts_with(&root){continue;}
+            if path.is_dir(){children.push(path);continue;}
+            if !path.is_file(){continue;}
+            let Some(relative)=path.strip_prefix(&root).ok()
+                .and_then(|p|p.to_str()) else{continue};
             if !crate::engine::rsi::safe_path(relative){continue;}
-            let allowed=matches!(file.extension().and_then(|e|e.to_str()),
-                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
-            if !allowed {continue;}
-            let Ok(bytes)=fs::read(&file) else {continue};
-            if bytes.len()>2_000_000 {continue;}
+            if !matches!(path.extension().and_then(|e|e.to_str()),
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py")){continue;}
+            let Ok(bytes)=fs::read(&path) else{continue};
+            if bytes.len()>2_000_000{continue;}
             rows.push(json!({"path":relative,
                 "sha256":format!("{:x}",Sha256::digest(&bytes)),
                 "bytes":bytes.len()}));
-            if rows.len()>=2048 {break;}
+            if rows.len()>=2048{break;}
         }
-        if rows.len()>=2048 {break;}
+        for child in children.into_iter().rev(){pending.push(child);}
+        if rows.len()>=2048{break;}
     }
     rows.sort_by(|a,b|a["path"].as_str().cmp(&b["path"].as_str()));
     rows
@@ -56,6 +58,34 @@ fn source_inventory(root:&Path)->Vec<Value> {
 /// has an explicit 1:1 attribution from each changed file to a system role;
 /// an unrelated one-file optimization cannot claim six improved capabilities.
 /// Adapted from the source-bound coupled redesign in Dominion Sub3/Sub4.
+/// Source-file ownership is part of the editable successor policy: the
+/// built descendant can extend this mapping when inventing new modules.
+fn source_role(path:&str)->&'static str {
+    if path.starts_with("web/src/")||path.starts_with("src-tauri/src/"){
+        return "frontend";
+    }
+    let lower=path.to_ascii_lowercase();
+    let name=lower.rsplit('/').next().unwrap_or(&lower);
+    if name.starts_with("model_")||name.starts_with("train_")
+        || name.starts_with("training")||name.starts_with("trainable")
+        || matches!(name,"models.rs"|"llm.rs"|"cli_model.rs"|"router.rs"
+            |"gateway.rs"|"model_architecture.py"){return "models";}
+    if name.starts_with("rsi_") || name=="rsi.rs"
+        || lower.contains("/self_improv")||lower.contains("/evolution"){
+        return "improvement_methods";
+    }
+    if lower.contains("/chat/")||matches!(name,"jobs.rs"|"decompose.rs"
+        |"chat.rs"|"adaptation_loop.rs"|"scheduler.rs"){return "harness";}
+    if name.starts_with("memory")||name.starts_with("room_")
+        || name.starts_with("recall"){return "memory";}
+    if name.starts_with("learning")||name.starts_with("experience")
+        || name.starts_with("procedure")||name.starts_with("skill")
+        || name.starts_with("agent_growth"){return "learning";}
+    if name.starts_with("tools")||name.starts_with("browser")
+        || name.starts_with("mcp")||name.starts_with("connector"){return "tools";}
+    "algorithms"
+}
+
 fn valid_role(role:&str)->bool {
     !role.is_empty() && role.len()<=64
         && role.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-')
@@ -91,7 +121,7 @@ fn design_role_files<'a>(design:&'a Value,role:&str)->Option<&'a Vec<Value>> {
 /// A bundle is implemented only if every declared file is in the independently
 /// measured source diff, with an unchanged design-to-role mapping. No
 /// automatic "model says succeeded" or inferred coverage is accepted.
-pub(crate) pub(crate) fn design_implemented(design:&Value,changed:&[Value])->bool {
+pub(crate) fn design_implemented(design:&Value,changed:&[Value])->bool {
     let Some(targets)=design["targetFiles"].as_array().filter(|files|!files.is_empty())
         else{return false;};
     let roles=design_roles(design);
@@ -184,6 +214,7 @@ fn architecture_role_domain(role:&str)->Option<&'static str>{
         "harness"=>Some("context"),
         "memory"=>Some("memory"),
         "learning"=>Some("learning"),
+        "models"=>Some("learning"),
         "tools"=>Some("tools"),
         "frontend"=>Some("ui"),
         _=>None,
@@ -307,18 +338,15 @@ pub(crate) fn architecture_frontier(
 /// measured generator revision; no holdout content is read here.
 pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     let canonical_root=fs::canonicalize(root).ok();
+    let files=source_inventory(root);
     let mut components=Vec::new();
-    for (role,paths) in COMPONENTS {
-        let mut inventory=Vec::new();
-        for relative in *paths {
-            if !crate::engine::rsi::safe_path(relative) {continue;}
-            let Some(root)=canonical_root.as_ref() else {continue;};
-            let Ok(file)=fs::canonicalize(root.join(relative)) else {continue;};
-            if !file.starts_with(root)||!file.is_file(){continue;}
-            let Ok(contents)=fs::read(&file) else {continue;};
-            inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
-                "bytes":contents.len()}));
-        }
+    for (role,_) in COMPONENTS {
+        let inventory=files.iter().filter(|row|
+            row["path"].as_str().is_some_and(|path|
+                source_role(path)==*role
+                    && path!="src/engine/rsi.rs"
+                    && path!="src/engine/rsi_worktree.rs"))
+            .cloned().collect::<Vec<_>>();
         components.push(json!({"role":role,
             "domain":architecture_role_domain(role).unwrap_or("improver"),
             "representativeSources":inventory}));
@@ -378,7 +406,6 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "regressions":generation["evaluation"]["metrics"]["regressions"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
-    let files=source_inventory(root);
     let fingerprint=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()));
     json!({
@@ -386,6 +413,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "generatorCommit":revision,
         "architecture":components,
         "sourceInventory":files,
+        "sourceFileCount":files.len(),
         "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
         "inheritedDesign":history.iter().rev().find(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
@@ -559,7 +587,7 @@ pub(crate) fn propose(
                 .ok_or("새 파일을 만들 실제 소스 폴더가 없습니다.")?;
             if !parent.starts_with(&root)
                 || !matches!(proposed.extension().and_then(|ext|ext.to_str()),
-                    Some("rs"|"ts"|"tsx"|"js"|"jsx")) {
+                    Some("rs"|"ts"|"tsx"|"js"|"jsx"|"py")) {
                 return Err("새 모듈은 현재 저장소의 소스 폴더 아래에 작성해야 합니다.".into());
             }
         }
@@ -905,7 +933,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["sourceInventory"].as_array().unwrap().len(),2);

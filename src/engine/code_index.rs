@@ -48,6 +48,7 @@ fn is_source(path: &Path) -> bool {
                 | "tsx"
                 | "js"
                 | "jsx"
+                | "py"
                 | "mjs"
                 | "cjs"
                 | "css"
@@ -361,6 +362,13 @@ fn parse_file(rel: &str, content: &str) -> Value {
             rust_symbol(trimmed)
         } else if matches!(language.as_str(), "ts" | "tsx" | "js" | "jsx") {
             script_symbol(trimmed)
+        } else if language=="py" {
+            let definition=trimmed.strip_prefix("async def ")
+                .or_else(||trimmed.strip_prefix("def "))
+                .map(|s|("fn",symbol_name(s)));
+            let class=trimmed.strip_prefix("class ")
+                .map(|s|("class",symbol_name(s)));
+            definition.or(class).filter(|(_,name)|!name.is_empty())
         } else {
             None
         };
@@ -799,7 +807,7 @@ pub fn rank_focus_files_with_feedback(
         .filter(|file| {
             let path=file["path"].as_str().unwrap_or("");
             let ext=path.rsplit_once('.').map(|(_,ext)|ext).unwrap_or("");
-            matches!(ext,"rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"|"html"|"toml")
+            matches!(ext,"rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py"|"css"|"html"|"toml")
                 && !path.starts_with("tests/")
                 && !path.contains("/tests/")
                 && !path.contains("_test.")
