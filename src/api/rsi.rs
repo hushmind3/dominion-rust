@@ -425,6 +425,8 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         "rsiLocalOnly":body["localOnly"]==true,
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
+        // Explicit owner opt-in: local training uses approved, immutable hashed data.
+        "rsiAllowLocalAdapterTraining": continuous && body["allowLocalAdapterTraining"] == true,
         "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.

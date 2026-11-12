@@ -1067,6 +1067,62 @@ impl Store {
         }
     }
 
+    pub fn model_usage_for_session_in_window(
+        &self, session_id: &str, after_rowid: i64, through_rowid: i64,
+    ) -> Result<Vec<Value>, String> {
+        if session_id.is_empty() || after_rowid < 0 || through_rowid < after_rowid {
+            return Err("model usage session or audit window invalid".into());
+        }
+        let conn = self.conn.lock().map_err(|e|e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT rowid, id, detail, created_at FROM audit
+             WHERE event='model.usage'
+               AND json_extract(detail,'$.sessionId')=?1
+               AND rowid>?2
+               AND rowid<=?3
+             ORDER BY rowid ASC"
+        ).map_err(|e|e.to_string())?;
+        let rows = stmt.query_map(params![session_id,after_rowid,through_rowid], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }).map_err(|e|e.to_string())?;
+        let mut out=Vec::new();
+        for row in rows {
+            let (rowid,id,detail,time)=row.map_err(|e|e.to_string())?;
+            let parsed=serde_json::from_str::<Value>(&detail)
+                .map_err(|e|format!("invalid persisted model usage audit: {e}"))?;
+            if !parsed.is_object() {
+                return Err("model usage audit detail is not an object".into());
+            }
+            out.push(json!({
+                "rowid":rowid,"id":id,"event":"model.usage",
+                "detail":parsed,"createdAt":time
+            }));
+        }
+        Ok(out)
+    }
+
+    /// Convenience query for live observability; historical evidence must
+    /// use a persisted finite end cursor via model_usage_for_session_in_window.
+    pub fn model_usage_for_session_since(
+        &self, session_id: &str, after_rowid: i64,
+    ) -> Result<Vec<Value>, String> {
+        let end=self.audit_rowid_cursor()?;
+        self.model_usage_for_session_in_window(session_id,after_rowid,end)
+    }
+
+    /// A monotonic SQLite audit cursor bounds the generation's real model
+    /// turn even when an owner later reuses the same session.
+    pub fn audit_rowid_cursor(&self) -> Result<i64, String> {
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        conn.query_row("SELECT COALESCE(MAX(rowid),0) FROM audit",[],|row|
+            row.get::<_,i64>(0)).map_err(|e|e.to_string())
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn
