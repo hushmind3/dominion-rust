@@ -4451,9 +4451,11 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let algebra=crate::engine::rsi_method_generalization::adapt(
         authored_algebra,&method_learning);
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    let algebra_active=science_active && algebra["selected"]["target"].is_object();
-    let capability_active=science_active && !algebra_active
-        && method_learning["suggestedCapabilityTarget"].is_object();
+    let capability_active=science_active
+        && crate::engine::rsi_method_generalization::prefer_capability_target(
+            &algebra,&method_learning);
+    let algebra_active=science_active && !capability_active
+        && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
         crate::engine::rsi_system::inherited_domain(&history).as_deref());
@@ -4899,14 +4901,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner_focus=matches!(
             job["input"]["rsiFocusSelection"]["source"].as_str(),
             Some("owner_selected"|"user_selected"));
-        let algebra_active=job["input"]["rsiAutonomous"]==true
-            && !owner_focus && !paired_descendant_target(&job["input"])
-            && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
         let capability_active=job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
-            && !algebra_active
-            && job["input"]["rsiMethodGeneralization"]["suggestedCapabilityTarget"]
-                .is_object();
+            && crate::engine::rsi_method_generalization::prefer_capability_target(
+                &job["input"]["rsiImprovementAlgebra"],
+                &job["input"]["rsiMethodGeneralization"]);
+        let algebra_active=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"])
+            && !capability_active
+            && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
         let suggested=if job["input"]["rsiAutonomous"]==true && !owner_focus
             && !paired_descendant_target(&job["input"])
             && !algebra_active && !capability_active {
