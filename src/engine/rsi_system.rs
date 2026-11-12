@@ -51,6 +51,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "generatorCommit":revision,
         "architecture":components,
         "historyCount":history.len(),
+        "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["pairedRevalidated"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
         "designOwnership":"compiled_descendant_and_its_model_worker",
@@ -71,6 +72,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
                 .collect::<Vec<_>>().join(", ");
             Some(format!("{name}: {paths}"))
         }).collect::<Vec<_>>().join("\n");
+    let inherited=self_model["inheritedDesign"].as_object().map(|_|format!("Previously accepted design: nextDomain={} hypothesis={}",self_model["inheritedDesign"]["nextDomain"],self_model["inheritedDesign"]["hypothesis"])).unwrap_or_default();
     let history=self_model["recentMeasuredGenerations"].as_array()
         .into_iter().flatten().take(4).map(|row|format!(
             "domain={} adopted={} verdict={} holdoutGain={} metaGain={}",
@@ -88,7 +90,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_range/function/write. \
-        Where beneficial, propose a reusable executable method using \
+        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -97,8 +99,101 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         design and execute the subsequent change.\n\
         Source architecture (representatives; the full repository is searchable):\n{}\n\
         Measured predecessor outcomes (not claims about the new generation):\n{}\n\
-        Report source changes and receipts, not a claimed AGI or RSI completion.",
-        self_model["generatorCommit"],owner_objective,components,history)
+        Prior accepted design intent: {}\nReport source changes and receipts, not a claimed AGI or RSI completion.",
+        self_model["generatorCommit"],owner_objective,components,history,inherited)
+}
+
+
+/// A model-authored design is an unproven experiment. It cannot modify the
+/// frozen evaluator or steer successors unless source changes are adopted.
+pub(crate) fn propose(
+    state:&crate::state::AppState,session_id:&str,body:&Value
+)->Result<Value,String>{
+    let mut session=state.store.get("session",session_id)
+        .ok_or("시스템 설계 세션 없음")?;
+    let campaign_id=session["rsiCampaignId"].as_str()
+        .ok_or("자기개선 캠페인 ID 없음")?;
+    let child_id=session["rsiGenerationJobId"].as_str()
+        .ok_or("후손 작업 ID 없음")?;
+    let parent=state.store.get("job",campaign_id)
+        .ok_or("캠페인 작업 없음")?;
+    let child=state.store.get("job",child_id)
+        .ok_or("후손 작업 없음")?;
+    if session["rsiRun"]!=true || parent["kind"]!="rsi_evolve"
+        || parent["status"]!="running" || parent["cancelRequested"]==true
+        || child["kind"]!="rsi_generation" || child["status"]!="running"
+        || child["input"]["rsiCampaignId"]!=campaign_id
+        || child["input"]["rsiSystemEvolution"]!=true
+        || child["cancelRequested"]==true{
+        return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
+    }
+    let component=body["component"].as_str()
+        .filter(|name|COMPONENTS.iter().any(|row|row.0==*name))
+        .ok_or("시스템 구성요소 지정 오류")?;
+    let next=body["nextDomain"].as_str()
+        .filter(|name|crate::engine::rsi_evolve::DOMAINS.contains(name))
+        .ok_or("다음 개선 분야 오류")?;
+    let hypothesis=body["hypothesis"].as_str()
+        .filter(|v|v.trim().len()>=20 && v.len()<=2000)
+        .ok_or("검증 가능한 가설 20~2000자가 필요합니다.")?;
+    let design=body["design"].as_str()
+        .filter(|v|v.trim().len()>=30 && v.len()<=6000)
+        .ok_or("실행할 설계 30~6000자가 필요합니다.")?;
+    let paths=body["targetFiles"].as_array()
+        .filter(|rows|!rows.is_empty()&&rows.len()<=8)
+        .ok_or("변경할 실제 소스 1~8개를 선택하세요.")?;
+    let root=fs::canonicalize(&state.config.workspace).map_err(|e|e.to_string())?;
+    let mut unique=std::collections::BTreeSet::new();
+    for path in paths {
+        let path=path.as_str().ok_or("소스 경로 문자열이 필요합니다.")?;
+        if !crate::engine::rsi::safe_path(path)||!unique.insert(path.to_string()){
+            return Err("중복 또는 허용되지 않은 소스 경로입니다.".into());
+        }
+        let file=fs::canonicalize(root.join(path))
+            .map_err(|_|"설계 대상이 실제 소스에 없습니다.".to_string())?;
+        if !file.starts_with(&root)||!file.is_file(){
+            return Err("외부 파일은 설계 범위가 아닙니다.".into());
+        }
+    }
+    let commit=child["input"]["rsiGeneratorCommit"].as_str()
+        .ok_or("후손 원본 revision 없음")?;
+    let revision=format!("{:x}",Sha256::digest(json!([
+        commit,component,next,hypothesis,design,paths]).to_string().as_bytes()));
+    let proposal=json!({
+        "id":format!("system-design-{revision}"),"status":"proposed",
+        "source":"model_authored_system_design",
+        "campaignId":campaign_id,"generationJobId":child_id,
+        "generatorCommit":commit,"component":component,
+        "nextDomain":next,"hypothesis":hypothesis,
+        "design":design,"targetFiles":paths,
+        "qualityProven":false,"adopted":false
+    });
+    session["rsiSystemDesign"]=proposal.clone();
+    state.store.put("session",&session).ok_or("설계 저장 실패")?;
+    state.store.audit("rsi.system_design_proposed",json!({
+        "campaignId":campaign_id,"generationJobId":child_id,
+        "designId":proposal["id"],"qualityProven":false
+    }));
+    Ok(json!({"proposal":proposal,
+        "next":"실제 코드를 변경해야 합니다. 독립 A/B 채택 이전에는 개선 증거가 아닙니다."}))
+}
+
+/// Reuse the model's target only when its *source change*, not its
+/// explanation, was independently evaluated and adopted.
+pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
+    let previous=history.last()?;
+    let design=&previous["systemDesign"];
+    if previous["accepted"]!=true || previous["pairedRevalidated"]!=true
+        || previous["evaluation"]["metrics"]["eligible"]!=true
+        || previous["candidateOrigin"]!="model_driven_detached_worktree"
+        || !previous["acceptedCommit"].is_string()
+        || design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=previous["generatorCommit"]
+        || design["generationJobId"]!=previous["jobId"]
+    {return None;}
+    let domain=design["nextDomain"].as_str()?;
+    crate::engine::rsi_evolve::DOMAINS.contains(&domain)
+        .then(||domain.to_string())
 }
 
 #[cfg(test)]
@@ -124,6 +219,27 @@ mod tests {
         assert_ne!(baseline,second["architecture"][0]["representativeSources"][0]["sha256"]);
         assert_ne!(first["generatorCommit"],second["generatorCommit"]);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
+        let base=json!({"generatorCommit":"parent","jobId":"worker",
+            "acceptedCommit":"child","candidateOrigin":"model_driven_detached_worktree",
+            "accepted":true,"pairedRevalidated":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"parent","generationJobId":"worker",
+                "nextDomain":"learning"}});
+        assert_eq!(inherited_domain(&[base.clone()]),Some("learning".into()));
+        for (key,value) in [("accepted",json!(false)),
+                            ("pairedRevalidated",json!(false)),
+                            ("candidateOrigin",json!("native_inductive_source_mutation"))] {
+            let mut invalid=base.clone();
+            invalid[key]=value;
+            assert_eq!(inherited_domain(&[invalid]),None);
+        }
+        let mut wrong=base;
+        wrong["systemDesign"]["generatorCommit"]=json!("stale");
+        assert_eq!(inherited_domain(&[wrong]),None);
     }
     #[cfg(unix)]
     #[test]
