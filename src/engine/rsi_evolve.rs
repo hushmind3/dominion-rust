@@ -3292,6 +3292,10 @@ async fn run_loop(
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
             if input["rsiAdaptiveApiRouting"]==true {
+                if !crate::engine::rsi_api_route_learning::verify_replay(
+                    &context.state,&history) {
+                    return Err("API 경로 학습 출처의 호출 감사·평가 원본 불일치".into());
+                }
                 if !crate::engine::rsi_api_route_learning::approved_choice(
                     &plan["apiRoutePolicy"],&input["rsiApprovedApiRoutes"])
                     || plan["apiRoutePolicy"]["ownerOriginal"]
@@ -3722,6 +3726,9 @@ async fn run_loop(
             current["input"]["model"].as_str().unwrap_or("")))
             .unwrap_or(Value::Null);
         generation["apiRouteUsage"]=api_route_usage.clone();
+        // Bind usage evidence to the original worker session so the next
+        // compiled descendant can replay it from the protected audit log.
+        generation["apiRouteSessionId"]=json!(session);
         generation["apiRouteExecutionVerified"]=json!(
             current["input"]["rsiAdaptiveApiRouting"]==true
             && current["input"]["rsiApiRoutePolicy"]["chosen"]["model"]
@@ -4496,6 +4503,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     if !crate::engine::rsi_principle_learning::verify_replay(&state,&history) {
         return Err("후손 원리 학습의 후보별 독립 평가 기록을 재생하지 못했습니다.".into());
     }
+    if input["rsiAdaptiveApiRouting"]==true
+        && !crate::engine::rsi_api_route_learning::verify_replay(&state,&history) {
+        return Err("API 경로 학습의 실제 호출·평가 영수증을 재생하지 못했습니다.".into());
+    }
     let objective=selection_objective(input);
     let source=input["rsiGeneratorSourceDir"].as_str()
         .or_else(||input["rsiSourceDir"].as_str())
@@ -5200,7 +5211,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiAdaptiveApiRouting"]==true
-            && (!crate::engine::rsi_api_route_learning::valid(
+            && (!crate::engine::rsi_api_route_learning::verify_replay(&state,&history)
+                || !crate::engine::rsi_api_route_learning::valid(
                 &job["input"]["rsiApiRoutePolicy"],&history,
                 &job["input"]["rsiApprovedApiRoutes"],
                 &job["input"]["rsiOriginalApiRoute"],&commit)
