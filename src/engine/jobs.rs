@@ -532,6 +532,38 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
+    let mut descendant_actual_source=String::new();
+    // An inherited neutral candidate is restored AFTER the parent prepared
+    // its source excerpt. Re-read the model's actual detached worktree: the
+    // parent's SHA and line numbers may now describe different Rust bytes.
+    if input["rsiSystemEvolution"]==true
+        && input["rsiInheritedCandidateId"].is_string() {
+        if let Some(worktree)=&rsi_workspace {
+            let indexed=crate::engine::code_index::refresh(
+                &context.state,&worktree.path)?;
+            let id=indexed["id"].as_str().unwrap_or("");
+            let objective=input["rsiObjective"].as_str().unwrap_or("");
+            let domain=input["rsiTargetDomain"].as_str().unwrap_or("");
+            for path in input["rsiFocusFiles"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(2) {
+                if !crate::engine::rsi::safe_path(path){continue;}
+                if let Some(excerpt)=crate::engine::code_index::bounded_focus_context(
+                    &context.state,&worktree.path,id,path,objective,domain) {
+                    if excerpt.contains("sourceSha256: ") && excerpt.contains("~~~")
+                        && descendant_actual_source.chars().count()
+                            + excerpt.chars().count()<=10000 {
+                        descendant_actual_source.push_str(&excerpt);
+                    }
+                }
+            }
+            context.state.store.audit("rsi.inherited_source_regrounded",json!({
+                "generationJobId":context.job_id,
+                "candidateId":input["rsiInheritedCandidateId"],
+                "actualSourceIndexId":indexed["id"],
+                "modelReceivedFreshSha":!descendant_actual_source.is_empty()
+            }));
+        }
+    }
     // The dedicated source checkout is validated and detached before a model
     // call, never modified directly by the RSI execution.
     let session_id = job
@@ -558,10 +590,15 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiExplicitFocus"]=json!(input["rsiAutonomous"] != true
                 && input["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty()));
             session["rsiFocusContextReady"]=json!(
-                input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
-                && input["rsiContextPlan"]["sourceExcerptDeferred"] != true
-                && (input["rsiSystemEvolution"]!=true
-                    || input["rsiFocusGrounded"]==true));
+                if input["rsiSystemEvolution"]==true
+                    && input["rsiInheritedCandidateId"].is_string() {
+                    !descendant_actual_source.is_empty()
+                }else{
+                    input["rsiFocusContextChars"].as_u64().unwrap_or(0) > 0
+                    && input["rsiContextPlan"]["sourceExcerptDeferred"] != true
+                    && (input["rsiSystemEvolution"]!=true
+                        || input["rsiFocusGrounded"]==true)
+                });
             crate::engine::rsi_evolve::configure_method_session(&context.state, &input, &mut session);
             // A neutral candidate is restored only inside the detached worker.
             // The coordinator index still describes the pristine parent tree.
@@ -587,6 +624,11 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     let reused_research=if let Some(worktree)=&rsi_workspace {
         crate::engine::rsi_evolve::reuse_research(&context.state,&input,&worktree.path,&session_id)
     }else{String::new()};
+    let actual_source_handoff=if descendant_actual_source.is_empty(){
+        String::new()
+    }else{
+        format!("\n\n[CURRENT DESCENDANT WORKTREE SOURCE — AUTHORITATIVE]\nThe neutral ancestor patch was actually restored after predecessor planning. Any earlier sourceSha256, source excerpts or line positions may now be stale. Use only these current hash-verified Rust bytes, or re-read missing ranges in this worktree before editing.\n{descendant_actual_source}")
+    };
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
@@ -598,7 +640,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             } else {
                 "개선 근거가 있으면 workspace_replace_range(읽은 줄과 sourceSha256) 또는 workspace_replace로 변경하고, 근거가 없다면 변경 없이 이유를 보고하세요."
             };
-            format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. {completion} 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.")
+            format!("{prompt}{reused_research}{actual_source_handoff}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. {completion} 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.")
         } else { prompt },
         agent_id: input
             .get("agentId")
