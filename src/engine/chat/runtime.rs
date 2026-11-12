@@ -35,34 +35,6 @@ fn bounded_contract_intent(input: &str) -> String {
     )
 }
 
-/// The owner enables local weight training at the API; the compiled child
-/// may use it only in an actual scoped generation. The ordinary agent and
-/// non-opted-in RSI runs cannot even see the training primitive.
-fn adapter_training_visible(session:&Value)->bool{
-    session["rsiRun"]==true && session["rsiCampaignId"].is_string()
-        && session["rsiAllowLocalAdapterTraining"]==true
-}
-
-#[cfg(test)]
-mod sub1_adapter_tool_visibility_tests {
-    use super::*;
-    #[test]
-    fn training_tool_requires_actual_opted_in_rsi_generation(){
-        assert!(!adapter_training_visible(&json!({})));
-        assert!(!adapter_training_visible(&json!({
-            "rsiRun":true,"rsiCampaignId":"campaign"
-        })));
-        assert!(!adapter_training_visible(&json!({
-            "rsiRun":false,"rsiCampaignId":"campaign",
-            "rsiAllowLocalAdapterTraining":true
-        })));
-        assert!(adapter_training_visible(&json!({
-            "rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiAllowLocalAdapterTraining":true
-        })));
-    }
-}
-
 /// Repository maps, quoted source and prior evidence are context, not tasks.
 fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
     if session["rsiRun"]==true {
@@ -1058,10 +1030,6 @@ async fn run_turn_body(
     if tool_discovery_applies(is_room, session["rsiRun"] == true) {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
-    if !adapter_training_visible(&session) {
-        tool_definitions.retain(|definition|
-            tool_name(definition)!="rsi_train_local_adapter");
-    }
     if session["rsiRun"]==true {
         tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
         if session["rsiSystemEvolution"]==true {
@@ -1070,8 +1038,7 @@ async fn run_turn_body(
             tool_definitions.retain(|definition|matches!(tool_name(definition),
                 "code_search"|"workspace_read_range"|"workspace_replace"
                 |"workspace_replace_range"|"workspace_replace_function"
-                |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"
-                |"rsi_train_local_adapter"));
+                |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"));
         }
     }
     let compiled = if is_room {
@@ -1845,8 +1812,6 @@ async fn run_turn_body(
                 let next=round_tools.iter().filter(|def|{
                     let name=tool_name(def);
                     rule.allows(name)
-                        ||adapter_training_visible(&session)
-                            &&name=="rsi_train_local_adapter"
                         ||session["rsiSystemEvolution"]==true
                             &&name=="rsi_system_plan"
                 }).cloned().collect::<Vec<_>>();
@@ -1873,8 +1838,6 @@ async fn run_turn_body(
                 let mut next=round_tools.iter().filter(|def|{
                     let name=tool_name(def);
                     route.allows(name)
-                        ||adapter_training_visible(&session)
-                            &&name=="rsi_train_local_adapter"
                         ||route.edit_only()&&name=="workspace_replace_function"
                         ||session["rsiSystemEvolution"]==true
                             &&name=="rsi_system_plan"
