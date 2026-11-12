@@ -159,6 +159,14 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
                 .filter(|p|!p.is_empty() && p.len()<=4) else{continue};
             let Some(wires)=invented["integrationPaths"].as_array()
                 .filter(|p|!p.is_empty() && p.len()<=4) else{continue};
+            let rust_module=source_paths.iter().any(|file|file.as_str()
+                .is_some_and(|path|path.starts_with("src/engine/")
+                    && path.ends_with(".rs")));
+            if rust_module && (!wires.iter().any(|w|w=="src/engine/mod.rs")
+                || !wires.iter().any(|w|w!="src/engine/mod.rs")) {
+                // A declaration in mod.rs does not make a novel algorithm run.
+                continue;
+            }
             let target_files=design["targetFiles"].as_array();
             let valid_source=|path:&str|{
                 target_files.is_some_and(|rows|rows.iter().any(|p|p==path))
@@ -219,6 +227,11 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
         let Some(design)=accepted_model_design(generation) else{continue};
         for role in design_roles(design) {
             if components.iter().any(|row|row["role"]==role){continue;}
+            // Invented roles have stricter birth criteria; they must not
+            // sneak back through the legacy generic-role path if their
+            // runtime wiring was rejected.
+            if design["newComponents"].as_array().is_some_and(|rows|
+                rows.iter().any(|entry|entry["role"]==role)){continue;}
             let files=design["componentFiles"][&role].as_array().or_else(||
                 (design_roles(design).len()==1).then(||design["targetFiles"].as_array()).flatten());
             let entries=files.into_iter().flatten().filter_map(|path|{
@@ -995,6 +1008,12 @@ pub(crate) fn propose(
                 !target_set.contains(path)||paths.iter().any(|p|p==path))){
             return Err("새 구성요소와 런타임 연결은 변경 파일로 명시돼야 합니다.".into());
         }
+        if paths.iter().any(|p|p.as_str().is_some_and(|name|
+                name.starts_with("src/engine/")&&name.ends_with(".rs")))
+            && (!wired.iter().any(|p|p=="src/engine/mod.rs")
+                || !wired.iter().any(|p|p!="src/engine/mod.rs")) {
+            return Err("새 Rust 지능은 모듈 등록과 별도의 실제 실행 호출 소스를 모두 수정해야 합니다.".into());
+        }
         if !item["purpose"].as_str().is_some_and(|p|
             p.trim().len()>=15 && p.len()<=1000){
             return Err("새 지능 구성요소의 실질적인 기능 설명이 필요합니다.".into());
@@ -1125,6 +1144,8 @@ mod tests {
             "pub fn improve() -> bool { true }\n").unwrap();
         std::fs::write(root.join("src/engine/mod.rs"),
             "pub mod rsi_new_method;\n").unwrap();
+        std::fs::write(root.join("src/engine/tools.rs"),
+            "pub fn propose() -> bool { crate::engine::rsi_new_method::improve() }\n").unwrap();
         let g=json!({
             "jobId":"generation","generatorCommit":"a".repeat(40),
             "acceptedCommit":"b".repeat(40),
@@ -1135,15 +1156,18 @@ mod tests {
                 "generationJobId":"generation","generatorCommit":"a".repeat(40),
                 "component":"system","components":["new_method","improvement_methods"],
                 "nextDomain":"improver",
-                "targetFiles":["src/engine/rsi_new_method.rs","src/engine/mod.rs"],
+                "targetFiles":["src/engine/rsi_new_method.rs","src/engine/mod.rs",
+                    "src/engine/tools.rs"],
                 "componentFiles":{"new_method":["src/engine/rsi_new_method.rs"],
-                    "improvement_methods":["src/engine/mod.rs"]},
+                    "improvement_methods":["src/engine/mod.rs"],
+                    "tools":["src/engine/tools.rs"]},
                 "newComponents":[{"role":"new_method","domain":"improver",
                     "purpose":"Discover a new source-based recursive improvement algorithm",
                     "sourcePaths":["src/engine/rsi_new_method.rs"],
-                    "integrationPaths":["src/engine/mod.rs"]}]},
+                    "integrationPaths":["src/engine/mod.rs","src/engine/tools.rs"]}]},
             "acceptedSourceHashes":{"src/engine/rsi_new_method.rs":"c".repeat(64),
-                "src/engine/mod.rs":"d".repeat(64)}
+                "src/engine/mod.rs":"d".repeat(64),
+                "src/engine/tools.rs":"e".repeat(64)}
         });
         let first=blueprint(&root,"ancestor",&[g.clone()]);
         assert!(first["architecture"].as_array().unwrap().iter().any(|r|
@@ -1153,8 +1177,7 @@ mod tests {
             "pub mod something_else;\n").unwrap();
         let second=blueprint(&root,"child",&[g]);
         assert!(!second["architecture"].as_array().unwrap().iter().any(|r|
-            r["role"]=="new_method"
-                && r["origin"]=="accepted_compiled_descendant_wired_intelligence_v1"));
+            r["role"]=="new_method"));
         std::fs::remove_dir_all(&root).unwrap();
     }
     #[test]
