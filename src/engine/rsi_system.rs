@@ -188,6 +188,22 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
                     "bytes":bytes.len()}))
             }).collect::<Vec<_>>();
             if entries.len()!=source_paths.len(){continue;}
+            // A changed integration file is not sufficient. The currently
+            // compiled descendant must still name/import the new module.
+            // This is source linkage evidence, not an inferred benchmark win.
+            let stems=source_paths.iter().filter_map(Value::as_str)
+                .filter_map(|p|Path::new(p).file_stem().and_then(|s|s.to_str()))
+                .collect::<Vec<_>>();
+            let wired=wires.iter().all(|wire|{
+                let Some(path)=wire.as_str() else{return false};
+                let Some(root)=canonical_root.as_ref() else{return false};
+                let Ok(file)=fs::canonicalize(root.join(path)) else{return false};
+                if !file.starts_with(root)||!file.is_file(){return false;}
+                let Ok(contents)=fs::read(file) else{return false};
+                let text=String::from_utf8_lossy(&contents);
+                stems.iter().any(|stem|text.contains(stem))
+            });
+            if !wired {continue;}
             components.push(json!({"role":role,"domain":domain,
                 "representativeSources":entries,
                 "birthCommit":generation["acceptedCommit"],
@@ -983,6 +999,11 @@ pub(crate) fn propose(
             p.trim().len()>=15 && p.len()<=1000){
             return Err("새 지능 구성요소의 실질적인 기능 설명이 필요합니다.".into());
         }
+        if let Some(improved)=item["improvesRole"].as_str(){
+            if improved==role||!roles.iter().any(|known|known==improved){
+                return Err("새 지능은 실제로 개선할 다른 구성요소를 지정해야 합니다.".into());
+            }
+        }
     }
     let edges=body["interactionEdges"].as_array().cloned().unwrap_or_default();
     if edges.len()>12{return Err("상호개선 관계는 최대 12개입니다.".into());}
@@ -1095,6 +1116,47 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invented_roles_require_current_executable_source_linkage(){
+        let root=std::env::temp_dir().join(format!(
+            "sub1-invented-executable-role-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::write(root.join("src/engine/rsi_new_method.rs"),
+            "pub fn improve() -> bool { true }\n").unwrap();
+        std::fs::write(root.join("src/engine/mod.rs"),
+            "pub mod rsi_new_method;\n").unwrap();
+        let g=json!({
+            "jobId":"generation","generatorCommit":"a".repeat(40),
+            "acceptedCommit":"b".repeat(40),
+            "accepted":true,"pairedRevalidated":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "candidateOrigin":"model_driven_detached_worktree",
+            "systemDesign":{"source":"model_authored_system_design",
+                "generationJobId":"generation","generatorCommit":"a".repeat(40),
+                "component":"system","components":["new_method","improvement_methods"],
+                "nextDomain":"improver",
+                "targetFiles":["src/engine/rsi_new_method.rs","src/engine/mod.rs"],
+                "componentFiles":{"new_method":["src/engine/rsi_new_method.rs"],
+                    "improvement_methods":["src/engine/mod.rs"]},
+                "newComponents":[{"role":"new_method","domain":"improver",
+                    "purpose":"Discover a new source-based recursive improvement algorithm",
+                    "sourcePaths":["src/engine/rsi_new_method.rs"],
+                    "integrationPaths":["src/engine/mod.rs"]}]},
+            "acceptedSourceHashes":{"src/engine/rsi_new_method.rs":"c".repeat(64),
+                "src/engine/mod.rs":"d".repeat(64)}
+        });
+        let first=blueprint(&root,"ancestor",&[g.clone()]);
+        assert!(first["architecture"].as_array().unwrap().iter().any(|r|
+            r["role"]=="new_method"
+                && r["origin"]=="accepted_compiled_descendant_wired_intelligence_v1"));
+        std::fs::write(root.join("src/engine/mod.rs"),
+            "pub mod something_else;\n").unwrap();
+        let second=blueprint(&root,"child",&[g]);
+        assert!(!second["architecture"].as_array().unwrap().iter().any(|r|
+            r["role"]=="new_method"
+                && r["origin"]=="accepted_compiled_descendant_wired_intelligence_v1"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
     #[test]
     fn python_model_architecture_mutations_change_whole_system_identity(){
         let root=std::env::temp_dir().join(format!("rsi-python-model-{}",
