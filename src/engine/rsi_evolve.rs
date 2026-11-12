@@ -1037,6 +1037,10 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
             && input["rsiSuccessorStage"]["executionPolicy"]=="grounded_edit"
             && input["rsiSuccessorStage"]["path"]==input["rsiFocusFiles"][0])
         || (input["rsiSystemEvolution"]==true
+            && input["rsiRecursiveDiscovery"]["target"]["path"]
+                ==input["rsiFocusFiles"][0]
+            && input["rsiRecursiveDiscovery"]["phase"]!="invent_new_intelligence")
+        || (input["rsiSystemEvolution"]==true
             && input["rsiFactorialCurriculum"]["selected"]["isolationRequired"]==true
             && input["rsiFactorialCurriculum"]["selected"]["target"]["path"]
                 ==input["rsiFocusFiles"][0])
@@ -1070,7 +1074,8 @@ fn bind_action_to_source(
     // Never collapse A+B joint experiments into a single meta edit.
     // Actual verification requires BOTH independently witnessed file writes.
     if input["rsiSystemEvolution"]==true
-        && input["rsiFactorialCurriculum"]["selected"]["phase"]=="test_joint" {
+        && (input["rsiFactorialCurriculum"]["selected"]["phase"]=="test_joint"
+            || input["rsiRecursiveDiscovery"]["phase"]=="invent_new_intelligence"){
         return false;
     }
     let method_repair=pending_method_recovery_domain(input).is_some();
@@ -1097,8 +1102,19 @@ fn bind_action_to_source(
                 .as_deref()==target["sourceSha256"].as_str())
             .map(str::to_string)
     }else{None};
+    let scientific_path=if input["rsiSystemEvolution"]==true
+        && input["rsiRecursiveDiscovery"]["target"].is_object()
+        && input["rsiRecursiveDiscovery"]["phase"]!="invent_new_intelligence"{
+        let target=&input["rsiRecursiveDiscovery"]["target"];
+        target["path"].as_str().filter(|path|
+            crate::engine::rsi::safe_path(path)
+            && crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                .as_deref()==target["sourceSha256"].as_str())
+            .map(str::to_string)
+    }else{None};
     let meta_path=if input["rsiSystemEvolution"]==true
         && !input["rsiSuccessorStage"].is_object()
+        && scientific_path.is_none()
         && factorial_path.is_none()
         && input["rsiMetaActionPolicy"]["executionPolicy"]=="grounded_edit" {
         input["rsiMetaActionPolicy"]["path"].as_str()
@@ -1108,7 +1124,8 @@ fn bind_action_to_source(
             .map(str::to_string)
     }else{None};
     if !learned_action && !method_repair && stage_path.is_none()
-        && factorial_path.is_none() && meta_path.is_none() {return false}
+        && factorial_path.is_none() && scientific_path.is_none()
+        && meta_path.is_none() {return false}
     let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str)
         .find(|path|crate::engine::rsi::safe_path(path)
@@ -1129,8 +1146,9 @@ fn bind_action_to_source(
                 && crate::engine::code_index::indexed_source_hash(state,index_id,path).is_some())
             .map(str::to_string)
     } else {None};
-    let Some(target)=repair_path.clone().or(stage_path.clone())
-        .or(factorial_path.clone()).or(meta_path.clone())
+    let Some(target)=scientific_path.clone().or(repair_path.clone())
+        .or(stage_path.clone()).or(factorial_path.clone())
+        .or(meta_path.clone())
         .or(failed_path.clone()).or(first)
         else {return false};
     let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
@@ -1143,6 +1161,8 @@ fn bind_action_to_source(
         if repair_path.is_some() {"learned_executable_method"}
         else if stage_path.as_deref()==Some(target.as_str()) {
             "inherited_descendant_execution_policy"
+        }else if scientific_path.as_deref()==Some(target.as_str()){
+            "compiled_recursive_discovery_source_control"
         }else if factorial_path.as_deref()==Some(target.as_str()){
             "compiled_factorial_intervention_control"
         }else if meta_path.as_deref()==Some(target.as_str()){
@@ -5411,22 +5431,35 @@ fn compiled_system_generation_plan(
         crate::engine::rsi_mutual_evolution::curriculum(&frontier,&meta,DOMAINS)
     };
     // This experiment designer is compiled into the NEW child and can evolve.
-    let factorial=if successor_stage.is_object() || explicit_focus{Value::Null}else{
+    let raw_factorial=if successor_stage.is_object() || explicit_focus{
+        Value::Null
+    }else{
         crate::engine::rsi_causal_curriculum::design(
             history,&mutual,&frontier,commit)
     };
-    let scientific=crate::engine::rsi_recursive_discovery::plan(
+    let suggested=crate::engine::rsi_recursive_discovery::plan(
         history,&frontier,&blueprint["openTopology"],&meta,
-        &factorial,&mutual,commit);
-    let phase=scientific["phase"].as_str().unwrap_or("");
+        &raw_factorial,&mutual,commit);
+    let phase=suggested["phase"].as_str().unwrap_or("");
     let scientific_active=!explicit_focus
-        && scientific["target"].is_object()
+        && suggested["target"].is_object()
         && (matches!(phase,
             "develop_invented_capability"|"return_to_origin"|"rewrite_discovery_method")
             || !successor_stage.is_object());
+    // An adopted recursive-science continuation owns the ONE source focus:
+    // no unrelated isolated factorial arm may block its actual write tools.
+    let factorial=if scientific_active && phase!="invent_new_intelligence"{
+        Value::Null
+    }else{raw_factorial};
+    let scientific=if scientific_active && phase!="invent_new_intelligence"{
+        crate::engine::rsi_recursive_discovery::plan(
+            history,&frontier,&blueprint["openTopology"],&meta,
+            &factorial,&mutual,commit)
+    }else{suggested};
+    let empty_scientist=Value::Null;
     let scientific_target=if scientific_active{
         &scientific["target"]
-    }else{&Value::Null};
+    }else{&empty_scientist};
     let scientific_domain=scientific_target["domain"].as_str()
         .filter(|d|DOMAINS.contains(d)).map(str::to_string);
     let factorial_target=&factorial["selected"]["target"];
@@ -5826,8 +5859,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiFactorialCurriculum"]);
         let topology_instruction=crate::engine::rsi_open_topology::instruction(
             &job["input"]["rsiSystemBlueprint"]["openTopology"]);
-        let discovery_instruction=crate::engine::rsi_recursive_discovery::instruction(
-            &job["input"]["rsiRecursiveDiscovery"]);
+        let discovery_instruction=if job["input"]["rsiAutoFocus"]==true{
+            crate::engine::rsi_recursive_discovery::instruction(
+                &job["input"]["rsiRecursiveDiscovery"])
+        }else{String::new()};
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
@@ -5847,10 +5882,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("{}\n\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
                 meta_instruction,peer_instruction,
-                if job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
+                if job["input"]["rsiAutoFocus"]==true
+                    && job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
                     String::new()
                 }else{mutual_instruction},
-                if job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
+                if job["input"]["rsiAutoFocus"]==true
+                    && job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
                     String::new()
                 }else{factorial_instruction},
                 topology_instruction,discovery_instruction),

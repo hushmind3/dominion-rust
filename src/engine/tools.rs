@@ -203,6 +203,8 @@ pub async fn execute(
             }else{&session["rsiMetaControlPolicy"]};
             session["rsiSystemEvolution"]==true
                 && policy["toolPolicy"]=="patch_only"
+                && !(session["rsiRecursiveDiscovery"]["phase"]=="invent_new_intelligence"
+                    && args["path"]==session["rsiRecursiveDiscovery"]["invention"]["newFile"])
         }) {
         return Err("계승된 후손 도구 정책(patch_only)은 신규 파일 생성을 허용하지 않습니다.".into());
     }

@@ -837,7 +837,8 @@ async fn run_turn_body(
             let policy=if session["rsiSuccessorStage"].is_object(){
                 &session["rsiSuccessorStage"]
             }else{&session["rsiMetaControlPolicy"]};
-            if policy["toolPolicy"]=="patch_only" {
+            if policy["toolPolicy"]=="patch_only"
+                && session["rsiRecursiveDiscovery"]["phase"]!="invent_new_intelligence"{
                 tool_definitions.retain(|definition|
                     tool_name(definition)!="workspace_write");
             }

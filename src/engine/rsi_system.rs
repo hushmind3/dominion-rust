@@ -308,7 +308,7 @@ pub(crate) fn architecture_frontier(
         // perfectly valid inherited next-stage path whenever another file
         // happened to be smaller. Multiple options give the child an actual
         // architectural search space without pre-authoring an optimization.
-        for (path,hash,bytes) in available.into_iter().take(8) {
+        for (path,hash,bytes) in available.into_iter().take(12) {
             let prior=source_attempts.get(path).copied().unwrap_or(0);
             frontier.push(json!({
                 "role":role,"domain":domain,"path":path,
