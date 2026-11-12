@@ -4196,10 +4196,15 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
     let inherited_experiment_method=
         crate::engine::rsi_intervention_lab::inherited_method(&history);
-    let factorial=crate::engine::rsi_intervention_lab::design(
+    let proposed_factorial=crate::engine::rsi_intervention_lab::design(
         &history,&frontier,&inherited_meta,&initial_symbiosis,
         &permitted,revision,profile.as_deref(),&inherited_experiment_method);
-    let factorial_active=auto && stage.is_null() && factorial["selected"].is_object();
+    let factorial_active=auto && stage.is_null()
+        && proposed_factorial["selected"].is_object();
+    // An explicit owner objective or a previously adopted successor program
+    // must NOT inherit file-write restrictions from an unused experiment.
+    // Null means no actual factorial intervention was scheduled.
+    let factorial=if factorial_active{proposed_factorial}else{Value::Null};
     let meta=if factorial_active {
         crate::engine::rsi_intervention_lab::steer(inherited_meta,&factorial)
     }else{inherited_meta};
