@@ -179,6 +179,60 @@ pub(crate) fn synthesize(
 }
 
 
+
+/// Unlike a reference-only prompt, a donor's independently measured general
+/// method affects WHICH new architecture the compiled descendant attempts.
+/// Donor evidence raises exploration priority, NOT the predicted probability
+/// that the current descendant will pass its own frozen evaluation.
+pub(crate) fn integrate_peer_evidence(mut policy:Value,peers:&Value)->Value{
+    let Some(donors)=peers["references"].as_array()
+        .filter(|rows|!rows.is_empty()) else{return policy};
+    let Some(mut alternatives)=policy["alternatives"].as_array().cloned()
+        else{return policy};
+    for candidate in &mut alternatives {
+        let Some(role)=candidate["role"].as_str() else{continue};
+        let mut strongest=0.0f64;
+        let mut ids=Vec::<String>::new();
+        for donor in donors {
+            if donor["source"]!="independently_measured_peer_design_v1"
+                || donor["patchImported"]!=false
+                || donor["roles"].as_array().is_none_or(|roles|
+                    !roles.iter().any(|name|name==role)) {continue;}
+            let gain=donor["metaHoldoutGains"].as_u64().unwrap_or(0).min(10);
+            let same=donor["identicalSourceFiles"].as_u64().unwrap_or(0).min(4);
+            let bonus=0.10+0.01*gain as f64+0.01*same as f64;
+            strongest=strongest.max(bonus);
+            if let Some(id)=donor["candidateId"].as_str(){
+                ids.push(id.to_string());
+            }
+        }
+        // The donor's success does not become a local adoption or Brier
+        // training label. It is evidence that transfer may be worth trying.
+        let original=candidate["score"].as_f64().unwrap_or(0.0);
+        candidate["transferPriorityBonus"]=json!(strongest);
+        candidate["donorCandidateIds"]=json!(ids.into_iter().take(4).collect::<Vec<_>>());
+        candidate["score"]=json!(original+strongest);
+    }
+    alternatives.sort_by(|a,b|
+        b["score"].as_f64().unwrap_or(0.0).total_cmp(
+            &a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str())));
+    let Some(winner)=alternatives.first().cloned() else{return policy};
+    let old_revision=policy["revision"].clone();
+    policy["target"]=winner["target"].clone();
+    policy["selectionEvidence"]=winner.clone();
+    policy["alternatives"]=json!(alternatives);
+    policy["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+    policy["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    policy["mode"]=json!("cross_lineage_evidence_guided_search");
+    policy["donorArchiveSha256"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(peers).unwrap_or_default())));
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([old_revision,policy["alternatives"],
+            policy["donorArchiveSha256"]])).unwrap_or_default())));
+    policy
+}
+
 /// The accepted program is an inheritable action schedule, not a source
 /// mutation recipe. This selection is compiled into the new descendant's
 /// metacognitive policy and reflected in its forecast and actual tool menu.

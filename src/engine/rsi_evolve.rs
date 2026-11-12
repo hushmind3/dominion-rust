@@ -4123,10 +4123,17 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // This meta-controller lives in the REBUILT BINARY. The frozen previous
     // coordinator cannot overwrite its comparative learning or target.
     let permitted=candidate_domains(&objective);
+    let mut peer_input=parent["input"].clone();
+    peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
+    let peers=crate::engine::rsi_lineage_transfer::peers(
+        &state,campaign_id,&peer_input,
+        campaign["planIndexId"].as_str().unwrap_or(""),None);
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&permitted,inherited.as_deref());
+    let transferred_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
+        raw_meta,&peers);
     let stage=crate::engine::rsi_system::inherited_stage(&history,&frontier);
-    let meta=crate::engine::rsi_meta_controller::apply_successor_stage(raw_meta,&stage);
+    let meta=crate::engine::rsi_meta_controller::apply_successor_stage(transferred_meta,&stage);
     let architecture_target=meta["target"].clone();
     let auto=parent["input"]["selectionPolicy"]=="automatic";
     let selected=if auto{
@@ -4157,12 +4164,6 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             ranked.truncate(3);
         }
     }
-    let mut peer_input=parent["input"].clone();
-    peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
-    let peers=crate::engine::rsi_lineage_transfer::peers(
-        &state,campaign_id,&peer_input,
-        campaign["planIndexId"].as_str().unwrap_or(""),
-        architecture_target["role"].as_str());
     let comparative_mode=if peers["references"].as_array().is_some_and(|v|!v.is_empty()){
         "cross_lineage_design"
     }else if meta["counterexamples"].as_array().is_some_and(|v|v.len()>=2){
