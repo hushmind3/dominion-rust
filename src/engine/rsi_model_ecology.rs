@@ -96,7 +96,8 @@ fn session_chat_calls(rows:&[Value],session:&str,route:&Value)->(u64,u64,BTreeSe
 }
 
 fn verified_attempt(g:&Value)->bool{
-    g["modelEcologyExecuted"]["sessionOwnedByGeneration"]==true
+    g["modelEcologyExecuted"]["routeMatchedWorkerInput"]==true
+        &&g["modelEcologyExecuted"]["sessionOwnedByGeneration"]==true
         &&g["modelEcologyExecuted"]["mixedChatModelCalls"]==0
         &&g["modelEcologyExecuted"]["actuallyUsedInGeneration"]==true
         &&g["modelEcologyExecuted"]["actualModelCalls"].as_u64().unwrap_or(0)>0
@@ -445,6 +446,7 @@ mod tests{
             "source":"real_descendant_model_usage_v1",
             "generationJobId":"generation","generatorCommit":"a".repeat(40),
             "providerId":"p","model":"m","selectedBy":"policy",
+            "routeMatchedWorkerInput":true,
             "sessionOwnedByGeneration":true,
             "mixedChatModelCalls":1,
             "actualModelCalls":1,"actuallyUsedInGeneration":true},
@@ -462,6 +464,51 @@ mod tests{
         g["modelEcologyExecuted"]["sessionOwnedByGeneration"]=json!(false);
         assert!(outcome(&g).is_none());
     }
+    #[test] fn owned_real_session_and_exclusive_model_usage_are_required(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!(
+            "sub4-actor-owned-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let session=state.store.put("session",&json!({
+            "id":"owned-session","rsiRun":true,
+            "rsiGenerationJobId":"generation-1"})).unwrap();
+        assert_eq!(session["id"],"owned-session");
+        let mut job=json!({"id":"generation-1","sessionId":"owned-session",
+            "input":{"rsiGeneratorCommit":"a".repeat(40),
+                "providerId":"provider-a","model":"model-a",
+                "rsiModelEcologyPolicy":{"active":true,
+                    "revision":"compiled-selection",
+                    "selected":{"providerId":"provider-a","model":"model-a"}}}});
+        state.store.audit("model.usage",json!({
+            "sessionId":"owned-session","purpose":"chat",
+            "providerId":"provider-a","model":"model-a","totalTokens":81}));
+        let measured=executed(&state,&job);
+        assert_eq!(measured["actualModelCalls"],1);
+        assert_eq!(measured["mixedChatModelCalls"],0);
+        assert_eq!(measured["actuallyUsedInGeneration"],true);
+        state.store.audit("model.usage",json!({
+            "sessionId":"owned-session","purpose":"helper",
+            "providerId":"helper-provider","model":"helper","totalTokens":12}));
+        assert_eq!(executed(&state,&job)["actuallyUsedInGeneration"],true);
+        state.store.audit("model.usage",json!({
+            "sessionId":"owned-session","purpose":"chat",
+            "providerId":"provider-b","model":"model-b","totalTokens":12}));
+        let mixed=executed(&state,&job);
+        assert_eq!(mixed["actualModelCalls"],1);
+        assert_eq!(mixed["mixedChatModelCalls"],1);
+        assert_eq!(mixed["actuallyUsedInGeneration"],false);
+        job["id"]=json!("generation-other");
+        assert_eq!(executed(&state,&job)["sessionOwnedByGeneration"],false);
+        job["id"]=json!("generation-1");
+        job["input"]["model"]=json!("model-other");
+        assert_eq!(executed(&state,&job)["routeMatchedWorkerInput"],false);
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
+    }
     #[test] fn execution_requires_real_model_traffic(){
         let g=json!({"modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
             "providerId":"api-1","model":"model-a",
@@ -477,6 +524,7 @@ mod tests{
             "generationJobId":"generation-1",
             "generatorCommit":"a".repeat(40),
             "selectedBy":"chosen-policy",
+            "routeMatchedWorkerInput":true,
             "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":1},
             "jobId":"generation-1",
@@ -527,7 +575,8 @@ mod tests{
             "modelEcologyPolicy":{"revision":"policy-1",
                 "selected":{"providerId":"remote","model":"model-1"}},
             "modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
-                "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
+                "routeMatchedWorkerInput":true,
+            "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
                 "actuallyUsedInGeneration":true,"actualModelCalls":1,
                 "generationJobId":"trial-1",
                 "generatorCommit":"a".repeat(40),"selectedBy":"policy-1",
@@ -578,6 +627,7 @@ mod tests{
             "generationJobId":"adopted-agent-1",
             "generatorCommit":"a".repeat(40),
             "selectedBy":"policy-1",
+            "routeMatchedWorkerInput":true,
             "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":2},
             "jobId":"adopted-agent-1",
