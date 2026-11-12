@@ -3567,8 +3567,24 @@ async fn run_loop(
                     .as_deref()!=Some(target_domain.as_str()) {
                 return Err("후손의 재설계 목표와 실제 선택 분야가 다릅니다.".into());
             }
+            let meta=&record["nextGenerationPlan"]["metaPolicy"];
+            if meta["source"]!="compiled_editable_meta_controller_v1"
+                || meta["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
+                || meta["target"].is_object()
+                    && !agenda["frontier"].as_array().is_some_and(|f|
+                        f.contains(&meta["target"])) {
+                return Err("후손의 수정 가능한 메타 개선기 정책이 유효하지 않습니다.".into());
+            }
+            let peers=&record["nextGenerationPlan"]["peerLineages"];
+            let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
+            crate::engine::rsi_meta_controller::validate_peer_lineages(
+                &context.state,peers,profile.as_deref(),&context.job_id)?;
             child_input["rsiSystemBlueprint"]=model.clone();
             child_input["rsiSystemAgenda"]=agenda.clone();
+            child_input["rsiMetaPolicy"]=meta.clone();
+            child_input["rsiPeerLineages"]=peers.clone();
+            child_input["rsiMetaMethodHypothesis"]=
+                record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
             child_input["rsiSelectedDomain"]=json!(target_domain);
             child_input["rsiDecisionInput"]=json!({
                 "source":"compiled_descendant_self_controller_v1",
@@ -3851,6 +3867,12 @@ async fn run_loop(
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["selfControllerVerified"]=current["rsiSelfControllerVerified"].clone();
         generation["inheritedMetaMethod"]=current["rsiInheritedMetaMethod"].clone();
+        generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        generation["metaMethodHypothesis"]=current["input"]["rsiMetaMethodHypothesis"].clone();
+        generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["comparisonProfileSha256"]=json!(
+            crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["candidateOrigin"]=current["result"]["rsi"]["candidateOrigin"].clone();
@@ -3971,6 +3993,10 @@ async fn run_loop(
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
+        if generation["systemEvolution"]==true {
+            generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+                &generation["metaPolicy"],&generation);
+        }
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;
@@ -4847,13 +4873,37 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         if lab.is_empty(){return Err("후손의 실제 소스 디렉터리가 없습니다.".into());}
         crate::engine::rsi_system::blueprint(Path::new(lab),binary_commit,&history)
     }else{Value::Null};
-    let agenda=if system_mode {
+    let mut agenda=if system_mode {
         crate::engine::rsi_system::system_agenda(state,&model,&history,
             campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab))
     }else{Value::Null};
     let inherited=if automatic {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
+    // The current child's meta-controller is compiled with its task-agent:
+    // its evolving decision algorithm, not the predecessor's ordering,
+    // chooses the redesign with the highest evidence-weighted potential.
+    let meta_policy=if system_mode {
+        let frontier=agenda["frontier"].as_array().cloned().unwrap_or_default();
+        crate::engine::rsi_meta_controller::synthesize(
+            &history,&frontier,DOMAINS,inherited.as_deref())
+    }else{Value::Null};
+    if automatic && meta_policy["target"].is_object()
+        && agenda["frontier"].as_array().is_some_and(|f|f.contains(&meta_policy["target"])) {
+        agenda["target"]=meta_policy["target"].clone();
+        agenda["focus"]=json!([meta_policy["target"]]);
+    }
+    let mut peer_input=source_input.clone();
+    peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
+    let peers=if system_mode {
+        crate::engine::rsi_meta_controller::peer_lineages(
+            state,campaign_id,&peer_input,
+            meta_policy["target"]["role"].as_str())
+    }else{Value::Null};
+    let method_hypothesis=if system_mode {
+        crate::engine::rsi_meta_controller::next_method_hypothesis(
+            &meta_policy,&history)
+    }else{Value::Null};
     let self_domain=if automatic {
         agenda["target"]["domain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
@@ -4906,6 +4956,8 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "targetPlan":target_plan,
         "improvementDirective":generation_improvement_directive(source_input,&action_history),
         "systemBlueprint":model,"systemAgenda":agenda,
+        "metaPolicy":meta_policy,"peerLineages":peers,
+        "metaMethodHypothesis":method_hypothesis,
         "rankedFiles":ranked
     }))
 }
@@ -5162,6 +5214,25 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &state,&model,&job["input"]["rsiSystemAgenda"],
             job["input"]["rsiIndexId"].as_str().unwrap_or(""),
             Path::new(source),&commit,history.len())?;
+        let expected_meta=crate::engine::rsi_meta_controller::synthesize(
+            &history,
+            job["input"]["rsiSystemAgenda"]["frontier"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]),
+            DOMAINS,
+            crate::engine::rsi_system::inherited_domain(&history).as_deref());
+        if job["input"]["rsiMetaPolicy"]!=expected_meta {
+            return Err("실제 후손의 메타 학습 정책과 상속된 계획이 다릅니다.".into());
+        }
+        let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
+        crate::engine::rsi_meta_controller::validate_peer_lineages(
+            &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
+        job["rsiMetaPolicyExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":commit,
+            "metaRevision":expected_meta["revision"],
+            "targetRole":expected_meta["target"]["role"],
+            "forecast":expected_meta["forecast"]
+        });
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiSelfControllerVerified"]=json!(true);
         // An accepted model-authored research program becomes executable
@@ -5181,11 +5252,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiSystemBlueprint"],goal);
         let own_agenda=crate::engine::rsi_system::agenda_instruction(
             &job["input"]["rsiSystemAgenda"]);
+        let meta=crate::engine::rsi_meta_controller::instruction(
+            &job["input"]["rsiMetaPolicy"]);
+        let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
+        let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
+            .into_iter().flatten().take(3).map(|row|format!(
+                "other lineage roles={} hypothesis={} priorDesign={}",
+                row["roles"],row["hypothesis"],row["designSummary"]))
+            .collect::<Vec<_>>().join("\n");
         let method=if job["rsiInheritedMetaMethod"].is_object(){
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}{method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
