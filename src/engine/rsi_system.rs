@@ -114,6 +114,7 @@ fn role_domain(role:&Value)->&str {
         crate::engine::rsi_evolve::DOMAINS.contains(d)) {return domain;}
     match role["role"].as_str().unwrap_or("") {
         "memory"=>"memory", "learning"=>"learning", "tools"=>"tools",
+        "models"=>"models",
         "harness"=>"context", "frontend"=>"ui", _=>"improver"
     }
 }
