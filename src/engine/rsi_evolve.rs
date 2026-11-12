@@ -3932,10 +3932,10 @@ async fn run_loop(
                     .is_none_or(|architecture|architecture.len()!=7)
                 || plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTreeSha256"]
-                || plan["architectureFrontier"]!=
+                || plan["architectureFrontier"]!=json!(
                     crate::engine::rsi_system::architecture_frontier(
                         &context.state,&plan["systemBlueprint"],&recorded_history,
-                        child_input["rsiIndexId"].as_str().unwrap_or(""))
+                        child_input["rsiIndexId"].as_str().unwrap_or("")))
                 || plan["architectureTarget"]!=plan["architectureFrontier"]
                     .as_array().and_then(|rows|rows.first()).cloned()
                     .unwrap_or(Value::Null)
