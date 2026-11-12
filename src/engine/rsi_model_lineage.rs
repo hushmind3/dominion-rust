@@ -331,6 +331,55 @@ mod tests {
         assert!(plan(&state,&[],&input,&"a".repeat(40)).is_err());
         let _=std::fs::remove_dir_all(root);
     }
+    #[test]
+    fn unverified_claims_never_authorize_paid_or_local_model_switch(){
+        let (state,root)=make_state();
+        state.store.put("provider",&json!({"id":"local-only","kind":"openai",
+            "name":"Local","baseUrl":"http://127.0.0.1:6789/v1",
+            "model":"local-base","enabled":true})).unwrap();
+        let baseline="a".repeat(40);
+        let input=json!({"providerId":"local-only","model":"local-base",
+            "rsiAutonomous":true,"rsiSystemEvolution":true,
+            "rsiAllowModelEvolution":true,"rsiLocalOnly":true,
+            "rsiApprovedModelPool":[
+                {"providerId":"local-only","model":"local-base"},
+                {"providerId":"local-only","model":"local-alternative"}]});
+        let original=plan(&state,&[],&input,&baseline).unwrap();
+        assert_eq!(original["selected"]["model"],"local-base");
+        assert!(valid(&original,&input,&baseline,0));
+        // A model-written comparison claiming quality is not a replayed
+        // frozen execution and cannot select a new model.
+        let forged=json!({"generatorCommit":baseline,
+            "generatorProviderId":"local-only","generatorModel":"local-base",
+            "pairedMeasured":true,"candidateId":"fake",
+            "evaluationProfileSha256":"b".repeat(64),
+            "evaluation":{"metrics":{"eligible":true,"verdict":"improved"}},
+            "accepted":true});
+        let after=plan(&state,&[forged],&input,&baseline).unwrap();
+        assert_eq!(after["selected"]["model"],"local-base");
+        assert_eq!(after["matchedBaselineModelComparisons"],0);
+        let mut corrupted=after.clone();
+        corrupted["selected"]["model"]=json!("unapproved-remote");
+        assert!(!valid(&corrupted,&input,&baseline,1));
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn local_only_policy_denies_approved_remote_model_before_invocation(){
+        let (state,root)=make_state();
+        for (id,url) in [("local","http://127.0.0.1:6789/v1"),
+                         ("cloud","https://api.example.invalid/v1")]{
+            state.store.put("provider",&json!({"id":id,"kind":"openai",
+                "baseUrl":url,"model":"test-model","enabled":true})).unwrap();
+        }
+        let input=json!({"providerId":"local","model":"test-model",
+            "rsiAutonomous":true,"rsiSystemEvolution":true,
+            "rsiAllowModelEvolution":true,"rsiLocalOnly":true,
+            "rsiApprovedModelPool":[
+                {"providerId":"local","model":"test-model"},
+                {"providerId":"cloud","model":"test-model"}]});
+        assert!(plan(&state,&[],&input,&"a".repeat(40)).is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
     fn make_state()->(AppState,std::path::PathBuf){
         use crate::{config::Config,db::Store,vault::Vault};
         let root=std::env::temp_dir().join(
