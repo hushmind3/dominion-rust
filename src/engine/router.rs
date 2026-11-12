@@ -5,7 +5,7 @@
 //! capable route for light questions and a credentialed/high-capability route
 //! for deep work; explicit provider selections are never overridden.
 
-use crate::engine::gateway;
+use crate::engine::{gateway,rsi_model_learning};
 use crate::state::AppState;
 use serde_json::{json, Value};
 
@@ -58,6 +58,11 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
         return None;
     }
     let score = |provider: &Value| gateway::capability_score(provider);
+    // A source-editable, empirically trained ROUTING MODEL adapts real deep
+    // inference to independently compared next-generation performance.
+    let learned=if complexity==Complexity::Deep && candidates.len()>1 {
+        rsi_model_learning::learn(&state.store.all("rsi_generation"))
+    }else{Value::Null};
     match complexity {
         Complexity::Light => {
             // Free/keyless first, then the smallest capable route.
@@ -80,6 +85,8 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
             candidates.sort_by(|a, b| {
                 has_key(state, b)
                     .cmp(&has_key(state, a))
+                    .then_with(||rsi_model_learning::compared_preference(&learned,a,b)
+                        .unwrap_or(std::cmp::Ordering::Equal))
                     .then_with(|| {
                         score(b)
                             .partial_cmp(&score(a))
@@ -176,6 +183,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn deep_auto_route_learns_from_comparable_cross_domain_model_improvements(){
+        let (state,dir)=state();
+        for (id,context) in [("strong",8000u64),("weak",128000u64)]{
+            state.store.put("provider",&json!({
+                "id":id,"name":id,"baseUrl":format!("https://{id}/v1"),
+                "model":"m","contextTokens":context,"enabled":true}));
+            state.save_secret(&format!("provider:{id}"),"test-key");
+        }
+        assert_eq!(select_provider(&state,Complexity::Deep).unwrap()["id"],"weak");
+        for (base,domain,idx) in [("a".repeat(40),"memory",1),
+            ("b".repeat(40),"tools",2)]{
+            for (model,good) in [("strong",true),("weak",false)]{
+                let id=format!("{model}-{idx}");
+                state.store.put("rsi_generation",&json!({
+                    "id":id,"jobId":id,"generatorCommit":base,
+                    "generatorProviderId":model,"generatorModel":"m",
+                    "comparisonProfileSha256":"f".repeat(64),
+                    "domain":domain,"candidateId":id,"pairedRevalidated":true,
+                    "selfControllerVerified":true,
+                    "candidateOrigin":"model_driven_detached_worktree",
+                    "accepted":good,
+                    "acceptedCommit":if good{json!("c".repeat(40))}else{Value::Null},
+                    "evaluation":{"metrics":{"eligible":good,
+                        "holdoutEvidence":[{
+                            "id":"case","baselinePass":!good,"candidatePass":good,
+                            "metricGains":0,"metricRegressions":0
+                        }]}}
+                }));
+            }
+        }
+        assert_eq!(select_provider(&state,Complexity::Deep).unwrap()["id"],"strong");
+        let _=std::fs::remove_dir_all(dir);
+    }
     #[test]
     fn light_prefers_free_and_deep_prefers_credentialed_routes() {
         let (state, dir) = state();
