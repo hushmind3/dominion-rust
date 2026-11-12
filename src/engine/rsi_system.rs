@@ -182,6 +182,212 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
     })
 }
 
+
+/// The source graph is factual evidence. Ranking is an evolvable algorithm
+/// in the currently built descendant; the external parent validates only
+/// that chosen files and their hashes are real.
+fn source_entry_valid(state:&crate::state::AppState,root:&Path,index_id:&str,
+    entry:&Value,hash_key:&str)->bool{
+    let Some(path)=entry["path"].as_str() else{return false};
+    let Some(sha)=entry[hash_key].as_str() else{return false};
+    if !crate::engine::rsi::safe_path(path)
+        || crate::engine::rsi::hidden_rsi_oracle_path(path)
+        || sha.len()!=64 || !sha.bytes().all(|b|b.is_ascii_hexdigit()) {
+        return false;
+    }
+    let Ok(base)=fs::canonicalize(root) else{return false};
+    let Ok(file)=fs::canonicalize(base.join(path)) else{return false};
+    if !file.starts_with(base)||!file.is_file(){return false;}
+    if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+        .as_deref()!=Some(sha){return false;}
+    fs::read(file).is_ok_and(|bytes|format!("{:x}",Sha256::digest(bytes))==sha)
+}
+
+/// A source-grounded research frontier identifies unmet capabilities, rather
+/// than running an optimization operator with a preselected source path.
+/// It learns from actual inherited and failed generations and production
+/// task failure signals, without turning an untested observation into gain.
+pub(crate) fn architecture_frontier(state:&crate::state::AppState,
+    model:&Value,history:&[Value],index_id:&str,root:&Path)->Vec<Value>{
+    let mut attempted=BTreeMap::<String,u64>::new();
+    let mut role_wins=BTreeMap::<String,u64>::new();
+    let mut recent_failure=BTreeMap::<String,String>::new();
+    for generation in history {
+        for file in generation["focusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str){
+            *attempted.entry(file.to_string()).or_default()+=1;
+            if generation["accepted"]!=true {
+                recent_failure.insert(file.to_string(),
+                    generation["evaluation"]["verdict"].as_str()
+                        .unwrap_or("source_edit_unproven").to_string());
+            }
+        }
+        if let Some(design)=accepted_model_design(generation) {
+            for role in design_roles(design) {
+                *role_wins.entry(role).or_default()+=1;
+            }
+        }
+    }
+    let usage=crate::engine::rsi_scan::report(state);
+    let signals=usage["signals"].as_array().cloned().unwrap_or_default();
+    let mut frontier=Vec::new();
+    for component in model["architecture"].as_array().into_iter().flatten() {
+        let Some(role)=component["role"].as_str().filter(|role|valid_role(role)) else{continue};
+        let domain=component["domain"].as_str()
+            .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+            .unwrap_or_else(||role_domain(role));
+        let mut sources=component["representativeSources"].as_array()
+            .into_iter().flatten()
+            .filter(|file|source_entry_valid(state,root,index_id,file,"sha256"))
+            .collect::<Vec<_>>();
+        sources.sort_by(|a,b| {
+            let ca=attempted.get(a["path"].as_str().unwrap_or("")).copied().unwrap_or(0);
+            let cb=attempted.get(b["path"].as_str().unwrap_or("")).copied().unwrap_or(0);
+            ca.cmp(&cb).then(a["bytes"].as_u64().cmp(&b["bytes"].as_u64()))
+                .then(a["path"].as_str().cmp(&b["path"].as_str()))
+        });
+        let Some(source)=sources.first() else{continue};
+        let Some(path)=source["path"].as_str() else{continue};
+        let related=signals.iter().filter(|signal|
+            signal["targetFiles"].as_array().is_some_and(|paths|
+                paths.iter().any(|candidate|candidate.as_str()==Some(path))))
+            .filter_map(|signal|signal["id"].as_str().map(str::to_string))
+            .take(6).collect::<Vec<_>>();
+        frontier.push(json!({
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":source["sha256"],"sourceBytes":source["bytes"],
+            "attempts":attempted.get(path).copied().unwrap_or(0),
+            "verifiedRedesigns":role_wins.get(role).copied().unwrap_or(0),
+            "latestFailure":recent_failure.get(path),
+            "taskFailureSignalIds":related,
+            "reason":if role_wins.contains_key(role){"extend_verified_intelligence"}
+                else if recent_failure.contains_key(path){"invent_alternative_after_failure"}
+                else {"unexplored_intelligence_component"},
+            "qualityProven":false
+        }));
+    }
+    frontier.sort_by(|a,b|{
+        a["verifiedRedesigns"].as_u64().cmp(&b["verifiedRedesigns"].as_u64())
+            .then(a["attempts"].as_u64().cmp(&b["attempts"].as_u64()))
+            .then(b["taskFailureSignalIds"].as_array().map(Vec::len)
+                .cmp(&a["taskFailureSignalIds"].as_array().map(Vec::len)))
+            .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
+            .then(a["role"].as_str().cmp(&b["role"].as_str()))
+    });
+    frontier
+}
+
+/// Controller output is computed by the newly rebuilt generation, with the
+/// entire source tree and measured history available to its own code.
+/// Its design, ranking and future execution-method policy may change in the
+/// next accepted revision; the supervising process merely authenticates facts.
+pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
+    history:&[Value],index_id:&str,root:&Path)->Value{
+    let frontier=architecture_frontier(state,model,history,index_id,root);
+    let inherited=history.iter().rev().find_map(accepted_model_design);
+    let inherited_targets=inherited.and_then(|design|
+        design["nextTargetFiles"].as_array()).into_iter().flatten()
+        .take(3).filter_map(Value::as_str)
+        .filter_map(|path|{
+            frontier.iter().find(|item|item["path"]==path).cloned()
+        }).collect::<Vec<_>>();
+    let selected=inherited_targets.first().cloned().or_else(||frontier.first().cloned());
+    let focus=if !inherited_targets.is_empty() {
+        inherited_targets
+    } else {
+        selected.as_ref().map(|t|vec![t.clone()]).unwrap_or_default()
+    };
+    json!({
+        "source":"compiled_descendant_self_controller_v1",
+        "generatorCommit":model["generatorCommit"],
+        "sourceTreeSha256":model["sourceTreeSha256"],
+        "frontier":frontier,
+        "target":selected,
+        "focus":focus,
+        "decisionOwner":"current_compiled_descendant",
+        "nextHypothesis":inherited.map(|d|d["hypothesis"].clone())
+            .unwrap_or(Value::Null),
+        "nextImprovementMethod":inherited.and_then(|d|
+            d["methodHypothesis"].as_str()).map(|s|json!(s)).unwrap_or(Value::Null)
+    })
+}
+
+/// Only immutable path+hash evidence is verified by the resident parent.
+/// It MUST NOT recompute the last generation's frontier order: that would
+/// freeze intelligence selection and reject a genuinely new planner policy.
+pub(crate) fn validate_system_agenda(state:&crate::state::AppState,
+    model:&Value,agenda:&Value,index_id:&str,root:&Path,
+    commit:&str,history_len:usize)->Result<(),String>{
+    if model["generatorCommit"]!=commit
+        || model["historyCount"].as_u64()!=Some(history_len as u64)
+        || model["sourceTreeSha256"]!=source_facts(root)["sha256"]
+        || model["sourceFileCount"]!=source_facts(root)["fileCount"]
+        || model["architecture"].as_array().is_none_or(|roles|
+            roles.is_empty()||roles.len()>64)
+        || agenda["source"]!="compiled_descendant_self_controller_v1"
+        || agenda["generatorCommit"]!=commit
+        || agenda["sourceTreeSha256"]!=model["sourceTreeSha256"] {
+        return Err("후손의 전체 소스 구조와 세대 ID가 일치하지 않습니다.".into());
+    }
+    let rows=agenda["frontier"].as_array()
+        .filter(|rows|rows.len()<=64)
+        .ok_or("후손 자기재설계 후보가 잘못됐습니다.")?;
+    for row in rows {
+        if !row["role"].as_str().is_some_and(valid_role)
+            || !row["domain"].as_str().is_some_and(|d|
+                crate::engine::rsi_evolve::DOMAINS.contains(&d))
+            || !source_entry_valid(state,root,index_id,row,"sourceSha256") {
+            return Err("후손이 선택한 개선 대상의 실제 소스 증거가 일치하지 않습니다.".into());
+        }
+    }
+    let chosen=&agenda["target"];
+    if !chosen.is_null() && !rows.iter().any(|row|row==chosen){
+        return Err("후손의 선택 목표가 자체 소스 탐색 결과와 다릅니다.".into());
+    }
+    let focus=agenda["focus"].as_array()
+        .filter(|focus|focus.len()<=3)
+        .ok_or("후손의 실제 수정 범위가 너무 큽니다.")?;
+    if focus.iter().any(|row|!rows.contains(row)){
+        return Err("후손의 집중 수정 대상이 실제 인덱스 증거와 다릅니다.".into());
+    }
+    Ok(())
+}
+
+/// A model may propose a new executable source-edit procedure. It inherits
+/// only after the associated source redesign is independently adopted.
+/// This is a new *trial* for the next generation, not proof that the proposed
+/// program already improved performance.
+pub(crate) fn inherited_program(history:&[Value])->Option<Value>{
+    let last=history.iter().rev().find(|row|accepted_model_design(row).is_some())?;
+    let design=accepted_model_design(last)?;
+    let sequence=design["actionProgram"].as_array()
+        .filter(|seq|seq.len()>=2&&seq.len()<=8)?;
+    let allowed=|tool:&str|matches!(tool,
+        "code_search"|"workspace_read_range"|"workspace_replace"
+        |"workspace_replace_range"|"workspace_replace_function"
+        |"workspace_write"|"rsi_system_plan"|"rsi_method_propose");
+    if !sequence.iter().all(|tool|tool.as_str().is_some_and(allowed)){return None;}
+    let read=sequence.iter().position(|tool|tool=="workspace_read_range")?;
+    let write=sequence.iter().position(|tool|matches!(tool.as_str(),
+        Some("workspace_replace"|"workspace_replace_range"
+            |"workspace_replace_function"|"workspace_write")))?;
+    if read>=write{return None;}
+    let revision=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&sequence).ok()?));
+    Some(json!({
+        "kind":"rsi.induced_action_program","revision":revision,
+        "sequence":sequence,"onFailure":[],"recoveryPaths":[],
+        "status":"trial_inherited_from_verified_descendant_design",
+        "origin":"model_authored_self_modification",
+        "evidence":{
+            "adoptedCommit":last["acceptedCommit"],"designId":design["id"],
+            "generatorCommit":last["generatorCommit"],
+            "pairedRevalidated":true,
+            "methodTrialUnverified":true
+        }
+    }))
+}
+
 /// A system-generation *model* chooses the actual design and edits. The
 /// descendant's source-grounded map is context, not a fixed list of allowed
 /// mutations. The code index and source-edit tools still cover the repository.
@@ -301,29 +507,13 @@ pub(crate) fn propose(
         "next":"실제 코드를 변경해야 합니다. 독립 A/B 채택 이전에는 개선 증거가 아닙니다."}))
 }
 
-/// Reuse the model's target only when its *source change*, not its
-/// explanation, was independently evaluated and adopted.
+/// The model's accepted goal remains an input to its own next binary.
+/// An unadopted written design cannot dictate the descendant's behavior.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
-    let previous=history.last()?;
-    let design=&previous["systemDesign"];
-    if previous["accepted"]!=true || previous["pairedRevalidated"]!=true
-        || previous["evaluation"]["metrics"]["eligible"]!=true
-        || previous["candidateOrigin"]!="model_driven_detached_worktree"
-        || !previous["acceptedCommit"].is_string()
-        || design["source"]!="model_authored_system_design"
-        || design["generatorCommit"]!=previous["generatorCommit"]
-        || design["generationJobId"]!=previous["jobId"]
-    {return None;}
-    // A good score for an unrelated patch cannot establish that the
-    // model's proposed system design was actually implemented.
-    let paths=design["targetFiles"].as_array()?;
-    if !paths.iter().filter_map(Value::as_str).any(|path|
-        previous["acceptedSourceHashes"][path].as_str().is_some_and(|hash|hash.len()==64)){
-        return None;
-    }
-    let domain=design["nextDomain"].as_str()?;
-    crate::engine::rsi_evolve::DOMAINS.contains(&domain)
-        .then(||domain.to_string())
+    let design=history.iter().rev().find_map(accepted_model_design)?;
+    let next=design["nextDomain"].as_str()?;
+    crate::engine::rsi_evolve::DOMAINS.contains(&next)
+        .then(||next.to_string())
 }
 
 #[cfg(test)]
