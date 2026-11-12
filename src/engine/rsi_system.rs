@@ -68,7 +68,19 @@ fn design_roles(design:&Value)->Vec<String> {
             .filter(|role|valid_role(role)).map(str::to_string).collect()
     ).unwrap_or_else(||design["component"].as_str()
         .filter(|role|valid_role(role))
-        .map(|role|vec![role.to_string()]).unwrap_or_default())
+        .map(|role|vec![role.to_string()])
+        .unwrap_or_else(||{
+            // Legacy, independently adopted single-file proposals had no
+            // component field. Recover only an UNAMBIGUOUS role from the
+            // original source map; never guess for a shared or new module.
+            let Some(targets)=design["targetFiles"].as_array()
+                .filter(|files|files.len()==1) else{return Vec::new();};
+            let Some(path)=targets[0].as_str() else{return Vec::new();};
+            let matched=COMPONENTS.iter()
+                .filter(|(_,files)|files.contains(&path))
+                .map(|(role,_)|role.to_string()).collect::<Vec<_>>();
+            if matched.len()==1{matched}else{Vec::new()}
+        }))
 }
 
 fn design_role_files<'a>(design:&'a Value,role:&str)->Option<&'a Vec<Value>> {
