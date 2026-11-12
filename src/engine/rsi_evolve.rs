@@ -3691,7 +3691,15 @@ async fn run_loop(
                         && generation["systemBlueprintVerified"]==true
                         && crate::engine::rsi_system::design_implemented(design,&paths));
                     generation["designImplemented"]=json!(design_complete);
-                    generation["pairedRevalidated"]=json!(crate::engine::rsi::verified_pair_receipt(&context.state,&candidate));
+                    // A rejected or neutral patch can still have a fully
+                    // replayable independent paired report. Track measurement
+                    // separately from *eligible adoption* so the next
+                    // generation learns from genuine negative outcomes too.
+                    generation["pairedMeasured"]=json!(
+                        crate::engine::rsi::replayed_pair_metrics(
+                            &context.state,&candidate).is_some());
+                    generation["pairedRevalidated"]=json!(
+                        crate::engine::rsi::verified_pair_receipt(&context.state,&candidate));
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true
                         && generation["pairedRevalidated"]==true && design_complete;
