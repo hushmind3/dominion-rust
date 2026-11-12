@@ -95,13 +95,14 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
         "rsiDiagnostic":{"failed":1,"domain":"tools","focusFiles":["src/engine/decompose.rs"]},
         "rsiTargetPlan":{"domain":"tools","selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
         "rsiFrozenCases":rsi_worktree::metric_cases(),"rsiNativeInduction":false,
-        "rsiMetaEpisode":true,"rsiLocalOnly":outer_input["rsiLocalOnly"],
+        "rsiLocalOnly":outer_input["rsiLocalOnly"],
         "rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
         "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false});
     // Use the same frozen registration cases in each arm; never nest meta eval.
     input["rsiFrozenCases"]=outer_input["rsiFrozenCases"].as_array().map(|cases|
         cases.iter().filter(|c|c["id"]!="meta-downstream-editing").cloned().collect::<Vec<_>>()).map_or(Value::Null,|c|json!(c));
     let child=context.state.store.put("job",&json!({"kind":"rsi_generation","status":"running",
+        "rsiEvaluationEpisode":true,"rsiEvaluationArm":arm,"rsiEvaluationTask":task,
         "input":input,"attempts":1,"queuedAt":chrono::Utc::now().to_rfc3339()})).ok_or("후속 평가 작업 저장 실패")?;
     let id=child["id"].as_str().ok_or("후속 평가 작업 ID 없음")?;
     context.checkpoint(json!({"rsiMetaActiveJobId":id,"rsiMetaArm":arm,"rsiMetaTask":task}))?;
