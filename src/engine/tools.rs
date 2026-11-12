@@ -64,10 +64,6 @@ pub fn definitions() -> Vec<Value> {
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
         }), vec!["expression"])),
-        tool("rsi_train_local_adapter", "Approved offline LoRA training; only independently paired model gains can be promoted.", object(json!({
-            "manifestName":text("Approved .json manifest in rsi-training-approved"),
-            "mode":{"type":"string","enum":["check","train"]}
-        }),vec!["manifestName"])),
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
@@ -171,7 +167,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan"|"rsi_train_local_adapter")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"workspace_replace_function"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
 
 pub async fn execute(
@@ -453,8 +449,6 @@ pub async fn execute(
         }
         "rsi_method_propose" => crate::engine::rsi_evolve::propose_method(ctx.state, ctx.session_id, args),
         "rsi_system_plan" => crate::engine::rsi_system::propose(ctx.state, ctx.session_id, args),
-        "rsi_train_local_adapter" => crate::engine::rsi_model_weights::run_tool(
-            ctx.state,ctx.session_id,ctx.workspace,args).await,
         "algorithm_propose" => {
             let session = ctx
                 .store
