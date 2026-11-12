@@ -5,10 +5,11 @@ import fs from 'node:fs';
 import {execFileSync} from 'node:child_process';
 
 const mode=process.argv[2];
-const upstream='https://text.pollinations.ai/openai';
+const upstream=process.env.SUB4_MODEL_API_BASE||'https://text.pollinations.ai/openai';
+const remoteApiKey=process.env.SUB4_MODEL_API_KEY||'';
 const localModel=process.env.SUB4_MODEL_KIND==='ollama';
 const systemGoal=process.env.SUB4_SYSTEM_GOAL==='1';
-const selectedModel=localModel?(process.env.SUB4_MODEL_NAME||'qwen3:4b-instruct'):'openai-fast';
+const selectedModel=process.env.SUB4_MODEL_NAME||(localModel?'qwen3:4b-instruct':'openai-fast');
 const ollamaOrigin=process.env.SUB4_OLLAMA_URL||'http://127.0.0.1:11434';
 const port=Number(process.env.DOMINION_PORT||43179);
 const host=`http://127.0.0.1:${port}`;
@@ -95,8 +96,14 @@ if(mode==='probe'){
         stream:false,options:{num_ctx:16384,num_predict:64}},180000);
       reply=result?.message?.content;
     }else{
-      const result=await post(upstream,{model:selectedModel,
-        messages:[{role:'user',content:'Reply exactly READY.'}],max_tokens:24,stream:false},35000);
+      const response=await fetch(upstream,{method:'POST',
+        headers:{'content-type':'application/json',
+          ...(remoteApiKey?{'authorization':'Bearer '+remoteApiKey}:{})},
+        body:JSON.stringify({model:selectedModel,
+          messages:[{role:'user',content:'Reply exactly READY.'}],max_tokens:24,stream:false}),
+        signal:AbortSignal.timeout(35000)});
+      if(!response.ok)throw Error('Remote inference probe status '+response.status);
+      const result=await response.json();
       reply=result?.choices?.[0]?.message?.content;
     }
     console.log(`SUB4_FREE_MODEL=${typeof reply==='string'&&reply.length?'available':'unavailable'}`);
@@ -111,7 +118,8 @@ if(mode==='probe'){
     }
     try{
       const data=[];for await(const chunk of req)data.push(chunk);
-      const upstreamResult=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json'},
+      const upstreamResult=await fetch(upstream,{method:'POST',headers:{'content-type':'application/json',
+        ...(remoteApiKey?{'authorization':'Bearer '+remoteApiKey}:{})},
         body:Buffer.concat(data),signal:AbortSignal.timeout(180000)});
       res.writeHead(upstreamResult.status,{'content-type':upstreamResult.headers.get('content-type')||'application/json'});
       res.end(Buffer.from(await upstreamResult.arrayBuffer()));
@@ -129,6 +137,8 @@ if(mode==='probe'){
     }
     if(!healthy)throw Error('native DOMINION engine did not start');
     const nativeProof=process.env.SUB4_NATIVE_INDUCTION==='1';
+    if(systemGoal && !localModel && !remoteApiKey)
+      throw Error('Hosted full-system model requires explicit model secret; public proxy is not a substitute');
     let toolMode='native';
     if(systemGoal && localModel && !nativeProof) {
       const tags=await fetch(ollamaOrigin+'/api/tags',{signal:AbortSignal.timeout(20000)})
