@@ -48,6 +48,20 @@ fn direct_child<'a>(history:&'a [Value],parent:&str,role:&str)->Option<&'a Value
     history.iter().rev().find(|g|
         g["generatorCommit"]==parent && changed(g,role))
 }
+/// The origin and the scientific method must be rewritten at the same
+/// source path selected by the running descendant, not elsewhere in a
+/// similarly named component. This prevents false cross-generation closure.
+fn direct_child_path<'a>(
+    history:&'a [Value],parent:&str,role:&str,path:&str
+)->Option<&'a Value>{
+    history.iter().rev().find(|g|{
+        g["generatorCommit"]==parent && changed(g,role)
+            && g["changedSourcePaths"].as_array().is_some_and(|files|
+                files.iter().any(|file|file==path))
+            && g["acceptedSourceHashes"][path].as_str().is_some_and(|hash|
+                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit()))
+    })
+}
 fn current<'a>(frontier:&'a [Value],role:&str)->Option<&'a Value>{
     frontier.iter().find(|row|row["role"]==role&&valid_source(row))
 }
@@ -96,7 +110,8 @@ fn pending_invention(history:&[Value],frontier:&[Value],commit:&str)->Option<Val
             }
             let Some(child)=child else{continue};
             let second=child["acceptedCommit"].as_str()?;
-            let returned=direct_child(history,second,old);
+            let returned=direct_child_path(history,second,old,
+                origin["path"].as_str()?);
             if returned.is_none() && commit==second {
                 return Some(json!({"phase":"return_to_origin",
                     "target":origin,"origin":novel,"inventionRole":role,
@@ -107,7 +122,8 @@ fn pending_invention(history:&[Value],frontier:&[Value],commit:&str)->Option<Val
             let third=returned["acceptedCommit"].as_str()?;
             let Some(method)=method_source(frontier) else{continue};
             let method_role=method["role"].as_str()?;
-            if direct_child(history,third,method_role).is_none() && commit==third {
+            if direct_child_path(history,third,method_role,
+                method["path"].as_str()?).is_none() && commit==third {
                 return Some(json!({"phase":"rewrite_scientific_method",
                     "target":method,"origin":origin,"inventionRole":role,
                     "birthCommit":first,"birthJob":birth["jobId"],
@@ -318,16 +334,18 @@ mod tests{
             "sourceSha256":"a".repeat(64),"sourceBytes":1000})
     }
     fn accepted(id:&str,base:&str,head:&str,role:&str,path:&str)->Value {
-        json!({"jobId":id,"generatorCommit":base,"acceptedCommit":head,
+        let mut g=json!({"jobId":id,"generatorCommit":base,"acceptedCommit":head,
             "accepted":true,"pairedRevalidated":true,
             "selfControllerVerified":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "evaluation":{"metrics":{"eligible":true}},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":base,"generationJobId":id,
-                "componentFiles":{role:[path]},"targetFiles":[path]},
-            "changedSourcePaths":[path],
-            "acceptedSourceHashes":{path:"b".repeat(64)}})
+                "componentFiles":{},"targetFiles":[path]},
+            "changedSourcePaths":[path],"acceptedSourceHashes":{}});
+        g["systemDesign"]["componentFiles"][role]=json!([path]);
+        g["acceptedSourceHashes"][path]=json!("b".repeat(64));
+        g
     }
     #[test]
     fn only_adopted_descendant_source_changes_advance_new_role_cycle(){
@@ -361,6 +379,26 @@ mod tests{
         false_birth["acceptedSourceHashes"]["src/engine/rsi_new_study.rs"]=
             Value::Null;
         assert!(pending_invention(&[false_birth],&frontier,&first).is_none());
+    }
+    #[test]
+    fn unrelated_source_update_cannot_fake_return_or_scientific_rewrite(){
+        let a="a".repeat(40);let b="b".repeat(40);let c="c".repeat(40);
+        let mut birth=accepted("birth",&a,&b,"novel_agent",
+            "src/engine/novel_agent.rs");
+        birth["systemDesign"]["newComponents"]=json!([{
+            "role":"novel_agent","improvesRole":"improvement_methods"}]);
+        let child=accepted("develop",&b,&c,"novel_agent",
+            "src/engine/novel_agent.rs");
+        let unrelated=accepted("unrelated",&c,&"d".repeat(40),
+            "improvement_methods","src/engine/rsi_evolve.rs");
+        let frontier=vec![
+            target("novel_agent","src/engine/novel_agent.rs"),
+            target("improvement_methods","src/engine/rsi_meta_controller.rs"),
+            target("improvement_methods","src/engine/rsi_recursive_laboratory.rs")
+        ];
+        assert!(pending_invention(&[birth,child,unrelated],&frontier,
+            &"d".repeat(40)).is_none(),
+            "A different method path cannot claim that the declared origin improved");
     }
     #[test]
     fn research_method_rank_only_counts_real_measured_candidate_trials(){
