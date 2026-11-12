@@ -4901,6 +4901,14 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         agenda["target"]=meta_policy["target"].clone();
         agenda["focus"]=json!([meta_policy["target"]]);
     }
+    // A descendant-selected two-role experiment must become actual source
+    // focus, not an unexecuted prompt suggestion. The selected source hashes
+    // will be checked again before any edit. Explicit user focus and inherited
+    // model-authored stages are not replaced by this exploratory policy.
+    if automatic && agenda["inheritedStage"].is_null() {
+        crate::engine::rsi_meta_controller::attach_reciprocal_focus(
+            &mut agenda,&meta_policy);
+    }
     let mut peer_input=source_input.clone();
     peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
     let peers=if system_mode {
