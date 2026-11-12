@@ -137,6 +137,61 @@ fn confidence_adjustment(history:&[Value])->f64{
 }
 
 
+/// Frozen paired holdouts provide *observed* direction-of-effect data.
+/// A multi-module patch cannot establish which module caused an improvement.
+/// The next compiled descendant owns this editable causal-hypothesis model.
+fn measured_interaction_edges(history:&[Value])
+    ->BTreeMap<(String,String),(u64,u64,u64,u64)>{
+    let mut edges=BTreeMap::<(String,String),(u64,u64,u64,u64)>::new();
+    for generation in history.iter().filter(|g|independent_adoption(g)){
+        let roles=model_design_roles(generation);
+        let targets=&generation["systemDesign"]["targetFiles"];
+        let implemented=roles.into_iter().filter(|role|{
+            let mapped=generation["systemDesign"]["componentFiles"][role.as_str()]
+                .as_array().filter(|rows|!rows.is_empty())
+                .or_else(||(generation["systemDesign"]["component"]==role.as_str()
+                    && generation["systemDesign"]["componentFiles"].is_null())
+                    .then(||targets.as_array()).flatten());
+            mapped.is_some_and(|files|files.iter().all(|file|{
+                let Some(path)=file.as_str() else{return false};
+                targets.as_array().is_some_and(|all|all.iter().any(|r|r==path))
+                && generation["acceptedSourceHashes"][path].as_str()
+                    .is_some_and(|sha|sha.len()==64
+                        && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+            }))
+        }).collect::<Vec<_>>();
+        if implemented.is_empty(){continue;}
+        for case in generation["evaluation"]["metrics"]["holdoutEvidence"]
+            .as_array().into_iter().flatten(){
+            let Some(domain)=case["domain"].as_str() else{continue};
+            let target_role=match domain{
+                "context"|"planning"=>"harness",
+                "improver"|"search"=>"improvement_methods",
+                "ui"=>"frontend",
+                "model"=>"models",
+                "memory"|"tools"|"learning"=>domain,
+                _=>continue
+            };
+            let (Some(before),Some(after))=(case["baselinePass"].as_bool(),
+                case["candidatePass"].as_bool()) else{continue};
+            let loss=before&&!after
+                ||case["metricRegressions"].as_u64().unwrap_or(0)>0;
+            let gain=!before&&after
+                ||case["metricGains"].as_u64().unwrap_or(0)>0;
+            for source in &implemented{
+                if source==target_role || !gain&&!loss {continue;}
+                let evidence=edges.entry((source.clone(),target_role.to_string()))
+                    .or_default();
+                let joint=implemented.len()>1;
+                if loss {
+                    if joint{evidence.3+=1}else{evidence.1+=1;}
+                } else if joint {evidence.2+=1;} else {evidence.0+=1;}
+            }
+        }
+    }
+    edges
+}
+
 /// Construct a *two-way* source-edit experiment from independently adopted
 /// parent -> rebuilt-child role transitions. A joint edit is not automatically
 /// a causal gain: both directions remain hypotheses until separately tested.
@@ -148,6 +203,7 @@ fn reciprocal_evolution_contract(
     let Some(primary_role)=primary["role"].as_str() else{return Value::Null};
     let Some(primary_path)=primary["path"].as_str() else{return Value::Null};
     let adopted=history.iter().filter(|g|independent_adoption(g)).collect::<Vec<_>>();
+    let observed=measured_interaction_edges(history);
     let mut transitions=BTreeMap::<(String,String),u64>::new();
     let mut joint=BTreeMap::<(String,String),u64>::new();
     for ancestor in &adopted {
@@ -185,6 +241,12 @@ fn reciprocal_evolution_contract(
         let pair=if primary_role<role {(primary_role.to_string(),role.to_string())}
             else{(role.to_string(),primary_role.to_string())};
         let observed_joint=joint.get(&pair).copied().unwrap_or(0);
+        let (gain_ab,regression_ab,joint_ab,_)=observed
+            .get(&(primary_role.to_string(),role.to_string()))
+            .copied().unwrap_or_default();
+        let (gain_ba,regression_ba,joint_ba,_)=observed
+            .get(&(role.to_string(),primary_role.to_string()))
+            .copied().unwrap_or_default();
         // Reciprocal observed transitions dominate one-way successes; an
         // editable meta-method paired with a task capability is the cold-start
         // prior, not an immutable constraint on future invented roles.
@@ -196,11 +258,17 @@ fn reciprocal_evolution_contract(
         let score=12.0*(forward.min(reverse) as f64)
             +4.0*((forward+reverse) as f64)
             +2.0*(observed_joint as f64)
+            +8.0*(gain_ab.min(gain_ba) as f64)
+            +3.0*((gain_ab+gain_ba) as f64)
+            +0.5*((joint_ab+joint_ba) as f64)
+            -6.0*((regression_ab+regression_ba) as f64)
             +meta_prior+unexplored+1.0/(1.0+attempts);
-        Some((candidate.clone(),score,forward,reverse,observed_joint))
+        Some((candidate.clone(),score,forward,reverse,observed_joint,
+            gain_ab,gain_ba,regression_ab,regression_ba))
     }).max_by(|a,b|a.1.total_cmp(&b.1)
         .then_with(||b.0["path"].as_str().cmp(&a.0["path"].as_str())));
-    let Some((partner,_,forward,reverse,joint_adoptions))=counterpart
+    let Some((partner,_,forward,reverse,joint_adoptions,
+        gain_ab,gain_ba,regression_ab,regression_ba))=counterpart
         else{return Value::Null};
     let mode=if forward>0 && reverse>0 {"observed_bidirectional_lineage_transfer"}
         else if forward+reverse+joint_adoptions>0 {"partial_interaction_evidence"}
@@ -215,6 +283,11 @@ fn reciprocal_evolution_contract(
         "observedForwardTransfers":forward,
         "observedReverseTransfers":reverse,
         "observedJointAdoptions":joint_adoptions,
+        "measuredForwardHoldoutGains":gain_ab,
+        "measuredReverseHoldoutGains":gain_ba,
+        "measuredForwardRegressions":regression_ab,
+        "measuredReverseRegressions":regression_ba,
+        "twoWayMeasuredInteraction":gain_ab>0&&gain_ba>0,
         "twoWayTemporalEvidence":forward>0 && reverse>0,
         "hypothesis":"A source change to the first capability should improve the second capability's future improvement procedure, and a change to the second should improve subsequent redesigns of the first.",
         "requiredNewWork":["inspect_both_exact_current_sources",
@@ -792,6 +865,35 @@ mod tests{
             &forged,&primary,&[primary.clone(),role("improvement_methods")]);
         assert_eq!(weakened["observedForwardTransfers"],0);
         assert_eq!(weakened["observedReverseTransfers"],1);
+    }
+    #[test]
+    fn source_mapped_holdout_edges_separate_isolated_and_joint_changes(){
+        let single=json!({"jobId":"j","generatorCommit":"base",
+            "accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "acceptedCommit":"a".repeat(40),
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"base","generationJobId":"j",
+                "component":"harness","targetFiles":["src/engine/jobs.rs"]},
+            "acceptedSourceHashes":{"src/engine/jobs.rs":"a".repeat(64)},
+            "evaluation":{"metrics":{"eligible":true,"holdoutEvidence":[
+                {"domain":"memory","baselinePass":false,"candidatePass":true,
+                    "metricGains":0,"metricRegressions":0}]}}});
+        let edges=measured_interaction_edges(&[single.clone()]);
+        assert_eq!(edges[&("harness".to_string(),"memory".to_string())].0,1);
+        let mut joint=single;
+        joint["systemDesign"]["component"]="system".into();
+        joint["systemDesign"]["components"]=json!(["harness","learning"]);
+        joint["systemDesign"]["componentFiles"]=json!({
+            "harness":["src/engine/jobs.rs"],
+            "learning":["src/engine/learning.rs"]});
+        joint["systemDesign"]["targetFiles"]=json!([
+            "src/engine/jobs.rs","src/engine/learning.rs"]);
+        joint["acceptedSourceHashes"]["src/engine/learning.rs"]=
+            json!("b".repeat(64));
+        let edges=measured_interaction_edges(&[joint]);
+        assert_eq!(edges[&("harness".to_string(),"memory".to_string())].0,0);
+        assert_eq!(edges[&("harness".to_string(),"memory".to_string())].2,1);
     }
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
