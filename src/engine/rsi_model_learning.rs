@@ -141,6 +141,122 @@ pub(crate) fn compared_preference(model:&Value,a:&Value,b:&Value)->Option<std::c
     if (pa-pb).abs()<0.12{return None;}
     Some(pb.total_cmp(&pa))
 }
+
+/// Adapt the actual generation-time model, not only everyday chat routing.
+/// Any owner-configured capable API, local model, or approved adapter can
+/// compete on the SAME committed harness and frozen paired evaluation.
+/// No third-party API weights are rewritten: the whole agent is the unit
+/// whose next-generation improvement productivity is measured.
+pub(crate) fn generator_competition(
+    state:&crate::state::AppState,history:&[Value],
+    input:&Value,commit:&str,attempt:u64,allow_autonomous:bool
+)->Value{
+    let current_provider=input["providerId"].as_str().unwrap_or("");
+    let current_model=input["model"].as_str().unwrap_or("");
+    let current=(current_provider.to_owned(),current_model.to_owned());
+    let mut providers=state.store.all("provider").into_iter().filter(|p|{
+        crate::engine::gateway::provider_eligible(p)
+            &&p["enabled"]!=false
+            &&p["id"].as_str().is_some_and(|s|!s.is_empty())
+            &&p["model"].as_str().is_some_and(|s|!s.is_empty())
+            &&p["baseUrl"].as_str().is_some_and(|s|!s.is_empty())
+            &&(crate::engine::gateway::is_local_provider(p)
+                ||p["kind"]=="cli"
+                ||p["apiKey"].as_str().is_some_and(|s|!s.is_empty())
+                ||p["id"].as_str().is_some_and(|id|
+                    state.store.has_secret(&format!("provider:{id}"))))
+    }).collect::<Vec<_>>();
+    providers.sort_by(|a,b|a["id"].as_str().cmp(&b["id"].as_str())
+        .then_with(||a["model"].as_str().cmp(&b["model"].as_str())));
+    providers.dedup_by(|a,b|a["id"]==b["id"]&&a["model"]==b["model"]);
+    let available=providers.iter().map(|p|(
+        p["id"].as_str().unwrap_or("").to_owned(),
+        p["model"].as_str().unwrap_or("").to_owned()
+    )).collect::<Vec<_>>();
+    let model=learn(history);
+    let mut chosen=current.clone();
+    let mut mode="locked_or_single_provider";
+    // A selected API remains the default unless the owner opted into
+    // autonomous whole-system research or explicit model comparison.
+    if allow_autonomous && providers.len()>=2 && available.contains(&current){
+        // A independently measured, multi-cohort comparison is strong enough
+        // to favor one route (not prove that its base weights improved).
+        let mut trusted=providers.iter().filter_map(|p|{
+            let row=model["models"].as_array()?.iter().find(|row|
+                row["providerId"]==p["id"]&&row["model"]==p["model"]
+                    &&row["trustedForDeepAutoRoute"]==true)?;
+            Some((
+                row["posteriorMeasuredImprovement"].as_f64()?,
+                (p["id"].as_str()?.to_owned(),p["model"].as_str()?.to_owned())
+            ))
+        }).collect::<Vec<_>>();
+        trusted.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||a.1.cmp(&b.1)));
+        // Source-verified measurements of a generation's returned coding
+        // agent are independent of its underlying API or local weights.
+        let mut trials=BTreeMap::<(String,String),usize>::new();
+        for generation in history.iter().filter(|g|
+            g["generatorCommit"]==commit
+                && eligible(g)) {
+            if let Some(pair)=identity(g){*trials.entry(pair).or_default()+=1;}
+        }
+        let unknown=available.iter().filter(|pair|!trials.contains_key(*pair))
+            .cloned().collect::<Vec<_>>();
+        if attempt>1 && !unknown.is_empty() {
+            // Controlled challenger on identical code: the next attempt
+            // reuses the same frozen oracle. It may be accepted only after
+            // its own source-changing evaluation succeeds.
+            chosen=unknown.iter().find(|pair|*pair!=&current)
+                .cloned().unwrap_or_else(||unknown[0].clone());
+            mode="same_source_exploration";
+        }else if let Some((top,leader))=trusted.first(){
+            let previous=trusted.iter().find(|(_,id)|id==&current)
+                .map(|x|x.0);
+            if leader!=&current && previous.is_some_and(|v|top-v>=0.12) {
+                chosen=leader.clone();
+                mode="independently_measured_preference";
+            }else{
+                mode="measured_incumbent";
+            }
+        }else{
+            mode="no_matched_comparison_keep_incumbent";
+        }
+    }
+    let chosen_provider=providers.iter().find(|p|
+        p["id"]==chosen.0&&p["model"]==chosen.1);
+    let mut plan=json!({
+        "source":"compiled_open_model_scaffold_competition_v1",
+        "generatorCommit":commit,"attempt":attempt,
+        "selectedProviderId":chosen.0,
+        "selectedModel":chosen.1,
+        "previousProviderId":current.0,
+        "previousModel":current.1,
+        "decision":mode,"autonomousResearchAuthorized":allow_autonomous,
+        "availableModelRoutes":providers.iter().map(|p|json!({
+            "providerId":p["id"],"model":p["model"],
+            "local":crate::engine::gateway::is_local_provider(p)
+        })).collect::<Vec<_>>(),
+        "modelEvidenceSha256":model["sha256"],
+        "selectedRouteEnabled":chosen_provider.is_some(),
+        "modelParametersRewritten":false,
+        "successorSelfImprovementMeasured":false,
+        "apiWeightsChanged":false,
+        "claim":"model_scaffold_tournament_candidate_not_model_retraining"
+    });
+    plan["revision"]=json!(sha(&plan));plan
+}
+/// A worker can verify the actual model call receives exactly the decision
+/// the parent stored; it may then learn a better decision rule in source.
+pub(crate) fn competition_matches(plan:&Value,input:&Value)->bool{
+    let mut data=plan.clone();
+    let Some(row)=data.as_object_mut()else{return false};row.remove("revision");
+    plan["source"]=="compiled_open_model_scaffold_competition_v1"
+        &&plan["revision"].as_str()==Some(sha(&data).as_str())
+        &&plan["generatorCommit"]==input["rsiGeneratorCommit"]
+        &&plan["selectedProviderId"]==input["providerId"]
+        &&plan["selectedModel"]==input["model"]
+        &&plan["apiWeightsChanged"]==false
+        &&plan["modelParametersRewritten"]==false
+}
 #[cfg(test)]
 mod tests {
     use super::*;
