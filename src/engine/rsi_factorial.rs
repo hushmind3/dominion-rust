@@ -205,13 +205,23 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,history_count:usiz
             return false;
         }
         let expected=if pair["phase"]=="isolate_right"{&pair["right"]}else{&pair["left"]};
-        pair["target"]==*expected
+        let companion=if pair["phase"]=="isolate_right"{&pair["left"]}else{&pair["right"]};
+        let mut observed=pair["observations"].clone();
+        let Some(body)=observed.as_object_mut() else{return false};
+        body.remove("sha256");
+        pair["target"]==*expected && pair["companion"]==*companion
+            && pair["observations"]["sha256"].as_str()==Some(hash(&observed).as_str())
             && pair["observations"]["evidenceClass"]=="matched_observational_factorial_not_causal_proof"
+            && pair["observations"]["matchedFrozenHoldoutCases"].as_u64()
+                .is_some_and(|n|n<=history_count as u64 * 128)
             && matches!(pair["phase"].as_str(),
                 Some("isolate_left"|"isolate_right"|"test_joint_interaction"|"all_variants_observed"))
     };
-    (plan["selected"].is_null() || valid_pair(&plan["selected"]))
-        && plan["pairFrontier"].as_array().is_some_and(|pairs|pairs.iter().all(valid_pair))
+    plan["pairFrontier"].as_array().is_some_and(|pairs|
+        pairs.iter().all(valid_pair)
+        && (plan["selected"].is_null()
+            || (valid_pair(&plan["selected"])
+                && pairs.iter().any(|row|row==&plan["selected"]))))
 }
 pub(crate) fn instruction(plan:&Value)->String {
     let selection=&plan["selected"];
@@ -268,6 +278,23 @@ mod tests {
         assert!(p3["selected"].is_null());
         assert_eq!(p3["pairFrontier"][0]["observations"]["matchedFrozenHoldoutCases"],1);
         assert_eq!(p3["pairFrontier"][0]["observations"]["meanInteractionContrast"],0.0);
+    }
+    #[test]
+    fn forged_success_claim_and_changed_target_fail_attestation() {
+        let frontier=vec![source("memory","src/engine/memory.rs"),
+            source("learning","src/engine/learning.rs")];
+        let graph=json!({"sha256":"g".repeat(64),"edges":[]});
+        let joint=generation("joint",&["src/engine/memory.rs",
+            "src/engine/learning.rs"],true);
+        let mut plan=design(&[joint],&frontier,&graph,&["improver"],&"f".repeat(40));
+        assert!(valid(&plan,&frontier,&"f".repeat(40),1,&graph));
+        plan["selected"]["observations"]["matchedFrozenHoldoutCases"]=json!(100);
+        // Even after recomputing the outer digest, nested measured facts
+        // cannot be changed without breaking their own evidence digest.
+        let mut unsigned=plan.clone();
+        unsigned.as_object_mut().unwrap().remove("sha256");
+        plan["sha256"]=json!(hash(&unsigned));
+        assert!(!valid(&plan,&frontier,&"f".repeat(40),1,&graph));
     }
     #[test]
     fn different_generator_or_evaluation_cannot_create_false_interaction(){
