@@ -361,7 +361,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "sourceInventory":files,
         "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
-        "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
+        "inheritedDesign":history.iter().rev().find(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
         "designOwnership":"compiled_descendant_and_its_model_worker",
@@ -785,7 +785,7 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
         if chain>=3 && independently_planned>=2
             && witnessed_inherited_method
             && ["algorithms","harness","memory","learning","tools",
-                "improvement_methods"].iter().all(|role|covered.contains(role)) {
+                "improvement_methods"].iter().all(|role|covered.contains(*role)) {
             return true;
         }
     }
