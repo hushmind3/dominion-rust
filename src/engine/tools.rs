@@ -1848,6 +1848,50 @@ mod tests {
             &json!({"startLine":7,"endLine":8}),function),None);
     }
 
+    #[tokio::test]
+    async fn descendant_function_edit_without_end_line_writes_real_sha_pinned_rust() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!(
+            "rsi-compiled-descendant-tool-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        let path=root.join("src/engine/decision.rs");
+        std::fs::write(&path,
+            "pub fn choose(value:u32)->u32 {\n    value + 1\n}\n\npub fn keep()->bool {\n    true\n}\n").unwrap();
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        state.store.put("session",&json!({"id":"descendant","rsiRun":true,
+            "rsiCodeIndexId":index["id"]})).unwrap();
+        let ctx=ToolContext{
+            workspace:&root,store:&state.store,state:&state,
+            session_id:"descendant",agent_id:None,
+            tools_enabled:true,tools_execution_enabled:true
+        };
+        let arguments=json!({
+            "path":"src/engine/decision.rs",
+            "startLine":0,"endLine":0,
+            "newText":"pub fn choose(value:u32)->u32 {\n    value + 2\n}\n"
+        });
+        let applied=execute(&ctx,"workspace_replace",&arguments,"run-1")
+            .await.unwrap();
+        assert_eq!(applied["written"],true,"{applied}");
+        assert_eq!(applied["editContractRecovered"],
+            "model_authored_complete_function");
+        assert_eq!(applied["sourceHashRecoveredFromIndex"],true);
+        let changed=std::fs::read_to_string(&path).unwrap();
+        assert!(changed.contains("value + 2"));
+        assert!(changed.contains("pub fn keep()->bool"));
+        // The same index cannot approve a second write against new bytes.
+        let replay=execute(&ctx,"workspace_replace",&arguments,"run-2")
+            .await.unwrap();
+        assert_eq!(replay["staleVersion"],true,"{replay}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),changed);
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn rsi_can_read_only_a_range_or_replace_a_block() {
         assert!(rsi_allowed("code_search"));
