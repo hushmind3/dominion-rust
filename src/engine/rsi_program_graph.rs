@@ -7,7 +7,7 @@
 //! a later adopted design may replace its graph and learn new transitions.
 //! Graph topology, mechanisms, roles and editing objectives are not fixed
 //! in the resident supervisor. Validation guards source and lineage facts.
-use crate::engine::{rsi,rsi_mutual_program,rsi_component_birth,rsi_evolve};
+use crate::engine::{rsi,rsi_mutual_program,rsi_component_birth,rsi_evolve,rsi_principle_learning};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::BTreeSet;
@@ -137,6 +137,11 @@ pub(crate) fn synthesize(history:&[Value],frontier:&[Value],
         (&previous["program"],previous["originGenerationId"].clone(),
             previous["nodeId"].clone(),false)
     }else{return Value::Null};
+    // Learn from independent held-out task cases AND from what a later,
+    // differently compiled descendant did with the accepted source.
+    // This ranking rule is inside this editable module, not a frozen
+    // coordinator policy; its features and weights can be rewritten.
+    let learned=rsi_principle_learning::study(history);
     let mut choices=Vec::new();
     if from_authored {
         if let Some(row)=node(program,program["entry"].as_str().unwrap_or("")) {
@@ -153,12 +158,22 @@ pub(crate) fn synthesize(history:&[Value],frontier:&[Value],
             }
         }
     }
-    choices.sort_by(|(a,ra),(b,rb)|b.cmp(a)
-        .then_with(||ra["id"].as_str().cmp(&rb["id"].as_str())));
-    let selected=choices.into_iter().filter_map(|(_,row)|
-        path_target(frontier,&row,allowed).map(|target|(row,target.clone())))
-        .next();
-    let Some((selected,target))=selected else{return Value::Null};
+    // Program-authored outcome edges constrain what is permitted.
+    // Independently MEASURED effectiveness, not alphabetical node IDs,
+    // then chooses among the valid next experiments.
+    let mut ranked=choices.into_iter().filter_map(|(edge_priority,row)| {
+        let target=path_target(frontier,&row,allowed)?;
+        let forecast=rsi_principle_learning::estimate(&learned,&row);
+        let measured_score=forecast["estimatedPriority"].as_f64().unwrap_or(0.0);
+        // The outcome-specific edge is a mild tie-breaker. A real track
+        // record can supersede its original static ordering.
+        let score=measured_score+if edge_priority==2{0.08}else{0.0};
+        Some((score,row,target.clone(),forecast))
+    }).collect::<Vec<_>>();
+    ranked.sort_by(|a,b|b.0.total_cmp(&a.0)
+        .then_with(||a.1["id"].as_str().cmp(&b.1["id"].as_str())));
+    let Some((chosen_score,selected,target,selection_evidence))=
+        ranked.into_iter().next() else{return Value::Null};
     let node_id=selected["id"].clone();
     let mut plan=json!({
         "source":"compiled_descendant_open_improvement_program_v1",
@@ -170,6 +185,9 @@ pub(crate) fn synthesize(history:&[Value],frontier:&[Value],
         "parentGenerationId":parent["id"],
         "parentAcceptedCommit":parent["acceptedCommit"],
         "nodeId":node_id,"node":selected,"target":target,
+        "principleLearningSha256":learned["sha256"],
+        "principleSelectionEvidence":selection_evidence,
+        "principleSelectionPriority":chosen_score,
         "currentSourceRebound":true,
         "evaluationOwner":"independent_supervisor",
         "qualityProven":false
@@ -197,6 +215,8 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],
         || plan["currentSourceRebound"]!=true
         || plan["evaluationOwner"]!="independent_supervisor"
         || plan["qualityProven"]!=false
+        || plan["principleLearningSha256"]
+            !=rsi_principle_learning::study(history)["sha256"]
         || !valid_authored(&plan["program"])
         || plan["programSha256"]!=plan["program"]["revision"]
         || !frontier.iter().any(|f|f==&plan["target"])
@@ -207,6 +227,11 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],
     }
     let Some(chosen)=plan["nodeId"].as_str() else{return false};
     if node(&plan["program"],chosen)!=Some(&plan["node"]){return false;}
+    if plan["principleSelectionEvidence"]
+        !=rsi_principle_learning::estimate(
+            &rsi_principle_learning::study(history),&plan["node"]) {
+        return false;
+    }
     if plan["originatedFromNewAdoptedDesign"]==true {
         return parent["systemDesign"]["openProgram"]==plan["program"]
             && plan["originGenerationId"]==parent["id"]
@@ -228,7 +253,8 @@ pub(crate) fn instruction(plan:&Value)->String {
     let node=&plan["node"];
     format!(
         "OPEN SELF-IMPROVEMENT PROGRAM revision={} authored={} selectedNode={} \
-         role={} source={} sha={}. Hypothesis and transferable mechanism: {}. \
+         role={} source={} sha={}. Measured principle estimate={} \
+         from independent ledger={}. Hypothesis and transferable mechanism: {}. \
          Executable objective: {}. This is an experiment instruction, not a \
          demonstrated gain. Edit actual source, submit rsi_system_plan with \
          real changed targetFiles; you may author a COMPLETELY NEW openProgram \
@@ -237,6 +263,7 @@ pub(crate) fn instruction(plan:&Value)->String {
          list. Only independently adopted sources create runnable successors.",
         plan["revision"],plan["originGenerationId"],plan["nodeId"],
         node["role"],node["path"],plan["target"]["sourceSha256"],
+        plan["principleSelectionEvidence"],plan["principleLearningSha256"],
         node["mechanism"],node["objective"])
 }
 /// A proven rewrite is an adopted, different model-authored program that
