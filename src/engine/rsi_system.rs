@@ -684,6 +684,62 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     })
 }
 
+/// Rebuild experimental learning labels from original immutable paired
+/// receipts. A mutable generation JSON can report either a fabricated win
+/// or a fabricated loss; neither should train a descendant's meta-method.
+pub(crate) fn revalidated_method_history(
+    state:&crate::state::AppState,history:&[Value]
+)->Vec<Value>{
+    history.iter().map(|generation|{
+        let mut checked=generation.clone();
+        let candidate=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id));
+        let measured=candidate.as_ref().is_some_and(|candidate|
+            candidate["pairedComparisonComplete"]==true
+                && candidate["id"]==generation["candidateId"]
+                && candidate["baseCommit"]==generation["generatorCommit"]
+                && candidate["evaluation"]["source"]
+                    =="server_invoked_local_paired_git_worktrees"
+                && candidate["evaluation"]["evidenceSha256"]
+                    ==generation["evaluation"]["evidenceSha256"]
+                && candidate["evaluation"]["metrics"]
+                    ==generation["evaluation"]["metrics"]
+                && candidate["evaluation"]["verdict"]
+                    ==generation["evaluation"]["verdict"]
+                && crate::engine::rsi::replayed_pair_metrics(state,candidate)
+                    .is_some_and(|metrics|metrics==candidate["evaluation"]["metrics"]));
+        checked["pairedMeasured"]=json!(measured);
+        if !measured {
+            // Preserve operational failure details, but never invent a
+            // benchmark outcome or Brier training label without a receipt.
+            checked["evaluation"]["verdict"]=Value::Null;
+            checked["evaluation"]["metrics"]["eligible"]=Value::Null;
+            checked["metaLearning"]=Value::Null;
+        }
+        let accepted=measured && generation["accepted"]==true
+            && candidate.as_ref().is_some_and(|candidate|
+                candidate["status"]=="verified"
+                    && candidate["evaluation"]["metrics"]["eligible"]==true
+                    && candidate["experimentAdoption"]["commit"]
+                        ==generation["acceptedCommit"]
+                    && candidate["experimentAdoption"]["generatorCommit"]
+                        ==generation["generatorCommit"]
+                    && candidate["experimentAdoption"]["productionDeployed"]==false
+                    && crate::engine::rsi_system::design_implemented(
+                        &generation["systemDesign"],
+                        &candidate["paths"].as_array().cloned().unwrap_or_default()));
+        checked["accepted"]=json!(accepted);
+        checked["pairedRevalidated"]=json!(accepted);
+        if measured {
+            // Feedback is recomputed against the revalidated measurements,
+            // never inherited as an untrusted historical score.
+            checked["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+                &checked["metaPolicy"],&checked);
+        }
+        checked
+    }).collect()
+}
+
 /// A system-generation *model* chooses the actual design and edits. The
 /// descendant's source-grounded map is context, not a fixed list of allowed
 /// mutations. The code index and source-edit tools still cover the repository.
@@ -1202,6 +1258,37 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_receipt_revalidation_rejects_forged_positive_and_negative_training() {
+        let root=std::env::temp_dir().join(format!("rsi-meta-audit-{}",
+            uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let fake=json!({"candidateId":"nonexistent",
+            "generatorCommit":"a".repeat(40),"acceptedCommit":"b".repeat(40),
+            "accepted":true,"pairedRevalidated":true,
+            "evaluation":{"verdict":"improved",
+                "evidenceSha256":"c".repeat(64),
+                "metrics":{"eligible":true,"metaHoldoutGains":5}},
+            "metaLearning":{"proposalBrierError":0.001}});
+        let mut negative=fake.clone();
+        negative["accepted"]=json!(false);
+        negative["evaluation"]["verdict"]=json!("rejected");
+        let checked=revalidated_method_history(&state,&[fake,negative]);
+        for generation in &checked{
+            assert_eq!(generation["pairedMeasured"],false);
+            assert_eq!(generation["pairedRevalidated"],false);
+            assert_eq!(generation["accepted"],false);
+            assert_eq!(generation["evaluation"]["verdict"],Value::Null);
+            assert_eq!(generation["evaluation"]["metrics"]["eligible"],Value::Null);
+            assert_eq!(generation["metaLearning"],Value::Null);
+        }
+        let _=fs::remove_dir_all(root);
+    }
     #[test]
     fn system_instruction_renders_json_shapes_as_literals() {
         let blueprint=json!({
