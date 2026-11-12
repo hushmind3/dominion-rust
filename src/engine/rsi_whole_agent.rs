@@ -55,26 +55,34 @@ fn mapped_role(domain:&str)->&str{
 /// These are source-grounded *intervention hypotheses*, not demonstrated causes.
 /// The next compiled agent can rewrite this selection algorithm itself.
 fn cross_component_interference(
-    history:&[Value],sources:&BTreeMap<String,Value>
+    history:&[Value],sources:&BTreeMap<String,Value>,current_commit:&str
 )->Vec<Value>{
-    let mut cohorts=BTreeMap::<(String,String,String),std::collections::BTreeSet<String>>::new();
+    // One cohort is one real generator source revision and one frozen
+    // comparison profile. A past source failure remains useful historical
+    // evidence, but MUST NOT force a repair on a later, changed descendant.
+    type Cohort=(String,String,String,String,String);
+    type Witnesses=(std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>);
+    let mut cohorts=BTreeMap::<Cohort,Witnesses>::new();
     for g in history.iter().filter(|g|assessed(g)){
         if g["candidateOrigin"]!="model_driven_detached_worktree"
             ||g["systemDesign"]["source"]!="model_authored_system_design"
             ||g["systemDesign"]["generatorCommit"]!=g["generatorCommit"]
-            ||g["systemDesign"]["generationJobId"]!=g["jobId"]{
+            ||g["systemDesign"]["generationJobId"]!=g["jobId"] {
             continue;
         }
-        let Some(candidate)=g["candidateId"].as_str().filter(|s|!s.is_empty()) else{continue};
-        let Some(job)=g["jobId"].as_str().filter(|s|!s.is_empty()) else{continue};
+        let Some(base)=g["generatorCommit"].as_str().filter(|s|
+            s.len()==40&&s.bytes().all(|b|b.is_ascii_hexdigit()))else{continue};
+        let Some(candidate)=g["candidateId"].as_str().filter(|s|!s.is_empty())
+            else{continue};
+        let Some(job)=g["jobId"].as_str().filter(|s|!s.is_empty())else{continue};
         let Some(profile)=g["comparisonProfileSha256"].as_str().filter(|s|
-            s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())) else{continue};
-        let Some(changed)=g["changedSourcePaths"].as_array().filter(|rows|rows.len()==1)
-            .and_then(|rows|rows[0].as_str())
-            .filter(|path|crate::engine::rsi::safe_path(path)) else{continue};
-        // The edited path must be the actual source anchor for exactly one
-        // currently represented intelligence role, with a matching authored
-        // component-to-file mapping. Otherwise attribution is ambiguous.
+            s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit()))else{continue};
+        let Some(changed)=g["changedSourcePaths"].as_array().filter(|rows|
+            rows.len()==1).and_then(|rows|rows[0].as_str())
+            .filter(|path|crate::engine::rsi::safe_path(path))else{continue};
+        if !g["systemDesign"]["targetFiles"].as_array().is_some_and(|files|
+            files.iter().any(|file|file.as_str()==Some(changed))) {continue;}
         let mut source_roles=sources.iter().filter(|(role,source)|
             source["path"].as_str()==Some(changed)
                 &&g["systemDesign"]["componentFiles"][role.as_str()]
@@ -83,35 +91,57 @@ fn cross_component_interference(
         let Some((source_role,_))=source_roles.next()else{continue};
         let source_role=source_role.clone();
         if source_roles.next().is_some(){continue;}
-        let mut affected=std::collections::BTreeSet::new();
+        // This is the exact pre-edit source snapshot independently frozen
+        // in the original generation input. A current source with the same
+        // path does NOT prove that a different old revision is still damaged.
+        let Some(snapshot)=g["systemAgenda"]["frontier"].as_array()else{continue};
+        let origin=snapshot.iter().filter(|row|row["path"]==changed
+            &&row["role"]==source_role.as_str()).collect::<Vec<_>>();
+        if origin.len()!=1 {continue;}
+        let Some(source_sha)=origin[0]["sourceSha256"].as_str().filter(|s|
+            s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit()))else{continue};
+        let mut damaged=BTreeMap::<String,std::collections::BTreeSet<String>>::new();
         for case in g["evaluation"]["metrics"]["holdoutEvidence"]
             .as_array().into_iter().flatten(){
-            if !case["id"].as_str().is_some_and(|id|!id.is_empty()){continue;}
-            let Some(domain)=case["domain"].as_str() else{continue};
-            let target_role=mapped_role(domain);
-            if target_role==source_role.as_str() || !sources.contains_key(target_role){
+            let (Some(id),Some(domain))=(
+                case["id"].as_str().filter(|s|!s.is_empty()),
+                case["domain"].as_str().filter(|s|!s.is_empty()))else{continue};
+            let victim=mapped_role(domain);
+            if victim==source_role.as_str()||!sources.contains_key(victim)
+                ||case["baselinePass"]!=true
+                ||(case["candidatePass"]!=false
+                    &&case["metricRegressions"].as_u64().unwrap_or(0)==0) {
                 continue;
             }
-            if case["baselinePass"]==true
-                && (case["candidatePass"]==false
-                    ||case["metricRegressions"].as_u64().unwrap_or(0)>0){
-                affected.insert(target_role.to_string());
-            }
+            damaged.entry(victim.to_string()).or_default()
+                .insert(format!("{domain}:{id}"));
         }
-        for victim in affected{
-            cohorts.entry((profile.to_string(),source_role.clone(),victim))
-                .or_default().insert(format!("{job}:{candidate}"));
+        for (victim,cases) in damaged{
+            let entry=cohorts.entry((base.to_string(),profile.to_string(),
+                source_sha.to_string(),source_role.clone(),victim))
+                .or_default();
+            entry.0.insert(format!("{job}:{candidate}"));
+            entry.1.extend(cases);
         }
     }
-    let mut rows=cohorts.into_iter().filter_map(|((profile,from,to),trials)|{
+    let mut rows=cohorts.into_iter().filter_map(
+        |((base,profile,source_sha,from,to),(trials,cases))|{
         let source=sources.get(&from)?;
         let victim=sources.get(&to)?;
+        let current=base==current_commit
+            &&source["sourceSha256"].as_str()==Some(source_sha.as_str());
         Some(json!({
+            "generatorSourceCommit":base,
+            "sourceAnchorSha256":source_sha,
             "sourceRole":from,"victimRole":to,
             "source":source,"victim":victim,
             "comparisonProfileSha256":profile,
             "independentCounterexamples":trials.len(),
+            "distinctDamagedHoldouts":cases.len(),
+            "damagedHoldoutIds":cases.into_iter().take(12).collect::<Vec<_>>(),
             "requiredIndependentCounterexamples":2,
+            "requiredDistinctDamagedHoldouts":2,
+            "currentSourceRevision":current,
             "isolatedSourceChange":true,
             "sameFrozenComparisonProfile":true,
             "causalAttributionProven":false,
@@ -119,8 +149,11 @@ fn cross_component_interference(
         }))
     }).collect::<Vec<_>>();
     rows.sort_by(|a,b|
-        b["independentCounterexamples"].as_u64()
-            .cmp(&a["independentCounterexamples"].as_u64())
+        (b["currentSourceRevision"]==true).cmp(&(a["currentSourceRevision"]==true))
+        .then_with(||b["independentCounterexamples"].as_u64()
+            .cmp(&a["independentCounterexamples"].as_u64()))
+        .then_with(||b["distinctDamagedHoldouts"].as_u64()
+            .cmp(&a["distinctDamagedHoldouts"].as_u64()))
         .then_with(||a["sourceRole"].as_str().cmp(&b["sourceRole"].as_str()))
         .then_with(||a["victimRole"].as_str().cmp(&b["victimRole"].as_str()))
         .then_with(||a["comparisonProfileSha256"].as_str()
@@ -226,12 +259,14 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
         .then_with(||b.1.cmp(&a.1))
         .then_with(||a.2["role"].as_str().cmp(&b.2["role"].as_str())));
     let mut best=ranked.first().map(|row|row.2.clone()).unwrap_or(Value::Null);
-    let interference=cross_component_interference(history,&sources);
+    let interference=cross_component_interference(history,&sources,commit);
     // Two independent, same-profile, single-source counterexamples are
     // sufficient to prioritize a *new paired experiment*, never adoption.
     // Pair the damaged capability with the source suspected of interfering.
     let paired_risk=interference.iter().find(|row|
-        row["independentCounterexamples"].as_u64().unwrap_or(0)>=2);
+        row["independentCounterexamples"].as_u64().unwrap_or(0)>=2
+            &&row["distinctDamagedHoldouts"].as_u64().unwrap_or(0)>=2
+            &&row["currentSourceRevision"]==true);
     if let Some(pair)=paired_risk{
         best=json!({"role":pair["victimRole"],"target":pair["victim"],
             "measuredHoldouts":0,"unresolvedBehavior":0,
@@ -335,7 +370,7 @@ pub(crate) fn instruction(p:&Value)->String{
         Actual successor growth plan: {} revision={}. \
         Edit the ACTUAL intelligence source role={} path={}. \
         Frozen behavioral deficits and cases are observable in the source-grounded \
-        capability ledger={}. Cross-component counterfactual={} (unproven). \
+        capability ledger={}. Cross-component counterfactual={} (unproven; only current source SHA and two distinct frozen holdouts can activate the paired repair). \
         When this counterfactual selects TWO focused roles, inspect and actually \
         rewrite both pinned source files. Contrast source-only, victim-only and \
         joint edits against the same frozen cases to distinguish repair from \
@@ -417,6 +452,11 @@ mod tests{
         g["comparisonProfileSha256"]=json!(profile);
         g["pairedRevalidated"]=json!(verified);
         g["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
+        g["evaluation"]["metrics"]["holdoutEvidence"][0]["id"]=
+            json!(format!("case-{name}"));
+        g["systemAgenda"]=json!({"frontier":[
+            role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")]});
         g["systemDesign"]=json!({
             "source":"model_authored_system_design",
             "generationJobId":g["jobId"],
@@ -439,15 +479,18 @@ mod tests{
         let history=vec![
             interference_trial("first",&profile,true),
             interference_trial("second",&profile,true)];
-        let result=plan(&history,&frontier,"d");
+        let commit="b".repeat(40);
+        let result=plan(&history,&frontier,&commit);
         assert_eq!(result["phase"],
             "investigate_repeated_cross_component_negative_transfer");
         assert_eq!(result["target"]["role"],"tools");
         assert_eq!(result["focus"][0]["role"],"tools");
         assert_eq!(result["focus"][1]["role"],"memory");
         assert_eq!(result["selectedInterferenceExperiment"]["independentCounterexamples"],2);
+        assert_eq!(result["selectedInterferenceExperiment"]["distinctDamagedHoldouts"],2);
+        assert_eq!(result["selectedInterferenceExperiment"]["currentSourceRevision"],true);
         assert_eq!(result["interferenceCausalityProven"],false);
-        assert!(valid(&result,&frontier,"d",2));
+        assert!(valid(&result,&frontier,&commit,2));
         let mut agenda=json!({"frontier":frontier,"target":Value::Null,
             "focus":[],"inheritedStage":null});
         apply(&mut agenda,&result);
@@ -485,4 +528,59 @@ mod tests{
         assert_eq!(studied["capabilityLedger"][0]["acceptedImprovements"],0);
         assert_eq!(studied["wholeAgentImprovementProven"],false);
     }
+    #[test]
+    fn old_generations_remain_learning_evidence_but_cannot_redirect_a_new_source(){
+        let frontier=vec![role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")];
+        let profile="c".repeat(64);
+        let history=vec![interference_trial("one",&profile,true),
+            interference_trial("two",&profile,true)];
+        let new_commit="d".repeat(40);
+        let p=plan(&history,&frontier,&new_commit);
+        assert!(p["selectedInterferenceExperiment"].is_null());
+        assert_eq!(p["crossComponentInterference"][0]["independentCounterexamples"],2);
+        assert_eq!(p["crossComponentInterference"][0]["currentSourceRevision"],false);
+    }
+    #[test]
+    fn duplicated_holdout_cases_cannot_masquerade_as_distinct_damage(){
+        let frontier=vec![role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")];
+        let profile="c".repeat(64);
+        let first=interference_trial("one",&profile,true);
+        let mut same=interference_trial("two",&profile,true);
+        same["evaluation"]["metrics"]["holdoutEvidence"][0]["id"]=json!("case-one");
+        let commit="b".repeat(40);
+        let p=plan(&[first,same],&frontier,&commit);
+        assert!(p["selectedInterferenceExperiment"].is_null());
+        assert_eq!(p["crossComponentInterference"][0]["independentCounterexamples"],2);
+        assert_eq!(p["crossComponentInterference"][0]["distinctDamagedHoldouts"],1);
+    }
+    #[test]
+    fn original_source_hash_is_required_even_when_path_and_commit_match(){
+        let frontier=vec![role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")];
+        let profile="c".repeat(64);
+        let mut first=interference_trial("one",&profile,true);
+        let mut second=interference_trial("two",&profile,true);
+        for trial in [&mut first,&mut second] {
+            trial["systemAgenda"]["frontier"][0]["sourceSha256"]=
+                json!("1".repeat(64));
+        }
+        let p=plan(&[first,second],&frontier,&"b".repeat(40));
+        assert!(p["selectedInterferenceExperiment"].is_null());
+        assert_eq!(p["crossComponentInterference"][0]["currentSourceRevision"],false);
+    }
+    #[test]
+    fn missing_frozen_snapshot_cannot_generate_source_causal_evidence(){
+        let frontier=vec![role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs")];
+        let profile="c".repeat(64);
+        let mut first=interference_trial("one",&profile,true);
+        first["systemAgenda"]["frontier"]=Value::Null;
+        let p=plan(&[first,interference_trial("two",&profile,true)],
+            &frontier,&"b".repeat(40));
+        assert!(p["selectedInterferenceExperiment"].is_null());
+        assert_eq!(p["crossComponentInterference"][0]["independentCounterexamples"],1);
+    }
+
 }
