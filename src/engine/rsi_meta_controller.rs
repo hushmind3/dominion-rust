@@ -64,7 +64,7 @@ fn failure_class(g:&Value)->&'static str {
 /// Reproduction credit cannot be replaced by mere source-edit count.
 pub(crate) fn synthesize(
     history:&[Value],frontier:&[Value],allowed_domains:&[&str],
-    inherited_domain:Option<&str>,lineage:&Value,peers:&Value,
+    inherited_domain:Option<&str>,lineage:&Value,peers:&Value,interaction:&Value,
 )->Value {
     let calibration=recent_calibration(history);
     let accepted_lineages=lineage["acceptedDesigns"].as_array()
@@ -116,6 +116,22 @@ pub(crate) fn synthesize(
         let file_stall=(file_attempts.saturating_sub(file_wins)) as f64
             /(file_attempts.max(1) as f64);
         let program_bonus=if target["inheritedProgramStage"]==true{0.31}else{0.0};
+        // A verified improvement in one intelligence subsystem may improve
+        // another one. Cross-role measured transfer is more valuable than
+        // repeatedly optimizing the exact same file. Joint interventions
+        // without isolated evidence receive no pseudo-causal credit.
+        let mut cross_gain=0.0_f64;
+        let mut cross_regression=0.0_f64;
+        for edge in interaction["edges"].as_array().into_iter().flatten() {
+            if edge["sourceRole"]!=role || edge["targetRole"]==role
+                || edge["isolatedObservations"].as_u64().unwrap_or(0)==0 {
+                continue;
+            }
+            let strength=edge["directionalScore"].as_f64().unwrap_or(0.0);
+            if strength>0.0{cross_gain=cross_gain.max(strength);}
+            if strength<0.0{cross_regression=cross_regression.max(-strength);}
+        }
+        let interaction_bonus=0.22*cross_gain-0.27*cross_regression;
         let token_cost_penalty=average_tokens.map(|tokens|
             (tokens/80_000.0).min(1.0)).unwrap_or(0.0);
         // Give the descendant's own editable meta-program a fair place in
@@ -126,7 +142,7 @@ pub(crate) fn synthesize(
         // outcomes; no change to the external validation threshold is allowed.
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
-            +inherited+program_bonus+metacognition
+            +inherited+program_bonus+metacognition+interaction_bonus
             -0.11*regressions-0.06*noise_penalty-0.09*file_stall
             -0.035*cost-0.08*token_cost_penalty;
         roles.insert(role.to_string());
@@ -141,6 +157,8 @@ pub(crate) fn synthesize(
             "measuredMeanTokens":average_tokens,
             "tokenCostPenalizedOnlyWhenObserved":average_tokens.is_some(),
             "inheritedProgramStage":target["inheritedProgramStage"]==true,
+            "crossSubsystemObservedGain":cross_gain,
+            "crossSubsystemObservedRegression":cross_regression,
             "novelComponent":novelty>0.0
         }),score));
     }
@@ -184,6 +202,8 @@ pub(crate) fn synthesize(
         "metaSource":"src/engine/rsi_meta_controller.rs",
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
+        "interactionGraphSha256":interaction["sha256"],
+        "crossSubsystemImprovementEnabled":true,
         "lineageDesigns":accepted_lineages,
         "inheritedImprovementProgramApplied":selected["inheritedProgramStage"]==true,
         "coveredRoles":roles.len(),
@@ -286,7 +306,8 @@ mod tests {
         let history=vec![json!({"id":"failed","metaPolicy":{"target":{"role":"improvement_methods"}},
             "accepted":false,"error":"unfinished","candidateId":null})];
         let policy=synthesize(&history,&frontier,&["improver"],None,
-            &json!({"acceptedDesigns":[]}),&json!({"references":[]}));
+            &json!({"acceptedDesigns":[]}),&json!({"references":[]}),
+            &json!({"edges":[]}));
         assert!(valid_policy(&policy,history.len()));
         let mut forged=policy.clone();
         forged["forecast"]["probability"]=json!(0.99);
@@ -316,7 +337,7 @@ mod tests {
                 "path":"src/engine/learning.rs","sourceBytes":1000,"verifiedRoleChanged":true})
         ];
         let before=synthesize(&[],&frontier,&["improver","learning"],None,
-            &json!({}),&json!({}));
+            &json!({}),&json!({}),&json!({"edges":[]}));
         assert!(valid_policy(&before,0));
         let eligible=json!({"metrics":{"eligible":true}});
         let parent=json!({"id":"p","generatorCommit":"a".repeat(40),
@@ -335,7 +356,7 @@ mod tests {
                 "targetFiles":["src/engine/learning.rs"]},
             "acceptedSourceHashes":{"src/engine/learning.rs":"e".repeat(64)}});
         let after=synthesize(&[parent,child],&frontier,&["improver","learning"],None,
-            &json!({}),&json!({}));
+            &json!({}),&json!({}),&json!({"edges":[]}));
         assert!(after["alternatives"].as_array().unwrap().iter().any(|v|
             v["role"]=="learning" && v["productiveOffspring"]==1));
     }
