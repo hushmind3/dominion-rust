@@ -34,33 +34,61 @@ fn independent_pair(g:&Value)->bool {
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
         && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
 }
-fn independent_trial(g:&Value)->bool {
+/// An independently tested episode can derive its mechanism from EITHER
+/// a compiled open-program node OR a real model-authored whole-system design.
+/// This allows every earlier A->B->A, factorial and model/harness redesign
+/// to teach the new learner; the graph is not a prerequisite for learning.
+fn grounded_mechanism(g:&Value)->Option<(String,String,String)> {
+    let changes=g["changedSourcePaths"].as_array()?;
     let plan=&g["openImprovementProgram"];
-    let Some(path)=plan["target"]["path"].as_str().filter(|p|rsi::safe_path(p))
-        else{return false};
-    independent_pair(g)
-        && g["changedSourcePaths"].as_array().is_some_and(|paths|
-            paths.iter().any(|p|p.as_str()==Some(path)))
-        && plan["source"]=="compiled_descendant_open_improvement_program_v1"
-        && plan["target"]["role"].as_str().is_some()
-        && plan["node"]["mechanism"].as_str().is_some_and(|s|!s.is_empty())
+    let open_path=plan["target"]["path"].as_str();
+    let open_executed=plan["source"]=="compiled_descendant_open_improvement_program_v1"
         && plan["revision"].as_str().is_some_and(|s|s.len()==64)
-        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
-        && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
         && g["compiledPlanExecuted"]["openImprovementRevision"]==plan["revision"]
         && g["compiledPlanExecuted"]["metaRevision"]==g["metaPolicy"]["revision"]
         && g["metaPolicy"]["selectionMode"]=="authored_open_improvement_program"
         && g["metaPolicy"]["target"]==plan["target"]
-        && g["metaPolicy"]["openImprovementRevision"]==plan["revision"]
+        && g["metaPolicy"]["openImprovementRevision"]==plan["revision"];
+    if open_executed {
+        if let (Some(path),Some(role),Some(mechanism))=(
+            open_path,plan["target"]["role"].as_str(),
+            plan["node"]["mechanism"].as_str()) {
+            if rsi::safe_path(path) && !mechanism.is_empty()
+                && changes.iter().any(|p|p.as_str()==Some(path)) {
+                return Some((mechanism.to_string(),role.to_string(),path.to_string()));
+            }
+        }
+    }
+    let design=&g["systemDesign"];
+    let authentic=design["source"]=="model_authored_system_design"
+        && design["generatorCommit"]==g["generatorCommit"]
+        && design["generationJobId"]==g["jobId"]
+        && g["compiledPlanExecuted"]["metaRevision"]==g["metaPolicy"]["revision"]
+        && g["metaPolicy"]["revision"].as_str().is_some();
+    if !authentic{return None;}
+    let mechanism=design["hypothesis"].as_str()
+        .filter(|s|(20..=1600).contains(&s.chars().count()))?;
+    let path=design["targetFiles"].as_array()?.iter().filter_map(Value::as_str)
+        .find(|path|rsi::safe_path(path)
+            && changes.iter().any(|changed|changed.as_str()==Some(path)))?;
+    // A coupled design is tracked as coupled, not falsely credited to
+    // whichever component happened to be first in the source list.
+    let role=if design["component"]=="system" {
+        "coupled_system"
+    }else {design["component"].as_str()?};
+    if role.is_empty(){return None;}
+    Some((mechanism.to_string(),role.to_string(),path.to_string()))
+}
+fn independent_trial(g:&Value)->bool {
+    independent_pair(g) && grounded_mechanism(g).is_some()
 }
 fn accepted_measured(g:&Value)->bool {
     independent_trial(g)
         && rsi_mutual_program::adopted_source(g)
         && g["evaluation"]["metrics"]["eligible"]==true
-        && g["acceptedSourceHashes"]
-            [g["openImprovementProgram"]["target"]["path"].as_str().unwrap_or("")]
-            .as_str().is_some_and(|s|s.len()==64
-                && s.bytes().all(|b|b.is_ascii_hexdigit()))
+        && grounded_mechanism(g).is_some_and(|(_,_,path)|
+            g["acceptedSourceHashes"][&path].as_str().is_some_and(|s|
+                s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())))
 }
 /// A downstream descendant may use a completely DIFFERENT improvement
 /// method. Credit real outcome data by role even when no openProgram was
@@ -158,13 +186,13 @@ pub(crate) fn study(history:&[Value])->Value {
         if !seen_candidate.insert((profile.to_owned(),candidate.to_owned())) {
             continue;
         }
-        let mechanism=g["openImprovementProgram"]["node"]["mechanism"]
-            .as_str().unwrap_or("").trim().to_owned();
+        let Some((mechanism,role,_path))=grounded_mechanism(g)
+            else{continue};
+        let mechanism=mechanism.trim().to_owned();
         if mechanism.is_empty()||mechanism.len()>1600{continue;}
-        let role=g["openImprovementProgram"]["target"]["role"].as_str().unwrap_or("");
         let group=groups.entry(mechanism).or_default();
         group.attempts+=1;
-        group.roles.insert(role.to_string());
+        group.roles.insert(role.clone());
         if let Some(id)=g["id"].as_str(){group.generation_ids.insert(id.to_string());}
         let adopted=accepted_measured(g);
         if adopted{group.independently_adopted+=1;}
@@ -187,7 +215,7 @@ pub(crate) fn study(history:&[Value])->Value {
             let Some(child_candidate)=child["candidateId"].as_str() else{continue};
             if !seen_children.insert(child_candidate.to_string()){continue;}
             let other_roles=changed_child_roles(child).into_iter()
-                .filter(|r|r!=role).collect::<Vec<_>>();
+                .filter(|r|r!=&role).collect::<Vec<_>>();
             if other_roles.is_empty(){continue;}
             let child_adopted=adopted_child(child);
             for (domain,_case,delta) in cases(child) {
