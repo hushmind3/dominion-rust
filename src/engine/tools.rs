@@ -60,8 +60,8 @@ pub fn definitions() -> Vec<Value> {
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
         tool("rsi_system_plan", "Propose a measured redesign of the running descendant; a proposal alone cannot pass independent evaluation.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend","system"]}),
-            "components":json!({"type":"array","description":"Required for component=system: choose 2-7 distinct subsystems to redesign together","items":{"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]},"minItems":2,"maxItems":7}),
+            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","model_architecture","frontend","system"]}),
+            "components":json!({"type":"array","description":"Required for component=system: choose 2-8 distinct subsystems including optional model_architecture","items":{"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","model_architecture","frontend"]},"minItems":2,"maxItems":8}),
             "hypothesis":text("Causal limitation and falsifiable improvement prediction"),
             "design":text("Concrete architectural and code implementation changes"),
             "targetFiles":json!({"type":"array","description":"Existing workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),

@@ -12,6 +12,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -71,7 +72,7 @@ fn source_tree_manifest(root: &Path) -> Value {
             if !kind.is_file() {continue;}
             let supported=path.extension().and_then(|ext|ext.to_str())
                 .is_some_and(|ext|matches!(ext,
-                    "rs"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
+                    "rs"|"py"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
             if !supported {continue;}
             if let Ok(relative)=path.strip_prefix(&root) {
                 if let Some(name)=relative.to_str() {
@@ -103,7 +104,7 @@ fn architecture_domain(role:&str)->Option<&'static str> {
     match role {
         "algorithms"|"improvement_methods"=>Some("improver"),
         "harness"=>Some("context"), "memory"=>Some("memory"),
-        "learning"=>Some("learning"),"tools"=>Some("tools"),
+        "learning"|"model_architecture"=>Some("learning"),"tools"=>Some("tools"),
         "frontend"=>Some("ui"),_=>None
     }
 }
@@ -221,7 +222,7 @@ fn discovered_architecture_sources(root:&Path)->Vec<(String,Vec<&'static str>,Va
                 .and_then(|value|value.to_str()) else{continue};
             if !crate::engine::rsi::safe_path(relative){continue;}
             let supported=path.extension().and_then(|ext|ext.to_str())
-                .is_some_and(|ext|matches!(ext,"rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+                .is_some_and(|ext|matches!(ext,"rs"|"py"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
             if !supported{continue;}
             let name=relative.to_ascii_lowercase();
             let mut roles=Vec::new();
@@ -241,6 +242,12 @@ fn discovered_architecture_sources(root:&Path)->Vec<(String,Vec<&'static str>,Va
                     ||name.contains("room_state")||name.contains("compact")
                     ||name.contains("recall"){
                     roles.push("memory");
+                }
+                if name.contains("model")||name.contains("network")
+                    ||name.contains("train")||name.contains("inference")
+                    ||name.contains("weight")||name.contains("tokeniz")
+                    ||name.contains("embedding")||name.contains("transformer"){
+                    roles.push("model_architecture");
                 }
                 if name.contains("learn")||name.contains("experience")
                     ||name.contains("distill")||name.contains("adaptation")
@@ -498,7 +505,7 @@ pub(crate) fn propose(
     let components=if component=="system" {
         let list=body["components"].as_array()
             .filter(|rows| (2..=COMPONENTS.len()).contains(&rows.len()))
-            .ok_or("전체 시스템 설계에는 구체적인 구성요소 2~7개가 필요합니다.")?;
+            .ok_or("전체 시스템 설계에는 구체적인 구성요소 2~8개가 필요합니다.")?;
         let mut seen=std::collections::BTreeSet::new();
         let mut chosen=Vec::new();
         for row in list {
@@ -555,7 +562,7 @@ pub(crate) fn propose(
                 .map_err(|_|"신규 소스의 상위 폴더가 없습니다.".to_string())?;
             let source_extension=candidate.extension().and_then(|ext|ext.to_str())
                 .is_some_and(|ext|matches!(ext,
-                    "rs"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
+                    "rs"|"py"|"ts"|"tsx"|"js"|"mjs"|"json"|"toml"|"yml"|"yaml"));
             if !parent.starts_with(&root) || !parent.is_dir() || !source_extension {
                 return Err("신규 설계 대상은 작업공간 내부의 실제 소스 경로여야 합니다.".into());
             }
@@ -719,7 +726,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);

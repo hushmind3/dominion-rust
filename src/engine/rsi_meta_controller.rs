@@ -17,7 +17,7 @@ fn model_design_roles(g:&Value)->Vec<String>{
     }else{vec![design["component"].clone()]};
     names.iter().filter_map(Value::as_str)
         .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
-            "learning"|"tools"|"improvement_methods"|"frontend"))
+            "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
         .map(str::to_string).collect()
 }
 fn independent_adoption(g:&Value)->bool{
