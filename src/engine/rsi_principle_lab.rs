@@ -305,8 +305,18 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
     } else {
         "invent_and_test_coupled_task_meta_learning_principle"
     };
+    // Portfolio-level self-observation: never let the new principle lab
+    // permanently starve invention of DIFFERENT intelligence mechanisms.
+    // After consecutive task↔method probes, the next rebuilt child can
+    // resume the separate open-topology invention programme. This scheduling
+    // law is editable in the same successor source as the learned forecasts.
+    let consecutive_probes = history.iter().rev()
+        .take_while(|g| g["principleActive"] == true).count();
+    let should_probe = consecutive_probes < 2;
     let mut result = json!({
         "source": "compiled_descendant_empirical_principle_lab_v1",
+        "consecutivePrincipleProbes": consecutive_probes,
+        "shouldProbeTaskMethod": should_probe,
         "generatorCommit": commit, "historyCount": history.len(),
         "mode": mode, "target": task, "methodTarget": method,
         "priorPrinciples": principles.into_iter().take(8).collect::<Vec<_>>(),
