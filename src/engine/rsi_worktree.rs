@@ -415,6 +415,8 @@ pub async fn finish(
     // worker that makes NO change to an inherited neutral patch re-registers
     // the same candidate and overwrites its independent paired evaluation.
     let edit_evidence=edit_outcomes(&context.state,session_id);
+    let model_calls=context.state.store.session_usage(session_id)["calls"]
+        .as_u64().unwrap_or(0);
     // A native induction is a separate accountable code generator. Its
     // receipt must match this job, source and patch bytes; never credit the
     // model merely because the resulting code compiles.
@@ -443,6 +445,11 @@ pub async fn finish(
             && edit_evidence["verifiedWrites"].as_u64().unwrap_or(0)>0);
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
+    } else if !native_origin && model_calls==0 {
+        capture_error="실제 모델 API 호출 기록이 없으므로 이 패치를 모델 주도 개선 후보로 등록하지 않았습니다.".into();
+    } else if !native_origin && edit_evidence["verifiedWrites"]
+        .as_u64().unwrap_or(0)==0 {
+        capture_error="모델이 수행한 검증된 소스 쓰기 도구 기록이 없습니다.".into();
     } else if input["rsiInheritedCandidateId"].is_string()
         && !inherited_patch_changed {
         capture_error="계승된 실패 패치에 새로 검증된 소스 수정이 없습니다. 이전 평가 후보는 그대로 보존합니다.".into();
@@ -511,6 +518,8 @@ pub async fn finish(
             else{"model_driven_detached_worktree"},
         "nativeMutation":native_receipt,
         "editEvidence":edit_evidence,
+        "modelProviderCalls":model_calls,
+        "originAttribution":"model_usage_and_verified_tool_write_or_native_receipt",
         "inheritedCandidateId":input["rsiInheritedCandidateId"],
         "inheritedPatchChanged":inherited_patch_changed,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
@@ -1237,6 +1246,24 @@ mod tests {
         assert_ne!(worktree.path,source);
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
         std::fs::write(worktree.path.join("web/src/pages/Demo.tsx"),"export const version = 2\n").unwrap();
+        // Even a real dirty detached worktree cannot be attributed to a
+        // model when the model had zero recorded calls.
+        let rejected=finish(&context,&job,&worktree,
+            Ok(Some(json!({"id":"unproven"}))),"session-rsi").await.unwrap();
+        assert!(rejected["rsi"]["candidateId"].is_null());
+        assert!(rejected["rsi"]["captureError"].as_str().unwrap()
+            .contains("모델 API 호출 기록"));
+        // Unit-test fixture: emulate both independent receipt sources after
+        // demonstrating the zero-call rejection. Not a real model benchmark.
+        state.store.audit("model.usage",json!({
+            "sessionId":"session-rsi","promptTokens":10,
+            "completionTokens":10,"totalTokens":20,"estimated":false
+        }));
+        state.store.put("execution_operation",&json!({
+            "sessionId":"session-rsi","origin":"model",
+            "tool":"workspace_replace","status":"completed",
+            "result":{"written":true},"toolReceipt":{"verified":true}
+        })).unwrap();
         let outcome=finish(&context,&job,&worktree,Ok(Some(json!({"id":"m1"}))),"session-rsi").await.unwrap();
         assert_eq!(outcome["status"],"needs_review");
         assert_eq!(outcome["reason"],"build_or_typecheck_failed");
