@@ -713,7 +713,9 @@ pub(crate) fn revalidated_method_history(
             // Preserve operational failure details, but never invent a
             // benchmark outcome or Brier training label without a receipt.
             checked["evaluation"]["verdict"]=Value::Null;
-            checked["evaluation"]["metrics"]["eligible"]=Value::Null;
+            // Do not leave fabricated public-case measurements available to
+            // the prequential learner after rejecting their source receipt.
+            checked["evaluation"]["metrics"]=Value::Null;
             checked["metaLearning"]=Value::Null;
         }
         let accepted=measured && generation["accepted"]==true
