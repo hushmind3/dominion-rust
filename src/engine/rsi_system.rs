@@ -15,6 +15,33 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
+
+/**
+ * Only independently revalidated, actually adopted source edits can become
+ * an inherited design. Failed research-only descendants must not erase the
+ * last successful design, and unverified prose must never become policy.
+ */
+fn last_verified_system_design(history: &[Value]) -> Option<&Value> {
+    history.iter().rev().find(|generation| {
+        let design = &generation["systemDesign"];
+        generation["accepted"] == true
+            && generation["pairedRevalidated"] == true
+            && generation["evaluation"]["metrics"]["eligible"] == true
+            && generation["candidateOrigin"] == "model_driven_detached_worktree"
+            && generation["acceptedCommit"].as_str().is_some_and(|s| !s.is_empty())
+            && design["source"] == "model_authored_system_design"
+            && design["generatorCommit"] == generation["generatorCommit"]
+            && design["generationJobId"] == generation["jobId"]
+            && design["targetFiles"].as_array().is_some_and(|paths| {
+                paths.iter().filter_map(Value::as_str).any(|path| {
+                    generation["acceptedSourceHashes"][path].as_str()
+                        .is_some_and(|hash| hash.len() == 64
+                            && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                })
+            })
+    })
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -34,6 +61,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         }
         components.push(json!({"role":role,"representativeSources":inventory}));
     }
+    let inherited=last_verified_system_design(history);
     let evidence=history.iter().rev().take(8).map(|generation|json!({
         "generatorCommit":generation["generatorCommit"],
         "acceptedCommit":generation["acceptedCommit"],
@@ -51,7 +79,13 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "generatorCommit":revision,
         "architecture":components,
         "historyCount":history.len(),
-        "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["pairedRevalidated"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
+        "inheritedDesign":inherited.map(|row|row["systemDesign"].clone()).unwrap_or(Value::Null),
+        "inheritedDesignEvidence":inherited.map(|row|json!({
+            "acceptedCommit":row["acceptedCommit"],
+            "generatorCommit":row["generatorCommit"],
+            "generationJobId":row["jobId"],
+            "pairedRevalidated":true
+        })).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
         "designOwnership":"compiled_descendant_and_its_model_worker",
@@ -72,7 +106,11 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
                 .collect::<Vec<_>>().join(", ");
             Some(format!("{name}: {paths}"))
         }).collect::<Vec<_>>().join("\n");
-    let inherited=self_model["inheritedDesign"].as_object().map(|_|format!("Previously accepted design: nextDomain={} hypothesis={}",self_model["inheritedDesign"]["nextDomain"],self_model["inheritedDesign"]["hypothesis"])).unwrap_or_default();
+    let inherited=self_model["inheritedDesign"].as_object().map(|_|format!(
+        "Previously independently adopted system design: nextDomain={} hypothesis={} implementation={} acceptedCommit={}",
+        self_model["inheritedDesign"]["nextDomain"],self_model["inheritedDesign"]["hypothesis"],
+        self_model["inheritedDesign"]["design"].as_str().unwrap_or("").chars().take(1200).collect::<String>(),
+        self_model["inheritedDesignEvidence"]["acceptedCommit"])).unwrap_or_default();
     let history=self_model["recentMeasuredGenerations"].as_array()
         .into_iter().flatten().take(4).map(|row|format!(
             "domain={} adopted={} verdict={} holdoutGain={} metaGain={}",
@@ -205,24 +243,8 @@ pub(crate) fn revalidated_history(
 /// Reuse the model's target only when its *source change*, not its
 /// explanation, was independently evaluated and adopted.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
-    let previous=history.last()?;
-    let design=&previous["systemDesign"];
-    if previous["accepted"]!=true || previous["pairedRevalidated"]!=true
-        || previous["evaluation"]["metrics"]["eligible"]!=true
-        || previous["candidateOrigin"]!="model_driven_detached_worktree"
-        || !previous["acceptedCommit"].is_string()
-        || design["source"]!="model_authored_system_design"
-        || design["generatorCommit"]!=previous["generatorCommit"]
-        || design["generationJobId"]!=previous["jobId"]
-    {return None;}
-    // A good score for an unrelated patch cannot establish that the
-    // model's proposed system design was actually implemented.
-    let paths=design["targetFiles"].as_array()?;
-    if !paths.iter().filter_map(Value::as_str).any(|path|
-        previous["acceptedSourceHashes"][path].as_str().is_some_and(|hash|hash.len()==64)){
-        return None;
-    }
-    let domain=design["nextDomain"].as_str()?;
+    let previous=last_verified_system_design(history)?;
+    let domain=previous["systemDesign"]["nextDomain"].as_str()?;
     crate::engine::rsi_evolve::DOMAINS.contains(&domain)
         .then(||domain.to_string())
 }
@@ -312,6 +334,32 @@ mod tests {
         let mut wrong=base;
         wrong["systemDesign"]["generatorCommit"]=json!("stale");
         assert_eq!(inherited_domain(&[wrong]),None);
+    }
+
+    #[test]
+    fn rejected_or_research_only_generations_do_not_erase_verified_design() {
+        let accepted=json!({"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"successful-child","generatorCommit":"initial-parent",
+            "jobId":"worker-one","candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "acceptedSourceHashes":{"src/engine/memory.rs":"f".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"initial-parent","generationJobId":"worker-one",
+                "hypothesis":"Improving retrieval changes the downstream planner.",
+                "design":"Implement more reliable source-grounded retrieval for subsequent generations.",
+                "targetFiles":["src/engine/memory.rs"],"nextDomain":"learning"}});
+        let failure=json!({"accepted":false,"pairedRevalidated":false,
+            "generatorCommit":"successful-child","systemDesign":{"nextDomain":"ui"}});
+        let history=vec![accepted.clone(),failure];
+        assert_eq!(inherited_domain(&history),Some("learning".into()));
+        let root=std::env::temp_dir();
+        let model=blueprint(&root,"newer-child",&history);
+        assert_eq!(model["inheritedDesign"]["nextDomain"],"learning");
+        assert_eq!(model["inheritedDesignEvidence"]["acceptedCommit"],"successful-child");
+        assert!(instruction(&model,"redesign the whole agent").contains("source-grounded retrieval"));
+        let mut forged=accepted;
+        forged["acceptedSourceHashes"]["src/engine/memory.rs"]=json!("not-a-real-hash");
+        assert!(inherited_domain(&[forged]).is_none());
     }
     #[cfg(unix)]
     #[test]
