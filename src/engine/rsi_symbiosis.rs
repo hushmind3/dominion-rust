@@ -47,6 +47,71 @@ fn attempted_role(row:&Value)->Option<&str>{
     row["metaPolicy"]["target"]["role"].as_str()
 }
 
+
+/// A reciprocal cycle is *observed* only if two separately verified,
+/// model-authored compiled descendants execute consecutive B then A stages,
+/// each modifying the source they were assigned. This counts downstream
+/// learning evidence, not experimental proof that A caused B's success.
+pub(crate) fn completed_cycles(history:&[Value])->Vec<Value>{
+    let mut outcomes=Vec::new();
+    for (index,ancestor) in history.iter().enumerate(){
+        if !valid_adoption(ancestor){continue;}
+        let Some(design_id)=ancestor["systemDesign"]["id"].as_str() else{continue};
+        let Some(ancestor_commit)=ancestor["acceptedCommit"].as_str() else{continue};
+        for edge in ancestor["systemDesign"]["interactionEdges"]
+            .as_array().into_iter().flatten(){
+            let Some(from)=edge["fromRole"].as_str() else{continue};
+            let Some(to)=edge["toRole"].as_str() else{continue};
+            if from==to{continue;}
+            let mut phase_zero=None;
+            for (j,child) in history.iter().enumerate().skip(index+1){
+                if child["successorStage"]["designId"]!=design_id
+                    || child["successorStage"]["stageIndex"]!=0
+                    || child["successorStage"]["role"]!=to
+                    || child["generatorCommit"]!=ancestor_commit {continue;}
+                if valid_adoption(child)
+                    && child["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+                    && child["acceptedSourceHashes"][child["successorStage"]["path"]
+                        .as_str().unwrap_or("")].as_str().is_some_and(|hash|
+                            hash.len()==64&&hash.bytes().all(|b|b.is_ascii_hexdigit())){
+                    phase_zero=Some((j,child));
+                    break;
+                }
+            }
+            let Some((first_index,first))=phase_zero else{continue};
+            let Some(first_commit)=first["acceptedCommit"].as_str() else{continue};
+            for return_child in history.iter().skip(first_index+1){
+                if return_child["successorStage"]["designId"]!=design_id
+                    || return_child["successorStage"]["stageIndex"]!=1
+                    || return_child["successorStage"]["role"]!=from
+                    || return_child["generatorCommit"]!=first_commit
+                    || !valid_adoption(return_child)
+                    || return_child["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
+                    || return_child["acceptedSourceHashes"][return_child["successorStage"]["path"]
+                        .as_str().unwrap_or("")].as_str().is_none_or(|hash|
+                            hash.len()!=64||!hash.bytes().all(|b|b.is_ascii_hexdigit())){
+                    continue;
+                }
+                outcomes.push(json!({
+                    "source":"observed_independently_adopted_reciprocal_descendants_v1",
+                    "designId":design_id,
+                    "fromRole":from,"toRole":to,
+                    "ancestorCommit":ancestor_commit,
+                    "complementCommit":first_commit,
+                    "returnedCommit":return_child["acceptedCommit"],
+                    "complementGeneration":first["jobId"],
+                    "returnedGeneration":return_child["jobId"],
+                    "nextGenerationAdoptionVerified":true,
+                    "recursiveSequenceExecuted":true,
+                    "causalEffectProven":false
+                }));
+                break;
+            }
+        }
+    }
+    outcomes
+}
+
 /// Extract directional opportunities only when a genuinely compiled child
 /// attempted to improve a different component after its adopted ancestor.
 /// Report attempted/adopted transitions as observations, never as causality.
@@ -92,7 +157,8 @@ pub(crate) fn transition_graph(history:&[Value])->Value{
             "posterior":(*adopted as f64+1.0)/(*attempts as f64+2.0)})
     ).collect::<Vec<_>>();
     json!({"source":"compiled_cross_capability_observation_graph_v1",
-        "edges":edges,"hasMeasuredCausalInterventions":false})
+        "edges":edges,"completedCycles":completed_cycles(history),
+        "hasMeasuredCausalInterventions":false})
 }
 
 
@@ -122,11 +188,16 @@ pub(crate) fn apply_reciprocal_feedback(mut meta:Value,graph:&Value)->Value{
             reciprocal+=backwards.min(
                 edge["nextGenerationAdoptions"].as_u64().unwrap_or(0));
         }
+        let loop_success=graph["completedCycles"].as_array().into_iter().flatten()
+            .filter(|item|item["fromRole"]==role || item["toRole"]==role)
+            .count();
         let bonus=0.09*(outgoing.min(5) as f64/5.0)
-            +0.20*(reciprocal.min(3) as f64/3.0);
+            +0.20*(reciprocal.min(3) as f64/3.0)
+            +0.24*(loop_success.min(3) as f64/3.0);
         candidate["recursiveProductivityBonus"]=json!(bonus);
         candidate["observedOutboundDescendantGains"]=json!(outgoing);
         candidate["observedReciprocalGains"]=json!(reciprocal);
+        candidate["completedReciprocalCycles"]=json!(loop_success);
         let old=candidate["score"].as_f64().unwrap_or(0.0);
         candidate["score"]=json!(old+bonus);
     }

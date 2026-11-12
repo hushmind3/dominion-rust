@@ -3517,6 +3517,10 @@ async fn run_loop(
         generation["pairedRevalidated"]=independently_checked["pairedRevalidated"].clone();
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],independently_checked);
+        let mut lineage=history.clone();
+        lineage.push(independently_checked.clone());
+        generation["reciprocalCycleEvidence"]=json!(
+            crate::engine::rsi_symbiosis::completed_cycles(&lineage));
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;

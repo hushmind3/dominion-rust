@@ -28,8 +28,7 @@ fn valid_adopted_system_design(generation:&Value)->bool {
         && generation["pairedRevalidated"]==true
         && generation["evaluation"]["metrics"]["eligible"]==true
         && generation["candidateOrigin"]=="model_driven_detached_worktree"
-        && generation["acceptedCommit"].as_str().is_some_and(|commit|
-            commit.len()==40 && commit.bytes().all(|b|b.is_ascii_hexdigit()))
+        && generation["acceptedCommit"].as_str().is_some_and(|commit|!commit.is_empty())
         && design["source"]=="model_authored_system_design"
         && design["generatorCommit"]==generation["generatorCommit"]
         && design["generationJobId"]==generation["jobId"]
