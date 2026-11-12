@@ -47,6 +47,34 @@ def cases(path, expected):
         raise ValueError("Independent paired comparison needs >=8 tests and >=2 domains")
     return data
 
+def verify_training_separation(path, expected, private_cases):
+    """Refuse identical prompt+completion pairs across training and evaluation.
+
+    Different file SHA-256 digests do not establish sample-level separation.
+    Read only parent-controlled approved datasets; never emit private examples.
+    """
+    if hash_file(path) != expected:
+        raise ValueError("Approved training material changed")
+    training = set()
+    with open(path, encoding="utf-8") as stream:
+        for index, line in enumerate(stream):
+            if index >= 4000:
+                raise ValueError("Too many training items")
+            row = json.loads(line)
+            if row.get("split") != "train" or row.get("approvedForTraining") is not True:
+                raise ValueError("Unapproved training material")
+            prompt, completion = row.get("prompt"), row.get("completion")
+            if not isinstance(prompt, str) or not isinstance(completion, str):
+                raise ValueError("Unstructured training data")
+            identity = hashlib.sha256((prompt+"\\x00"+completion).encode()).hexdigest()
+            training.add(identity)
+    if not training:
+        raise ValueError("No approved training material")
+    for prompt, completion, _domain in private_cases:
+        identity = hashlib.sha256((prompt+"\\x00"+completion).encode()).hexdigest()
+        if identity in training:
+            raise ValueError("Training and frozen evaluation examples overlap")
+
 def score(model, tokenizer, test_cases):
     import torch
     import torch.nn.functional as F
@@ -78,8 +106,11 @@ def main():
     parser.add_argument("--adapter",required=True)
     parser.add_argument("--cases",required=True)
     parser.add_argument("--case-sha",required=True)
+    parser.add_argument("--train",required=True)
+    parser.add_argument("--train-sha",required=True)
     options=parser.parse_args()
     test_cases=cases(Path(options.cases),options.case_sha)
+    verify_training_separation(Path(options.train),options.train_sha,test_cases)
     from transformers import AutoModelForCausalLM,AutoTokenizer
     from peft import PeftModel
     import torch
@@ -112,7 +143,8 @@ def main():
         "distinctDomains":len(by_domain),"baselineMeanLoss":baseline,
         "candidateMeanLoss":sum(v for _,v in adapted)/len(adapted),
         "individuallyImproved":improved,
-        "domains":by_domain,"privateExamplesReturned":False}
+        "domains":by_domain,"privateExamplesReturned":False,
+        "trainingEvaluationDisjointVerified":True}
     print("DOMINION_ADAPTER_EVAL="+json.dumps(outcome,sort_keys=True))
 
 if __name__=="__main__":

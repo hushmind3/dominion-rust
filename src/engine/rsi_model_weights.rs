@@ -118,6 +118,7 @@ pub(crate) async fn run_tool(
         "generatorCommit":child["input"]["rsiGeneratorCommit"],
         "trainingMode":mode,"trainingProgramSha256":script_hash,
         "trainingDataSha256":sha_file(&dataset)?,
+        "trainingDataPath":dataset,
         "baseModel":model,"adapterCreated":false,
         "independentAdapterComparison":false,"qualityProven":false,
         "adopted":false
@@ -159,7 +160,8 @@ mod tests{
 fn paired_gate(m:&Value,case_sha:&str)->Result<bool,String>{
     if m["source"]!="separate_parent_paired_lora_oracle_v1"
         ||m["caseSha256"].as_str()!=Some(case_sha)
-        ||m["privateExamplesReturned"]!=false{
+        ||m["privateExamplesReturned"]!=false
+        ||m["trainingEvaluationDisjointVerified"]!=true{
         return Err("평가기 출처 또는 비공개 사례 증거가 유효하지 않습니다.".into());
     }
     let n=m["measuredExamples"].as_u64().filter(|v|(8..=256).contains(v))
@@ -223,6 +225,7 @@ mod model_promotion_tests{
         json!({
             "source":"separate_parent_paired_lora_oracle_v1",
             "caseSha256":"a".repeat(64),"privateExamplesReturned":false,
+            "trainingEvaluationDisjointVerified":true,
             "measuredExamples":12,"distinctDomains":3,
             "individuallyImproved":10,
             "baselineMeanLoss":1.2,"candidateMeanLoss":0.9,
@@ -288,6 +291,18 @@ pub(crate) async fn evaluate_candidate(
         if sha_file(&adapter.join("adapter_model.safetensors"))?!=expected{
             return Err("평가 전 후보 모델 가중치 불일치".into());
         }
+        // Content-level overlap is a leakage risk even if separate JSONL
+        // files have different hashes. Pin the original training bytes too.
+        let training_root=fs::canonicalize(state.config.data_dir.join("rsi-training-approved"))
+            .map_err(|e|e.to_string())?;
+        let training=fs::canonicalize(candidate["trainingDataPath"].as_str()
+            .ok_or("학습 원본 경로가 없습니다.")?).map_err(|e|e.to_string())?;
+        let train_sha=candidate["trainingDataSha256"].as_str().filter(|s|hex(s))
+            .ok_or("학습 데이터 해시가 없습니다.")?;
+        if !inside(&training,&training_root)||!training.is_file()
+            ||sha_file(&training)?!=train_sha{
+            return Err("독립 평가 전 학습 데이터 계보가 변경됐습니다.".into());
+        }
         let private_root=fs::canonicalize(state.config.data_dir.join("rsi-adapter-eval-private"))
             .map_err(|e|format!("독립 평가 자료가 준비되지 않았습니다: {e}"))?;
         let manifest:Value=serde_json::from_slice(&fs::read(private_root.join("manifest.json"))
@@ -319,6 +334,7 @@ pub(crate) async fn evaluate_candidate(
         evaluator.arg(&trusted).arg("--base").arg(&base)
             .arg("--adapter").arg(&adapter).arg("--cases").arg(&dataset)
             .arg("--case-sha").arg(case_sha)
+            .arg("--train").arg(&training).arg("--train-sha").arg(train_sha)
             .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1");
         let result=tokio::time::timeout(Duration::from_secs(900),
             evaluator.output()).await

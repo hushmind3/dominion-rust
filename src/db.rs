@@ -1220,6 +1220,32 @@ mod tests {
     }
 
     #[test]
+    fn adapted_model_audit_is_not_truncated_by_global_traffic(){
+        let store=Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.audit("model.usage",json!({
+            "sessionId":"child-one","providerId":"rsi-adapter-child-one",
+            "totalTokens":11
+        }));
+        for _ in 0..600 {
+            store.audit("model.usage",json!({
+                "sessionId":"other","providerId":"outside","totalTokens":1
+            }));
+        }
+        store.audit("model.usage",json!({
+            "sessionId":"child-one","providerId":"rsi-adapter-child-one",
+            "totalTokens":19
+        }));
+        store.audit("model.usage",json!({
+            "sessionId":"child-one","providerId":"unrelated","totalTokens":500
+        }));
+        assert_eq!(store.session_provider_usage(
+            "child-one","rsi-adapter-child-one"),
+            json!({"calls":2,"totalTokens":30}));
+        assert_eq!(store.session_provider_usage(
+            "other","rsi-adapter-child-one")["calls"],0);
+    }
+
+    #[test]
     fn attempt_creation_is_atomic_and_idempotent() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let root = json!({

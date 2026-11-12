@@ -40,6 +40,25 @@ class PrivateAdapterDatasetTests(unittest.TestCase):
             rows[4]=dict(rows[0],domain="tools")
             path,sha=self.write(folder,rows)
             with self.assertRaises(ValueError):evaluator.cases(path,sha)
+    def test_content_overlap_is_rejected_even_with_different_file_hashes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path,sha=self.write(folder,self.samples())
+            private=evaluator.cases(path,sha)
+            train=Path(folder)/"train.jsonl"
+            rows=[{"split":"train","approvedForTraining":True,
+                "prompt":"training prompt","completion":"training completion"},
+                {"split":"train","approvedForTraining":True,
+                "prompt":"question 3?","completion":"answer 3"}]
+            train.write_text("".join(json.dumps(x)+"\\n" for x in rows),encoding="utf-8")
+            train_sha=hashlib.sha256(train.read_bytes()).hexdigest()
+            self.assertNotEqual(train_sha,sha)
+            with self.assertRaises(ValueError):
+                evaluator.verify_training_separation(train,train_sha,private)
+            rows[1]["prompt"]="distinct training prompt"
+            train.write_text("".join(json.dumps(x)+"\\n" for x in rows),encoding="utf-8")
+            train_sha=hashlib.sha256(train.read_bytes()).hexdigest()
+            evaluator.verify_training_separation(train,train_sha,private)
+
     def test_single_domain_is_ineligible(self):
         with tempfile.TemporaryDirectory() as folder:
             rows=self.samples()
