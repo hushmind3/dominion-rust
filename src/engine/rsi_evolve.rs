@@ -5384,13 +5384,18 @@ fn compiled_system_generation_plan(
         .or_else(||crate::engine::rsi_mutual_evolution::reciprocal_return(
             history,&frontier))
         .unwrap_or(Value::Null);
+    // Owner-constrained source targets must remain authoritative. The
+    // autonomous factorial scheduler may not silently redirect an explicit
+    // user target or forbid its ordinary source edits at the tool gateway.
+    let explicit_focus=input["rsiAutoFocus"]!=true
+        && input["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty());
     // A live, adopted predecessor's programme takes precedence. Otherwise
     // the compiled meta agent authors the next A->B->A source curriculum.
-    let mutual=if successor_stage.is_object(){Value::Null}else{
+    let mutual=if successor_stage.is_object() || explicit_focus{Value::Null}else{
         crate::engine::rsi_mutual_evolution::curriculum(&frontier,&meta,DOMAINS)
     };
     // This experiment designer is compiled into the NEW child and can evolve.
-    let factorial=if successor_stage.is_object(){Value::Null}else{
+    let factorial=if successor_stage.is_object() || explicit_focus{Value::Null}else{
         crate::engine::rsi_causal_curriculum::design(
             history,&mutual,&frontier,commit)
     };
