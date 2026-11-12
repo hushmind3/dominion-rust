@@ -3331,6 +3331,10 @@ async fn run_loop(
                     &plan["factorialExperiment"],&plan["coupledPortfolio"]) {
                 return Err("후손의 실험 설계 및 재귀과학 프로그램이 소스와 불일치합니다.".into());
             }
+            if !crate::engine::rsi_method_generalization::valid(
+                &plan["methodGeneralization"],&head,history.len()) {
+                return Err("후손 개선 방법의 독립 평가 학습 근거가 유효하지 않습니다.".into());
+            }
             if !crate::engine::rsi_improvement_algebra::valid(
                 &plan["improvementAlgebra"],
                 plan["architectureFrontier"].as_array()
@@ -3388,6 +3392,7 @@ async fn run_loop(
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
             child_input["rsiImprovementAlgebra"]=plan["improvementAlgebra"].clone();
+            child_input["rsiMethodGeneralization"]=plan["methodGeneralization"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
@@ -3633,6 +3638,7 @@ async fn run_loop(
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
         generation["improvementAlgebraPlan"]=current["input"]["rsiImprovementAlgebra"].clone();
+        generation["methodGeneralization"]=current["input"]["rsiMethodGeneralization"].clone();
         // Only compare holdout records from identical frozen case/profile
         // definitions and the same actual compiled generator commit.
         let frozen_profile=json!([
@@ -4420,8 +4426,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &state,campaign,input,None);
     let interaction_graph=crate::engine::rsi_interaction::influence_graph(
         &history,&frontier);
-    let algebra=crate::engine::rsi_improvement_algebra::compile(
+    let authored_algebra=crate::engine::rsi_improvement_algebra::compile(
         &history,&frontier,commit);
+    let method_learning=crate::engine::rsi_method_generalization::learn(
+        &state,&history,&frontier,&authored_algebra,commit);
+    let algebra=crate::engine::rsi_method_generalization::adapt(
+        authored_algebra,&method_learning);
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
     let algebra_active=science_active && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
@@ -4676,6 +4686,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "factorialExperiment":factorial,
         "recursiveScientificProgram":science,
         "improvementAlgebra":algebra,
+        "methodGeneralization":method_learning,
         "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
@@ -4895,14 +4906,22 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &history,frontier,&observed_influence,DOMAINS,&commit);
         let science_expected=crate::engine::rsi_recursive_scientist::plan(
             &history,frontier,&factor_expected,portfolio,&commit);
-        let algebra_expected=crate::engine::rsi_improvement_algebra::compile(
+        let authored_algebra=crate::engine::rsi_improvement_algebra::compile(
             &history,frontier,&commit);
+        let learning_expected=crate::engine::rsi_method_generalization::learn(
+            &state,&history,frontier,&authored_algebra,&commit);
+        let algebra_expected=crate::engine::rsi_method_generalization::adapt(
+            authored_algebra,&learning_expected);
         if job["input"]["rsiFactorialExperiment"]!=factor_expected
             || job["input"]["rsiRecursiveScientificProgram"]!=science_expected
             || job["input"]["rsiControllerPlan"]["factorialExperiment"]!=factor_expected
             || job["input"]["rsiControllerPlan"]["recursiveScientificProgram"]!=science_expected
             || job["input"]["rsiControllerPlan"]["improvementAlgebra"]!=algebra_expected
             || job["input"]["rsiImprovementAlgebra"]!=algebra_expected
+            || job["input"]["rsiMethodGeneralization"]!=learning_expected
+            || job["input"]["rsiControllerPlan"]["methodGeneralization"]!=learning_expected
+            || !crate::engine::rsi_method_generalization::valid(
+                &learning_expected,&commit,history.len())
             || !crate::engine::rsi_improvement_algebra::valid(
                 &algebra_expected,frontier,&commit,history.len())
             || !crate::engine::rsi_factorial::valid(
@@ -5055,9 +5074,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_improvement_algebra::instruction(
                 &job["input"]["rsiImprovementAlgebra"])
         }else{String::new()};
+        let method_learning_instruction=if science_enabled {
+            crate::engine::rsi_method_generalization::instruction(
+                &job["input"]["rsiMethodGeneralization"])
+        }else{String::new()};
         let peer_context=format!(
-            "OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
-            algebra_instruction,scientific_instruction,factorial_instruction,
+            "DOWNSTREAM METHOD EFFECTIVENESS (replayed independent holdouts): {}\n            OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            method_learning_instruction,algebra_instruction,
+            scientific_instruction,factorial_instruction,
             job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
             capsule(&independent_effects,2400),capsule(&combined_sources,1600));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
