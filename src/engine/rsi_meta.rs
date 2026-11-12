@@ -152,7 +152,13 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
                 .filter(|c|c["candidatePass"]==true).and_then(|c|c["metrics"]["quality"]["candidate"].as_f64()).unwrap_or(0.0);
             let guards_ok=measured["candidateBuildOk"]==true && measured["cases"].as_array()
                 .is_some_and(|cases|cases.iter().all(|case|case["candidatePass"]==true));
-            result["quality"]=json!(if guards_ok {quality}else{0.0});result["subjectReport"]=measured;
+            let before=measured["cases"].as_array().into_iter().flatten().find(|c|c["id"]=="subject-planning")
+                .and_then(|c|c["metrics"]["quality"]["baseline"].as_f64()).unwrap_or(1.0);
+            // Reward improvement caused by the generated patch, not useful
+            // behavior the unchanged subject already had or unrelated edits.
+            let gain=if guards_ok && before<1.0 {((quality-before)/(1.0-before)).clamp(0.0,1.0)}else{0.0};
+            result["quality"]=json!(gain);result["baselineSubjectQuality"]=json!(before);
+            result["candidateSubjectQuality"]=json!(quality);result["subjectReport"]=measured;
         }else{result["gradingError"]=json!(String::from_utf8_lossy(&checked.stderr).chars().take(1000).collect::<String>());}
     }
     context.state.store.put("rsi_meta_episode",&json!({"id":id,"campaignId":context.job_id,"result":result}));

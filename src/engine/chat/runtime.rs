@@ -1269,7 +1269,7 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if session["rsiRun"]==true && !force_final {
+        if session["rsiRun"]==true && session["rsiSystemEvolution"]!=true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
             let mut all_operations = state.store.all("execution_operation").into_iter()
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id))
