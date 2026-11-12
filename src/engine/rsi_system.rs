@@ -442,8 +442,24 @@ pub(crate) fn propose(
         return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
     }
     let component=body["component"].as_str()
-        .filter(|name|COMPONENTS.iter().any(|row|row.0==*name))
-        .ok_or("시스템 구성요소 지정 오류")?;
+        .filter(|name|*name=="system"||valid_role(name))
+        .ok_or("시스템 구성요소 이름은 1~64자 영문·숫자·밑줄·하이픈이어야 합니다.")?;
+    // Sub4's coupled design + Sub3's attributed source-role contract:
+    // one model may redesign several interdependent intelligence components.
+    // New role names are legitimate, but have no credited capability before
+    // a real independently accepted patch introduces their implementation.
+    let roles=if component=="system" {
+        let rows=body["components"].as_array()
+            .filter(|rows|(2..=16).contains(&rows.len()))
+            .ok_or("결합 구조 설계에는 구성요소 2~16개가 필요합니다.")?;
+        let mut names=std::collections::BTreeSet::new();
+        for row in rows {
+            let role=row.as_str().filter(|role|valid_role(role))
+                .ok_or("설계 구성요소 이름 오류")?;
+            if !names.insert(role){return Err("중복된 설계 구성요소".into());}
+        }
+        rows.clone()
+    }else{vec![json!(component)]};
     let next=body["nextDomain"].as_str()
         .filter(|name|crate::engine::rsi_evolve::DOMAINS.contains(name))
         .ok_or("다음 개선 분야 오류")?;
@@ -454,8 +470,9 @@ pub(crate) fn propose(
         .filter(|v|v.trim().len()>=30 && v.len()<=6000)
         .ok_or("실행할 설계 30~6000자가 필요합니다.")?;
     let paths=body["targetFiles"].as_array()
-        .filter(|rows|!rows.is_empty()&&rows.len()<=8)
-        .ok_or("변경할 실제 소스 1~8개를 선택하세요.")?;
+        .filter(|rows|!rows.is_empty()&&rows.len()<=24
+            && (component!="system"||rows.len()>=2))
+        .ok_or("실제 변경할 소스 1~24개, 결합 설계는 2개 이상 지정하세요.")?;
     let root=fs::canonicalize(&state.config.workspace).map_err(|e|e.to_string())?;
     let mut unique=std::collections::BTreeSet::new();
     for path in paths {
@@ -483,15 +500,71 @@ pub(crate) fn propose(
             }
         }
     }
+    // Every proposed component must have concrete implementation files.
+    // One changed source cannot be credited to several intelligence roles.
+    let mut assignments=serde_json::Map::new();
+    let mut assigned=std::collections::BTreeSet::<String>::new();
+    for role in &roles {
+        let name=role.as_str().ok_or("설계 구성요소 문자열 오류")?;
+        let files=if component=="system" {
+            body["componentFiles"][name].as_array()
+                .filter(|files|!files.is_empty())
+                .ok_or("결합 설계에는 각 구성요소에 대응하는 componentFiles가 필요합니다.")?
+                .clone()
+        }else{paths.clone()};
+        for file in &files {
+            let path=file.as_str().ok_or("소스 파일 이름 오류")?;
+            if !paths.iter().any(|target|target==path)
+                || !assigned.insert(path.to_string()) {
+                return Err("구성요소의 소스 파일은 중복 없이 targetFiles에 연결해야 합니다.".into());
+            }
+        }
+        assignments.insert(name.to_string(),json!(files));
+    }
+    if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
+        return Err("모든 targetFiles를 실제 구성요소에 할당해야 합니다.".into());
+    }
+    // Successor program is a model-authored decision schedule, not a claim
+    // that the tasks are done. The compiled child will rebind each stage to
+    // the actual post-adoption source and may reject it if the code changed.
+    let mut stages=Vec::new();
+    if let Some(rows)=body["successorStages"].as_array() {
+        if rows.len()>8{return Err("후손 설계 단계는 최대 8개입니다.".into());}
+        for row in rows {
+            let role=row["role"].as_str().filter(|role|valid_role(role))
+                .ok_or("후손 단계 구성요소 오류")?;
+            let domain=row["domain"].as_str().filter(|d|
+                crate::engine::rsi_evolve::DOMAINS.contains(d))
+                .ok_or("후손 단계 분야 오류")?;
+            let path=row["path"].as_str()
+                .filter(|p|crate::engine::rsi::safe_path(p))
+                .ok_or("후손 단계 소스 경로 오류")?;
+            let objective=row["objective"].as_str()
+                .filter(|s|(25..=1200).contains(&s.chars().count()))
+                .ok_or("후손 단계 실행 목표 25~1200자 필요")?;
+            let candidate=root.join(path);
+            if !paths.iter().any(|file|file==path) {
+                let real=fs::canonicalize(candidate).map_err(|_|"후손 단계 파일 없음".to_string())?;
+                if !real.starts_with(&root)||!real.is_file(){
+                    return Err("후손 단계는 현재 시스템 소스에 속해야 합니다.".into());
+                }
+            }
+            stages.push(json!({"role":role,"domain":domain,"path":path,
+                "objective":objective,"qualityProven":false}));
+        }
+    }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,next,hypothesis,design,paths]).to_string().as_bytes()));
+        commit,component,roles,assignments,next,hypothesis,design,paths,stages
+    ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
+        "components":roles,"componentFiles":assignments,
+        "successorStages":stages,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false
@@ -521,8 +594,13 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
     // A good score for an unrelated patch cannot establish that the
     // model's proposed system design was actually implemented.
     let paths=design["targetFiles"].as_array()?;
-    if !paths.iter().filter_map(Value::as_str).any(|path|
-        previous["acceptedSourceHashes"][path].as_str().is_some_and(|hash|hash.len()==64)){
+    if !design_implemented(design,
+        &previous["acceptedSourceHashes"].as_object()?.keys()
+            .map(|key|json!(key)).collect::<Vec<_>>())
+        || !paths.iter().filter_map(Value::as_str).all(|path|
+            previous["acceptedSourceHashes"][path].as_str()
+                .is_some_and(|hash|hash.len()==64
+                    && hash.bytes().all(|byte|byte.is_ascii_hexdigit()))) {
         return None;
     }
     let domain=design["nextDomain"].as_str()?;
@@ -584,12 +662,12 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
             && design["source"]=="model_authored_system_design"
             && design["generatorCommit"]==generator
             && design["generationJobId"]==generation["jobId"]
-            && changed.iter().filter_map(Value::as_str).any(|path|
-                design["targetFiles"].as_array().is_some_and(|targets|
-                    targets.iter().any(|target|target.as_str()==Some(path)))
-                    && generation["acceptedSourceHashes"][path]
-                        .as_str().is_some_and(|hash|
-                            hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())))
+            && design_implemented(design,&changed)
+            && design["targetFiles"].as_array().is_some_and(|targets|
+                targets.iter().all(|target|target.as_str().is_some_and(|path|
+                    generation["acceptedSourceHashes"][path].as_str()
+                        .is_some_and(|hash|hash.len()==64
+                            && hash.bytes().all(|b|b.is_ascii_hexdigit())))))
             && generation["evaluation"]["metrics"]["eligible"]==true
             && generation["evaluation"]["metrics"]["regressions"]==0;
         if !independently_verified {
@@ -645,23 +723,17 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
                 }
             }
         }
-        for path in changed.iter().filter_map(Value::as_str) {
-            let role=match path {
-                "src/engine/algorithms.rs" | "src/engine/reasoning.rs"
-                    | "src/engine/algorithm_eval.rs"=>"algorithms",
-                "src/engine/jobs.rs" | "src/engine/rsi_worktree.rs"
-                    | "src/engine/decompose.rs" | "src/engine/chat/mod.rs"=>"harness",
-                "src/engine/memory.rs" | "src/engine/room_state.rs"
-                    | "src/engine/room_knowledge.rs"=>"memory",
-                "src/engine/learning.rs" | "src/engine/experience.rs"
-                    | "src/engine/procedure.rs"=>"learning",
-                "src/engine/tools.rs" | "src/engine/browser.rs"
-                    | "src/engine/mcp.rs"=>"tools",
-                "src/engine/rsi_evolve.rs" | "src/engine/rsi_mutation.rs"
-                    | "src/engine/rsi_system.rs"=>"improvement_methods",
-                _=>continue
-            };
-            if generation["acceptedSourceHashes"][path].is_string() {
+        // Source coverage follows the MODEL'S validated, completely
+        // implemented design programme, not a hard-coded file-name lookup.
+        // A changed file only counts for its explicitly assigned role;
+        // invented roles remain evolvable without faking the six core ones.
+        for role in design_roles(design) {
+            if design_role_files(design,&role).is_some_and(|files|
+                files.iter().all(|file|file.as_str().is_some_and(|path|
+                    changed.iter().any(|entry|entry==path)
+                    && generation["acceptedSourceHashes"][path].as_str()
+                        .is_some_and(|sha|sha.len()==64
+                            && sha.bytes().all(|b|b.is_ascii_hexdigit()))))) {
                 covered.insert(role);
             }
         }
