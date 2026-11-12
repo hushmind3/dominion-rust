@@ -37,7 +37,7 @@ fn independent_adoption(g:&Value)->bool{
 fn role_touched(g:&Value,role:&str)->bool{
     model_design_roles(g).iter().any(|name|name==role)
         || g["selfControllerVerified"]==true
-            && g["metaPolicy"]["target"]["role"]==role
+            && g["systemAgenda"]["target"]["role"]==role
 }
 fn failure_kind(g:&Value)->&'static str{
     if g["accepted"]==true{return "adopted";}
@@ -522,6 +522,18 @@ pub(crate) fn instruction(policy:&Value)->String {
 pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     if policy["source"]!="compiled_editable_meta_controller_v1" {
         return Value::Null;
+    }
+    // An inherited, independently adopted method stage may legitimately
+    // override the generic meta-controller. Its real outcome must not be
+    // used to calibrate a forecast made for a different source/role.
+    if generation["systemAgenda"]["target"]!=policy["target"] {
+        return json!({"policyRevision":policy["revision"],
+            "selectedByInheritedStage":true,
+            "actualRole":generation["systemAgenda"]["target"]["role"],
+            "forecastRole":policy["target"]["role"],
+            "independentlyMeasured":false,
+            "brierError":null,"categoricalBrier":null,
+            "qualityProven":false});
     }
     let probability=policy["forecast"]["acceptanceProbability"]
         .as_f64().filter(|p|p.is_finite()&&*p>=0.0&&*p<=1.0);

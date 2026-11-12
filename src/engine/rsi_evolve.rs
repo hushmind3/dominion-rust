@@ -4903,7 +4903,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     let peers=if system_mode {
         crate::engine::rsi_meta_controller::peer_lineages(
             state,campaign_id,&peer_input,
-            meta_policy["target"]["role"].as_str())
+            agenda["target"]["role"].as_str())
     }else{Value::Null};
     let method_hypothesis=if system_mode {
         crate::engine::rsi_meta_controller::next_method_hypothesis(
@@ -5249,7 +5249,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,
             "metaRevision":expected_meta["revision"],
-            "targetRole":expected_meta["target"]["role"],
+            "metaForecastTargetRole":expected_meta["target"]["role"],
+            "actualExecutedRole":job["input"]["rsiSystemAgenda"]["target"]["role"],
             "forecast":expected_meta["forecast"]
         });
         job["rsiSystemBlueprintVerified"]=json!(true);
