@@ -86,11 +86,18 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     let files=source_inventory(root);
     let fingerprint=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()));
+    let total=files.len();
+    // Hash ALL indexed source, but transport only a bounded sample: a
+    // 2,048-module system would overflow the planner's stdout capture and
+    // needlessly resend tens of thousands of SHA strings to the model.
+    let preview=files.into_iter().take(64).collect::<Vec<_>>();
     json!({
         "source":"compiled_descendant_system_blueprint_v1",
         "generatorCommit":revision,
         "architecture":components,
-        "sourceInventory":files,
+        "sourceInventory":preview,
+        "sourceFileCount":total,
+        "sourceInventoryTruncated":total>64,
         "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
         "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
@@ -337,6 +344,26 @@ mod tests {
         assert_ne!(first["generatorCommit"],second["generatorCommit"]);
         assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"],
             "the full system inventory must follow real source changes");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn large_agent_source_map_has_full_digest_but_bounded_transfer() {
+        let root=std::env::temp_dir().join(format!("rsi-system-many-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        for n in 0..90 {
+            fs::write(root.join(format!("src/engine/method_{n:03}.rs")),
+                format!("pub fn method_{n:03}() {{}}")).unwrap();
+        }
+        let full=blueprint(&root,"old",&[]);
+        assert_eq!(full["sourceFileCount"],90);
+        assert_eq!(full["sourceInventory"].as_array().unwrap().len(),64);
+        assert_eq!(full["sourceInventoryTruncated"],true);
+        fs::write(root.join("src/engine/method_089.rs"),"pub fn changed() {}").unwrap();
+        let changed=blueprint(&root,"new",&[]);
+        assert_eq!(full["sourceInventory"],changed["sourceInventory"],
+            "the changed file falls outside the bounded model preview");
+        assert_ne!(full["sourceTreeSha256"],changed["sourceTreeSha256"],
+            "the complete source fingerprint must include every file");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
