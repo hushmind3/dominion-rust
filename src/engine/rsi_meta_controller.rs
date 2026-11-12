@@ -181,7 +181,16 @@ pub(crate) fn synthesize(
     plan
 }
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
-    policy["source"]=="compiled_self_modifying_meta_controller_v2"
+    // The parent may enforce a content hash, but never re-run or override
+    // the descendant's compiled search ranking. Hash binds the exact
+    // meta-model decision and forecast to its source generation.
+    let mut body=policy.clone();
+    let Some(map)=body.as_object_mut() else{return false};
+    map.remove("revision");
+    let expected=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&body).unwrap_or_default()));
+    policy["revision"]==expected
+        && policy["source"]=="compiled_self_modifying_meta_controller_v2"
         && policy["historyCount"].as_u64()==Some(history_count as u64)
         && policy["revision"].as_str().is_some_and(|sha|
             sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
@@ -265,6 +274,14 @@ mod tests {
         let policy=synthesize(&history,&frontier,&["improver"],None,
             &json!({"acceptedDesigns":[]}),&json!({"references":[]}));
         assert!(valid_policy(&policy,history.len()));
+        let mut forged=policy.clone();
+        forged["forecast"]["probability"]=json!(0.99);
+        assert!(!valid_policy(&forged,history.len()),
+            "an old supervisor cannot rewrite a compiled descendant forecast");
+        let mut diverted=policy.clone();
+        diverted["target"]["path"]=json!("src/engine/algorithms.rs");
+        assert!(!valid_policy(&diverted,history.len()),
+            "a stale controller cannot silently swap the next source target");
         assert_eq!(policy["prediction"]["observedTrials"],0);
         let observation=feedback(&policy,&history[0]);
         assert_eq!(observation["independentlyMeasured"],false);
