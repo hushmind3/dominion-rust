@@ -400,18 +400,26 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
                 Some((path,sha,bytes.len() as u64))
             }).collect::<Vec<_>>();
         sources.sort_by_key(|(path,_,bytes)|(std::cmp::Reverse(related(path).len()),attempts.get(*path).copied().unwrap_or(0),*bytes,*path));
-        let Some((path,sha,bytes))=sources.first().copied() else{continue;};
-        rows.push(json!({"role":role,"domain":role_domain(component),"path":path,
-            "sourceSha256":sha,"sourceBytes":bytes,"sourceAttempts":attempts.get(path).copied().unwrap_or(0),
-            "usageSignalIds":related(path),"usageSignalCount":related(path).len(),
-            "verifiedRoleChanged":covered.contains(role),"qualityProven":false,
-            "reason":if covered.contains(role){"extend_verified_source"}else{"unexplored_component"}}));
+        // A single representative hides the newly generated meta-controller
+        // whenever another file happens to sort first. Publish a bounded
+        // portfolio of distinct, SHA-grounded source candidates per role.
+        // The compiled meta-controller (itself mutable) scores this portfolio.
+        for (path,sha,bytes) in sources.into_iter().take(6) {
+            rows.push(json!({"role":role,"domain":role_domain(component),"path":path,
+                "sourceSha256":sha,"sourceBytes":bytes,
+                "sourceAttempts":attempts.get(path).copied().unwrap_or(0),
+                "usageSignalIds":related(path),"usageSignalCount":related(path).len(),
+                "verifiedRoleChanged":covered.contains(role),"qualityProven":false,
+                "reason":if covered.contains(role){"extend_verified_source"}else{"unexplored_component"}}));
+        }
     }
     rows.sort_by(|a,b|b["usageSignalCount"].as_u64().cmp(&a["usageSignalCount"].as_u64())
         .then((a["verifiedRoleChanged"]==true).cmp(&(b["verifiedRoleChanged"]==true)))
         .then(a["sourceAttempts"].as_u64().cmp(&b["sourceAttempts"].as_u64()))
         .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
-        .then(a["role"].as_str().cmp(&b["role"].as_str())));
+        .then(a["role"].as_str().cmp(&b["role"].as_str()))
+        .then(a["path"].as_str().cmp(&b["path"].as_str())));
+    rows.truncate(64);
     rows
 }
 
@@ -1164,6 +1172,30 @@ mod integration_contract_tests {
         let config=Config{port:0,data_dir:root.join("data"),web_dir:root.join("web"),workspace:root.clone()};
         let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
         (state,root)
+    }
+    #[test]
+    fn source_portfolio_exposes_new_meta_mechanisms_to_descendants() {
+        let (state,root)=state();
+        fs::write(root.join("src/engine/rsi_evolve.rs"),"pub fn parent() {}\n").unwrap();
+        fs::write(root.join("src/engine/rsi_meta_controller.rs"),
+            "pub fn meta_improve() {}\n").unwrap();
+        fs::write(root.join("src/engine/rsi_system.rs"),"pub fn plan() {}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let blueprint=blueprint(&root,"source-commit",&[]);
+        let frontier=architecture_frontier(&state,&blueprint,&[],
+            index["id"].as_str().unwrap(),&root);
+        let improvers=frontier.iter().filter(|row|
+            row["role"]=="improvement_methods").collect::<Vec<_>>();
+        assert!(improvers.len()>=3,
+            "meta-self-modification needs multiple candidate source files");
+        assert!(improvers.iter().any(|row|
+            row["path"]=="src/engine/rsi_meta_controller.rs"));
+        let target=improvers[0].clone();
+        let plan=json!({"systemBlueprint":blueprint,
+            "architectureFrontier":frontier,"architectureTarget":target});
+        assert!(validate_plan_evidence(&state,&root,"source-commit",
+            index["id"].as_str().unwrap(),&plan).is_ok());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn supervisor_accepts_new_frontier_order_and_role_but_rejects_stale_source() {
