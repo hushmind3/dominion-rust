@@ -4054,6 +4054,8 @@ async fn run_loop(
             child_input["rsiFactorialCurriculum"]=plan["factorialCurriculum"].clone();
             child_input["rsiRecursiveDiscovery"]=plan["recursiveDiscovery"].clone();
             child_input["rsiRecursiveScienceActive"]=plan["recursiveScienceActive"].clone();
+            child_input["rsiPrincipleProgramme"]=plan["principleProgramme"].clone();
+            child_input["rsiPrincipleActive"]=plan["principleActive"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -4232,6 +4234,8 @@ async fn run_loop(
         generation["factorialPlanExecuted"]=current["rsiFactorialPlanExecuted"].clone();
         generation["recursiveDiscovery"]=current["input"]["rsiRecursiveDiscovery"].clone();
         generation["recursiveScienceActive"]=current["input"]["rsiRecursiveScienceActive"].clone();
+        generation["principleProgramme"]=current["input"]["rsiPrincipleProgramme"].clone();
+        generation["principleActive"]=current["input"]["rsiPrincipleActive"].clone();
         generation["recursiveSciencePlanExecuted"]=current["rsiRecursiveSciencePlanExecuted"].clone();
         generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
@@ -4613,6 +4617,11 @@ async fn run_loop(
         // outcomes now update task-level error available to its successor.
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],&generation);
+        // The immediate quality receipt and the future descendant's
+        // productivity are SEPARATE learning targets. Future descendants
+        // reconstruct the latter only after real independent evaluations.
+        generation["principleObservation"]=
+            crate::engine::rsi_principle_lab::observation(&generation);
         // Persist the real outcome of the newly executed recovery policy.
         // A ranking score or a source write is not a validated improvement;
         // this is the observed action utility that the next built generator
@@ -5445,7 +5454,13 @@ fn compiled_system_generation_plan(
     // Its learned prediction dynamics select the NEXT architecture target.
     let meta=crate::engine::rsi_meta_controller::synthesize(
         history,&frontier,DOMAINS,inherited.as_deref());
-    let architecture_target=if meta["target"].is_object(){
+    // Learned laws are compiled into this actual successor, not a prompt-only
+    // retrospective. A task-intelligence bottleneck can supersede another
+    // purely meta-level tweak. The child may rewrite this scoring law itself.
+    let principle=crate::engine::rsi_principle_lab::plan(history,&frontier,commit);
+    let architecture_target=if principle["target"].is_object(){
+        principle["target"].clone()
+    }else if meta["target"].is_object(){
         meta["target"].clone()
     }else{frontier.first().cloned().unwrap_or(Value::Null)};
     let peers=crate::engine::rsi_meta_controller::peer_lineages(
@@ -5481,7 +5496,16 @@ fn compiled_system_generation_plan(
         history,&frontier,&blueprint["openTopology"],&meta,
         &raw_factorial,&mutual,commit);
     let phase=suggested["phase"].as_str().unwrap_or("");
-    let scientific_active=!explicit_focus
+    // Never interrupt an already accepted recursive invention lineage.
+    // When the scientific programme is only inventing from no evidence,
+    // let the descendant first create an independently testable task↔method
+    // principle and measure whether it makes its NEXT descendant stronger.
+    let principle_active=!explicit_focus
+        && !successor_stage.is_object()
+        && principle["target"].is_object()
+        && principle["methodTarget"].is_object()
+        && matches!(phase,"invent_new_intelligence"|"observe_factorial");
+    let scientific_active=!explicit_focus && !principle_active
         && suggested["target"].is_object()
         && (matches!(phase,
             "develop_invented_capability"|"return_to_origin"|"rewrite_discovery_method"
@@ -5489,7 +5513,8 @@ fn compiled_system_generation_plan(
             || !successor_stage.is_object());
     // An adopted recursive-science continuation owns the ONE source focus:
     // no unrelated isolated factorial arm may block its actual write tools.
-    let factorial=if scientific_active && phase!="invent_new_intelligence"{
+    let factorial=if principle_active
+        || (scientific_active && phase!="invent_new_intelligence"){
         Value::Null
     }else{raw_factorial};
     let scientific=if scientific_active && phase!="invent_new_intelligence"{
@@ -5576,6 +5601,24 @@ fn compiled_system_generation_plan(
     // Both source modules enter the NATIVE edit context, not merely the
     // prompt text. The B module may belong to a different domain than A.
     let mut paths=Vec::<String>::new();
+    if principle_active {
+        // Source-ground both ends of the proposed learning law. This is an
+        // actual two-file edit target, not just an abstract method label.
+        for key in ["target","methodTarget"] {
+            let item=&principle[key];
+            if let (Some(path),Some(sha))=(
+                item["path"].as_str(),item["sourceSha256"].as_str()) {
+                if crate::engine::rsi::safe_path(path)
+                    && root.join(path).is_file()
+                    && crate::engine::code_index::indexed_source_hash(
+                        state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                        .as_deref()==Some(sha)
+                    && !paths.iter().any(|p|p==path) {
+                    paths.push(path.to_owned());
+                }
+            }
+        }
+    }
     if scientific_active {
         if let Some(path)=scientific_target["path"].as_str()
             .filter(|p|crate::engine::rsi::safe_path(p)){
@@ -5616,6 +5659,9 @@ fn compiled_system_generation_plan(
     if scientific_active {
         // Invention may need a new module plus existing consumers; leave the
         // execution target no broader than its SOURCE-GROUNDED programme.
+    }else if principle_active {
+        // Keep both actual intelligence and method-learning sources as the
+        // executable model context. Generic ranked files must not evict them.
     }else if factorial["selected"]["isolationRequired"]!=true{
         for path in original_paths{
             if paths.len()>=3{break;}
@@ -5646,6 +5692,8 @@ fn compiled_system_generation_plan(
         "factorialCurriculum":factorial,
         "recursiveDiscovery":scientific,
         "recursiveScienceActive":scientific_active,
+        "principleProgramme":principle,
+        "principleActive":principle_active,
         "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
@@ -5778,6 +5826,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiFactorialCurriculum"]!=plan["factorialCurriculum"]
             || job["input"]["rsiRecursiveDiscovery"]!=plan["recursiveDiscovery"]
             || job["input"]["rsiRecursiveScienceActive"]!=plan["recursiveScienceActive"]
+            || job["input"]["rsiPrincipleProgramme"]!=plan["principleProgramme"]
+            || job["input"]["rsiPrincipleActive"]!=plan["principleActive"]
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
             || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
@@ -5912,6 +5962,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_recursive_discovery::instruction(
                 &job["input"]["rsiRecursiveDiscovery"])
         }else{String::new()};
+        let principle_instruction=if job["input"]["rsiPrincipleActive"]==true
+            && job["input"]["rsiAutoFocus"]==true {
+            crate::engine::rsi_principle_lab::instruction(
+                &job["input"]["rsiPrincipleProgramme"])
+        }else{String::new()};
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
@@ -5928,7 +5983,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "qualityProven":false
         }));
         format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
-            format!("{}\n\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
+            format!("{}\n\n{}\n{}\n{}\n{}\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
                 meta_instruction,peer_instruction,
                 if job["input"]["rsiRecursiveScienceActive"]==true
@@ -5941,7 +5996,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                     && job["input"]["rsiRecursiveDiscovery"]["target"].is_object(){
                     String::new()
                 }else{factorial_instruction},
-                topology_instruction,discovery_instruction),
+                topology_instruction,discovery_instruction,principle_instruction),
             job["input"]["rsiImprovementDirective"],feedback,target,
             current_source,format!("{research}{inherited_task}"))
     }else{
