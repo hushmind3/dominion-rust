@@ -316,6 +316,128 @@ pub(crate) fn synthesize(
     })
 }
 
+/// Turn independently paired *other-lineage* results into a bounded
+/// experimental hypothesis rather than copying a foreign patch. A donor's
+/// nextDomain is a proposed transferable METHOD, not an observed improvement
+/// of the new role. The compiled descendant itself chooses a source-bound
+/// recipient and must still author, build and independently test its changes.
+///
+/// Source compatibility (at least one identical current indexed source file)
+/// and the same frozen comparison profile are required. A donor cannot
+/// promote its own role as a repeated success by reporting a nextDomain.
+pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
+    if policy["source"]!="compiled_editable_meta_controller_v1"
+        || policy["metaRepairChosen"]==true
+        || peers["source"]!="paired_cross_campaign_reference_archive_v1"
+        || peers["automaticPatchReuse"]!=false
+        || peers["comparisonProfileSha256"].as_str()
+            .is_none_or(|s|s.len()!=64||!s.bytes().all(|b|b.is_ascii_hexdigit())){
+        return policy;
+    }
+    let Some(donors)=peers["references"].as_array()else{return policy;};
+    let Some(mut alternatives)=policy["alternatives"].as_array().cloned()
+        else{return policy;};
+    let original_revision=policy["revision"].clone();
+    let mut transferred=false;
+    for candidate in &mut alternatives{
+        let (Some(role),Some(domain),Some(path),Some(hash))=(
+            candidate["target"]["role"].as_str(),
+            candidate["target"]["domain"].as_str(),
+            candidate["target"]["path"].as_str(),
+            candidate["target"]["sourceSha256"].as_str()
+        )else{continue};
+        if !crate::engine::rsi::safe_path(path) || hash.len()!=64
+            || !hash.bytes().all(|b|b.is_ascii_hexdigit()) {continue;}
+        let mut seen=BTreeSet::new();
+        let mut bridges=Vec::<Value>::new();
+        for donor in donors.iter().take(4){
+            if donor["source"]!="paired_cross_campaign_design_reference_v1"
+                || donor["automaticPatchReuse"]!=false
+                || donor["comparisonProfileSha256"]!=peers["comparisonProfileSha256"]
+                || donor["nextDomain"]!=domain
+                || donor["identicalSourceFiles"].as_u64().unwrap_or(0)==0
+                || donor["alignedSourceFiles"].as_array()
+                    .is_none_or(|v|v.is_empty())
+                || donor["roles"].as_array().is_none_or(|roles|
+                    roles.is_empty() || roles.iter().any(|r|r.as_str()==Some(role))){
+                continue;
+            }
+            let Some(patch)=donor["patchSha256"].as_str()
+                .filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit()))
+                else{continue};
+            if !seen.insert(patch.to_string()){continue;}
+            bridges.push(json!({
+                "candidateId":donor["candidateId"],
+                "fromCampaign":donor["campaignId"],
+                "fromRoles":donor["roles"],
+                "donorAcceptedCommit":donor["acceptedCommit"],
+                "toRole":role,"toDomain":domain,
+                "toSourcePath":path,"toSourceSha256":hash,
+                "sharedFrozenProfileSha256":peers["comparisonProfileSha256"],
+                "identicalIndexedSourceFiles":donor["identicalSourceFiles"],
+                "automaticPatchReuse":false,
+                "transferProven":false
+            }));
+        }
+        // One real independently adopted donor is enough to PROPOSE a
+        // transfer trial. More donors increase priority with a hard cap,
+        // but cannot become a new performance label.
+        let bonus=if bridges.is_empty(){0.0}
+            else{0.12+0.035*(bridges.len().min(3)-1) as f64};
+        let prior=candidate["score"].as_f64().filter(|s|s.is_finite())
+            .unwrap_or(0.0);
+        candidate["score"]=json!(prior+bonus);
+        candidate["portableMethodExplorationBonus"]=json!(bonus);
+        candidate["transferHypotheses"]=json!(bridges);
+        transferred|=bonus>0.0;
+    }
+    if !transferred{return policy;}
+    alternatives.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
+        .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str()))
+        .then_with(||a["target"]["path"].as_str().cmp(&b["target"]["path"].as_str())));
+    let Some(winner)=alternatives.first().cloned()else{return policy;};
+    let target=winner["target"].clone();
+    let bridge=winner["transferHypotheses"].as_array()
+        .is_some_and(|a|!a.is_empty());
+    policy["target"]=target.clone();
+    policy["selectionEvidence"]=winner.clone();
+    policy["alternatives"]=json!(alternatives);
+    policy["taskOutcomeForecast"]=winner["outcomeForecast"].clone();
+    policy["forecast"]["acceptanceProbability"]=
+        winner["predictedAdoptionProbability"].clone();
+    policy["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    // The selected target must also become the native action, not just a
+    // ranking comment. The coordinator still owns independent evaluation.
+    for (key,field) in [("role","role"),("domain","domain"),
+        ("path","path"),("sourceSha256","sourceSha256")]{
+        policy["controlPolicy"][key]=target[field].clone();
+    }
+    let mutual=policy["mutualDevelopmentGraph"]["edges"].as_array()
+        .into_iter().flatten()
+        .find(|edge|edge["to"]==target["role"])
+        .cloned().unwrap_or(Value::Null);
+    policy["nextMutualRedesign"]=mutual;
+    policy["peerMethodTransfer"]=json!({
+        "source":"compiled_cross_lineage_method_hypothesis_v1",
+        "selectedRecipient":target,
+        "references":winner["transferHypotheses"],
+        "active":bridge,
+        "sameFrozenComparisonProfile":true,
+        "automaticallyApplied":false,
+        "transferProven":false
+    });
+    if bridge{
+        policy["mode"]=json!("test_cross_role_portable_method");
+    }
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([
+            original_revision,policy["target"],policy["alternatives"],
+            policy["controlPolicy"],policy["peerMethodTransfer"]
+        ])).unwrap_or_default())));
+    policy
+}
+
 /// A frozen-case digest distinguishes compatible comparisons from coincidental
 /// success labels. An absent suite never admits peers into the archive.
 pub(crate) fn comparison_profile(input:&Value)->Option<String>{
@@ -596,6 +718,70 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn portable_peer_method_changes_executable_recipient_not_adoption_credit(){
+        let target=|role:&str,domain:&str,path:&str|json!({
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":"a".repeat(64),"sourceBytes":1200
+        });
+        let a=target("memory","memory","src/engine/memory.rs");
+        let b=target("learning","learning","src/engine/learning.rs");
+        let original=json!({
+            "source":"compiled_editable_meta_controller_v1",
+            "revision":"prior","target":a,
+            "controlPolicy":{"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceSha256":"a".repeat(64)},
+            "alternatives":[
+                {"role":"memory","score":1.0,"target":a,
+                    "outcomeForecast":{"adoption":0.5},
+                    "predictedAdoptionProbability":0.5,"uncertainty":0.2},
+                {"role":"learning","score":0.95,"target":b,
+                    "outcomeForecast":{"adoption":0.25},
+                    "predictedAdoptionProbability":0.25,"uncertainty":0.3}
+            ],
+            "forecast":{"acceptanceProbability":0.5,"uncertainty":0.2}
+        });
+        let peer=json!({
+            "source":"paired_cross_campaign_reference_archive_v1",
+            "automaticPatchReuse":false,
+            "comparisonProfileSha256":"f".repeat(64),
+            "references":[{
+                "source":"paired_cross_campaign_design_reference_v1",
+                "automaticPatchReuse":false,
+                "comparisonProfileSha256":"f".repeat(64),
+                "campaignId":"other","candidateId":"verified-1",
+                "acceptedCommit":"b".repeat(40),
+                "patchSha256":"c".repeat(64),
+                "nextDomain":"learning","roles":["memory"],
+                "identicalSourceFiles":1,
+                "alignedSourceFiles":["src/engine/memory.rs"]
+            }]
+        });
+        let evolved=evolve_from_peer_methods(original.clone(),&peer);
+        assert_eq!(evolved["target"]["role"],"learning");
+        assert_eq!(evolved["controlPolicy"]["role"],"learning");
+        assert_eq!(evolved["controlPolicy"]["path"],"src/engine/learning.rs");
+        assert_eq!(evolved["forecast"]["acceptanceProbability"],0.25);
+        assert_eq!(evolved["taskOutcomeForecast"]["adoption"],0.25);
+        assert_eq!(evolved["peerMethodTransfer"]["active"],true);
+        assert_eq!(evolved["peerMethodTransfer"]["automaticallyApplied"],false);
+        assert_eq!(evolved["peerMethodTransfer"]["transferProven"],false);
+        assert_ne!(evolved["revision"],original["revision"]);
+        let mut drift=peer.clone();
+        drift["references"][0]["identicalSourceFiles"]=json!(0);
+        let ignored=evolve_from_peer_methods(original.clone(),&drift);
+        assert_eq!(ignored["target"],original["target"]);
+        let mut wrong_suite=peer.clone();
+        wrong_suite["references"][0]["comparisonProfileSha256"]=
+            json!("0".repeat(64));
+        assert_eq!(evolve_from_peer_methods(original.clone(),&wrong_suite)["target"],
+            original["target"]);
+        let mut repair=original.clone();
+        repair["metaRepairChosen"]=json!(true);
+        assert_eq!(evolve_from_peer_methods(repair.clone(),&peer)["target"],
+            repair["target"]);
+    }
+
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
         let target=|role:&str,path:&str|json!({"role":role,"domain":if role=="memory"{"memory"}else{"learning"},
