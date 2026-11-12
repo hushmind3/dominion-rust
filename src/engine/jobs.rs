@@ -673,7 +673,14 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     context.checkpoint(json!({"sessionId":session_id,"promptState":{"inFlight":true}}))?;
     let request = TurnRequest {
         session_id: Some(session_id.clone()),
-        input: if rsi_workspace.is_some() { format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 제공된 검증 원문과 인덱스는 바로 활용하고, 빠진 정보만 도구로 조회하세요. 실제 코드 근거가 있을 때 workspace_read_range의 startLine/endLine/sourceSha256를 사용한 workspace_replace(startLine,endLine,expectedSha256,newText)로 최대 120줄을 수정하세요. 새 파일에만 workspace_write를 사용하고, 근거가 없으면 변경 없이 종료하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 종료 후 별도로 처리합니다.") } else { prompt },
+        input: if rsi_workspace.is_some() {
+            let editing=if input["rsiSystemEvolution"]==true {
+                "새 모델이 rsi_system_plan에 설계 가설과 구현 파일을 제출한 뒤, 실제 Rust 소스까지 바꾸세요. 제공된 sourceSha256으로 workspace_replace_function(path,functionName,newText,expectedSha256)을 쓰면 한 함수 전체를 안전하게 교체할 수 있습니다. 120줄 이하의 작은 수정은 workspace_replace(startLine,endLine,expectedSha256,newText)를 사용하세요. 바뀐 설계와 실패로부터 다음 후손이 다시 계획합니다."
+            }else{
+                "실제 코드 근거가 있을 때 workspace_read_range의 startLine/endLine/sourceSha256를 사용한 workspace_replace(startLine,endLine,expectedSha256,newText)로 최대 120줄을 수정하세요."
+            };
+            format!("{prompt}{reused_research}\n\n현재 대상은 별도의 Git 작업공간입니다. 검증된 원문과 인덱스를 활용하고 빠진 정보만 도구로 조회하세요. {editing} 새 파일에만 workspace_write를 사용하세요. 절대경로 파일 도구, 셸, Git API, 다른 에이전트는 사용하지 마세요. 빌드·타입 검사와 패치 수집은 실행 엔진이 별도로 처리합니다.")
+        } else { prompt },
         agent_id: input
             .get("agentId")
             .and_then(|value| value.as_str())
