@@ -3589,6 +3589,16 @@ async fn run_loop(
                     && agenda["recursiveLaboratory"]!=*laboratory {
                 return Err("실제 후손의 자기발전 연구 제어기와 소스 계획이 다릅니다.".into());
             }
+            let predictor=&record["nextGenerationPlan"]["principleModel"];
+            let learned=&record["nextGenerationPlan"]["principleCurriculum"];
+            if !crate::engine::rsi_principle_learner::valid(
+                learned,predictor,agenda["frontier"].as_array()
+                    .map(Vec::as_slice).unwrap_or(&[]),
+                &head,recorded_history.len())
+                || agenda["principleCurriculum"].is_object()
+                    && agenda["principleCurriculum"]!=*learned {
+                return Err("후손의 개선 원리 학습기와 실제 소스 계획이 다릅니다.".into());
+            }
             let peers=&record["nextGenerationPlan"]["peerLineages"];
             let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
             crate::engine::rsi_meta_controller::validate_peer_lineages(
@@ -3598,6 +3608,8 @@ async fn run_loop(
             child_input["rsiMetaPolicy"]=meta.clone();
             child_input["rsiFactorialExperiment"]=factorial.clone();
             child_input["rsiRecursiveLaboratory"]=laboratory.clone();
+            child_input["rsiPrincipleModel"]=predictor.clone();
+            child_input["rsiPrincipleCurriculum"]=learned.clone();
             child_input["rsiPeerLineages"]=peers.clone();
             child_input["rsiMetaMethodHypothesis"]=
                 record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
@@ -3881,6 +3893,8 @@ async fn run_loop(
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemAgenda"]=current["input"]["rsiSystemAgenda"].clone();
         generation["recursiveLaboratory"]=current["input"]["rsiRecursiveLaboratory"].clone();
+        generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
+        generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
         generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -4952,6 +4966,24 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     if automatic && agenda["inheritedStage"].is_null() {
         crate::engine::rsi_recursive_laboratory::apply(&mut agenda,&laboratory);
     }
+    // A second-order learning loop: source-backed METHOD improvements are
+    // selected by what their independently measured COMPILED CHILDREN can do
+    // to models, tools, memory, learning and any newly invented roles.
+    let principle_model=if system_mode {
+        crate::engine::rsi_principle_learner::learn(
+            &history,agenda["frontier"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]))
+    }else{Value::Null};
+    let principle_policy=if system_mode {
+        crate::engine::rsi_principle_learner::plan(
+            &history,agenda["frontier"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]),
+            &principle_model,binary_commit)
+    }else{Value::Null};
+    if automatic && agenda["inheritedStage"].is_null(){
+        crate::engine::rsi_principle_learner::apply(
+            &mut agenda,&principle_policy);
+    }
     let mut peer_input=source_input.clone();
     peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
     let peers=if system_mode {
@@ -4976,6 +5008,9 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     let selected=if automatic && agenda["inheritedStage"].is_object() {
         // Model-authored successor stage can override a generic inherited
         // domain when the current source and observed failures support it.
+        self_domain.or(inherited).or(explicit)
+    }else if automatic && agenda["principleCurriculum"].is_object() {
+        // Capability-level evidence can override a stale meta-domain bias.
         self_domain.or(inherited).or(explicit)
     }else if automatic && agenda["recursiveLaboratory"].is_object() {
         // A compiled scientific cycle must execute its own currently selected
@@ -5033,6 +5068,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "systemBlueprint":model,"systemAgenda":agenda,
         "metaPolicy":meta_policy,"factorialExperiment":factorial,
         "recursiveLaboratory":laboratory,
+        "principleModel":principle_model,"principleCurriculum":principle_policy,
         "peerLineages":peers,
         "metaMethodHypothesis":method_hypothesis,
         "crossLineageHypothesis":hybrid,
@@ -5324,6 +5360,24 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 && job["input"]["rsiSystemAgenda"]["recursiveLaboratory"]!=expected_laboratory {
             return Err("현재 후손의 재귀 연구 프로그램과 실제 실행 계획이 다릅니다.".into());
         }
+        let expected_principles=crate::engine::rsi_principle_learner::learn(
+            &history,job["input"]["rsiSystemAgenda"]["frontier"]
+                .as_array().map(Vec::as_slice).unwrap_or(&[]));
+        let expected_curriculum=crate::engine::rsi_principle_learner::plan(
+            &history,job["input"]["rsiSystemAgenda"]["frontier"]
+                .as_array().map(Vec::as_slice).unwrap_or(&[]),
+            &expected_principles,&commit);
+        if job["input"]["rsiPrincipleModel"]!=expected_principles
+            || job["input"]["rsiPrincipleCurriculum"]!=expected_curriculum
+            || !crate::engine::rsi_principle_learner::valid(
+                &expected_curriculum,&expected_principles,
+                job["input"]["rsiSystemAgenda"]["frontier"]
+                    .as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &commit,history.len())
+            || job["input"]["rsiSystemAgenda"]["principleCurriculum"].is_object()
+                && job["input"]["rsiSystemAgenda"]["principleCurriculum"]!=expected_curriculum {
+            return Err("재컴파일된 후손의 개선 원리 모델과 능력개선 실행 계획이 다릅니다.".into());
+        }
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
@@ -5365,6 +5419,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiFactorialExperiment"]);
         let scientific=crate::engine::rsi_recursive_laboratory::instruction(
             &job["input"]["rsiRecursiveLaboratory"]);
+        let principle=crate::engine::rsi_principle_learner::instruction(
+            &job["input"]["rsiPrincipleCurriculum"],
+            &job["input"]["rsiPrincipleModel"]);
         let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
         let hybrid=&job["input"]["rsiCrossLineageHypothesis"];
         let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
@@ -5376,7 +5433,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
