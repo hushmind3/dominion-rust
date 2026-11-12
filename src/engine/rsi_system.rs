@@ -191,6 +191,13 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
         || design["generatorCommit"]!=previous["generatorCommit"]
         || design["generationJobId"]!=previous["jobId"]
     {return None;}
+    // A good score for an unrelated patch cannot establish that the
+    // model's proposed system design was actually implemented.
+    let paths=design["targetFiles"].as_array()?;
+    if !paths.iter().filter_map(Value::as_str).any(|path|
+        previous["acceptedSourceHashes"][path].as_str().is_some_and(|hash|hash.len()==64)){
+        return None;
+    }
     let domain=design["nextDomain"].as_str()?;
     crate::engine::rsi_evolve::DOMAINS.contains(&domain)
         .then(||domain.to_string())
@@ -224,10 +231,12 @@ mod tests {
     fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
         let base=json!({"generatorCommit":"parent","jobId":"worker",
             "acceptedCommit":"child","candidateOrigin":"model_driven_detached_worktree",
+            "acceptedSourceHashes":{"src/engine/learning.rs":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "accepted":true,"pairedRevalidated":true,
             "evaluation":{"metrics":{"eligible":true}},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":"parent","generationJobId":"worker",
+                "targetFiles":["src/engine/learning.rs"],
                 "nextDomain":"learning"}});
         assert_eq!(inherited_domain(&[base.clone()]),Some("learning".into()));
         for (key,value) in [("accepted",json!(false)),
@@ -237,6 +246,9 @@ mod tests {
             invalid[key]=value;
             assert_eq!(inherited_domain(&[invalid]),None);
         }
+        let mut irrelevant=base.clone();
+        irrelevant["systemDesign"]["targetFiles"]=json!(["src/engine/browser.rs"]);
+        assert_eq!(inherited_domain(&[irrelevant]),None);
         let mut wrong=base;
         wrong["systemDesign"]["generatorCommit"]=json!("stale");
         assert_eq!(inherited_domain(&[wrong]),None);
