@@ -280,7 +280,12 @@ pub(crate) fn study(history:&[Value])->Value {
         let group=groups.entry(mechanism).or_default();
         group.attempts+=1;
         group.roles.insert(role.clone());
-        if g["openImprovementProgram"]["node"]["mechanism"]==mechanism.as_str() {
+        if g["openImprovementProgram"]["source"]
+            =="compiled_descendant_open_improvement_program_v1"
+            && g["metaPolicy"]["selectionMode"]=="authored_open_improvement_program"
+            && g["compiledPlanExecuted"]["openImprovementRevision"]
+                ==g["openImprovementProgram"]["revision"]
+            && g["openImprovementProgram"]["node"]["mechanism"]==mechanism.as_str() {
             for factor in g["openImprovementProgram"]["node"]["principleKeys"]
                 .as_array().into_iter().flatten().filter_map(Value::as_str) {
                 if (3..=48).contains(&factor.len())
