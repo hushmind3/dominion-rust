@@ -124,10 +124,12 @@ fn inherited_curriculum(history:&[Value],frontier:&[Value],commit:&str)
     let a=program["left"]["role"].as_str()?;
     let b=program["right"]["role"].as_str()?;
     let required=match program["phase"].as_str()?{
-        "isolate_left"=>0,"isolate_right"=>1,"probe_joint"=>2,_=>return None
+        "isolate_left"=>0,"isolate_right"=>1,"probe_joint"=>2,
+        "return_to_origin"=>0,_=>return None
     };
     if observed_arm(ancestor,a,b)!=Some(required){return None;}
-    let next=(required+1).min(3);
+    let next=if program["phase"]=="return_to_origin"{4}
+        else if program["phase"]=="probe_joint"{3}else{required+1};
     let rebind=|row:&Value|frontier.iter().find(|current|
         current["role"]==row["role"] && current["path"]==row["path"]
             && live(current)).cloned();
@@ -158,10 +160,11 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],pair:&Value,commit:&str)
     let missing=forced_arm.or_else(||counts.iter().position(|v|*v==0));
     let phase=match missing{
         Some(0)=>"isolate_left",Some(1)=>"isolate_right",
-        Some(2)=>"probe_joint",_=>"invent_new_interaction"
+        Some(2)=>"probe_joint",Some(3)=>"return_to_origin",
+        _=>"invent_new_interaction"
     };
     let target=if missing==Some(1){b.clone()}else{a.clone()};
-    let focus=match missing{Some(0)=>vec![a.clone()],
+    let focus=match missing{Some(0)|Some(3)=>vec![a.clone()],
         Some(1)=>vec![b.clone()],_=>vec![a.clone(),b.clone()]};
     let mut result=json!({
         "source":"compiled_evolvable_causal_ecology_v1",
@@ -200,6 +203,8 @@ pub(crate) fn instruction(plan:&Value)->String{
             "Edit ONLY the selected source role; inspect the other without changing it.",
         "probe_joint"=>
             "Invent a joint source rewrite and compare against independent A and B source variants on identical frozen cases.",
+        "return_to_origin"=>
+            "Use the separately adopted complementary subsystem and observed interaction evidence to REINVENT the originating intelligence module and its improvement method. Edit the returning source, not just a report.",
         _=>
             "Invent a new interaction mechanism from matched observational contrasts, not a recycled patch."
     };
@@ -289,6 +294,37 @@ mod tests{
         let mut invalid=parent;
         invalid["pairedRevalidated"]=json!(false);
         assert!(inherited_curriculum(&[invalid],&frontier,&"b".repeat(40)).is_none());
+    }
+    #[test]
+    fn adopted_a_then_b_then_joint_descendants_return_to_better_a(){
+        let a=role("memory","src/engine/memory.rs");
+        let b=role("tools","src/engine/tools.rs");
+        let frontier=vec![a.clone(),b.clone()];
+        let pair=json!({"source":"compiled_descendant_reciprocal_evolution_v1",
+            "primary":a,"partner":b});
+        let mut previous=design(&[],&frontier,&pair,"parent");
+        for (index,(paths,expected)) in [
+            (vec!["src/engine/memory.rs"],"isolate_right"),
+            (vec!["src/engine/tools.rs"],"probe_joint"),
+            (vec!["src/engine/memory.rs","src/engine/tools.rs"],"return_to_origin")
+        ].into_iter().enumerate(){
+            let mut gen=generation(&format!("gen-{index}"),&paths);
+            gen["generatorCommit"]=previous["generatorCommit"].clone();
+            gen["systemDesign"]["generatorCommit"]=gen["generatorCommit"].clone();
+            gen["acceptedCommit"]=json!(format!("{:040x}",index+1));
+            gen["accepted"]=json!(true);
+            gen["pairedRevalidated"]=json!(true);
+            gen["selfControllerVerified"]=json!(true);
+            gen["candidateOrigin"]=json!("model_driven_detached_worktree");
+            gen["evaluation"]["metrics"]["eligible"]=json!(true);
+            gen["systemAgenda"]["factorialExperiment"]=previous;
+            let next=design(&[gen],&frontier,&pair,&format!("{:040x}",index+1));
+            assert_eq!(next["phase"],expected);
+            assert_eq!(next["descendantContinuation"],true);
+            previous=next;
+        }
+        assert_eq!(previous["target"]["role"],"memory");
+        assert_eq!(previous["focus"].as_array().unwrap().len(),1);
     }
     #[test]
     fn unrelated_baselines_cannot_fabricate_a_completed_factorial(){
