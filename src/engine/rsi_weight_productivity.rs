@@ -152,7 +152,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
                     rows.iter().any(|r|r["path"]==m["path"]
                         &&r["sourceSha256"]==m["sourceSha256"]))
             });
-            let negative=both && control_wins>=2 && adapted_wins==0;
+            let negative=both && control_wins>=1 && adapted_wins==0;
             let active=negative&&!stale;
             let row=json!({
                 "generatorCommit":base,"comparisonProfileSha256":profile,
@@ -326,11 +326,11 @@ mod tests {
         let frontier=vec![role("src/engine/rsi_model_weights.rs"),
             role("src/engine/rsi_model_learning.rs")];
         let history=vec![trial("a",true,false),trial("b",true,false),
-            trial("c",false,true),trial("d",false,true)];
+            trial("c",false,false),trial("d",false,true)];
         let p=plan(&history,&frontier,&"f".repeat(40));
         assert_eq!(p["redesignTrainingMethod"],true);
         assert_eq!(p["selected"]["adaptedSourceTrials"],2);
-        assert_eq!(p["selected"]["nonAdaptedSourceAdoptions"],2);
+        assert_eq!(p["selected"]["nonAdaptedSourceAdoptions"],1);
         assert!(valid(&p,&frontier,&"f".repeat(40),4));
         let mut agenda=json!({"frontier":frontier,
             "target":role("src/engine/learning.rs"),"focus":[],
