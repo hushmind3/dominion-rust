@@ -44,7 +44,7 @@ fn meta_task(task:usize)->Option<MetaTask> {
             guard:"rsi_frozen_oracle::long_owner_recall"
         },
         2=>MetaTask {
-            domain:"context",file:"src/engine/chat/context_oracle.rs",
+            domain:"context",file:"src/engine/chat/room_context.rs",
             request:"Improve group-chat context construction efficiency without losing the owner instructions, participant personas, earlier assistant turns or memory facts. Inspect actual context-harness source and implement a verifiable code change.",
             oracle:"rsi_frozen_oracle::group_chat_context_efficiency",metric:"contextChars",
             guard:"rsi_frozen_oracle::long_owner_recall"
