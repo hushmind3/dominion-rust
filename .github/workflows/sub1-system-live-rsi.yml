@@ -1,34 +1,10 @@
 name: Sub1 full-system descendant design RSI
 
-# Full-intelligence-stack recursive self-redesign through an actual model.
-# The rebuilt child selects source, domain and architecture, never the old
-# coordinator. Only independent frozen A/B evidence can adopt changed code.
-# Every model-authored design and real source patch is retained.
-# 2026-11-12 real Qwen model proposed a system redesign but failed to write
-# Rust because endLine=0. Replay this causal regression through the actual
-# source tool and CAS before any live inference; only verified writes proceed
-# to compiler, A/B and successor re-planning.
-# GitHub Models inference was retired. This campaign uses real local Ollama
-# rather than pretending a retired GitHub proxy is a hosted coding model.
-# The rebuilt descendant (not the resident coordinator) owns the next system
-# architecture frontier. Adoptions still require independent frozen proof.
-# 2026-11-12 full-stack frontier verification: the rebuilt descendant
-# inventories the actual seven-system source graph, prioritizes previously
-# unmodified intelligence components, and controls next-generation source
-# focus. Independent frozen evaluation alone controls code adoption.
-# Follow-up to run 43189004497 (attempts=0): filter native descendant source
-# plans against canonical editable paths and exactly hashed detached files.
-# Rerun the real campaign only after the new regression passes.
-
+# Opt-in external-runner integration proof: rebuilt source planner,
+# model-authored edits, independent frozen A/B, and descendant inheritance.
+# Never run model inference on ordinary source pushes.
 on:
   workflow_dispatch:
-  # One real-model probe when this workflow definition changes on Sub1.
-  # Ordinary code pushes continue to run only fast CI, not heavy inference.
-  push:
-    branches: [dominion-sub1]
-    paths:
-      - .github/workflows/sub1-system-live-rsi.yml
-      - scripts/sub1-system-live-rsi.mjs
 
 # Preserve each immutable full-system experiment and causal measurement.
 concurrency:
