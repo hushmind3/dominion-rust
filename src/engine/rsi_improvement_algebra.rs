@@ -140,7 +140,8 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
         for _ in 0..12 {
             let mut next=Vec::new();
             for (role,chain) in queue{
-                for edge in edges.iter().filter(|e|e["from"]==role) {
+                for edge in edges.iter().filter(|e|
+                    e["from"].as_str()==Some(role.as_str())) {
                     let Some(to)=edge["to"].as_str()else{continue};
                     let mut extended=chain.clone();
                     extended.push(edge.clone());
@@ -158,20 +159,25 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
             queue=next;
         }
     }
+    // The active frontier is derived from the REAL most recent independently
+    // adopted source change, not from a pre-enumerated A->B->A stage index.
+    // Multi-input operators can require evidence from several generations.
+    let changed_after_adoption=history.iter().rev().filter(|g|adopted(g))
+        .map(|g|changed_roles(g,frontier))
+        .filter(|roles|!roles.is_empty()).collect::<Vec<_>>();
+    let latest_changed=changed_after_adoption.first().cloned()
+        .unwrap_or_default();
+    let accumulated_roles=changed_after_adoption.iter().take(16)
+        .flat_map(|set|set.iter().cloned()).collect::<BTreeSet<_>>();
     let mut candidates=Vec::<(i64,Value)>::new();
     for rule in &rules {
         let Some(id)=rule["id"].as_str()else{continue};
         let Some(products)=roles(&rule["products"])else{continue};
-        let mut observed=BTreeSet::new();
-        let Some(birth)=rule["acceptedAtCommit"].as_str()else{continue};
-        // No accepted target result is claimed just because the generator
-        // has written a rule; future descendants must actually edit it.
-        for g in history.iter().filter(|g|adopted(g)){
-            if g["generatorCommit"]==birth
-                || g["acceptedCommit"]==birth {
-                observed.extend(changed_roles(g,frontier));
-            }
-        }
+        let Some(premises)=roles(&rule["premises"])else{continue};
+        let premise_observed=premises.iter()
+            .all(|role|accumulated_roles.contains(role));
+        let fresh_activation=premises.iter()
+            .any(|role|latest_changed.contains(role));
         for product in &products{
             let Some(target)=source(frontier,product)else{continue};
             let trials=history.iter().filter(|g|record_trial(g,id,target))
@@ -190,7 +196,8 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
             let cycle_member=best_cycle.iter().any(|e|e["ruleId"]==id
                 && e["to"]==product.as_str().unwrap_or(""));
             let score=(if cycle_member{500}else{0})
-                + (if observed.contains(product){80}else{0})
+                + (if fresh_activation && premise_observed{900}else{0})
+                + (if premise_observed{180}else{0})
                 + (if trials.is_empty(){160}else{0})
                 + (accepted as i64).min(10)*12
                 - (regressions as i64).min(12)*24;
@@ -201,6 +208,8 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
                 }else{"improve_composed_intelligence"},
                 "observations":science_evidence,
                 "inVerifiedCycle":cycle_member,
+                "premiseObservedInAcceptedGenerations":premise_observed,
+                "activatedByLatestIndependentAdoption":fresh_activation,
                 "qualityProven":false
             })));
         }
@@ -218,6 +227,8 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
             "edges":best_cycle,"causalityProven":false},
         "candidateCount":candidates.len(),
         "selectionPolicy":"editable_source_compositional_rule_search",
+        "latestIndependentlyChangedRoles":latest_changed,
+        "acceptedRevisionPremiseMemory":accumulated_roles,
         "externalEvaluationOwner":"frozen_paired_supervisor",
         "qualityProven":false
     });
