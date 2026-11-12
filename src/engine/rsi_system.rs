@@ -505,8 +505,8 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         components.push(json!({"role":role,"domain":domain,"representativeSources":inventory,
             "discoveredSourceCount":total_sources}));
     }
-    for generation in history.iter().filter(|generation|generation["accepted"]==true
-        && generation["evaluation"]["metrics"]["eligible"]==true) {
+    for generation in history.iter().filter(|generation|
+        crate::engine::rsi_mutual_program::adopted_source(generation)) {
         let design=&generation["systemDesign"];
         for role in design_roles(design) {
             if components.iter().any(|item|item["role"]==role){continue;}
