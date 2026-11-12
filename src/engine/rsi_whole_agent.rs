@@ -382,8 +382,7 @@ pub(crate) fn instruction(p:&Value)->String{
         and test both with independent heldout tasks. A patch that is adopted \
         without later capability transfer is not recursive intelligence gain. \
         Propose source-changing new intelligence when existing capabilities \
-        cannot solve the weakness. Never substitute an API model ranking or \
-        LoRA training for complete-agent self-improvement.",
+        cannot solve the weakness. Never substitute an API model ranking for complete-agent self-improvement.",
         p["phase"],p["revision"],
         p["target"]["role"],p["target"]["path"],p["capabilityLedger"],
         p["selectedInterferenceExperiment"])
