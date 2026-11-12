@@ -26,7 +26,7 @@ fn sha(value: &str) -> bool {
 pub(crate) fn hidden_rsi_oracle_path(path:&str)->bool {
     ["src/engine/rsi_oracle_fixture.rs",
      "src/engine/rsi_adapter_oracle.rs"].iter().any(|hidden|
-        std::path::Path::new(path).ends_with(hidden))
+        std::path::Path::new(path).ends_with(*hidden))
 }
 
 pub(crate) fn safe_path(path: &str) -> bool {
