@@ -112,6 +112,9 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
             || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
             || path == "src/engine/algorithm_eval.rs"
             || path == "src/engine/policy_patch.rs"
+            || path == "src/engine/rsi_meta_controller.rs"
+            || path == "src/engine/rsi_system.rs"
+            || path == "src/engine/rsi_interaction.rs"
     }) {
         return Err("improver 후보는 실제 개선기 소스를 수정해야 합니다.".into());
     }
