@@ -4754,33 +4754,27 @@ async fn run_loop(
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
         let generation_verdict = generation["evaluation"]["verdict"].clone();
+        // ARCHIVE BEFORE THE CAMPAIGN DECIDES TO STOP. A campaign can reach
+        // its token/time/max-attempt limit immediately after this generation:
+        // there may never be a next descendant planning/select() call.
+        // Persist only an original, independently replayed neutral experiment;
+        // the source branch, frozen plan and candidate-bound receipt are
+        // checked again by rsi_archive::record_completed.
+        let archive_receipt=crate::engine::rsi_archive::record_completed(
+            &context.state,&generation,
+            &current["input"]["rsiFrozenCases"],
+            current["input"]["rsiSourceBranch"].as_str().unwrap_or(""))?;
+        generation["archivePersistence"]=archive_receipt.clone();
+        record["archiveRefreshObservation"]=archive_receipt;
         // Workers read this durable table, not the coordinator's in-memory
-        // history. Publish only after research, method feedback and trial
-        // outcomes are complete so the next worker can actually continue.
+        // history. Publish only after research, method feedback, archive and
+        // trial outcomes are complete so the next worker actually continues.
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
-        // The archive is durably refreshed FROM completed, independently
-        // paired neutral candidates. The next rebuilt binary alone chooses
-        // whether/which archived patch to inherit.
-        if record["history"].as_array().and_then(|rows|rows.last())
-            .is_some_and(|g|g["accepted"]!=true
-                && g["candidateId"].is_string()
-                && g["staticChecksPassed"]==true) {
-            let update=crate::engine::rsi_archive::select_bound(
-                &context.state,
-                record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-                &head,&input["rsiFrozenCases"],
-                input["rsiSourceBranch"].as_str().unwrap_or(""));
-            record["archiveRefreshObservation"]=json!({
-                "hasMeasuredNeutralParent":update["candidateId"].is_string(),
-                "archiveSize":update["archiveSize"],
-                "qualityProven":false
-            });
-        }
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
         let no_edit = candidate_id.is_none() && novel_source_bytes==0;
