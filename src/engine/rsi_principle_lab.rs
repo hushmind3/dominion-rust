@@ -335,6 +335,34 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
     result
 }
 
+/// A task improvement must first survive independent holdout comparison,
+/// rewrite the self-improvement method in real source, and then produce a
+/// DIFFERENT task-intelligence improvement in an actual recompiled child.
+/// This proves only a witnessed finite transfer, not unbounded future gains.
+pub(crate) fn established_transfer(history: &[Value]) -> bool {
+    history.iter().filter(|g| adopted(g)).any(|parent| {
+        let Some(p) = principle(parent) else { return false; };
+        let Some(source_role) = p["taskRole"].as_str() else { return false; };
+        if !role_adopted(parent, source_role)
+            || !role_adopted(parent, "improvement_methods") {
+            return false;
+        }
+        let (wins, regressions, cases) = task_measurement(parent);
+        if cases < 2 || wins <= regressions { return false; }
+        immediate_children(history, parent).into_iter().any(|child| {
+            if !adopted(child)
+                || child["generatorBinarySha256"].as_str().is_none_or(str::is_empty)
+                || child["generatorBinarySha256"] == parent["generatorBinarySha256"] {
+                return false;
+            }
+            let cross_role = TASK_ROLES.iter().copied().any(|other|
+                other != source_role && role_adopted(child, other));
+            let (next_wins, next_losses, next_cases) = task_measurement(child);
+            cross_role && next_cases >= 2 && next_wins > next_losses
+        })
+    })
+}
+
 /// Just-observed evidence; later descendant outcomes are computed from the
 /// full archive in plan(), never fabricated at the time of adoption.
 pub(crate) fn observation(g: &Value) -> Value {
