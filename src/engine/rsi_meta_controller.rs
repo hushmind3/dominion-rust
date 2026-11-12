@@ -333,6 +333,9 @@ pub(crate) fn steer_reflexive(mut policy:Value,program:&Value)->Value {
     policy["reflexivePhase"]=program["phase"].clone();
     policy["reflexiveProgramSha256"]=program["sha256"].clone();
     policy["reflexiveRootGenerationId"]=program["rootGenerationId"].clone();
+    if phase=="execute_revised_experiment" {
+        policy["revisedExperimentPlanSha256"]=program["experimentPlanSha256"].clone();
+    }
     let mut unsigned=policy.clone();
     if let Some(obj)=unsigned.as_object_mut(){obj.remove("revision");}
     policy["revision"]=json!(format!("{:x}",Sha256::digest(
