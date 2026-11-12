@@ -186,6 +186,17 @@ pub(crate) fn validate_plan_evidence(state:&crate::state::AppState, root:&Path,
             || !row["domain"].as_str().is_some_and(|domain|crate::engine::rsi_evolve::DOMAINS.contains(&domain)) {
             return Err("후손 탐색 근거의 구성요소·분야 오류".into());
         }
+        // The successor may change the ranking algorithm, but it cannot
+        // attribute a source file to a role that its own pinned architecture
+        // did not actually identify.
+        let mapped=roles.iter().find(|role|role["role"]==row["role"])
+            .and_then(|role|role["representativeSources"].as_array())
+            .is_some_and(|files|files.iter().any(|file|
+                file["path"]==row["path"] &&
+                file["sha256"]==row["sourceSha256"]));
+        if !mapped {
+            return Err("구조 탐색의 역할과 실제 소스 연결이 다릅니다.".into());
+        }
         validate_source_entry(state,root,index_id,row,"sourceSha256")?;
     }
     if !plan["architectureTarget"].is_null() && !rows.iter().any(|row|*row==plan["architectureTarget"]) {
