@@ -98,6 +98,107 @@ fn source_tree_manifest(root: &Path) -> Value {
         "complete":paths.len()<=2048})
 }
 
+
+fn architecture_domain(role:&str)->Option<&'static str> {
+    match role {
+        "algorithms"|"improvement_methods"=>Some("improver"),
+        "harness"=>Some("context"), "memory"=>Some("memory"),
+        "learning"=>Some("learning"),"tools"=>Some("tools"),
+        "frontend"=>Some("ui"),_=>None
+    }
+}
+
+/// An executable descendant inspects the exact code it is about to modify
+/// and the independently revalidated adopted generations. Components without
+/// a prior demonstrated source change enter the search frontier first. This
+/// chooses *experiments*, never grants improvement credit by itself.
+pub(crate) fn architecture_frontier(
+    state:&crate::state::AppState,
+    blueprint:&Value,history:&[Value],index_id:&str,root:&Path
+)->Vec<Value> {
+    use std::collections::{BTreeMap,BTreeSet};
+    let history=revalidated_history(state,history);
+    let mut verified_roles=BTreeSet::<String>::new();
+    let mut attempts=BTreeMap::<String,u64>::new();
+    for generation in &history {
+        for path in generation["focusFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            *attempts.entry(path.to_string()).or_default()+=1;
+        }
+        if generation["accepted"]!=true || generation["pairedRevalidated"]!=true {
+            continue;
+        }
+        let Some(candidate)=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else{continue};
+        if candidate["status"]!="verified"
+            || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
+            || candidate["experimentAdoption"]["generatorCommit"]!=generation["generatorCommit"] {
+            continue;
+        }
+        for path in candidate["paths"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            let Some(hash)=generation["acceptedSourceHashes"][path].as_str()
+                .filter(|hash|hash.len()==64
+                    && hash.bytes().all(|b|b.is_ascii_hexdigit())) else{continue};
+            for component in blueprint["architecture"].as_array().into_iter().flatten(){
+                let Some(role)=component["role"].as_str() else{continue};
+                if component["representativeSources"].as_array().into_iter().flatten()
+                    .any(|item|item["path"]==path) {
+                    // The SHA is an independently adopted source receipt.
+                    // Subsequent changes to this module do not erase
+                    // independently verified historical coverage.
+                    let _=hash;
+                    verified_roles.insert(role.to_string());
+                }
+            }
+        }
+    }
+    let core=["algorithms","harness","memory","learning","tools","improvement_methods"];
+    let complete_core=core.iter().all(|role|verified_roles.contains(*role));
+    let mut frontier=Vec::new();
+    let canonical=match fs::canonicalize(root){Ok(value)=>value,Err(_)=>return frontier};
+    for component in blueprint["architecture"].as_array().into_iter().flatten(){
+        let Some(role)=component["role"].as_str() else{continue};
+        if role=="frontend" && !complete_core {continue;}
+        let Some(domain)=architecture_domain(role) else{continue};
+        let improved=verified_roles.contains(role);
+        let mut sources=component["representativeSources"].as_array().into_iter().flatten()
+            .filter_map(|item|{
+                let path=item["path"].as_str()?;
+                if !crate::engine::rsi::safe_path(path){return None;}
+                let hash=item["sha256"].as_str()?;
+                let bytes=item["bytes"].as_u64()?;
+                if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()!=Some(hash){return None;}
+                let file=fs::canonicalize(canonical.join(path)).ok()?;
+                if !file.starts_with(&canonical)||!file.is_file(){return None;}
+                let actual=fs::read(&file).ok()?;
+                if actual.len() as u64!=bytes
+                    || format!("{:x}",Sha256::digest(&actual))!=hash{return None;}
+                Some((path.to_string(),hash.to_string(),bytes))
+            }).collect::<Vec<_>>();
+        sources.sort_by(|a,b|
+            attempts.get(&a.0).copied().unwrap_or(0)
+                .cmp(&attempts.get(&b.0).copied().unwrap_or(0))
+            .then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+        let Some((path,hash,bytes))=sources.into_iter().next() else{continue};
+        let count=attempts.get(&path).copied().unwrap_or(0);
+        frontier.push(json!({"role":role,"domain":domain,"path":path,
+            "sourceSha256":hash,"sourceBytes":bytes,"sourceAttempts":count,
+            "verifiedRoleImproved":improved,
+            "reason":if improved{"extend_accepted_ability"}
+                else{"untouched_core_intelligence"},
+            "qualityProven":false
+        }));
+    }
+    frontier.sort_by(|a,b|
+        (a["verifiedRoleImproved"]==true).cmp(&(b["verifiedRoleImproved"]==true))
+            .then(a["sourceAttempts"].as_u64().cmp(&b["sourceAttempts"].as_u64()))
+            .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
+            .then(a["role"].as_str().cmp(&b["role"].as_str())));
+    frontier
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -496,6 +597,44 @@ mod tests {
         forged["acceptedSourceHashes"]["src/engine/memory.rs"]=json!("not-a-real-hash");
         assert!(inherited_domain(&[forged]).is_none());
     }
+
+    #[test]
+    fn new_descendant_discovers_unmodified_core_modules_from_real_index() {
+        let root=std::env::temp_dir().join(format!("rsi-frontier-{}",uuid::Uuid::new_v4()));
+        let workspace=root.join("work");
+        fs::create_dir_all(workspace.join("src/engine")).unwrap();
+        fs::write(workspace.join("src/engine/memory.rs"),
+            "pub fn memory_recall() -> bool { true }").unwrap();
+        fs::write(workspace.join("src/engine/learning.rs"),
+            "pub fn learning_update() -> bool { true }").unwrap();
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:workspace.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let index=crate::engine::code_index::refresh(&state,&workspace).unwrap();
+        let model=blueprint(&workspace,"descendant",&[]);
+        let frontier=architecture_frontier(&state,&model,&[],
+            index["id"].as_str().unwrap(),&workspace);
+        assert!(frontier.iter().any(|row|row["role"]=="memory"));
+        assert!(frontier.iter().any(|row|row["role"]=="learning"));
+        assert!(!frontier.iter().any(|row|row["role"]=="frontend"));
+        for row in &frontier {
+            assert_eq!(row["verifiedRoleImproved"],false);
+            assert_eq!(row["qualityProven"],false);
+            assert_eq!(crate::engine::code_index::indexed_source_hash(
+                &state,index["id"].as_str().unwrap(),row["path"].as_str().unwrap())
+                .as_deref(),row["sourceSha256"].as_str());
+        }
+        fs::write(workspace.join("src/engine/memory.rs"),
+            "pub fn memory_recall() -> bool { false }").unwrap();
+        let stale=architecture_frontier(&state,&model,&[],
+            index["id"].as_str().unwrap(),&workspace);
+        assert!(!stale.iter().any(|row|row["role"]=="memory"),
+            "a stale indexed SHA must never drive a source edit");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlink_outside_experiment_cannot_enter_descendant_model() {
