@@ -408,7 +408,7 @@ mod tests {
             &["improver","memory"],&Value::Null);
         let failed=|id:&str|json!({
             "id":id,"jobId":id,"generatorCommit":"0".repeat(40),
-            "candidateId":id,"accepted":false,"reflexiveProgram":initial
+            "candidateId":id,"accepted":false,"reflexiveProgram":initial.clone()
         });
         let plan=propose(&[failed("failure-one"),failed("failure-two")],&f,
             &"0".repeat(40),&["improver","memory"],&Value::Null);
