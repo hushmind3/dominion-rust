@@ -5,7 +5,7 @@
 //! against the *next* observed, separately verified outcome.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap,BTreeSet};
 
 fn model_design_roles(g:&Value)->Vec<String>{
     let design=&g["systemDesign"];
@@ -75,7 +75,8 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
 }
 fn confidence_adjustment(history:&[Value])->f64{
     let errors=history.iter().filter_map(|row|
-        row["metaLearning"]["proposalBrierError"].as_f64()
+        row["metaLearning"]["publicCaseBrierError"].as_f64()
+            .or_else(||row["metaLearning"]["proposalBrierError"].as_f64())
             .or_else(||row["metaLearning"]["brierError"].as_f64())
             .filter(|value|value.is_finite() && *value>=0.0 && *value<=1.0))
         .rev().take(12).collect::<Vec<_>>();
@@ -120,11 +121,40 @@ pub(crate) fn synthesize(
             g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0).count();
         let probability=((adopted as f64+1.0)/(measured as f64+2.0)).clamp(0.0,1.0);
         let epistemic=(probability*(1.0-probability)/(measured as f64+3.0)).sqrt();
+        // Learn case-specific candidate behavior ONLY from public training
+        // observations, never frozen holdouts. The compiled meta-controller
+        // may predict held-out aggregate gains, but cannot see held-out IDs
+        // or outcomes as training examples.
+        let mut cases=BTreeMap::<String,(u64,u64)>::new();
+        for generation in &relevant{
+            for row in generation["evaluation"]["metrics"]["measurements"]
+                .as_array().into_iter().flatten(){
+                if row["holdout"]!=false{continue;}
+                let Some(id)=row["id"].as_str().filter(|id|!id.is_empty()
+                    && id.len()<=128) else{continue;};
+                let Some(passed)=row["candidatePass"].as_bool() else{continue;};
+                let counts=cases.entry(id.to_string()).or_insert((0,0));
+                counts.0+=1;
+                counts.1+=u64::from(passed);
+            }
+        }
+        let public_cases=cases.into_iter().take(16)
+            .map(|(id,(attempts,passes))|json!({
+                "caseId":id,"candidatePassProbability":
+                    (passes as f64+1.0)/(attempts as f64+2.0),
+                "observedTrials":attempts,
+                "holdout":false,"qualityProven":false
+            })).collect::<Vec<_>>();
+        let public_case_mean=if public_cases.is_empty(){0.5}else{
+            public_cases.iter().map(|row|row["candidatePassProbability"]
+                .as_f64().unwrap_or(0.5)).sum::<f64>()/public_cases.len() as f64
+        };
         let outcomes=json!({
             "candidateCaptured":(captured as f64+1.0)/(attempts as f64+2.0),
             "adoption":probability,
             "metaImprovement":(meta_gains as f64+1.0)/(measured as f64+2.0),
             "regression":(regressions as f64+1.0)/(measured as f64+2.0),
+            "publicCaseForecasts":public_cases,
             "assessedGenerations":measured,
             "predictionProven":false
         });
@@ -143,7 +173,8 @@ pub(crate) fn synthesize(
             +coverage+inherited_bonus+0.14*clade
             -0.12*penalty-0.07*stall-0.035*cost
             +0.08*outcomes["metaImprovement"].as_f64().unwrap_or(0.5)
-            -0.12*outcomes["regression"].as_f64().unwrap_or(0.5);
+            -0.12*outcomes["regression"].as_f64().unwrap_or(0.5)
+            +0.07*public_case_mean;
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
@@ -164,7 +195,8 @@ pub(crate) fn synthesize(
     // itself, not just another patch to the task agent. Bound this choice so
     // it cannot become an endless metacognitive self-edit loop.
     let recent_errors=history.iter().rev().filter_map(|g|
-        g["metaLearning"]["proposalBrierError"].as_f64()
+        g["metaLearning"]["publicCaseBrierError"].as_f64()
+            .or_else(||g["metaLearning"]["proposalBrierError"].as_f64())
             .filter(|p|p.is_finite()&&(0.0..=1.0).contains(p)))
         .take(6).collect::<Vec<_>>();
     let meta_recent=history.iter().rev().take(3).filter(|g|
@@ -487,11 +519,43 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     let proposal_error=if losses.is_empty(){Value::Null}else{
         json!(losses.iter().sum::<f64>()/losses.len() as f64)
     };
+    // Compare only the visible training case predictions against actual
+    // measurements. Held-out case IDs and results are never used as
+    // predictive training labels.
+    let mut public_losses=Vec::new();
+    let mut public_observations=Vec::new();
+    if assessed{
+        for expected in policy["taskOutcomeForecast"]["publicCaseForecasts"]
+            .as_array().into_iter().flatten().take(16){
+            let Some(id)=expected["caseId"].as_str() else{continue;};
+            let Some(p)=expected["candidatePassProbability"].as_f64()
+                .filter(|p|p.is_finite()&&(0.0..=1.0).contains(p))
+                else{continue;};
+            let actual=generation["evaluation"]["metrics"]["measurements"].as_array()
+                .into_iter().flatten().find(|row|row["id"]==id
+                    && row["holdout"]==false)
+                .and_then(|row|row["candidatePass"].as_bool());
+            if let Some(passed)=actual{
+                let error=(p-if passed{1.0}else{0.0}).powi(2);
+                public_losses.push(error);
+                public_observations.push(json!({
+                    "caseId":id,"predicted":p,"observed":passed,
+                    "brierError":error,"holdout":false
+                }));
+            }
+        }
+    }
+    let public_brier=if public_losses.is_empty(){Value::Null}else{
+        json!(public_losses.iter().sum::<f64>()/public_losses.len() as f64)
+    };
     json!({
         "policyRevision":policy["revision"],
         "targetRole":policy["target"]["role"],
         "taskPredictionErrors":errors,
         "proposalBrierError":proposal_error,
+        "publicCasePredictionErrors":public_observations,
+        "publicCaseBrierError":public_brier,
+        "publicCasePredictionsAssessed":public_losses.len(),
         "forecastOrigin":if proposal.is_object(){"model_authored_pre_edit"}
             else{"compiled_meta_prior"},
         "predictedProbability":probability,
