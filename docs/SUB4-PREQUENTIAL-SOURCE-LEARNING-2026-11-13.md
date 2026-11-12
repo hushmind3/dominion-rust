@@ -18,3 +18,13 @@ Designed with the prequential prediction/update loop in *Predict Before You Modi
 ## Verification
 
 New unit tests cover plan mismatch, missing independent receipt, off-target acceptance, source-shift discounting and forged-history exclusion. No full Rust build, CI or live-model RSI run was executed as part of this source change.
+
+## Recursive prediction-method repair
+
+Four or more source-bound, independently replayed prequential forecasts in the six most recent assessed observations, with mean Brier error above 0.35, add a bounded 2.0 search bonus to the *executable* predictor module. That bonus changes the compiled successor's actual ranked target and model instruction; it does not claim that a source modification will help. A measured predictor-target attempt within the four latest generations imposes a cooldown. An owner-restricted domain or verified inherited successor stage remains authoritative.
+
+## Historical receipt replay
+
+`rsi_system::revalidated_history` now reconstructs `pairedMeasured` for both accepted and rejected candidates from the original persisted `rsi_pair` receipt via `rsi::replayed_pair_metrics`, checking the base commit, metrics, verdict and evidence SHA against the evaluated candidate and generation. It restores changed paths from the evaluated candidate and recomputes the prequential label at history-read time. A synthetic history flag or edited Brier score cannot become an independent observation merely by being persisted.
+
+The predictor-drift and receipt-replay contracts have corresponding Rust unit tests in `rsi_meta_controller.rs` and `rsi_system.rs`; they are authored but not executed in this pass.
