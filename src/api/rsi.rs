@@ -191,7 +191,7 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
     record["evaluationEpisodes"]=json!(children.iter().filter(|j|is_rsi_evaluation_episode(j)).count());
     let candidates=state.store.all("rsi_candidate").iter().filter(|c|
         c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
-            .and_then(|id|state.store.get("job",id)).is_some_and(|j|!is_rsi_evaluation_episode(j))).count();
+            .and_then(|id|state.store.get("job",id)).is_some_and(|j|!is_rsi_evaluation_episode(&j))).count();
     let mut reused=0usize;
     for session in &sessions {
         reused+=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned())
