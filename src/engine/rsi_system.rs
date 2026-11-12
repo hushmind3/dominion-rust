@@ -809,12 +809,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
         evaluator alone decides adoption; do not edit the evaluator. \
-        You may INVENT new intelligence components with newComponents: each \ 
-        must include role, domain, purpose, sourcePaths AND changed \ 
-        integrationPaths that actually call or register that code. Propose \ 
-        interactionEdges with fromRole, toRole, fromPath, toPath, mechanism \ 
-        and observable for verifiable mutual improvement. These inventions \ 
-        become inheritable roles only after independent source adoption. \ 
+        You may INVENT new intelligence components with newComponents: each \
+        must include role, domain, purpose, sourcePaths AND changed \
+        integrationPaths that actually call or register that code. Propose \
+        interactionEdges with fromRole, toRole, fromPath, toPath, mechanism \
+        and observable for verifiable mutual improvement. These inventions \
+        become inheritable roles only after independent source adoption. \
         The accepted source will be compiled as your successor, which must \
         design and execute the subsequent change.\n\
         Source architecture (representatives; the full repository is searchable):\n{}\n\
