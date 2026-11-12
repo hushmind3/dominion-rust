@@ -163,7 +163,7 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
         "generatorCommit":commit,"historyCount":history.len(),
         "phase":phase,"target":target,"origin":origin,
         "partner":partner,"rootGenerationId":root_id,
-        "transitionGraphSha256":graph["sha256"],
+        "transitionGraphSha256":graph["sha256"],"transferGraph":graph,
         "sequence":["improve_primary","improve_complement","return_improved_method"],
         "nextPhase":match phase {"seed"=>"complement",
             "complement"=>"return",_=>"completed"},
@@ -173,6 +173,30 @@ pub(crate) fn propose(history:&[Value],frontier:&[Value],commit:&str,
     let mut program=core;
     program["revision"]=json!(sha(&program));
     program
+}
+/// Authenticates the descendant's reported observations, not the old
+/// supervisor's version of their ranking policy. The descendant can evolve
+/// transition_graph while the supervisor retains immutable source checks.
+pub(crate) fn valid_transfer_graph(graph:&Value)->bool {
+    let mut core=graph.clone();
+    let Some(obj)=core.as_object_mut() else{return false};
+    obj.remove("sha256");
+    let digest=sha(&core);
+    graph["source"]=="compiled_intergenerational_transfer_v1"
+        && graph["sha256"].as_str()==Some(digest.as_str())
+        && graph["observationalOnly"]==true
+        && graph["rewardSource"]=="independent_child_source_adoption"
+        && graph["edges"].as_array().is_some_and(|v|v.len()<=128
+            && v.iter().all(|row|{
+                let observations=row["attempts"].as_u64().unwrap_or(0);
+                let measured=row["independentlyMeasured"].as_u64().unwrap_or(0);
+                let adopted=row["nextGenerationAdoptions"].as_u64().unwrap_or(0);
+                let rejected=row["measuredNonAdoptions"].as_u64().unwrap_or(0);
+                observations>0 && measured<=observations && adopted<=measured
+                    && rejected<=measured && row["causalityProven"]==false
+                    && row["fromRole"].as_str().is_some_and(|v|!v.is_empty())
+                    && row["toRole"].as_str().is_some_and(|v|!v.is_empty())
+            }))
 }
 pub(crate) fn valid_program(program:&Value,frontier:&[Value],commit:&str,
     history_len:usize,graph:&Value)->bool {
@@ -187,6 +211,8 @@ pub(crate) fn valid_program(program:&Value,frontier:&[Value],commit:&str,
         && program["revision"].as_str()==Some(revision.as_str())
         && program["generatorCommit"]==commit
         && program["historyCount"].as_u64()==Some(history_len as u64)
+        && valid_transfer_graph(graph)
+        && program["transferGraph"]==graph
         && program["transitionGraphSha256"]==graph["sha256"]
         && matches!(program["phase"].as_str(),Some("seed"|"complement"|"return"))
         && program["currentSourceRebound"]==true
