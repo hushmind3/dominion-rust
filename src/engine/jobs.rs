@@ -618,6 +618,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             session["rsiSuccessorStage"]=input["rsiSuccessorStage"].clone();
             session["rsiMetaPolicy"]=input["rsiMetaPolicy"].clone();
             session["rsiMetaControlPolicy"]=input["rsiMetaActionPolicy"].clone();
+            session["rsiMutualCurriculum"]=input["rsiMutualCurriculum"].clone();
             session["rsiObjective"]=input["rsiObjective"].clone();
             session["rsiRecoveredPatch"]=recovered.clone();
             // A user-selected source file is an execution target even in a

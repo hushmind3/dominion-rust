@@ -70,6 +70,14 @@ pub fn definitions() -> Vec<Value> {
                 "description":"For component=system, all redesign roles including any new modules"}),
             "componentFiles":json!({"type":"object","description":"For component=system map each role to its own nonempty list of files from targetFiles; files cannot be credited twice",
                 "additionalProperties":{"type":"array","items":{"type":"string"},"minItems":1}}),
+            "interactionEdges":json!({"type":"array","maxItems":16,
+                "description":"Source-bound A->B improvement mechanism: both assigned sources must actually change; acceptance and descendant transfer are independently evaluated",
+                "items":{"type":"object","properties":{
+                    "fromRole":{"type":"string"},"toRole":{"type":"string"},
+                    "fromPath":{"type":"string"},"toPath":{"type":"string"},
+                    "mechanism":{"type":"string"},"expectedEffect":{"type":"string"}
+                },"required":["fromRole","toRole","fromPath","toPath","mechanism","expectedEffect"],
+                "additionalProperties":false}}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "hypothesis":text("Falsifiable causal limitation; at least 20 characters"),
             "design":text("Executable architecture, interface contracts, memory/learning/tool changes and failure handling; at least 30 characters"),

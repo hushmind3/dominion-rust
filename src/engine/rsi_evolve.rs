@@ -3999,6 +3999,7 @@ async fn run_loop(
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiMetaActionPolicy"]=plan["metaActionPolicy"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
+            child_input["rsiMutualCurriculum"]=plan["mutualCurriculum"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -4172,6 +4173,8 @@ async fn run_loop(
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
+        generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
@@ -5317,6 +5320,11 @@ fn compiled_system_generation_plan(
     // silently drops stages whose path/role/hash is no longer current.
     let successor_stage=crate::engine::rsi_system::inherited_stage(history,&frontier)
         .unwrap_or(Value::Null);
+    // A live, adopted predecessor's programme takes precedence. Otherwise
+    // the compiled meta agent authors the next A->B->A source curriculum.
+    let mutual=if successor_stage.is_object(){Value::Null}else{
+        crate::engine::rsi_mutual_evolution::curriculum(&frontier,&meta,DOMAINS)
+    };
     let successor_domain=successor_stage["domain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let architecture_domain=architecture_target["domain"].as_str()
@@ -5368,10 +5376,32 @@ fn compiled_system_generation_plan(
             ranked.insert(0,prioritised);
         }
     }
-    let paths=ranked.iter().filter_map(|row|row["path"].as_str())
+    let original_paths=ranked.iter().filter_map(|row|row["path"].as_str())
         .filter(|path|crate::engine::rsi::safe_path(path)
             && root.join(path).is_file())
         .take(3).collect::<Vec<_>>();
+    // Both source modules enter the NATIVE edit context, not merely the
+    // prompt text. The B module may belong to a different domain than A.
+    let mut paths=Vec::<String>::new();
+    if mutual["pair"].is_object()
+        && architecture_target["domain"]==domain {
+        for (key,sha_key) in [("fromPath","fromSourceSha256"),
+            ("toPath","toSourceSha256")] {
+            if let (Some(path),Some(sha))=(mutual["pair"][key].as_str(),
+                mutual["pair"][sha_key].as_str()) {
+                if crate::engine::rsi::safe_path(path) && root.join(path).is_file()
+                    && crate::engine::code_index::indexed_source_hash(
+                        state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                        .as_deref()==Some(sha) && !paths.iter().any(|p|p==path) {
+                    paths.push(path.to_owned());
+                }
+            }
+        }
+    }
+    for path in original_paths{
+        if paths.len()>=3{break;}
+        if !paths.iter().any(|p|p==path){paths.push(path.to_owned());}
+    }
     let directive=crate::engine::rsi_system::improvement_directive(history);
     Ok(json!({
         "source":"compiled_descendant_system_controller_v3",
@@ -5392,6 +5422,7 @@ fn compiled_system_generation_plan(
         "metaPolicy":meta,
         "metaActionPolicy":meta["controlPolicy"],
         "peerLineages":peers,
+        "mutualCurriculum":mutual,
         "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
@@ -5520,6 +5551,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiMetaPolicy"]!=plan["metaPolicy"]
             || job["input"]["rsiMetaActionPolicy"]!=plan["metaActionPolicy"]
             || job["input"]["rsiPeerLineages"]!=plan["peerLineages"]
+            || job["input"]["rsiMutualCurriculum"]!=plan["mutualCurriculum"]
             || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
             || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
             || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
@@ -5533,6 +5565,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiImprovementDirectiveVerified"]=json!(true);
         job["rsiMetaPolicyExecuted"]=json!(true);
+        job["rsiMutualProgrammeExecuted"]=json!(
+            plan["mutualCurriculum"]["pair"].is_object());
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
             "source":"same_compiled_descendant_recomputed_its_own_policy",
@@ -5544,6 +5578,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "metaSource":plan["metaPolicy"]["metaMechanismSource"],
             "metaActionPolicy":plan["metaActionPolicy"],
             "mutualDevelopment":plan["metaPolicy"]["nextMutualRedesign"],
+            "reciprocalCurriculum":plan["mutualCurriculum"]["revision"],
             "forecast":plan["metaPolicy"]["taskOutcomeForecast"],
             "rankingAuthority":"compiled_descendant_not_resident_supervisor"
         }));
@@ -5622,6 +5657,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let peer_instruction=crate::engine::rsi_meta_controller::peer_instruction(
             &job["input"]["rsiPeerLineages"]);
+        let mutual_instruction=crate::engine::rsi_mutual_evolution::instruction(
+            &job["input"]["rsiMutualCurriculum"]);
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
@@ -5638,9 +5675,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "qualityProven":false
         }));
         format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
-            format!("{}\n\n{}\n{}",crate::engine::rsi_system::instruction(
+            format!("{}\n\n{}\n{}\n{}",crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
-                meta_instruction,peer_instruction),
+                meta_instruction,peer_instruction,mutual_instruction),
             job["input"]["rsiImprovementDirective"],feedback,target,
             current_source,format!("{research}{inherited_task}"))
     }else{

@@ -442,6 +442,37 @@ pub(crate) fn validate_plan_evidence(
             return Err("후손의 실행·학습·도구 정책이 실제 소스에 연결되지 않았습니다.".into());
         }
     }
+    // Check the *facts* behind a paired source-edit programme, never impose
+    // the older resident controller's partner-selection scoring function.
+    let mutual=&plan["mutualCurriculum"];
+    if !mutual.is_null() {
+        let pair=&mutual["pair"];
+        if mutual["source"]!="compiled_reciprocal_intelligence_curriculum_v1"
+            || mutual["causalityProven"]!=false
+            || mutual["qualityProven"]!=false
+            || !mutual["revision"].as_str().is_some_and(|s|
+                s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())) {
+            return Err("상호 지능 개선 프로그램의 출처와 증거 범위가 다릅니다.".into());
+        }
+        if pair.is_object(){
+            let a=frontier.iter().find(|row|row["role"]==pair["fromRole"]
+                && row["path"]==pair["fromPath"]
+                && row["sourceSha256"]==pair["fromSourceSha256"]);
+            let b=frontier.iter().find(|row|row["role"]==pair["toRole"]
+                && row["path"]==pair["toPath"]
+                && row["sourceSha256"]==pair["toSourceSha256"]);
+            if a.is_none() || b.is_none()
+                || pair["fromRole"]==pair["toRole"]
+                || pair["fromPath"]==pair["toPath"]
+                || mutual["primary"]!=a.cloned().unwrap_or(&Value::Null)
+                || mutual["phases"].as_array().is_none_or(|p|p.len()!=3) {
+                return Err("상호 발전 계획의 2개 실제 소스·단계가 일치하지 않습니다.".into());
+            }
+        }else if mutual["phases"].as_array()
+            .is_none_or(|phases|!phases.is_empty()){
+            return Err("대상이 없는 상호개선 계획에 실행 단계가 남았습니다.".into());
+        }
+    }
     let stage=&plan["successorStage"];
     if stage.is_object(){
         if !bound(stage) || !history.iter().any(|g|
