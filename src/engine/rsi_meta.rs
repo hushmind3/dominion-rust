@@ -91,7 +91,7 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
         "rsiSourceDir":source,"rsiKnowledgeSource":source,"rsiBaseCommit":source_commit,
         "rsiCampaignId":context.job_id,"rsiGeneratorCommit":generator_commit,
         "rsiIndexId":index["id"],"rsiFocusFiles":["src/engine/decompose.rs"],
-        "rsiSelectedDomain":null,"rsiTargetDomain":"tools",
+        "rsiSelectedDomain":"tools","rsiTargetDomain":"tools",
         "rsiDiagnostic":{"failed":1,"domain":"tools","focusFiles":["src/engine/decompose.rs"]},
         "rsiTargetPlan":{"domain":"tools","selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
         "rsiFrozenCases":rsi_worktree::metric_cases(),"rsiNativeInduction":false,

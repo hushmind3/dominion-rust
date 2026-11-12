@@ -2830,6 +2830,19 @@ pub fn diagnose_capabilities() -> Value {
         "failed":failures,"observations":observations})
 }
 
+/// Shared coordinator transition. Downstream evaluation executes this exact
+/// transition too, so a candidate may improve either target binding or the
+/// worker's interpretation of it. No evaluator-specific substitute selector.
+fn bind_inherited_target(input:&mut Value, next:&Value) {
+    if let Some(domain)=next["nextDomain"].as_str().filter(|domain|DOMAINS.contains(domain)) {
+        input["rsiSelectedDomain"]=json!(domain);
+        input["rsiDecisionInput"]=next.clone();
+    }else {
+        input["rsiSelectedDomain"]=Value::Null;
+        input["rsiDecisionInput"]=Value::Null;
+    }
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -3002,16 +3015,7 @@ async fn run_loop(
         } else {
             record["nextTrialAlgorithmId"] = Value::Null;
         }
-        if let Some(domain) = record["nextDecision"]["nextDomain"]
-            .as_str()
-            .filter(|domain| DOMAINS.contains(domain))
-        {
-            child_input["rsiSelectedDomain"] = json!(domain);
-            child_input["rsiDecisionInput"] = record["nextDecision"].clone();
-        } else {
-            child_input["rsiSelectedDomain"] = Value::Null;
-            child_input["rsiDecisionInput"] = Value::Null;
-        }
+        bind_inherited_target(&mut child_input,&record["nextDecision"]);
         // After an independently accepted generation, the next task is
         // selected from the *measured paired residuals*, not from a stale
         // parent_next_decision computed for the former source revision.
@@ -4022,6 +4026,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
+    if job["input"]["rsiMetaEpisode"]==true {
+        bind_inherited_target(&mut job["input"],&Value::Null);
+    }
     let objective = selection_objective(&job["input"]);
     let paired_target=paired_descendant_target(&job["input"]) || job["input"]["rsiSystemEvolution"]==true || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
