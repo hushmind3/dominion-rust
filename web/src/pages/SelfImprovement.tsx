@@ -35,7 +35,8 @@ function preferences():{selection:'manual'|'automatic';workload:Workload;provide
   workload:saved?.workload in workloads?saved.workload:'short',providerId:saved?.providerId||'',model:saved?.model||''}}
  catch{return {selection:'manual',workload:'short',providerId:'',model:''}}
 }
-const stops:Record<string,string>={attempt_limit:'선택한 작업량을 마쳤습니다. 같은 목표로 이어갈 수 있습니다.',
+const stops:Record<string,string>={capability_demonstrated:'검증된 개선을 3세대 연속 채택하고 다른 분야로 이어가는 데 성공했습니다.',
+ attempt_limit:'선택한 작업량을 마쳤습니다. 같은 목표로 이어갈 수 있습니다.',
  token_budget:'설정한 사용량에 도달했습니다. 연구와 선택 버전은 보존했습니다.',
  time_budget:'설정한 작업 시간이 끝났습니다. 연구와 선택 버전은 보존했습니다.',
  no_progress:'새로운 근거나 변경이 없어 반복 호출을 멈췄습니다.'}
