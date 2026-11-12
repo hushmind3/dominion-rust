@@ -33,7 +33,7 @@ The old operator `ruleId` includes the originating `acceptedCommit`. Its semanti
 2. A forged model string, changed usage total and second provider in the same session invalidate attribution.
 3. Actual `rsi_worktree::finish` rejects zero API calls and a mixed API-model session **before candidate registration**.
 4. A rewritten rule keeps its semantic method-family ID but must receive a distinct source-revision evidence ID.
-5. An archived independent paired evaluator receipt for one method revision may inform its newer family descendant; an unrelated method is excluded.
+5. A **synthetic unit-test fixture matching the archived independent paired-receipt schema** can inform a newer method-family revision; an unrelated method is excluded. This test is not an actual model or external benchmark run.
 
 ## Proof boundary
 
