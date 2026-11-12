@@ -119,6 +119,8 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
 pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
     symbiosis:&Value,allowed:&[&str],commit:&str,profile:Option<&str>)->Value{
     let profile=profile.filter(|p|hash_valid(p)).unwrap_or("");
+    // No frozen profile means no independently comparable intervention.
+    if profile.is_empty(){return Value::Null;}
     let primary=&meta["target"];
     let mut targets=BTreeMap::<String,Value>::new();
     for row in frontier.iter().filter(|row|grounded(row)
@@ -200,6 +202,7 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
 /// decision's receipt without rerunning an old copy of the child's planner.
 pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
     history_count:usize,profile:Option<&str>)->Result<(),String>{
+    if plan.is_null(){return Ok(());}
     let mut clean=plan.clone();
     let map=clean.as_object_mut().ok_or("요인별 실험 계획의 형식 오류")?;
     map.remove("sha256");
@@ -244,6 +247,30 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
 
 /// The active edit policy does not claim successful isolation; changed
 /// source paths are compared AFTER execution by the independent coordinator.
+/// Model-authored source edits remain its decision; the compiled descendant
+/// promotes information-gain experiments into its live meta-target choice.
+pub(crate) fn steer(mut meta:Value,plan:&Value)->Value{
+    let selected=&plan["selected"];
+    if !selected.is_object(){return meta;}
+    let target=&selected["target"];
+    if !grounded(target){return meta;}
+    let chosen=meta["alternatives"].as_array().into_iter().flatten()
+        .find(|item|item["target"]==*target).cloned();
+    let previous=meta["revision"].clone();
+    meta["target"]=target.clone();
+    if let Some(winner)=chosen {
+        meta["selectionEvidence"]=winner.clone();
+        meta["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+        meta["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    }
+    meta["mode"]=json!("independently_matched_factorial_experiment_design");
+    meta["factorialExperimentSha256"]=plan["sha256"].clone();
+    meta["revision"]=json!(digest(&json!([
+        previous,plan["sha256"],target,selected["phase"]
+    ])));
+    meta
+}
+
 pub(crate) fn compliance(plan:&Value,changed:&[Value])->Value{
     let row=&plan["selected"];
     let actual=changed.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>();

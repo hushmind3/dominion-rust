@@ -3037,6 +3037,7 @@ async fn run_loop(
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
+            child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -3850,6 +3851,7 @@ fn compiled_system_target(
         || plan["comparativeMode"] != input["rsiComparativeMode"]
         || plan["successorStage"] != input["rsiSuccessorStage"]
         || plan["symbioticCurriculum"] != input["rsiSymbioticCurriculum"]
+        || plan["factorialExperiment"] != input["rsiFactorialExperiment"]
         || plan["editPolicy"] != input["rsiEditPolicy"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
@@ -4149,14 +4151,23 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         .is_some_and(|domain|permitted.contains(&domain)){
         proposed_stage
     }else{Value::Null};
-    let meta=crate::engine::rsi_meta_controller::apply_successor_stage(transferred_meta,&stage);
+    let inherited_meta=crate::engine::rsi_meta_controller::apply_successor_stage(
+        transferred_meta,&stage);
+    let auto=parent["input"]["selectionPolicy"]=="automatic";
+    let initial_symbiosis=crate::engine::rsi_symbiosis::curriculum(
+        &history,&frontier,&inherited_meta,&permitted);
+    let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
+    let factorial=crate::engine::rsi_intervention_lab::design(
+        &history,&frontier,&inherited_meta,&initial_symbiosis,
+        &permitted,revision,profile.as_deref());
+    let factorial_active=auto && stage.is_null() && factorial["selected"].is_object();
+    let meta=if factorial_active {
+        crate::engine::rsi_intervention_lab::steer(inherited_meta,&factorial)
+    }else{inherited_meta};
     let architecture_target=meta["target"].clone();
-    // This compiled descendant's co-evolution algorithm proposes a coupled
-    // source-level experiment: capability -> complementary improver -> return.
-    // It must survive into the model editor, adoption lineage and next child.
+    // The same compiled child can rewrite its coupling search algorithm.
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&meta,&permitted);
-    let auto=parent["input"]["selectionPolicy"]=="automatic";
     let selected=if auto{
         architecture_target["domain"].as_str()
             .map(str::to_string).or(inherited.clone())
@@ -4195,7 +4206,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             row["path"]==stage["path"] && row["sourceHash"]==stage["sourceSha256"]){
         ranked.truncate(1);
     }
-    if auto && stage.is_null()
+    if auto && stage.is_null() && !factorial_active
         && symbiosis["complement"]["fromRole"]==architecture_target["role"]
         && symbiosis["primary"]["domain"]==domain {
         let partner=&symbiosis["complement"];
@@ -4210,6 +4221,22 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
                 ranked.truncate(4);
             }
         }
+    }
+    // Turn an information-gain experiment into exact executable edit scope.
+    // It is invalid as factorial evidence if the model edits outside scope;
+    // normal independent adoption remains a separate decision.
+    if factorial_active && architecture_target["domain"]==domain
+        && focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+        let selected=&factorial["selected"];
+        let targets=if selected["phase"]=="test_joint" {
+            vec![&selected["a"],&selected["b"]]
+        } else {vec![&selected["target"]]};
+        ranked=targets.into_iter().map(|row|json!({
+            "path":row["path"],"role":row["role"],
+            "sourceHash":row["sourceSha256"],
+            "source":"compiled_open_factorial_intervention",
+            "sourceIndexId":campaign["planIndexId"]
+        })).collect();
     }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
     if stage["source"]=="rebound_verified_model_successor_program_v1" {
@@ -4235,6 +4262,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "successorStage":stage,"editPolicy":descendant_policy,
         "symbioticCurriculum":symbiosis,
+        "factorialExperiment":factorial,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
@@ -4313,7 +4341,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || plan["metaPolicy"]!=job["input"]["rsiMetaPolicy"]
             || plan["architectureTarget"]!=job["input"]["rsiArchitectureTarget"]
             || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]
-            || plan["symbioticCurriculum"]!=job["input"]["rsiSymbioticCurriculum"]{
+            || plan["symbioticCurriculum"]!=job["input"]["rsiSymbioticCurriculum"]
+            || plan["factorialExperiment"]!=job["input"]["rsiFactorialExperiment"]{
             return Err("후손 바이너리·설계 revision·작업 입력이 다릅니다.".into());
         }
     }
@@ -4423,6 +4452,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiPeerLineages"]);
         let mutual_context=crate::engine::rsi_symbiosis::instruction(
             &job["input"]["rsiSymbioticCurriculum"]);
+        let factorial_context=crate::engine::rsi_intervention_lab::instruction(
+            &job["input"]["rsiFactorialExperiment"]);
         let stage=&job["input"]["rsiSuccessorStage"];
         let stage_context=if stage.is_object() {
             format!("\n[EXECUTABLE INHERITED SUCCESSOR PROGRAM] Design={} phase={} objective={} source={} sourceSha256={} learningPolicy={} toolPolicy={} executionPolicy={}. This is your parent's independently adopted task plan; actually implement the stage and improve the meta-program.\n",
@@ -4430,7 +4461,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{peer_context}\n{mutual_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
