@@ -763,9 +763,37 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     let public_brier=if public_losses.is_empty(){Value::Null}else{
         json!(public_losses.iter().sum::<f64>()/public_losses.len() as f64)
     };
+    // A peer-guided *attempt* is distinct from both donor success and
+    // recipient adoption. Future generations learn method portability only
+    // from attempts that actually reached the chosen indexed source.
+    let transfer=&policy["peerMethodTransfer"];
+    let source_focus=transfer["active"]==true
+        && generation["metaPolicyExecuted"]==true
+        && transfer["selectedRecipient"]["path"].as_str().is_some_and(|path|
+            generation["focusFiles"].as_array().is_some_and(|files|
+                files.iter().any(|file|file.as_str()==Some(path))));
+    let source_adopted=source_focus && independent_adoption(generation)
+        && transfer["selectedRecipient"]["path"].as_str().is_some_and(|path|
+            generation["acceptedSourceHashes"][path].as_str().is_some_and(
+                |sha|sha.len()==64&&sha.bytes().all(|b|b.is_ascii_hexdigit())));
+    let transfer_observation=json!({
+        "source":"measured_cross_lineage_recipient_observation_v1",
+        "hypothesisRevision":policy["revision"],
+        "fromPeerCandidates":transfer["references"].as_array()
+            .into_iter().flatten()
+            .filter_map(|row|row["candidateId"].as_str())
+            .take(4).collect::<Vec<_>>(),
+        "recipient":transfer["selectedRecipient"],
+        "sourceFocusExecuted":source_focus,
+        "independentlyAssessed":source_focus && assessed,
+        "recipientSourceIndependentlyAdopted":source_adopted,
+        "portableMethodSuperiorityProven":false,
+        "automaticPatchReuse":false
+    });
     json!({
         "policyRevision":policy["revision"],
         "targetRole":policy["target"]["role"],
+        "portableMethodObservation":transfer_observation,
         "taskPredictionErrors":errors,
         "proposalBrierError":proposal_error,
         "publicCasePredictionErrors":public_observations,
@@ -836,6 +864,19 @@ mod tests{
         assert_eq!(evolved["peerMethodTransfer"]["active"],true);
         assert_eq!(evolved["peerMethodTransfer"]["automaticallyApplied"],false);
         assert_eq!(evolved["peerMethodTransfer"]["transferProven"],false);
+        let observation=feedback(&evolved,&json!({
+            "metaPolicyExecuted":true,
+            "focusFiles":["src/engine/learning.rs"],
+            "candidateId":"recipient-1",
+            "accepted":false,
+            "evaluation":{"verdict":"rejected","metrics":{"eligible":true}}
+        }));
+        assert_eq!(observation["portableMethodObservation"]
+            ["sourceFocusExecuted"],true);
+        assert_eq!(observation["portableMethodObservation"]
+            ["recipientSourceIndependentlyAdopted"],false);
+        assert_eq!(observation["portableMethodObservation"]
+            ["portableMethodSuperiorityProven"],false);
         assert!(instruction(&evolved).contains("PORTABLE METHOD HYPOTHESIS"));
         assert_ne!(evolved["revision"],original["revision"]);
         let mut drift=peer.clone();
