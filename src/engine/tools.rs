@@ -67,12 +67,17 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
-        tool("rsi_system_plan", "Model-authored redesign of the running agent's architecture. This is ONLY a proposal; you must actually modify source and pass independent paired tests.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]}),
-            "hypothesis":text("Measured limitation, cause, and falsifiable prediction"),
-            "design":text("Concrete new algorithm or system architecture that this descendant will implement"),
-            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}),
-            "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
+        tool("rsi_system_plan", "Invent a causal modification to your own task and meta-agent architecture, including NEW modules and multi-component edits. The proposal becomes an inherited method only after every target is actually edited and independently adopted.", object(json!({
+            "component":text("Primary editable agent subsystem, or system for multi-component self-redesign"),
+            "components":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Optional independently evolvable subcomponents; required when component=system"}),
+            "componentFiles":json!({"type":"object","description":"Required for coupled redesign: map each named subsystem to its targetFiles"}),
+            "hypothesis":text("Observed limitation, root cause and falsifiable prediction"),
+            "design":text("Concrete executable new architecture or learning/control algorithm to implement"),
+            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12}),
+            "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "nextTargetFiles":json!({"type":"array","items":{"type":"string"},"maxItems":3,"description":"Next child's source targets after this design is adopted"}),
+            "methodHypothesis":text("Optional new recursive design/editing method and its causal rationale"),
+            "actionProgram":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":8,"description":"Optional NEW executable tool sequence, read before edit. This is a future-generation trial, not a current quality claim."})
         }),vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({
             "name":text("Reusable method name"),

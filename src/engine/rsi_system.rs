@@ -435,6 +435,9 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
 
 /// A model-authored design is an unproven experiment. It cannot modify the
 /// frozen evaluator or steer successors unless source changes are adopted.
+/// A descendant-authored meta-design is persisted as an experiment contract
+/// with exact source observations. The agent, not its supervisor, invents
+/// components, techniques, and executable exploration programs.
 pub(crate) fn propose(
     state:&crate::state::AppState,session_id:&str,body:&Value
 )->Result<Value,String>{
@@ -453,58 +456,146 @@ pub(crate) fn propose(
         || child["kind"]!="rsi_generation" || child["status"]!="running"
         || child["input"]["rsiCampaignId"]!=campaign_id
         || child["input"]["rsiSystemEvolution"]!=true
-        || child["cancelRequested"]==true{
-        return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
+        || child["cancelRequested"]==true {
+        return Err("진행 중인 자기재설계 후손만 설계할 수 있습니다.".into());
     }
     let component=body["component"].as_str()
-        .filter(|name|COMPONENTS.iter().any(|row|row.0==*name))
-        .ok_or("시스템 구성요소 지정 오류")?;
-    let next=body["nextDomain"].as_str()
-        .filter(|name|crate::engine::rsi_evolve::DOMAINS.contains(name))
-        .ok_or("다음 개선 분야 오류")?;
+        .filter(|name|valid_role(name))
+        .ok_or("시스템 구성요소 이름 오류")?;
+    let mut roles=body["components"].as_array()
+        .map(|items|items.iter().filter_map(Value::as_str)
+            .map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_else(||vec![component.to_string()]);
+    if component=="system" && roles.len()<2 {
+        return Err("전체 시스템 결합 설계는 2개 이상의 지능 구성요소를 지정해야 합니다.".into());
+    }
+    if roles.is_empty() || roles.len()>12 || roles.iter().any(|role|!valid_role(role)){
+        return Err("지능 구성요소 목록 형식 오류".into());
+    }
+    let mut unique_roles=BTreeSet::new();
+    if roles.iter().any(|role|!unique_roles.insert(role.clone())){
+        return Err("중복된 설계 구성요소".into());
+    }
+    if component!="system" && roles.len()>1 && !roles.iter().any(|r|r==component){
+        return Err("복합 설계에서 주 구성요소가 누락됐습니다.".into());
+    }
+    if component!="system" && roles.len()==1 && roles[0]!=component {
+        return Err("주 구성요소와 설계 범위가 일치하지 않습니다.".into());
+    }
+    let domain=body["nextDomain"].as_str()
+        .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+        .ok_or("후손의 다음 탐색 분야 오류")?;
     let hypothesis=body["hypothesis"].as_str()
         .filter(|v|v.trim().len()>=20 && v.len()<=2000)
-        .ok_or("검증 가능한 가설 20~2000자가 필요합니다.")?;
+        .ok_or("인과적인 개선 가설 20~2000자를 입력하세요.")?;
     let design=body["design"].as_str()
         .filter(|v|v.trim().len()>=30 && v.len()<=6000)
-        .ok_or("실행할 설계 30~6000자가 필요합니다.")?;
-    let paths=body["targetFiles"].as_array()
-        .filter(|rows|!rows.is_empty()&&rows.len()<=8)
-        .ok_or("변경할 실제 소스 1~8개를 선택하세요.")?;
+        .ok_or("실제 구현할 구조 또는 학습 방법 30~6000자가 필요합니다.")?;
+    let targets=body["targetFiles"].as_array()
+        .filter(|files|!files.is_empty()&&files.len()<=12)
+        .ok_or("변경할 소스 파일은 1~12개여야 합니다.")?;
     let root=fs::canonicalize(&state.config.workspace).map_err(|e|e.to_string())?;
-    let mut unique=std::collections::BTreeSet::new();
-    for path in paths {
-        let path=path.as_str().ok_or("소스 경로 문자열이 필요합니다.")?;
-        if !crate::engine::rsi::safe_path(path)||!unique.insert(path.to_string()){
-            return Err("중복 또는 허용되지 않은 소스 경로입니다.".into());
+    let mut target_set=BTreeSet::new();
+    let mut observed=serde_json::Map::new();
+    for file in targets {
+        let path=file.as_str().ok_or("소스 경로는 문자열이어야 합니다.")?;
+        if !crate::engine::rsi::safe_path(path)
+            || crate::engine::rsi::hidden_rsi_oracle_path(path)
+            || !target_set.insert(path.to_string())
+            || !(path.starts_with("src/")||path.starts_with("web/src/")) {
+            return Err("허용되지 않은 구성요소 파일 또는 중복 경로".into());
         }
-        let file=fs::canonicalize(root.join(path))
-            .map_err(|_|"설계 대상이 실제 소스에 없습니다.".to_string())?;
-        if !file.starts_with(&root)||!file.is_file(){
-            return Err("외부 파일은 설계 범위가 아닙니다.".into());
+        let target=root.join(path);
+        if target.exists() {
+            let real=fs::canonicalize(&target).map_err(|e|e.to_string())?;
+            if !real.starts_with(&root)||!real.is_file(){
+                return Err("작업공간 외부 소스를 변경할 수 없습니다.".into());
+            }
+            let bytes=fs::read(real).map_err(|e|e.to_string())?;
+            observed.insert(path.to_string(),json!({
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),"bytes":bytes.len()
+            }));
+        } else {
+            // New code modules are essential for real architectural novelty.
+            // Only an existing canonical parent under the detached checkout
+            // can authorize a new source. A proposal does NOT create it.
+            let parent=target.parent().ok_or("새 소스의 상위 경로 없음")?;
+            let canonical=fs::canonicalize(parent)
+                .map_err(|_|"새 소스는 기존 소스 디렉터리 아래에 만드세요.".to_string())?;
+            if !canonical.starts_with(&root)||!canonical.is_dir(){
+                return Err("새 소스의 상위 폴더가 실험 루트 밖입니다.".into());
+            }
+            observed.insert(path.to_string(),json!({"plannedNewSource":true}));
         }
     }
-    let commit=child["input"]["rsiGeneratorCommit"].as_str()
-        .ok_or("후손 원본 revision 없음")?;
+    let mut component_files=body["componentFiles"].clone();
+    if roles.len()==1 && !component_files.is_object(){
+        component_files=json!({roles[0].clone():targets});
+    }
+    for role in &roles {
+        let files=component_files[role].as_array()
+            .filter(|rows|!rows.is_empty())
+            .ok_or("각 구성요소에 실제 변경 대상 파일을 배정하세요.")?;
+        if files.iter().any(|file|file.as_str()
+            .is_none_or(|path|!target_set.contains(path))) {
+            return Err("구성요소 파일이 전체 수정 대상에 포함되지 않습니다.".into());
+        }
+    }
+    if let Some(program)=body["actionProgram"].as_array(){
+        if program.len()<2 || program.len()>8
+            || !program.iter().all(|step|step.as_str().is_some_and(|tool|
+                matches!(tool,"code_search"|"workspace_read_range"|"workspace_replace"
+                    |"workspace_replace_range"|"workspace_replace_function"
+                    |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"))) {
+            return Err("새 개선 프로그램에는 허용된 도구 2~8개가 필요합니다.".into());
+        }
+        let read=program.iter().position(|step|step=="workspace_read_range");
+        let write=program.iter().position(|step|matches!(step.as_str(),Some(
+            "workspace_replace"|"workspace_replace_range"
+            |"workspace_replace_function"|"workspace_write")));
+        if read.zip(write).is_none_or(|(r,w)|r>=w) {
+            return Err("개선 프로그램은 실제 소스 관찰 후 소스 편집을 수행해야 합니다.".into());
+        }
+    }
+    let next_files=body["nextTargetFiles"].as_array()
+        .cloned().unwrap_or_default();
+    if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
+        .is_none_or(|path|!crate::engine::rsi::safe_path(path)
+            || crate::engine::rsi::hidden_rsi_oracle_path(path))) {
+        return Err("다음 세대의 목표 파일은 허용된 소스 3개 이하여야 합니다.".into());
+    }
+    let method_hypothesis=body["methodHypothesis"].as_str().unwrap_or("");
+    if method_hypothesis.len()>1200 {
+        return Err("개선 방법의 인과 설명이 너무 깁니다.".into());
+    }
+    let generator=child["input"]["rsiGeneratorCommit"].as_str()
+        .ok_or("후손 소스 버전이 없습니다.")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,next,hypothesis,design,paths]).to_string().as_bytes()));
+        generator,component,&roles,domain,hypothesis,design,targets,
+        &component_files,&body["actionProgram"],&next_files,method_hypothesis
+    ]).to_string().as_bytes()));
     let proposal=json!({
-        "id":format!("system-design-{revision}"),"status":"proposed",
-        "source":"model_authored_system_design",
+        "id":format!("system-design-{revision}"),
+        "source":"model_authored_system_design","status":"proposed",
         "campaignId":campaign_id,"generationJobId":child_id,
-        "generatorCommit":commit,"component":component,
-        "nextDomain":next,"hypothesis":hypothesis,
-        "design":design,"targetFiles":paths,
+        "generatorCommit":generator,
+        "component":component,"components":roles,"componentFiles":component_files,
+        "nextDomain":domain,"nextTargetFiles":next_files,
+        "hypothesis":hypothesis,"design":design,"targetFiles":targets,
+        "methodHypothesis":method_hypothesis,
+        "actionProgram":body["actionProgram"],
+        "observedSources":observed,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
-    state.store.put("session",&session).ok_or("설계 저장 실패")?;
+    state.store.put("session",&session).ok_or("개선 설계 기록 저장 실패")?;
     state.store.audit("rsi.system_design_proposed",json!({
         "campaignId":campaign_id,"generationJobId":child_id,
-        "designId":proposal["id"],"qualityProven":false
+        "designId":proposal["id"],"roles":proposal["components"],
+        "targetFiles":proposal["targetFiles"],"qualityProven":false
     }));
     Ok(json!({"proposal":proposal,
-        "next":"실제 코드를 변경해야 합니다. 독립 A/B 채택 이전에는 개선 증거가 아닙니다."}))
+        "next":"이제 실제 Rust 소스를 수정하세요. 변경된 모든 targetFiles가 채택되기 전에는 설계나 개선 프로그램을 다음 세대에 계승하지 않습니다."}))
 }
 
 /// The model's accepted goal remains an input to its own next binary.
