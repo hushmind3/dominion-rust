@@ -178,6 +178,31 @@ fn offspring_priority(attempts:usize,measured_wins:usize)->f64{
         +0.12/(attempts as f64+1.0).sqrt()
 }
 
+/// Persist the last measured generation immediately, even if the campaign
+/// stops at its token/time/attempt budget before another select() call.
+/// A later campaign must be able to recover that final verified stepping
+/// stone without needing the old campaign's in-memory history.
+pub(crate) fn persist_completed(
+    state:&AppState,generation:&Value,base:&str,cases:&Value
+)->bool{
+    if generation["accepted"]==true
+        ||generation["verification"]["checksPassed"]!=true{
+        return false;
+    }
+    let Some(id)=generation["candidateId"].as_str() else{return false};
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    if generation["evaluation"]["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"]{
+        return false;
+    }
+    let Ok(plan)=rsi::case_plan(cases) else{return false};
+    let oracle=format!("{:x}",Sha256::digest(
+        include_bytes!("rsi_oracle_fixture.rs")));
+    if candidate_scores(state,&candidate,base,&plan,&oracle).is_none(){
+        return false;
+    }
+    remember(state,&plan_identity(base,&plan,&oracle),&candidate)
+}
+
 /// Only completed, independently evaluated candidates enter the archive. The
 /// live campaign and the persisted archive share the verification gate; a
 /// same-patch alias or an unverified claim cannot consume exploration credit.
@@ -398,6 +423,27 @@ mod tests {
         assert_eq!(next["adopted"], false);
         assert_eq!(next["qualityProven"], false);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn last_measured_generation_persists_without_a_following_select() {
+        let (state,root)=state();
+        let base="a".repeat(40);
+        let generation=insert(&state,"last-campaign-result",[0.53,0.52]);
+        // The campaign exits immediately after this neutral evaluation.
+        assert!(persist_completed(&state,&generation,&base,&plan()));
+        assert!(!persist_completed(&state,&generation,&"c".repeat(40),&plan()));
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let restarted=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let recovered=select(&restarted,&[],&base,&plan());
+        assert_eq!(recovered["candidateId"],generation["candidateId"]);
+        assert_eq!(recovered["persisted"],true);
+        drop(restarted);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
