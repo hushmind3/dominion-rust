@@ -6,10 +6,17 @@
 //! can accept a candidate or reveal hidden evaluator cases.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap,BTreeSet};
 
-const TASK_ROLES: &[&str] = &["models", "learning", "memory", "tools",
-    "harness", "algorithms"];
+// Learnable intelligence roles are discovered from the current source graph,
+// including genuine child-invented modules; only the self-improver role is
+// excluded from the *task*-side of a causal A<->meta experiment.
+fn task_role(role:&str)->bool {
+    !role.is_empty() && role.len()<=96 && role!="system"
+        && role!="improvement_methods"
+        && role.bytes().all(|b|b.is_ascii_alphanumeric()
+            || b==b'_'||b==b'-')
+}
 
 fn revision(value: &Value) -> String {
     format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap_or_default()))
@@ -77,7 +84,7 @@ fn principle(g: &Value) -> Option<&Value> {
     let p = &g["systemDesign"]["improvementPrinciple"];
     (p["source"] == "model_authored_improvement_principle_v1"
         && p["name"].as_str().is_some_and(|s| !s.is_empty())
-        && p["taskRole"].as_str().is_some_and(|s| TASK_ROLES.contains(&s))
+        && p["taskRole"].as_str().is_some_and(task_role)
         && p["methodRole"] == "improvement_methods")
         .then_some(p)
 }
@@ -103,8 +110,8 @@ pub(crate) fn validate_authored(
     let transfer_prediction = field("transferPrediction", 25, 1400)?;
     let learning_signal = field("learningSignal", 20, 800)?;
     let role = authored["taskRole"].as_str()
-        .filter(|r| TASK_ROLES.contains(r))
-        .ok_or("개선 원리는 실제 모델·기억·학습·도구·하네스·알고리즘을 대상으로 해야 합니다.")?;
+        .filter(|r| task_role(r))
+        .ok_or("개선 원리는 기존 지능 또는 후손이 창조한 지능 역할을 대상으로 해야 합니다.")?;
     let task_path = authored["taskFile"].as_str()
         .filter(|path| crate::engine::rsi::safe_path(path))
         .ok_or("실제 지능 소스 경로가 필요합니다.")?;
@@ -139,20 +146,37 @@ pub(crate) fn validate_authored(
 /// The reconstructed archive can be revised by editing THIS Rust source.
 pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value {
     let mut family = BTreeMap::<String, Vec<&Value>>::new();
+    let mut discovered_roles=BTreeSet::<String>::new();
+    for f in frontier {
+        if let Some(role)=f["role"].as_str().filter(|r|task_role(r)) {
+            discovered_roles.insert(role.to_string());
+        }
+    }
+    for g in history {
+        if let Some(map)=g["systemDesign"]["componentFiles"].as_object() {
+            for role in map.keys() {
+                if task_role(role) {discovered_roles.insert(role.clone());}
+            }
+        }
+        if let Some(role)=g["systemDesign"]["component"].as_str()
+            .filter(|r|task_role(r)){
+            discovered_roles.insert(role.to_string());
+        }
+    }
     let mut attempts = BTreeMap::<String, u64>::new();
     let mut accepted_roles = BTreeMap::<String, u64>::new();
     for g in history {
         if g["systemDesign"]["source"] == "model_authored_system_design" {
-            for role in TASK_ROLES {
+            for role in &discovered_roles {
                 if !paths_for_role(&g["systemDesign"], role).is_empty() {
-                    *attempts.entry((*role).to_string()).or_default() += 1;
+                    *attempts.entry(role.clone()).or_default() += 1;
                 }
             }
         }
         if adopted(g) {
-            for role in TASK_ROLES {
+            for role in &discovered_roles {
                 if role_adopted(g, role) {
-                    *accepted_roles.entry((*role).to_string()).or_default() += 1;
+                    *accepted_roles.entry(role.clone()).or_default() += 1;
                 }
             }
         }
@@ -272,7 +296,7 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
     // The preference is a LEARNABLE policy: the rebuilt child can edit this
     // module, change the criterion or invent an entirely different method.
     let mut task_candidates = frontier.iter().filter(|f|
-        f["role"].as_str().is_some_and(|r| TASK_ROLES.contains(&r))
+        f["role"].as_str().is_some_and(task_role)
         && f["sourceSha256"].as_str().is_some_and(|s| s.len() == 64)
         && f["path"].as_str().is_some_and(crate::engine::rsi::safe_path))
         .collect::<Vec<_>>();
@@ -404,8 +428,13 @@ pub(crate) fn established_transfer(history: &[Value]) -> bool {
                 || child["generatorBinarySha256"] == parent["generatorBinarySha256"] {
                 return false;
             }
-            let cross_role = TASK_ROLES.iter().copied().any(|other|
-                other != source_role && role_adopted(child, other));
+            let cross_role = child["systemDesign"]["componentFiles"].as_object()
+                .is_some_and(|roles|roles.keys().any(|other|
+                    task_role(other) && other!=source_role
+                    && role_adopted(child,other)))
+                || child["systemDesign"]["component"].as_str()
+                    .is_some_and(|other|task_role(other)
+                        && other!=source_role && role_adopted(child,other));
             let (next_wins, next_losses, next_cases) = task_measurement(child);
             cross_role && next_cases >= 2 && next_wins > next_losses
         })
@@ -498,6 +527,28 @@ mod tests {
         let p=plan(&history,&[], "0123456789abcdef0123456789abcdef01234567");
         assert_eq!(p["shouldProbeTaskMethod"],false);
         assert_eq!(p["consecutivePrincipleProbes"],2);
+    }
+    #[test]
+    fn invented_intelligence_roles_can_create_real_principle_experiments() {
+        assert!(task_role("new_reasoning_architecture_77"));
+        assert!(!task_role("improvement_methods"));
+        let mut assignments=serde_json::Map::new();
+        assignments.insert("new_reasoning_architecture_77".into(),
+            json!(["src/engine/new_reasoning.rs"]));
+        assignments.insert("improvement_methods".into(),
+            json!(["src/engine/rsi_principle_lab.rs"]));
+        let p=json!({"name":"novel_learning_principle",
+            "taskRole":"new_reasoning_architecture_77",
+            "taskFile":"src/engine/new_reasoning.rs",
+            "methodFile":"src/engine/rsi_principle_lab.rs",
+            "failureMode":"A fixed search method never considers newly invented reasoning modules.",
+            "mechanism":"A descendant learns a new method from testable task-level observations.",
+            "counterfactual":"Without the mechanism the next child cannot refine the new learning source.",
+            "transferPrediction":"The new reasoning module transfers improvement capability to other roles.",
+            "learningSignal":"Aggregate independent gains and measured descendant productivity."});
+        assert!(validate_authored(&p,&assignments,
+            &[json!("src/engine/new_reasoning.rs"),
+              json!("src/engine/rsi_principle_lab.rs")]).is_ok());
     }
     #[test]
     fn coupling_requires_two_distinct_witnessed_sources() {
