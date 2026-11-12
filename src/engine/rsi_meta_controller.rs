@@ -408,6 +408,41 @@ pub(crate) fn steer_open_program(mut policy:Value,graph:&Value)->Value {
         serde_json::to_vec(&unsigned).unwrap_or_default())));
     policy
 }
+/// Learner-on-learner feedback. Repeated independent forecasting errors
+/// trigger a source-edit assignment for the LEARNING ALGORITHM itself,
+/// rather than adding another predetermined recursive stage.
+pub(crate) fn steer_learner_repair(mut policy:Value,ledger:&Value,
+    frontier:&[Value],allowed:&[&str])->Value {
+    if ledger["predictiveCalibration"]["needsLearnerSourceRevision"]!=true {
+        return policy;
+    }
+    let target=frontier.iter().find(|row|
+        row["role"]=="improvement_methods"
+        && row["path"]=="src/engine/rsi_principle_learning.rs"
+        && row["domain"].as_str().is_some_and(|d|allowed.contains(&d))
+        && row["sourceSha256"].as_str().is_some_and(|s|s.len()==64));
+    let Some(target)=target else{return policy};
+    let prediction=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==*target).cloned()
+        .unwrap_or_else(||json!({
+            "target":target,"predictedAcceptance":0.5,
+            "uncertainty":0.5,"observedTrials":0,
+            "source":"independent_meta_calibration_repair_hypothesis"
+        }));
+    policy["target"]=target.clone();
+    policy["prediction"]=prediction.clone();
+    policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
+    policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
+    policy["selectionMode"]=json!("verified_calibration_driven_learner_rewrite");
+    policy["principleLearningSha256"]=ledger["sha256"].clone();
+    policy["learnerDiagnostic"]=ledger["predictiveCalibration"].clone();
+    let mut copy=policy.clone();
+    if let Some(body)=copy.as_object_mut(){body.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&copy).unwrap_or_default())));
+    policy
+}
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     // The parent may enforce a content hash, but never re-run or override
     // the descendant's compiled search ranking. Hash binds the exact
