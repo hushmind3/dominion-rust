@@ -141,14 +141,28 @@ async function main() {
   const body=await response.json().catch(()=>({}));
   if(!response.ok)throw Error("GitHub Models tool preflight failed: HTTP "+response.status+
     " "+JSON.stringify(body).slice(0,1200));
-  const nativeCalls=body.choices?.[0]?.message?.tool_calls||[];
-  if(!nativeCalls.some(call=>call?.function?.name==="code_search")){
-    throw Error("GitHub-hosted model did not produce the required native code_search tool call");
-  }
+  const selected=body.choices?.[0]||{};
+  const reply=selected.message||{};
+  const nativeCalls=reply.tool_calls||[];
+  // Persist only the response SHAPE, never bearer credentials. This makes
+  // model-access/routing failures diagnosable from a redacted CI artifact.
   receipt.preflight={
-    githubModels:true,nativeToolCalls:nativeCalls.length,
+    githubModels:true,responseStatus:response.status,
+    rootKeys:Object.keys(body).slice(0,12),
+    choiceKeys:Object.keys(selected).slice(0,12),
+    messageKeys:Object.keys(reply).slice(0,12),
+    finishReason:selected.finish_reason||null,
+    nativeToolNames:nativeCalls.map(call=>call?.function?.name||null),
+    messagePreview:typeof reply.content==="string"?
+      reply.content.slice(0,160):null,
+    nativeToolCalls:nativeCalls.length,
     model,latencyMs:Date.now()-t0,usage:body.usage||null
   };
+  persist();
+  if(!nativeCalls.some(call=>call?.function?.name==="code_search")){
+    throw Error("GitHub-hosted model native-call preflight mismatch: "+
+      JSON.stringify(receipt.preflight).slice(0,900));
+  }
   receipt.modelDigest=null;
   receipt.providerToolMode="native";
   receipt.modelSource="GitHub Models hosted inference";
