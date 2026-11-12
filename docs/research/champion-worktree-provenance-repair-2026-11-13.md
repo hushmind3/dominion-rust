@@ -41,3 +41,11 @@ These changes are actual GitHub source edits, not executed success. A Rust toolc
 The decisive next evaluation should inspect: ordinary champion prepare → actual model.usage → verified source tool write → independent A/B replay → accepted patch → next rebuilt binary's model & method decisions → genuine model-driven downstream source improvement in subsequent generations.
 
 Independent source material: [Darwin Gödel Machine paper](https://arxiv.org/abs/2505.22954), and [open implementation](https://github.com/kew-lab/darwin-godel-machine). DGM itself treats model-authored mutation logs, benchmark evaluations and diverse stepping-stone archives as different evidence roles rather than a single undifferentiated success marker.
+
+## 5. Regression coverage of the exact user-facing path
+
+The API test `natural_language_start_queues_selected_model_only_on_clean_champion_branch` now starts from a real `dominion-champion` Git checkout and asserts that the newly queued model-driven job carries the exact recorded champion branch, source, base commit and selected provider/model. The existing legacy `dominion-sub` integration case remains intact.
+
+The 4-generation `goal_capability_loop_inherits_research_adopts_and_applies_next_decision` source integration test also now uses `dominion-champion`: it exercises an actual descendant source commit being accepted, a later rebuilt descendant executing, a rejected tampered patch, a refusal on `main`, and explicit application of the independently measured selected commit back to the champion source branch. The test has been updated, not executed yet.
+
+The candidate archive remains the same byte-for-byte source as main's durable cross-campaign archive, including persisted neutral stepping stones and child-attempt counts.
