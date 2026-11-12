@@ -234,7 +234,7 @@ pub(crate) fn peer_lineage_references(
         }
         if aligned.is_empty() {continue;}
         let components=design_roles(design);
-        let role_match=preferred_role.is_some_and(|role|components.iter().any(|name|name==role));
+        let role_match=preferred_role.is_some_and(|role|components.iter().any(|name|name.as_str()==role));
         let meta=candidate["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0);
         let gains=candidate["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0);
         let score=i64::from(role_match)*1_000+(meta.min(20) as i64)*30
@@ -285,6 +285,16 @@ pub(crate) fn validate_peer_references(
             || row["evaluationProfileSha256"]!=profile_sha
             || row["automaticPatchReuse"]!=false {
             return Err("중복·비검증 교차 계보 참조".into());
+        }
+        let generation_id=row["generationId"].as_str()
+            .ok_or("교차 계보 세대 ID 없음")?;
+        let original=state.store.get("rsi_generation",generation_id)
+            .ok_or("교차 계보 세대 소실")?;
+        if original["campaignId"]!=row["campaignId"]
+            || original["candidateId"]!=id
+            || original["evaluationProfileSha256"]!=profile_sha
+            || adopted_design(&original).is_none() {
+            return Err("교차 계보 출처·후손 설계의 원본 기록 오류".into());
         }
         let candidate=state.store.get("rsi_candidate",id).ok_or("교차 계보 후보 소실")?;
         if candidate["status"]!="verified"
@@ -761,13 +771,21 @@ pub(crate) fn propose(
 /// Reuse the model's target only when its *source change*, not its
 /// explanation, was independently evaluated and adopted.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
-    // A failed or research-only generation must not erase a previously
-    // adopted executable design. Source-genuine designs remain inherited
-    // across later attempts until another accepted design supersedes them.
-    let design=latest_adopted_design(history)?;
+    // A failed generation must not erase an adopted design. Yet continuing
+    // to pin its target after repeated unsuccessful attempts creates an
+    // infinite repair loop. Keep the design in the lineage capsule while
+    // releasing the planner to explore after two actual failed continuations.
+    let (accepted_at,design)=history.iter().enumerate().rev()
+        .find_map(|(index,record)|adopted_design(record).map(|design|(index,design)))?;
     let domain=design["nextDomain"].as_str()?;
-    crate::engine::rsi_evolve::DOMAINS.contains(&domain)
-        .then(||domain.to_string())
+    if !crate::engine::rsi_evolve::DOMAINS.contains(&domain) {return None;}
+    let exhausted=history[accepted_at+1..].iter()
+        .filter(|attempt|attempt["accepted"]!=true && attempt["domain"]==domain)
+        .filter(|attempt|attempt["candidateId"].is_string()
+            || attempt["error"].as_str().is_some_and(|s|!s.is_empty())
+            || attempt["newFindings"].as_u64().unwrap_or(0)>0)
+        .take(2).count();
+    (exhausted<2).then(||domain.to_string())
 }
 
 /// Whole-system handoff evidence is separate from a source patch's score.
@@ -983,7 +1001,8 @@ mod tests {
     #[test]
     fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
         let base=json!({"generatorCommit":"parent","jobId":"worker",
-            "acceptedCommit":"child","candidateOrigin":"model_driven_detached_worktree",
+            "acceptedCommit":"child","candidateId":"verified-candidate",
+            "candidateOrigin":"model_driven_detached_worktree",
             "acceptedSourceHashes":{"src/engine/learning.rs":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "accepted":true,
             "evaluation":{"metrics":{"eligible":true}},
@@ -997,6 +1016,20 @@ mod tests {
             invalid[key]=value;
             assert_eq!(inherited_domain(&[invalid]),None);
         }
+        let mut after_failure=vec![base.clone(),json!({
+            "id":"failed-next","accepted":false,"domain":"learning",
+            "error":"first attempt did not compile","newFindings":1
+        })];
+        assert_eq!(inherited_domain(&after_failure),Some("learning".into()),
+            "one failure must not erase an adopted design");
+        assert_eq!(lineage_capsule(&after_failure)["acceptedDesigns"].as_array().unwrap().len(),1);
+        assert_eq!(lineage_capsule(&after_failure)["failureCounterexamples"].as_array().unwrap().len(),1);
+        after_failure.push(json!({"id":"failed-again","accepted":false,
+            "domain":"learning","error":"different approach failed"}));
+        assert_eq!(inherited_domain(&after_failure),None,
+            "after repeated failure a descendant may explore another domain");
+        assert_eq!(lineage_capsule(&after_failure)["acceptedDesigns"].as_array().unwrap().len(),1,
+            "target exploration must not discard adopted design history");
         let mut irrelevant=base.clone();
         irrelevant["systemDesign"]["targetFiles"]=json!(["src/engine/browser.rs"]);
         assert_eq!(inherited_domain(&[irrelevant]),None);
