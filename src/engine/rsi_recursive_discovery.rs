@@ -192,8 +192,12 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
                     && f["path"]=="src/engine/rsi_evolve.rs"))
                 .or_else(||frontier.first());
             if let Some(f)=candidate{
-                let material=json!([commit,history.len(),f["role"],
-                    f["sourceSha256"],mutual["pair"],interaction]);
+                // Stable experimental identity across failed generations:
+                // changing the arbitrary name every time would prevent
+                // learning the true failure rate of one causal hypothesis.
+                let material=json!([commit,f["role"],f["sourceSha256"],
+                    mutual["pair"]["fromRole"],mutual["pair"]["toRole"],
+                    interaction]);
                 let seed=hash(&material);
                 let suffix=&seed[..12];
                 let role=format!("causal_synthesis_{suffix}");
@@ -203,9 +207,8 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
                     invention=json!({
                         "role":role,"domain":"improver",
                         "newFile":format!("src/engine/rsi_{role}.rs"),
-                        "integrationFiles":[
-                            "src/engine/rsi_evolve.rs","src/engine/mod.rs"
-                        ],
+                        "integrationFiles":["src/engine/rsi_evolve.rs"],
+                        "moduleRegistrar":"src/engine/mod.rs",
                         "integrationSymbol":format!("synthesis_{suffix}"),
                         "modelDesignField":"moduleIntroductions",
                         "sourceOfHypothesis":if matched>0{
@@ -246,7 +249,23 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
             && g["recursiveDiscovery"]["invention"]["role"]==invention["role"]
             && g["candidateId"].is_string()
             && g["accepted"]!=true).count();
-        if same>=2{phase="observe_factorial".into();target=Value::Null;}
+        if same>=2 {
+            if let Some(method)=frontier.iter().find(|f|
+                f["path"]=="src/engine/rsi_recursive_discovery.rs"
+                    && f["role"]=="improvement_methods")
+                .or_else(||frontier.iter().find(|f|
+                    f["path"]=="src/engine/rsi_meta_controller.rs"
+                    && f["role"]=="improvement_methods")){
+                // Evolve the experiment-invention algorithm instead of
+                // rolling a new meaningless role ID after repeated failure.
+                phase="repair_discovery_method".into();
+                target=method.clone();
+                invention=Value::Null;
+            }else{
+                phase="observe_factorial".into();
+                target=Value::Null;invention=Value::Null;
+            }
+        }
     }
     let core=json!({
         "source":"compiled_recursive_discovery_program_v1",
@@ -285,7 +304,8 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
     }
     if !matches!(plan["phase"].as_str(),
         Some("invent_new_intelligence"|"develop_invented_capability"|
-            "return_to_origin"|"rewrite_discovery_method"))
+            "return_to_origin"|"rewrite_discovery_method"|
+            "repair_discovery_method"))
         || !frontier.iter().any(|f|f==&plan["target"]){return false;}
     if plan["phase"]=="invent_new_intelligence"{
         let source=plan["invention"]["newFile"].as_str().unwrap_or("");
@@ -295,7 +315,15 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
             && plan["invention"]["role"].as_str().is_some_and(|r|
                 r.starts_with("causal_synthesis_")
                 && r.len()<=64)
-            && plan["invention"]["mustActuallyWireExistingCallSite"]==true;
+            && plan["invention"]["mustActuallyWireExistingCallSite"]==true
+            && plan["invention"]["integrationFiles"].as_array().is_some_and(
+                |files|files.len()==1 && files[0]=="src/engine/rsi_evolve.rs");
+    }
+    if plan["phase"]=="repair_discovery_method"{
+        return plan["target"]["role"]=="improvement_methods"
+            && plan["target"]["path"].as_str().is_some_and(|p|
+                matches!(p,"src/engine/rsi_recursive_discovery.rs"
+                    |"src/engine/rsi_meta_controller.rs"));
     }
     let ancestor=&plan["ancestry"];
     sha40(&ancestor["birthCommit"])
@@ -310,13 +338,15 @@ pub(crate) fn instruction(plan:&Value)->String{
     let source=&plan["target"];
     let change=match phase{
         "invent_new_intelligence"=>
-            "INVENT a genuinely NEW executable intelligence ability, not merely a renamed helper. Create the proposed new Rust module and integrate it with actual executable source consumers. Call rsi_system_plan(component=system, components=[new role, improvement_methods], componentFiles, moduleIntroductions, interactionEdges, successorStages); include integrationSymbol in BOTH changed implementation and the existing execution consumer. A subsequent accepted descendant must improve the new capability, then return to improve the original subsystem and rewrite THIS experiment-discovery algorithm.",
+            "INVENT a genuinely NEW executable intelligence ability, not merely a renamed helper. Create the proposed Rust module, register it in src/engine/mod.rs and call its new method from the REAL compiled src/engine/rsi_evolve.rs. Call rsi_system_plan(component=system, components=[new role, improvement_methods], componentFiles, moduleIntroductions, interactionEdges, successorStages); include the same integrationSymbol in BOTH the new implementation and the changed rsi_evolve.rs execution consumer. Include the exact new module in moduleIntroductions.newFiles and rsi_evolve.rs in moduleIntroductions.integrationFiles. A subsequent accepted descendant must improve the new capability, then return to improve the original subsystem and rewrite THIS experiment-discovery algorithm.",
         "develop_invented_capability"=>
             "An independently adopted descendant has already introduced a source-integrated new intelligence. Actually change its CURRENT module's implementation and measure independently. This stage is not complete until a rebuilt accepted child has rewritten the new component.",
         "return_to_origin"=>
             "A compiled child has independently improved the invented ability. Use that improved implementation to REWRITE the original agent component's source code. Source-level adoption, not a message claiming transfer, is required.",
         "rewrite_discovery_method"=>
             "A descendant has independently improved the original agent component using the invented ability. NOW rewrite THIS program's method of generating new intelligence experiments, or another genuine meta experiment source. The next rebuilt descendant must inherit the changed meta algorithm.",
+        "repair_discovery_method"=>
+            "Multiple independently evaluated candidate inventions from the same stable source-hypothesis failed. Change the SOURCE of the discovery method; invent a better experiment selection and failure model, do not merely rename or replay the candidate.",
         _=>"",
     };
     format!(
