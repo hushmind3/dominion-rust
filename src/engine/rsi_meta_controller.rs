@@ -34,8 +34,12 @@ fn model_design_roles(g:&Value)->Vec<String>{
         .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
             "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
         .filter(|role| {
-            let Some(files)=design["componentFiles"][*role].as_array()
-                .filter(|files|!files.is_empty()) else{return false;};
+            let files=design["componentFiles"][*role].as_array()
+                .filter(|files|!files.is_empty())
+                .or_else(||(design["component"]==*role
+                    && design["componentFiles"].is_null())
+                    .then(||design["targetFiles"].as_array()).flatten());
+            let Some(files)=files else{return false;};
             let paths=design["targetFiles"].as_array();
             files.iter().all(|item|item.as_str().is_some_and(|path|
                 paths.is_some_and(|list|list.iter().any(|p|p.as_str()==Some(path)))

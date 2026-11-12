@@ -26,8 +26,11 @@ fn implemented_roles(row:&Value)->Vec<String>{
         d["components"].as_array().cloned().unwrap_or_default()
     } else{vec![d["component"].clone()]};
     names.iter().filter_map(Value::as_str).filter(|role|{
-        let Some(paths)=d["componentFiles"][*role].as_array()
-            .filter(|paths|!paths.is_empty()) else{return false;};
+        let paths=d["componentFiles"][*role].as_array()
+            .filter(|paths|!paths.is_empty())
+            .or_else(||(d["component"]==*role && d["componentFiles"].is_null())
+                .then(||d["targetFiles"].as_array()).flatten());
+        let Some(paths)=paths else{return false;};
         paths.iter().all(|p|p.as_str().is_some_and(|path|
             d["targetFiles"].as_array().is_some_and(|all|
                 all.iter().any(|file|file.as_str()==Some(path)))

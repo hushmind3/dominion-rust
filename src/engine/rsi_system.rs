@@ -653,11 +653,11 @@ pub(crate) fn propose(
                 .filter(|role|components.contains(role)&&*role!=from)
                 .ok_or("상호 개선 대상 구성요소가 중복되거나 없습니다.")?;
             let from_path=edge["fromPath"].as_str()
-                .filter(|path|component_files[from].as_array()
+                .filter(|path|component_files.get(from).and_then(Value::as_array)
                     .is_some_and(|paths|paths.iter().any(|row|row==*path)))
                 .ok_or("상호 개선 원인 소스가 구성요소에 속하지 않습니다.")?;
             let to_path=edge["toPath"].as_str()
-                .filter(|path|component_files[to].as_array()
+                .filter(|path|component_files.get(to).and_then(Value::as_array)
                     .is_some_and(|paths|paths.iter().any(|row|row==*path)))
                 .ok_or("상호 개선 결과 소스가 구성요소에 속하지 않습니다.")?;
             if !seen.insert((from.to_string(),to.to_string())){
