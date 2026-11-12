@@ -24,7 +24,7 @@ pub(crate) fn adopted_source(g:&Value)->bool {
         && g["systemDesign"]["generatorCommit"]==g["generatorCommit"]
         && g["systemDesign"]["generationJobId"]==g["jobId"]
 }
-fn implemented_roles(g:&Value)->Vec<String> {
+pub(crate) fn implemented_roles(g:&Value)->Vec<String> {
     if !adopted_source(g){return vec![];}
     let design=&g["systemDesign"];
     let changed=g["changedSourcePaths"].as_array()
