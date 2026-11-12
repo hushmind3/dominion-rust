@@ -477,6 +477,14 @@ pub(crate) fn validate_plan_evidence(
             return Err("대상이 없는 상호개선 계획에 실행 단계가 남았습니다.".into());
         }
     }
+    let science_active=plan["recursiveScienceActive"].as_bool()
+        .ok_or("후손 재귀 발명 프로그램의 실행 여부가 없습니다.")?;
+    if science_active && (!plan["recursiveDiscovery"]["target"].is_object()
+        || plan["focusFiles"].as_array().is_none_or(|files|
+            !files.iter().any(|file|
+                file==&plan["recursiveDiscovery"]["target"]["path"]))) {
+        return Err("재귀 발명의 실행 목표와 실제 소스 편집 대상이 다릅니다.".into());
+    }
     if !crate::engine::rsi_recursive_discovery::validate(
         &plan["recursiveDiscovery"],frontier,commit,history,
         &blueprint["openTopology"],&plan["factorialCurriculum"],
