@@ -50,18 +50,28 @@ fn grounded_roles(g:&Value)->Vec<String> {
         }
     }
     let design=&g["systemDesign"];
+    let Some(targets)=design["targetFiles"].as_array()
+        .filter(|rows|!rows.is_empty() && rows.len()<=24)
+        else{return Vec::new()};
+    if !targets.iter().all(|row|row.as_str().is_some_and(|path|
+        changed_paths.contains(path) && g["acceptedSourceHashes"][path]
+            .as_str().is_some_and(sha256))) {
+        return Vec::new();
+    }
     // A model cannot gain role credit by naming a module it did not edit.
     // Every credited role must own at least one independently adopted path.
     declared_roles(g).into_iter().filter(|role|{
-        let files=design["componentFiles"][role].as_array()
+        let files=design["componentFiles"][role.as_str()].as_array()
             .filter(|paths|!paths.is_empty())
             .or_else(||(design["component"]==role.as_str()
                 && design["componentFiles"].is_null())
                 .then(||design["targetFiles"].as_array()).flatten());
         let Some(files)=files else{return false};
         files.iter().all(|path|path.as_str().is_some_and(|p|
-            changed_paths.contains(p) && g["acceptedSourceHashes"][p]
-                .as_str().is_some_and(sha256)))
+            changed_paths.contains(p)
+                && targets.iter().any(|target|target.as_str()==Some(p))
+                && g["acceptedSourceHashes"][p]
+                    .as_str().is_some_and(sha256)))
     }).collect()
 }
 
@@ -138,6 +148,7 @@ mod tests {
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":"g".repeat(40),"generationJobId":"job-1",
                 "component":"system","components":["memory","learning"],
+                "targetFiles":["src/engine/memory.rs","src/engine/learning.rs"],
                 "componentFiles":{"memory":["src/engine/memory.rs"],
                     "learning":["src/engine/learning.rs"]}},
             "changedSourcePaths":["src/engine/memory.rs","src/engine/learning.rs"],
@@ -159,6 +170,7 @@ mod tests {
     fn declared_but_unmodified_role_receives_no_credit(){
         let mut g=accepted();
         g["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
+        g["systemDesign"]["targetFiles"]=json!(["src/engine/memory.rs"]);
         assert_eq!(credit(&[g],"learning")["verifiedRoleAdoptions"],0);
     }
     #[test]
@@ -166,6 +178,7 @@ mod tests {
         let mut g=accepted();
         g["systemDesign"]["components"]=json!(["memory"]);
         g["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
+        g["systemDesign"]["targetFiles"]=json!(["src/engine/memory.rs"]);
         g["comparisonProfileSha256"]=json!("c".repeat(64));
         g["factorialExperiment"]=json!({"generatorCommit":"g".repeat(40),
             "comparisonProfileSha256":"c".repeat(64)});
