@@ -393,25 +393,32 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
                 .then(a["bytes"].as_u64().cmp(&b["bytes"].as_u64()))
                 .then(a["path"].as_str().cmp(&b["path"].as_str()))
         });
-        let Some(source)=sources.first() else{continue};
-        let Some(path)=source["path"].as_str() else{continue};
-        let related=signals.iter().filter(|signal|
-            signal["targetFiles"].as_array().is_some_and(|paths|
-                paths.iter().any(|candidate|candidate.as_str()==Some(path))))
-            .filter_map(|signal|signal["id"].as_str().map(str::to_string))
-            .take(6).collect::<Vec<_>>();
-        frontier.push(json!({
-            "role":role,"domain":domain,"path":path,
-            "sourceSha256":source["sha256"],"sourceBytes":source["bytes"],
-            "attempts":attempted.get(path).copied().unwrap_or(0),
-            "verifiedRedesigns":role_wins.get(role).copied().unwrap_or(0),
-            "latestFailure":recent_failure.get(path),
-            "taskFailureSignalIds":related,
-            "reason":if role_wins.contains_key(role){"extend_verified_intelligence"}
-                else if recent_failure.contains_key(path){"invent_alternative_after_failure"}
-                else {"unexplored_intelligence_component"},
-            "qualityProven":false
-        }));
+        // Preserve diversity among source-level ways to improve the same
+        // intelligence role. One handpicked representative suppresses
+        // alternate methods, newly generated modules and metacognition code.
+        for (source_rank,source) in sources.into_iter().take(4).enumerate(){
+            let Some(path)=source["path"].as_str() else{continue};
+            let related=signals.iter().filter(|signal|
+                signal["targetFiles"].as_array().is_some_and(|paths|
+                    paths.iter().any(|candidate|candidate.as_str()==Some(path))))
+                .filter_map(|signal|signal["id"].as_str().map(str::to_string))
+                .take(6).collect::<Vec<_>>();
+            frontier.push(json!({
+                "role":role,"domain":domain,"path":path,
+                "sourceSha256":source["sha256"],"sourceBytes":source["bytes"],
+                "candidateRankWithinRole":source_rank,
+                "methodSource":path.ends_with("rsi_meta_controller.rs")
+                    || path.ends_with("rsi_system.rs"),
+                "attempts":attempted.get(path).copied().unwrap_or(0),
+                "verifiedRedesigns":role_wins.get(role).copied().unwrap_or(0),
+                "latestFailure":recent_failure.get(path),
+                "taskFailureSignalIds":related,
+                "reason":if role_wins.contains_key(role){"extend_verified_intelligence"}
+                    else if recent_failure.contains_key(path){"invent_alternative_after_failure"}
+                    else {"unexplored_intelligence_component"},
+                "qualityProven":false
+            }));
+        }
     }
     frontier.sort_by(|a,b|{
         a["verifiedRedesigns"].as_u64().cmp(&b["verifiedRedesigns"].as_u64())
