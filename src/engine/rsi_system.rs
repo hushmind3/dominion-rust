@@ -96,7 +96,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
-        "designOwnership":"compiled_descendant_and_its_model_worker",
+        "designOwnership":"compiled_descendant_source_editing_runtime",
         "immutableBoundary":["experiment_baseline","frozen_paired_evaluator","budget","production_apply_gate"]
     })
 }
@@ -122,26 +122,33 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
             row["improvedHoldouts"],row["metaHoldoutGains"]
         )).collect::<Vec<_>>().join("\n");
     format!(
-        "[COMPILED DESCENDANT: SYSTEM SELF-REDESIGN]\n\
-        You are running from revision {}. The user goal is: {}.\n\
-        You control design, source analysis, algorithm choice, method learning and \
-        actual code edits for your next descendant. Do not treat a prewritten \
-        source mutation or a single benchmark speedup as system evolution.\n\
-        Inspect real source and identify a causal limitation in the current \
-        agent's algorithm, harness, memory, learning, tools or improvement \
-        method. Propose a genuinely new executable design, inspect source \
-        hashes with code_search/workspace_read_range and WRITE the required \
-        cross-module Rust changes with workspace_replace_range/function/write. \
-        Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
-        rsi_method_propose; mere registration is not evidence of execution. \
-        Make your next-generation planning and implementation behavior better, \
-        not only an external product function. The independently frozen paired \
-        evaluator alone decides adoption; do not edit the evaluator. \
-        The accepted source will be compiled as your successor, which must \
-        design and execute the subsequent change.\n\
-        Source architecture (representatives; the full repository is searchable):\n{}\n\
-        Measured predecessor outcomes (not claims about the new generation):\n{}\n\
-        Prior accepted design intent: {}\nReport source changes and receipts, not a claimed AGI or RSI completion.",
+        "[COMPILED DESCENDANT: VERSIONED INTELLIGENCE RUNTIME]\n\
+        Running source revision: {}. Assigned task: {}.\n\
+        Your own code contains the domain selector, search policy, planning \
+        harness, context, memory, learning, source tools and improvement \
+        methods. These are evolvable source, not fixed hand-written edit rules.\n\
+        Use the CURRENT revision's indexed evidence, previous compiler failures \
+        and accepted/rejected candidate receipts to decide what to try next. \
+        Inspect current source and its SHA via code_search/workspace_read_range. \
+        Use workspace_replace_range, workspace_replace or workspace_write for \
+        REAL source edits; a proposal or read-only report is not an improvement.\n\
+        If the task is whole-system self-redesign: find a causal limitation of \
+        your own algorithm/harness/memory/learning/tools/improver, propose a \
+        falsifiable structural change through rsi_system_plan, and implement \
+        the actual code, including new modules when justified. A changed \
+        improvement procedure must be executed and evaluated in its successor.\n\
+        If assigned a concrete downstream coding task: solve THAT task with \
+        your current improved intelligence. Do not substitute unrelated agent \
+        redesign for the requested patch. The downstream result measures \
+        whether the improved generator really solves more problems.\n\
+        You may propose reusable executable methods with rsi_method_propose \
+        and exploratory algorithm selectors with algorithm_propose. Registration \
+        is not success. The independent paired evaluator alone decides \
+        experimental adoption; never edit the evaluator or claim unevaluated gain.\n\
+        Current architecture (representative files; ALL indexed source is open):\n{}\n\
+        Measured predecessor generations (not present-tense claims):\n{}\n\
+        Last independently inherited design hypothesis: {}\n\
+        Report exact changed source and what still requires evaluation.",
         self_model["generatorCommit"],owner_objective,components,history,inherited)
 }
 
@@ -366,6 +373,20 @@ mod tests {
         state.store.put("job",&disabled).unwrap();
         assert!(propose(&state,"session",&request).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn compiled_successor_distinguishes_whole_system_design_from_downstream_tasks() {
+        let blueprint=json!({"generatorCommit":"source-revision",
+            "architecture":[{"role":"harness","representativeSources":[]}],
+            "recentMeasuredGenerations":[]});
+        let task="Improve a specific Rust parser and preserve existing tests";
+        let instructions=instruction(&blueprint,task);
+        assert!(instructions.contains(task));
+        assert!(instructions.contains("solve THAT task"));
+        assert!(instructions.contains("rsi_system_plan"));
+        assert!(instructions.contains("workspace_replace_range"));
+        assert!(!instructions.contains("workspace_replace_function"),
+            "do not advertise a tool missing from the active harness");
     }
     #[test]
     fn measured_outcomes_change_successors_without_rewarding_research_only_generations() {
