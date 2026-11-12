@@ -63,7 +63,7 @@ fn adopted_step<'a>(history:&'a [Value],start:&str,
     for _ in 0..history.len(){
         if !visited.insert(head.clone()){return None;}
         let child=history.iter().find(|g|
-            adopted(g) && g["generatorCommit"].as_str()==Some(&head))?;
+            adopted(g) && g["generatorCommit"].as_str()==Some(head.as_str()))?;
         if role_changed(child,role,path,phase) {return Some(child);}
         head=child["acceptedCommit"].as_str()?.to_string();
     }
@@ -288,6 +288,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
             }
         }
     }
+    let completed=completed_cycles(history);
     let mut method_trials=Vec::new();
     for method in ["invent_new_intelligence","develop_invented_capability",
         "return_to_origin","rewrite_discovery_method"]{
@@ -336,6 +337,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
         "generatorCommit":commit,"historyCount":history.len(),
         "phase":phase,"target":target,"invention":invention,
         "ancestry":ancestry,"scientificMethodLearning":method_trials,
+        "completedRecursiveCycles":completed,
         "factorialEvidenceSha256":factorial["sha256"],
         "mutualCurriculumRevision":mutual["revision"],
         "openTopologySha256":topology["sha256"],
@@ -349,14 +351,15 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],topology:&Value,
     result
 }
 pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
-    history_len:usize,topology:&Value,factorial:&Value,mutual:&Value)->bool{
+    history:&[Value],topology:&Value,factorial:&Value,mutual:&Value)->bool{
     if !plan.is_object(){return false;}
     let mut unsigned=plan.clone();
     if let Some(obj)=unsigned.as_object_mut(){obj.remove("revision");}
     if plan["source"]!="compiled_recursive_discovery_program_v1"
         || plan["revision"]!=hash(&unsigned)
         || plan["generatorCommit"]!=commit
-        || plan["historyCount"].as_u64()!=Some(history_len as u64)
+        || plan["historyCount"].as_u64()!=Some(history.len() as u64)
+        || plan["completedRecursiveCycles"]!=completed_cycles(history)
         || plan["openTopologySha256"]!=topology["sha256"]
         || plan["factorialEvidenceSha256"]!=factorial["sha256"]
         || plan["mutualCurriculumRevision"]!=mutual["revision"]
@@ -390,11 +393,39 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
                     |"src/engine/rsi_meta_controller.rs"));
     }
     let ancestor=&plan["ancestry"];
-    sha40(&ancestor["birthCommit"])
+    let Some(birth)=history.iter().find(|g|adopted(g)
+        && g["id"]==ancestor["birthGenerationId"]
+        && g["acceptedCommit"]==ancestor["birthCommit"]
+        && g["systemDesign"]["moduleIntroductions"].as_array().is_some_and(
+            |modules|modules.iter().any(|module|
+                module["role"]==ancestor["inventedRole"]
+                && module["newFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|file|file==&ancestor["inventedPath"]))
+                && module["integrationFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|file|file==&ancestor["originPath"])))))
+        else{return false;};
+    let _=birth;
+    let phase=plan["phase"].as_str().unwrap_or("");
+    let target_role=plan["target"]["role"].as_str().unwrap_or("");
+    let eligible=match phase{
+        "develop_invented_capability"=>
+            target_role==ancestor["inventedRole"].as_str().unwrap_or(""),
+        "return_to_origin"=>
+            target_role==ancestor["originRole"].as_str().unwrap_or("")
+                && sha40(&ancestor["developedCommit"]),
+        "rewrite_discovery_method"=>
+            target_role=="improvement_methods"
+                && sha40(&ancestor["developedCommit"])
+                && sha40(&ancestor["returnedCommit"]),
+        _=>false
+    };
+    eligible
+        && sha40(&ancestor["birthCommit"])
         && sha40(&ancestor["requiredPreviousCommit"])
+        && history.iter().any(|g|adopted(g)
+            && g["acceptedCommit"]==ancestor["requiredPreviousCommit"])
         && ancestor["target"]==plan["target"]
         && ancestor["phase"]==plan["phase"]
-        && ancestor["birthGenerationId"].is_string()
 }
 pub(crate) fn instruction(plan:&Value)->String{
     let phase=plan["phase"].as_str().unwrap_or("");
@@ -416,10 +447,11 @@ pub(crate) fn instruction(plan:&Value)->String{
     format!(
         "[SELF-EVOLVING RECURSIVE SCIENTIST] phase={}; target={}; \
         invention={}; verifiedAncestry={}; methodEvidence={}; \
-        programmeRevision={}. {} This is a SOURCE-CHANGING hypothesis. \
+        completedSourceLoops={}; programmeRevision={}. {} This is a SOURCE-CHANGING hypothesis. \
         Do not claim improvement before the independent paired evaluator adopts \
         an actual patch. The next compiled descendant owns the successor stage.",
         phase,source,plan["invention"],plan["ancestry"],
-        plan["scientificMethodLearning"],plan["revision"],change
+        plan["scientificMethodLearning"],plan["completedRecursiveCycles"],
+        plan["revision"],change
     )
 }

@@ -478,7 +478,7 @@ pub(crate) fn validate_plan_evidence(
         }
     }
     if !crate::engine::rsi_recursive_discovery::validate(
-        &plan["recursiveDiscovery"],frontier,commit,history.len(),
+        &plan["recursiveDiscovery"],frontier,commit,history,
         &blueprint["openTopology"],&plan["factorialCurriculum"],
         &plan["mutualCurriculum"]) {
         return Err("후손의 재귀 지능 발명·자기수정 계획 근거가 일치하지 않습니다.".into());

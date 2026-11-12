@@ -4573,6 +4573,11 @@ async fn run_loop(
                     .is_some_and(|files|files.iter().any(|file|
                         file.as_str()==Some(path))));
         generation["recursiveScienceExecuted"]=json!(scientific_edit_accepted);
+        let mut science_history=record["history"].as_array().cloned()
+            .unwrap_or_default();
+        science_history.push(generation.clone());
+        generation["recursiveScientificLineage"]=
+            crate::engine::rsi_recursive_discovery::completed_cycles(&science_history);
         generation["recursiveScienceObservation"]=json!({
             "source":"paired_adopted_recursive_science_source_receipt_v1",
             "planRevision":generation["recursiveDiscovery"]["revision"],
