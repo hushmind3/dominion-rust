@@ -4115,7 +4115,9 @@ async fn run_loop(
                 "generatorCommit":head,
                 "metaPolicyRevision":generation["metaPolicy"]["revision"],
                 "independentObservation":generation["metaLearning"]["independentObservation"],
-                "brierError":generation["metaLearning"]["brierError"]
+                "brierError":generation["metaLearning"]["brierError"],
+                "taskQualityBrierError":generation["metaLearning"]["taskQualityBrierError"],
+                "observedTaskCases":generation["metaLearning"]["taskQualityObservations"]
             }));
         }
         let generation_accepted = generation["accepted"] == true;
@@ -4692,9 +4694,19 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         && input["rsiAutonomous"]==true && !explicit
         && !paired_descendant_target(input)
         && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return"));
+    // The CURRENT compiled descendant can schedule a repair of its own
+    // prequential task-quality predictor. This is a source-edit objective;
+    // the independent evaluator and user-assigned work remain authoritative.
+    let quality_repair=unsteered["qualityPredictorCalibration"]
+        ["needsPredictorSourceRevision"]==true
+        && !learner_repair && open_program.is_null()
+        && input["rsiAutonomous"]==true && !explicit
+        && !paired_descendant_target(input)
+        && allowed.contains(&"improver")
+        && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return"));
     // The earlier fixed reflexive curriculum is a fallback, not a ceiling
     // over dynamically authored successor improvement programs.
-    let reflexive_program=if learner_repair || open_program.is_object()
+    let reflexive_program=if learner_repair || quality_repair || open_program.is_object()
         || explicit || paired_descendant_target(input)
         || input["rsiAutonomous"]!=true
         || matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
@@ -4709,6 +4721,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let meta_policy=if learner_repair {
         crate::engine::rsi_meta_controller::steer_learner_repair(
             initial_policy,&principle_learning,&frontier,&allowed)
+    }else if quality_repair {
+        crate::engine::rsi_meta_controller::steer_quality_predictor_repair(
+            initial_policy,&history,&frontier,&allowed)
     }else{initial_policy};
     // If a reflexive source experiment has priority, do not also advertise
     // a conflicting speculative mutual-improvement stage to the worker.
@@ -4819,6 +4834,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     if !explicit && meta_policy["selectionMode"]
         =="verified_calibration_driven_learner_rewrite" {
         focus=vec!["src/engine/rsi_principle_learning.rs"];
+    }
+    if !explicit && meta_policy["selectionMode"]
+        =="prequential_task_quality_predictor_repair" {
+        focus=vec!["src/engine/rsi_meta_controller.rs"];
     }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let comparative_mode=if peers["references"].as_array()
