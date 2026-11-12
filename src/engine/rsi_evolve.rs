@@ -5481,7 +5481,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "jobId":job_id,"generatorCommit":commit,
             "source":"rebuilt_child_verified_against_current_source_graph",
             "sourceTreeSha256":blueprint["sourceTreeSha256"],
-            "architectureComponents":7,
+            "architectureComponents":blueprint["architecture"].as_array().map(Vec::len).unwrap_or(0),
             "decision":directive["mode"]
         }));
         (domain.to_string(),selection,strategy)
