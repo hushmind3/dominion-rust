@@ -541,6 +541,78 @@ mod tests {
             crate::engine::rsi_improvement_algebra::method_family_id(&altered));
     }
     #[test]
+    fn real_independent_receipt_links_method_revisions_with_different_ids(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(
+            format!("rsi-method-family-replay-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let commit="a".repeat(40);
+        let path="src/engine/models.rs";
+        let cases=(0..8).map(|i|json!({"id":format!("case-{i}"),
+            "domain":if i%2==0{"models"}else{"tools"},
+            "holdout":i<4,"metrics":[]})).collect::<Vec<_>>();
+        let observed=(0..8).map(|i|json!({"id":format!("case-{i}"),
+            "baselinePass":i!=0,"candidatePass":true,
+            "metrics":{}})).collect::<Vec<_>>();
+        let metrics=rsi::evaluate_cases(&cases,&observed,"harness").unwrap();
+        assert_eq!(metrics["eligible"],true);
+        let evidence="e".repeat(64);
+        state.store.put("rsi_candidate",&json!({
+            "id":"paired-revision-candidate","status":"verified",
+            "baseCommit":commit,"patchSha256":"c".repeat(64),
+            "oracleVersion":"rsi-worktree-v2","cases":cases,
+            "paths":[path],"target":"harness",
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":metrics,"verdict":metrics["verdict"],
+                "evidenceSha256":evidence}
+        })).unwrap();
+        state.store.put("rsi_pair",&json!({
+            "id":"rsi-pair-paired-revision-candidate",
+            "candidateId":"paired-revision-candidate",
+            "runner":"local_gitrepo_not_os_sandbox",
+            "evidenceSha256":evidence,
+            "metrics":metrics,"verdict":metrics["verdict"],
+            "report":{"baseCommit":commit,"patchSha256":"c".repeat(64),
+                "oracleVersion":"rsi-worktree-v2",
+                "reportSha256":evidence,
+                "baselineBuildOk":true,"candidateBuildOk":true,
+                "cases":observed}
+        })).unwrap();
+        let old_rule=json!({"id":"1".repeat(64),"name":"improve_agent",
+            "premises":["memory"],"products":["tools"],
+            "methodRole":"scientific_method","method":{
+                "path":"src/engine/rsi_improvement_algebra.rs",
+                "sourceSha256":"3".repeat(64)}});
+        let mut current_rule=old_rule.clone();
+        current_rule["id"]=json!("2".repeat(64));
+        current_rule["method"]["sourceSha256"]=json!("4".repeat(64));
+        let plan=json!({"source":"compiled_model_authored_improvement_algebra_v1",
+            "generatorCommit":commit,"sha256":"5".repeat(64),
+            "selected":{"ruleId":old_rule["id"],"rule":old_rule,
+                "target":{"path":path}}});
+        let generation=json!({"generatorCommit":commit,
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":commit},
+            "improvementAlgebraPlan":plan,
+            "controllerPlan":{"improvementAlgebra":plan},
+            "changedSourcePaths":[path],"candidateId":"paired-revision-candidate",
+            "evaluation":{"metrics":metrics},
+            "evaluationProfileSha256":"6".repeat(64)});
+        assert_ne!(plan["selected"]["ruleId"],current_rule["id"]);
+        assert!(independent_use(&state,&generation,&current_rule).is_some(),
+            "independent receipt for an old method must inform its accepted revision");
+        let mut unrelated=current_rule.clone();
+        unrelated["name"]=json!("other_principle");
+        assert!(independent_use(&state,&generation,&unrelated).is_none(),
+            "unrelated improvement principles cannot inherit a sibling's evidence");
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
     fn independently_measured_model_failure_beats_unmeasured_meta_rule(){
         let algebra=json!({"selected":{"target":{"role":"scientific_method"},
             "generalizationEvidence":{"independentReplayedTrials":0}}});
