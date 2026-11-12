@@ -163,7 +163,8 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],pair:&Value,commit:&str)
 pub(crate) fn apply(agenda:&mut Value,plan:&Value){
     if plan["source"]!="compiled_evolvable_causal_ecology_v1"
         || agenda["inheritedStage"].is_object()
-        || agenda["target"]!=plan["left"]{return;}
+        || (agenda["target"]!=plan["left"]
+            && plan["descendantContinuation"]!=true){return;}
     let Some(frontier)=agenda["frontier"].as_array()else{return};
     let Some(focus)=plan["focus"].as_array()else{return};
     if focus.is_empty()||focus.len()>2||focus.iter().any(|r|
@@ -263,6 +264,12 @@ mod tests{
         assert_eq!(next["phase"],"isolate_right");
         assert_eq!(next["target"]["role"],"tools");
         assert_eq!(next["descendantContinuation"],true);
+        let mut agenda=json!({"inheritedStage":null,
+            "target":frontier[0],"frontier":frontier,
+            "focus":[frontier[0]]});
+        apply(&mut agenda,&next);
+        assert_eq!(agenda["target"]["role"],"tools");
+        assert_eq!(agenda["focus"][0]["role"],"tools");
         let mut invalid=parent;
         invalid["pairedRevalidated"]=json!(false);
         assert!(inherited_curriculum(&[invalid],&frontier,&"b".repeat(40)).is_none());
