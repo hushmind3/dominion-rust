@@ -1,0 +1,98 @@
+name: Sub4 fresh native RSI three-generation experiment
+# Runs an actual new self-improvement campaign on the historical unimproved
+# seed in an isolated Git worktree. This does not impersonate Sub4 HEAD gains.
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - '.github/workflows/sub4-native-reproduction.yml'
+      - 'scripts/sub4-live-rsi.mjs'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sub4-native-reproduction-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 105
+    env:
+      SUB4_MODEL_KIND: ollama
+      SUB4_BASE_MODEL: native-source
+      SUB4_MODEL_NAME: dominion-native-source
+      SUB4_NATIVE_INDUCTION: '1'
+      SUB4_EXPECT_COMPLETION: '1'
+      SUB4_CAMPAIGN_SECONDS: '5900'
+      SUB4_RUN_DEADLINE_MS: '6000000'
+      SUB4_LIVE_REPORT: benchmark/sub4-native-reproduction.json
+      DOMINION_PORT: '43179'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_OLLAMA_BASE_URL: http://127.0.0.1:11434
+      SUB4_OLLAMA_URL: http://127.0.0.1:11434
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Compile inherited real Rust coordinator
+        run: |
+          node --check scripts/sub4-live-rsi.mjs
+          npm ci --prefix web
+          npm run build --prefix web
+          cargo build --release --locked --bin dominion-rust
+      - name: Run independent native three-generation lineage from unoptimized source
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed=ae927f6b4153926f892998f6cd312f3a4e94f7db
+          git cat-file -e "$seed^{commit}"
+          git worktree add --detach "$RUNNER_TEMP/sub4-replay-source" "$seed"
+          export DOMINION_DATA="$RUNNER_TEMP/sub4-replay-data"
+          export DOMINION_WORKSPACE="$RUNNER_TEMP/sub4-replay-source"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub4-replay-source"
+          mkdir -p "$DOMINION_DATA"
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub4-replay-engine.log" 2>&1 &
+          engine_pid=$!
+          trap 'kill "$engine_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do
+            if curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
+          node scripts/sub4-live-rsi.mjs run
+      - name: Confirm new three-generation evidence and source ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,re,subprocess
+          from pathlib import Path
+          r=json.loads(Path('benchmark/sub4-native-reproduction.json').read_text())
+          p=r['completionProof']
+          assert r['status']=='completed' and p['complete'] is True
+          assert p['acceptedSourceGenerations']>=3
+          assert p['rebuiltDescendantGenerations']>=2
+          assert p['maxAcceptedStreak']>=3 and p['capabilityDemonstrated'] is True
+          assert not p['productionChanged']
+          head=r['adoptedHeadCommit']
+          assert re.fullmatch('[0-9a-f]{40}',head)
+          subprocess.run(['git','cat-file','-e',head+'^{commit}'],check=True)
+          subprocess.run(['git','merge-base','--is-ancestor',
+              'ae927f6b4153926f892998f6cd312f3a4e94f7db',head],check=True)
+          print('SUB4_NEW_NATIVE_PROOF_HEAD='+head)
+          PY
+      - name: Preserve independent campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub4-fresh-three-generation-evidence
+          retention-days: 30
+          if-no-files-found: ignore
+          path: |
+            benchmark/sub4-native-reproduction.json
+            ${{ runner.temp }}/sub4-replay-engine.log
