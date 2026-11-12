@@ -38,6 +38,10 @@ fn measured(policy:&Value,g:&Value)->bool{
         && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
         && hex(&g["evaluation"]["evidenceSha256"],64)
         && g["evaluation"]["metrics"]["eligible"].is_boolean()
+        // A measured eligible candidate can be declined by its owner.
+        // This must not become a fabricated failure of the source method.
+        && !(g["evaluation"]["metrics"]["eligible"]==true
+            && g["accepted"]!=true)
         && (g["accepted"]!=true || g["pairedRevalidated"]==true)
 }
 
@@ -214,9 +218,9 @@ pub(crate) fn repair_execution_evidence(g:&Value)->Value{
         && g["metaPolicyExecuted"]["source"]=="running_compiled_descendant_meta_controller";
     let path=target["path"].as_str().filter(|s|crate::engine::rsi::safe_path(s));
     let focused=valid && path.is_some_and(|p|g["focusFiles"]
-        .as_array().is_some_and(|rows|rows.iter().any(|row|row==p)));
+        .as_array().is_some_and(|rows|rows.iter().any(|row|row.as_str()==Some(p))));
     let edited=focused && path.is_some_and(|p|g["changedSourcePaths"]
-        .as_array().is_some_and(|rows|rows.iter().any(|row|row==p)));
+        .as_array().is_some_and(|rows|rows.iter().any(|row|row.as_str()==Some(p))));
     let measured=edited && g["pairedMeasured"]==true;
     let adopted=measured && g["accepted"]==true
         && g["pairedRevalidated"]==true
@@ -273,6 +277,15 @@ mod tests{
         assert_eq!(result["observations"],0);
         assert_eq!(result["probability"],0.5);
     }
+    #[test]
+    fn owner_declined_but_eligible_patch_does_not_count_as_failure(){
+        let p=policy("src/engine/memory.rs");
+        let mut g=observed(&p,false);
+        g["evaluation"]["metrics"]["eligible"]=json!(true);
+        assert_eq!(feedback(&p,&g,false)["independentlyMeasured"],false);
+        assert_eq!(feedback(&p,&g,false)["brierError"],Value::Null);
+    }
+
     #[test]
     fn target_specific_feedback_censors_unverified_adoptions(){
         let p=policy("src/engine/memory.rs");
