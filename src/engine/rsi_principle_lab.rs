@@ -255,6 +255,18 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
     });
+    // Outcome-conditioned GENERALIZATION is part of the executable
+    // successor policy, not merely an LLM instruction. A principle with
+    // witnessed task wins and productive children is transferred to another
+    // task role; a regressing principle is repaired on its original role.
+    // These rules are themselves editable by the newly compiled child.
+    let strongest=principles.first().cloned().unwrap_or(Value::Null);
+    let source_role=strongest["taskRole"].as_str().unwrap_or("").to_string();
+    let strong_wins=strongest["aggregateHoldoutWins"].as_u64().unwrap_or(0);
+    let strong_losses=strongest["aggregateHoldoutRegressions"].as_u64().unwrap_or(0);
+    let strong_children=strongest["subsequentAcceptedDescendants"].as_u64().unwrap_or(0);
+    let learned_transfer=strong_wins>strong_losses && strong_children>0;
+    let learned_repair=strong_losses>strong_wins;
     // Prefer a real trainable/task subsystem over another meta-controller
     // tweak when the empirical record does not contain usable task effects.
     // The preference is a LEARNABLE policy: the rebuilt child can edit this
@@ -276,7 +288,13 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
                 "learning" => 0.16 / (1.0 + wins),
                 _ => 0.0
             };
-            coverage + trainability_gap + 0.35 / (1.0 + n)
+            let empirical_transfer = if learned_transfer && role!=source_role {
+                0.42
+            } else if learned_repair && role==source_role {
+                0.42
+            } else { 0.0 };
+            coverage + trainability_gap + empirical_transfer
+                + 0.35 / (1.0 + n)
                 + 0.20 / (1.0 + wins)
                 - 0.05 * (bytes / 25_000.0).min(1.0)
         };
@@ -325,6 +343,21 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
         "shouldProbeTaskMethod": should_probe,
         "generatorCommit": commit, "historyCount": history.len(),
         "mode": mode, "target": task, "methodTarget": method,
+        "learnedTransferPolicy": {
+            "referencePrinciple": strongest["id"],
+            "referenceRole": source_role,
+            "observedTaskWins": strong_wins,
+            "observedTaskRegressions": strong_losses,
+            "productiveDescendants": strong_children,
+            "action": if learned_transfer {
+                "apply_learned_principle_to_different_intelligence_role"
+            } else if learned_repair {
+                "rewrite_failed_principle_on_original_task_role"
+            } else { "invent_testable_task_and_improvement_method" },
+            "selectedRole": task["role"],
+            "sourceTargetRecomputedByCompiledDescendant": true,
+            "transferAlreadyProven": false
+        },
         "priorPrinciples": principles.into_iter().take(8).collect::<Vec<_>>(),
         "experimentContract": {
             "treatment": "change_actual_task_and_improvement_method_sources",
