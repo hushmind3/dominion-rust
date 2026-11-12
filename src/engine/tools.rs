@@ -197,6 +197,36 @@ pub async fn execute(
             if let Some(old_text)=args["oldText"].as_str().filter(|text|!text.is_empty()) {
                 replace_text(ctx,&path,old_text,&new_text,
                     args["expectedSha256"].as_str(),run_id).await
+            } else if isolated_rsi {
+                // The latest real-model whole-system episode authored a
+                // design, then sent workspace_replace without a valid endLine.
+                // Recover ONLY an unambiguous model-authored function or
+                // explicit one-line edit, never invent a range of source lines.
+                match rsi_unambiguous_edit_intent(args,&new_text) {
+                    Some(RsiEditIntent::CompleteFunction(function)) => {
+                        let indexed=rsi_pinned_source_sha(ctx,&path,args);
+                        let expected=args["expectedSha256"].as_str()
+                            .or(indexed.as_deref())
+                            .ok_or("함수 수정에는 현재 소스 SHA-256이 필요합니다.")?;
+                        let mut receipt=replace_compiled_rust_function(
+                            ctx,&path,&function,&new_text,expected,run_id).await?;
+                        receipt["editContractRecovered"]=json!(
+                            "model_authored_complete_function");
+                        receipt["sourceHashRecoveredFromIndex"]=json!(
+                            indexed.is_some());
+                        Ok(receipt)
+                    }
+                    Some(RsiEditIntent::SingleLine(start)) => {
+                        let mut precise=args.clone();
+                        precise["endLine"]=json!(start);
+                        let mut receipt=replace_line_span(
+                            ctx,&path,&precise,&new_text,run_id).await?;
+                        receipt["editContractRecovered"]=json!(
+                            "explicit_single_line");
+                        Ok(receipt)
+                    }
+                    None => replace_line_span(ctx,&path,args,&new_text,run_id).await,
+                }
             } else {
                 replace_line_span(ctx,&path,args,&new_text,run_id).await
             }
@@ -826,6 +856,47 @@ async fn replace_text(
 /// path as exact-text replacement. The small model can provide the numbered
 /// source span rather than reconstructing 50KB of source or perfectly echoing
 /// a long oldText block. It must prove which file revision it observed.
+/// A model can choose the right source file and author Rust without
+/// serializing every coordinate of a source editing tool perfectly.
+/// Normalize only edits whose target is uniquely determined by the authored
+/// Rust text or by an explicitly supplied line. This is NOT a built-in
+/// improvement operator; actual bytes still need CAS, compilation and the
+/// unchanged independent paired evaluator.
+#[derive(Debug,PartialEq,Eq)]
+enum RsiEditIntent {
+    CompleteFunction(String),
+    SingleLine(u64),
+}
+
+fn rsi_unambiguous_edit_intent(args:&Value,new_text:&str)->Option<RsiEditIntent>{
+    let line=|key:&str|args[key].as_u64().or_else(||
+        args[key].as_str()?.parse::<u64>().ok());
+    if line("endLine").is_some_and(|n|n>0) {return None;}
+    if new_text.len()<=16_000 && new_text.trim_end().ends_with('}') {
+        let functions=rsi_top_level_functions(new_text);
+        let first=functions.first()?;
+        if functions.len()==1 && new_text.trim_start()
+            .starts_with(first.1.trim_start()) {
+            return Some(RsiEditIntent::CompleteFunction(first.0.clone()));
+        }
+    }
+    let start=line("startLine").filter(|line|*line>0)?;
+    let single=new_text.trim_end_matches(['\n','\r']);
+    (!single.contains('\n') && !single.is_empty())
+        .then_some(RsiEditIntent::SingleLine(start))
+}
+
+fn rsi_pinned_source_sha(
+    ctx:&ToolContext<'_>,path:&Path,args:&Value
+)->Option<String>{
+    if args["expectedSha256"].as_str().is_some() {return None;}
+    let session=ctx.store.get("session",ctx.session_id)?;
+    if session["rsiRun"]!=true {return None;}
+    let index=session["rsiCodeIndexId"].as_str()?;
+    let relative=path.strip_prefix(ctx.workspace).ok()?.to_str()?;
+    crate::engine::code_index::indexed_source_hash(ctx.state,index,relative)
+}
+
 async fn replace_line_span(
     ctx:&ToolContext<'_>, path:&Path, args:&Value, new_text:&str, run_id:&str,
 )->Result<Value,String> {
@@ -1751,6 +1822,30 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
             "let new_value = 6;\nlet untouched = 9;\n");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn real_model_edit_without_end_line_recovers_only_unambiguous_intent() {
+        let function="pub fn evaluate_policy(value: u64) -> u64 {\n    value + 1\n}\n";
+        assert_eq!(
+            rsi_unambiguous_edit_intent(&json!({"endLine":0}),function),
+            Some(RsiEditIntent::CompleteFunction("evaluate_policy".into()))
+        );
+        assert_eq!(
+            rsi_unambiguous_edit_intent(&json!({"startLine":"7"}),"let x=3;"),
+            Some(RsiEditIntent::SingleLine(7))
+        );
+        // A multi-line snippet without an explicit final coordinate has no
+        // unique range. The model must provide one, not let the harness guess.
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":7,"endLine":0}),
+            "let x=3;\nlet y=4;\n"),None);
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":7,"endLine":0}),
+            "pub fn a() {\n}\npub fn b() {\n}\n"),None);
+        // A valid explicit span is never rewritten into the fallback path.
+        assert_eq!(rsi_unambiguous_edit_intent(
+            &json!({"startLine":7,"endLine":8}),function),None);
     }
 
     #[test]
