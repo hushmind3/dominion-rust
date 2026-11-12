@@ -521,7 +521,11 @@ fn capability_proven_with_origin(state:&AppState, history:&[Value], model_only:b
     for generation in history {
         let Some(generator)=generation["generatorCommit"].as_str().filter(|s|sha(s))
             else{chain.clear();continue;};
-        if model_only && !model_driven_generation_provenance(generation) {
+        if model_only && (!model_driven_generation_provenance(generation)
+            || generation["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .is_none_or(|candidate|
+                    candidate["origin"]!="model_driven_detached_worktree")) {
             chain.clear();continue;
         }
         let Some(proof)=generation_proof(state,generation)
