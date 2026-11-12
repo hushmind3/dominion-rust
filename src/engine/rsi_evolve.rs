@@ -4697,7 +4697,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // The CURRENT compiled descendant can schedule a repair of its own
     // prequential task-quality predictor. This is a source-edit objective;
     // the independent evaluator and user-assigned work remain authoritative.
-    let quality_repair=unsteered["qualityPredictorCalibration"]
+    let quality_repair=prior_meta["qualityPredictorCalibration"]
         ["needsPredictorSourceRevision"]==true
         && !learner_repair && open_program.is_null()
         && input["rsiAutonomous"]==true && !explicit
