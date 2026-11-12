@@ -172,7 +172,7 @@ async function main() {
     // induction rather than spending Qwen calls on already-matched code shapes.
     // The same detached source, compiled binaries and frozen oracle apply.
     nativeInduction: false, stopAfterProof: true, systemEvolution: true,
-    request: "DOMINION 지능 시스템 전체를 자기재설계하라. 현재 후손 바이너리가 알고리즘, 실행 하네스, 장기 기억, 학습, 도구, 개선 방법을 모두 코드 수준에서 분석하고, 측정된 실패와 한계를 근거로 기존에 없던 설계 또는 실행 방법을 제안한 뒤 실제 Rust 구현으로 만들어라. 네이티브 고정 최적화 연산자를 사용하지 말고 모델이 rsi_system_plan을 실행해 검증 가능한 가설과 바꿀 소스 파일을 제출한 다음 workspace_read_range와 workspace_replace를 사용해 실제 코드를 수정해야 한다. 채택된 소스에서 컴파일된 다음 후손은 자신이 가진 새로운 알고리즘, 하네스, 기억, 학습, 도구와 개선 방법을 다시 살펴 직접 다음 설계를 고르고 구현해야 한다. 첫 세대의 판단을 복사하지 말고 채택된 시스템 설계와 독립 평가 결과를 계승해 지능 시스템의 다른 부분도 발전시켜라. 모델 기반 새로운 설계, 실제 변경된 모듈, 후손 계획 권한, 재빌드된 바이너리, 독립 A/B 무회귀 증거와 실제 적용 계보를 남겨라. 동결 검증기와 예산은 건드리지 말아라.",
+    request: "DOMINION 지능 시스템 전체를 자기재설계하라. 현재 후손 바이너리가 알고리즘, 실행 하네스, 장기 기억, 학습, 도구, 개선 방법을 모두 코드 수준에서 분석하고, 측정된 실패와 한계를 근거로 기존에 없던 설계 또는 실행 방법을 제안한 뒤 실제 Rust 구현으로 만들어라. 네이티브 고정 최적화 연산자를 사용하지 말고 모델이 rsi_system_plan을 실행해 검증 가능한 가설과 바꿀 소스 파일을 제출한 다음 workspace_read_range와 workspace_replace_function 또는 workspace_replace를 사용해 실제 코드를 수정해야 한다. 새로운 실행 가능한 개선 절차는 rsi_method_propose로 직접 발명하고, 채택 후손이 실제 도구 실행으로 그 절차를 재사용해 후속 조건을 검증해야 한다. 채택된 소스에서 컴파일된 다음 후손은 자신이 가진 새로운 알고리즘, 하네스, 기억, 학습, 도구와 개선 방법을 다시 살펴 직접 다음 설계를 고르고 구현해야 한다. 첫 세대의 판단을 복사하지 말고 채택된 시스템 설계와 독립 평가 결과를 계승해 지능 시스템의 다른 부분도 발전시켜라. 모델 기반 새로운 설계, 실제 변경된 모듈, 후손 계획 권한, 재빌드된 바이너리, 독립 A/B 무회귀 증거와 실제 적용 계보를 남겨라. 동결 검증기와 예산은 건드리지 말아라.",
     focusFiles: [],
     maxAttempts: 8, tokenBudget: 120_000, timeBudgetSeconds: 3000,
   }, 120_000);
