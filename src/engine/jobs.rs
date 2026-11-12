@@ -651,6 +651,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // prior real source/evaluation receipts. The model is a worker,
             // never the authority for upgrading the policy.
             session["rsiExecutionMethod"]=input["rsiExecutionMethod"].clone();
+            session["rsiEditPolicy"]=input["rsiEditPolicy"].clone();
             session["rsiSourceDir"]=input["rsiSourceDir"].clone();
             if let Some(id)=input["rsiCampaignId"].as_str(){
                 session["rsiCampaignId"]=json!(id);
