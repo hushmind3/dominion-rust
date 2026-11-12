@@ -391,6 +391,30 @@ mod tests {
         assert_eq!(p["inheritedFromVerifiedParent"],false);
     }
     #[test]
+    fn fabricated_executed_meta_sha_is_not_a_real_transfer(){
+        let f=frontier();
+        let p0=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
+        let mut first=accepted("first",&"1".repeat(40),&"0".repeat(40),
+            "improvement_methods","src/engine/rsi_meta_controller.rs",p0);
+        first["compiledPlanExecuted"]["reflexiveSha256"]=json!("e".repeat(64));
+        let next=propose(&[first],&f,&"1".repeat(40),
+            &["improver","memory"],&Value::Null);
+        assert_eq!(next["phase"],"seed");
+    }
+    #[test]
+    fn repeated_failed_reflexive_edits_release_the_source_target(){
+        let f=frontier();
+        let initial=propose(&[],&f,&"0".repeat(40),
+            &["improver","memory"],&Value::Null);
+        let failed=|id:&str|json!({
+            "id":id,"jobId":id,"generatorCommit":"0".repeat(40),
+            "candidateId":id,"accepted":false,"reflexiveProgram":initial
+        });
+        let plan=propose(&[failed("failure-one"),failed("failure-two")],&f,
+            &"0".repeat(40),&["improver","memory"],&Value::Null);
+        assert!(plan.is_null());
+    }
+    #[test]
     fn source_rebound_or_false_parent_commit_is_rejected(){
         let f=frontier();
         let p=propose(&[],&f,&"0".repeat(40),&["improver","memory"],&Value::Null);
