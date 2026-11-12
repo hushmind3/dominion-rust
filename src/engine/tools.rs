@@ -121,6 +121,27 @@ pub fn definitions() -> Vec<Value> {
                     "metaImprovement":{"type":"number","minimum":0,"maximum":1},
                     "regression":{"type":"number","minimum":0,"maximum":1}
                 },"additionalProperties":false}),
+            "openProgram":json!({"type":"object",
+                "description":"Model-authored open recursive experiment graph. Unlike fixed successorStages, nodes, roles, mechanics, branching, loops and replacement plans are authored by the model; an adopted source change is required before the compiled descendant interprets it.",
+                "properties":{
+                    "entry":{"type":"string"},
+                    "nodes":{"type":"array","minItems":1,"maxItems":96,
+                        "items":{"type":"object","properties":{
+                            "id":{"type":"string"},"role":{"type":"string"},
+                            "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                            "path":{"type":"string"},"objective":{"type":"string"},
+                            "mechanism":{"type":"string"}},
+                            "required":["id","role","domain","path","objective","mechanism"],
+                            "additionalProperties":false}},
+                    "edges":{"type":"array","maxItems":384,
+                        "items":{"type":"object","properties":{
+                            "from":{"type":"string"},"to":{"type":"string"},
+                            "when":{"type":"string","enum":["always","adopted",
+                                "not_adopted","improved","regressed",
+                                "rejected","no_candidate","neutral"]}},
+                            "required":["from","to","when"],
+                            "additionalProperties":false}}
+                },"required":["entry","nodes","edges"],"additionalProperties":false}),
             "successorStages":json!({"type":"array","maxItems":8,
                 "description":"Executable planning intentions for the NEXT compiled descendant. Each stage is rebound to fresh indexed source; no stage receives improvement credit before actual editing.",
                 "items":{"type":"object","properties":{
