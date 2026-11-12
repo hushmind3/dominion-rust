@@ -984,3 +984,66 @@ mod model_driven_origin_audit_tests{
             "native source mutations never become API model improvements");
     }
 }
+
+#[cfg(test)]
+mod exact_api_route_replay_tests {
+    use super::*;
+    #[test]
+    fn only_the_actual_exclusive_model_can_train_a_descendant_policy() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(
+            format!("rsi-api-provenance-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        state.store.put("job",&json!({
+            "id":"worker-route-1","kind":"rsi_generation",
+            "sessionId":"session-a","input":{
+                "providerId":"provider-a","model":"model-a"}
+        })).unwrap();
+        state.store.audit("model.usage",json!({
+            "sessionId":"session-a","providerId":"provider-a",
+            "model":"model-a","promptTokens":12,
+            "completionTokens":8,"totalTokens":20,"estimated":false
+        }));
+        let usage=state.store.api_route_usage("session-a","provider-a","model-a");
+        state.store.put("rsi_candidate",&json!({
+            "id":"candidate-route-1","rsiJobId":"worker-route-1",
+            "origin":"model_driven_detached_worktree",
+            "generatorModel":"model-a",
+            "modelSessionId":"session-a",
+            "actualModelRoute":{"providerId":"provider-a","model":"model-a"},
+            "modelRouteUsage":usage,"modelRouteSessionExclusive":true
+        })).unwrap();
+        let mut generation=json!({
+            "candidateId":"candidate-route-1","jobId":"worker-route-1",
+            "candidateOrigin":"model_driven_detached_worktree",
+            "tokenUsage":{"calls":1},"editEvidence":{"verifiedWrites":1},
+            "apiRouteExecutionVerified":true,
+            "apiRouteSessionExclusive":true,
+            "apiRouteSessionId":"session-a",
+            "requestedProviderId":"provider-a","requestedModel":"model-a",
+            "generatorProviderId":"provider-a","generatorModel":"model-a",
+            "apiRouteUsage":usage
+        });
+        assert!(model_route_audited(&state,&generation));
+        generation["requestedModel"]=json!("fake-model");
+        assert!(!model_route_audited(&state,&generation));
+        generation["requestedModel"]=json!("model-a");
+        generation["apiRouteUsage"]["totalTokens"]=json!(999);
+        assert!(!model_route_audited(&state,&generation),
+            "a self-written usage total is not original API evidence");
+        generation["apiRouteUsage"]=usage;
+        state.store.audit("model.usage",json!({
+            "sessionId":"session-a","providerId":"provider-b",
+            "model":"model-b","promptTokens":2,
+            "completionTokens":8,"totalTokens":10,"estimated":false
+        }));
+        assert!(!model_route_audited(&state,&generation),
+            "mixing another model into the same worker session voids model credit");
+        let _=std::fs::remove_dir_all(root);
+    }
+}
