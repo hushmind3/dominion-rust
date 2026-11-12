@@ -37,9 +37,16 @@ jobs:
                   tool_choice:'required'}),
                 signal:AbortSignal.timeout(40000)
               });
-              const x=await r.json().catch(()=>({}));
+              const raw=await r.text();
+              let x={};try{x=JSON.parse(raw)}catch{}
               const c=x.choices?.[0]||{},m=c.message||{};
-              report.push({model,http:r.status,keys:Object.keys(x),
+              report.push({model,http:r.status,bodyBytes:raw.length,
+                contentType:r.headers.get('content-type'),
+                contentLength:r.headers.get('content-length'),
+                locationHost:(()=>{try{return new URL(r.url).host}catch{return null}})(),
+                // No secrets are part of the body; truncate diagnostics.
+                bodyPreview:raw.slice(0,220),
+                keys:Object.keys(x),
                 choiceKeys:Object.keys(c),messageKeys:Object.keys(m),
                 finish:c.finish_reason,toolNames:m.tool_calls?.map(t=>t?.function?.name)||[],
                 contentPreview:typeof m.content==='string'?m.content.slice(0,180):null,
