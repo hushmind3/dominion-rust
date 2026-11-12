@@ -20,7 +20,7 @@ pub(crate) fn intelligence_editable_path(path:&str)->bool{
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs","src/engine/chat/mod.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
@@ -855,7 +855,7 @@ pub(crate) fn propose(
         component_files=Value::Object(map);
     }
     for role in &roles {
-        let files=component_files[role].as_array()
+        let files=component_files[role.as_str()].as_array()
             .filter(|rows|!rows.is_empty())
             .ok_or("각 구성요소에 실제 변경 대상 파일을 배정하세요.")?;
         if files.iter().any(|file|file.as_str()
