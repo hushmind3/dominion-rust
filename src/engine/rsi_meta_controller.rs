@@ -172,6 +172,41 @@ pub(crate) fn synthesize(
             "newComponent":target["verifiedRoleImproved"]!=true
         }),score));
     }
+    // The prediction algorithm is itself editable source. Repeated independently
+    // measured prediction errors create a concrete experiment to redesign it.
+    // A cooldown prevents the predictor from monopolizing descendant edits.
+    let errors=history.iter().rev().filter_map(|g|{
+        let learning=&g["metaLearning"];
+        if learning["source"]!="source_bound_prequential_feedback_v1"
+            || learning["nextPolicyCanTrainFromObservation"]!=true
+            || g["pairedMeasured"]!=true
+            || learning["policyRevision"]!=g["metaPolicy"]["revision"]{
+            return None;
+        }
+        learning["brierError"].as_f64()
+            .filter(|p|p.is_finite()&&(0.0..=1.0).contains(p))
+    }).take(6).collect::<Vec<_>>();
+    let mean_error=(!errors.is_empty()).then(||
+        errors.iter().sum::<f64>()/errors.len() as f64);
+    let recent_prediction_attempt=history.iter().rev().take(4).any(|g|
+        g["pairedMeasured"]==true
+        && g["metaPolicy"]["target"]["path"]=="src/engine/rsi_prequential.rs");
+    let predictor_available=ranked.iter().any(|(row,_)|
+        row["target"]["path"]=="src/engine/rsi_prequential.rs"
+        && row["domain"]=="improver");
+    let repair_predictor=errors.len()>=4
+        && mean_error.is_some_and(|mean|mean>0.35)
+        && !recent_prediction_attempt && predictor_available;
+    if repair_predictor{
+        for (row,score) in &mut ranked {
+            if row["target"]["path"]=="src/engine/rsi_prequential.rs"{
+                // A bounded exploration experiment, never a success claim.
+                *score+=2.0;
+                row["score"]=json!(*score);
+                row["predictionRuleRepairBonus"]=json!(2.0);
+            }
+        }
+    }
     ranked.sort_by(|(left,a),(right,b)|
         b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
             .then_with(||left["role"].as_str().cmp(&right["role"].as_str())));
@@ -200,7 +235,10 @@ pub(crate) fn synthesize(
             "error":g["error"].as_str().unwrap_or("")
                 .chars().take(500).collect::<String>()
         })).collect::<Vec<_>>();
-    let mode=if counterexamples.iter().any(|row|
+    let mode=if repair_predictor
+        && target["path"]=="src/engine/rsi_prequential.rs"{
+            "repair_own_source_bound_prediction_rule"
+        }else if counterexamples.iter().any(|row|
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
         else{"open_ended_mechanism_discovery"};
@@ -208,8 +246,18 @@ pub(crate) fn synthesize(
     // programs; a six-item truncation can hide a legitimate later stage.
     let alternatives=ranked.iter().take(32)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
+    let prediction_repair=json!({
+        "source":"independently_observed_forecast_drift_v1",
+        "recentMeasuredPredictions":errors.len(),
+        "meanBrierError":mean_error,
+        "cooldown":recent_prediction_attempt,
+        "repairRuleSourceSelected":repair_predictor,
+        "targetSource":"src/engine/rsi_prequential.rs",
+        "requiresActualDescendantSourceEdit":repair_predictor,
+        "causalSuperiorityProven":false
+    });
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len()]);
+        prediction_repair,inherited_domain,history.len()]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -218,6 +266,7 @@ pub(crate) fn synthesize(
         "mode":mode,"target":target,"selectionEvidence":winner,
         "alternatives":alternatives,
         "referenceDesigns":reference,"counterexamples":counterexamples,
+        "predictionRuleRepair":prediction_repair,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
             "calibrationFactor":calibration,
@@ -328,6 +377,9 @@ pub(crate) fn instruction(policy:&Value)->String {
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Source-bound prediction history={}. Cross-revision outcomes are discounted.\n\
+        Prediction-method repair evidence={}. If mode=repair_own_source_bound_prediction_rule, \
+        edit the executable source-bound estimator and its selection behavior, \
+        not the external independent evaluator.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
@@ -343,7 +395,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         target["path"],target["sourceSha256"],
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
         policy["selectionEvidence"]["prequentialEvidence"],
-        refs,failures
+        policy["predictionRuleRepair"],refs,failures
     )
 }
 
@@ -366,6 +418,58 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn repeated_measured_forecast_errors_rewrite_prediction_method_then_cool_down(){
+        let target=|role:&str,path:&str,domain:&str|json!({
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":"f".repeat(64),"sourceBytes":850,
+            "verifiedRoleImproved":false});
+        let frontier=vec![
+            target("memory","src/engine/memory.rs","memory"),
+            target("improvement_methods","src/engine/rsi_prequential.rs","improver")];
+        let policy=json!({"source":"compiled_editable_meta_controller_v1",
+            "revision":"a".repeat(64),
+            "target":frontier[0],
+            "forecast":{"acceptanceProbability":0.95}});
+        let mut rows=Vec::new();
+        for i in 0..4{
+            let mut g=json!({"jobId":format!("failed-{i}"),
+                "generatorCommit":"a".repeat(40),
+                "metaPolicy":policy,
+                "descendantPlan":{"metaPolicy":policy,
+                    "architectureTarget":policy["target"],
+                    "generatorCommit":"a".repeat(40)},
+                "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+                "candidateOrigin":"model_driven_detached_worktree",
+                "candidateId":format!("candidate-{i}"),
+                "pairedMeasured":true,"accepted":false,
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "verdict":"unchanged","evidenceSha256":"c".repeat(64),
+                    "metrics":{"eligible":false,"regressions":0}}});
+            g["metaLearning"]=crate::engine::rsi_prequential::feedback(
+                &policy,&g,false);
+            assert_eq!(g["metaLearning"]["independentlyMeasured"],true);
+            rows.push(g);
+        }
+        let repair=synthesize(&rows,&frontier,&["memory","improver"],None);
+        assert_eq!(repair["mode"],"repair_own_source_bound_prediction_rule");
+        assert_eq!(repair["target"]["path"],"src/engine/rsi_prequential.rs");
+        assert_eq!(repair["predictionRuleRepair"]["recentMeasuredPredictions"],4);
+        let mut last=rows[0].clone();
+        let next_policy=json!({"source":"compiled_editable_meta_controller_v1",
+            "revision":"b".repeat(64),
+            "target":frontier[1],
+            "forecast":{"acceptanceProbability":0.95}});
+        last["metaPolicy"]=next_policy.clone();
+        last["descendantPlan"]["metaPolicy"]=next_policy.clone();
+        last["descendantPlan"]["architectureTarget"]=next_policy["target"].clone();
+        last["metaLearning"]=crate::engine::rsi_prequential::feedback(
+            &next_policy,&last,false);
+        rows.push(last);
+        let cooled=synthesize(&rows,&frontier,&["memory","improver"],None);
+        assert_eq!(cooled["predictionRuleRepair"]["cooldown"],true);
+        assert_eq!(cooled["predictionRuleRepair"]["repairRuleSourceSelected"],false);
+    }
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
         let target=|role:&str,path:&str|json!({"role":role,"domain":if role=="memory"{"memory"}else{"learning"},
