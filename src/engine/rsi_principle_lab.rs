@@ -288,9 +288,9 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
                 "learning" => 0.16 / (1.0 + wins),
                 _ => 0.0
             };
-            let empirical_transfer = if learned_transfer && role!=source_role {
+            let empirical_transfer = if learned_transfer && role!=source_role.as_str() {
                 0.42
-            } else if learned_repair && role==source_role {
+            } else if learned_repair && role==source_role.as_str() {
                 0.42
             } else { 0.0 };
             coverage + trainability_gap + empirical_transfer
