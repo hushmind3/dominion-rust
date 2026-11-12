@@ -188,8 +188,11 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
         return Err("DOMINION 소스가 아닙니다.".into());
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
-    if !campaign && !is_rsi_work_branch(git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?.trim()) {
-        return Err("원본 소스가 허용된 dominion-sub 작업 브랜치가 아닙니다.".into());
+    if !campaign {
+        let actual=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+        if !owns_application_branch(actual.trim(),input["rsiSourceBranch"].as_str()) {
+            return Err("실험의 원본 브랜치와 현재 체크아웃 브랜치가 일치하지 않습니다.".into());
+        }
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
         return Err("작업을 기다리는 동안 원본 커밋이 바뀌었습니다. 다시 시작하세요.".into());
@@ -406,6 +409,7 @@ pub async fn finish(
         // NOT a claim that baseline/candidate paired tests have been run.
         let proposal=json!({
             "target":classify(&patch),"baseCommit":worktree.base,
+            "sourceBranch":input["rsiSourceBranch"],
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
             "generatorModel":if context.state.store.get("rsi_mutation",&context.job_id).is_some(){
@@ -480,6 +484,7 @@ pub async fn finish(
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
         "baseCommit":worktree.base,"candidateId":candidate_id,
+        "sourceBranch":input["rsiSourceBranch"],
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "novelDiffBytes":novel_diff_bytes,
         "inheritedPatchUnchanged":inherited_unchanged,
