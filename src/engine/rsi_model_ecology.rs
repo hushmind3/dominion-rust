@@ -178,6 +178,81 @@ fn matched_cohort(
         "modelCausalityProven":false
     })
 }
+/// Historical model comparisons are allowed to survive a campaign restart,
+/// but only under the same immutable source commit, objective and frozen
+/// evaluator. Reconcile a generation with its original job, actual actor
+/// receipt, source candidate and replayed paired result. A claimed success
+/// in a mutable generation row is not itself evidence.
+fn independently_bound_comparison(
+    state:&AppState,g:&Value,revision:&str,profile:&str,objective:&str,domain:&str
+)->Option<Value>{
+    if !same_source_profile_trial(g,revision,profile,objective,domain){
+        return None;
+    }
+    let job_id=g["jobId"].as_str()?;
+    let job=state.store.get("job",job_id)?;
+    let candidate_id=g["candidateId"].as_str()?;
+    let candidate=state.store.get("rsi_candidate",candidate_id)?;
+    if job["kind"]!="rsi_generation"
+        ||job["id"]!=job_id
+        ||job["input"]["rsiGeneratorCommit"]!=revision
+        ||job["input"]["rsiModelEcologyPolicy"]!=g["modelEcologyPolicy"]
+        ||job["rsiModelEcologyExecuted"]!=g["modelEcologyExecuted"]
+        ||job["rsiCompiledPlanExecuted"]!=g["compiledPlanExecuted"]
+        ||job["input"]["providerId"]!=g["modelEcologyExecuted"]["providerId"]
+        ||job["input"]["model"]!=g["modelEcologyExecuted"]["model"]
+        ||crate::engine::rsi_lineage_transfer::profile(&job["input"]).as_deref()
+            !=Some(profile)
+        ||candidate["baseCommit"]!=revision
+        ||candidate["origin"]!="model_driven_detached_worktree"
+        ||g["evaluation"]["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"] {
+        return None;
+    }
+    let receipt=crate::engine::rsi::replayed_pair_metrics(state,&candidate)?;
+    if g["evaluation"]["metrics"]!=receipt
+        ||candidate["evaluation"]["metrics"]!=receipt
+        ||g["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"{
+        return None;
+    }
+    let audited=crate::engine::rsi_system::revalidated_history(state,&[g.clone()]);
+    let mut verified=audited.into_iter().next()?;
+    if g["accepted"]==true &&verified["pairedRevalidated"]!=true{
+        return None;
+    }
+    // Do not trust a mutable stale flag from a now-invalid adoption.
+    verified["pairedMeasured"]=json!(true);
+    Some(verified)
+}
+
+/// This is NOT pooled superiority across source revisions. A historical
+/// campaign contributes only if it independently ran the exact same frozen
+/// comparison while using the same source bytes and objective. Failed
+/// campaigns can contribute neutral/negative paired evidence as well.
+fn historical_same_source_trials(
+    state:&AppState,history:&[Value],revision:&str,
+    profile:&str,objective:&str,domain:&str
+)->Vec<Value>{
+    let mut already=history.iter().filter_map(|g|
+        g["jobId"].as_str().map(str::to_string)).collect::<BTreeSet<_>>();
+    let mut records=state.store.all("rsi_generation").into_iter()
+        .filter(|g|g["generatorCommit"]==revision
+            &&g["comparisonProfileSha256"]==profile
+            &&g["objectiveId"]==objective
+            &&g["domain"]==domain)
+        .collect::<Vec<_>>();
+    records.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    let mut verified=Vec::new();
+    for record in records.into_iter().take(256){
+        let Some(job)=record["jobId"].as_str() else{continue};
+        if !already.insert(job.to_string()){continue;}
+        if let Some(row)=independently_bound_comparison(
+            state,&record,revision,profile,objective,domain){
+            verified.push(row);
+        }
+    }
+    verified
+}
+
 fn statistics(history:&[Value],route:&Value,domain:&str)->Value{
     let mut attempts=0u64;
     let mut measured=0u64;
@@ -246,10 +321,16 @@ pub(crate) fn plan(
     let task=if input["rsiAutonomous"]==true{domain}
         else{input["rsiObjective"].as_str().unwrap_or("")};
     let objective=crate::engine::memory::stable_id(&[task]);
+    let recovered=if enabled &&!profile.is_empty(){
+        historical_same_source_trials(
+            state,history,revision,&profile,&objective,domain)
+    }else{Vec::new()};
+    let mut comparable=history.to_vec();
+    comparable.extend(recovered.iter().cloned());
     let scores=routes.iter().map(|route|{
-        let mut evidence=statistics(history,route,domain);
+        let mut evidence=statistics(&comparable,route,domain);
         evidence["sameSourceCohort"]=matched_cohort(
-            history,route,revision,&profile,&objective,domain);
+            &comparable,route,revision,&profile,&objective,domain);
         (route.clone(),evidence)
     }).collect::<Vec<_>>();
     let incumbent_matched=scores.first()
@@ -303,6 +384,8 @@ pub(crate) fn plan(
         "selected":selected,
         "selectedBy":choice_type,
         "matchedSourceComparisonAvailable":paired_preference.is_some(),
+        "independentlyRevalidatedPriorCampaignTrials":recovered.len(),
+        "historicalEvidenceSameSourceOnly":true,
         "comparisonProfileSha256":profile,
         "comparisonObjectiveId":objective,
         "sourceRevisionsNeverPooledAsPairedModelProof":true,
@@ -463,6 +546,51 @@ mod tests{
         assert!(outcome(&g).is_some());
         g["modelEcologyExecuted"]["sessionOwnedByGeneration"]=json!(false);
         assert!(outcome(&g).is_none());
+    }
+    #[test] fn cross_campaign_model_comparison_rejects_missing_original_job(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let root=std::env::temp_dir().join(format!(
+            "sub4-cross-campaign-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let revision="a".repeat(40);
+        let profile="p".repeat(64);
+        let objective=crate::engine::memory::stable_id(&["tools"]);
+        let fake=json!({
+            "id":"claimed-success","jobId":"nonexistent-job",
+            "generatorCommit":revision,"comparisonProfileSha256":profile,
+            "objectiveId":objective,"domain":"tools",
+            "candidateId":"nonexistent-candidate",
+            "modelEcologyPolicy":{"revision":"p","selected":{
+                "providerId":"api","model":"m"}},
+            "modelEcologyExecuted":{
+                "source":"real_descendant_model_usage_v1",
+                "generationJobId":"nonexistent-job",
+                "generatorCommit":revision,
+                "selectedBy":"p","providerId":"api","model":"m",
+                "sessionOwnedByGeneration":true,
+                "routeMatchedWorkerInput":true,
+                "mixedChatModelCalls":0,
+                "actuallyUsedInGeneration":true,"actualModelCalls":1},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "candidateOrigin":"model_driven_detached_worktree",
+            "accepted":true,"pairedMeasured":true,
+            "pairedRevalidated":true,"acceptedCommit":"b".repeat(40),
+            "evaluation":{"metrics":{"measurements":[{"id":"holdout"}]}}
+        });
+        state.store.put("rsi_generation",&fake).unwrap();
+        let historical=historical_same_source_trials(
+            &state,&[],&revision,&profile,&objective,"tools");
+        assert!(historical.is_empty());
+        assert!(historical_same_source_trials(
+            &state,&[],&"c".repeat(40),&profile,&objective,"tools").is_empty());
+        assert!(historical_same_source_trials(
+            &state,&[],&revision,&"x".repeat(64),&objective,"tools").is_empty());
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
     }
     #[test] fn owned_real_session_and_exclusive_model_usage_are_required(){
         use crate::{config::Config,db::Store,vault::Vault};
