@@ -4365,9 +4365,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["input"]["rsiDomain"]=json!(domain);
     let descendant_prompt=if job["input"]["rsiSystemEvolution"]==true {
         let source=job["input"]["rsiSourceDir"].as_str()
-            .ok_or("후손 소스 폴더가 없습니다.")?;
+            .ok_or("후손 소스 폴더가 없습니다.")?.to_string();
         let blueprint=crate::engine::rsi_system::blueprint(
-            Path::new(source),&commit,&history);
+            Path::new(&source),&commit,&history);
         if blueprint!=job["input"]["rsiSystemBlueprint"] {
             return Err("후손 소스 자기모형이 컴파일된 계획과 일치하지 않습니다.".into());
         }
