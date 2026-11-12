@@ -326,6 +326,57 @@ mod tests{
         assert!(valid(&plan,&frontier,&c,hist.len()));
     }
     #[test]
+    fn adopted_role_change_activates_composable_rule_without_fixed_phase_names(){
+        let h="a".repeat(40);let a="b".repeat(40);
+        let b="c".repeat(40);let c="d".repeat(40);
+        let m="src/engine/rsi_improvement_algebra.rs";
+        let frontier=vec![
+            row("scientific_method",m),
+            row("memory","src/engine/memory.rs"),
+            row("learning","src/engine/learning.rs"),
+            row("tools","src/engine/tools.rs")];
+        let rule1=birth(&h,&a,"author-1","memory_to_learning",
+            m,"scientific_method","memory","learning");
+        let rule2=birth(&a,&b,"author-2","learning_to_tools",
+            m,"scientific_method","learning","tools");
+        let mut accepted_memory=birth(&b,&c,"act","unrelated",
+            "src/engine/memory.rs","memory","memory","memory");
+        accepted_memory["systemDesign"]["improvementRules"]=json!([]);
+        let plan=compile(&[rule1,rule2,accepted_memory],&frontier,&c);
+        assert_eq!(plan["latestIndependentlyChangedRoles"],json!(["memory"]));
+        assert_eq!(plan["selected"]["rule"]["name"],"memory_to_learning");
+        assert_eq!(plan["selected"]["activatedByLatestIndependentAdoption"],true);
+        assert_eq!(plan["selected"]["target"]["role"],"learning");
+    }
+    #[test]
+    fn two_independent_rejections_redirect_source_edit_to_method_itself(){
+        let h="a".repeat(40);let a="b".repeat(40);
+        let m="src/engine/rsi_improvement_algebra.rs";
+        let frontier=vec![row("scientific_method",m),
+            row("memory","src/engine/memory.rs"),
+            row("learning","src/engine/learning.rs")];
+        let birth=birth(&h,&a,"one","memory_to_learning",
+            m,"scientific_method","memory","learning");
+        let original=compile(&[birth.clone()],&frontier,&a);
+        let rule_id=original["selected"]["ruleId"].clone();
+        let rejects=(0..2).map(|n|json!({
+            "candidateId":format!("rejected-{n}"),"accepted":false,
+            "generatorCommit":a,
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "improvementAlgebraPlan":{
+                "generatorCommit":a,
+                "selected":{"ruleId":rule_id,
+                    "target":{"path":"src/engine/learning.rs"}}
+            }
+        })).collect::<Vec<_>>();
+        let mut history=vec![birth];
+        history.extend(rejects);
+        let next=compile(&history,&frontier,&a);
+        assert_eq!(next["selected"]["intent"],"rewrite_accepted_method_source");
+        assert_eq!(next["selected"]["target"]["path"],m);
+        assert!(valid(&next,&frontier,&a,history.len()));
+    }
+    #[test]
     fn no_source_change_no_independent_adoption_no_rule(){
         let m="src/engine/rsi_improvement_algebra.rs";
         let frontier=vec![row("scientific_method",m),row("memory","src/engine/memory.rs"),
