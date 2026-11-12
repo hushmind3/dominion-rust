@@ -610,6 +610,11 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         the actual code, including new modules when justified. For coupled redesigns use \
         component=system, list components, and map every component to its \
         targetFiles via componentFiles. Implement ALL declared target files. \
+        When inventing a NEW intelligence role, declare newComponents with \
+        role, domain, purpose, sourcePaths and DISTINCT integrationPaths. \
+        Both the module code and actual runtime wiring must change and be \
+        independently adopted before the new role enters future search. \
+        A rebuilt descendant may then improve this newly invented module. \
         Submit successorStages in rsi_system_plan to program how the NEXT \
         compiled agent chooses its domain, source target, learning policy, \
         and source tool policy. Each stage needs role, domain, path, objective; \
