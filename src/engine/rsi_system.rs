@@ -1206,6 +1206,23 @@ pub(crate) fn propose(
                 files.iter().any(|file|file==path)) {
             return Err("도미니언 자신의 미해결 지능을 개선하려면 선택한 실제 구현 소스를 수정해야 합니다.".into());
         }
+        if whole["phase"]=="invent_better_improvement_method_for_failed_intelligence" {
+            let method_path=whole["improvementMethodSource"]["path"]
+                .as_str().ok_or("실패한 지능을 위한 새로운 개선기 소스가 필요합니다.")?;
+            let method_role=whole["improvementMethodSource"]["role"]
+                .as_str().ok_or("개선 방법의 지능 역할이 필요합니다.")?;
+            if !target_set.contains(method_path)
+                || !component_files[method_role].as_array()
+                    .is_some_and(|files|files.iter().any(|file|file==method_path))
+                || !principles.iter().any(|p|
+                    p["methodRole"]==method_role
+                        && p["methodSourcePaths"].as_array().is_some_and(|files|
+                            files.iter().any(|file|file==method_path))
+                        && p["improvesRoles"].as_array().is_some_and(|roles|
+                            roles.iter().any(|r|r==role))){
+                return Err("같은 지능을 반복해서 개선하지 못했다면, 원래 지능과 새로운 개선 방법의 실행 소스를 함께 변경하고 원리를 명시해야 합니다.".into());
+            }
+        }
     }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
