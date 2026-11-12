@@ -218,7 +218,7 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,history_count:usiz
                 Some("isolate_left"|"isolate_right"|"test_joint_interaction"|"all_variants_observed"))
     };
     plan["pairFrontier"].as_array().is_some_and(|pairs|
-        pairs.iter().all(valid_pair)
+        pairs.iter().all(|pair|valid_pair(pair))
         && (plan["selected"].is_null()
             || (valid_pair(&plan["selected"])
                 && pairs.iter().any(|row|row==&plan["selected"]))))
