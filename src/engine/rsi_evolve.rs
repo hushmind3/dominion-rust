@@ -5788,8 +5788,19 @@ fn compiled_system_generation_plan(
     // Its learned prediction dynamics select the NEXT architecture target.
     let explicit_focus=input["rsiAutoFocus"]!=true
         && input["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty());
-    let meta=crate::engine::rsi_meta_controller::synthesize(
+    let baseline_meta=crate::engine::rsi_meta_controller::synthesize(
         history,&frontier,DOMAINS,inherited.as_deref());
+    // Portable method hypotheses require verified peer receipts and at
+    // least one identical indexed source. Only the COMPILED child can
+    // re-rank its own target; the frozen resident validates the raw receipts.
+    // Explicit user-selected paths and adopted successor programs keep
+    // their existing precedence.
+    let peers=crate::engine::rsi_meta_controller::peer_lineages(
+        state,input["rsiCampaignId"].as_str().unwrap_or(""),input,None);
+    let meta=if explicit_focus{baseline_meta}else{
+        crate::engine::rsi_meta_controller::evolve_from_peer_methods(
+            baseline_meta,&peers)
+    };
     // Learned laws are compiled into this actual successor, not a prompt-only
     // retrospective. A task-intelligence bottleneck can supersede another
     // purely meta-level tweak. The child may rewrite this scoring law itself.
@@ -5801,14 +5812,13 @@ fn compiled_system_generation_plan(
     };
     let architecture_target=if open_program["target"].is_object(){
         open_program["target"].clone()
-    }else if principle["target"].is_object(){
+    }else if principle["shouldProbeTaskMethod"]==true
+        && principle["target"].is_object()
+        && principle["methodTarget"].is_object(){
         principle["target"].clone()
     }else if meta["target"].is_object(){
         meta["target"].clone()
     }else{frontier.first().cloned().unwrap_or(Value::Null)};
-    let peers=crate::engine::rsi_meta_controller::peer_lineages(
-        state,input["rsiCampaignId"].as_str().unwrap_or(""),input,
-        architecture_target["role"].as_str());
     // A predecessor can AUTHOR the successor's task program. The compiled
     // descendant interprets it against its own newly built source graph and
     // silently drops stages whose path/role/hash is no longer current.
