@@ -318,10 +318,16 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
                 if !file.starts_with(&base) || !file.is_file() {continue;}
                 let Ok(bytes)=fs::read(file) else{continue;};
                 let sha=format!("{:x}",Sha256::digest(&bytes));
-                // New roles cannot be invented solely in model metadata.
-                // Their FIRST accepted implementation is pinned to source.
-                if generation["acceptedSourceHashes"][path]!=sha {continue;}
-                sources.push(json!({"path":path,"sha256":sha,"bytes":bytes.len()}));
+                // Provenance names the FIRST accepted implementation; the
+                // current rebuilt descendant may have further redesigned it.
+                // Keep the evolving role alive while its current file exists,
+                // and independently fingerprint the current bytes.
+                let Some(origin)=generation["acceptedSourceHashes"][path].as_str()
+                    .filter(|h|h.len()==64 && h.bytes()
+                        .all(|byte|byte.is_ascii_hexdigit())) else{continue;};
+                sources.push(json!({"path":path,"sha256":sha,"bytes":bytes.len(),
+                    "introducedSourceSha256":origin,
+                    "changedSinceIntroduction":sha!=origin}));
             }
             if !sources.is_empty() {
                 let domain=design["nextDomain"].as_str()
@@ -545,7 +551,7 @@ pub(crate) fn propose(
         }else{paths.clone()};
         for file in &files {
             let path=file.as_str().ok_or("소스 파일 이름 오류")?;
-            if !paths.iter().any(|target|target==path)
+            if !paths.iter().any(|target|target.as_str()==Some(path))
                 || !assigned.insert(path.to_string()) {
                 return Err("구성요소의 소스 파일은 중복 없이 targetFiles에 연결해야 합니다.".into());
             }
@@ -574,7 +580,7 @@ pub(crate) fn propose(
                 .filter(|s|(25..=1200).contains(&s.chars().count()))
                 .ok_or("후손 단계 실행 목표 25~1200자 필요")?;
             let candidate=root.join(path);
-            if !paths.iter().any(|file|file==path) {
+            if !paths.iter().any(|file|file.as_str()==Some(path)) {
                 let real=fs::canonicalize(candidate).map_err(|_|"후손 단계 파일 없음".to_string())?;
                 if !real.starts_with(&root)||!real.is_file(){
                     return Err("후손 단계는 현재 시스템 소스에 속해야 합니다.".into());
