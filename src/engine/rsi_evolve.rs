@@ -3300,7 +3300,14 @@ async fn run_loop(
                     || plan["metaPolicy"]["reflexiveProgramSha256"]
                         !=plan["reflexiveProgram"]["sha256"]
                     || plan["metaPolicy"]["target"]
-                        !=plan["reflexiveProgram"]["target"]) {
+                        !=plan["reflexiveProgram"]["target"]
+                    || (plan["reflexiveProgram"]["phase"]=="execute_revised_experiment"
+                        && (plan["reflexiveProgram"]["experimentPlanSha256"]
+                            !=plan["factorialExperiment"]["sha256"]
+                            || plan["reflexiveProgram"]["target"]
+                                !=plan["factorialExperiment"]["selected"]["target"]
+                            || plan["metaPolicy"]["revisedExperimentPlanSha256"]
+                                !=plan["factorialExperiment"]["sha256"]))) {
                 return Err("후손의 실제 재귀적 자기수정 계보·정책·소스가 다릅니다.".into());
             }
             if plan["factorialExperiment"].is_object()
@@ -4476,7 +4483,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         Value::Null
     }else{
         crate::engine::rsi_reflexive::propose(
-            &history,&frontier,commit,&allowed,&prior_meta["target"])
+            &history,&frontier,commit,&allowed,&prior_meta["target"],&factorial)
     };
     let meta_policy=crate::engine::rsi_meta_controller::steer_reflexive(
         prior_meta,&reflexive_program);
@@ -4695,7 +4702,14 @@ fn validated_descendant_controller(
                 || plan["metaPolicy"]["reflexiveProgramSha256"]
                     !=plan["reflexiveProgram"]["sha256"]
                 || plan["metaPolicy"]["target"]
-                    !=plan["reflexiveProgram"]["target"]))
+                    !=plan["reflexiveProgram"]["target"]
+                || (plan["reflexiveProgram"]["phase"]=="execute_revised_experiment"
+                    && (plan["reflexiveProgram"]["experimentPlanSha256"]
+                        !=plan["factorialExperiment"]["sha256"]
+                        || plan["reflexiveProgram"]["target"]
+                            !=plan["factorialExperiment"]["selected"]["target"]
+                        || plan["metaPolicy"]["revisedExperimentPlanSha256"]
+                            !=plan["factorialExperiment"]["sha256"]))))
         || (plan["factorialExperiment"].is_object()
             && plan["architectureFrontier"].as_array().is_none_or(|frontier|
                 !crate::engine::rsi_factorial::valid(
@@ -5022,7 +5036,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiReflexiveProgram"].is_object()
-            && (job["input"]["rsiMetaPolicy"]["reflexiveProgramSha256"]
+            && ((job["input"]["rsiReflexiveProgram"]["phase"]
+                =="execute_revised_experiment"
+                && (job["input"]["rsiReflexiveProgram"]["experimentPlanSha256"]
+                    !=job["input"]["rsiFactorialExperiment"]["sha256"]
+                    || job["input"]["rsiReflexiveProgram"]["target"]
+                        !=job["input"]["rsiFactorialExperiment"]["selected"]["target"]
+                    || job["input"]["rsiMetaPolicy"]["revisedExperimentPlanSha256"]
+                        !=job["input"]["rsiFactorialExperiment"]["sha256"]))
+                || job["input"]["rsiMetaPolicy"]["reflexiveProgramSha256"]
                 !=job["input"]["rsiReflexiveProgram"]["sha256"]
                 || job["input"]["rsiMetaPolicy"]["target"]
                     !=job["input"]["rsiReflexiveProgram"]["target"]
@@ -5110,7 +5132,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let reflexive_instructions=
             crate::engine::rsi_reflexive::instruction(&job["input"]["rsiReflexiveProgram"]);
         let factorial_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
-            =="matched_factorial_experiment_design" {
+            =="matched_factorial_experiment_design"
+            || job["input"]["rsiReflexiveProgram"]["phase"]
+                =="execute_revised_experiment" {
             crate::engine::rsi_factorial::instruction(&job["input"]["rsiFactorialExperiment"])
         }else{String::new()};
         let mutual_instructions=
