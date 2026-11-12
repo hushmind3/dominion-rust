@@ -5017,8 +5017,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("INTERACTING INTELLIGENCE SUBSYSTEMS: {}. This is a cross-role redesign HYPOTHESIS, not verified causal proof. Inspect each current source, explain the functional interfaces and use rsi_system_plan component=system with separate componentFiles for each role. Modify multiple actual modules when their interaction is the limitation. Avoid claiming single-file credit for a joint intervention.",
                 source)
         }else{String::new()};
-        let factorial_instructions=
-            crate::engine::rsi_factorial::instruction(&job["input"]["rsiFactorialExperiment"]);
+        let factorial_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
+            =="matched_factorial_experiment_design" {
+            crate::engine::rsi_factorial::instruction(&job["input"]["rsiFactorialExperiment"])
+        }else{String::new()};
         let mutual_instructions=
             crate::engine::rsi_mutual_program::instruction(&job["input"]["rsiMutualProgram"]);
         let successor_instructions=if job["input"]["rsiSuccessorStage"].is_object() {
