@@ -112,12 +112,12 @@ pub(crate) fn propose(
     let mut session=state.store.get("session",session_id)
         .ok_or("시스템 설계 세션 없음")?;
     let campaign_id=session["rsiCampaignId"].as_str()
-        .ok_or("자기개선 캠페인 ID 없음")?;
+        .ok_or("자기개선 캠페인 ID 없음")?.to_string();
     let child_id=session["rsiGenerationJobId"].as_str()
-        .ok_or("후손 작업 ID 없음")?;
-    let parent=state.store.get("job",campaign_id)
+        .ok_or("후손 작업 ID 없음")?.to_string();
+    let parent=state.store.get("job",&campaign_id)
         .ok_or("캠페인 작업 없음")?;
-    let child=state.store.get("job",child_id)
+    let child=state.store.get("job",&child_id)
         .ok_or("후손 작업 없음")?;
     if session["rsiRun"]!=true || parent["kind"]!="rsi_evolve"
         || parent["status"]!="running" || parent["cancelRequested"]==true
