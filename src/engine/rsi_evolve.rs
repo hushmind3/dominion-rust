@@ -3810,8 +3810,6 @@ async fn run_loop(
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "nativePlan":current["input"]["rsiNativePlan"],
-            "systemBlueprint":current["input"]["rsiSystemBlueprint"],
-            "systemEvolution":current["input"]["rsiSystemEvolution"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
@@ -3827,6 +3825,8 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         // Keep serde_json's macro recursion bounded while preserving
         // native provenance as first-class generation evidence.
+        generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
+        generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["candidateOrigin"]=current["result"]["rsi"]["candidateOrigin"].clone();
         generation["nativeMutation"]=current["result"]["rsi"]["nativeMutation"].clone();
         let capture = &current["result"]["rsi"];
