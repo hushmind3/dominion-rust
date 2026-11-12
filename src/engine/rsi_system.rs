@@ -194,6 +194,111 @@ pub(crate) fn lineage_capsule(history:&[Value])->Value {
     capsule
 }
 
+/// Comparative evolution without unverified cherry-picks: successful
+/// architectures from OTHER campaigns are read-only references. Each must
+/// have an independently replayable paired receipt under the same immutable
+/// evaluation profile and overlap a module in the current source index.
+/// The new compiled descendant must still synthesize and verify its own patch.
+pub(crate) fn peer_lineage_references(
+    state:&crate::state::AppState,campaign:&str,profile_sha:&str,index_id:&str,
+    preferred_role:Option<&str>,
+)->Value {
+    let mut ranked=Vec::<(i64,Value)>::new();
+    let mut patches=BTreeSet::new();
+    for generation in state.store.all("rsi_generation").into_iter().take(256) {
+        if generation["campaignId"].as_str()==Some(campaign)
+            || generation["evaluationProfileSha256"].as_str()!=Some(profile_sha) {
+            continue;
+        }
+        let Some(design)=adopted_design(&generation) else {continue};
+        let Some(candidate)=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else{continue};
+        if candidate["status"]!="verified"
+            || candidate["evaluation"]["metrics"]["eligible"]!=true
+            || candidate["baseCommit"]!=generation["generatorCommit"]
+            || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {
+            continue;
+        }
+        let Some(patch_hash)=candidate["patchSha256"].as_str() else{continue};
+        if !patches.insert(patch_hash.to_string()){continue;}
+        let mut aligned=Vec::new();
+        let mut same_bytes=0usize;
+        for path in design["targetFiles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).take(24) {
+            let current=crate::engine::code_index::indexed_source_hash(state,index_id,path);
+            if let Some(hash)=current {
+                same_bytes+=usize::from(generation["acceptedSourceHashes"][path].as_str()==Some(&hash));
+                aligned.push(path.to_string());
+            }
+        }
+        if aligned.is_empty() {continue;}
+        let components=design_roles(design);
+        let role_match=preferred_role.is_some_and(|role|components.iter().any(|name|name==role));
+        let meta=candidate["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0);
+        let gains=candidate["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0);
+        let score=i64::from(role_match)*1_000+(meta.min(20) as i64)*30
+            +(gains.min(30) as i64)*5+(same_bytes.min(6) as i64)*2;
+        ranked.push((score,json!({
+            "source":"independently_paired_peer_lineage_v1",
+            "campaignId":generation["campaignId"],"generationId":generation["id"],
+            "candidateId":candidate["id"],"patchSha256":patch_hash,
+            "generatorCommit":generation["generatorCommit"],
+            "acceptedCommit":generation["acceptedCommit"],
+            "evaluationProfileSha256":profile_sha,
+            "components":components,"alignedSourceFiles":aligned,
+            "identicalSourceFiles":same_bytes,
+            "nextDomain":design["nextDomain"],
+            "hypothesis":design["hypothesis"].as_str().unwrap_or("")
+                .chars().take(420).collect::<String>(),
+            "designSummary":design["design"].as_str().unwrap_or("")
+                .chars().take(700).collect::<String>(),
+            "improvedHoldouts":gains,"metaHoldoutGains":meta,
+            "sourceCompatibility":if same_bytes>0 {"some_identical"}else{"requires_reimplementation"},
+            "automaticPatchReuse":false,"qualityProvenForThisDescendant":false
+        })));
+    }
+    ranked.sort_by(|a,b|b.0.cmp(&a.0).then_with(||
+        a.1["candidateId"].as_str().cmp(&b.1["candidateId"].as_str())));
+    let selected=ranked.into_iter().take(4).map(|(_,row)|row).collect::<Vec<_>>();
+    json!({"source":"cross_campaign_comparative_archive_v1","profileSha256":profile_sha,
+        "references":selected,"automaticPatchReuse":false,
+        "policy":"same_frozen_oracle_only_peer_successes_are_references_not_promotions"})
+}
+
+/// The old supervisor verifies archived comparison receipts, never the peer
+/// agent's proposal text or source patch as an instruction.
+pub(crate) fn validate_peer_references(
+    state:&crate::state::AppState,reference_set:&Value,profile_sha:&str,
+)->Result<(),String> {
+    if reference_set["source"]!="cross_campaign_comparative_archive_v1"
+        || reference_set["profileSha256"]!=profile_sha
+        || reference_set["automaticPatchReuse"]!=false {
+        return Err("교차 계보 출처·평가 프로필 오류".into());
+    }
+    let references=reference_set["references"].as_array()
+        .filter(|rows|rows.len()<=4).ok_or("교차 계보 참조 수 오류")?;
+    let mut seen=BTreeSet::new();
+    for row in references {
+        let id=row["candidateId"].as_str().ok_or("교차 계보 후보 ID 없음")?;
+        if !seen.insert(id) || row["source"]!="independently_paired_peer_lineage_v1"
+            || row["evaluationProfileSha256"]!=profile_sha
+            || row["automaticPatchReuse"]!=false {
+            return Err("중복·비검증 교차 계보 참조".into());
+        }
+        let candidate=state.store.get("rsi_candidate",id).ok_or("교차 계보 후보 소실")?;
+        if candidate["status"]!="verified"
+            || candidate["evaluation"]["metrics"]["eligible"]!=true
+            || candidate["patchSha256"]!=row["patchSha256"]
+            || candidate["baseCommit"]!=row["generatorCommit"]
+            || candidate["experimentAdoption"]["commit"]!=row["acceptedCommit"]
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {
+            return Err("교차 계보 후보의 독립 채택 증거 오류".into());
+        }
+    }
+    Ok(())
+}
+
 fn valid_role(name:&str)->bool {
     !name.is_empty() && name.len()<=64 && name.bytes().all(|c|
         c.is_ascii_alphanumeric() || c==b'_' || c==b'-')
