@@ -325,7 +325,7 @@ pub(crate) fn synthesize(
 /// Source compatibility (at least one identical current indexed source file)
 /// and the same frozen comparison profile are required. A donor cannot
 /// promote its own role as a repeated success by reporting a nextDomain.
-pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
+pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[Value])->Value{
     if policy["source"]!="compiled_editable_meta_controller_v1"
         || policy["metaRepairChosen"]==true
         || peers["source"]!="paired_cross_campaign_reference_archive_v1"
@@ -350,6 +350,7 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
             || !hash.bytes().all(|b|b.is_ascii_hexdigit()) {continue;}
         let mut seen=BTreeSet::new();
         let mut bridges=Vec::<Value>::new();
+        let mut learned_factors=Vec::<f64>::new();
         for donor in donors.iter().take(4){
             if donor["source"]!="paired_cross_campaign_design_reference_v1"
                 || donor["automaticPatchReuse"]!=false
@@ -366,6 +367,47 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
                 .filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit()))
                 else{continue};
             if !seen.insert(patch.to_string()){continue;}
+            // Learn the portability of this donor's METHOD from subsequent
+            // executable recipient attempts, not from the donor's own win.
+            // Match role, real focused source path, frozen suite, and donor.
+            // Count unique generations. No held-out case data enter this law.
+            let mut observed=BTreeSet::<String>::new();
+            let mut attempts=0_u64;
+            let mut measured=0_u64;
+            let mut adopted=0_u64;
+            let donor_id=donor["candidateId"].as_str();
+            for g in history.iter().rev().take(256){
+                if g["metaPolicyExecuted"]!=true
+                    || g["metaPolicy"]["peerMethodTransfer"]["active"]!=true
+                    || g["metaPolicy"]["peerMethodTransfer"]["selectedRecipient"]["role"]!=role
+                    || g["metaPolicy"]["peerMethodTransfer"]["selectedRecipient"]["path"]!=path
+                    || g["focusFiles"].as_array().is_none_or(|files|
+                        !files.iter().any(|v|v.as_str()==Some(path)))
+                    || !g["metaPolicy"]["peerMethodTransfer"]["references"]
+                        .as_array().is_some_and(|refs|refs.iter().any(|ref_row|
+                            ref_row["candidateId"].as_str()==donor_id
+                            && ref_row["sharedFrozenProfileSha256"]
+                                ==peers["comparisonProfileSha256"])) {
+                    continue;
+                }
+                let Some(id)=g["jobId"].as_str()else{continue};
+                if !observed.insert(id.to_string()){continue;}
+                attempts+=1;
+                if g["evaluation"]["verdict"].is_string()
+                    && g["evaluation"]["metrics"]["eligible"].is_boolean(){
+                    measured+=1;
+                    if independent_adoption(g)
+                        && g["acceptedSourceHashes"][path].as_str().is_some_and(
+                            |sha|sha.len()==64&&sha.bytes().all(|b|b.is_ascii_hexdigit())){
+                        adopted+=1;
+                    }
+                }
+            }
+            let posterior=(adopted as f64+1.0)/(measured as f64+2.0);
+            let unresolved=attempts.saturating_sub(measured);
+            let factor=(2.0*posterior).clamp(0.25,1.5)
+                *(1.0-0.10*unresolved.min(4) as f64);
+            learned_factors.push(factor);
             bridges.push(json!({
                 "candidateId":donor["candidateId"],
                 "fromCampaign":donor["campaignId"],
@@ -375,6 +417,10 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
                 "toSourcePath":path,"toSourceSha256":hash,
                 "sharedFrozenProfileSha256":peers["comparisonProfileSha256"],
                 "identicalIndexedSourceFiles":donor["identicalSourceFiles"],
+                "observedTransferAttempts":attempts,
+                "independentlyMeasuredTransferTrials":measured,
+                "recipientSourceAdoptions":adopted,
+                "empiricalTransferPosterior":posterior,
                 "automaticPatchReuse":false,
                 "transferProven":false
             }));
@@ -382,8 +428,11 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value)->Value{
         // One real independently adopted donor is enough to PROPOSE a
         // transfer trial. More donors increase priority with a hard cap,
         // but cannot become a new performance label.
-        let bonus=if bridges.is_empty(){0.0}
-            else{0.12+0.035*(bridges.len().min(3)-1) as f64};
+        let bonus=if bridges.is_empty(){0.0}else{
+            let learned=learned_factors.iter().sum::<f64>()
+                /learned_factors.len() as f64;
+            (0.12+0.035*(bridges.len().min(3)-1) as f64)*learned
+        };
         let prior=candidate["score"].as_f64().filter(|s|s.is_finite())
             .unwrap_or(0.0);
         candidate["score"]=json!(prior+bonus);
@@ -757,7 +806,7 @@ mod tests{
                 "alignedSourceFiles":["src/engine/memory.rs"]
             }]
         });
-        let evolved=evolve_from_peer_methods(original.clone(),&peer);
+        let evolved=evolve_from_peer_methods(original.clone(),&peer,&[]);
         assert_eq!(evolved["target"]["role"],"learning");
         assert_eq!(evolved["controlPolicy"]["role"],"learning");
         assert_eq!(evolved["controlPolicy"]["path"],"src/engine/learning.rs");
@@ -769,16 +818,39 @@ mod tests{
         assert_ne!(evolved["revision"],original["revision"]);
         let mut drift=peer.clone();
         drift["references"][0]["identicalSourceFiles"]=json!(0);
-        let ignored=evolve_from_peer_methods(original.clone(),&drift);
+        let ignored=evolve_from_peer_methods(original.clone(),&drift,&[]);
         assert_eq!(ignored["target"],original["target"]);
         let mut wrong_suite=peer.clone();
         wrong_suite["references"][0]["comparisonProfileSha256"]=
             json!("0".repeat(64));
-        assert_eq!(evolve_from_peer_methods(original.clone(),&wrong_suite)["target"],
+        assert_eq!(evolve_from_peer_methods(original.clone(),&wrong_suite,&[])["target"],
             original["target"]);
+        // Four independently assessed non-adoptions lower the donor-method
+        // posterior; the child returns to the non-transfer candidate.
+        let rejected=(0..4).map(|i|json!({
+            "jobId":format!("transfer-{i}"),
+            "metaPolicyExecuted":true,
+            "focusFiles":["src/engine/learning.rs"],
+            "evaluation":{"verdict":"rejected","metrics":{"eligible":true}},
+            "metaPolicy":{"peerMethodTransfer":{
+                "active":true,
+                "selectedRecipient":{"role":"learning",
+                    "path":"src/engine/learning.rs"},
+                "references":[{"candidateId":"verified-1",
+                    "sharedFrozenProfileSha256":"f".repeat(64)}]
+            }}
+        })).collect::<Vec<_>>();
+        let later=evolve_from_peer_methods(original.clone(),&peer,&rejected);
+        assert_eq!(later["target"]["role"],"memory");
+        let alternative=later["alternatives"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="learning").unwrap();
+        assert_eq!(alternative["transferHypotheses"][0]
+            ["independentlyMeasuredTransferTrials"],4);
+        assert_eq!(alternative["transferHypotheses"][0]
+            ["recipientSourceAdoptions"],0);
         let mut repair=original.clone();
         repair["metaRepairChosen"]=json!(true);
-        assert_eq!(evolve_from_peer_methods(repair.clone(),&peer)["target"],
+        assert_eq!(evolve_from_peer_methods(repair.clone(),&peer,&[])["target"],
             repair["target"]);
     }
 
