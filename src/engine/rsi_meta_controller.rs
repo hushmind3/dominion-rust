@@ -316,6 +316,33 @@ pub(crate) fn synthesize(
     })
 }
 
+// Attribution is to one executed donor method on one exact source version
+// and frozen comparison profile. A donor mentioned among several references
+// is not evidence that its method caused a recipient's outcome.
+fn measured_recipient(g:&Value)->bool{
+    g["evaluation"]["verdict"].is_string()
+        && g["evaluation"]["metrics"]["eligible"].is_boolean()
+}
+fn executed_recipient_context(
+    g:&Value,role:&str,path:&str,source_sha:&str,profile:&Value
+)->bool{
+    g["metaPolicyExecuted"]==true
+        && &g["comparisonProfileSha256"]==profile
+        && g["metaPolicy"]["target"]["role"]==role
+        && g["metaPolicy"]["target"]["path"]==path
+        && g["metaPolicy"]["target"]["sourceSha256"]==source_sha
+        && g["focusFiles"].as_array().is_some_and(|files|
+            files.iter().any(|file|file.as_str()==Some(path)))
+}
+fn recipient_source_adopted(g:&Value,path:&str,previous_sha:&str)->bool{
+    independent_adoption(g)
+        && g["systemDesign"]["targetFiles"].as_array().is_some_and(|files|
+            files.iter().any(|file|file.as_str()==Some(path)))
+        && g["acceptedSourceHashes"][path].as_str().is_some_and(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())
+                && sha!=previous_sha)
+}
+
 /// Turn independently paired *other-lineage* results into a bounded
 /// experimental hypothesis rather than copying a foreign patch. A donor's
 /// nextDomain is a proposed transferable METHOD, not an observed improvement
@@ -350,7 +377,23 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
             || !hash.bytes().all(|b|b.is_ascii_hexdigit()) {continue;}
         let mut seen=BTreeSet::new();
         let mut bridges=Vec::<Value>::new();
-        let mut learned_factors=Vec::<f64>::new();
+        let mut learned_factors=Vec::<(String,f64)>::new();
+        // Observational matched control: same role, source revision, frozen
+        // suite and executed focus, but no peer-method intervention.
+        let mut control_seen=BTreeSet::<String>::new();
+        let mut control_trials=0_u64;
+        let mut control_adoptions=0_u64;
+        for g in history.iter().rev().take(256){
+            if !executed_recipient_context(g,role,path,hash,
+                &peers["comparisonProfileSha256"])
+                || g["metaPolicy"]["peerMethodTransfer"]["active"]==true
+                || !measured_recipient(g){continue;}
+            let Some(job)=g["jobId"].as_str()else{continue};
+            if !control_seen.insert(job.to_owned()){continue;}
+            control_trials+=1;
+            control_adoptions+=u64::from(recipient_source_adopted(g,path,hash));
+        }
+        let control_p=(control_adoptions as f64+1.0)/(control_trials as f64+2.0);
         for donor in donors.iter().take(4){
             if donor["source"]!="paired_cross_campaign_design_reference_v1"
                 || donor["automaticPatchReuse"]!=false
@@ -367,6 +410,8 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
                 .filter(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit()))
                 else{continue};
             if !seen.insert(patch.to_string()){continue;}
+            let Some(donor_id)=donor["candidateId"].as_str()
+                .filter(|id|!id.is_empty()) else{continue};
             // Learn the portability of this donor's METHOD from subsequent
             // executable recipient attempts, not from the donor's own win.
             // Match role, real focused source path, frozen suite, and donor.
@@ -375,17 +420,20 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
             let mut attempts=0_u64;
             let mut measured=0_u64;
             let mut adopted=0_u64;
-            let donor_id=donor["candidateId"].as_str();
             for g in history.iter().rev().take(256){
-                if g["metaPolicyExecuted"]!=true
-                    || g["metaPolicy"]["peerMethodTransfer"]["active"]!=true
-                    || g["metaPolicy"]["peerMethodTransfer"]["selectedRecipient"]["role"]!=role
-                    || g["metaPolicy"]["peerMethodTransfer"]["selectedRecipient"]["path"]!=path
-                    || g["focusFiles"].as_array().is_none_or(|files|
-                        !files.iter().any(|v|v.as_str()==Some(path)))
-                    || !g["metaPolicy"]["peerMethodTransfer"]["references"]
+                let observed_transfer=&g["metaPolicy"]["peerMethodTransfer"];
+                if !executed_recipient_context(g,role,path,hash,
+                    &peers["comparisonProfileSha256"])
+                    || observed_transfer["active"]!=true
+                    || observed_transfer["activeDonorCandidateId"]!=donor_id
+                    || observed_transfer["comparisonProfileSha256"]
+                        !=peers["comparisonProfileSha256"]
+                    || observed_transfer["selectedRecipient"]["role"]!=role
+                    || observed_transfer["selectedRecipient"]["path"]!=path
+                    || observed_transfer["selectedRecipient"]["sourceSha256"]!=hash
+                    || !observed_transfer["references"]
                         .as_array().is_some_and(|refs|refs.iter().any(|ref_row|
-                            ref_row["candidateId"].as_str()==donor_id
+                            ref_row["candidateId"]==donor_id
                             && ref_row["sharedFrozenProfileSha256"]
                                 ==peers["comparisonProfileSha256"])) {
                     continue;
@@ -393,21 +441,23 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
                 let Some(id)=g["jobId"].as_str()else{continue};
                 if !observed.insert(id.to_string()){continue;}
                 attempts+=1;
-                if g["evaluation"]["verdict"].is_string()
-                    && g["evaluation"]["metrics"]["eligible"].is_boolean(){
+                if measured_recipient(g){
                     measured+=1;
-                    if independent_adoption(g)
-                        && g["acceptedSourceHashes"][path].as_str().is_some_and(
-                            |sha|sha.len()==64&&sha.bytes().all(|b|b.is_ascii_hexdigit())){
-                        adopted+=1;
-                    }
+                    adopted+=u64::from(recipient_source_adopted(g,path,hash));
                 }
             }
             let posterior=(adopted as f64+1.0)/(measured as f64+2.0);
             let unresolved=attempts.saturating_sub(measured);
-            let factor=(2.0*posterior).clamp(0.25,1.5)
-                *(1.0-0.10*unresolved.min(4) as f64);
-            learned_factors.push(factor);
+            // A negative matched-control signal suppresses this method's
+            // exploration bonus; it does not falsely establish causality.
+            let negative_transfer=measured>=3 && control_trials>=3
+                && posterior+0.12<control_p;
+            let factor=if negative_transfer{0.0}else{
+                (2.0*posterior).clamp(0.25,1.5)
+                    *(1.0-0.10*unresolved.min(4) as f64)
+                    *(1.0+(posterior-control_p).max(0.0)).min(1.5)
+            };
+            learned_factors.push((donor_id.to_owned(),factor));
             bridges.push(json!({
                 "candidateId":donor["candidateId"],
                 "fromCampaign":donor["campaignId"],
@@ -421,22 +471,27 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
                 "independentlyMeasuredTransferTrials":measured,
                 "recipientSourceAdoptions":adopted,
                 "empiricalTransferPosterior":posterior,
+                "matchedControlTrials":control_trials,
+                "matchedControlAdoptions":control_adoptions,
+                "matchedControlPosterior":control_p,
+                "negativeTransferSignal":negative_transfer,
+                "singleDonorAttribution":true,
                 "automaticPatchReuse":false,
                 "transferProven":false
             }));
         }
-        // One real independently adopted donor is enough to PROPOSE a
-        // transfer trial. More donors increase priority with a hard cap,
-        // but cannot become a new performance label.
-        let bonus=if bridges.is_empty(){0.0}else{
-            let learned=learned_factors.iter().sum::<f64>()
-                /learned_factors.len() as f64;
-            (0.12+0.035*(bridges.len().min(3)-1) as f64)*learned
-        };
+        // Select exactly one donor intervention. Other references remain
+        // hypotheses, never co-credited after the recipient's evaluation.
+        let primary=learned_factors.iter().filter(|(_,factor)|*factor>0.0)
+            .max_by(|(id_a,a),(id_b,b)|a.total_cmp(b)
+                .then_with(||id_b.cmp(id_a)));
+        let active_donor=primary.map(|(id,_)|id.as_str());
+        let bonus=primary.map(|(_,factor)|0.12*factor).unwrap_or(0.0);
         let prior=candidate["score"].as_f64().filter(|s|s.is_finite())
             .unwrap_or(0.0);
         candidate["score"]=json!(prior+bonus);
         candidate["portableMethodExplorationBonus"]=json!(bonus);
+        candidate["activeTransferDonorCandidateId"]=json!(active_donor);
         candidate["transferHypotheses"]=json!(bridges);
         transferred|=bonus>0.0;
     }
@@ -447,8 +502,7 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
         .then_with(||a["target"]["path"].as_str().cmp(&b["target"]["path"].as_str())));
     let Some(winner)=alternatives.first().cloned()else{return policy;};
     let target=winner["target"].clone();
-    let bridge=winner["transferHypotheses"].as_array()
-        .is_some_and(|a|!a.is_empty());
+    let bridge=winner["activeTransferDonorCandidateId"].is_string();
     policy["target"]=target.clone();
     policy["selectionEvidence"]=winner.clone();
     policy["alternatives"]=json!(alternatives);
@@ -471,6 +525,9 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
         "source":"compiled_cross_lineage_method_hypothesis_v1",
         "selectedRecipient":target,
         "references":winner["transferHypotheses"],
+        "comparisonProfileSha256":peers["comparisonProfileSha256"],
+        "activeDonorCandidateId":winner["activeTransferDonorCandidateId"],
+        "attributionMode":"one_executed_donor_source_revision_and_suite",
         "active":bridge,
         "sameFrozenComparisonProfile":true,
         "automaticallyApplied":false,
@@ -659,14 +716,18 @@ pub(crate) fn instruction(policy:&Value)->String {
     );
     if policy["peerMethodTransfer"]["active"]==true {
         let rows=policy["peerMethodTransfer"]["references"].as_array()
-            .into_iter().flatten().take(3)
+            .into_iter().flatten()
+            .filter(|r|r["candidateId"]==policy["peerMethodTransfer"]["activeDonorCandidateId"])
+            .take(1)
             .map(|r|format!(
-                "independent donor={} source roles={} target={} current file={} \
+                "isolated donor={} source roles={} target={} current file={} \
                  measured recipient trials={} actual source adoptions={} \
-                 smoothed portability={}",
+                 smoothed portability={} matched control trials={} control adoptions={} negative transfer={}",
                 r["candidateId"],r["fromRoles"],r["toRole"],
                 r["toSourcePath"],r["independentlyMeasuredTransferTrials"],
-                r["recipientSourceAdoptions"],r["empiricalTransferPosterior"]
+                r["recipientSourceAdoptions"],r["empiricalTransferPosterior"],
+                r["matchedControlTrials"],r["matchedControlAdoptions"],
+                r["negativeTransferSignal"]
             )).collect::<Vec<_>>();
         message.push_str(&format!(
             "\nPORTABLE METHOD HYPOTHESIS (not a performance claim): \
@@ -767,15 +828,23 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     // recipient adoption. Future generations learn method portability only
     // from attempts that actually reached the chosen indexed source.
     let transfer=&policy["peerMethodTransfer"];
-    let source_focus=transfer["active"]==true
-        && generation["metaPolicyExecuted"]==true
-        && transfer["selectedRecipient"]["path"].as_str().is_some_and(|path|
-            generation["focusFiles"].as_array().is_some_and(|files|
-                files.iter().any(|file|file.as_str()==Some(path))));
-    let source_adopted=source_focus && independent_adoption(generation)
-        && transfer["selectedRecipient"]["path"].as_str().is_some_and(|path|
-            generation["acceptedSourceHashes"][path].as_str().is_some_and(
-                |sha|sha.len()==64&&sha.bytes().all(|b|b.is_ascii_hexdigit())));
+    let assigned_donor=transfer["activeDonorCandidateId"].as_str()
+        .filter(|id|!id.is_empty());
+    let matching_assignment=assigned_donor.is_some_and(|id|
+        generation["metaPolicy"]["peerMethodTransfer"]["activeDonorCandidateId"]==id
+            && generation["metaPolicy"]["revision"]==policy["revision"]
+            && transfer["references"].as_array().is_some_and(|refs|
+                refs.iter().any(|row|row["candidateId"]==id)));
+    let source_focus=transfer["active"]==true && matching_assignment
+        && transfer["comparisonProfileSha256"]==generation["comparisonProfileSha256"]
+        && transfer["selectedRecipient"]["role"].as_str().is_some_and(|role|
+            transfer["selectedRecipient"]["path"].as_str().is_some_and(|path|
+                transfer["selectedRecipient"]["sourceSha256"].as_str().is_some_and(
+                    |sha|executed_recipient_context(generation,role,path,sha,
+                        &transfer["comparisonProfileSha256"]))));
+    let source_adopted=source_focus && transfer["selectedRecipient"]["path"].as_str()
+        .zip(transfer["selectedRecipient"]["sourceSha256"].as_str())
+        .is_some_and(|(path,sha)|recipient_source_adopted(generation,path,sha));
     let transfer_observation=json!({
         "source":"measured_cross_lineage_recipient_observation_v1",
         "hypothesisRevision":policy["revision"],
@@ -784,6 +853,8 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
             .filter_map(|row|row["candidateId"].as_str())
             .take(4).collect::<Vec<_>>(),
         "recipient":transfer["selectedRecipient"],
+        "attributableDonorCandidateId":if source_focus{json!(assigned_donor)}else{Value::Null},
+        "singleDonorSourceSuiteMatched":source_focus,
         "sourceFocusExecuted":source_focus,
         "independentlyAssessed":source_focus && assessed,
         "recipientSourceIndependentlyAdopted":source_adopted,
@@ -866,6 +937,8 @@ mod tests{
         assert_eq!(evolved["peerMethodTransfer"]["transferProven"],false);
         let observation=feedback(&evolved,&json!({
             "metaPolicyExecuted":true,
+            "comparisonProfileSha256":"f".repeat(64),
+            "metaPolicy":evolved.clone(),
             "focusFiles":["src/engine/learning.rs"],
             "candidateId":"recipient-1",
             "accepted":false,
@@ -893,12 +966,17 @@ mod tests{
         let rejected=(0..4).map(|i|json!({
             "jobId":format!("transfer-{i}"),
             "metaPolicyExecuted":true,
+            "comparisonProfileSha256":"f".repeat(64),
             "focusFiles":["src/engine/learning.rs"],
             "evaluation":{"verdict":"rejected","metrics":{"eligible":true}},
-            "metaPolicy":{"peerMethodTransfer":{
-                "active":true,
+            "metaPolicy":{
+                "target":{"role":"learning","path":"src/engine/learning.rs",
+                    "sourceSha256":"a".repeat(64)},
+                "peerMethodTransfer":{
+                "active":true,"activeDonorCandidateId":"verified-1",
+                "comparisonProfileSha256":"f".repeat(64),
                 "selectedRecipient":{"role":"learning",
-                    "path":"src/engine/learning.rs"},
+                    "path":"src/engine/learning.rs","sourceSha256":"a".repeat(64)},
                 "references":[{"candidateId":"verified-1",
                     "sharedFrozenProfileSha256":"f".repeat(64)}]
             }}
@@ -911,6 +989,53 @@ mod tests{
             ["independentlyMeasuredTransferTrials"],4);
         assert_eq!(alternative["transferHypotheses"][0]
             ["recipientSourceAdoptions"],0);
+        // An execution referencing two donors may only credit the
+        // explicitly assigned one, never each name in the prompt.
+        let mut ambiguous=rejected.clone();
+        for row in &mut ambiguous{
+            row["metaPolicy"]["peerMethodTransfer"]["references"]
+                .as_array_mut().unwrap().push(json!({
+                    "candidateId":"verified-other",
+                    "sharedFrozenProfileSha256":"f".repeat(64)
+                }));
+            row["metaPolicy"]["peerMethodTransfer"]["activeDonorCandidateId"]=
+                json!("verified-other");
+        }
+        let unmatched=evolve_from_peer_methods(original.clone(),&peer,&ambiguous);
+        let unmatched_bridge=unmatched["alternatives"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="learning").unwrap();
+        assert_eq!(unmatched_bridge["transferHypotheses"][0]
+            ["independentlyMeasuredTransferTrials"],0);
+        let mut wrong_source=rejected.clone();
+        for row in &mut wrong_source{
+            row["metaPolicy"]["target"]["sourceSha256"]=json!("b".repeat(64));
+        }
+        let source_mismatch=evolve_from_peer_methods(original.clone(),&peer,&wrong_source);
+        let source_bridge=source_mismatch["alternatives"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="learning").unwrap();
+        assert_eq!(source_bridge["transferHypotheses"][0]
+            ["independentlyMeasuredTransferTrials"],0);
+        let mut wrong_profile=rejected.clone();
+        for row in &mut wrong_profile{
+            row["comparisonProfileSha256"]=json!("e".repeat(64));
+        }
+        let suite_mismatch=evolve_from_peer_methods(original.clone(),&peer,&wrong_profile);
+        let suite_bridge=suite_mismatch["alternatives"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="learning").unwrap();
+        assert_eq!(suite_bridge["transferHypotheses"][0]
+            ["independentlyMeasuredTransferTrials"],0);
+        let mut failed_receipt=json!({
+            "metaPolicyExecuted":true,
+            "metaPolicy":evolved.clone(),
+            "comparisonProfileSha256":"e".repeat(64),
+            "focusFiles":["src/engine/learning.rs"],
+            "evaluation":{"verdict":"rejected","metrics":{"eligible":true}}
+        });
+        assert_eq!(feedback(&evolved,&failed_receipt)["portableMethodObservation"]
+            ["independentlyAssessed"],false);
+        failed_receipt["comparisonProfileSha256"]=json!("f".repeat(64));
+        assert_eq!(feedback(&evolved,&failed_receipt)["portableMethodObservation"]
+            ["attributableDonorCandidateId"],"verified-1");
         let mut repair=original.clone();
         repair["metaRepairChosen"]=json!(true);
         assert_eq!(evolve_from_peer_methods(repair.clone(),&peer,&[])["target"],
