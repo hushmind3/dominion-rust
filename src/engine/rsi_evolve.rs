@@ -5472,6 +5472,28 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let principle=crate::engine::rsi_principle_learner::instruction(
             &job["input"]["rsiPrincipleCurriculum"],
             &job["input"]["rsiPrincipleModel"]);
+        let model_weights=if job["input"]["rsiAllowLocalAdapterTraining"]==true {
+            if let Some(name)=job["input"]["rsiAdapterManifestName"].as_str() {
+                format!("[SELF-EVOLVING MODEL PARAMETERS]\n\
+                    The campaign owner approved a separate local LoRA model \
+                    training experiment with manifestName={}. Use the REAL \
+                    rsi_model_adapter tool with mode=check, then mode=train, \
+                    then mode=assess. A TRAINED weight file is NOT accepted. \
+                    The independent Rust holdout assessor compares blinded \
+                    base and adapter inference, requiring cross-domain gains \
+                    and no regressions. Only if it independently adopts the \
+                    weights AND the owner set rsiAllowLocalAdapterDeployment \
+                    may mode=activate launch an actual inference provider. \
+                    The next rebuilt agent can use that provider only with \
+                    rsiUsePromotedAdapterDescendants approval. Your source \
+                    research can rewrite src/engine/rsi_weight_cycle.rs and \
+                    src/engine/rsi_adapter_cycle.py so methods of parameter \
+                    learning themselves evolve; frozen approval and holdout \
+                    verdicts remain separate. Data and model paths must \
+                    originate in the owner's manifest, not model-authored paths.\n",
+                    name)
+            }else{String::new()}
+        }else{String::new()};
         let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
         let hybrid=&job["input"]["rsiCrossLineageHypothesis"];
         let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
@@ -5483,7 +5505,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{model_weights}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
