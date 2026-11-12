@@ -1,0 +1,167 @@
+name: Sub1 Codex whole-system redesign candidate
+
+# High-capability coding-model route, separate from the native frozen RSI
+# grader. A generated patch is NEVER evidence of a recursive RSI completion.
+# GitHub Models retired July 30, 2026. Copilot CLI is a separate service.
+# This account owns a personal repository, so configure a user-owned fine-
+# grained PAT with Account > Copilot Requests as SUB1_COPILOT_PAT.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "GitHub Copilot CLI model available to your Copilot seat"
+        type: choice
+        required: true
+        default: gpt-5.3-codex
+        options:
+          - gpt-5.3-codex
+          - gpt-6-astra
+
+permissions:
+  contents: read
+
+jobs:
+  codex-source-candidate:
+    if: github.ref_name == 'dominion-sub1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      SUB1_CANDIDATE_DIR: ${{ runner.temp }}/sub1-codex-source
+      SUB1_EVIDENCE_DIR: ${{ runner.temp }}/sub1-codex-evidence
+    steps:
+      - name: Checkout immutable Sub1 revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install official GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      - name: Prepare detached checked-out source and task contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git worktree add --detach "$SUB1_CANDIDATE_DIR" "$GITHUB_SHA"
+          mkdir -p "$SUB1_EVIDENCE_DIR"
+          printf '%s\n' "$GITHUB_SHA" > "$SUB1_EVIDENCE_DIR/base-commit.txt"
+          cat > "$SUB1_EVIDENCE_DIR/task.md" <<'PROMPT'
+          You are implementing an experiment in the REAL DOMINION Rust
+          recursive self-improvement intelligence system, not writing a report.
+          Start by reading src/engine/rsi_evolve.rs, rsi_system.rs,
+          chat/runtime.rs, jobs.rs and related algorithms, memory, learning and
+          tools. Understand its current source-level descendant planning,
+          execution, independent grading, and actual model-authored edits.
+
+          Choose one demonstrable causal deficit that prevents the compiled
+          next-generation intelligence controller from deciding, learning and
+          implementing genuinely better next-generation system architecture.
+          Invent an executable improvement method and IMPLEMENT it in the
+          existing Rust modules, with specific regression tests. A standalone
+          optimization, a new hardcoded source mutation, a prettier prompt,
+          or a document-only proposal is not a result.
+
+          Change only necessary source code under src/ or web/src/.
+          Do not change frozen evaluators, holdout cases, test fixtures,
+          CI/workflows, secrets, Cargo.lock, package locks, or Git history.
+          Do not create a commit, branch or pull request. Make the source
+          changes in THIS detached worktree. Preserve prior capabilities,
+          whole-system generational identity, budget and evidence boundaries.
+          The harness runs validation separately after your patch.
+
+          Return changed file paths and the causal hypothesis. This response
+          does not count as implemented work without actual changed bytes.
+          PROMPT
+
+      - name: Run real GitHub Copilot Codex model against detached source
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.SUB1_COPILOT_PAT }}
+          SUB1_REQUESTED_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COPILOT_GITHUB_TOKEN:-}" ]; then
+            echo 'SUB1_COPILOT_PAT repository secret not configured.'
+            echo 'For personal repositories create a fine-grained PAT with Account > Copilot Requests.'
+            exit 2
+          fi
+          cd "$SUB1_CANDIDATE_DIR"
+          # Only local source reading/editing is authorized: no shell, URL,
+          # GitHub mutations, external MCP calls or workflow permissions.
+          # Copilot CLI itself authenticates, but the agent cannot execute
+          # shell tools that could expose the token or push changes.
+          copilot -p "$(cat "$SUB1_EVIDENCE_DIR/task.md")" \
+            --model "$SUB1_REQUESTED_MODEL" \
+            --allow-tool='read,write' \
+            --deny-tool='shell,url,memory,github' \
+            --no-ask-user \
+            --no-auto-update \
+            --share="$SUB1_EVIDENCE_DIR/copilot-session.md" \
+            > "$SUB1_EVIDENCE_DIR/copilot-response.txt"
+
+      - name: Check actual source modifications and freeze patch receipt
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d "$SUB1_CANDIDATE_DIR/.git" ] && [ ! -f "$SUB1_CANDIDATE_DIR/.git" ]; then
+            echo 'Detached checkout was not created'
+            exit 0
+          fi
+          cd "$SUB1_CANDIDATE_DIR"
+          git status --short > "$SUB1_EVIDENCE_DIR/git-status.txt"
+          git diff --no-ext-diff --binary > "$SUB1_EVIDENCE_DIR/candidate.patch"
+          git diff --check > "$SUB1_EVIDENCE_DIR/diff-check.txt" 2>&1 || true
+          git diff --name-only > "$SUB1_EVIDENCE_DIR/changed-files.txt"
+          # No untracked file is silently counted as a validated source edit.
+          git ls-files --others --exclude-standard > "$SUB1_EVIDENCE_DIR/untracked-files.txt"
+          if [ ! -s "$SUB1_EVIDENCE_DIR/candidate.patch" ]; then
+            echo 'No tracked source changes. This is NOT an RSI improvement.'
+            exit 1
+          fi
+          while IFS= read -r path; do
+            case "$path" in
+              src/engine/rsi_metrics.rs|src/engine/rsi_oracle_fixture.rs|src/engine/preflight_fixture.rs|src/engine/rsi_worktree.rs|src/engine/rsi.rs)
+                echo "Frozen evaluation or safety boundary changed: $path"
+                exit 1 ;;
+              src/*.rs|src/**/*.rs|web/src/*.ts|web/src/*.tsx|web/src/**/*.ts|web/src/**/*.tsx)
+                ;;
+              *)
+                echo "Unexpected modified path: $path"
+                exit 1 ;;
+            esac
+          done < "$SUB1_EVIDENCE_DIR/changed-files.txt"
+          echo 'Measured condition: code diff exists. Source improvement is still UNPROVEN.'
+          sha256sum "$SUB1_EVIDENCE_DIR/candidate.patch" > "$SUB1_EVIDENCE_DIR/patch-sha256.txt"
+
+      - name: Compile and test generated candidate without AI credentials
+        if: success()
+        shell: bash
+        run: |
+          set -o pipefail
+          cd "$SUB1_CANDIDATE_DIR"
+          cargo test --release --locked --bin dominion-rust \
+            2>&1 | tee "$SUB1_EVIDENCE_DIR/cargo-test.log"
+          cargo build --release --locked --bin dominion-rust \
+            2>&1 | tee "$SUB1_EVIDENCE_DIR/cargo-build.log"
+
+      - name: Keep raw source and validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub1-codex-source-candidate-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/sub1-codex-evidence/*.txt
+            ${{ runner.temp }}/sub1-codex-evidence/*.md
+            ${{ runner.temp }}/sub1-codex-evidence/*.patch
+            ${{ runner.temp }}/sub1-codex-evidence/*.log
