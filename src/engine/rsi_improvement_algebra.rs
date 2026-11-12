@@ -273,8 +273,9 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,
         || plan["qualityProven"]!=false {return false}
     let rule_valid=|rule:&Value|{
         rule["id"].as_str().is_some_and(|s|hash_ok(s,64))
-            && method_family_id(rule).as_deref()==
-                rule["methodFamilyId"].as_str()
+            && rule["methodFamilyId"].as_str().is_some_and(|family|
+                hash_ok(family,64) &&
+                method_family_id(rule).as_deref()==Some(family))
             && frontier.iter().any(|f|f==&rule["method"])
             && roles(&rule["premises"]).is_some()
             && roles(&rule["products"]).is_some()
