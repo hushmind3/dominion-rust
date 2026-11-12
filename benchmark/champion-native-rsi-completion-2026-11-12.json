@@ -1,0 +1,3160 @@
+{
+  "phase": "campaign_finished",
+  "provider": "legacy_public_endpoint",
+  "model": "openai-fast",
+  "sourceDir": "/home/runner/work/_temp/champion-source",
+  "submittedRequest": {
+    "mode": "continuous",
+    "confirmation": "START_RSI_EVOLUTION",
+    "selectionPolicy": "automatic",
+    "providerId": "champion-free-proxy",
+    "model": "openai-fast",
+    "reasoningEffort": "low",
+    "request": "Improve DOMINION's current self-improvement algorithm and then transfer a measured improvement into memory. Start from the unchanged current source. Find repeated allocation, scans, or redundant work in self-improvement policy selection and owner-fact retrieval. Preserve policy features, provenance checks and ranking semantics. Inspect source before editing; use small SHA-bound edits. Use independently measured development feedback to repair unsuccessful candidates. The runtime can also try native source transformations, whose provenance must stay separate from model edits. Do not modify tests, evaluators, fixtures, or report an unevaluated proposal as an improvement.",
+    "focusFiles": [],
+    "expandAfterGain": true,
+    "nativeInduction": true,
+    "stopAfterProof": true,
+    "maxAttempts": 6,
+    "tokenBudget": 520000,
+    "timeBudgetSeconds": 6000
+  },
+  "jobId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+  "generationEvidence": [
+    {
+      "attempt": 1,
+      "jobId": "ca52cc06-5cf8-48c2-aac6-8c83036fbf6b",
+      "model": "dominion-native:verified_owner_provenance_cache_v1",
+      "requestedModel": "openai-fast",
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "candidateId": "rsi-f48e5678094dcda0289fcfecde1f549199d2c9760bd9a9fbcb84ec41965c07bf",
+      "accepted": true,
+      "acceptedCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+      "verdict": "improved",
+      "improvedHoldouts": 1,
+      "generatorCommit": "c3e0e014dd03b50123dcd88627aa802e5e1decde",
+      "domain": "memory",
+      "searchStrategy": {
+        "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+        "implementation": "failure-clusters",
+        "mode": "active",
+        "name": "failure-clusters",
+        "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+      },
+      "toolsUsed": [],
+      "newFindings": 0,
+      "editEvidence": {
+        "attempts": 0,
+        "recentFailures": [],
+        "verifiedWrites": 0
+      },
+      "diffBytes": 1214,
+      "captureError": "",
+      "inheritedCandidateId": null,
+      "archiveSelection": null,
+      "inheritedPatchChanged": false,
+      "editPolicy": {
+        "basis": "composed_executable_controller_from_real_worker_outcomes",
+        "checkpointAfter": 3,
+        "derivedFromJobId": null,
+        "improvementProven": false,
+        "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+        "method": "balanced",
+        "mutation": "bootstrap",
+        "objectiveId": "453ab9ed7de20ced96964a1abe7c309c",
+        "observations": 0,
+        "parentRevision": "",
+        "preferredTool": "workspace_replace_range",
+        "program": [
+          "discover",
+          "ground",
+          "edit",
+          "verify"
+        ],
+        "programKind": "receipt_driven_source_edit_procedure",
+        "repairLimit": 2,
+        "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "rewriteProgram": [],
+        "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+        "ruleKind": "synthesized_boolean_execution_guards",
+        "rules": [],
+        "score": 0,
+        "selectedByGeneratorCommit": "c3e0e014dd03b50123dcd88627aa802e5e1decde"
+      },
+      "programStages": [],
+      "compilerRepairReceipts": [],
+      "nativeMutation": {
+        "afterSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+        "beforeSha256": "f31e0094b20380a9a3ab677b465b60e2dc8fa49ff112a65ffc4a539f818f5e27",
+        "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+        "id": "ca52cc06-5cf8-48c2-aac6-8c83036fbf6b",
+        "operator": "verified_owner_provenance_cache_v1",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/room_state.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+      },
+      "candidateOrigin": "native_inductive_source_mutation",
+      "scopeExpanded": null,
+      "residualEvidence": null,
+      "costOpportunities": null,
+      "metaTransferTarget": null,
+      "ruleExecutions": [],
+      "toolTimeline": [],
+      "acceptedSourceHashes": {
+        "src/engine/room_state.rs": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019"
+      },
+      "verification": {
+        "checks": [
+          {
+            "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:314:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m314\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+            "exitCode": 0,
+            "label": "cargo check --all-targets",
+            "passed": true
+          }
+        ],
+        "checksPassed": true,
+        "rawCandidateId": "rsi-f48e5678094dcda0289fcfecde1f549199d2c9760bd9a9fbcb84ec41965c07bf",
+        "reason": "candidate_compiles_not_performance_verified",
+        "repairAttempts": 0,
+        "repairHistory": []
+      },
+      "rewriteProgram": [],
+      "editMethodReward": 0,
+      "focusFiles": [
+        "scripts/champion-native-rsi-proof.mjs",
+        "scripts/sub3-live-model-campaign.mjs"
+      ],
+      "knowledgeId": "experience-rsi-e519d0dec70332589642feab4109e3c9",
+      "evaluation": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 171.122317,
+                "candidate": 170.8658155,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 272.0655955,
+                "candidate": 113.1853415,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518,
+                "candidate": 518,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 69.31372150000001,
+                "candidate": 69.745882,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 265.625685,
+                "candidate": 270.806626,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 147.837852,
+                "candidate": 148.7899055,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238,
+                "candidate": 77238,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 0,
+        "metaHoldoutGains": 0,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      }
+    },
+    {
+      "attempt": 2,
+      "jobId": "d1cd1ddb-e0a5-422c-9262-18a4379f95bb",
+      "model": "dominion-native:streamed_verified_domain_selector_v3",
+      "requestedModel": "openai-fast",
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "candidateId": "rsi-f71f1ebab59f5be6031646a889d588a302d39d45cbc776e255af95b44ddd2bff",
+      "accepted": true,
+      "acceptedCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+      "verdict": "improved",
+      "improvedHoldouts": 1,
+      "generatorCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+      "domain": "improver",
+      "searchStrategy": {
+        "decisionSource": "parent_next_decision",
+        "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+        "implementation": "failure-clusters",
+        "mode": "active",
+        "name": "failure-clusters",
+        "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+      },
+      "toolsUsed": [],
+      "newFindings": 0,
+      "editEvidence": {
+        "attempts": 0,
+        "recentFailures": [],
+        "verifiedWrites": 0
+      },
+      "diffBytes": 3587,
+      "captureError": "",
+      "inheritedCandidateId": null,
+      "archiveSelection": null,
+      "inheritedPatchChanged": false,
+      "editPolicy": {
+        "basis": "composed_executable_controller_from_real_worker_outcomes",
+        "checkpointAfter": 3,
+        "derivedFromJobId": null,
+        "improvementProven": false,
+        "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+        "method": "balanced",
+        "mutation": "bootstrap",
+        "objectiveId": "595e7a94b14da253005654baa01ccf26",
+        "observations": 0,
+        "parentRevision": "",
+        "preferredTool": "workspace_replace_range",
+        "program": [
+          "discover",
+          "ground",
+          "edit",
+          "verify"
+        ],
+        "programKind": "receipt_driven_source_edit_procedure",
+        "repairLimit": 2,
+        "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "rewriteProgram": [],
+        "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+        "ruleKind": "synthesized_boolean_execution_guards",
+        "rules": [],
+        "score": 0,
+        "selectedByGeneratorCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634"
+      },
+      "programStages": [],
+      "compilerRepairReceipts": [],
+      "nativeMutation": {
+        "afterSha256": "73dd9661f4cbbc7ce845f40aa52c1b6c55cc686f163c82c926e99fa34c179074",
+        "beforeSha256": "58df8eb29d3568723bcbae04264957704556291a8c28aab9aa981ab2434d0df5",
+        "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+        "id": "d1cd1ddb-e0a5-422c-9262-18a4379f95bb",
+        "operator": "streamed_verified_domain_selector_v3",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/rsi_evolve.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+      },
+      "candidateOrigin": "native_inductive_source_mutation",
+      "scopeExpanded": true,
+      "residualEvidence": [],
+      "costOpportunities": [
+        {
+          "caseId": "group-chat-input-cost",
+          "domain": "context",
+          "metric": "contextChars",
+          "observed": 77238,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 3861.9
+        },
+        {
+          "caseId": "long-recall-quality",
+          "domain": "memory",
+          "metric": "contextChars",
+          "observed": 518,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 51.8
+        },
+        {
+          "caseId": "planning-quality",
+          "domain": "planning",
+          "metric": "elapsedMs",
+          "observed": 270.806626,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 54.1613252
+        },
+        {
+          "caseId": "memory-quality",
+          "domain": "memory",
+          "metric": "elapsedMs",
+          "observed": 170.8658155,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 34.173163100000004
+        },
+        {
+          "caseId": "search-quality",
+          "domain": "improver",
+          "metric": "elapsedMs",
+          "observed": 148.7899055,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 29.7579811
+        }
+      ],
+      "metaTransferTarget": true,
+      "ruleExecutions": [],
+      "toolTimeline": [],
+      "acceptedSourceHashes": {
+        "src/engine/rsi_evolve.rs": "73dd9661f4cbbc7ce845f40aa52c1b6c55cc686f163c82c926e99fa34c179074"
+      },
+      "verification": {
+        "checks": [
+          {
+            "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:314:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m314\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+            "exitCode": 0,
+            "label": "cargo check --all-targets",
+            "passed": true
+          }
+        ],
+        "checksPassed": true,
+        "rawCandidateId": "rsi-f71f1ebab59f5be6031646a889d588a302d39d45cbc776e255af95b44ddd2bff",
+        "reason": "candidate_compiles_not_performance_verified",
+        "repairAttempts": 0,
+        "repairHistory": []
+      },
+      "rewriteProgram": [],
+      "editMethodReward": 0,
+      "focusFiles": [
+        "src/engine/rsi.rs",
+        "src/engine/rsi_worktree.rs"
+      ],
+      "knowledgeId": "experience-rsi-97a412803efc8121149824af8057f5e4",
+      "evaluation": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "improver"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 171.0293155,
+                "candidate": 180.0376185,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 113.1440195,
+                "candidate": 131.08565,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518,
+                "candidate": 518,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 69.42188149999998,
+                "candidate": 74.81670249999999,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 267.29426,
+                "candidate": 288.458964,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 149.462198,
+                "candidate": 17.946877,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238,
+                "candidate": 77238,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 1,
+        "metaHoldoutGains": 1,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      }
+    },
+    {
+      "attempt": 3,
+      "jobId": "8f6a8a33-6921-4208-a49a-9a438ce32fb5",
+      "model": "dominion-native:loop_invariant_term_hoist_v1",
+      "requestedModel": "openai-fast",
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "candidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+      "accepted": true,
+      "acceptedCommit": "d6d8e76871b63b10790929c5dc7fb79dc53b1384",
+      "verdict": "improved",
+      "improvedHoldouts": 1,
+      "generatorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+      "domain": "memory",
+      "searchStrategy": {
+        "decisionSource": "parent_next_decision",
+        "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+        "implementation": "failure-clusters",
+        "mode": "active",
+        "name": "failure-clusters",
+        "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+      },
+      "toolsUsed": [],
+      "newFindings": 0,
+      "editEvidence": {
+        "attempts": 0,
+        "recentFailures": [],
+        "verifiedWrites": 0
+      },
+      "diffBytes": 1641,
+      "captureError": "",
+      "inheritedCandidateId": null,
+      "archiveSelection": null,
+      "inheritedPatchChanged": false,
+      "editPolicy": {
+        "basis": "composed_executable_controller_from_real_worker_outcomes",
+        "checkpointAfter": 3,
+        "derivedFromJobId": null,
+        "improvementProven": false,
+        "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+        "method": "balanced",
+        "mutation": "bootstrap",
+        "objectiveId": "b41adad86246b83cb9c7743efe251951",
+        "observations": 0,
+        "parentRevision": "",
+        "preferredTool": "workspace_replace_range",
+        "program": [
+          "discover",
+          "ground",
+          "edit",
+          "verify"
+        ],
+        "programKind": "receipt_driven_source_edit_procedure",
+        "repairLimit": 2,
+        "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "rewriteProgram": [],
+        "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+        "ruleKind": "synthesized_boolean_execution_guards",
+        "rules": [],
+        "score": 0,
+        "selectedByGeneratorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1"
+      },
+      "programStages": [],
+      "compilerRepairReceipts": [],
+      "nativeMutation": {
+        "afterSha256": "1bb9029612cd69b7563ef18736bf3f064347b4da0c551c0c122f221f8b14f51a",
+        "beforeSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+        "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+        "id": "8f6a8a33-6921-4208-a49a-9a438ce32fb5",
+        "operator": "loop_invariant_term_hoist_v1",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/room_state.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+      },
+      "candidateOrigin": "native_inductive_source_mutation",
+      "scopeExpanded": true,
+      "residualEvidence": [],
+      "costOpportunities": [
+        {
+          "caseId": "memory-quality",
+          "domain": "memory",
+          "metric": "elapsedMs",
+          "observed": 180.0376185,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 36.0075237
+        },
+        {
+          "caseId": "long-recall-quality",
+          "domain": "memory",
+          "metric": "elapsedMs",
+          "observed": 131.08565,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 26.217129999999997
+        },
+        {
+          "caseId": "group-chat-input-cost",
+          "domain": "context",
+          "metric": "contextChars",
+          "observed": 77238,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 3861.9
+        },
+        {
+          "caseId": "long-recall-quality",
+          "domain": "memory",
+          "metric": "contextChars",
+          "observed": 518,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 51.8
+        },
+        {
+          "caseId": "planning-quality",
+          "domain": "planning",
+          "metric": "elapsedMs",
+          "observed": 288.458964,
+          "qualityGuard": "no_regression",
+          "requiredReduction": 57.6917928
+        }
+      ],
+      "metaTransferTarget": false,
+      "ruleExecutions": [],
+      "toolTimeline": [],
+      "acceptedSourceHashes": {
+        "src/engine/room_state.rs": "1bb9029612cd69b7563ef18736bf3f064347b4da0c551c0c122f221f8b14f51a"
+      },
+      "verification": {
+        "checks": [
+          {
+            "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:313:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m313\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+            "exitCode": 0,
+            "label": "cargo check --all-targets",
+            "passed": true
+          }
+        ],
+        "checksPassed": true,
+        "rawCandidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+        "reason": "candidate_compiles_not_performance_verified",
+        "repairAttempts": 0,
+        "repairHistory": []
+      },
+      "rewriteProgram": [],
+      "editMethodReward": 0,
+      "focusFiles": [
+        "src/api/memory.rs",
+        "web/src/pages/Memory.tsx"
+      ],
+      "knowledgeId": "experience-rsi-16a7027e027b260e83c0c45ae4065b2b",
+      "evaluation": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 179.79726399999998,
+                "candidate": 180.563678,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 130.879342,
+                "candidate": 89.0748405,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518,
+                "candidate": 518,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 75.3513605,
+                "candidate": 74.6062085,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 287.191428,
+                "candidate": 287.894676,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 17.881603499999997,
+                "candidate": 17.679689500000002,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1,
+                "candidate": 1,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238,
+                "candidate": 77238,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 0,
+        "metaHoldoutGains": 0,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      }
+    }
+  ],
+  "errors": [],
+  "evaluationScope": "current_source_frozen_native_suite",
+  "historicalBugRestored": false,
+  "status": "completed",
+  "result": {
+    "evolution": {
+      "accelerationProven": false,
+      "acceptedGenerations": 3,
+      "acceptedStreak": 3,
+      "activeBaseTokens": 0,
+      "activeGenerationJobId": null,
+      "actualGeneratorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+      "attempts": 3,
+      "baseCommit": "c3e0e014dd03b50123dcd88627aa802e5e1decde",
+      "capabilityDemonstrated": true,
+      "comparison": {
+        "attempt": 3,
+        "baselineCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+        "canSelectCandidate": true,
+        "candidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+        "evaluationId": "rsi-eval-62b4fb31-d74a-4c6a-86c6-2b8f2d56e6c0",
+        "metrics": {
+          "baselineSuccesses": 14,
+          "candidateSuccesses": 14,
+          "eligible": true,
+          "gains": 0,
+          "holdoutCases": 10,
+          "holdoutDomains": [
+            "algorithm",
+            "context",
+            "improver",
+            "memory",
+            "planning"
+          ],
+          "improvedHoldoutDomains": [
+            "memory"
+          ],
+          "improvedHoldouts": 1,
+          "measurements": [
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": true,
+              "id": "memory-explicit",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": true,
+              "id": "memory-correction",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": true,
+              "id": "memory-long",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": false,
+              "id": "memory-distinct",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "algorithm",
+              "holdout": true,
+              "id": "kernel-generation",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "algorithm",
+              "holdout": false,
+              "id": "kernel-promotion",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "improver",
+              "holdout": true,
+              "id": "rsi-oracle",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "improver",
+              "holdout": true,
+              "id": "rsi-lineage",
+              "metrics": []
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": false,
+              "id": "memory-quality",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 179.79726399999998,
+                  "candidate": 180.563678,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "elapsedMs",
+                  "regressed": false
+                }
+              ]
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "memory",
+              "holdout": true,
+              "id": "long-recall-quality",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 130.879342,
+                  "candidate": 89.0748405,
+                  "direction": "lower",
+                  "improved": true,
+                  "key": "elapsedMs",
+                  "regressed": false
+                },
+                {
+                  "baseline": 518,
+                  "candidate": 518,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "contextChars",
+                  "regressed": false
+                }
+              ]
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "planning",
+              "holdout": false,
+              "id": "planning-development",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 75.3513605,
+                  "candidate": 74.6062085,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "elapsedMs",
+                  "regressed": false
+                }
+              ]
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "planning",
+              "holdout": true,
+              "id": "planning-quality",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 287.191428,
+                  "candidate": 287.894676,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "elapsedMs",
+                  "regressed": false
+                }
+              ]
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "improver",
+              "holdout": true,
+              "id": "search-quality",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 17.881603499999997,
+                  "candidate": 17.679689500000002,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "elapsedMs",
+                  "regressed": false
+                }
+              ]
+            },
+            {
+              "baselinePass": true,
+              "candidatePass": true,
+              "domain": "context",
+              "holdout": true,
+              "id": "group-chat-input-cost",
+              "metrics": [
+                {
+                  "baseline": 1,
+                  "candidate": 1,
+                  "direction": "higher",
+                  "improved": false,
+                  "key": "quality",
+                  "regressed": false
+                },
+                {
+                  "baseline": 77238,
+                  "candidate": 77238,
+                  "direction": "lower",
+                  "improved": false,
+                  "key": "contextChars",
+                  "regressed": false
+                }
+              ]
+            }
+          ],
+          "metaGains": 0,
+          "metaHoldoutGains": 0,
+          "metricGains": 1,
+          "metricRegressions": 0,
+          "pairedCases": 14,
+          "regressions": 0,
+          "verdict": "improved"
+        },
+        "selected": "candidate",
+        "winner": "candidate"
+      },
+      "continuedFrom": null,
+      "createdAt": "2026-11-12T01:32:16.320406892+00:00",
+      "efficiency": {
+        "accelerationProven": false,
+        "tokensPerAcceptedGeneration": 0,
+        "verifiedGainsPerHour": 7.090638715543927
+      },
+      "elapsedMs": 1523135,
+      "finishedAt": "2026-11-12T01:57:39.458518508+00:00",
+      "generatorBinarySha256": "85ef64aafe5ccb9c044bfd4a136d95bf23fafe5ad7967ad86cfdfe9f6e197952",
+      "headCommit": "d6d8e76871b63b10790929c5dc7fb79dc53b1384",
+      "history": [
+        {
+          "accepted": true,
+          "acceptedCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+          "acceptedSourceHashes": {
+            "src/engine/room_state.rs": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019"
+          },
+          "archiveSelection": null,
+          "attempt": 1,
+          "boundaryResult": null,
+          "builtInToolsUsed": [],
+          "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+          "candidateId": "rsi-f48e5678094dcda0289fcfecde1f549199d2c9760bd9a9fbcb84ec41965c07bf",
+          "candidateOrigin": "native_inductive_source_mutation",
+          "captureError": "",
+          "compilerRepairReceipts": [],
+          "costOpportunities": null,
+          "createdAt": "2026-11-12T01:43:34.766076208+00:00",
+          "decisionInput": null,
+          "diffBytes": 1214,
+          "domain": "memory",
+          "domainSelection": "algorithm_active",
+          "editEvidence": {
+            "attempts": 0,
+            "recentFailures": [],
+            "verifiedWrites": 0
+          },
+          "editMethodReward": 0,
+          "editPolicy": {
+            "basis": "composed_executable_controller_from_real_worker_outcomes",
+            "checkpointAfter": 3,
+            "derivedFromJobId": null,
+            "improvementProven": false,
+            "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+            "method": "balanced",
+            "mutation": "bootstrap",
+            "objectiveId": "453ab9ed7de20ced96964a1abe7c309c",
+            "observations": 0,
+            "parentRevision": "",
+            "preferredTool": "workspace_replace_range",
+            "program": [
+              "discover",
+              "ground",
+              "edit",
+              "verify"
+            ],
+            "programKind": "receipt_driven_source_edit_procedure",
+            "repairLimit": 2,
+            "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+            "rewriteProgram": [],
+            "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+            "ruleKind": "synthesized_boolean_execution_guards",
+            "rules": [],
+            "score": 0,
+            "selectedByGeneratorCommit": "c3e0e014dd03b50123dcd88627aa802e5e1decde"
+          },
+          "elapsedMs": 525437,
+          "evaluation": {
+            "candidateId": "rsi-f48e5678094dcda0289fcfecde1f549199d2c9760bd9a9fbcb84ec41965c07bf",
+            "candidateStatus": "verified",
+            "evaluationId": "rsi-eval-b6127641-6631-4623-b17a-184771cf5960",
+            "evidenceSha256": "5ecf455002bb075608023d0b17dce705dd4981b49306bf12f6cf4cc0e8632354",
+            "measurementScope": "frozen_native_cases_only",
+            "metrics": {
+              "baselineSuccesses": 14,
+              "candidateSuccesses": 14,
+              "eligible": true,
+              "gains": 0,
+              "holdoutCases": 10,
+              "holdoutDomains": [
+                "algorithm",
+                "context",
+                "improver",
+                "memory",
+                "planning"
+              ],
+              "improvedHoldoutDomains": [
+                "memory"
+              ],
+              "improvedHoldouts": 1,
+              "measurements": [
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-explicit",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-correction",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-long",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-distinct",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": true,
+                  "id": "kernel-generation",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": false,
+                  "id": "kernel-promotion",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-oracle",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-lineage",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 171.122317,
+                      "candidate": 170.8658155,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "long-recall-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 272.0655955,
+                      "candidate": 113.1853415,
+                      "direction": "lower",
+                      "improved": true,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 518,
+                      "candidate": 518,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": false,
+                  "id": "planning-development",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 69.31372150000001,
+                      "candidate": 69.745882,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": true,
+                  "id": "planning-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 265.625685,
+                      "candidate": 270.806626,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "search-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 147.837852,
+                      "candidate": 148.7899055,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "context",
+                  "holdout": true,
+                  "id": "group-chat-input-cost",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 77238,
+                      "candidate": 77238,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                }
+              ],
+              "metaGains": 0,
+              "metaHoldoutGains": 0,
+              "metricGains": 1,
+              "metricRegressions": 0,
+              "pairedCases": 14,
+              "regressions": 0,
+              "verdict": "improved"
+            },
+            "pairedCases": 14,
+            "performanceImprovementClaimed": true,
+            "source": "server_invoked_local_paired_git_worktrees",
+            "verdict": "improved"
+          },
+          "focusFiles": [
+            "scripts/champion-native-rsi-proof.mjs",
+            "scripts/sub3-live-model-campaign.mjs"
+          ],
+          "focusSelection": {
+            "candidates": [
+              {
+                "baselineScore": 177.37247795345218,
+                "evidence": {
+                  "body": 204.0721161049512,
+                  "domain": 0,
+                  "path": 2.47962630091211,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 1.9891357421875,
+                  "summary": 13.948553056166023,
+                  "symbols": 0
+                },
+                "lexicalEvidencePresent": true,
+                "path": "scripts/champion-native-rsi-proof.mjs",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 177.37247795345218,
+                "scoring": "corpus-evidence",
+                "sourceHash": "f0a175ed36480bccce4ff497585af6c77a40647257431f1e307f2b8f1cbcea2b"
+              },
+              {
+                "baselineScore": 174.8973267565094,
+                "evidence": {
+                  "body": 204.0721161049512,
+                  "domain": 0,
+                  "path": 1.6543073472436816,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 1.9837646484375,
+                  "summary": 13.948553056166023,
+                  "symbols": 0
+                },
+                "lexicalEvidencePresent": true,
+                "path": "scripts/sub3-live-model-campaign.mjs",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 174.8973267565094,
+                "scoring": "corpus-evidence",
+                "sourceHash": "d54deb660a9a172f407cb860a00b16c327393a96c8cfb2f036e575e477679f9c"
+              }
+            ],
+            "domain": "memory",
+            "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+            "source": "indexed_evidence",
+            "sourceIndexId": "code-index-f28266869e5b9d67d21dc5ddb3429914"
+          },
+          "generatorBinarySha256": "4e8d3f96c9cc92c1d072b19200a2c09743fb665717ccdd06df10fb0ae2e056ce",
+          "generatorCommit": "c3e0e014dd03b50123dcd88627aa802e5e1decde",
+          "generatorModel": "dominion-native:verified_owner_provenance_cache_v1",
+          "generatorProviderId": "dominion-native",
+          "hypothesisMessageId": null,
+          "id": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc-1",
+          "inheritedCandidateId": null,
+          "inheritedImplementations": [],
+          "inheritedPatchChanged": false,
+          "jobId": "ca52cc06-5cf8-48c2-aac6-8c83036fbf6b",
+          "knowledgeArtifactHashes": [],
+          "knowledgeId": "experience-rsi-e519d0dec70332589642feab4109e3c9",
+          "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+          "knowledgeReuse": [],
+          "metaTransferTarget": null,
+          "methodExecutions": [],
+          "nativeMutation": {
+            "afterSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+            "beforeSha256": "f31e0094b20380a9a3ab677b465b60e2dc8fa49ff112a65ffc4a539f818f5e27",
+            "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+            "id": "ca52cc06-5cf8-48c2-aac6-8c83036fbf6b",
+            "operator": "verified_owner_provenance_cache_v1",
+            "origin": "native_inductive_source_mutation",
+            "path": "src/engine/room_state.rs",
+            "proof": "pending_independent_compile_and_paired_holdout",
+            "qualityGain": null,
+            "sourceChanged": true,
+            "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+          },
+          "newFindings": 0,
+          "objectiveId": "453ab9ed7de20ced96964a1abe7c309c",
+          "programStages": [],
+          "repairFailure": null,
+          "requestedModel": "openai-fast",
+          "researchDelivered": null,
+          "researchFingerprint": "cbf29ce48422232584222325cbf29ce4",
+          "residualEvidence": null,
+          "ruleExecutions": [],
+          "scopeExpanded": null,
+          "searchStrategy": {
+            "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+            "implementation": "failure-clusters",
+            "mode": "active",
+            "name": "failure-clusters",
+            "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+          },
+          "selectedDomainInput": null,
+          "selection": "candidate",
+          "sourceContextChars": 0,
+          "stopReason": null,
+          "targetReplan": null,
+          "tokenUsage": {
+            "calls": 0,
+            "completionTokens": 0,
+            "estimatedCalls": 0,
+            "promptTokens": 0
+          },
+          "tokens": 0,
+          "toolTimeline": [],
+          "toolsUsed": [],
+          "totalPromptChars": 2701,
+          "verification": {
+            "checks": [
+              {
+                "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:314:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m314\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+                "exitCode": 0,
+                "label": "cargo check --all-targets",
+                "passed": true
+              }
+            ],
+            "checksPassed": true,
+            "rawCandidateId": "rsi-f48e5678094dcda0289fcfecde1f549199d2c9760bd9a9fbcb84ec41965c07bf",
+            "reason": "candidate_compiles_not_performance_verified",
+            "repairAttempts": 0,
+            "repairHistory": []
+          },
+          "workerMarker": null
+        },
+        {
+          "accepted": true,
+          "acceptedCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+          "acceptedSourceHashes": {
+            "src/engine/rsi_evolve.rs": "73dd9661f4cbbc7ce845f40aa52c1b6c55cc686f163c82c926e99fa34c179074"
+          },
+          "archiveSelection": null,
+          "attempt": 2,
+          "boundaryResult": null,
+          "builtInToolsUsed": [],
+          "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+          "candidateId": "rsi-f71f1ebab59f5be6031646a889d588a302d39d45cbc776e255af95b44ddd2bff",
+          "candidateOrigin": "native_inductive_source_mutation",
+          "captureError": "",
+          "compilerRepairReceipts": [],
+          "costOpportunities": [
+            {
+              "caseId": "group-chat-input-cost",
+              "domain": "context",
+              "metric": "contextChars",
+              "observed": 77238,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 3861.9
+            },
+            {
+              "caseId": "long-recall-quality",
+              "domain": "memory",
+              "metric": "contextChars",
+              "observed": 518,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 51.8
+            },
+            {
+              "caseId": "planning-quality",
+              "domain": "planning",
+              "metric": "elapsedMs",
+              "observed": 270.806626,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 54.1613252
+            },
+            {
+              "caseId": "memory-quality",
+              "domain": "memory",
+              "metric": "elapsedMs",
+              "observed": 170.8658155,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 34.173163100000004
+            },
+            {
+              "caseId": "search-quality",
+              "domain": "improver",
+              "metric": "elapsedMs",
+              "observed": 148.7899055,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 29.7579811
+            }
+          ],
+          "createdAt": "2026-11-12T01:50:39.960630207+00:00",
+          "decisionInput": {
+            "basis": "independently_measured_post_adoption_target",
+            "metaTransferTarget": true,
+            "previousAcceptedCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+            "targetDomain": "improver"
+          },
+          "diffBytes": 3587,
+          "domain": "improver",
+          "domainSelection": "algorithm_active",
+          "editEvidence": {
+            "attempts": 0,
+            "recentFailures": [],
+            "verifiedWrites": 0
+          },
+          "editMethodReward": 0,
+          "editPolicy": {
+            "basis": "composed_executable_controller_from_real_worker_outcomes",
+            "checkpointAfter": 3,
+            "derivedFromJobId": null,
+            "improvementProven": false,
+            "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+            "method": "balanced",
+            "mutation": "bootstrap",
+            "objectiveId": "595e7a94b14da253005654baa01ccf26",
+            "observations": 0,
+            "parentRevision": "",
+            "preferredTool": "workspace_replace_range",
+            "program": [
+              "discover",
+              "ground",
+              "edit",
+              "verify"
+            ],
+            "programKind": "receipt_driven_source_edit_procedure",
+            "repairLimit": 2,
+            "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+            "rewriteProgram": [],
+            "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+            "ruleKind": "synthesized_boolean_execution_guards",
+            "rules": [],
+            "score": 0,
+            "selectedByGeneratorCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634"
+          },
+          "elapsedMs": 360668,
+          "evaluation": {
+            "candidateId": "rsi-f71f1ebab59f5be6031646a889d588a302d39d45cbc776e255af95b44ddd2bff",
+            "candidateStatus": "verified",
+            "evaluationId": "rsi-eval-0723bac4-ec2b-4ef9-9681-3cc6c290ed28",
+            "evidenceSha256": "3e74dd0ce9fba34e0eceaa011271458e9575f00013395c736e4ba5dcadcd6e54",
+            "measurementScope": "frozen_native_cases_only",
+            "metrics": {
+              "baselineSuccesses": 14,
+              "candidateSuccesses": 14,
+              "eligible": true,
+              "gains": 0,
+              "holdoutCases": 10,
+              "holdoutDomains": [
+                "algorithm",
+                "context",
+                "improver",
+                "memory",
+                "planning"
+              ],
+              "improvedHoldoutDomains": [
+                "improver"
+              ],
+              "improvedHoldouts": 1,
+              "measurements": [
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-explicit",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-correction",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-long",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-distinct",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": true,
+                  "id": "kernel-generation",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": false,
+                  "id": "kernel-promotion",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-oracle",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-lineage",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 171.0293155,
+                      "candidate": 180.0376185,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "long-recall-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 113.1440195,
+                      "candidate": 131.08565,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 518,
+                      "candidate": 518,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": false,
+                  "id": "planning-development",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 69.42188149999998,
+                      "candidate": 74.81670249999999,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": true,
+                  "id": "planning-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 267.29426,
+                      "candidate": 288.458964,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "search-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 149.462198,
+                      "candidate": 17.946877,
+                      "direction": "lower",
+                      "improved": true,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "context",
+                  "holdout": true,
+                  "id": "group-chat-input-cost",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 77238,
+                      "candidate": 77238,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                }
+              ],
+              "metaGains": 1,
+              "metaHoldoutGains": 1,
+              "metricGains": 1,
+              "metricRegressions": 0,
+              "pairedCases": 14,
+              "regressions": 0,
+              "verdict": "improved"
+            },
+            "pairedCases": 14,
+            "performanceImprovementClaimed": true,
+            "source": "server_invoked_local_paired_git_worktrees",
+            "verdict": "improved"
+          },
+          "focusFiles": [
+            "src/engine/rsi.rs",
+            "src/engine/rsi_worktree.rs"
+          ],
+          "focusSelection": {
+            "candidates": [
+              {
+                "baselineScore": 9.978772081987271,
+                "evidence": {
+                  "body": 4.228826155721369,
+                  "domain": 1,
+                  "path": 0,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 4.9835205078125,
+                  "summary": 4.228826155721369,
+                  "symbols": 4.228826155721369
+                },
+                "lexicalEvidencePresent": true,
+                "path": "src/engine/rsi.rs",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 9.978772081987271,
+                "scoring": "corpus-evidence",
+                "sourceHash": "de442088c2c11e0613647121f741179b47fa85877ff1ef35d4c1adda4e0bac9c"
+              },
+              {
+                "baselineScore": 7.263058955298464,
+                "evidence": {
+                  "body": 4.228826155721369,
+                  "domain": 1,
+                  "path": 0,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 8.9921875,
+                  "summary": 0,
+                  "symbols": 4.228826155721369
+                },
+                "lexicalEvidencePresent": true,
+                "path": "src/engine/rsi_worktree.rs",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 7.263058955298464,
+                "scoring": "corpus-evidence",
+                "sourceHash": "08813a067c3f29be0ae8b2a3539cf14c2c5fc92fc710d9c59701970df4b9f0b4"
+              }
+            ],
+            "domain": "improver",
+            "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+            "source": "indexed_evidence",
+            "sourceIndexId": "code-index-f28266869e5b9d67d21dc5ddb3429914"
+          },
+          "generatorBinarySha256": "b8c1d4de41bb273a41e931287adc39ff6007f17241c752f9cb20023b9b22ed28",
+          "generatorCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+          "generatorModel": "dominion-native:streamed_verified_domain_selector_v3",
+          "generatorProviderId": "dominion-native",
+          "hypothesisMessageId": null,
+          "id": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc-2",
+          "inheritedCandidateId": null,
+          "inheritedImplementations": [
+            {
+              "binarySha256": "b8c1d4de41bb273a41e931287adc39ff6007f17241c752f9cb20023b9b22ed28",
+              "experienceId": "experience-rsi-e519d0dec70332589642feab4109e3c9",
+              "generatorCommit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+              "implementation_ref": {
+                "commit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+                "kind": "source_revision",
+                "paths": [
+                  "src/engine/room_state.rs"
+                ]
+              },
+              "status": "available_in_binary"
+            }
+          ],
+          "inheritedPatchChanged": false,
+          "jobId": "d1cd1ddb-e0a5-422c-9262-18a4379f95bb",
+          "knowledgeArtifactHashes": [],
+          "knowledgeId": "experience-rsi-97a412803efc8121149824af8057f5e4",
+          "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+          "knowledgeReuse": [],
+          "metaTransferTarget": true,
+          "methodExecutions": [],
+          "nativeMutation": {
+            "afterSha256": "73dd9661f4cbbc7ce845f40aa52c1b6c55cc686f163c82c926e99fa34c179074",
+            "beforeSha256": "58df8eb29d3568723bcbae04264957704556291a8c28aab9aa981ab2434d0df5",
+            "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+            "id": "d1cd1ddb-e0a5-422c-9262-18a4379f95bb",
+            "operator": "streamed_verified_domain_selector_v3",
+            "origin": "native_inductive_source_mutation",
+            "path": "src/engine/rsi_evolve.rs",
+            "proof": "pending_independent_compile_and_paired_holdout",
+            "qualityGain": null,
+            "sourceChanged": true,
+            "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+          },
+          "newFindings": 0,
+          "objectiveId": "595e7a94b14da253005654baa01ccf26",
+          "programStages": [],
+          "repairFailure": null,
+          "requestedModel": "openai-fast",
+          "researchDelivered": null,
+          "researchFingerprint": "cbf29ce48422232584222325cbf29ce4",
+          "residualEvidence": [],
+          "ruleExecutions": [],
+          "scopeExpanded": true,
+          "searchStrategy": {
+            "decisionSource": "parent_next_decision",
+            "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+            "implementation": "failure-clusters",
+            "mode": "active",
+            "name": "failure-clusters",
+            "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+          },
+          "selectedDomainInput": "improver",
+          "selection": "candidate",
+          "sourceContextChars": 15644,
+          "stopReason": null,
+          "targetReplan": null,
+          "tokenUsage": {
+            "calls": 0,
+            "completionTokens": 0,
+            "estimatedCalls": 0,
+            "promptTokens": 0
+          },
+          "tokens": 0,
+          "toolTimeline": [],
+          "toolsUsed": [],
+          "totalPromptChars": 18930,
+          "verification": {
+            "checks": [
+              {
+                "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:314:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m314\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+                "exitCode": 0,
+                "label": "cargo check --all-targets",
+                "passed": true
+              }
+            ],
+            "checksPassed": true,
+            "rawCandidateId": "rsi-f71f1ebab59f5be6031646a889d588a302d39d45cbc776e255af95b44ddd2bff",
+            "reason": "candidate_compiles_not_performance_verified",
+            "repairAttempts": 0,
+            "repairHistory": []
+          },
+          "workerMarker": null
+        },
+        {
+          "accepted": true,
+          "acceptedCommit": "d6d8e76871b63b10790929c5dc7fb79dc53b1384",
+          "acceptedSourceHashes": {
+            "src/engine/room_state.rs": "1bb9029612cd69b7563ef18736bf3f064347b4da0c551c0c122f221f8b14f51a"
+          },
+          "archiveSelection": null,
+          "attempt": 3,
+          "boundaryResult": null,
+          "builtInToolsUsed": [],
+          "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+          "candidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+          "candidateOrigin": "native_inductive_source_mutation",
+          "captureError": "",
+          "compilerRepairReceipts": [],
+          "costOpportunities": [
+            {
+              "caseId": "memory-quality",
+              "domain": "memory",
+              "metric": "elapsedMs",
+              "observed": 180.0376185,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 36.0075237
+            },
+            {
+              "caseId": "long-recall-quality",
+              "domain": "memory",
+              "metric": "elapsedMs",
+              "observed": 131.08565,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 26.217129999999997
+            },
+            {
+              "caseId": "group-chat-input-cost",
+              "domain": "context",
+              "metric": "contextChars",
+              "observed": 77238,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 3861.9
+            },
+            {
+              "caseId": "long-recall-quality",
+              "domain": "memory",
+              "metric": "contextChars",
+              "observed": 518,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 51.8
+            },
+            {
+              "caseId": "planning-quality",
+              "domain": "planning",
+              "metric": "elapsedMs",
+              "observed": 288.458964,
+              "qualityGuard": "no_regression",
+              "requiredReduction": 57.6917928
+            }
+          ],
+          "createdAt": "2026-11-12T01:57:39.450872472+00:00",
+          "decisionInput": {
+            "basis": "independently_measured_post_adoption_target",
+            "metaTransferTarget": false,
+            "previousAcceptedCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+            "targetDomain": "memory"
+          },
+          "diffBytes": 1641,
+          "domain": "memory",
+          "domainSelection": "algorithm_active",
+          "editEvidence": {
+            "attempts": 0,
+            "recentFailures": [],
+            "verifiedWrites": 0
+          },
+          "editMethodReward": 0,
+          "editPolicy": {
+            "basis": "composed_executable_controller_from_real_worker_outcomes",
+            "checkpointAfter": 3,
+            "derivedFromJobId": null,
+            "improvementProven": false,
+            "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+            "method": "balanced",
+            "mutation": "bootstrap",
+            "objectiveId": "b41adad86246b83cb9c7743efe251951",
+            "observations": 0,
+            "parentRevision": "",
+            "preferredTool": "workspace_replace_range",
+            "program": [
+              "discover",
+              "ground",
+              "edit",
+              "verify"
+            ],
+            "programKind": "receipt_driven_source_edit_procedure",
+            "repairLimit": 2,
+            "revision": "8f923023760171fdeb0ad2fe22ab7d0a",
+            "rewriteProgram": [],
+            "rewriteProgramKind": "executable_meta_algorithm_for_rule_generation",
+            "ruleKind": "synthesized_boolean_execution_guards",
+            "rules": [],
+            "score": 0,
+            "selectedByGeneratorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1"
+          },
+          "elapsedMs": 353298,
+          "evaluation": {
+            "candidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+            "candidateStatus": "verified",
+            "evaluationId": "rsi-eval-62b4fb31-d74a-4c6a-86c6-2b8f2d56e6c0",
+            "evidenceSha256": "72800cba74635d77275cf39b0fe0d45aaff6704f2738de8ce0daa66245dc1395",
+            "measurementScope": "frozen_native_cases_only",
+            "metrics": {
+              "baselineSuccesses": 14,
+              "candidateSuccesses": 14,
+              "eligible": true,
+              "gains": 0,
+              "holdoutCases": 10,
+              "holdoutDomains": [
+                "algorithm",
+                "context",
+                "improver",
+                "memory",
+                "planning"
+              ],
+              "improvedHoldoutDomains": [
+                "memory"
+              ],
+              "improvedHoldouts": 1,
+              "measurements": [
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-explicit",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-correction",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "memory-long",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-distinct",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": true,
+                  "id": "kernel-generation",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "algorithm",
+                  "holdout": false,
+                  "id": "kernel-promotion",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-oracle",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "rsi-lineage",
+                  "metrics": []
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": false,
+                  "id": "memory-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 179.79726399999998,
+                      "candidate": 180.563678,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "memory",
+                  "holdout": true,
+                  "id": "long-recall-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 130.879342,
+                      "candidate": 89.0748405,
+                      "direction": "lower",
+                      "improved": true,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 518,
+                      "candidate": 518,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": false,
+                  "id": "planning-development",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 75.3513605,
+                      "candidate": 74.6062085,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "planning",
+                  "holdout": true,
+                  "id": "planning-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 287.191428,
+                      "candidate": 287.894676,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "improver",
+                  "holdout": true,
+                  "id": "search-quality",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 17.881603499999997,
+                      "candidate": 17.679689500000002,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "elapsedMs",
+                      "regressed": false
+                    }
+                  ]
+                },
+                {
+                  "baselinePass": true,
+                  "candidatePass": true,
+                  "domain": "context",
+                  "holdout": true,
+                  "id": "group-chat-input-cost",
+                  "metrics": [
+                    {
+                      "baseline": 1,
+                      "candidate": 1,
+                      "direction": "higher",
+                      "improved": false,
+                      "key": "quality",
+                      "regressed": false
+                    },
+                    {
+                      "baseline": 77238,
+                      "candidate": 77238,
+                      "direction": "lower",
+                      "improved": false,
+                      "key": "contextChars",
+                      "regressed": false
+                    }
+                  ]
+                }
+              ],
+              "metaGains": 0,
+              "metaHoldoutGains": 0,
+              "metricGains": 1,
+              "metricRegressions": 0,
+              "pairedCases": 14,
+              "regressions": 0,
+              "verdict": "improved"
+            },
+            "pairedCases": 14,
+            "performanceImprovementClaimed": true,
+            "source": "server_invoked_local_paired_git_worktrees",
+            "verdict": "improved"
+          },
+          "focusFiles": [
+            "src/api/memory.rs",
+            "web/src/pages/Memory.tsx"
+          ],
+          "focusSelection": {
+            "candidates": [
+              {
+                "baselineScore": 10.77000561975872,
+                "evidence": {
+                  "body": 2.0455878203598896,
+                  "domain": 1,
+                  "path": 2.0455878203598896,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 0.325439453125,
+                  "summary": 0,
+                  "symbols": 2.0455878203598896
+                },
+                "lexicalEvidencePresent": true,
+                "path": "src/api/memory.rs",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 10.77000561975872,
+                "scoring": "corpus-evidence",
+                "sourceHash": "a394dbc371732abc75e80460f9de2aea7c750adfaa6cf0ba6bce68741ed627ca"
+              },
+              {
+                "baselineScore": 10.653642094368095,
+                "evidence": {
+                  "body": 2.0455878203598896,
+                  "domain": 1,
+                  "path": 2.0455878203598896,
+                  "priorProductive": 0,
+                  "priorUnproductive": 0,
+                  "sourceCost": 1.1011962890625,
+                  "summary": 0,
+                  "symbols": 2.0455878203598896
+                },
+                "lexicalEvidencePresent": true,
+                "path": "web/src/pages/Memory.tsx",
+                "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+                "score": 10.653642094368095,
+                "scoring": "corpus-evidence",
+                "sourceHash": "dd41438eef91c8ce8591f81263d2c54aa3fe2bf7b9c86341469bae9b842d5b67"
+              }
+            ],
+            "domain": "memory",
+            "policyRevision": "b15fa455b0ec988fd32e5a0d2222d62a",
+            "source": "indexed_evidence",
+            "sourceIndexId": "code-index-f28266869e5b9d67d21dc5ddb3429914"
+          },
+          "generatorBinarySha256": "85ef64aafe5ccb9c044bfd4a136d95bf23fafe5ad7967ad86cfdfe9f6e197952",
+          "generatorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+          "generatorModel": "dominion-native:loop_invariant_term_hoist_v1",
+          "generatorProviderId": "dominion-native",
+          "hypothesisMessageId": null,
+          "id": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc-3",
+          "inheritedCandidateId": null,
+          "inheritedImplementations": [
+            {
+              "binarySha256": "85ef64aafe5ccb9c044bfd4a136d95bf23fafe5ad7967ad86cfdfe9f6e197952",
+              "experienceId": "experience-rsi-97a412803efc8121149824af8057f5e4",
+              "generatorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+              "implementation_ref": {
+                "commit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+                "kind": "source_revision",
+                "paths": [
+                  "src/engine/rsi_evolve.rs"
+                ]
+              },
+              "status": "available_in_binary"
+            },
+            {
+              "binarySha256": "85ef64aafe5ccb9c044bfd4a136d95bf23fafe5ad7967ad86cfdfe9f6e197952",
+              "experienceId": "experience-rsi-e519d0dec70332589642feab4109e3c9",
+              "generatorCommit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+              "implementation_ref": {
+                "commit": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+                "kind": "source_revision",
+                "paths": [
+                  "src/engine/room_state.rs"
+                ]
+              },
+              "status": "available_in_binary"
+            }
+          ],
+          "inheritedPatchChanged": false,
+          "jobId": "8f6a8a33-6921-4208-a49a-9a438ce32fb5",
+          "knowledgeArtifactHashes": [],
+          "knowledgeId": "experience-rsi-16a7027e027b260e83c0c45ae4065b2b",
+          "knowledgePartition": "rsi:52be0882468b7c59bdea870ff2eaffb6",
+          "knowledgeReuse": [],
+          "metaTransferTarget": false,
+          "methodExecutions": [],
+          "nativeMutation": {
+            "afterSha256": "1bb9029612cd69b7563ef18736bf3f064347b4da0c551c0c122f221f8b14f51a",
+            "beforeSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+            "campaignId": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+            "id": "8f6a8a33-6921-4208-a49a-9a438ce32fb5",
+            "operator": "loop_invariant_term_hoist_v1",
+            "origin": "native_inductive_source_mutation",
+            "path": "src/engine/room_state.rs",
+            "proof": "pending_independent_compile_and_paired_holdout",
+            "qualityGain": null,
+            "sourceChanged": true,
+            "sourceDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258"
+          },
+          "newFindings": 0,
+          "objectiveId": "b41adad86246b83cb9c7743efe251951",
+          "programStages": [],
+          "repairFailure": null,
+          "requestedModel": "openai-fast",
+          "researchDelivered": null,
+          "researchFingerprint": "cbf29ce48422232584222325cbf29ce4",
+          "residualEvidence": [],
+          "ruleExecutions": [],
+          "scopeExpanded": true,
+          "searchStrategy": {
+            "decisionSource": "parent_next_decision",
+            "id": "algorithm-b34e648e61a7b1edb26abefa663da4f2",
+            "implementation": "failure-clusters",
+            "mode": "active",
+            "name": "failure-clusters",
+            "revision": "b15fa455b0ec988fd32e5a0d2222d62a"
+          },
+          "selectedDomainInput": "memory",
+          "selection": "candidate",
+          "sourceContextChars": 6388,
+          "stopReason": null,
+          "targetReplan": null,
+          "tokenUsage": {
+            "calls": 0,
+            "completionTokens": 0,
+            "estimatedCalls": 0,
+            "promptTokens": 0
+          },
+          "tokens": 0,
+          "toolTimeline": [],
+          "toolsUsed": [],
+          "totalPromptChars": 10932,
+          "verification": {
+            "checks": [
+              {
+                "detail": "gine/memory.rs:1132:4\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m1132\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn context_block_ranked(\n     \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `llama_available` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:530:4\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m530\u001b[0m \u001b[1m\u001b[94m|\u001b[0m fn llama_available() -> bool {\n    \u001b[1m\u001b[94m|\u001b[0m    \u001b[1m\u001b[33m^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2192:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2192\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `start_download_with` is never used\u001b[0m\n    \u001b[1m\u001b[94m--> \u001b[0msrc/engine/models.rs:2214:8\n     \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m2214\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn start_download_with(\n     \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `evaluating` is never used\u001b[0m\n  \u001b[1m\u001b[94m--> \u001b[0msrc/engine/preflight_fixture.rs:53:8\n   \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m53\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn evaluating() -> bool {\n   \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block` is never used\u001b[0m\n   \u001b[1m\u001b[94m--> \u001b[0msrc/engine/room_state.rs:313:8\n    \u001b[1m\u001b[94m|\u001b[0m\n\u001b[1m\u001b[94m313\u001b[0m \u001b[1m\u001b[94m|\u001b[0m pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {\n    \u001b[1m\u001b[94m|\u001b[0m        \u001b[1m\u001b[33m^^^^^^^^^^^^^\u001b[0m\n\n\u001b[1m\u001b[33mwarning\u001b[0m\u001b[1m: function `context_block_",
+                "exitCode": 0,
+                "label": "cargo check --all-targets",
+                "passed": true
+              }
+            ],
+            "checksPassed": true,
+            "rawCandidateId": "rsi-9ff4dd42f506c4a32a0a7d4a8432630c709d9897e48fbc0043c8f2af6d7e9192",
+            "reason": "candidate_compiles_not_performance_verified",
+            "repairAttempts": 0,
+            "repairHistory": []
+          },
+          "workerMarker": null
+        }
+      ],
+      "id": "80b28e1c-c26c-4db1-a121-b085cb5ab4cc",
+      "labDir": "/home/runner/work/_temp/champion-data/rsi-labs/lab-6e41f17b-b420-4c9a-83d0-f552aadb7258",
+      "limits": {
+        "maxAttempts": 6,
+        "timeBudgetSeconds": 6000,
+        "tokenBudget": 520000
+      },
+      "lineage": {
+        "fingerprintMatch": false,
+        "fingerprintValid": false,
+        "reused": false,
+        "sameBase": false,
+        "sameBranch": false,
+        "sameSource": false,
+        "selectedCommit": null
+      },
+      "maxAcceptedStreak": 3,
+      "model": "openai-fast",
+      "nativeApproved": true,
+      "nextDecision": {
+        "basis": "accepted_implementation",
+        "fromGeneration": 3,
+        "headCommit": "d6d8e76871b63b10790929c5dc7fb79dc53b1384",
+        "knowledgeId": "experience-rsi-16a7027e027b260e83c0c45ae4065b2b",
+        "nextDomain": "improver",
+        "observed": {
+          "accepted": true,
+          "editEvidence": {
+            "attempts": 0,
+            "recentFailures": [],
+            "verifiedWrites": 0
+          },
+          "elapsedMs": 353298,
+          "tokens": 0,
+          "verdict": "improved"
+        },
+        "reuseDecision": {
+          "action": "research_only",
+          "methodIds": []
+        },
+        "trialAlgorithmId": null
+      },
+      "nextTrialAlgorithmId": null,
+      "noProgressStreak": 0,
+      "objective": "Improve DOMINION's current self-improvement algorithm and then transfer a measured improvement into memory. Start from the unchanged current source. Find repeated allocation, scans, or redundant work in self-improvement policy selection and owner-fact retrieval. Preserve policy features, provenance checks and ranking semantics. Inspect source before editing; use small SHA-bound edits. Use independently measured development feedback to repair unsuccessful candidates. The runtime can also try native source transformations, whose provenance must stay separate from model edits. Do not modify tests, evaluators, fixtures, or report an unevaluated proposal as an improvement.",
+      "phase": "measuring",
+      "productionChanged": false,
+      "providerId": "champion-free-proxy",
+      "selectionPolicy": "automatic",
+      "sourceBranch": "HEAD",
+      "sourceDir": "/home/runner/work/_temp/champion-source",
+      "sourceFingerprint": "9d3128d4e0296bef7b8784c56ad01c3536ae7492d1cdaa000a5da66a8923e201",
+      "sourceSnapshot": false,
+      "status": "completed",
+      "stopReason": "capability_demonstrated",
+      "tokens": 0,
+      "tokensEstimated": false,
+      "waitingMs": 0
+    },
+    "status": "completed"
+  },
+  "stopReason": "capability_demonstrated",
+  "summary": {
+    "modelCalls": 0,
+    "improvementMethodHistory": [
+      {
+        "attempt": 1,
+        "method": "balanced",
+        "synthesizedRuleIds": [],
+        "contrastTrial": false,
+        "firedRuleIds": [],
+        "policyRevision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "parentRevision": null,
+        "mutation": "bootstrap",
+        "checkpointAfter": 3,
+        "preferredTool": "workspace_replace_range",
+        "verifierRepairLimit": 2,
+        "selectedMethodReward": 0,
+        "verifiedWrites": 0,
+        "candidateCreated": true,
+        "independentlyAdopted": true
+      },
+      {
+        "attempt": 2,
+        "method": "balanced",
+        "synthesizedRuleIds": [],
+        "contrastTrial": false,
+        "firedRuleIds": [],
+        "policyRevision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "parentRevision": null,
+        "mutation": "bootstrap",
+        "checkpointAfter": 3,
+        "preferredTool": "workspace_replace_range",
+        "verifierRepairLimit": 2,
+        "selectedMethodReward": 0,
+        "verifiedWrites": 0,
+        "candidateCreated": true,
+        "independentlyAdopted": true
+      },
+      {
+        "attempt": 3,
+        "method": "balanced",
+        "synthesizedRuleIds": [],
+        "contrastTrial": false,
+        "firedRuleIds": [],
+        "policyRevision": "8f923023760171fdeb0ad2fe22ab7d0a",
+        "parentRevision": null,
+        "mutation": "bootstrap",
+        "checkpointAfter": 3,
+        "preferredTool": "workspace_replace_range",
+        "verifierRepairLimit": 2,
+        "selectedMethodReward": 0,
+        "verifiedWrites": 0,
+        "candidateCreated": true,
+        "independentlyAdopted": true
+      }
+    ],
+    "sourceEditCalls": 0,
+    "rangeEditCalls": 0,
+    "legacyEditCalls": 0,
+    "verifiedWrites": 0,
+    "unsuccessfulEdits": 0,
+    "candidateCaptureFailures": 0,
+    "candidateCount": 3,
+    "inheritedCandidateGenerations": 0,
+    "inheritedSourceCorrections": 0,
+    "inheritedSourceAdoptions": 0,
+    "rawRegisteredCandidates": 3,
+    "compileRejectedGenerations": 0,
+    "firstCompilerDiagnostics": [],
+    "acceptedGenerations": 3,
+    "acceptedCommits": [
+      "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+      "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+      "d6d8e76871b63b10790929c5dc7fb79dc53b1384"
+    ],
+    "compilerAssistedGenerations": 0,
+    "postAdoptionScopeExpansions": 2,
+    "metaImproverTrials": 1,
+    "nativeMutationCandidates": 3,
+    "nativeDescendantTrials": [
+      {
+        "attempt": 2,
+        "operator": "streamed_verified_domain_selector_v3",
+        "target": "src/engine/rsi_evolve.rs",
+        "modelCalls": 0,
+        "pairedVerdict": "improved",
+        "independentlyAdopted": true
+      },
+      {
+        "attempt": 3,
+        "operator": "loop_invariant_term_hoist_v1",
+        "target": "src/engine/room_state.rs",
+        "modelCalls": 0,
+        "pairedVerdict": "improved",
+        "independentlyAdopted": true
+      }
+    ],
+    "independentlyAdoptedMetaChanges": [
+      {
+        "attempt": 2,
+        "commit": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+        "verifiedMetaHoldoutGains": 1
+      }
+    ],
+    "independentlyAdoptedNativeMutations": 3,
+    "readOnlyGenerations": 0,
+    "independentlyVerifiedImprovement": true,
+    "causallyAttributedRuleAdoptions": 0,
+    "ruleComparisons": 0,
+    "note": "CI completed does not imply an accepted model-generated RSI improvement",
+    "maxAcceptedStreak": 3,
+    "capabilityDemonstrated": true,
+    "acceptedLineage": [
+      {
+        "attempt": 1,
+        "base": "c3e0e014dd03b50123dcd88627aa802e5e1decde",
+        "child": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+        "domain": "memory",
+        "metaHoldoutGains": 0,
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "tokens": 0
+      },
+      {
+        "attempt": 2,
+        "base": "87dc8e2eca61d8e0b1162b0ef79eeaf2e8ce3634",
+        "child": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+        "domain": "improver",
+        "metaHoldoutGains": 1,
+        "improvedHoldoutDomains": [
+          "improver"
+        ],
+        "tokens": 0
+      },
+      {
+        "attempt": 3,
+        "base": "d3bb211bc2d3297db3c3bf3d81870cf948ae01d1",
+        "child": "d6d8e76871b63b10790929c5dc7fb79dc53b1384",
+        "domain": "memory",
+        "metaHoldoutGains": 0,
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "tokens": 0
+      }
+    ],
+    "tokensPerAccepted": 0
+  },
+  "actualCompletion": true,
+  "recordedAt": "2026-11-12T01:57:47.152Z"
+}
