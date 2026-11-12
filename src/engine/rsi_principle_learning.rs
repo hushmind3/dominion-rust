@@ -1,0 +1,327 @@
+//! Source-grounded meta-learning of *improvement principles*, not merely
+//! the count of accepted source patches.
+//!
+//! Frozen paired evaluations are the reward source. A recompiled descendant
+//! learns which model-authored mechanism improves actual held-out task cases,
+//! which cases regress, and whether its accepted descendant improves a
+//! DIFFERENT intelligence subsystem. It uses those observations to select
+//! and rewrite future improvement programs. Nothing here edits the oracle,
+//! claims parameter fine-tuning, or treats proposal text as measured gain.
+//!
+//! This learner is ordinary editable Rust. A later independently adopted
+//! source revision may replace its feature extraction, credit assignment,
+//! search algorithm, or synthesis policy.
+use crate::engine::{rsi,rsi_mutual_program};
+use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
+use std::collections::{BTreeMap,BTreeSet};
+
+fn digest(v:&Value)->String {
+    format!("{:x}",Sha256::digest(serde_json::to_vec(v).unwrap_or_default()))
+}
+fn sha_ok(v:&Value)->bool {
+    v.as_str().is_some_and(|s|s.len()==64
+        && s.bytes().all(|b|b.is_ascii_hexdigit()))
+}
+fn independent_trial(g:&Value)->bool {
+    let plan=&g["openImprovementProgram"];
+    let Some(path)=plan["target"]["path"].as_str().filter(|p|rsi::safe_path(p))
+        else{return false};
+    (g["pairedMeasured"]==true||g["pairedRevalidated"]==true)
+        && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+        && g["evaluation"]["metrics"]["measurements"].is_array()
+        && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
+        && g["generatorCommit"].as_str().is_some_and(|s|s.len()==40)
+        && sha_ok(&g["evaluationProfileSha256"])
+        && g["changedSourcePaths"].as_array().is_some_and(|paths|
+            paths.iter().any(|p|p.as_str()==Some(path)))
+        && plan["source"]=="compiled_descendant_open_improvement_program_v1"
+        && plan["target"]["role"].as_str().is_some()
+        && plan["node"]["mechanism"].as_str().is_some_and(|s|!s.is_empty())
+        && plan["revision"].as_str().is_some_and(|s|s.len()==64)
+        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
+        && g["compiledPlanExecuted"]["openImprovementRevision"]==plan["revision"]
+        && g["compiledPlanExecuted"]["metaRevision"]==g["metaPolicy"]["revision"]
+        && g["metaPolicy"]["selectionMode"]=="authored_open_improvement_program"
+        && g["metaPolicy"]["target"]==plan["target"]
+        && g["metaPolicy"]["openImprovementRevision"]==plan["revision"]
+}
+fn accepted_measured(g:&Value)->bool {
+    independent_trial(g)
+        && rsi_mutual_program::adopted_source(g)
+        && g["evaluation"]["metrics"]["eligible"]==true
+        && g["acceptedSourceHashes"]
+            [g["openImprovementProgram"]["target"]["path"].as_str().unwrap_or("")]
+            .as_str().is_some_and(|s|s.len()==64
+                && s.bytes().all(|b|b.is_ascii_hexdigit()))
+}
+fn case_delta(m:&Value)->Option<i8> {
+    if m["holdout"]!=true {return None;}
+    if let Some(qualities)=m["metrics"].as_array() {
+        for metric in qualities.iter().filter(|metric|metric["key"]=="quality") {
+            if metric["improved"]==true{return Some(1);}
+            if metric["regressed"]==true{return Some(-1);}
+            if metric["improved"]==false && metric["regressed"]==false{
+                return Some(0);
+            }
+            let before=metric["baseline"].as_f64()?;
+            let after=metric["candidate"].as_f64()?;
+            return Some(if after>before{1}else if after<before{-1}else{0});
+        }
+    }
+    match (m["baselinePass"].as_bool(),m["candidatePass"].as_bool()) {
+        (Some(false),Some(true))=>Some(1),
+        (Some(true),Some(false))=>Some(-1),
+        (Some(_),Some(_))=>Some(0),
+        _=>None
+    }
+}
+fn cases(g:&Value)->Vec<(String,String,i8)> {
+    let mut seen=BTreeSet::new();
+    g["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten().filter_map(|row|{
+            let domain=row["domain"].as_str()
+                .or_else(||g["domain"].as_str())
+                .filter(|s|!s.is_empty())?;
+            let id=row["id"].as_str().filter(|s|!s.is_empty())?;
+            let change=case_delta(row)?;
+            if !seen.insert((domain.to_owned(),id.to_owned())){return None;}
+            Some((domain.to_owned(),id.to_owned(),change))
+        }).collect()
+}
+#[derive(Default)]
+struct Aggregate {
+    attempts:u64,
+    independently_adopted:u64,
+    cases:u64,
+    improved:u64,
+    regressed:u64,
+    neutral:u64,
+    successor_cases:u64,
+    successor_gains:u64,
+    successor_regressions:u64,
+    cross_role_gains:u64,
+    domains:BTreeSet<String>,
+    case_keys:BTreeSet<String>,
+    generation_ids:BTreeSet<String>,
+    next_roles:BTreeSet<String>,
+    roles:BTreeSet<String>,
+}
+/// The descendant's learned table is deterministic given its durable record.
+/// Cases are deduplicated per independent candidate and frozen profile.
+/// Importantly, source adoption is NEVER counted as a task-quality success.
+pub(crate) fn study(history:&[Value])->Value {
+    let mut groups=BTreeMap::<String,Aggregate>::new();
+    let mut seen_candidate=BTreeSet::new();
+    for (i,g) in history.iter().enumerate() {
+        if !independent_trial(g){continue;}
+        let Some(candidate)=g["candidateId"].as_str() else{continue};
+        let profile=g["evaluationProfileSha256"].as_str().unwrap_or("");
+        if !seen_candidate.insert((profile.to_owned(),candidate.to_owned())) {
+            continue;
+        }
+        let mechanism=g["openImprovementProgram"]["node"]["mechanism"]
+            .as_str().unwrap_or("").trim().to_owned();
+        if mechanism.is_empty()||mechanism.len()>1600{continue;}
+        let role=g["openImprovementProgram"]["target"]["role"].as_str().unwrap_or("");
+        let group=groups.entry(mechanism).or_default();
+        group.attempts+=1;
+        group.roles.insert(role.to_string());
+        if let Some(id)=g["id"].as_str(){group.generation_ids.insert(id.to_string());}
+        let adopted=accepted_measured(g);
+        if adopted{group.independently_adopted+=1;}
+        for (domain,case,delta) in cases(g){
+            let id=format!("{profile}:{candidate}:{domain}:{case}");
+            if !group.case_keys.insert(id){continue;}
+            group.cases+=1;
+            group.domains.insert(domain);
+            match delta{1=>group.improved+=1,-1=>group.regressed+=1,_=>group.neutral+=1}
+        }
+        // Future offspring productivity: evidence must come from a NEW
+        // independently evaluated child generated by the accepted source,
+        // not the original candidate's own quality or a model's promise.
+        if !adopted{continue;}
+        let Some(commit)=g["acceptedCommit"].as_str() else{continue};
+        let mut seen_children=BTreeSet::new();
+        for child in history.iter().skip(i+1).filter(|child|
+            child["generatorCommit"].as_str()==Some(commit)
+            && independent_trial(child)) {
+            let Some(child_candidate)=child["candidateId"].as_str() else{continue};
+            if !seen_children.insert(child_candidate.to_string()){continue;}
+            let child_role=child["openImprovementProgram"]["target"]["role"]
+                .as_str().unwrap_or("");
+            if child_role.is_empty()||child_role==role{continue;}
+            let child_adopted=accepted_measured(child);
+            for (domain,_case,delta) in cases(child){
+                group.successor_cases+=1;
+                group.next_roles.insert(child_role.into());
+                group.domains.insert(domain);
+                if delta>0 && child_adopted {
+                    group.successor_gains+=1;
+                    group.cross_role_gains+=1;
+                }else if delta<0 {
+                    group.successor_regressions+=1;
+                }
+            }
+        }
+    }
+    let rows=groups.into_iter().map(|(mechanism,g)|{
+        // Beta(1,1) shrinkage means two lucky cases cannot masquerade as
+        // a universal law. Regression and neutral cases remain training data.
+        let posterior=(g.improved as f64+1.0)/(g.cases as f64+2.0);
+        let next_posterior=(g.successor_gains as f64+1.0)
+            /(g.successor_cases as f64+2.0);
+        json!({
+            "mechanism":mechanism,"observedAttempts":g.attempts,
+            "independentSourceAdoptions":g.independently_adopted,
+            "measuredCases":g.cases,"improvedCases":g.improved,
+            "regressedCases":g.regressed,"neutralCases":g.neutral,
+            "nextGenerationCases":g.successor_cases,
+            "nextGenerationImprovements":g.successor_gains,
+            "nextGenerationRegressions":g.successor_regressions,
+            "crossRoleImprovements":g.cross_role_gains,
+            "posteriorCaseGain":posterior,
+            "posteriorDescendantGain":next_posterior,
+            "domains":g.domains.into_iter().collect::<Vec<_>>(),
+            "changedRoles":g.roles.into_iter().collect::<Vec<_>>(),
+            "descendantRoles":g.next_roles.into_iter().collect::<Vec<_>>(),
+            "generationIds":g.generation_ids.into_iter().take(12).collect::<Vec<_>>(),
+            "causalAttributionProven":false
+        })
+    }).collect::<Vec<_>>();
+    let mut ledger=json!({
+        "source":"independently_measured_improvement_principle_learner_v1",
+        "historyCount":history.len(),
+        "principles":rows,
+        "effectSource":"frozen_holdout_case_level_and_rebuilt_descendant",
+        "sourceAdoptionIsNotTaskGain":true,
+        "crossRoleEffectIsObservational":true,
+        "modelWeightsTrained":false,
+        "editableLearningSource":"src/engine/rsi_principle_learning.rs",
+        "qualityProvenForNewProgram":false
+    });
+    ledger["sha256"]=json!(digest(&ledger));
+    ledger
+}
+pub(crate) fn valid(ledger:&Value,history:&[Value])->bool {
+    ledger==&study(history)
+}
+/// This function is the executable meta-learner's ranking algorithm. It
+/// can itself be rewritten, together with this module, by a descendant.
+/// Unmeasured ideas remain exploration hypotheses instead of fake gains.
+pub(crate) fn estimate(ledger:&Value,node:&Value)->Value {
+    let mechanism=node["mechanism"].as_str().unwrap_or("");
+    let row=ledger["principles"].as_array().into_iter().flatten()
+        .find(|row|row["mechanism"]==mechanism);
+    let trials=row.and_then(|r|r["measuredCases"].as_u64()).unwrap_or(0);
+    let descendant_cases=row.and_then(|r|r["nextGenerationCases"].as_u64())
+        .unwrap_or(0);
+    let quality=row.and_then(|r|r["posteriorCaseGain"].as_f64()).unwrap_or(0.5);
+    let future=row.and_then(|r|r["posteriorDescendantGain"].as_f64()).unwrap_or(0.5);
+    let regressions=row.and_then(|r|r["regressedCases"].as_u64()).unwrap_or(0);
+    let child_regressions=row.and_then(|r|r["nextGenerationRegressions"].as_u64())
+        .unwrap_or(0);
+    let breadth=row.and_then(|r|r["domains"].as_array()).map(Vec::len).unwrap_or(0);
+    let novelty=0.16 / ((trials+1) as f64).sqrt();
+    let risk=(regressions+child_regressions) as f64
+        / ((trials+descendant_cases).max(1) as f64);
+    let breadth_bonus=if breadth>1 {0.08*(breadth.min(4) as f64-1.0)/3.0}
+        else{0.0};
+    // Conservatively rate downstream ability separately from immediate wins.
+    let score=0.50*quality+0.35*future+novelty+breadth_bonus-0.20*risk.min(1.0);
+    json!({
+        "mechanism":mechanism,"estimatedPriority":score,
+        "caseQualityPosterior":quality,
+        "futureDescendantPosterior":future,
+        "measuredCases":trials,"nextGenerationCases":descendant_cases,
+        "noveltyExploration":novelty,"crossTaskBreadth":breadth,
+        "penaltyFromRegressions":risk,
+        "predictionNotIndependentProof":true
+    })
+}
+/// Short feedback targeted at WHAT future agent/model should learn, not
+/// the old scripted graph transitions. A model may invent new hypotheses,
+/// components, training procedures and meta-learners from these examples.
+pub(crate) fn instruction(ledger:&Value)->String {
+    let mut rows=ledger["principles"].as_array().cloned().unwrap_or_default();
+    rows.sort_by(|a,b|{
+        let ea=estimate(ledger,&json!({"mechanism":a["mechanism"]}));
+        let eb=estimate(ledger,&json!({"mechanism":b["mechanism"]}));
+        eb["estimatedPriority"].as_f64().unwrap_or(0.0)
+            .total_cmp(&ea["estimatedPriority"].as_f64().unwrap_or(0.0))
+    });
+    let top=rows.iter().take(5).map(|row|format!(
+        "mechanism={} measured={} gains={} regressions={} next-generation cases={} next-generation improvements={} across-domains={}",
+        row["mechanism"],row["measuredCases"],row["improvedCases"],
+        row["regressedCases"],row["nextGenerationCases"],
+        row["nextGenerationImprovements"],row["domains"]
+    )).collect::<Vec<_>>().join("\n");
+    format!(
+        "VERIFIED PRINCIPLE LEARNING (ledger={}):\n{}\n\
+         These are independently evaluated task effects and observational \
+         successor effects, not proof of a universal causal law. \
+         Diagnose which MECHANISM fails to transfer, and invent a new, \
+         falsifiable improvement rule by rewriting the learning algorithm, \
+         model architecture/training source, memory, harness or tool logic. \
+         Propose a new openProgram graph and implement the actual source. \
+         Reuse good mechanisms across domains only when case-level evidence \
+         supports transfer. Do not optimize raw patch-count or self-reported \
+         acceptance. This learner's source can itself be redesigned.",
+        ledger["sha256"],top)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn trial(id:&str,mechanism:&str,source:&str,target_role:&str,
+        before:bool,after:bool,accepted:bool)->Value {
+        let mut hashes=serde_json::Map::new();
+        hashes.insert(source.into(),json!("b".repeat(64)));
+        let generator="a".repeat(40);
+        json!({
+            "id":id,"jobId":format!("job-{id}"),"candidateId":format!("candidate-{id}"),
+            "generatorCommit":generator,"acceptedCommit":if accepted{json!("c".repeat(40))}else{Value::Null},
+            "accepted":accepted,"pairedMeasured":true,"pairedRevalidated":accepted,
+            "evaluationProfileSha256":"d".repeat(64),
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":accepted,
+                    "measurements":[{"id":"case-a","domain":"memory","holdout":true,
+                        "baselinePass":before,"candidatePass":after}]}},
+            "changedSourcePaths":[source],
+            "acceptedSourceHashes":Value::Object(hashes),
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":generator,"metaRevision":"m",
+                "openImprovementRevision":"r"},
+            "metaPolicy":{"revision":"m","selectionMode":"authored_open_improvement_program",
+                "openImprovementRevision":"r",
+                "target":{"role":target_role,"path":source}},
+            "openImprovementProgram":{"source":"compiled_descendant_open_improvement_program_v1",
+                "revision":"r","target":{"role":target_role,"path":source},
+                "node":{"mechanism":mechanism}},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":generator,"generationJobId":format!("job-{id}"),
+                "components":[target_role],"componentFiles":{target_role:[source]},
+                "targetFiles":[source]}
+        })
+    }
+    #[test]
+    fn independent_task_gains_train_priority_while_failed_ideas_lose_rank(){
+        let good=trial("good","executable retrieval repair","src/engine/memory.rs",
+            "memory",false,true,true);
+        let bad=trial("bad","repeated no-op search","src/engine/memory.rs",
+            "memory",true,false,false);
+        let ledger=study(&[good,bad]);
+        assert!(valid(&ledger,&[] )==false);
+        let yes=estimate(&ledger,&json!({"mechanism":"executable retrieval repair"}));
+        let no=estimate(&ledger,&json!({"mechanism":"repeated no-op search"}));
+        assert!(yes["estimatedPriority"].as_f64()>no["estimatedPriority"].as_f64());
+        assert_eq!(ledger["principles"].as_array().unwrap().len(),2);
+    }
+    #[test]
+    fn model_prose_without_independent_paired_evidence_never_trains_principle(){
+        let mut g=trial("false","invented gain","src/engine/memory.rs",
+            "memory",false,true,true);
+        g["evaluation"]["source"]=json!("model_self_report");
+        assert_eq!(study(&[g])["principles"].as_array().unwrap().len(),0);
+    }
+}
