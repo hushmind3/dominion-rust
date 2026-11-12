@@ -7,6 +7,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -17,9 +18,15 @@ struct Session {
     child: Child,
     port: u16,
     profile: PathBuf,
+    /// CDP tab IDs are owned by the initiating agent/session. Never select
+    /// the first arbitrary tab: another agent may be operating there.
+    owned_tabs: HashMap<String,String>,
 }
 
 static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
+/// Serializes Chrome startup, tab ownership and actions so concurrent agents
+/// cannot interleave two operations against the same UI snapshot.
+static BROWSER_ACTION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn session() -> &'static Mutex<Option<Session>> {
     SESSION.get_or_init(|| Mutex::new(None))
@@ -136,12 +143,24 @@ async fn ensure_session(data_dir: &Path) -> Result<u16, String> {
             child,
             port,
             profile,
+            owned_tabs: HashMap::new(),
         });
     }
     Ok(port)
 }
 
-async fn page_target(port: u16) -> Result<Value, String> {
+fn select_owned_target(targets: &Value, target_id: Option<&str>) -> Option<Value> {
+    let target_id=target_id?;
+    targets.as_array()?.iter().find(|page|
+        page["type"]=="page"
+        && page["id"].as_str()==Some(target_id)
+        && page["webSocketDebuggerUrl"].is_string()).cloned()
+}
+
+async fn page_target(port: u16, owner_id: &str) -> Result<Value, String> {
+    if owner_id.trim().is_empty() {
+        return Err("브라우저 탭을 사용할 작업 세션 ID가 필요합니다.".into());
+    }
     let client = reqwest::Client::new();
     let targets = client
         .get(format!("http://127.0.0.1:{port}/json/list"))
@@ -154,30 +173,35 @@ async fn page_target(port: u16) -> Result<Value, String> {
         .json::<Value>()
         .await
         .map_err(|error| format!("브라우저 대상 응답 오류: {error}"))?;
-    if let Some(page) = targets
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|target| target["type"] == "page" && target["webSocketDebuggerUrl"].is_string())
-    {
-        return Ok(page.clone());
+    let owned_id=session().lock().map_err(|_|"브라우저 세션 잠금 오류")?
+        .as_ref().and_then(|s|s.owned_tabs.get(owner_id).cloned());
+    if let Some(page)=select_owned_target(&targets,owned_id.as_deref()) {
+        return Ok(page);
     }
+    // A lost tab is not a license to switch to another agent's first tab.
+    // Create a new page and atomically assign its CDP target to this owner.
     let created = client
         .put(format!("http://127.0.0.1:{port}/json/new?about:blank"))
         .timeout(Duration::from_secs(10))
         .send()
         .await
-        .map_err(|error| format!("브라우저 탭 생성 실패: {error}"))?;
-    let created = created
+        .map_err(|error| format!("브라우저 탭 생성 실패: {error}"))?
         .error_for_status()
         .map_err(|error| format!("브라우저 탭 HTTP 오류: {error}"))?
         .json::<Value>()
         .await
         .map_err(|error| format!("브라우저 탭 응답 오류: {error}"))?;
-    if created["webSocketDebuggerUrl"].is_string() {
-        return Ok(created);
+    let id=created["id"].as_str().ok_or("새 브라우저 탭 ID가 없습니다.")?;
+    if !created["webSocketDebuggerUrl"].is_string() {
+        return Err("브라우저 페이지 WebSocket 주소가 없습니다.".into());
     }
-    Err("브라우저 페이지 대상을 찾을 수 없습니다.".into())
+    let mut guard=session().lock().map_err(|_|"브라우저 세션 잠금 오류")?;
+    let running=guard.as_mut().ok_or("브라우저 세션이 종료되었습니다.")?;
+    if running.port!=port {
+        return Err("브라우저 세션이 변경되었습니다.".into());
+    }
+    running.owned_tabs.insert(owner_id.to_string(),id.to_string());
+    Ok(created)
 }
 
 async fn cdp(ws_url: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -403,27 +427,58 @@ async fn screenshot(ws_url: &str, workspace: &Path) -> Result<Value, String> {
     }))
 }
 
-fn close_session() -> Value {
-    let mut closed = false;
-    if let Ok(mut guard) = session().lock() {
-        if let Some(mut current) = guard.take() {
-            let _ = current.child.kill();
-            let _ = current.child.wait();
-            let _ = std::fs::remove_file(current.profile.join("DevToolsActivePort"));
-            closed = true;
+async fn close_owner(owner_id: &str) -> Value {
+    let (tab,port,last_owner)=match session().lock() {
+        Ok(mut guard)=>{
+            let Some(current)=guard.as_mut() else {
+                return json!({"closed":false});
+            };
+            let tab=current.owned_tabs.remove(owner_id);
+            (tab,current.port,current.owned_tabs.is_empty())
+        },
+        Err(_)=>return json!({"closed":false}),
+    };
+    if let Some(id)=tab.as_deref() {
+        // The CDP close endpoint is local. Failure to close a vanished target
+        // does not grant access to another owner's tab.
+        let _=reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/json/close/{id}"))
+            .timeout(Duration::from_secs(5)).send().await;
+    }
+    if last_owner {
+        if let Ok(mut guard)=session().lock() {
+            if let Some(mut current)=guard.take() {
+                let _=current.child.kill();
+                let _=current.child.wait();
+                let _=std::fs::remove_file(current.profile.join("DevToolsActivePort"));
+            }
         }
     }
-    json!({ "closed": closed })
+    json!({"closed":tab.is_some()})
 }
 
-/// Run one browser action. Actions: status, open, observe, click, type, press,
-/// screenshot, close.
+/// Backwards-compatible default for trusted direct calls. Agent tools use
+/// execute_for_owner with their agent and session identity.
 pub async fn execute(
     action: &str,
     args: &Value,
     data_dir: &Path,
     workspace: &Path,
 ) -> Result<Value, String> {
+    execute_for_owner(action,args,data_dir,workspace,"direct-browser").await
+}
+
+/// One stable CDP page belongs to one agent/session pair. All actions are
+/// serialized until their result arrives; a different owner cannot borrow
+/// either its target or the element indices returned by observe.
+pub async fn execute_for_owner(
+    action: &str,
+    args: &Value,
+    data_dir: &Path,
+    workspace: &Path,
+    owner_id: &str,
+) -> Result<Value, String> {
+    let _action_guard=BROWSER_ACTION_LOCK.lock().await;
     match action {
         "status" => {
             let mut running = false;
@@ -445,11 +500,11 @@ pub async fn execute(
                 "browser": chrome_bin().map(|path| path.to_string_lossy().to_string()),
             }));
         }
-        "close" => return Ok(close_session()),
+        "close" => return Ok(close_owner(owner_id).await),
         _ => {}
     }
     let port = ensure_session(data_dir).await?;
-    let target = page_target(port).await?;
+    let target = page_target(port,owner_id).await?;
     let ws_url = target["webSocketDebuggerUrl"]
         .as_str()
         .ok_or("브라우저 페이지 WebSocket 주소가 없습니다.")?;
@@ -559,6 +614,20 @@ mod tests {
         assert!(shot["bytes"].as_u64().unwrap() > 0);
         execute("close", &json!({}), &dir, &dir).await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn browser_page_selection_requires_matching_owner_target() {
+        let tabs=json!([
+            {"type":"page","id":"agent-a","webSocketDebuggerUrl":"ws://a"},
+            {"type":"page","id":"agent-b","webSocketDebuggerUrl":"ws://b"},
+            {"type":"other","id":"agent-c","webSocketDebuggerUrl":"ws://c"}
+        ]);
+        assert_eq!(select_owned_target(&tabs,Some("agent-a")).unwrap()["id"],"agent-a");
+        assert_eq!(select_owned_target(&tabs,Some("agent-b")).unwrap()["id"],"agent-b");
+        assert!(select_owned_target(&tabs,Some("agent-c")).is_none());
+        assert!(select_owned_target(&tabs,Some("missing")).is_none());
+        assert!(select_owned_target(&tabs,None).is_none());
     }
 
     #[test]

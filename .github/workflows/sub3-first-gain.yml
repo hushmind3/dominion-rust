@@ -1,0 +1,97 @@
+name: Sub3 frozen A/B first quality gain
+
+on:
+  push:
+    branches: [dominion-sub3]
+    paths:
+      - '.github/workflows/sub3-first-gain.yml'
+      - 'src/engine/decompose.rs'
+      - 'benchmark/SUB3-REAL-FIRST-GAIN-2026-11-11.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-planning:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm run build --prefix web
+      - name: Prepare frozen baseline and model-authored change
+        shell: bash
+        env:
+          BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark/sub3-first-gain-output
+          git cat-file -e "$BASE_SHA^{commit}"
+          git show "$BASE_SHA:src/engine/rsi_oracle_fixture.rs" > benchmark/sub3-first-gain-output/frozen-oracle.rs
+          git diff --binary "$BASE_SHA" HEAD -- src/engine/decompose.rs > benchmark/sub3-first-gain-output/candidate.patch
+          test -s benchmark/sub3-first-gain-output/candidate.patch
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import path from 'node:path';
+          const dir='benchmark/sub3-first-gain-output';
+          const file=path.resolve(dir,'frozen-oracle.rs');
+          const plan=JSON.parse(fs.readFileSync('benchmark/SUB3-REAL-FIRST-GAIN-2026-11-11.json'));
+          plan.oracleFixture=file;
+          plan.oracleSha256=crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          fs.writeFileSync(path.join(dir,'plan.json'),JSON.stringify(plan,null,2)+'\n');
+          NODE
+      - name: Execute real frozen paired tests on separate Git worktrees
+        shell: bash
+        env:
+          BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
+        run: |
+          set -euo pipefail
+          bash scripts/rsi-lab.sh "$BASE_SHA" \
+            benchmark/sub3-first-gain-output/candidate.patch \
+            benchmark/sub3-first-gain-output/plan.json \
+            benchmark/sub3-first-gain-output/report.json
+      - name: Summarize measured quality, cost and regressions
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const report=JSON.parse(fs.readFileSync('benchmark/sub3-first-gain-output/report.json'));
+          const rows=report.cases;
+          for(const row of rows){
+            console.log(JSON.stringify({id:row.id,baselinePass:row.baselinePass,candidatePass:row.candidatePass,metrics:row.metrics}));
+          }
+          const planning=rows.find(row=>row.id==='planning-quality');
+          if(!planning||!planning.baselinePass||!planning.candidatePass){
+            throw new Error('The frozen planning oracle did not execute on both real builds.');
+          }
+          const before=planning.metrics?.quality?.baseline;
+          const after=planning.metrics?.quality?.candidate;
+          console.log('Measured planning-quality:',before,'->',after);
+          if(!Number.isFinite(before)||!Number.isFinite(after)||after-before<0.025){
+            throw new Error('No independent measured planning-quality gain.');
+          }
+          if(!report.baselineBuildOk||!report.candidateBuildOk){
+            throw new Error('Both real Rust variants must build.');
+          }
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sub3-frozen-first-gain
+          path: |
+            benchmark/sub3-first-gain-output/plan.json
+            benchmark/sub3-first-gain-output/candidate.patch
+            benchmark/sub3-first-gain-output/report.json
+            benchmark/sub3-first-gain-output/report.json.evidence.txt
+          if-no-files-found: ignore

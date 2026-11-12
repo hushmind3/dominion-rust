@@ -71,7 +71,7 @@ fn patch_paths(patch: &str) -> Result<Vec<String>, String> {
     Ok(paths.into_iter().collect())
 }
 
-fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
+pub(crate) fn case_plan(value: &Value) -> Result<Vec<Value>, String> {
     let rows = value.as_array().ok_or("평가 계획 cases 배열이 필요합니다.")?;
     if rows.len() < 2 || rows.len() > 128 {
         return Err("평가 계획은 2~128개의 독립 사례를 포함해야 합니다.".into());
@@ -123,17 +123,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .ok_or("후보 등록 전에 고정된 oracleVersion이 필요합니다.")?;
     let patch_hash = digest(patch);
     let plan_hash=digest(&json!({"cases":cases,"oracleVersion":oracle_version}).to_string());
-    // Identical source trees can be checked out on several independent
-    // experimental branches. Do not merge their candidate ledgers by hash.
-    // Legacy unscoped proposals retain their original identity.
-    let source_branch=body["sourceBranch"].as_str()
-        .filter(|s|!s.is_empty() && s.len()<=160 && !s.chars().any(char::is_control));
-    let mut identity=format!("{base}:{target}:{patch_hash}:{plan_hash}");
-    if let Some(branch)=source_branch {
-        identity.push_str(":branch:");
-        identity.push_str(branch);
-    }
-    let id = format!("rsi-{}", digest(&identity));
+    let id = format!("rsi-{}", digest(&format!("{base}:{target}:{patch_hash}:{plan_hash}")));
     if let Some(existing) = state.store.get("rsi_candidate", &id) {
         return Ok(existing);
     }
@@ -146,9 +136,6 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         {
             return Err("실제 배포를 기록한 개선기만 다음 세대 개선기의 부모가 될 수 있습니다.".into());
         }
-        if previous["sourceBranch"].as_str()!=source_branch {
-            return Err("개선기 계보를 다른 작업 브랜치로 옮길 수 없습니다.".into());
-        }
         if body["generatorSourceCommit"] != previous["deployment"]["commitSha"] {
             return Err("다음 개선기를 실행한 소스 커밋을 부모의 배포 revision과 연결하세요.".into());
         }
@@ -157,8 +144,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .and_then(|row| row["revision"].as_str().map(str::to_string));
     let now = chrono::Utc::now().to_rfc3339();
     let record = json!({
-        "id":id, "target":target, "baseCommit":base, "sourceBranch":source_branch,
-        "patchSha256":patch_hash,
+        "id":id, "target":target, "baseCommit":base, "patchSha256":patch_hash,
         "patch":patch, "paths":paths, "hypothesis":hypothesis,
         "cases":cases, "oracleVersion":oracle_version,
         "status":"proposed", "createdAt":now,
@@ -179,7 +165,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     Ok(saved)
 }
 
-fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
+pub(crate) fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Value, String> {
     if plan.len() != measured.len() {
         return Err("실험 사례 수가 고정 계획과 일치하지 않습니다.".into());
     }
@@ -190,8 +176,8 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
     let mut candidate_successes = 0usize;
     let mut holdouts = 0usize;
     let mut improved_holdouts = 0usize;
-    let mut holdout_domains = BTreeSet::new();
     let mut improved_holdout_domains = BTreeSet::new();
+    let mut holdout_domains = BTreeSet::new();
     let mut metric_gains = 0;
     let mut metric_losses = 0;
     let mut measurements = Vec::new();
@@ -223,27 +209,27 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         metric_losses += ml;
         if planned["domain"] == "improver" {
             meta_gains += mg;
-            if planned["holdout"] == true {meta_holdout_gains += mg;}
+            if planned["holdout"] == true { meta_holdout_gains += mg; }
         }
-        measurements.push(json!({"id":id,"domain":planned["domain"],
-            "holdout":planned["holdout"],"baselinePass":before,"candidatePass":after,
-            "metrics":detail}));
+        // Persist the exact paired result, not just a success summary. The
+        // recursive proof verifier must be able to independently recompute
+        // which frozen holdout and domain actually improved.
+        measurements.push(json!({
+            "id":id,"domain":planned["domain"],"holdout":planned["holdout"],
+            "baselinePass":before,"candidatePass":after,"metrics":detail
+        }));
         if planned["holdout"] == true {
             holdouts += 1;
             holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
             if (!before && after) || mg > 0 {
                 improved_holdouts += 1;
-                if let Some(domain)=planned["domain"].as_str(){
-                    improved_holdout_domains.insert(domain.to_string());
-                }
+                improved_holdout_domains.insert(planned["domain"].as_str().unwrap_or("").to_string());
             }
         }
     }
     let ready = plan.len() >= MIN_PAIRED_CASES
         && holdouts >= 2
         && gains + metric_gains > 0
-        // Training-only improvements do not establish generalization. The
-        // frozen held-out suite must itself improve without regressions.
         && improved_holdouts > 0
         && losses + metric_losses == 0
         && (target != "improver"
@@ -256,8 +242,7 @@ fn evaluate_cases(plan: &[Value], measured: &[Value], target: &str) -> Result<Va
         "baselineSuccesses":baseline_successes,"candidateSuccesses":candidate_successes,
         "gains":gains,"regressions":losses+metric_losses,"improvedHoldouts":improved_holdouts,
         "metricGains":metric_gains,"metricRegressions":metric_losses,
-        "metaGains":meta_gains,"metaHoldoutGains":meta_holdout_gains,
-        "measurements":measurements,
+        "metaGains":meta_gains,"metaHoldoutGains":meta_holdout_gains,"measurements":measurements,
         "eligible":ready,
         "verdict":if losses+metric_losses>0 {"regressed"} else if ready {"improved"} else {"inconclusive"}
     }))
@@ -382,45 +367,47 @@ pub fn confirm_deployment(
     Ok(saved)
 }
 
-/// Recompute the claimed domain transfer from immutable per-case paired receipts.
-/// Missing legacy detail is unproven, never silently upgraded to a pass.
+/// Verify a self-improvement report from its immutable per-case receipts.
+/// A candidate-controlled summary (domain list/counts) is never proof on its
+/// own, even when the evaluation source and evidence hash are syntactically
+/// valid. Missing legacy receipts intentionally remain unproven.
 fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
     let rows=metrics["measurements"].as_array()?;
     let mut seen=BTreeSet::new();
     let mut domains=BTreeSet::new();
     let mut improved_rows=0u64;
-    let mut holdout_rows=0u64;
     let mut meta_gains=0u64;
     for row in rows {
-        let id=row["id"].as_str().filter(|value|!value.is_empty())?;
-        if !seen.insert(id.to_string()) { return None; }
-        let domain=row["domain"].as_str().filter(|value|!value.is_empty())?;
+        let id=row["id"].as_str().filter(|s|!s.is_empty())?;
+        if !seen.insert(id.to_string()) {return None;}
+        let domain=row["domain"].as_str().filter(|s|!s.is_empty())?;
         let holdout=row["holdout"].as_bool()?;
         let before=row["baselinePass"].as_bool()?;
         let after=row["candidatePass"].as_bool()?;
-        let details=row["metrics"].as_array()?;
-        if before && !after { return None; }
+        let detail=row["metrics"].as_array()?;
+        // Metrics are valid only for cases where both binaries passed.
         let mut improved_metrics=0u64;
-        for detail in details {
-            let improved=detail["improved"].as_bool()?;
-            if detail["regressed"].as_bool()? { return None; }
-            if improved && (!before || !after) { return None; }
+        for metric in detail {
+            let improved=metric["improved"].as_bool()?;
+            let regressed=metric["regressed"].as_bool()?;
+            if regressed {return None;}
+            if improved && (!before || !after) {return None;}
             improved_metrics+=u64::from(improved);
         }
         if holdout {
-            holdout_rows+=1;
             if (!before && after) || improved_metrics>0 {
                 improved_rows+=1;
                 domains.insert(domain.to_string());
             }
-            if domain=="improver" { meta_gains+=improved_metrics; }
+            if domain=="improver" {
+                meta_gains=meta_gains.saturating_add(improved_metrics);
+            }
         }
     }
     let claimed=metrics["improvedHoldoutDomains"].as_array()?
-        .iter().map(|value|value.as_str().filter(|value|!value.is_empty())
-            .map(str::to_string)).collect::<Option<BTreeSet<_>>>()?;
-    if holdout_rows<2 || domains.is_empty() || domains!=claimed
-        || metrics["holdoutCases"].as_u64()?!=holdout_rows
+        .iter().map(|value|value.as_str().filter(|s|!s.is_empty())
+            .map(str::to_string)).collect::<Option<BTreeSet<String>>>()?;
+    if domains.is_empty() || domains!=claimed
         || metrics["improvedHoldouts"].as_u64()?!=improved_rows
         || metrics["metaHoldoutGains"].as_u64()?!=meta_gains {
         return None;
@@ -428,123 +415,123 @@ fn verified_holdout_domains(metrics:&Value)->Option<BTreeSet<String>> {
     Some(domains)
 }
 
-/// A successful patch is not proof that a system can improve its own
-/// improvement mechanism. Require a verified meta holdout gain followed by a
-/// verified cross-domain gain from the newly compiled descendant generator.
-/// A three-generation chain without independent evidence is not capability.
-pub fn capability_proven(state:&AppState, history:&[Value])->bool {
-    // Every transfer must be grounded in the domains of improved frozen cases.
-    // Merely labelling the next patch as "harness" is not cross-domain evidence.
-    let mut chain:Vec<(String,bool,String,BTreeSet<String>)>=Vec::new();
+/// Recompute the candidate's complete paired evaluation from the original
+/// frozen case plan and preserved per-case raw measurements. The final
+/// metrics and extracted holdout labels must agree with this source record.
+/// Each candidate owns its receipt; campaign-job IDs are not unique across
+/// generations and would overwrite previously adopted evidence.
+pub(crate) fn verified_pair_receipt(state: &AppState, candidate: &Value) -> bool {
+    replayed_pair_metrics(state, candidate).is_some_and(|metrics| metrics["eligible"] == true)
+}
+
+/// Recompute both successful and neutral experiments from the server's raw
+/// paired receipt. Neutral patches may seed search, but cannot earn adoption.
+pub(crate) fn replayed_pair_metrics(state: &AppState, candidate: &Value) -> Option<Value> {
+    let id = candidate["id"].as_str()?;
+    let Some(receipt) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
+        return None;
+    };
+    let evaluation = &candidate["evaluation"];
+    let report = &receipt["report"];
+    let plan = candidate["cases"].as_array()?;
+    let measured = report["cases"].as_array()?;
+    if receipt["candidateId"] != candidate["id"]
+        || receipt["runner"] != "local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"] != evaluation["evidenceSha256"]
+        || report["reportSha256"] != receipt["evidenceSha256"]
+        || report["baseCommit"] != candidate["baseCommit"]
+        || report["patchSha256"] != candidate["patchSha256"]
+        || report["oracleVersion"] != candidate["oracleVersion"]
+        || report["baselineBuildOk"] != true || report["candidateBuildOk"] != true
+    { return None; }
+    let Ok(recalculated) = evaluate_cases(
+        plan, measured, candidate["target"].as_str().unwrap_or("")) else {
+        return None;
+    };
+    (recalculated == evaluation["metrics"]
+        && recalculated == receipt["metrics"]
+        && recalculated["verdict"] == evaluation["verdict"]
+        && recalculated["verdict"] == receipt["verdict"]).then_some(recalculated)
+}
+
+/// Three accepted patches alone do not demonstrate recursive intelligence.
+/// Require exact generator succession, independently measured holdout gains,
+/// a self-improver change, and subsequent transfer into another capability.
+pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
+    let mut chain: Vec<(String, bool, BTreeSet<String>)> = Vec::new();
     for generation in history {
-        if generation["accepted"]!=true {
-            // A research-only or failed generation also interrupts a
-            // consecutive adoption chain, even without an evaluation report.
+        if generation["accepted"] != true { chain.clear(); continue; }
+        let Some(candidate) = generation["candidateId"].as_str()
+            .and_then(|id| state.store.get("rsi_candidate", id)) else {
+                chain.clear(); continue;
+            };
+        let Some(commit) = generation["acceptedCommit"].as_str().filter(|s|sha(s)) else {
+            chain.clear(); continue;
+        };
+        let Some(generator) = generation["generatorCommit"].as_str().filter(|s|sha(s)) else {
+            chain.clear(); continue;
+        };
+        let evaluation = &candidate["evaluation"];
+        let evidence = evaluation["evidenceSha256"].as_str().is_some_and(|h|
+            h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()));
+        let verified = candidate["status"] == "verified"
+            && evaluation["source"] == "server_invoked_local_paired_git_worktrees"
+            && evaluation["metrics"]["eligible"] == true
+            && evaluation["metrics"]["regressions"] == 0
+            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0) > 0
+            && evidence
+            && generation["evaluation"]["evidenceSha256"] == evaluation["evidenceSha256"]
+            && candidate["experimentAdoption"]["commit"] == generation["acceptedCommit"]
+            && candidate["baseCommit"] == generation["generatorCommit"];
+        if !verified || !verified_pair_receipt(state,&candidate) {
+            chain.clear(); continue;
+        }
+        if chain.last().is_some_and(|(prior,_,_)|prior!=generator) {
             chain.clear();
-            continue;
         }
-        let Some(candidate)=generation["candidateId"].as_str()
-            .and_then(|id|state.store.get("rsi_candidate",id))
-            .or_else(|| {
-                // The index record may have been archived. Accept only the
-                // evidence receipt written at the time of actual adoption.
-                let proof=&generation["acceptedProof"];
-                (proof["candidateId"]==generation["candidateId"]
-                    && proof["adoptedCommit"]==generation["acceptedCommit"]
-                    && proof["baseCommit"]==generation["generatorCommit"]
-                    && proof["status"]=="verified")
-                .then(||json!({"status":proof["status"],"target":proof["target"],
-                    "baseCommit":proof["baseCommit"],
-                    "experimentAdoption":{"commit":proof["adoptedCommit"]},
-                    "evaluation":proof["evaluation"]}))
-            }) else {
-            chain.clear();continue;
+        let Some(improved)=verified_holdout_domains(&evaluation["metrics"]) else {
+            chain.clear(); continue;
         };
-        let evaluation=&candidate["evaluation"];
-        let Some(commit)=generation["acceptedCommit"].as_str().filter(|v|sha(v)) else {
-            chain.clear();continue;
-        };
-        let Some(generator)=generation["generatorCommit"].as_str().filter(|v|sha(v)) else {
-            chain.clear();continue;
-        };
-        let evidence=evaluation["evidenceSha256"].as_str().filter(|v|
-            v.len()==64 && v.bytes().all(|byte|byte.is_ascii_hexdigit()));
-        let verified=candidate["status"]=="verified"
-            && evaluation["source"]=="server_invoked_local_paired_git_worktrees"
-            && evaluation["metrics"]["eligible"]==true
-            && evaluation["metrics"]["regressions"]==0
-            && evaluation["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)>0
-            && evidence.is_some()
-            && generation["evaluation"]["evidenceSha256"]==evaluation["evidenceSha256"]
-            && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
-            && candidate["baseCommit"]==generation["generatorCommit"];
-        if !verified {chain.clear();continue;}
-        if chain.last().is_some_and(|(prior,_,_,_)|prior!=generator) {chain.clear();}
-        // Domains are frozen in the evaluation plan and earned only by paired
-        // baseline/candidate holdout measurements, not inferred from target labels.
-        let Some(improved_domains)=verified_holdout_domains(&evaluation["metrics"]) else {
-            chain.clear();continue;
-        };
-        let meta=candidate["target"]=="improver"
-            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0
-            && improved_domains.contains("improver");
-        let target=candidate["target"].as_str().unwrap_or("").to_string();
-        chain.push((commit.to_string(),meta,target,improved_domains));
-        // Prove a distinct, newly improved frozen domain after the meta gain.
-        // Improving memory twice cannot masquerade as transfer to planning.
-        // A later descendant may demonstrate transfer after more than three
-        // generations. The chain must be consecutive and verified, but the
-        // meta gain and its cross-domain consequence need not be adjacent.
-        if chain.len()>=3 && chain.iter().enumerate().any(|(index,(_,meta,_,meta_domains))|
-            *meta && chain[index+1..].iter().any(|(_,_,target,domains)|
-                target!="improver" && domains.iter().any(|domain|
-                    domain!="improver" && !meta_domains.contains(domain)))) {
-            return true;
-        }
+        let meta = candidate["target"] == "improver"
+            && evaluation["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0) > 0
+            && improved.contains("improver");
+        chain.push((commit.to_string(),meta,improved));
+        if chain.len() >= 3 && chain.windows(3).any(|window|
+            window.iter().enumerate().any(|(i,(_,meta,domains))|
+                *meta && window[i+1..].iter().any(|(_,_,successor_domains)|
+                    successor_domains.iter().any(|domain|
+                        domain!="improver" && !domains.contains(domain)))))
+        { return true; }
     }
     false
 }
 
-/// Prove recursive capability across a continued campaign only when the
-/// previous campaign is the exact binary and source lineage being resumed.
-/// Campaign labels or inherited streak counters alone never establish proof.
-pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
+/// A continued campaign may inherit proof only from the same source snapshot,
+/// work branch and selected descendant. A reused goal label proves nothing.
+pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
     let mut segments = Vec::new();
-    let mut visited = BTreeSet::new();
-    let mut current = campaign.clone();
+    let mut seen = BTreeSet::new();
+    let mut current=campaign.clone();
     for _ in 0..32 {
-        let Some(id) = current["id"].as_str() else {break};
-        if !visited.insert(id.to_string()) {break;}
+        let Some(id)=current["id"].as_str() else {break};
+        if !seen.insert(id.to_string()) {break;}
         segments.push(current["history"].as_array().cloned().unwrap_or_default());
-        if current["lineage"]["reused"] != true {break;}
-        let Some(prior_id) = current["continuedFrom"].as_str() else {break};
-        let Some(prior) = state.store.get("rsi_campaign", prior_id) else {break};
-        let selected = current["lineage"]["selectedCommit"].as_str().unwrap_or("");
-        let fingerprint = current["sourceFingerprint"].as_str().unwrap_or("");
-        let same_base=current["baseCommit"]==prior["baseCommit"]
-            && current["sourceFingerprint"]==prior["sourceFingerprint"];
-        // A newly chosen descendant may become the next campaign's starting
-        // source revision. Its fingerprint changes, but the selected commit
-        // must be the exact head previously adopted by this lineage.
-        let advanced_base=current["baseCommit"].as_str()==Some(selected)
-            && prior["headCommit"].as_str()==Some(selected);
-        let same_origin = current["sourceDir"] == prior["sourceDir"]
-            && current["sourceBranch"] == prior["sourceBranch"]
-            && (same_base||advanced_base);
-        if !same_origin
-            || !sha(selected)
-            || prior["headCommit"].as_str() != Some(selected)
-            || fingerprint.len() != 64
-            || !fingerprint.bytes().all(|b|b.is_ascii_hexdigit())
-            || fingerprint == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-            || (!advanced_base && prior["sourceFingerprint"].as_str() != Some(fingerprint)) {
-            break;
-        }
-        current = prior;
+        if current["lineage"]["reused"]!=true {break;}
+        let Some(prior)=current["continuedFrom"].as_str()
+            .and_then(|id|state.store.get("rsi_campaign",id)) else {break};
+        let selected=current["lineage"]["selectedCommit"].as_str().unwrap_or("");
+        let hash=current["sourceFingerprint"].as_str().unwrap_or("");
+        if !sha(selected) || prior["headCommit"]!=selected
+            || current["sourceDir"]!=prior["sourceDir"]
+            || current["sourceBranch"]!=prior["sourceBranch"]
+            || current["baseCommit"]!=prior["baseCommit"]
+            || prior["sourceFingerprint"]!=hash
+            || !crate::engine::rsi_evolve::lineage_fingerprint_valid(hash)
+        {break;}
+        current=prior;
     }
     segments.reverse();
-    let history=segments.into_iter().flatten().collect::<Vec<_>>();
-    capability_proven(state,&history)
+    capability_proven(state,&segments.into_iter().flatten().collect::<Vec<_>>())
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {
@@ -587,120 +574,115 @@ mod tests {
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),"baselinePass":i!=0,"candidatePass":true})).collect::<Vec<_>>()})
     }
     #[test]
-    fn three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer() {
+    fn train_only_improvement_cannot_claim_holdout_generalization() {
+        let plan=(0..8).map(|i|json!({
+            "id":format!("case-{i}"),"domain":"memory",
+            "holdout":i<2
+        })).collect::<Vec<_>>();
+        let measured=(0..8).map(|i|json!({
+            "id":format!("case-{i}"),
+            "baselinePass":i!=3,"candidatePass":true
+        })).collect::<Vec<_>>();
+        let metrics=evaluate_cases(&plan,&measured,"memory").unwrap();
+        assert_eq!(metrics["gains"],1);
+        assert_eq!(metrics["improvedHoldouts"],0);
+        assert_eq!(metrics["eligible"],false);
+        assert_eq!(metrics["verdict"],"inconclusive");
+        let mut claimed=metrics;
+        claimed["improvedHoldoutDomains"]=json!(["memory"]);
+        assert!(verified_holdout_domains(&claimed).is_none());
+    }
+
+    #[test]
+    fn recursive_proof_needs_real_meta_transfer_not_three_adoption_flags() {
         let (state,root)=state();
         let revisions=["a".repeat(40),"b".repeat(40),"c".repeat(40),"d".repeat(40)];
         let mut history=Vec::new();
         for i in 0..3 {
             let id=format!("proof-{i}");
-            let evaluation_id=format!("eval-{i}");
-            let target=if i==0{"improver"}else{"harness"};
-            state.store.put("rsi_candidate",&json!({"id":id,"status":"verified","target":target,
-                "baseCommit":revisions[i],"experimentAdoption":{"commit":revisions[i+1]},
-                "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
-                    "evidenceSha256":"a".repeat(64),
-                    "metrics":{"eligible":true,"regressions":0,"holdoutCases":2,
-                        "improvedHoldouts":1,"metaHoldoutGains":if i==0{1}else{0},
-                        "improvedHoldoutDomains":if i==0 {json!(["improver"])}
-                            else if i==1 {json!(["memory"])} else {json!(["planning"])},
-                        "measurements":[
-                            {"id":format!("measured-{i}"),
-                                "domain":if i==0{"improver"}else if i==1{"memory"}else{"planning"},
-                                "holdout":true,"baselinePass":i==0,"candidatePass":true,
-                                "metrics":if i==0{json!([{"improved":true,"regressed":false}])}else{json!([])}},
-                            {"id":format!("control-{i}"),"domain":"other",
-                                "holdout":true,"baselinePass":true,"candidatePass":true,"metrics":[]}
-                        ]}}}));
-            let saved=state.store.get("rsi_candidate",&id).unwrap();
+            let improvement_domain=if i==0 {"improver"} else if i==1 {"memory"} else {"context"};
+            let target=if i==0 {"improver"} else {"harness"};
+            let plan=(0..8).map(|n|json!({
+                "id":format!("case-{n}"),"domain":if n==1 {"control"} else {improvement_domain},
+                "holdout":n<3,
+                "metrics":if i==0 && n==0 {json!([{"key":"quality","direction":"higher",
+                    "minRelativeGain":0.05,"minAbsoluteGain":0.0,"maxRelativeRegression":0.0}])}
+                    else {json!([])}
+            })).collect::<Vec<_>>();
+            let raw=(0..8).map(|n|json!({
+                "id":format!("case-{n}"),"baselinePass":i==0 || n!=0,
+                "candidatePass":true,
+                "metrics":if i==0 && n==0 {
+                    json!({"quality":{"baseline":0.4,"candidate":0.8}})
+                } else {json!({})}
+            })).collect::<Vec<_>>();
+            let metrics=evaluate_cases(&plan,&raw,target).unwrap();
+            assert_eq!(metrics["eligible"],true);
+            let evidence_sha="e".repeat(64);
+            let report=json!({"baseCommit":revisions[i],"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1","reportSha256":evidence_sha,
+                "baselineBuildOk":true,"candidateBuildOk":true,
+                "cases":raw});
+            let candidate=json!({
+                "id":id,"status":"verified","target":target,"cases":plan,
+                "baseCommit":revisions[i],"patchSha256":"p".repeat(64),
+                "oracleVersion":"frozen-v1",
+                "experimentAdoption":{"commit":revisions[i+1]},
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "evidenceSha256":evidence_sha,"verdict":metrics["verdict"],
+                    "metrics":metrics}
+            });
+            state.store.put("rsi_candidate",&candidate).unwrap();
+            state.store.put("rsi_pair",&json!({
+                "id":format!("rsi-pair-{id}"),"candidateId":id,
+                "runner":"local_gitrepo_not_os_sandbox",
+                "evidenceSha256":evidence_sha,"report":report,
+                "verdict":metrics["verdict"],"metrics":metrics
+            })).unwrap();
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
-                "evaluation":{"evidenceSha256":"a".repeat(64)},
-                "acceptedProof":{"candidateId":id,"status":"verified","target":target,
-                    "baseCommit":revisions[i],"adoptedCommit":revisions[i+1],
-                    "evaluation":saved["evaluation"]}}));
+                "evaluation":{"evidenceSha256":"e".repeat(64)}}));
         }
-        assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
-        let retained=state.store.get("rsi_candidate","proof-1").unwrap();
-        assert!(state.store.remove("rsi_candidate","proof-1"));
-        assert!(capability_proven(&state,&history),
-            "archiving the candidate index cannot erase durable adopted evidence");
-        state.store.put("rsi_candidate",&retained).unwrap();
-        let mut forged=state.store.get("rsi_candidate","proof-2").unwrap();
-        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["unmeasured-domain"]);
+        assert!(capability_proven(&state,&history));
+        let mut broken=history.clone();
+        broken[1]=json!({"accepted":false});
+        assert!(!capability_proven(&state,&broken),
+            "failed research generation must break recursive capability proof");
+        let mut forged=state.store.get("rsi_candidate","proof-1").unwrap();
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["tools"]);
         state.store.put("rsi_candidate",&forged).unwrap();
         assert!(!capability_proven(&state,&history),
-            "a forged summary cannot override the frozen paired case receipts");
-        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
+            "summary domain cannot override concrete frozen holdout measurements");
+        forged["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(2);
         state.store.put("rsi_candidate",&forged).unwrap();
-        // A later patch in the same previously improved domain is not transfer.
-        let mut same_domain=state.store.get("rsi_candidate","proof-2").unwrap();
-        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
-        state.store.put("rsi_candidate",&same_domain);
-        assert!(!capability_proven(&state,&history),"same-domain replay cannot prove transfer");
-        same_domain["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["planning"]);
-        state.store.put("rsi_candidate",&same_domain);
-        // Missing domain receipts are not retroactively accepted as proof.
-        let mut missing_domains=state.store.get("rsi_candidate","proof-2").unwrap();
-        missing_domains["evaluation"]["metrics"].as_object_mut().unwrap()
-            .remove("improvedHoldoutDomains");
-        state.store.put("rsi_candidate",&missing_domains);
-        assert!(!capability_proven(&state,&history));
-        state.store.put("rsi_candidate",&same_domain);
-        let mut interrupted=history.clone();
-        interrupted.insert(1,json!({"accepted":false,"reason":"research_only"}));
-        assert!(!capability_proven(&state,&interrupted),
-            "a generation without a patch must break the consecutive adoption chain");
-        let shared_fingerprint="b".repeat(64);
-        let origin=json!({"sourceDir":"/tmp/dominion-sub4","sourceBranch":"dominion-sub4",
-            "baseCommit":revisions[0],"sourceFingerprint":shared_fingerprint});
-        let mut prior=origin.clone();
-        prior["id"]=json!("proof-prior");
-        prior["headCommit"]=json!(revisions[2]);
-        prior["history"]=json!(history[..2].to_vec());
-        state.store.put("rsi_campaign",&prior).unwrap();
-        let mut next=origin.clone();
-        next["id"]=json!("proof-next");
-        next["headCommit"]=json!(revisions[3]);
-        next["continuedFrom"]=json!("proof-prior");
-        next["lineage"]=json!({"reused":true,"selectedCommit":revisions[2]});
-        next["history"]=json!(history[2..].to_vec());
-        assert!(campaign_capability_proven(&state,&next),
-            "three proven descendants may span two campaigns on the same source lineage");
-        let mut advanced=next.clone();
-        advanced["baseCommit"]=json!(revisions[2]);
-        advanced["sourceFingerprint"]=json!("c".repeat(64));
-        assert!(campaign_capability_proven(&state,&advanced),
-            "a continued campaign may start from the previously selected descendant");
-        let mut unrelated=next.clone();
-        unrelated["sourceBranch"]=json!("dominion-sub3");
-        assert!(!campaign_capability_proven(&state,&unrelated),
-            "a different sub branch must not inherit capability proof");
-        let mut mismatched=next.clone();
-        mismatched["lineage"]["selectedCommit"]=json!(revisions[1]);
-        assert!(!campaign_capability_proven(&state,&mismatched),
-            "a non-descendant must not borrow another campaign's accepted chain");
-        let mut false_claim=history.clone();
-        false_claim[1]["generatorCommit"]=json!("9".repeat(40));
-        assert!(!capability_proven(&state,&false_claim),"broken binary lineage cannot be counted");
-        let mut no_meta=state.store.get("rsi_candidate","proof-0").unwrap();
-        no_meta["evaluation"]["metrics"]["metaHoldoutGains"]=json!(0);
-        state.store.put("rsi_candidate",&no_meta);
-        assert!(!capability_proven(&state,&history),"ordinary code gains alone cannot prove meta improvement");
-        let _=std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn identical_patches_on_sibling_branches_have_independent_candidate_ids() {
-        let (state,root)=state();
-        let mut a=proposal("harness");a["sourceBranch"]=json!("dominion-sub3");
-        let mut b=a.clone();b["sourceBranch"]=json!("dominion-sub4");
-        let first=propose(&state,&a).unwrap();
-        let second=propose(&state,&b).unwrap();
-        assert_ne!(first["id"],second["id"]);
-        assert_eq!(first["sourceBranch"],"dominion-sub3");
-        assert_eq!(second["sourceBranch"],"dominion-sub4");
-        assert_eq!(propose(&state,&a).unwrap()["id"],first["id"]);
-        assert_eq!(state.store.all("rsi_candidate").len(),2);
+        assert!(!capability_proven(&state,&history),
+            "summary improvement count must match actual measured rows");
+        forged["evaluation"]["metrics"]["improvedHoldouts"]=json!(1);
+        forged["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("tools");
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "holdout domain receipts must be consistent with their published summary");
+        forged["evaluation"]["metrics"]["measurements"][0]["domain"]=json!("memory");
+        state.store.put("rsi_candidate",&forged).unwrap();
+        assert!(capability_proven(&state,&history));
+        let mut pair=state.store.get("rsi_pair","rsi-pair-proof-1").unwrap();
+        pair["report"]["cases"][0]["candidatePass"]=json!(false);
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "modified raw measurements cannot support a previously accepted improvement");
+        pair["report"]["cases"][0]["candidatePass"]=json!(true);
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(capability_proven(&state,&history));
+        pair["candidateId"]=json!("proof-2");
+        state.store.put("rsi_pair",&pair).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "a candidate cannot borrow another candidate's receipt");
+        let mut mislabeled=state.store.get("rsi_candidate","proof-0").unwrap();
+        mislabeled["evaluation"]["metrics"]["improvedHoldoutDomains"]=json!(["memory"]);
+        state.store.put("rsi_candidate",&mislabeled).unwrap();
+        assert!(!capability_proven(&state,&history),
+            "a meta improvement without an improver holdout is insufficient");
         let _=std::fs::remove_dir_all(root);
     }
 
@@ -780,29 +762,6 @@ mod tests {
         })).unwrap()["status"],"reported_deployed");
         child["generatorSourceCommit"]=json!(deployed);
         assert_eq!(propose(&state,&child).unwrap()["lineageGeneration"],2);
-        let _=std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn training_only_gain_does_not_pass_unchanged_holdouts() {
-        let (state, root)=state();
-        let mut p=proposal("harness");
-        // The first three cases were train-only, leaving two fixed holdouts.
-        for i in 0..3 {p["cases"][i]["holdout"]=json!(false);}
-        for i in 3..5 {p["cases"][i]["holdout"]=json!(true);}
-        let candidate=propose(&state,&p).unwrap();
-        let mut measured=report(&candidate);
-        for row in measured["cases"].as_array_mut().unwrap() {
-            row["baselinePass"]=json!(true);
-            row["candidatePass"]=json!(true);
-        }
-        // A successful change to a public/training test with no improvement
-        // on either held-out test must not become a verified RSI improvement.
-        measured["cases"][0]["baselinePass"]=json!(false);
-        let result=evaluate(&state,candidate["id"].as_str().unwrap(),&measured).unwrap();
-        assert_eq!(result["status"],"inconclusive");
-        assert_eq!(result["evaluation"]["metrics"]["improvedHoldouts"],0);
-        assert_eq!(result["evaluation"]["metrics"]["gains"],1);
         let _=std::fs::remove_dir_all(root);
     }
 

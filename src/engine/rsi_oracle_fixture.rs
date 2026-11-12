@@ -210,6 +210,29 @@ fn long_owner_recall() {
 #[test]
 fn planning_quality() {
     let cases = [
+        ("1. 자료를 연다\n2. 항목을 확인한다\n3. 결과를 보관한다",3),
+        ("1) fetch\n2) inspect\n3) report",3),
+        ("먼저 파일을 확인해",1),
+        ("사고 보고서를 검토해",1),
+        ("최고 점수를 알려줘",1),
+        ("재고 목록을 확인해",1),
+        ("내용을 읽고 요약해",2),
+        ("문서를 열고 항목을 확인해",2),
+        ("자료를 받고 결과를 저장한 다음 보고해",3),
+        ("상자를 닫고 사진을 찍은 후에 알려줘",3),
+        ("도구를 찾고 자료를 읽고 결과를 적어",3),
+        ("원문을 보고 결론을 쓰고 요약해",3),
+        ("자료를 확인한 뒤 결과를 기록해",2),
+        ("fetch then inspect after that report",3),
+        ("파일을 저장해; 내용을 확인해",2),
+        ("첫 결과를 기록해\n두 번째 결과를 기록해",2),
+    ];
+    planning_measure(&cases, false);
+}
+
+#[test]
+fn planning_development_quality() {
+    let cases = [
         (
             "1. 입력을 읽는다\n2. 결과를 저장한다\n3. 저장된 결과를 검증한다",
             3,
@@ -218,10 +241,14 @@ fn planning_quality() {
         ("1) inspect\n2) implement\n3) verify", 3),
         ("파일을 읽어", 1),
     ];
+    planning_measure(&cases, true);
+}
+
+fn planning_measure(cases: &[(&str, usize)], expose_examples: bool) {
     let started = Instant::now();
     let mut hits = 0;
     for _ in 0..3000 {
-        for (input, expected) in cases {
+        for &(input, expected) in cases {
             let result = decompose::decompose(
                 input,
                 &json!({"implementation":"numbered-first","parameters":{"kernel":"numbered-first"}}),
@@ -231,6 +258,22 @@ fn planning_quality() {
     }
     let quality = hits as f64 / (cases.len() * 3000) as f64;
     assert!(quality >= 0.5);
+    // An aggregate 0.75 does not tell the next source-improver WHICH behavior
+    // failed. Emit bounded deterministic observations from the same frozen
+    // cases in BOTH evaluated revisions, without changing the score or pass.
+    // The paired runner keeps this as feedback, not proof of generalization.
+    if expose_examples {
+    let observations=cases.iter().map(|(input,expected)|{
+        let result=decompose::decompose(
+            input,&json!({"implementation":"numbered-first",
+                "parameters":{"kernel":"numbered-first"}}));
+        json!({"input":input,"expectedSegments":expected,
+            "observedSegments":result["subtasks"].as_array().map(Vec::len).unwrap_or(0),
+            "steps":result["subtasks"].as_array().into_iter().flatten()
+                .filter_map(|item|item["text"].as_str()).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>();
+    println!("DOMINION_RSI_BEHAVIOR {}",json!(observations));
+    }
     metric(quality, started, json!({}));
 }
 
