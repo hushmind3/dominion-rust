@@ -1286,6 +1286,36 @@ mod tests {
     }
 
     #[test]
+    fn sealed_generation_model_audit_survives_database_reopen() {
+        let (store,root)=temp_store();
+        let start=store.audit_rowid_cursor().unwrap();
+        store.audit("model.usage",json!({
+            "sessionId":"durable-child","providerId":"author",
+            "model":"model-a","purpose":"chat","totalTokens":27
+        }));
+        store.audit("model.usage",json!({
+            "sessionId":"durable-child","providerId":"other",
+            "model":"model-b","purpose":"chat","totalTokens":12
+        }));
+        let end=store.audit_rowid_cursor().unwrap();
+        store.audit("model.usage",json!({
+            "sessionId":"durable-child","providerId":"later",
+            "model":"model-c","purpose":"chat","totalTokens":55
+        }));
+        drop(store);
+        let reopened=Store::open(&root.join("dominion.sqlite")).unwrap();
+        let original=reopened.model_usage_for_session_in_window(
+            "durable-child",start,end).unwrap();
+        assert_eq!(original.len(),2);
+        assert_eq!(original[0]["detail"]["providerId"],"author");
+        assert_eq!(original[1]["detail"]["providerId"],"other");
+        assert_eq!(reopened.model_usage_for_session_since(
+            "durable-child",start).unwrap().len(),3);
+        drop(reopened);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn usage_summary_aggregates_calls_and_estimates() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         store.audit(
