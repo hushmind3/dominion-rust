@@ -230,24 +230,34 @@ pub(crate) fn architecture_frontier(
             cost(a.0,a.2).cmp(&cost(b.0,b.2))
                 .then(a.0.cmp(b.0))
         });
-        let Some((path,hash,bytes))=available.first().copied() else {continue;};
-        let prior=source_attempts.get(path).copied().unwrap_or(0);
-        frontier.push(json!({
-            "role":role,"domain":domain,"path":path,
-            "sourceSha256":hash,"sourceBytes":bytes,
-            "verifiedRoleImproved":touched,
-            "sourceAttempts":prior,
-            "reason":if touched{"extend_prior_verified_component"}
-                else {"unmodified_intelligence_component"},
-            "qualityProven":false
-        }));
+        // Preserve alternate source targets. The original frontier exposed
+        // only ONE representative per role, silently discarding a model's
+        // perfectly valid inherited next-stage path whenever another file
+        // happened to be smaller. Multiple options give the child an actual
+        // architectural search space without pre-authoring an optimization.
+        for (path,hash,bytes) in available.into_iter().take(8) {
+            let prior=source_attempts.get(path).copied().unwrap_or(0);
+            frontier.push(json!({
+                "role":role,"domain":domain,"path":path,
+                "sourceSha256":hash,"sourceBytes":bytes,
+                "verifiedRoleImproved":touched,
+                "sourceAttempts":prior,
+                "reason":if touched{"extend_prior_verified_component"}
+                    else {"unmodified_intelligence_component"},
+                "qualityProven":false
+            }));
+            if frontier.len()>=128 {break;}
+        }
     }
+    // Bounded, stable portfolio: avoid serializing thousands of model tool
+    // inputs when future generations invent many additional intelligence roles.
     frontier.sort_by(|a,b|{
         (a["verifiedRoleImproved"]==true).cmp(&(b["verifiedRoleImproved"]==true))
             .then(a["sourceAttempts"].as_u64().cmp(&b["sourceAttempts"].as_u64()))
             .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
             .then(a["role"].as_str().cmp(&b["role"].as_str()))
     });
+    frontier.truncate(128);
     frontier
 }
 
