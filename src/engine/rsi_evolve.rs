@@ -3573,6 +3573,11 @@ async fn run_loop(
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
+        // The meta-policy was chosen by the compiled generator BEFORE it
+        // observed this generation's result. Keep it separate from measured
+        // feedback to avoid look-ahead and let later descendants learn.
+        generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaPolicyVerified"]=current["rsiMetaPolicyVerified"].clone();
         if generation["candidateOrigin"]=="native_inductive_source_mutation" {
             generation["generatorModel"]=json!(format!("dominion-native:{}",
                 generation["nativeMutation"]["operator"].as_str().unwrap_or("unknown")));
@@ -3838,6 +3843,17 @@ async fn run_loop(
                     record["nextTrialAlgorithmId"] = json!(id);
                 }
             }
+        }
+        if input["rsiSystemEvolution"]==true {
+            generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+                &generation["metaPolicy"],&generation);
+            context.state.store.audit("rsi.meta_controller_feedback",json!({
+                "campaignId":context.job_id,"generationJobId":generation["jobId"],
+                "generatorCommit":head,
+                "metaPolicyRevision":generation["metaPolicy"]["revision"],
+                "independentObservation":generation["metaLearning"]["independentObservation"],
+                "brierError":generation["metaLearning"]["brierError"]
+            }));
         }
         let generation_accepted = generation["accepted"] == true;
         // A real, independently adopted NATIVE source mutation can succeed
@@ -4515,7 +4531,7 @@ mod descendant_controller_contract_tests {
         let lineage=json!({"source":"descendant_curated_lineage_v1",
             "historyCount":1,"sha256":"f".repeat(64)});
         let meta=crate::engine::rsi_meta_controller::synthesize(
-            &[],&[json!({"role":"learning","domain":"learning",
+            &[json!({"attempt":1})],&[json!({"role":"learning","domain":"learning",
                 "path":"src/engine/learning.rs","sourceBytes":100})],
             &["learning"],None,&json!({}),&json!({}));
         let plan=json!({
