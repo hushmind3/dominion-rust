@@ -102,18 +102,92 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
     Some((id.clone(),fitness(&metrics)?))
 }
 
-/// Every verified stepping stone is persisted under the exact evaluation
-/// identity (base commit + case plan + oracle). Later campaigns can therefore
-/// continue the same archive instead of rebuilding it from nothing.
-fn remember(state:&AppState,identity:&str,candidate:&Value) {
-    let _=state.store.put("rsi_archive",&json!({
-        "id":format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")),
-        "identity":identity,
-        "candidateId":candidate["id"],
-        "patchSha256":candidate["patchSha256"],
+/// Atomic per-candidate archive insertion, independent of next-parent
+/// selection. Existing entries are immutable, idempotent, and tied to the
+/// raw paired receipt; a second candidate cannot claim the same archive key.
+fn remember(state:&AppState,identity:&str,candidate:&Value)->Result<Value,String> {
+    let patch=candidate["patchSha256"].as_str().filter(|s|s.len()==64)
+        .ok_or("아카이브에 검증된 패치 해시가 없습니다.")?;
+    let id=format!("{identity}:{patch}");
+    if let Some(existing)=state.store.get("rsi_archive",&id) {
+        if existing["candidateId"]!=candidate["id"]
+            || existing["patchSha256"]!=candidate["patchSha256"]
+            || existing["identity"]!=identity {
+            return Err("기존 아카이브 키의 후보 계보가 다릅니다.".into());
+        }
+        return Ok(existing);
+    }
+    let row=json!({
+        "id":id,"identity":identity,
+        "candidateId":candidate["id"],"patchSha256":candidate["patchSha256"],
+        "sourceBranch":candidate["sourceBranch"],"baseCommit":candidate["baseCommit"],
+        "evidenceSha256":candidate["evaluation"]["evidenceSha256"],
         "caseCount":candidate["cases"].as_array().map(Vec::len),
+        "status":"paired_neutral_source_stepping_stone",
+        "qualityProven":false,
         "createdAt":chrono::Utc::now().to_rfc3339(),
+    });
+    let stored=state.store.put("rsi_archive",&row)
+        .ok_or("검증된 중립 후보의 영구 아카이브 저장 실패")?;
+    state.store.audit("rsi.archive_persisted",json!({
+        "candidateId":candidate["id"],"baseCommit":candidate["baseCommit"],
+        "sourceBranch":candidate["sourceBranch"],
+        "evidenceSha256":candidate["evaluation"]["evidenceSha256"],
+        "qualityProven":false
     }));
+    Ok(stored)
+}
+
+/// Archive the COMPLETED worker's neutral experiment before the campaign
+/// considers stopping. The last generation gets the same durable candidate
+/// record as any intermediate generation; no future select() call is needed.
+/// Return a saved/not-eligible receipt, not a claim that an unadopted patch
+/// improved source quality. Never import a patch from a foreign branch.
+pub(crate) fn record_completed(
+    state:&AppState,generation:&Value,cases:&Value,branch:&str
+)->Result<Value,String>{
+    let not_eligible=|reason:&str|json!({
+        "status":"not_eligible","reason":reason,"persisted":false,
+        "qualityProven":false
+    });
+    if generation["accepted"]==true {return Ok(not_eligible("already_adopted"));}
+    if generation["staticChecksPassed"]!=true
+        && generation["verification"]["checksPassed"]!=true {
+        return Ok(not_eligible("compiler_checks_not_passed"));
+    }
+    let Some(candidate_id)=generation["candidateId"].as_str() else{
+        return Ok(not_eligible("no_real_candidate"));
+    };
+    let Some(base)=generation["generatorCommit"].as_str() else{
+        return Ok(not_eligible("no_generator_commit"));
+    };
+    if branch.is_empty() || generation["sourceBranch"].as_str()!=Some(branch) {
+        return Ok(not_eligible("foreign_source_branch"));
+    }
+    let candidate=match state.store.get("rsi_candidate",candidate_id){
+        Some(candidate)=>candidate,None=>return Ok(not_eligible("candidate_not_found")),
+    };
+    if candidate["id"]!=candidate_id
+        || candidate["baseCommit"]!=base
+        || candidate["sourceBranch"]!=branch
+        || generation["evaluation"]["evidenceSha256"]!=candidate["evaluation"]["evidenceSha256"] {
+        return Ok(not_eligible("candidate_source_or_receipt_mismatch"));
+    }
+    let plan=rsi::case_plan(cases)?;
+    let oracle=format!("{:x}",Sha256::digest(include_bytes!("rsi_oracle_fixture.rs")));
+    if candidate_scores(state,&candidate,base,&plan,&oracle).is_none() {
+        return Ok(not_eligible("independent_pair_not_replayable"));
+    }
+    let identity=scoped_identity(base,&plan,&oracle,Some(branch));
+    let saved=remember(state,&identity,&candidate)?;
+    Ok(json!({
+        "status":"persisted","persisted":true,
+        "candidateId":candidate_id,"archiveId":saved["id"],
+        "sourceBranch":branch,"baseCommit":base,
+        "evidenceSha256":candidate["evaluation"]["evidenceSha256"],
+        "originatingGenerationJobId":generation["jobId"],
+        "qualityProven":false,
+    }))
 }
 
 /// Only completed, independently evaluated candidates enter the archive. The
@@ -165,7 +239,9 @@ fn select_scoped(
             continue;
         };
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
-        remember(state,&identity,&candidate);
+        // Persistence failure cannot silently turn a transient candidate
+        // into a "persisted" selection the child will later fail to restore.
+        if remember(state,&identity,&candidate).is_err(){continue;}
         entries.push((id, candidate["patchSha256"].clone(), scores));
     }
     for record in state.store.all("rsi_archive") {
