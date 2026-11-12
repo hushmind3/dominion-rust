@@ -33,6 +33,7 @@ pub mod rsi_archive;
 pub mod rsi_metrics;
 pub mod rsi_meta;
 pub mod rsi_meta_controller;
+pub mod rsi_peer_transfer;
 pub mod rsi_prequential;
 pub mod rsi_system;
 pub mod rsi_symbiosis;

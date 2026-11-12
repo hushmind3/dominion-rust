@@ -4672,6 +4672,17 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             architecture_target=first.clone();
         }
     }
+    // Cross-lineage methods influence actual source search ONLY when the
+    // scientific program or predictor repair has not reserved a different
+    // descendant experiment. Exactly one donor can be active.
+    let mut meta_policy=meta_policy;
+    if science_active && science["phase"]=="discover_new_mechanism"
+        && !negative_transfer_active && !algebra_active && !capability_active
+        && successor_stage.is_null() && architecture_target==meta_policy["target"] {
+        meta_policy=crate::engine::rsi_peer_transfer::learn(
+            meta_policy,&peers,&history);
+        architecture_target=meta_policy["target"].clone();
+    }
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&json!({"target":architecture_target}),DOMAINS);
     let inherited=if input["rsiAutonomous"]==true {
@@ -5154,11 +5165,23 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             && !negative_transfer_active && !algebra_active && !capability_active {
             crate::engine::rsi_system::inherited_stage(&state,&history,frontier)
         }else{Value::Null};
-        let expected=crate::engine::rsi_meta_controller::apply_successor_stage(
+        let mut expected=crate::engine::rsi_meta_controller::apply_successor_stage(
             adapted,&suggested);
         let expected_stage=if suggested.is_object()
             && expected["successorStage"]==suggested{suggested}
             else{Value::Null};
+        // Recompute in the actual worker from the immutable source-bound
+        // history; a forged model prompt cannot claim a different donor.
+        let discover=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"])
+            && job["input"]["rsiRecursiveScientificProgram"]["phase"]==
+                "discover_new_mechanism"
+            && !negative_transfer_active && !algebra_active && !capability_active
+            && expected_stage.is_null();
+        if discover {
+            expected=crate::engine::rsi_peer_transfer::learn(
+                expected,&job["input"]["rsiPeerLineages"],&history);
+        }
         if job["input"]["rsiSuccessorStage"]!=expected_stage
             || job["input"]["rsiControllerPlan"]["successorStage"]!=expected_stage
             || job["input"]["rsiControllerPlan"]["metaPolicy"]!=expected
@@ -5332,8 +5355,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("NEXT-GENERATION EXECUTABLE EDIT METHOD (inherited, still an unproven trial): {}. The runtime tool router uses this program, and observed stage receipts—not this text—establish execution.",
                 job["input"]["rsiInheritedMetaProgram"])
         }else{String::new()};
-        let peer_evidence=serde_json::to_string(&job["input"]["rsiPeerLineages"])
-            .unwrap_or_default();
+        // Several references may be inspected by a compiled planner.
+        // The real coding model receives only ONE actively chosen donor.
+        let peer_evidence=if job["input"]["rsiMetaPolicy"]["peerMethodTransfer"]["active"]==true {
+            crate::engine::rsi_peer_transfer::instruction(&job["input"]["rsiMetaPolicy"])
+        }else{
+            serde_json::to_string(&job["input"]["rsiPeerLineages"]).unwrap_or_default()
+        };
         let independent_effects=serde_json::to_string(
             &job["input"]["rsiInteractionGraph"]).unwrap_or_default();
         let combined_sources=serde_json::to_string(
