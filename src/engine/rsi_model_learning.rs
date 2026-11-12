@@ -222,7 +222,8 @@ pub(crate) fn generator_competition(
         }
     }
     let chosen_provider=providers.iter().find(|p|
-        p["id"]==chosen.0&&p["model"]==chosen.1);
+        p["id"].as_str()==Some(chosen.0.as_str())
+            &&p["model"].as_str()==Some(chosen.1.as_str()));
     let mut plan=json!({
         "source":"compiled_open_model_scaffold_competition_v1",
         "generatorCommit":commit,"attempt":attempt,
@@ -260,6 +261,45 @@ pub(crate) fn competition_matches(plan:&Value,input:&Value)->bool{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+    fn test_state()->(crate::state::AppState,std::path::PathBuf){
+        let dir=std::env::temp_dir().join(format!(
+            "sub1-generator-compete-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),
+            web_dir:dir.join("web"),workspace:dir.clone()};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        (crate::state::AppState::new(config,store,vault),dir)
+    }
+    #[test]
+    fn open_model_competition_really_changes_next_source_generator(){
+        let (state,root)=test_state();
+        state.store.put("provider",&json!({
+            "id":"api","model":"paid-model","enabled":true,
+            "baseUrl":"https://example.test/v1","capabilities":{"text":true}}));
+        state.store.put("provider",&json!({
+            "id":"local","model":"local-model","enabled":true,
+            "baseUrl":"http://127.0.0.1:4433/v1","local":true}));
+        state.save_secret("provider:api","connected-owner-key");
+        let source="a".repeat(40);
+        let current=json!({"providerId":"api","model":"paid-model",
+            "rsiGeneratorCommit":source});
+        let first=generator_competition(&state,&[],&current,&source,1,true);
+        assert_eq!(first["selectedProviderId"],"api");
+        assert!(competition_matches(&first,&current));
+        let second=generator_competition(&state,&[],&current,&source,2,true);
+        assert_eq!(second["selectedProviderId"],"local");
+        assert_eq!(second["decision"],"same_source_exploration");
+        let mut next=current.clone();
+        next["providerId"]=second["selectedProviderId"].clone();
+        next["model"]=second["selectedModel"].clone();
+        assert!(competition_matches(&second,&next));
+        assert!(!competition_matches(&second,&current));
+        let locked=generator_competition(&state,&[],&current,&source,2,false);
+        assert_eq!(locked["selectedProviderId"],"api");
+        let _=std::fs::remove_dir_all(root);
+    }
     fn sample(job:&str,base:&str,domain:&str,provider:&str,good:bool)->Value{
         json!({"jobId":job,"generatorCommit":base,
             "generatorProviderId":provider,"generatorModel":"model",
