@@ -210,7 +210,7 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,history_count:usiz
             && matches!(pair["phase"].as_str(),
                 Some("isolate_left"|"isolate_right"|"test_joint_interaction"|"all_variants_observed"))
     };
-    plan["selected"].is_null() || valid_pair(&plan["selected"])
+    (plan["selected"].is_null() || valid_pair(&plan["selected"]))
         && plan["pairFrontier"].as_array().is_some_and(|pairs|pairs.iter().all(valid_pair))
 }
 pub(crate) fn instruction(plan:&Value)->String {
