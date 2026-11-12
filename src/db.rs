@@ -1028,6 +1028,61 @@ impl Store {
         }
     }
 
+    /// A generation must be credited to the model that ACTUALLY ran, not to
+    /// the originally requested endpoint. Read the WHOLE session's append-only
+    /// audit with a SQL session predicate: recent_audit is globally capped at
+    /// 500 and can silently lose the first incompatible model call.
+    pub fn session_model_attribution(&self, session_id:&str)->Value {
+        let unavailable=||json!({
+            "source":"complete_session_model_usage_audit_v1",
+            "verifiedHomogeneous":false,"providerId":null,"model":null,
+            "calls":0,"distinctEndpoints":0,"invalidRecords":0,
+            "status":"audit_query_unavailable"
+        });
+        if session_id.is_empty(){return unavailable();}
+        let conn=self.conn.lock().unwrap();
+        let Ok(mut stmt)=conn.prepare(
+            "SELECT detail FROM audit
+             WHERE event='model.usage'
+               AND json_extract(detail,'$.sessionId')=?1
+             ORDER BY rowid ASC"
+        )else{return unavailable()};
+        let Ok(rows)=stmt.query_map([session_id],|row|
+            row.get::<_,String>(0))else{return unavailable()};
+        let mut endpoints=std::collections::BTreeMap::<(String,String),u64>::new();
+        let mut invalid=0_u64;
+        let mut calls=0_u64;
+        for raw in rows{
+            calls+=1;
+            let Ok(raw)=raw else{invalid+=1;continue};
+            let Ok(value)=serde_json::from_str::<Value>(&raw)
+                else{invalid+=1;continue};
+            let (Some(provider),Some(model))=(
+                value["providerId"].as_str().filter(|s|!s.is_empty()),
+                value["model"].as_str().filter(|s|!s.is_empty())
+            )else{invalid+=1;continue};
+            *endpoints.entry((provider.to_owned(),model.to_owned()))
+                .or_default()+=1;
+        }
+        let consistent=calls>0 && invalid==0 && endpoints.len()==1;
+        let selected=if consistent{
+            endpoints.keys().next().cloned()
+        }else{None};
+        json!({
+            "source":"complete_session_model_usage_audit_v1",
+            "status":if consistent{"verified_single_model"}
+                else if calls==0{"no_model_call"}
+                else if invalid>0{"malformed_model_audit"}
+                else{"mixed_model_calls"},
+            "verifiedHomogeneous":consistent,
+            "providerId":selected.as_ref().map(|id|id.0.as_str()),
+            "model":selected.as_ref().map(|id|id.1.as_str()),
+            "calls":calls,"distinctEndpoints":endpoints.len(),
+            "invalidRecords":invalid,
+            "sourceBoundToSession":session_id,
+        })
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn
@@ -1170,6 +1225,48 @@ mod tests {
         assert!(released >= 2, "released {released}");
         assert!(store.active_lease("session:s").is_none());
         assert!(store.acquire_lease("session:s", "owner-c", 60_000).is_some());
+    }
+
+    #[test]
+    fn model_attribution_reads_entire_session_not_last_five_hundred_audits() {
+        let store=Store::open(std::path::Path::new(":memory:")).unwrap();
+        // The first, conflicting call disappears from recent_audit(800),
+        // whose implementation intentionally clamps to 500 globally.
+        store.audit("model.usage",json!({"sessionId":"worker-1",
+            "providerId":"foreign","model":"different","totalTokens":1}));
+        for i in 0..620 {
+            store.audit("model.usage",json!({"sessionId":"worker-1",
+                "providerId":"intended","model":"stable","totalTokens":2}));
+            if i==5 {
+                store.audit("model.usage",json!({"sessionId":"other",
+                    "providerId":"foreign","model":"unrelated","totalTokens":3}));
+            }
+        }
+        let report=store.session_model_attribution("worker-1");
+        assert_eq!(report["calls"],621);
+        assert_eq!(report["distinctEndpoints"],2);
+        assert_eq!(report["verifiedHomogeneous"],false);
+        assert_eq!(report["status"],"mixed_model_calls");
+        assert_eq!(store.recent_audit(800).len(),500);
+        assert_eq!(store.session_model_attribution("other")["verifiedHomogeneous"],true);
+        assert_eq!(store.session_model_attribution("other")["providerId"],"foreign");
+    }
+    #[test]
+    fn model_attribution_requires_one_nonempty_endpoint_and_real_calls(){
+        let store=Store::open(std::path::Path::new(":memory:")).unwrap();
+        assert_eq!(store.session_model_attribution("empty")["verifiedHomogeneous"],false);
+        store.audit("model.usage",json!({"sessionId":"s",
+            "providerId":"p","model":"m","totalTokens":10}));
+        store.audit("model.usage",json!({"sessionId":"s",
+            "providerId":"p","model":"m","totalTokens":20}));
+        let valid=store.session_model_attribution("s");
+        assert_eq!(valid["calls"],2);
+        assert_eq!(valid["verifiedHomogeneous"],true);
+        assert_eq!(valid["providerId"],"p");
+        assert_eq!(valid["model"],"m");
+        store.audit("model.usage",json!({"sessionId":"s",
+            "providerId":"","model":"m","totalTokens":3}));
+        assert_eq!(store.session_model_attribution("s")["verifiedHomogeneous"],false);
     }
 
     #[test]
