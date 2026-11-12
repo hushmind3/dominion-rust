@@ -39,9 +39,13 @@ fn independent_adoption(g:&Value)->bool{
                         sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 fn role_touched(g:&Value,role:&str)->bool{
+    // Failed turns can teach execution feasibility without creating a
+    // misleading claim of a model-authored, adopted improvement.
     model_design_roles(g).iter().any(|name|name==role)
-        || g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
-            && g["metaPolicy"]["target"]["role"]==role
+        || ((g["metaPolicyExecuted"]==true
+            && g["metaPolicy"]["source"]=="compiled_editable_meta_controller_v1"
+            || g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary")
+            && g["metaPolicy"]["target"]["role"]==role)
 }
 fn failure_kind(g:&Value)->&'static str{
     if g["accepted"]==true{return "adopted";}
@@ -64,7 +68,8 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
     let Some(child_commit)=generation["acceptedCommit"].as_str() else{return 0};
     history.iter().filter(|child|
         child["generatorCommit"]==child_commit
-            && child["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+            && (child["metaPolicyExecuted"]==true
+                || child["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary")
             && independent_adoption(child)
     ).count()
 }
@@ -113,7 +118,7 @@ pub(crate) fn synthesize(
         let captured=relevant.iter().filter(|g|g["candidateId"].is_string()).count();
         let meta_gains=assessed.iter().filter(|g|
             g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0).count();
-        let probability=(adopted as f64+1.0)/(measured as f64+2.0);
+        let probability=((adopted as f64+1.0)/(measured as f64+2.0)).clamp(0.0,1.0);
         let epistemic=(probability*(1.0-probability)/(measured as f64+3.0)).sqrt();
         let outcomes=json!({
             "candidateCaptured":(captured as f64+1.0)/(attempts as f64+2.0),
@@ -154,7 +159,27 @@ pub(crate) fn synthesize(
     ranked.sort_by(|(left,a),(right,b)|
         b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
             .then_with(||left["role"].as_str().cmp(&right["role"].as_str())));
-    let winner=ranked.first().map(|row|row.0.clone()).unwrap_or(Value::Null);
+    let mut winner=ranked.first().map(|row|row.0.clone()).unwrap_or(Value::Null);
+    // Repeated forecast misses can trigger improvement of the forecast rule
+    // itself, not just another patch to the task agent. Bound this choice so
+    // it cannot become an endless metacognitive self-edit loop.
+    let recent_errors=history.iter().rev().filter_map(|g|
+        g["metaLearning"]["proposalBrierError"].as_f64()
+            .filter(|p|p.is_finite()&&(0.0..=1.0).contains(p)))
+        .take(6).collect::<Vec<_>>();
+    let meta_recent=history.iter().rev().take(3).filter(|g|
+        g["focusFiles"].as_array().is_some_and(|files|
+            files.iter().any(|file|
+                file=="src/engine/rsi_meta_controller.rs"))).count();
+    let forecast_drift=recent_errors.len()>=3
+        && recent_errors.iter().sum::<f64>()/recent_errors.len() as f64>0.30;
+    let repair_predictor=forecast_drift && meta_recent<2;
+    if repair_predictor{
+        if let Some(repair)=ranked.iter().find(|(row,_)|
+            row["target"]["path"]=="src/engine/rsi_meta_controller.rs") {
+            winner=repair.0.clone();
+        }
+    }
     let target=winner["target"].clone();
     let reference=history.iter().rev().filter(|g|independent_adoption(g))
         .take(2).map(|g|json!({
@@ -179,7 +204,10 @@ pub(crate) fn synthesize(
             "error":g["error"].as_str().unwrap_or("")
                 .chars().take(500).collect::<String>()
         })).collect::<Vec<_>>();
-    let mode=if counterexamples.iter().any(|row|
+    let mode=if repair_predictor
+        && target["path"]=="src/engine/rsi_meta_controller.rs"{
+            "repair_own_prediction_mechanism"
+        }else if counterexamples.iter().any(|row|
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
         else{"open_ended_mechanism_discovery"};
@@ -223,6 +251,10 @@ pub(crate) fn synthesize(
         "alternatives":alternatives,
         "controlPolicy":control,
         "taskOutcomeForecast":winner["outcomeForecast"],
+        "forecastDrift":forecast_drift,
+        "metaRepairChosen":repair_predictor
+            && target["path"]=="src/engine/rsi_meta_controller.rs",
+        "recentPredictionErrors":recent_errors,
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
@@ -382,7 +414,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Predicted downstream outcomes={} and proposed executable control policy={}.\n\
-        Before editing call rsi_system_plan with expectedOutcomes probabilities (candidateCaptured, adoption, metaImprovement, regression), then let independent assessment calibrate this proposal.\n\
+        If mode=repair_own_prediction_mechanism, redesign the editable prediction/search rule ITSELF using observed prediction errors, not the benchmark scorer. Before editing call rsi_system_plan with expectedOutcomes probabilities (candidateCaptured, adoption, metaImprovement, regression), then let independent assessment calibrate this proposal.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
