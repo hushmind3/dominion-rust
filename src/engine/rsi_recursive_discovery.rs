@@ -156,6 +156,70 @@ fn unfinished(history:&[Value],frontier:&[Value],topology:&Value)->Option<Value>
     None
 }
 
+/// This is a lineage audit, not an equation claiming causality or infinite
+/// recursion. A cycle is recognized only when FOUR independent adopted
+/// source revisions occur in the correct rebuilt-child ancestry:
+/// invention -> module growth -> origin improvement -> method rewrite.
+/// Unrelated generations may occur BETWEEN accepted stages.
+pub(crate) fn completed_cycles(history:&[Value])->Value {
+    let mut cycles=Vec::new();
+    let mut origins=BTreeSet::<String>::new();
+    for birth in history.iter().filter(|g|adopted(g)){
+        for module in birth["systemDesign"]["moduleIntroductions"]
+            .as_array().into_iter().flatten(){
+            let (Some(role),Some(path),Some(origin))=(
+                module["role"].as_str(),
+                module["newFiles"].as_array().and_then(|v|v.first())
+                    .and_then(Value::as_str),
+                module["integrationFiles"].as_array().and_then(|v|v.first())
+                    .and_then(Value::as_str))else{continue};
+            if !birth["acceptedSourceHashes"][path].is_string()
+                || !birth["acceptedSourceHashes"][origin].is_string(){continue;}
+            let Some(head)=birth["acceptedCommit"].as_str()else{continue};
+            if !origins.insert(head.to_string()){continue;}
+            let Some(grown)=adopted_step(history,head,role,path,
+                "develop_invented_capability")else{continue};
+            let Some(next)=grown["acceptedCommit"].as_str()else{continue};
+            let Some(back)=adopted_step(history,next,
+                "improvement_methods",origin,"return_to_origin")
+                else{continue};
+            let Some(next)=back["acceptedCommit"].as_str()else{continue};
+            let method=adopted_step(history,next,"improvement_methods",
+                "src/engine/rsi_recursive_discovery.rs",
+                "rewrite_discovery_method")
+                .or_else(||adopted_step(history,next,"improvement_methods",
+                    "src/engine/rsi_causal_curriculum.rs",
+                    "rewrite_discovery_method"))
+                .or_else(||adopted_step(history,next,"improvement_methods",
+                    "src/engine/rsi_meta_controller.rs",
+                    "rewrite_discovery_method"));
+            let Some(method)=method else{continue};
+            cycles.push(json!({
+                "introducedRole":role,
+                "introducedSource":path,
+                "originSource":origin,
+                "inventedSourceCommit":birth["acceptedCommit"],
+                "developedSourceCommit":grown["acceptedCommit"],
+                "returnedSourceCommit":back["acceptedCommit"],
+                "rewrittenImproverCommit":method["acceptedCommit"],
+                "adoptionCount":4,
+                "newCompiledPolicyInherited":true,
+                "endToEndGainProven":false,
+                "unboundedSelfImprovementProven":false
+            }));
+        }
+    }
+    let mut out=json!({
+        "source":"four_independently_adopted_recursive_discovery_steps_v1",
+        "completedCycles":cycles.len(),
+        "cycles":cycles.into_iter().take(16).collect::<Vec<_>>(),
+        "allStepsMustBeAcceptedInRealCommitChain":true,
+        "qualityOrCausalityProven":false
+    });
+    out["revision"]=json!(hash(&out));
+    out
+}
+
 /// The currently COMPILED descendant owns source focus and whether to invent
 /// a new topology or continue a verified earlier invention. No resident
 /// predecessor can recompute this ranking with an obsolete meta-algorithm.
