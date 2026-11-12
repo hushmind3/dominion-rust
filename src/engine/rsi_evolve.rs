@@ -331,6 +331,12 @@ fn edit_method_reward(generation:&Value)->f64 {
     if generation["candidateOrigin"]=="native_inductive_source_mutation" {
         return 0.0;
     }
+    if generation["candidateOrigin"]=="model_driven_detached_worktree"
+        && (generation["tokenUsage"]["calls"].as_u64().unwrap_or(0)==0
+            || generation["editEvidence"]["verifiedWrites"]
+                .as_u64().unwrap_or(0)==0) {
+        return 0.0;
+    }
     if !executed_policy_rule(generation) {return 0.0;}
     if generation["accepted"]==true
         && generation["evidenceVerified"]==true
@@ -3920,6 +3926,25 @@ async fn run_loop(
             &context.state,&[generation.clone()]);
         generation["editMethodReward"]=json!(verified_outcomes.first()
             .map(edit_method_reward).unwrap_or(0.0));
+        let replayed_adoption=verified_outcomes.first()
+            .is_some_and(|row|row["evidenceVerified"]==true);
+        let proven_model_edit=crate::engine::rsi::model_driven_generation_provenance(
+            &generation);
+        generation["modelDrivenIndependentProof"]=json!(
+            proven_model_edit && replayed_adoption);
+        generation["nativeIndependentProof"]=json!(
+            generation["candidateOrigin"]=="native_inductive_source_mutation"
+                && replayed_adoption);
+        generation["modelCallsObserved"]=json!(
+            generation["tokenUsage"]["calls"].as_u64().unwrap_or(0));
+        generation["proofCategory"]=json!(if proven_model_edit && replayed_adoption {
+            "independently_adopted_model_invoked_source_edit"
+        }else if generation["candidateOrigin"]=="native_inductive_source_mutation"
+            && replayed_adoption {
+            "independently_adopted_native_source_mutation_no_model_claim"
+        }else{
+            "no_independently_proven_model_driven_improvement"
+        });
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
@@ -4057,6 +4082,9 @@ async fn run_loop(
         let bounded_proof=max_streak >= 3
             && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record);
         record["capabilityDemonstrated"]=json!(bounded_proof);
+        record["modelDrivenCapabilityDemonstrated"]=json!(
+            crate::engine::rsi::campaign_model_driven_capability_proven(
+                &context.state,&evidence_record));
         record["systemicHandoffProven"]=json!(bounded_proof
             && crate::engine::rsi_system::verified_handoff(
                 evidence_record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
