@@ -192,6 +192,45 @@ fn measured_interaction_edges(history:&[Value])
     edges
 }
 
+/// A persistent, inspectable source-role -> measured-role interaction map.
+/// Every next compiled binary can rewrite both the edge induction algorithm
+/// and its use in choosing the next architecture. The immutable frozen
+/// evaluator remains outside this self-model.
+fn role_influence_model(history:&[Value])->Value {
+    let edges=measured_interaction_edges(history);
+    let mut rows=edges.into_iter().map(|((source,target),(gains,losses,joint_gains,joint_losses))|
+        json!({"sourceRole":source,"targetRole":target,
+            "isolatedPairedGains":gains,"isolatedPairedRegressions":losses,
+            "jointPairedGains":joint_gains,"jointPairedRegressions":joint_losses,
+            "directionalObservationScore":if gains+losses>0 {
+                (gains as f64-losses as f64)/(gains+losses) as f64
+            }else{0.0},
+            "attribution":if gains+losses>0 {
+                "single_source_role_observation_not_ablation_proof"
+            }else{"joint_redesign_confounding"},
+            "causalityProven":false})
+    ).collect::<Vec<_>>();
+    rows.sort_by(|a,b|{
+        let informative=|r:&Value|r["isolatedPairedGains"].as_u64().unwrap_or(0)
+            +r["isolatedPairedRegressions"].as_u64().unwrap_or(0);
+        informative(b).cmp(&informative(a))
+            .then_with(||a["sourceRole"].as_str().cmp(&b["sourceRole"].as_str()))
+            .then_with(||a["targetRole"].as_str().cmp(&b["targetRole"].as_str()))
+    });
+    rows.truncate(96);
+    let mut model=json!({
+        "source":"descendant_editable_interaction_dynamics_v1",
+        "edges":rows,
+        "counterfactualStatus":"untested",
+        "rewardOrigin":"independently_frozen_paired_holdouts",
+        "nextDescendantCanRedesignInfluenceLearning":true,
+        "causalLoopProven":false
+    });
+    model["sha256"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&model).unwrap_or_default())));
+    model
+}
+
 /// Construct a *two-way* source-edit experiment from independently adopted
 /// parent -> rebuilt-child role transitions. A joint edit is not automatically
 /// a causal gain: both directions remain hypotheses until separately tested.
@@ -433,6 +472,7 @@ pub(crate) fn synthesize(
     }
     let target=winner["target"].clone();
     let reciprocal=reciprocal_evolution_contract(history,&target,frontier);
+    let interaction_model=role_influence_model(history);
     let reference=history.iter().rev().filter(|g|independent_adoption(g))
         .take(2).map(|g|json!({
             "generationJobId":g["jobId"],"acceptedCommit":g["acceptedCommit"],
@@ -463,7 +503,7 @@ pub(crate) fn synthesize(
     let alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len(),reciprocal,reverse_step]);
+        inherited_domain,history.len(),reciprocal,reverse_step,interaction_model]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -471,6 +511,7 @@ pub(crate) fn synthesize(
         "revision":revision,"historyCount":history.len(),
         "mode":mode,"target":target,"selectionEvidence":winner,
         "reciprocalExperiment":reciprocal,
+        "interactionDynamics":interaction_model,
         "reciprocalContinuation":reverse_step.as_ref().map(|(target,from)|
             json!({"source":"verified_descendant_reverse_redesign_v1",
                 "nextRole":target["role"],"priorRole":from,
@@ -791,6 +832,24 @@ pub(crate) fn instruction(policy:&Value)->String {
             pair["measuredForwardRegressions"],pair["measuredReverseRegressions"]
         ));
     }
+    let influence=policy["interactionDynamics"]["edges"].as_array().into_iter()
+        .flatten().take(8).map(|edge|format!(
+            "{} -> {}: isolated paired gains={}, regressions={}, joint-only gains={}",
+            edge["sourceRole"],edge["targetRole"],
+            edge["isolatedPairedGains"],edge["isolatedPairedRegressions"],
+            edge["jointPairedGains"]
+        )).collect::<Vec<_>>().join("\n");
+    if !influence.is_empty(){
+        prompt.push_str(&format!(
+            "\n[EVOLVABLE CROSS-SYSTEM INFLUENCE MODEL]\n\
+            Based on actual frozen holdout comparisons, the source-role to \
+            performance-domain relationships are:\n{}\n\
+            Treat these as hypotheses, not isolated causal interventions. \
+            You may invent a new graph learner, new interaction roles and \
+            a better method to choose and execute future multi-role changes.\n",
+            influence
+        ));
+    }
     if policy["reciprocalContinuation"]["source"]==
         "verified_descendant_reverse_redesign_v1" {
         prompt.push_str(&format!(
@@ -996,6 +1055,20 @@ mod tests{
         let mut invalid=ancestor;
         invalid["acceptedSourceHashes"]["src/engine/learning.rs"]=Value::Null;
         assert!(adopted_reciprocal_reversal(&[invalid],&frontier).is_none());
+    }
+    #[test]
+    fn cross_system_influence_model_is_revision_bound_and_unproven(){
+        let empty=role_influence_model(&[]);
+        assert_eq!(empty["edges"],json!([]));
+        assert_eq!(empty["causalLoopProven"],false);
+        assert_eq!(empty["sha256"].as_str().unwrap().len(),64);
+        let plan=synthesize(&[],&[json!({"role":"harness",
+            "domain":"context","path":"src/engine/jobs.rs",
+            "sourceSha256":"a".repeat(64),"sourceBytes":800})],
+            &["context"],None);
+        assert_eq!(plan["interactionDynamics"]["sha256"],empty["sha256"]);
+        assert_eq!(plan["interactionDynamics"]["rewardOrigin"],
+            "independently_frozen_paired_holdouts");
     }
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
