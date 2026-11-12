@@ -317,6 +317,8 @@ mod tests {
         json!({"id":id,"jobId":format!("job-{id}"),"candidateId":format!("cand-{id}"),
             "generatorCommit":generator,"acceptedCommit":head,
             "accepted":true,"pairedRevalidated":true,
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":generator},
             "evaluation":{"metrics":{"eligible":true,"improvedHoldouts":1}},
             "changedSourcePaths":["src/engine/memory.rs"],
             "acceptedSourceHashes":{"src/engine/memory.rs":"c".repeat(64)},
@@ -327,7 +329,7 @@ mod tests {
     }
     #[test]
     fn accepted_model_writes_open_graph_that_compiled_descendant_inherits(){
-        let p=authored();let f=frontier();let zero="0".repeat(40),one="1".repeat(40);
+        let p=authored();let f=frontier();let zero="0".repeat(40);let one="1".repeat(40);
         let first=parent("first",&one,&zero,p.clone(),Value::Null);
         let plan=synthesize(&[first.clone()],&f,
             &["memory","improver"],&one);
@@ -338,7 +340,7 @@ mod tests {
     #[test]
     fn invented_roles_and_conditional_graphs_are_not_a_fixed_stage_list(){
         let p=authored();let f=frontier();
-        let zero="0".repeat(40),one="1".repeat(40),two="2".repeat(40);
+        let zero="0".repeat(40);let one="1".repeat(40);let two="2".repeat(40);
         let first=parent("first",&one,&zero,p,Value::Null);
         let plan=synthesize(&[first.clone()],&f,
             &["memory","improver"],&one);
@@ -348,11 +350,11 @@ mod tests {
             "metaRevision":"m"});
         child["metaPolicy"]=json!({"selectionMode":"authored_open_improvement_program",
             "openImprovementRevision":plan["revision"],"revision":"m"});
-        let next=synthesize(&[first,child.clone()],&f,
-            &["memory","improver"],&two);
+        let history=vec![first,child.clone()];
+        let next=synthesize(&history,&f,&["memory","improver"],&two);
         assert_eq!(next["nodeId"],"new_algorithm");
-        assert!(valid(&next,&[child.clone()],&f,&two)==false,
-            "lineage history count must match exactly");
+        assert!(valid(&next,&history,&f,&two),
+            "a new role target must execute if its current source is indexed");
     }
     #[test]
     fn no_independent_adoption_never_mints_a_next_generation_program(){
