@@ -1180,21 +1180,22 @@ mod tests {
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
-        assert!(!rsi_work_branch("dominion-sub3"));
         assert!(rsi_work_branch("dominion-sub4"));
         assert!(rsi_work_branch("dominion-sub"));
-        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub3")));
         assert!(owns_application_branch("dominion-sub4",Some("dominion-sub4")));
-        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub4")));
-        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub4")));
-        assert!(!owns_application_branch("dominion-sub4",None));
-        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub2")));
-        assert!(!owns_application_branch("dominion-sub4",None));
-        assert!(!owns_application_branch("dominion-sub4",Some("")));
+        assert!(owns_application_branch("dominion-sub",Some("dominion-sub")));
         assert!(owns_application_branch("dominion-sub",None));
+        assert!(!owns_application_branch("dominion-sub4",None));
+        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub")));
+        assert!(!owns_application_branch("dominion-sub",Some("dominion-sub4")));
+        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub3")));
         assert!(!owns_application_branch("main",Some("main")));
-        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4-other","dominion-sub4-other"] {
-            assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
+        for forbidden in ["main","dominion-champion","dominion-sub1",
+            "dominion-sub2","dominion-sub3","dominion-sub3-other",
+            "dominion-sub4-other"]{
+            assert!(!rsi_work_branch(forbidden),
+                "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
     }
 
