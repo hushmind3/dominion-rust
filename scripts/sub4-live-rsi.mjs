@@ -155,6 +155,8 @@ if(mode==='probe'){
     const evolution=last.evolution||last.result?.evolution||{};
     const history=Array.isArray(evolution.history)?evolution.history:[];
     receipt.generations=history.map(summarize);
+    receipt.adoptedHeadCommit=typeof evolution.headCommit==='string'
+      ?evolution.headCommit:null;
     const acceptedSourceGenerations=history.filter(g=>g.accepted===true &&
       typeof g.acceptedCommit==='string' && g.acceptedCommit.length===40 &&
       typeof g.generatorCommit==='string' && g.generatorCommit.length===40 &&
