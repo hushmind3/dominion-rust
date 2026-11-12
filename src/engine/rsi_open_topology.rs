@@ -169,7 +169,9 @@ pub(crate) fn observed(history:&[Value],root:&Path)->Value{
 pub(crate) fn exploration_bonus(history:&[Value],role:&str)->f64{
     let mut origins=Vec::new();
     for row in history{
-        if row["accepted"]==true
+        if row["accepted"]==true && row["pairedRevalidated"]==true
+            && row["evaluation"]["metrics"]["eligible"]==true
+            && row["systemDesign"]["source"]=="model_authored_system_design"
             && row["systemDesign"]["moduleIntroductions"].as_array()
                 .is_some_and(|modules|modules.iter().any(|module|module["role"]==role)){
             origins.push(row["acceptedCommit"].clone());

@@ -175,7 +175,10 @@ pub(crate) fn synthesize(
             .filter(|edge|edge["to"]==role)
             .filter_map(|edge|edge["priority"].as_i64()).max().unwrap_or(0);
         let transfer_bonus=0.20*((incoming as f64)/100.0).clamp(-0.5,1.5);
-        let score=transfer_bonus+0.55*probability+0.48*epistemic*calibration
+        let causal=crate::engine::rsi_causal_curriculum::role_interaction_feedback(
+            history,role);
+        let score=causal["selectionBonus"].as_f64().unwrap_or(0.0)
+            +transfer_bonus+0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
             -0.12*penalty-0.07*stall-0.035*cost
@@ -187,6 +190,7 @@ pub(crate) fn synthesize(
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
             "score":score,"mutualTransferPriority":incoming,
+            "factorialInteractionEvidence":causal,
             "openTopologyBonus":crate::engine::rsi_open_topology::exploration_bonus(history,role),
             "predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,"attempts":attempts,

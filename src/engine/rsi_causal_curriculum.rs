@@ -128,6 +128,42 @@ fn observations(history:&[Value],a:&str,b:&str)->Value{
     result
 }
 
+/// Learn which role's subsequent redesign became more productive in
+/// source-matched factorial observations. These are aggregate signs of
+/// experimental interaction, never new independent adoption labels.
+pub(crate) fn role_interaction_feedback(history:&[Value],role:&str)->Value{
+    let mut pairs=BTreeSet::<(String,String)>::new();
+    for g in history.iter().filter(|g|g["factorialExperimentExecuted"]==true){
+        let item=&g["factorialCurriculum"]["selected"];
+        if let (Some(a),Some(b))=(item["fromRole"].as_str(),
+            item["toRole"].as_str()){
+            if a!=b && (role==a || role==b){
+                pairs.insert((a.to_string(),b.to_string()));
+            }
+        }
+    }
+    let mut weighted=0.0;
+    let mut total=0usize;
+    for (a,b) in pairs.into_iter().take(16){
+        let effect=observations(history,&a,&b);
+        if let (Some(n),Some(delta))=(
+            effect["matchedFrozenCases"].as_u64(),
+            effect["meanInteractionContrast"].as_f64()){
+            if n>0 && delta.is_finite(){
+                let strength=(n.min(16) as f64).sqrt();
+                weighted+=delta.clamp(-1.0,1.0)*strength;
+                total+=strength as usize+1;
+            }
+        }
+    }
+    let score=if total>0 {
+        (0.15*weighted/(total as f64)).clamp(-0.15,0.15)
+    }else{0.0};
+    json!({"role":role,"selectionBonus":score,
+        "matchedEvidenceObserved":total>0,
+        "causalityProven":false,"improvementCredit":false})
+}
+
 /// Executable experimental choice is inside the successor's own source.
 /// No fixed parent supplies the next variant, and no variants are assigned
 /// a quality label merely for generating a candidate.
@@ -152,10 +188,25 @@ pub(crate) fn design(history:&[Value],curriculum:&Value,
                 observed["partnerOnly"].as_u64().unwrap_or(0),
                 observed["joint"].as_u64().unwrap_or(0)
             ];
-            // If matched data are impossible across generations, this still
-            // orders falsifiable variants without crediting absent evidence.
-            let next=if count[0]==0{Some(0)}else if count[1]==0{
-                Some(1)}else if count[2]==0{Some(2)}else{None};
+            // Failed editing generations count as experimental ATTEMPTS but
+            // never become measurements. Shift to a different variant after
+            // two failures rather than looping forever on the first role.
+            let mut attempts=[0u64;3];
+            for g in history.iter().rev().take(48){
+                let earlier=&g["factorialCurriculum"]["selected"];
+                if g["factorialExperimentExecuted"]!=true
+                    || earlier["fromRole"]!=a["role"]
+                    || earlier["toRole"]!=b["role"]{continue;}
+                match earlier["phase"].as_str(){
+                    Some("isolate_primary")=>attempts[0]+=1,
+                    Some("isolate_partner")=>attempts[1]+=1,
+                    Some("test_joint")=>attempts[2]+=1,
+                    _=>{}
+                }
+            }
+            let next=(0..3).find(|index|
+                count[*index]==0 && attempts[*index]<2);
+            
             let phase=match next{
                 Some(0)=>"isolate_primary",Some(1)=>"isolate_partner",
                 Some(2)=>"test_joint",_=>"analyze_interaction"
@@ -166,6 +217,8 @@ pub(crate) fn design(history:&[Value],curriculum:&Value,
                 "primary":a,"partner":b,"target":target,
                 "phase":phase,"variantIndex":next,
                 "observations":counts,
+                "variantAttempts":{"primaryOnly":attempts[0],
+                    "partnerOnly":attempts[1],"joint":attempts[2]},
                 "isolationRequired":next==Some(0)||next==Some(1),
                 "qualityProven":false,"causalityProven":false
             });
