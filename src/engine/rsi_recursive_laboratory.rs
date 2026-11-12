@@ -238,13 +238,46 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],
         ).count();
         // A failed experiment is not evidence of a successful invention;
         // several measured dead ends motivate an entirely new mechanism.
-        if blocked>=2 && ongoing.is_none(){
-            let proposal=invention_proposal(frontier,factorial,meta);
-            if proposal.is_object(){
-                phase="invent_new_intelligence".into();
-                focus=vec![proposal["from"].clone(),proposal["to"].clone()];
-                target=proposal["from"].clone();
-                birth=proposal;
+        let diagnosed=meta["interactionDynamics"]["edges"].as_array()
+            .into_iter().flatten().any(|row|
+                row["isolatedPairedRegressions"].as_u64().unwrap_or(0)>0);
+        let contrast=factorial["observations"]["contrasts"].as_array()
+            .into_iter().flatten().any(|row|
+                row["interactionContrast"].as_f64()
+                    .is_some_and(|value|value<0.0));
+        if (blocked>=2||diagnosed||contrast) && ongoing.is_none(){
+            // The experimentally learned method is allowed to change real
+            // intervention focus, not merely annotate a research prompt.
+            let selected=method["name"].as_str().unwrap_or("");
+            let learned=method["observedTrials"].as_u64().unwrap_or(0)>0
+                && method["independentAdoptions"].as_u64().unwrap_or(0)>0;
+            let repair=selected=="counterexample_repair" && learned && blocked>=2;
+            let rewrite=selected=="rewrite_discovery_method" && learned;
+            let failed_source=history.iter().rev().filter(|g|
+                g["candidateId"].is_string() && g["accepted"]!=true
+                    && g["pairedRevalidated"]==true)
+                .flat_map(|g|g["focusFiles"].as_array().into_iter().flatten())
+                .filter_map(Value::as_str)
+                .find_map(|path|frontier.iter().find(|row|
+                    row["path"]==path && valid_source(row)).cloned());
+            if rewrite {
+                if let Some(source)=method_source(frontier){
+                    phase="rewrite_stalled_scientific_method".into();
+                    target=source.clone();focus=vec![target.clone()];
+                }
+            } else if repair {
+                if let Some(source)=failed_source{
+                    phase="repair_measured_negative_experiment".into();
+                    target=source;focus=vec![target.clone()];
+                }
+            } else {
+                let proposal=invention_proposal(frontier,factorial,meta);
+                if proposal.is_object(){
+                    phase="invent_new_intelligence".into();
+                    focus=vec![proposal["from"].clone(),proposal["to"].clone()];
+                    target=proposal["from"].clone();
+                    birth=proposal;
+                }
             }
         }
     }
@@ -307,8 +340,10 @@ pub(crate) fn instruction(lab:&Value)->String {
             "This newly invented intelligence is independently source-adopted. Rewrite its compiled code to develop its own intelligence and verify the next generation.",
         "return_to_origin"=>
             "The invented role was developed by a rebuilt descendant. Rewrite the originating intelligence source to incorporate this new improvement method.",
-        "rewrite_scientific_method"=>
-            "The originating intelligence was independently re-improved. Now REWRITE THIS RUNNING scientific-method code and change future experimental invention, controls, ablations or hypothesis selection.",
+        "rewrite_scientific_method"|"rewrite_stalled_scientific_method"=>
+            "The originating intelligence was independently re-improved, or repeated scientific failures exposed a meta-method limitation. Now REWRITE THIS RUNNING scientific-method code and change future experimental invention, controls, ablations or hypothesis selection.",
+        "repair_measured_negative_experiment"=>
+            "Independent paired evaluation rejected earlier source interventions. Repair the exact observed source failure, replace the failed hypothesis or invent a better test procedure; do not replay the same patch.",
         "invent_new_intelligence"=>
             "Invent a genuinely NEW EXECUTABLE Rust intelligence subsystem and wire it into engine/mod.rs AND the living recursive laboratory. Use rsi_system_plan with components=[new role, old roles], componentFiles, newComponents containing improvesRole, sourcePaths, integrationPaths, and falsifiable interactionEdges. Create and call the real source in the same candidate; the evaluator judges adoption.",
         _=>
