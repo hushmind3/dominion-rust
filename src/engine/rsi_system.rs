@@ -1159,6 +1159,10 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
         // role may be introduced without pretending it replaces a core one.
         if chain>=3 && independently_planned>=2
             && witnessed_inherited_method
+            // Finite full-system credit additionally needs a witnessed
+            // improvement principle that makes its rebuilt descendant
+            // independently improve a DISTINCT intelligence subsystem.
+            && crate::engine::rsi_principle_lab::established_transfer(rows)
             && ["algorithms","harness","memory","learning","tools",
                 "models","improvement_methods"].iter().all(|role|covered.contains(*role)) {
             return true;
