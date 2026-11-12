@@ -268,7 +268,7 @@ pub(crate) fn generator_competition(
         }else if let Some((top,leader))=trusted.first(){
             let previous=trusted.iter().find(|(_,id)|id==&current)
                 .map(|x|x.0);
-            if leader!=&current && previous.is_some_and(|v|top-v>=0.12) {
+            if leader!=&current && previous.is_some_and(|v|*top-v>=0.12) {
                 chosen=leader.clone();
                 mode="independently_measured_preference";
             }else{
@@ -301,6 +301,55 @@ pub(crate) fn generator_competition(
         "claim":"model_scaffold_tournament_candidate_not_model_retraining"
     });
     plan["revision"]=json!(sha(&plan));plan
+}
+/// A configured local backend can remain in a registry after its process
+/// exits. It is NOT an available model. Validate a proposed challenger at
+/// the real inference endpoint before permitting a source generation.
+pub(crate) async fn live_generator_competition(
+    state:&crate::state::AppState,history:&[Value],
+    input:&Value,commit:&str,attempt:u64,allow_autonomous:bool
+)->Value{
+    let mut plan=generator_competition(
+        state,history,input,commit,attempt,allow_autonomous);
+    let provider_id=plan["selectedProviderId"].as_str().unwrap_or("");
+    let model=plan["selectedModel"].as_str().unwrap_or("");
+    if plan["selectedRouteEnabled"]!=true
+        || plan["selectedProviderId"]==input["providerId"]
+            &&plan["selectedModel"]==input["model"] {
+        return plan;
+    }
+    let Some(route)=state.store.get("provider",provider_id)else{return plan};
+    if !crate::engine::gateway::is_local_provider(&route){return plan;}
+    let Some(base)=route["baseUrl"].as_str()
+        .filter(|url|(url.starts_with("http://127.0.0.1:")
+            ||url.starts_with("http://localhost:"))
+            &&url.ends_with("/v1"))else{
+        plan["decision"]=json!("untrusted_local_endpoint_keep_incumbent");
+        plan["selectedProviderId"]=input["providerId"].clone();
+        plan["selectedModel"]=input["model"].clone();
+        let old=plan["revision"].take();
+        plan["revision"]=json!(sha(&plan));
+        let _=old;
+        return plan;
+    };
+    let reachable=match reqwest::Client::new()
+        .get(format!("{base}/models"))
+        .timeout(std::time::Duration::from_secs(2)).send().await {
+        Ok(reply) if reply.status().is_success()=>reply
+            .json::<Value>().await.ok()
+            .and_then(|j|j["data"].as_array().cloned())
+            .is_some_and(|rows|rows.iter().any(|row|row["id"]==model)),
+        _=>false
+    };
+    if !reachable{
+        plan["decision"]=json!("unavailable_local_challenger_keep_incumbent");
+        plan["selectedProviderId"]=input["providerId"].clone();
+        plan["selectedModel"]=input["model"].clone();
+        plan["revision"]=Value::Null;
+        if let Some(row)=plan.as_object_mut(){row.remove("revision");}
+        plan["revision"]=json!(sha(&plan));
+    }
+    plan
 }
 /// A worker can verify the actual model call receives exactly the decision
 /// the parent stored; it may then learn a better decision rule in source.
