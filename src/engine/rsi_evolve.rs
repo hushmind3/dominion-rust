@@ -4815,7 +4815,7 @@ async fn run_loop(
                 .cloned().collect::<Vec<_>>();
             let comparison=crate::engine::rsi_successor_productivity::compare(
                 &context.state,&observed,&profile,
-                generation_domain_for_productivity(&current));
+                current["rsiDomain"].as_str().unwrap_or(""));
             record["methodSuccessorProductivity"]=json!({
                 "source":comparison["source"],"status":comparison["status"],
                 "selectionEligible":comparison["selectionEligible"],
