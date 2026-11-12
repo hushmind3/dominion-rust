@@ -141,6 +141,21 @@ pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,J
     }
 }
 
+fn is_rsi_evaluation_episode(job:&Value)->bool {
+    job["rsiEvaluationEpisode"]==true || job["input"]["rsiMetaEpisode"]==true
+}
+
+#[cfg(test)]
+mod rsi_evaluation_classification_tests {
+    use super::*;
+    #[test]
+    fn evaluator_marker_is_not_part_of_the_agent_input() {
+        assert!(is_rsi_evaluation_episode(&json!({"rsiEvaluationEpisode":true,"input":{}})));
+        assert!(is_rsi_evaluation_episode(&json!({"input":{"rsiMetaEpisode":true}})));
+        assert!(!is_rsi_evaluation_episode(&json!({"input":{"rsiSystemEvolution":true}})));
+    }
+}
+
 fn campaign_view(state: &AppState, job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let mut record=state.store.get("rsi_campaign",id)
@@ -166,17 +181,17 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         && op["origin"]=="model" && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
         && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))).count();
-    let proposal_sessions=children.iter().filter(|j|j["input"]["rsiMetaEpisode"]!=true)
+    let proposal_sessions=children.iter().filter(|j|!is_rsi_evaluation_episode(j))
         .filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
     let system_writes=state.store.all("execution_operation").iter().filter(|op|
         op["sessionId"].as_str().is_some_and(|id|proposal_sessions.contains(id))
         && op["origin"]=="model" && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true).count();
     record["systemSourceWrites"]=json!(system_writes);
-    record["evaluationEpisodes"]=json!(children.iter().filter(|j|j["input"]["rsiMetaEpisode"]==true).count());
+    record["evaluationEpisodes"]=json!(children.iter().filter(|j|is_rsi_evaluation_episode(j)).count());
     let candidates=state.store.all("rsi_candidate").iter().filter(|c|
         c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
-            .and_then(|id|state.store.get("job",id)).is_some_and(|j|j["input"]["rsiMetaEpisode"]!=true)).count();
+            .and_then(|id|state.store.get("job",id)).is_some_and(|j|!is_rsi_evaluation_episode(j))).count();
     let mut reused=0usize;
     for session in &sessions {
         reused+=state.store.get("session",session).and_then(|s|s["rsiKnowledgeReuse"].as_array().cloned())
