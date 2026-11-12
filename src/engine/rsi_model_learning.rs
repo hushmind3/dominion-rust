@@ -5,7 +5,7 @@
 //! the SAME generator revision, SAME frozen profile and SAME capability
 //! domain can compare model choices. Such evidence updates the actual request
 //! router, while explicit user model selection and free/light policy remain.
-//! This is learned routing, NOT finetuning of foundation model weights.
+//! This is learned routing of model-backed whole-agent source redesigns.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
