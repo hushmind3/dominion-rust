@@ -79,6 +79,7 @@ jobs:
           cargo test --release --locked --bin dominion-rust rsi::tests -- --nocapture
           cargo test --release --locked --bin dominion-rust architecture_frontier_rejects_unverified_adoption_and_uses_real_index -- --nocapture
           cargo test --release --locked --bin dominion-rust compiled_descendant_plans_from_its_actual_whole_source_graph -- --nocapture
+          cargo test --release --locked --bin dominion-rust compiled_descendant_source_excerpt_is_real_indexed_rust_not_research_text -- --nocapture
 
       - name: Install actual local inference runtime
         run: |
