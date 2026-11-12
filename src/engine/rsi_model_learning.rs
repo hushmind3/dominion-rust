@@ -58,6 +58,7 @@ struct Stats {
     successor_trials:u64,
     successor_adoptions:u64,
     successor_cross_domain_wins:u64,
+    cross_model_scaffold_transfer_trials:u64,
     successor_holdout_gains:u64,
     successor_holdout_regressions:u64,
     successor_jobs:BTreeSet<String>,
@@ -111,6 +112,14 @@ pub(crate) fn learn(history:&[Value])->Value{
                             && next["systemBlueprintVerified"]==true){
                         let Some(child_id)=child["jobId"].as_str()else{continue};
                         if !item.successor_jobs.insert(child_id.to_string()){continue;}
+                        if identity(child)!=identity(g){
+                            // The parent agent's rewritten scaffold may have
+                            // helped a DIFFERENT model. That is cross-model
+                            // software transfer, not evidence that the
+                            // originating API's own model improved.
+                            item.cross_model_scaffold_transfer_trials+=1;
+                            continue;
+                        }
                         item.successor_trials+=1;
                         if child["accepted"]==true
                             && child["evaluation"]["metrics"]["eligible"]==true{
@@ -163,6 +172,7 @@ pub(crate) fn learn(history:&[Value])->Value{
             "verifiedCompiledSuccessorTrials":s.successor_trials,
             "verifiedCompiledSuccessorAdoptions":s.successor_adoptions,
             "crossCapabilitySuccessorAdoptions":s.successor_cross_domain_wins,
+            "differentModelScaffoldTransferTrials":s.cross_model_scaffold_transfer_trials,
             "successorHoldoutGains":s.successor_holdout_gains,
             "successorHoldoutRegressions":s.successor_holdout_regressions,
             "posteriorSuccessorImprovement":offspring_rate,
@@ -498,6 +508,21 @@ mod tests {
             unrelated_cmp,offspring]);
         let api=changed["models"].as_array().unwrap().iter()
             .find(|row|row["providerId"]=="api").unwrap();
+        assert_eq!(api["verifiedCompiledSuccessorTrials"],0);
+    }
+    #[test]
+    fn code_transfer_across_models_does_not_fake_improvement_of_api_weights(){
+        let base="a".repeat(40);
+        let parent=sample("parent",&base,"memory","api",true);
+        let competitor=sample("competitor",&base,"memory","local",false);
+        let mut offspring=sample("offline-child",&"c".repeat(40),
+            "tools","local",true);
+        offspring["generatorBinarySha256"]=json!("1".repeat(64));
+        offspring["systemBlueprintVerified"]=json!(true);
+        let model=learn(&[parent,competitor,offspring]);
+        let api=model["models"].as_array().unwrap().iter()
+            .find(|row|row["providerId"]=="api").unwrap();
+        assert_eq!(api["differentModelScaffoldTransferTrials"],1);
         assert_eq!(api["verifiedCompiledSuccessorTrials"],0);
     }
     #[test]
