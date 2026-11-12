@@ -66,7 +66,10 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
 }
 fn confidence_adjustment(history:&[Value])->f64{
     let errors=history.iter().filter_map(|row|
-        row["metaLearning"]["brierError"].as_f64()
+        (row["metaLearning"]["source"]=="source_bound_prequential_feedback_v1"
+            && row["metaLearning"]["nextPolicyCanTrainFromObservation"]==true
+            && row["pairedMeasured"]==true)
+            .then(||row["metaLearning"]["brierError"].as_f64()).flatten()
             .filter(|value|value.is_finite() && *value>=0.0 && *value<=1.0))
         .rev().take(12).collect::<Vec<_>>();
     if errors.is_empty(){return 1.0;}
@@ -158,8 +161,13 @@ pub(crate) fn synthesize(
             g["candidateId"].is_null() && g["accepted"]!=true).count();
         let productivity=relevant.iter()
             .map(|g|next_generation_productivity(history,g)).sum::<usize>();
-        let probability=(adopted as f64+1.0)/(attempts as f64+2.0);
-        let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
+        let raw_probability=(adopted as f64+1.0)/(attempts as f64+2.0);
+        let prequential=crate::engine::rsi_prequential::calibrate(
+            history,role,target["path"].as_str().unwrap_or(""),
+            target["sourceSha256"].as_str().unwrap_or(""),raw_probability);
+        let probability=prequential["probability"].as_f64().unwrap_or(raw_probability);
+        let epistemic=prequential["uncertainty"].as_f64()
+            .unwrap_or((probability*(1.0-probability)/(attempts as f64+3.0)).sqrt());
         let coverage=if target["verifiedRoleChanged"]==true{0.0}else{0.22};
         let inherited_bonus=if inherited_domain==target["domain"].as_str(){0.12}else{0.0};
         let size=target["sourceBytes"].as_u64().unwrap_or(0) as f64;
@@ -190,6 +198,8 @@ pub(crate) fn synthesize(
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
             "score":score,"predictedAdoptionProbability":probability,
+            "uncalibratedProbability":raw_probability,
+            "prequentialEvidence":prequential,
             "uncertainty":epistemic*calibration,"attempts":attempts,
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
@@ -198,6 +208,36 @@ pub(crate) fn synthesize(
             "recordedTransferPriority":transfer_prior,
             "newComponent":target["verifiedRoleChanged"]!=true
         }),score));
+    }
+    // Repeated source-bound Brier errors make the prediction algorithm
+    // itself a real executable redesign target, with cooldown.
+    let errors=history.iter().rev().filter_map(|g|{
+        let row=&g["metaLearning"];
+        (row["source"]=="source_bound_prequential_feedback_v1"
+            && row["nextPolicyCanTrainFromObservation"]==true
+            && g["pairedMeasured"]==true)
+            .then(||row["brierError"].as_f64()).flatten()
+            .filter(|value|value.is_finite()&&(0.0..=1.0).contains(value))
+    }).take(6).collect::<Vec<_>>();
+    let mean_error=(!errors.is_empty()).then(||
+        errors.iter().sum::<f64>()/errors.len() as f64);
+    let cooldown=history.iter().rev().take(4).any(|g|
+        g["pairedMeasured"]==true && g["focusFiles"].as_array()
+            .is_some_and(|files|files.iter().any(|path|
+                path=="src/engine/rsi_prequential.rs")));
+    let predictor_available=ranked.iter().any(|(row,_)|
+        row["target"]["path"]=="src/engine/rsi_prequential.rs"
+        && row["domain"]=="improver");
+    let repair=errors.len()>=4 && mean_error.is_some_and(|v|v>0.35)
+        && !cooldown && predictor_available;
+    if repair {
+        for (row,score) in &mut ranked {
+            if row["target"]["path"]=="src/engine/rsi_prequential.rs" {
+                *score+=2.0;
+                row["score"]=json!(*score);
+                row["predictionRuleRepairBonus"]=json!(2.0);
+            }
+        }
     }
     ranked.sort_by(|(left,a),(right,b)|
         b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
@@ -227,14 +267,23 @@ pub(crate) fn synthesize(
             "error":g["error"].as_str().unwrap_or("")
                 .chars().take(500).collect::<String>()
         })).collect::<Vec<_>>();
-    let mode=if counterexamples.iter().any(|row|
+    let mode=if repair && target["path"]=="src/engine/rsi_prequential.rs" {
+        "repair_own_source_bound_prediction_rule"
+    }else if counterexamples.iter().any(|row|
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
         else{"open_ended_mechanism_discovery"};
-    let alternatives=ranked.iter().take(6)
+    let alternatives=ranked.iter().take(32)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
+    let prediction_repair=json!({
+        "source":"replayed_prequential_error_feedback_v1",
+        "recentMeasuredPredictions":errors.len(),"meanBrierError":mean_error,
+        "cooldown":cooldown,"repairRuleSourceSelected":repair,
+        "targetSource":"src/engine/rsi_prequential.rs",
+        "requiresActualDescendantSourceEdit":repair,"improvementProven":false
+    });
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len(),graph]);
+        prediction_repair,inherited_domain,history.len(),graph]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -243,6 +292,7 @@ pub(crate) fn synthesize(
         "mode":mode,"target":target,"selectionEvidence":winner,
         "alternatives":alternatives,
         "crossComponentGraph":graph,
+        "predictionRuleRepair":prediction_repair,
         "recentRedesignedRoles":recent_sources.into_iter().collect::<Vec<_>>(),
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
@@ -500,31 +550,7 @@ pub(crate) fn instruction(policy:&Value)->String {
 /// New prediction errors are durable observations available to later compiled
 /// meta-controllers. No model statement can turn a prediction into evidence.
 pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
-    if policy["source"]!="compiled_editable_meta_controller_v1" {
-        return Value::Null;
-    }
-    let probability=policy["forecast"]["acceptanceProbability"]
-        .as_f64().filter(|p|p.is_finite()&&*p>=0.0&&*p<=1.0);
-    let assessed=generation["evaluation"]["verdict"].as_str().is_some()
-        && generation["evaluation"]["metrics"]["eligible"].is_boolean();
-    let observed=if assessed{Some(independent_adoption(generation))}else{None};
-    let brier=match(probability,observed){
-        (Some(p),Some(success))=>Some((p-if success{1.0}else{0.0}).powi(2)),
-        _=>None
-    };
-    json!({
-        "policyRevision":policy["revision"],
-        "targetRole":policy["target"]["role"],
-        "predictedProbability":probability,
-        "independentlyMeasured":observed.is_some(),
-        "actualModelAuthoredAdoption":observed,
-        "brierError":brier,
-        "failureKind":if independent_adoption(generation){"adopted"}
-            else{failure_kind(generation)},
-        "attemptedSourceChange":generation["candidateId"].is_string(),
-        "nextPolicyCanTrainFromObservation":observed.is_some(),
-        "qualityProven":observed==Some(true)
-    })
+    crate::engine::rsi_prequential::feedback(policy,generation)
 }
 
 #[cfg(test)]

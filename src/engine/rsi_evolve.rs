@@ -4578,6 +4578,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let mut history=state.store.all("rsi_generation").into_iter()
         .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
     history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    let history=crate::engine::rsi_system::revalidated_history(&state,&history);
     let source=input["rsiSourceDir"].as_str()
         .ok_or("후손 시스템 소스 위치가 없습니다.")?;
     let source_root=Path::new(source);
@@ -4969,6 +4970,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
+    let history=crate::engine::rsi_system::revalidated_history(&state,&history);
     if job["input"]["rsiMetaEpisode"]==true {
         bind_inherited_target(&mut job["input"],&Value::Null);
     }

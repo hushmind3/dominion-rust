@@ -17,7 +17,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/rsi_model_lineage.rs",
         "src/engine/rsi_negative_transfer.rs"]),
     ("experimental_design",&["src/engine/rsi_factorial.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_prequential.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -220,8 +220,10 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
             "verifiedRoleChanged":covered.contains(role),"qualityProven":false,
             "reason":if covered.contains(role){"extend_verified_source"}else{"unexplored_component"}}));
         for (method_path,method_sha,method_bytes) in sources.iter().copied() {
-            if method_path==path || !adopted_method_paths.contains(
-                &(role.to_owned(),method_path.to_owned())) {continue;}
+            let predictor=method_path=="src/engine/rsi_prequential.rs"
+                && role=="improvement_methods";
+            if method_path==path || !(predictor || adopted_method_paths.contains(
+                &(role.to_owned(),method_path.to_owned()))) {continue;}
             rows.push(json!({"role":role,"domain":role_domain(component),
                 "path":method_path,"sourceSha256":method_sha,
                 "sourceBytes":method_bytes,
@@ -229,7 +231,8 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
                 "usageSignalIds":related(method_path),
                 "usageSignalCount":related(method_path).len(),
                 "verifiedRoleChanged":true,"qualityProven":false,
-                "reason":"inherited_model_written_improvement_operator"}));
+                "reason":if predictor{"source_editable_prediction_method"}
+                    else{"inherited_model_written_improvement_operator"}}));
         }
     }
     rows.sort_by(|a,b|b["usageSignalCount"].as_u64().cmp(&a["usageSignalCount"].as_u64())
@@ -916,6 +919,59 @@ pub(crate) fn inherited_program(
         return Some(trial);
     }
     None
+}
+
+/// Reconstruct source-bound training labels from the original immutable
+/// paired record. Rejected edits can inform prediction, but model-written
+/// generation flags cannot create an outcome or repair their own evidence.
+pub(crate) fn revalidated_history(
+    state:&crate::state::AppState,history:&[Value]
+)->Vec<Value>{
+    history.iter().map(|generation|{
+        let mut checked=generation.clone();
+        let candidate=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id));
+        let job_matches=generation["jobId"].as_str()
+            .and_then(|id|state.store.get("job",id)).is_some_and(|job|
+                job["kind"]=="rsi_generation"
+                && job["input"]["rsiControllerPlan"]==generation["controllerPlan"]
+                && job["input"]["rsiMetaPolicy"]==generation["metaPolicy"]
+                && job["input"]["rsiFocusFiles"]==generation["focusFiles"]
+                && job["input"]["rsiGeneratorCommit"]==generation["generatorCommit"]);
+        let measured=job_matches && candidate.as_ref().is_some_and(|candidate|
+            candidate["pairedComparisonComplete"]==true
+                && candidate["id"]==generation["candidateId"]
+                && candidate["baseCommit"]==generation["generatorCommit"]
+                && candidate["origin"]==generation["candidateOrigin"]
+                && candidate["evaluation"]["source"]==
+                    "server_invoked_local_paired_git_worktrees"
+                && candidate["evaluation"]["evidenceSha256"]
+                    ==generation["evaluation"]["evidenceSha256"]
+                && candidate["evaluation"]["metrics"]
+                    ==generation["evaluation"]["metrics"]
+                && candidate["evaluation"]["verdict"]
+                    ==generation["evaluation"]["verdict"]
+                && crate::engine::rsi::replayed_pair_metrics(state,candidate)
+                    .is_some_and(|metrics|metrics==candidate["evaluation"]["metrics"]));
+        checked["pairedMeasured"]=json!(measured);
+        checked["changedSourcePaths"]=if measured {
+            candidate.as_ref().map(|candidate|candidate["paths"].clone())
+                .unwrap_or(Value::Null)
+        }else{Value::Null};
+        let adopted=measured && generation["accepted"]==true
+            && candidate.as_ref().is_some_and(|candidate|
+                candidate["status"]=="verified"
+                && candidate["evaluation"]["metrics"]["eligible"]==true
+                && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
+                && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
+                && candidate["experimentAdoption"]["productionDeployed"]==false);
+        checked["pairedRevalidated"]=json!(adopted);
+        if checked["metaPolicy"]["source"]=="compiled_editable_meta_controller_v1" {
+            checked["metaLearning"]=crate::engine::rsi_prequential::feedback(
+                &checked["metaPolicy"],&checked);
+        }
+        checked
+    }).collect()
 }
 
 /// Choose the next *model-authored* child development stage only from an
