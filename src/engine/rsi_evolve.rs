@@ -3020,7 +3020,8 @@ async fn run_loop(
                 || !plan["domain"].as_str().is_some_and(|domain|DOMAINS.contains(&domain))
                 || plan["systemBlueprint"]["source"]!="compiled_descendant_system_blueprint_v1"
                 || plan["systemBlueprint"]["generatorCommit"]!=head
-                || plan["systemBlueprint"]["architecture"].as_array().is_none_or(|v|v.len()!=8) {
+                || plan["systemBlueprint"]["architecture"].as_array()
+                    .is_none_or(|v|v.len()<8||v.len()>32) {
                 return Err("후손 계획의 소스·세대·색인·전체 시스템 계보 불일치".into());
             }
             crate::engine::rsi_system::validate_plan_evidence(

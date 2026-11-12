@@ -18,8 +18,7 @@ fn declared_design_roles(g:&Value)->Vec<String>{
         design["components"].as_array().cloned().unwrap_or_default()
     }else{vec![design["component"].clone()]};
     names.iter().filter_map(Value::as_str)
-        .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
-            "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
+        .filter(|name|crate::engine::rsi_open_topology::valid_role(name))
         .map(str::to_string).collect()
 }
 fn model_design_roles(g:&Value)->Vec<String>{
@@ -31,8 +30,7 @@ fn model_design_roles(g:&Value)->Vec<String>{
         design["components"].as_array().cloned().unwrap_or_default()
     }else{vec![design["component"].clone()]};
     names.iter().filter_map(Value::as_str)
-        .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
-            "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
+        .filter(|name|crate::engine::rsi_open_topology::valid_role(name))
         .filter(|role| {
             let files=design["componentFiles"][*role].as_array()
                 .filter(|files|!files.is_empty())
@@ -187,7 +185,7 @@ pub(crate) fn synthesize(
         else{"open_ended_mechanism_discovery"};
     // Keep all eight intelligence roles available to inherited source
     // programs; a six-item truncation can hide a legitimate later stage.
-    let alternatives=ranked.iter().take(16)
+    let alternatives=ranked.iter().take(32)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
         inherited_domain,history.len()]);

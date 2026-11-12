@@ -171,7 +171,9 @@ pub(crate) fn architecture_frontier(
     for component in blueprint["architecture"].as_array().into_iter().flatten(){
         let Some(role)=component["role"].as_str() else{continue};
         if role=="frontend" && !complete_core {continue;}
-        let Some(domain)=architecture_domain(role) else{continue};
+        let Some(domain)=component["domain"].as_str()
+            .filter(|domain|crate::engine::rsi_evolve::DOMAINS.contains(domain))
+            .or_else(||architecture_domain(role)) else{continue};
         let improved=verified_roles.contains(role);
         let mut sources=component["representativeSources"].as_array().into_iter().flatten()
             .filter_map(|item|{
@@ -323,6 +325,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         }
         components.push(json!({"role":role,"representativeSources":inventory}));
     }
+    components.extend(crate::engine::rsi_open_topology::source_components(root,history));
     let inherited=last_verified_system_design(history);
     let evidence=history.iter().rev().take(8).map(|generation|json!({
         "generatorCommit":generation["generatorCommit"],
@@ -489,6 +492,9 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         cross-module Rust changes with workspace_replace_range/function/write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
+        You may INVENT intelligence roles via newComponents with role, \
+        domain, purpose, sourcePaths. They become new editable descendant \
+        components only after independently adopted source-level improvements. \
         For a coupled redesign list interactionEdges defining fromRole, toRole, \
         fromPath, toPath, mechanism and observable NEXT-GENERATION effect. \
         For a coupled redesign list componentFiles mapping EVERY declared \
@@ -536,18 +542,54 @@ pub(crate) fn propose(
         || child["cancelRequested"]==true{
         return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
     }
+    let known=child["input"]["rsiSystemBlueprint"]["architecture"]
+        .as_array().into_iter().flatten()
+        .filter_map(|row|row["role"].as_str()).map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut named=known.clone();
+    let mut new_components=Vec::<Value>::new();
+    if let Some(rows)=body["newComponents"].as_array(){
+        if rows.len()>4 || body["component"]!="system" {
+            return Err("새 지능 구조는 전체 시스템 설계에서 최대 4개씩 작성합니다.".into());
+        }
+        for row in rows {
+            let role=row["role"].as_str()
+                .filter(|role|crate::engine::rsi_open_topology::valid_role(role))
+                .ok_or("새 지능 구성요소의 이름이 올바르지 않습니다.")?;
+            if !named.insert(role.to_string()){
+                return Err("지능 구성요소 이름이 중복됩니다.".into());
+            }
+            let domain=row["domain"].as_str()
+                .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+                .ok_or("새 지능 구성요소의 실행 분야가 없습니다.")?;
+            let purpose=row["purpose"].as_str()
+                .filter(|t|(25..=1200).contains(&t.chars().count()))
+                .ok_or("새 지능 모듈의 개선 기능과 목적이 필요합니다.")?;
+            let sources=row["sourcePaths"].as_array()
+                .filter(|v|!v.is_empty()&&v.len()<=8)
+                .ok_or("새 지능 구성요소에는 실제 소스 경로가 필요합니다.")?;
+            if !sources.iter().all(|item|item.as_str().is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && body["targetFiles"].as_array().is_some_and(|files|
+                    files.iter().any(|f|f==path)))){
+                return Err("새 구성요소의 소스는 반드시 실제 변경 대상이어야 합니다.".into());
+            }
+            new_components.push(json!({"role":role,"domain":domain,
+                "purpose":purpose,"sourcePaths":sources,"qualityProven":false}));
+        }
+    }
     let component=body["component"].as_str()
-        .filter(|name| *name=="system" || COMPONENTS.iter().any(|row|row.0==*name))
+        .filter(|name| *name=="system" || known.contains(*name))
         .ok_or("시스템 구성요소 지정 오류")?;
     let components=if component=="system" {
         let list=body["components"].as_array()
-            .filter(|rows| (2..=COMPONENTS.len()).contains(&rows.len()))
-            .ok_or("전체 시스템 설계에는 구체적인 구성요소 2~8개가 필요합니다.")?;
+            .filter(|rows| (2..=24).contains(&rows.len()))
+            .ok_or("전체 시스템 설계에는 구체적인 구성요소 2~24개가 필요합니다.")?;
         let mut seen=std::collections::BTreeSet::new();
         let mut chosen=Vec::new();
         for row in list {
             let name=row.as_str()
-                .filter(|value|COMPONENTS.iter().any(|item|item.0==*value))
+                .filter(|value|named.contains(*value))
                 .ok_or("알 수 없는 시스템 구성요소입니다.")?;
             if !seen.insert(name) {
                 return Err("중복된 시스템 구성요소입니다.".into());
@@ -685,7 +727,7 @@ pub(crate) fn propose(
         if stages.len()>8{return Err("후손 개선 프로그램은 최대 8단계입니다.".into());}
         for stage in stages {
             let role=stage["role"].as_str()
-                .filter(|role|COMPONENTS.iter().any(|row|row.0==*role))
+                .filter(|role|named.contains(*role))
                 .ok_or("후손 단계 지능 구성요소가 올바르지 않습니다.")?;
             let domain=stage["domain"].as_str()
                 .filter(|domain|crate::engine::rsi_evolve::DOMAINS.contains(domain))
@@ -719,13 +761,14 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,component_files,interaction_edges,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,new_components,component_files,interaction_edges,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
-        "components":components,"componentFiles":component_files,
+        "components":components,"newComponents":new_components,
+        "componentFiles":component_files,
         "interactionEdges":interaction_edges,
         "successorStages":successor_stages,
         "nextDomain":next,"hypothesis":hypothesis,

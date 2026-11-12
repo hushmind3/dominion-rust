@@ -60,11 +60,18 @@ pub fn definitions() -> Vec<Value> {
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
         tool("rsi_system_plan", "Propose a measured redesign of the running descendant; a proposal alone cannot pass independent evaluation.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","model_architecture","frontend","system"]}),
-            "components":json!({"type":"array","description":"Required for component=system: choose 2-8 distinct subsystems including optional model_architecture","items":{"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","model_architecture","frontend"]},"minItems":2,"maxItems":8}),
+            "component":json!({"type":"string","description":"Current descendant role or system when proposing newComponents, checked against actual compiled source architecture"}),
+            "components":json!({"type":"array","description":"Required for component=system: 2-24 existing and newly declared roles, each linked to edited source in componentFiles","items":{"type":"string"},"minItems":2,"maxItems":24}),
             "hypothesis":text("Causal limitation and falsifiable improvement prediction"),
             "design":text("Concrete architectural and code implementation changes"),
             "targetFiles":json!({"type":"array","description":"Current or new workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "newComponents":json!({"type":"array","maxItems":4,
+                "description":"Invent new source-implemented intelligence subsystems to be inherited only after independently paired source adoption.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string"},
+                    "purpose":{"type":"string"},
+                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}
+                },"required":["role","domain","purpose","sourcePaths"]}}),
             "componentFiles":json!({"type":"object","description":"REQUIRED when component=system: map each selected role to one or more paths from targetFiles that actually implement that role. All declared roles need source evidence.","additionalProperties":{"type":"array","minItems":1,"items":{"type":"string"}}}),
             "interactionEdges":json!({"type":"array","description":"Directed causal hypotheses for whole-system co-evolution: fromRole code makes toRole better at improving the system, with specific fromPath/toPath, mechanism and observable successor behavior.","maxItems":12,"items":{"type":"object","properties":{
                 "fromRole":{"type":"string"},"toRole":{"type":"string"},
