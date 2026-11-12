@@ -63,7 +63,8 @@ fn evidence(history:&[Value],left:&str,right:&str)->(Value,[usize;3]){
             if id.is_empty(){continue;}
             let gains=case["metricGains"].as_u64().unwrap_or(0) as f64;
             let losses=case["metricRegressions"].as_u64().unwrap_or(0) as f64;
-            let delta=(i32::from(after)-i32::from(before)) as f64
+            let delta=(if after {1.0}else{0.0})
+                -(if before {1.0}else{0.0})
                 +0.25*(gains-losses).clamp(-1.0,1.0);
             blocks.entry((base.into(),profile.into(),id.into(),before))
                 .or_insert_with(||[Vec::new(),Vec::new(),Vec::new()])[arm].push(delta);
