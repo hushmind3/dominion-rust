@@ -4672,6 +4672,7 @@ mod descendant_controller_contract_tests {
             "metaPolicy":meta,"successorStage":null,
             "architectureTarget":meta["target"],"architectureFrontier":frontier,
             "interactionGraph":influence,"coDesignPortfolio":co_design,
+            "mutualProgram":null,
             "improvementDirective":{"mode":"change_approach"},
             "editPolicy":{"revision":"descendant-method-r2"}
         });
@@ -4692,6 +4693,7 @@ mod descendant_controller_contract_tests {
             "rsiSuccessorStage":plan["successorStage"],
             "rsiInteractionGraph":plan["interactionGraph"],
             "rsiCoDesignPortfolio":plan["coDesignPortfolio"],
+            "rsiMutualProgram":plan["mutualProgram"],
             "rsiControllerPlan":plan
         });
         let validated=validated_descendant_controller(&input,&history,&commit)
