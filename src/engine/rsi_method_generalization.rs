@@ -365,6 +365,36 @@ pub(crate) fn adapt(mut algebra:Value,feedback:&Value)->Value{
     algebra["sha256"]=json!(digest(&algebra));
     algebra
 }
+/// Avoid starving task intelligence when an old meta-operator is available.
+/// Reward learned transfer, but permit independently observed capability
+/// failure to beat an operator with no independent downstream evidence.
+/// All domain names and target paths come from the live source frontier.
+pub(crate) fn prefer_capability_target(algebra:&Value,learning:&Value)->bool {
+    let gap=learning["capabilityGaps"].as_array()
+        .into_iter().flatten()
+        .find(|row|row["priority"].as_i64().unwrap_or(0)>0
+            && row["independentHoldoutRegressions"].as_u64().unwrap_or(0)>0);
+    let Some(gap)=gap else {return false};
+    if !learning["suggestedCapabilityTarget"].is_object(){return false;}
+    let selected=&algebra["selected"];
+    if !selected.is_object(){return true;}
+    // When the best learned rule targets the same deficient capability,
+    // let the executable improvement rule operate rather than bypass it.
+    if selected["target"]["role"]==gap["role"]{return false;}
+    let evidence=&selected["generalizationEvidence"];
+    let independent=evidence["independentReplayedTrials"]
+        .as_u64().unwrap_or(0);
+    let cross=evidence["crossCapabilityGains"].as_u64().unwrap_or(0);
+    let regressions=evidence["holdoutRegressions"].as_u64().unwrap_or(0);
+    let transfer=evidence["transferScore"].as_f64().unwrap_or(0.0);
+    // A cross-domain failure with independent evidence should not be
+    // permanently displaced by a zero-shot stage compiler.
+    (independent==0 && gap["independentHoldoutRegressions"]
+        .as_u64().unwrap_or(0)>=1)
+        || (cross==0 && gap["independentHoldoutRegressions"]
+            .as_u64().unwrap_or(0)>=2)
+        || (regressions>cross && transfer<=0.0)
+}
 pub(crate) fn instruction(learning:&Value)->String {
     let productive=learning["operatorLearning"].as_array()
         .into_iter().flatten()
@@ -482,6 +512,22 @@ mod tests {
         assert_eq!(evolved["selected"]["ruleId"],strong);
         assert_eq!(evolved["selected"]["target"]["path"],"src/engine/models.rs");
         assert_eq!(evolved["selected"]["qualityProven"],Value::Null);
+    }
+    #[test]
+    fn independently_measured_model_failure_beats_unmeasured_meta_rule(){
+        let algebra=json!({"selected":{"target":{"role":"scientific_method"},
+            "generalizationEvidence":{"independentReplayedTrials":0}}});
+        let learning=json!({"suggestedCapabilityTarget":{
+                "role":"models","path":"src/engine/models.rs"},
+            "capabilityGaps":[{"role":"models","priority":16,
+                "independentHoldoutRegressions":2,
+                "independentHoldoutGains":0}]});
+        assert!(prefer_capability_target(&algebra,&learning));
+        let strong=json!({"selected":{"target":{"role":"tools"},
+            "generalizationEvidence":{"independentReplayedTrials":7,
+                "crossCapabilityGains":4,"holdoutRegressions":0,
+                "transferScore":0.8}}});
+        assert!(!prefer_capability_target(&strong,&learning));
     }
     #[test]
     fn measured_regression_redirects_a_future_method_edit(){
