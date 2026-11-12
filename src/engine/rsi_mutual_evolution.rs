@@ -253,3 +253,87 @@ pub(crate) fn instruction(curriculum:&Value)->String {
         pair["toSourceSha256"],curriculum["phases"]
     )
 }
+
+
+/// If an independently adopted A->B source redesign was followed by a
+/// genuinely adopted B-generation source change, the next compiled child may
+/// rebind A to CURRENT source and run the third, returning improvement stage.
+/// This is derived from source receipts, not merely an announced loop.
+pub(crate) fn reciprocal_return(history:&[Value],frontier:&[Value])->Option<Value>{
+    let child=history.iter().rev().find(|g|accepted(g))?;
+    let parent=history.iter().rev().find(|g|accepted(g)
+        && g["acceptedCommit"]==child["generatorCommit"]
+        && g["jobId"]!=child["jobId"])?;
+    if child["metaPolicyExecuted"]!=true && child["compiledPlanExecuted"]["source"]
+        !="running_compiled_descendant_binary" {return None;}
+    for edge in parent["systemDesign"]["interactionEdges"]
+        .as_array().into_iter().flatten(){
+        let (Some(from),Some(to),Some(path),Some(to_path))=(
+            edge["fromRole"].as_str(),edge["toRole"].as_str(),
+            edge["fromPath"].as_str(),edge["toPath"].as_str())else{continue};
+        let planned=parent["systemDesign"]["successorStages"].as_array()
+            .is_some_and(|stages|stages.iter().any(|stage|
+                stage["role"]==to && stage["path"]==to_path));
+        if !planned || !roles_of(child).iter().any(|r|r==to)
+            || child["acceptedSourceHashes"][to_path].as_str()
+                .is_none_or(|h|h.len()!=64)
+            || parent["acceptedSourceHashes"][path].as_str()
+                .is_none_or(|h|h.len()!=64){continue;}
+        let Some(current)=frontier.iter().find(|row|
+            row["role"]==from && row["path"]==path)else{continue};
+        let objective=format!(
+            "Apply the independently adopted improvement to {} from {} to redesign the \
+             {} subsystem's future improvement mechanism; originating hypothesis: {}",
+            to,child["acceptedCommit"],from,edge["mechanism"].as_str()
+                .unwrap_or("cross-subsystem learning"));
+        return Some(json!({
+            "phase":"return_improvement_to_primary",
+            "role":from,"domain":current["domain"],"path":path,
+            "sourceSha256":current["sourceSha256"],
+            "objective":objective.chars().take(1200).collect::<String>(),
+            "sourceDesignId":child["systemDesign"]["id"],
+            "predecessorCommit":child["acceptedCommit"],
+            "interactionOriginCommit":parent["acceptedCommit"],
+            "interactionOriginalDesignId":parent["systemDesign"]["id"],
+            "interactionFromRole":from,"interactionToRole":to,
+            "learningPolicy":"avoid_failed","toolPolicy":"allow_new_modules",
+            "executionPolicy":"explore_then_edit",
+            "qualityProven":false,
+            "actualTransferGainProven":false
+        }));
+    }
+    None
+}
+
+/// The external runner validates the immutable ancestor/descendant relationship
+/// without imposing the old descendant's particular scheduling equation.
+pub(crate) fn valid_return_lineage(history:&[Value],stage:&Value)->bool{
+    if stage["phase"]!="return_improvement_to_primary" {return false;}
+    history.iter().any(|child|accepted(child)
+        && child["systemDesign"]["id"]==stage["sourceDesignId"]
+        && child["acceptedCommit"]==stage["predecessorCommit"]
+        && (child["metaPolicyExecuted"]==true
+            || child["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary")
+        && history.iter().any(|parent|accepted(parent)
+            && parent["acceptedCommit"]==child["generatorCommit"]
+            && parent["acceptedCommit"]==stage["interactionOriginCommit"]
+            && parent["systemDesign"]["id"]==stage["interactionOriginalDesignId"]
+            && parent["systemDesign"]["interactionEdges"].as_array()
+                .is_some_and(|edges|edges.iter().any(|edge|
+                    edge["fromRole"]==stage["role"]
+                    && edge["fromRole"]==stage["interactionFromRole"]
+                    && edge["toRole"]==stage["interactionToRole"]
+                    && edge["fromPath"]==stage["path"]
+                    && parent["acceptedSourceHashes"][edge["fromPath"]
+                        .as_str().unwrap_or("")].is_string()
+                    && child["acceptedSourceHashes"][edge["toPath"]
+                        .as_str().unwrap_or("")].is_string()
+                    && roles_of(child).iter().any(|role|
+                        Some(role.as_str())==edge["toRole"].as_str())
+                    && parent["systemDesign"]["successorStages"].as_array()
+                        .is_some_and(|stages|stages.iter().any(|s|
+                            s["role"]==edge["toRole"]
+                            && s["path"]==edge["toPath"]))
+                )))
+    )
+}
