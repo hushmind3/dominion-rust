@@ -835,7 +835,7 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,assignments,next,hypothesis,design,paths,new_components,successor_stages]).to_string().as_bytes()));
+        commit,component,components,assignments,next,hypothesis,design,paths,new_components,open_program,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
