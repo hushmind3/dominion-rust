@@ -202,6 +202,9 @@ fn independently_bound_comparison(
         ||job["input"]["rsiGeneratorCommit"]!=revision
         ||job["input"]["rsiModelEcologyPolicy"]!=g["modelEcologyPolicy"]
         ||job["rsiModelEcologyExecuted"]!=g["modelEcologyExecuted"]
+        // The original raw audit is independently replayed over the frozen
+        // rowid window; matching two editable summaries is not enough.
+        ||executed(state,&job)!=g["modelEcologyExecuted"]
         ||job["rsiCompiledPlanExecuted"]!=g["compiledPlanExecuted"]
         ||job["input"]["providerId"]!=g["modelEcologyExecuted"]["providerId"]
         ||job["input"]["model"]!=g["modelEcologyExecuted"]["model"]
@@ -618,27 +621,33 @@ mod tests{
         assert!(crate::engine::rsi::replayed_pair_metrics(
             &state,&candidate).is_some());
         let route=identity("provider-a","actor-model");
-        let policy=json!({"revision":"policy-executed","selected":route});
-        let executed=json!({
-            "source":"real_descendant_model_usage_v1",
-            "generationJobId":"real-child","generatorCommit":base,
+        let policy=json!({"revision":"policy-executed","active":true,
+            "selected":route});
+        state.store.put("session",&json!({
+            "id":"real-child-session","rsiRun":true,
+            "rsiGenerationJobId":"real-child"
+        })).unwrap();
+        let audit_start=state.store.audit_rowid_cursor().unwrap();
+        state.store.audit("model.usage",json!({
+            "sessionId":"real-child-session","purpose":"chat",
             "providerId":"provider-a","model":"actor-model",
-            "selectedBy":"policy-executed",
-            "sessionOwnedByGeneration":true,
-            "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,"mixedChatModelCalls":0,
-            "actuallyUsedInGeneration":true,"actualModelCalls":1
-        });
+            "totalTokens":17
+        }));
+        let audit_end=state.store.audit_rowid_cursor().unwrap();
         let compiled=json!({"source":"running_compiled_descendant_binary"});
         let input=json!({
             "rsiGeneratorCommit":base,"rsiModelEcologyPolicy":policy,
             "rsiFrozenCases":cases,"providerId":"provider-a",
             "model":"actor-model"
         });
-        let job=json!({"id":"real-child","kind":"rsi_generation",
-            "rsiAuditStartRowid":0,"rsiAuditEndRowid":0,
-            "input":input,"rsiModelEcologyExecuted":executed,
-            "rsiCompiledPlanExecuted":compiled});
+        let mut job=json!({"id":"real-child","kind":"rsi_generation",
+            "sessionId":"real-child-session",
+            "rsiAuditStartRowid":audit_start,
+            "rsiAuditEndRowid":audit_end,
+            "input":input,"rsiCompiledPlanExecuted":compiled});
+        let executed=executed(&state,&job);
+        assert_eq!(executed["actuallyUsedInGeneration"],true);
+        job["rsiModelEcologyExecuted"]=executed.clone();
         state.store.put("job",&job).unwrap();
         let profile=crate::engine::rsi_lineage_transfer::profile(&input).unwrap();
         let objective=crate::engine::memory::stable_id(&["memory"]);
@@ -659,6 +668,21 @@ mod tests{
         assert_eq!(saved.len(),1);
         let matched=matched_cohort(&saved,&route,&base,&profile,&objective,"memory");
         assert_eq!(matched["comparedGenerations"],1);
+        // Later traffic from a reused session must never be retroactively
+        // credited to the sealed generation.
+        state.store.audit("model.usage",json!({
+            "sessionId":"real-child-session","purpose":"chat",
+            "providerId":"later-model","model":"unrelated",
+            "totalTokens":99
+        }));
+        assert_eq!(historical_same_source_trials(
+            &state,&[],&base,&profile,&objective,"memory").len(),1);
+        let mut moved=job.clone();
+        moved["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor().unwrap());
+        state.store.put("job",&moved).unwrap();
+        assert!(historical_same_source_trials(
+            &state,&[],&base,&profile,&objective,"memory").is_empty());
+        state.store.put("job",&job).unwrap();
         // The current campaign already loaded this job: never double count.
         assert!(historical_same_source_trials(
             &state,&[record.clone()],&base,&profile,&objective,"memory").is_empty());
