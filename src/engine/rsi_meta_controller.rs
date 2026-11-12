@@ -19,8 +19,8 @@ fn independent_outcome(g:&Value)->Option<bool> {
     // measurement even if its patch was rejected, regressed or never adopted.
     // Successful offspring require an actual separate adoption receipt.
     // Source-writing method (native / local / API) is not a success criterion.
-    if g["pairedMeasured"]!=true
-        || g["evaluation"]["metrics"]["eligible"].as_bool().is_none()
+    if g["pairedMeasured"]!=true && g["pairedRevalidated"]!=true {return None;}
+    if g["evaluation"]["metrics"]["eligible"].as_bool().is_none()
         || g["evaluation"]["metrics"]["verdict"].as_str().is_none() {
         return None;
     }
