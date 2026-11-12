@@ -202,15 +202,52 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
     // against identical subject bytes; each carries its own pinned agent
     // algorithm/harness/learning source for the verified self-model.
     if outer_input["rsiSystemEvolution"]==true {
-        let mut history=context.state.store.all("rsi_generation").into_iter()
-            .filter(|row|row["campaignId"]==context.job_id)
-            .collect::<Vec<_>>();
-        history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
         input["rsiSystemEvolution"]=json!(true);
         input["rsiGeneratorSourceDir"]=json!(generator_source);
-        input["rsiSystemBlueprint"]=crate::engine::rsi_system::blueprint(
-            generator_source,generator_commit,&history);
-        input["rsiImprovementDirective"]=crate::engine::rsi_system::improvement_directive(&history);
+        input["rsiFocusSelection"]=json!({"source":"owner_selected"});
+        // The A/B arms must exercise the SAME normal compiled successor
+        // planner used by production generations. The fixed task-specific
+        // focus and selected domain are owner constraints, not a distinct
+        // evaluator-only execution algorithm.
+        let plan_file=root.join(format!("successor-{task}-{arm}.json"));
+        let snapshot=json!({"generatorCommit":generator_commit,"attempt":1,"input":input});
+        std::fs::write(&plan_file,serde_json::to_vec(&snapshot).map_err(|e|e.to_string())?)
+            .map_err(|e|e.to_string())?;
+        let mut planner=Command::new(binary);
+        planner.arg("--rsi-plan-generation").arg(&plan_file)
+            .current_dir(generator_source)
+            .env("DOMINION_DATA",&context.state.config.data_dir)
+            .env("DOMINION_WORKSPACE",source)
+            .env_remove("DOMINION_DESKTOP_PARENT");
+        let planned=command(context,planner,Duration::from_secs(30)).await;
+        let _=std::fs::remove_file(&plan_file);
+        let planned=planned?;
+        if !planned.status.success(){
+            return Err(format!("개선기 A/B 후손 제어기 계획 실패: {}",
+                String::from_utf8_lossy(&planned.stderr)));
+        }
+        let plan:Value=serde_json::from_slice(&planned.stdout)
+            .map_err(|e|format!("개선기 A/B 후손 계획 파싱 실패: {e}"))?;
+        if plan["source"]!="compiled_descendant_system_controller_v2"
+            || plan["generatorCommit"]!=generator_commit
+            || plan["domain"]!=task_spec.domain
+            || plan["focusFiles"]!=json!([task_spec.file])
+            || plan["systemBlueprint"]["generatorCommit"]!=generator_commit
+            || !plan["editPolicy"].is_object()
+            || !plan["improvementDirective"].is_object(){
+            return Err("개선기 A/B 후손이 지정된 동일 소스 과제를 계획하지 않았습니다.".into());
+        }
+        input["rsiControllerPlan"]=plan.clone();
+        input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+        input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+        input["rsiEditPolicy"]=plan["editPolicy"].clone();
+        input["rsiSelectedDomain"]=plan["domain"].clone();
+        input["rsiTargetDomain"]=plan["domain"].clone();
+        input["rsiFocusFiles"]=plan["focusFiles"].clone();
+        input["rsiTargetPlan"]=json!({
+            "domain":plan["domain"],"selection":plan["selection"],
+            "strategy":plan["strategy"],"generatorCommit":generator_commit
+        });
     }
     // Use the same frozen registration cases in each arm; never nest meta eval.
     input["rsiFrozenCases"]=outer_input["rsiFrozenCases"].as_array().map(|cases|
@@ -240,6 +277,7 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
     let mut result=json!({"jobId":id,"task":task,"arm":arm,"generatorCommit":generator_commit,
         "subjectCommit":source_commit,"generatorBinarySha256":sha(std::fs::read(binary).map_err(|e|e.to_string())?),
         "generatorSourceTreeSha256":child["input"]["rsiSystemBlueprint"]["sourceTreeSha256"],
+        "controllerPlannerSource":child["input"]["rsiControllerPlan"]["source"],
         "systemBlueprintVerified":child["rsiSystemBlueprintVerified"],
         "generationRuntimeMode":if child["input"]["rsiSystemEvolution"]==true {
             "compiled_system_controller"
