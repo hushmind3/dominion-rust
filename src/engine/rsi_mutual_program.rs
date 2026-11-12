@@ -216,7 +216,7 @@ pub(crate) fn valid_program(program:&Value,frontier:&[Value],commit:&str,
         && program["generatorCommit"]==commit
         && program["historyCount"].as_u64()==Some(history_len as u64)
         && valid_transfer_graph(graph)
-        && program["transferGraph"]==graph
+        && &program["transferGraph"]==graph
         && program["transitionGraphSha256"]==graph["sha256"]
         && matches!(program["phase"].as_str(),Some("seed"|"complement"|"return"))
         && program["currentSourceRebound"]==true
