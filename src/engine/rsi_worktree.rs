@@ -431,6 +431,20 @@ pub async fn finish(
     let patch=String::from_utf8_lossy(&raw.stdout).to_string();
     let patch_size=patch.len();
     let patch_sha=digest(&patch);
+    // Bind native edits to an immutable job/source/path and exact mutated
+    // bytes. A stale or forged receipt cannot relabel a model-authored diff.
+    let native_receipt=context.state.store.get("rsi_mutation",&context.job_id)
+        .filter(|receipt|input["rsiNativeInduction"]==true
+            && receipt["origin"]=="native_inductive_source_mutation"
+            && receipt["campaignId"]==input["rsiCampaignId"]
+            && receipt["sourceDir"].as_str()==Some(worktree.source.to_string_lossy().as_ref())
+            && receipt["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
+            && receipt["path"].as_str().is_some_and(|path|
+                patch.contains(&format!("diff --git a/{path} b/{path}")))
+            && receipt["path"].as_str().is_some_and(|path|
+                std::fs::read(worktree.path.join(path)).ok().is_some_and(|bytes|
+                    format!("{:x}",Sha256::digest(&bytes))==receipt["afterSha256"])));
+    let native_origin=native_receipt.is_some();
     let mut candidate_id=Value::Null;
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
@@ -474,14 +488,22 @@ pub async fn finish(
             "sourceBranch":input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"),
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
-            "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
+            "generatorModel":if native_origin {json!(format!("dominion-native:{}",
+                native_receipt.as_ref().and_then(|row|row["operator"].as_str()).unwrap_or("unknown")))
+            }else{input["model"].clone()},
+            "generatorEffort":if native_origin {Value::Null}else{input["reasoningEffort"].clone()},
             "generatorSourceCommit":worktree.base
         });
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
                 candidate["sourceBranch"]=json!(input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"));
-                candidate["origin"]="model_driven_detached_worktree".into();
+                candidate["origin"]=json!(if native_origin {
+                    "native_inductive_source_mutation"
+                }else{"model_driven_detached_worktree"});
+                if native_origin {
+                    candidate["nativeMutation"]=json!(native_receipt);
+                }
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
                 candidate["experimentCampaignId"]=input["rsiCampaignId"].clone();
@@ -519,6 +541,9 @@ pub async fn finish(
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
+        "candidateOrigin":if native_origin {"native_inductive_source_mutation"}
+            else {"model_driven_detached_worktree"},
+        "nativeMutation":native_receipt,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
