@@ -5618,8 +5618,7 @@ fn compiled_system_generation_plan(
                 }
             }
         }
-    }
-    if scientific_active {
+    }else if scientific_active {
         if let Some(path)=scientific_target["path"].as_str()
             .filter(|p|crate::engine::rsi::safe_path(p)){
             paths.push(path.to_string());
