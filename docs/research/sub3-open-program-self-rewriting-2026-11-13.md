@@ -18,7 +18,7 @@
 ## 실행 연결 및 독립 채택 증거
 
 1. `rsi_system::propose`: `openProgram`을 구조화·검증하고 모델 저술 설계 원문에 포함한다.
-2. `rsi_evolve::plan_generation_from_file`: 새로운 후손의 **재컴파일된 실제 코드**에서 인정된 부모 설계·현재 전체 소스 `architectureFrontier`를 읽고 프로그램과 노드를 선택한다. 이미 독립적으로 진행 중인 A→B→A complement/return 단계는 우선 유지한다.
+2. `rsi_evolve::plan_generation_from_file`: 새로운 후손의 **재컴파일된 실제 코드**에서 인정된 부모 설계·현재 전체 소스 `architectureFrontier`를 읽고 프로그램과 노드를 선택한다. 새로운 독립 채택형 열린 프로그램이 없으면 기존 A→B→A complement/return 단계를 유지한다. 최근에 실제 채택된 모델 저술 프로그램 그래프가 있으면 고정 단계보다 최신 개선 원리를 우선할 수 있다.
 3. `rsi_meta_controller::steer_open_program`: 동적 그래프 노드를 메타 개선기의 실행 목표·정책 해시·예측에 결합한다. 기존 고정 reflexive 경로는 후순위로 남는다.
 4. `rsi_evolve`의 코디네이터와 worker: 그래프 원문, SHA-256, 노드, 실제 모델 수정 소스 및 부모 채택 커밋, 메타 목표가 동일한지 검증한다. worker가 실제로 선택된 그래프의 목표 파일을 수정할 수 있도록 집중 대상을 교체한다.
 5. `generation.openImprovementProgram`, `compiledPlanExecuted.openImprovementRevision`, `metaPolicy.openImprovementRevision`: 계획·실제 재컴파일 후손 실행·그 결과를 각기 분리 기록한다.
