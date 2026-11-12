@@ -70,7 +70,7 @@ fn case_effect(m:&Value)->Option<i8>{
 /// counted as isolated effects. This is causal *hypothesis* selection, not
 /// an ablation proof.
 pub(crate) fn influence_graph(history:&[Value],frontier:&[Value])->Value{
-    let mut edges=BTreeMap::<(String,String),(usize,usize,usize,usize,BTreeSet<String>)>::new();
+    let mut edges=BTreeMap::<(String,String),(usize,usize,usize,usize,usize,usize,BTreeSet<String>)>::new();
     let mut paired=0usize;
     for g in history{
         if !paired_observation(g){continue;}
@@ -91,24 +91,29 @@ pub(crate) fn influence_graph(history:&[Value],frontier:&[Value])->Value{
                 row.1+=usize::from(effect<0);
                 row.2+=usize::from(effect==0);
                 row.3+=usize::from(joint);
-                if !generation.is_empty() && row.4.len()<12 {
-                    row.4.insert(generation.clone());
+                if !joint {
+                    row.4+=usize::from(effect>0);
+                    row.5+=usize::from(effect<0);
+                }
+                if !generation.is_empty() && row.6.len()<12 {
+                    row.6.insert(generation.clone());
                 }
             }
         }
     }
-    let mut rows=edges.into_iter().map(|((source,target),(gain,loss,neutral,joint,ids))|{
+    let mut rows=edges.into_iter().map(|((source,target),(gain,loss,neutral,joint,isolated_gain,isolated_loss,ids))|{
         let total=gain+loss+neutral;
         let isolated=total.saturating_sub(joint);
         // No gains from a confounded multi-module edit should become proof
         // that its individual source component caused the observed gain.
         let strength=if isolated>0{
-            (gain as f64-loss as f64)/(total.max(1) as f64)
+            (isolated_gain as f64-isolated_loss as f64)/(isolated.max(1) as f64)
         }else{0.0};
         json!({"sourceRole":source,"targetRole":target,
             "pairedGainObservations":gain,"pairedRegressionObservations":loss,
             "pairedNeutralObservations":neutral,
             "jointInterventionObservations":joint,"isolatedObservations":isolated,
+            "isolatedGains":isolated_gain,"isolatedRegressions":isolated_loss,
             "directionalScore":strength,
             "evidenceClass":if isolated>0 {"single_component_paired_observation"}
                 else{"joint_confounding_no_single_role_credit"},
