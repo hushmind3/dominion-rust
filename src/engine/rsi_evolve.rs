@@ -3520,6 +3520,28 @@ async fn run_loop(
             child_input["prompt"]=json!(format!(
                 "Improve the DOMINION {domain} subsystem, preserving all prior accepted source revisions. Implement and evaluate a new measurable optimization against the frozen paired holdout."));
         }
+        // Run a genuine model-scaffold research competition for the source
+        // generator (including owner-configured API routes), independently
+        // of LoRA weight promotion. Every trial is still evaluated against
+        // the SAME frozen source-paired oracle and attributed to its real model.
+        let generator_competition=
+            crate::engine::rsi_model_learning::generator_competition(
+                &context.state,
+                record["history"].as_array().map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                &child_input,&head,attempt,
+                (input["rsiAutoGeneratorPortfolio"]==true
+                    || (input["rsiAutonomous"]==true
+                        &&input["rsiSystemEvolution"]==true))
+                    &&input["rsiLockGeneratorModel"]!=true
+                    &&child_input["rsiModelWeightLineage"].is_null()
+            );
+        if generator_competition["selectedRouteEnabled"]==true {
+            child_input["providerId"]=
+                generator_competition["selectedProviderId"].clone();
+            child_input["model"]=generator_competition["selectedModel"].clone();
+        }
+        child_input["rsiGeneratorCompetition"]=generator_competition;
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let action_history=improvement_history(
             &context.state,&child_input,&recorded_history,&context.job_id);
@@ -3955,6 +3977,8 @@ async fn run_loop(
         generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
         generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
         generation["modelWeightLineage"]=current["input"]["rsiModelWeightLineage"].clone();
+        generation["generatorCompetition"]=
+            current["input"]["rsiGeneratorCompetition"].clone();
         generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -5377,6 +5401,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["input"]["rsiSearchStrategy"] = strategy;
     // Rebuild the entire architecture view in the actual descendant process;
     // a stale parent-side manifest cannot override the new revision.
+    if job["input"]["rsiGeneratorCompetition"].is_object()
+        &&!crate::engine::rsi_model_learning::competition_matches(
+            &job["input"]["rsiGeneratorCompetition"],&job["input"]) {
+        return Err("후손의 실제 API/로컬 모델과 재컴파일된 개선기 모델 실험 계획이 다릅니다.".into());
+    }
     if job["input"]["rsiSystemEvolution"]==true {
         let source=job["input"]["rsiSourceDir"].as_str()
             .ok_or("후손 시스템의 실제 소스 경로가 없습니다.")?;
