@@ -15,6 +15,43 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
+/// Inventory every compilable agent/frontend source under the selected
+/// experimental revision, not merely a hand-picked optimization fixture.
+/// An inventory hash changes when ANY generation changes the executable
+/// system's source graph; the prompt can remain short without losing lineage.
+fn source_inventory(root:&Path)->Vec<Value> {
+    let Ok(root)=fs::canonicalize(root) else {return Vec::new()};
+    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let mut rows=Vec::new();
+    while let Some(directory)=pending.pop() {
+        let Ok(entries)=fs::read_dir(&directory) else {continue};
+        for entry in entries.flatten() {
+            let Ok(file)=fs::canonicalize(entry.path()) else {continue};
+            if !file.starts_with(&root){continue;}
+            if file.is_dir() {
+                pending.push(file);
+                continue;
+            }
+            if !file.is_file(){continue;}
+            let Some(relative)=file.strip_prefix(&root).ok()
+                .and_then(|p|p.to_str()) else {continue};
+            if !crate::engine::rsi::safe_path(relative){continue;}
+            let allowed=matches!(file.extension().and_then(|e|e.to_str()),
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+            if !allowed {continue;}
+            let Ok(bytes)=fs::read(&file) else {continue};
+            if bytes.len()>2_000_000 {continue;}
+            rows.push(json!({"path":relative,
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),
+                "bytes":bytes.len()}));
+            if rows.len()>=2048 {break;}
+        }
+        if rows.len()>=2048 {break;}
+    }
+    rows.sort_by(|a,b|a["path"].as_str().cmp(&b["path"].as_str()));
+    rows
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
@@ -46,10 +83,15 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "regressions":generation["evaluation"]["metrics"]["regressions"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
+    let files=source_inventory(root);
+    let fingerprint=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&files).unwrap_or_default()));
     json!({
         "source":"compiled_descendant_system_blueprint_v1",
         "generatorCommit":revision,
         "architecture":components,
+        "sourceInventory":files,
+        "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
         "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
@@ -258,6 +300,8 @@ mod tests {
         assert_eq!(first["architecture"].as_array().unwrap().len(),7);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
+        assert_eq!(first["sourceInventory"].as_array().unwrap().len(),2);
+        assert_eq!(first["sourceTreeSha256"].as_str().unwrap().len(),64);
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);
         assert!(instruction(&first,"improve the whole system").contains("workspace_replace_range"));
         let baseline=first["architecture"][0]["representativeSources"][0]["sha256"].clone();
@@ -265,6 +309,8 @@ mod tests {
         let second=blueprint(&root,"commit-two",&history);
         assert_ne!(baseline,second["architecture"][0]["representativeSources"][0]["sha256"]);
         assert_ne!(first["generatorCommit"],second["generatorCommit"]);
+        assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"],
+            "the full system inventory must follow real source changes");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
