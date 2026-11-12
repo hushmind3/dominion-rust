@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 fn adopted(g:&Value)->bool {
     g["accepted"]==true && g["pairedRevalidated"]==true
+        && g["candidateOrigin"]=="model_driven_detached_worktree"
         && g["evaluation"]["metrics"]["eligible"]==true
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
         && g["compiledPlanExecuted"]["generatorCommit"]==g["generatorCommit"]
@@ -335,6 +336,7 @@ mod tests {
     }
     fn adopted(role:&str,head:&str,next:&str,job:&str,path:&str)->Value {
         json!({"accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
                 "generatorCommit":head},
             "evaluation":{"metrics":{"eligible":true}},
