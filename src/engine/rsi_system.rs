@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs","src/engine/rsi_intervention_lab.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs","src/engine/rsi_intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs"]),
     ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -517,6 +517,11 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         experimentalPolicy (mode, explorationWeight, interactionWeight,maxPairs). \
         Only a new independently adopted experiment-planner source revision \
         may pass its model-authored policy to the next compiled child. \
+        Every invented role should be linked back to an executable meta \
+        improvement method: edit a real search/rewrite source and explain \
+        how that method will improve this role in the NEXT binary. The \
+        recursive policy can then demand an adopted meta edit, a later \
+        adopted role edit, and repeat the loop without a fixed stop generation. \
         The meta-improver in src/engine/rsi_meta_controller.rs is ALSO YOUR EDITABLE CODE, \
         not a fixed external planner. You can redesign how experiments are generated, \
         compared, forecast, selected and inherited across generations. \

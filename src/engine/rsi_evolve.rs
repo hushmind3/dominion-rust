@@ -3345,6 +3345,8 @@ async fn run_loop(
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["recursivePolicyExecuted"]=
+            current["input"]["rsiMetaPolicy"]["recursiveProgram"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_lineage_transfer::profile(&current["input"]));
@@ -3549,6 +3551,8 @@ async fn run_loop(
         lineage.push(independently_checked.clone());
         generation["reciprocalCycleEvidence"]=json!(
             crate::engine::rsi_symbiosis::completed_cycles(&lineage));
+        generation["recursiveMetaReturnEvidence"]=json!(
+            crate::engine::rsi_recursive_rewrite::ledger(&lineage));
         generation["factorialLearning"]=json!({
             "source":"independently_replayed_source_factorial_trial_v1",
             "planSha256":generation["factorialExperiment"]["sha256"],
@@ -4165,8 +4169,9 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     }else{None};
     let lab=campaign["labDir"].as_str().ok_or("후손 소스 경로 없음")?;
     let blueprint=crate::engine::rsi_system::blueprint(Path::new(lab),revision,&history);
-    let frontier=crate::engine::rsi_system::architecture_frontier(
+    let mut frontier=crate::engine::rsi_system::architecture_frontier(
         &state,&blueprint,&history,campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab));
+    crate::engine::rsi_recursive_rewrite::extend_frontier(&blueprint,&mut frontier);
     // This meta-controller lives in the REBUILT BINARY. The frozen previous
     // coordinator cannot overwrite its comparative learning or target.
     let permitted=candidate_domains(&objective);
@@ -4191,6 +4196,8 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let inherited_meta=crate::engine::rsi_meta_controller::apply_successor_stage(
         transferred_meta,&stage);
     let auto=parent["input"]["selectionPolicy"]=="automatic";
+    let inherited_meta=crate::engine::rsi_recursive_rewrite::reconfigure(
+        &history,&frontier,inherited_meta,&permitted,auto,stage.is_object());
     let initial_symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&inherited_meta,&permitted);
     let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
@@ -4299,6 +4306,13 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         })).collect();
     }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
+    if meta["recursiveProgram"]["active"]==true
+        && meta["recursiveProgram"]["phase"]=="rewrite_meta_method" {
+        descendant_policy["checkpointAfter"]=json!(2);
+        descendant_policy["preferredTool"]=json!("workspace_replace_range");
+        descendant_policy["recursiveRewriteSource"]=
+            meta["recursiveProgram"]["nextRequiredSourceChange"].clone();
+    }
     if stage["source"]=="rebound_verified_model_successor_program_v1" {
         if stage["executionPolicy"]=="grounded_edit" {
             descendant_policy["checkpointAfter"]=json!(2);
@@ -4515,6 +4529,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         let meta_directive=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let recursive_directive=crate::engine::rsi_recursive_rewrite::instruction(
+            &job["input"]["rsiMetaPolicy"]);
         let peer_context=crate::engine::rsi_lineage_transfer::instruction(
             &job["input"]["rsiPeerLineages"]);
         let mutual_context=crate::engine::rsi_symbiosis::instruction(
@@ -4528,7 +4544,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
