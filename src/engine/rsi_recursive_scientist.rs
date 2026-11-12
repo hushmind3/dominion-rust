@@ -35,6 +35,24 @@ fn altered(g:&Value,role:&str)->bool {
                 hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 
+/// Walk through *actual accepted* rebuilt descendants. An unrelated valid
+/// intermediate redesign must not permanently strand an inherited experiment.
+/// No edge exists without an independently adopted source commit.
+fn adopted_descendant_edit<'a>(history:&'a [Value],
+    origin_commit:&str,role:&str)->Option<&'a Value> {
+    let mut next=origin_commit.to_string();
+    let mut visited=BTreeSet::new();
+    for _ in 0..history.len() {
+        if !visited.insert(next.clone()){return None;}
+        let child=history.iter().find(|g|
+            g["generatorCommit"].as_str()==Some(&next)
+            && adopted(g))?;
+        if altered(child,role){return Some(child);}
+        next=child["acceptedCommit"].as_str()?.to_owned();
+    }
+    None
+}
+
 fn current<'a>(frontier:&'a [Value],role:&str)->Option<&'a Value> {
     frontier.iter().find(|source|source["role"]==role
         && source["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
@@ -70,8 +88,7 @@ fn unfinished_discovery(history:&[Value],frontier:&[Value])->Option<Value>{
                 .unwrap_or("improvement_methods");
             let Some(origin)=current(frontier,improved) else{continue};
             let born=birth["acceptedCommit"].as_str()?;
-            let child=history.iter().find(|g|
-                g["generatorCommit"]==born && altered(g,role));
+            let child=adopted_descendant_edit(history,born,role);
             if child.is_none(){
                 return Some(json!({"phase":"develop_invented_intelligence",
                     "role":role,"target":source,"origin":origin,
@@ -80,8 +97,7 @@ fn unfinished_discovery(history:&[Value],frontier:&[Value])->Option<Value>{
             }
             let child=child?;
             let next=child["acceptedCommit"].as_str()?;
-            let back=history.iter().find(|g|
-                g["generatorCommit"]==next && altered(g,improved));
+            let back=adopted_descendant_edit(history,next,improved);
             if back.is_none(){
                 return Some(json!({"phase":"return_and_redesign_origin",
                     "role":improved,"target":origin,"origin":source,
@@ -93,8 +109,8 @@ fn unfinished_discovery(history:&[Value],frontier:&[Value])->Option<Value>{
                 .or_else(||current(frontier,"improvement_methods"))?;
             let meta_role=meta["role"].as_str()?;
             let next=back["acceptedCommit"].as_str()?;
-            let finished=history.iter().any(|g|
-                g["generatorCommit"]==next && altered(g,meta_role));
+            let finished=adopted_descendant_edit(history,next,meta_role)
+                .is_some();
             if !finished {
                 return Some(json!({"phase":"rewrite_discovery_algorithm",
                     "role":meta_role,"target":meta,"origin":origin,
