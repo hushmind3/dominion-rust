@@ -4769,7 +4769,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         crate::engine::rsi_symbiosis::validate_curriculum(
             &job["input"]["rsiSymbioticCurriculum"],
             &job["input"]["rsiArchitectureTarget"],frontier)?;
-        let observed_influence=&observed_holdout;
+        let observed_influence=observed_holdout;
         let portfolio=&job["input"]["rsiCoupledPortfolio"];
         if !crate::engine::rsi_interaction::valid_graph(&observed_influence)
             || job["input"]["rsiControllerPlan"]["interactionGraph"]!=observed_influence
