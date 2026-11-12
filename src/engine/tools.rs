@@ -73,6 +73,15 @@ pub fn definitions() -> Vec<Value> {
                     "workspace_replace_range","workspace_write","rsi_system_plan","rsi_method_propose"]},
                 "minItems":2,"maxItems":8,"description":"Optional NEW tool sequence for the NEXT descendant. Source range read must precede actual edit; only adopted source designs may transfer it."}),
             "methodHypothesis":text("Optional falsifiable rationale for changing the next descendant's executable method"),
+            "newComponents":json!({"type":"array","maxItems":8,
+                "description":"For component=system: executable NEW intelligence subsystems. Must name a distinct role, sourcePaths actually authored, integrationPaths changed to wire it into the runtime, and the capability it learns to improve.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                    "purpose":{"type":"string","minLength":30},
+                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4},
+                    "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4},
+                    "improvesRole":{"type":"string"}},
+                    "required":["role","domain","purpose","sourcePaths","integrationPaths"]}}),
             "interactionEdges":json!({"type":"array","maxItems":12,
                 "description":"For component=system: directed source-backed hypotheses A→B, with causal mechanism and future observable",
                 "items":{"type":"object","properties":{
