@@ -233,6 +233,69 @@ fn source_entry_valid(state:&crate::state::AppState,root:&Path,index_id:&str,
     fs::read(file).is_ok_and(|bytes|format!("{:x}",Sha256::digest(bytes))==sha)
 }
 
+
+/// Persistent research state spans campaigns without assuming that a previous
+/// design's source still exists. Only model-authored, independently adopted
+/// source revisions matching the CURRENT indexed bytes enter verified memory.
+/// Rejected explorations remain explicitly unverified failure hypotheses.
+pub(crate) fn research_archive(state:&crate::state::AppState,
+    model:&Value,index_id:&str,history:&[Value])->Value{
+    let ids=history.iter().filter_map(|row|row["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let mut prior=state.store.all("rsi_generation");
+    prior.sort_by(|a,b|b["completedAt"].as_str().cmp(&a["completedAt"].as_str())
+        .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
+    let mut successes=Vec::new();
+    let mut failures=Vec::new();
+    for generation in &prior {
+        if generation["id"].as_str().is_some_and(|id|ids.contains(id)){continue;}
+        if let Some(design)=accepted_model_design(generation){
+            let compatible=design["targetFiles"].as_array().is_some_and(|targets|
+                targets.iter().all(|target|target.as_str().is_some_and(|path|{
+                    let Some(accepted)=generation["acceptedSourceHashes"][path].as_str() else{
+                        return false;
+                    };
+                    crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                        .as_deref()==Some(accepted)
+                })));
+            if compatible && successes.len()<8 {
+                successes.push(json!({
+                    "source":"current_source_matched_adopted_design",
+                    "designId":design["id"],
+                    "generatorCommit":generation["generatorCommit"],
+                    "acceptedCommit":generation["acceptedCommit"],
+                    "roles":design_roles(design),
+                    "targetFiles":design["targetFiles"],
+                    "hypothesis":design["hypothesis"],
+                    "methodHypothesis":design["methodHypothesis"],
+                    "nextDomain":design["nextDomain"],
+                    "qualityProven":true
+                }));
+            }
+        }else if failures.len()<6 && generation["accepted"]!=true
+            && generation["systemBlueprint"]["sourceTreeSha256"]==model["sourceTreeSha256"]
+            && generation["systemDesign"]["hypothesis"].is_string(){
+            failures.push(json!({
+                "source":"source_version_matched_failed_experiment",
+                "designId":generation["systemDesign"]["id"],
+                "domain":generation["domain"],
+                "hypothesis":generation["systemDesign"]["hypothesis"],
+                "observedFailure":generation["evaluation"]["verdict"],
+                "error":generation["error"],
+                "qualityProven":false
+            }));
+        }
+        if successes.len()>=8 && failures.len()>=6 {break;}
+    }
+    json!({
+        "source":"persistent_source_verified_research_archive",
+        "indexedRevision":model["sourceTreeSha256"],
+        "verifiedAdoptedDesigns":successes,
+        "unverifiedFailureLessons":failures,
+        "qualityBoundary":"source_matched_adoption_only"
+    })
+}
+
 /// A source-grounded research frontier identifies unmet capabilities, rather
 /// than running an optimization operator with a preselected source path.
 /// It learns from actual inherited and failed generations and production
@@ -261,6 +324,14 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
     let usage=crate::engine::rsi_scan::report(state);
     let signals=usage["signals"].as_array().cloned().unwrap_or_default();
     let full_source=source_inventory(root);
+    // Research from a previous campaign survives only when its accepted
+    // source bytes still occur in the current compiled intelligence.
+    let archive=research_archive(state,model,index_id,history);
+    for prior in archive["verifiedAdoptedDesigns"].as_array().into_iter().flatten(){
+        for role in prior["roles"].as_array().into_iter().flatten().filter_map(Value::as_str){
+            *role_wins.entry(role.to_string()).or_default()+=1;
+        }
+    }
     let mut frontier=Vec::new();
     for component in model["architecture"].as_array().into_iter().flatten() {
         let Some(role)=component["role"].as_str().filter(|role|valid_role(role)) else{continue};
@@ -333,6 +404,7 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
 pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
     history:&[Value],index_id:&str,root:&Path)->Value{
     let frontier=architecture_frontier(state,model,history,index_id,root);
+    let archive=research_archive(state,model,index_id,history);
     let inherited=history.iter().rev().find_map(accepted_model_design);
     let inherited_targets=inherited.and_then(|design|
         design["nextTargetFiles"].as_array()).into_iter().flatten()
@@ -351,6 +423,7 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
         "generatorCommit":model["generatorCommit"],
         "sourceTreeSha256":model["sourceTreeSha256"],
         "frontier":frontier,
+        "researchArchive":archive,
         "target":selected,
         "focus":focus,
         "decisionOwner":"current_compiled_descendant",
@@ -452,6 +525,15 @@ pub(crate) fn agenda_instruction(agenda:&Value)->String{
             row["role"],row["path"],row["attempts"],
             row["verifiedRedesigns"],row["latestFailure"],row["reason"]
         )).collect::<Vec<_>>().join("\n");
+    let archive=agenda["researchArchive"]["verifiedAdoptedDesigns"]
+        .as_array().into_iter().flatten().take(4).map(|row|
+            format!("ADOPTED roles={} sources={} hypothesis={} method={}",
+                row["roles"],row["targetFiles"],row["hypothesis"],row["methodHypothesis"]))
+        .chain(agenda["researchArchive"]["unverifiedFailureLessons"]
+            .as_array().into_iter().flatten().take(3).map(|row|
+                format!("FAILED (unproven) domain={} hypothesis={} observed={}",
+                    row["domain"],row["hypothesis"],row["observedFailure"])))
+        .collect::<Vec<_>>().join("\n");
     format!(
         "[SELF-OWNED TASK+META RESEARCH CONTROLLER]\n\
         Your compiled agent chose component={} domain={} because {}.\n\
@@ -466,10 +548,10 @@ pub(crate) fn agenda_instruction(agenda:&Value)->String{
         executable method. The first action must still be actual source \
         observation and the method must write implementation, not prose.\n\
         Previous independently adopted hypothesis: {}.\n\
-        Self-selected source research frontier:\n{}",
+        Self-selected source research frontier:\n{}\n        Persisted previous research (only adopted source gains are verified):\n{}",
         target["role"],target["domain"],target["reason"],
         target["path"],target["sourceSha256"],focus,
-        agenda["sourceTreeSha256"],agenda["nextHypothesis"],frontier
+        agenda["sourceTreeSha256"],agenda["nextHypothesis"],frontier,archive
     )
 }
 
@@ -757,7 +839,8 @@ mod tests {
     #[test]
     fn only_adopted_model_design_can_control_a_new_compiled_descendant() {
         let base=json!({"generatorCommit":"parent","jobId":"worker",
-            "acceptedCommit":"child","candidateOrigin":"model_driven_detached_worktree",
+            "acceptedCommit":"cccccccccccccccccccccccccccccccccccccccc",
+            "candidateOrigin":"model_driven_detached_worktree",
             "acceptedSourceHashes":{"src/engine/learning.rs":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
             "accepted":true,"pairedRevalidated":true,
             "evaluation":{"metrics":{"eligible":true}},
