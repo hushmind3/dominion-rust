@@ -3436,8 +3436,57 @@ async fn run_loop(
         }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan"]);
+            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan", "rsi_model_adapter"]);
 
+        // A real, independently accepted LoRA checkpoint may become the
+        // NEXT compiled descendant's actual inference route, only with owner
+        // authorization. A stale provider record cannot activate a dead
+        // server, and a failed training run never qualifies.
+        child_input["rsiModelWeightLineage"]=Value::Null;
+        if child_input["rsiUsePromotedAdapterDescendants"]==true {
+            if let Some(active)=context.state.store.get("rsi_adapter_active","selected")
+                .filter(|row|row["active"]==true
+                    && row["source"]=="independently_adopted_live_model_weights_v1") {
+                if let (Some(adapter),Some(provider_id),Some(model_name))=(
+                    active["adapterId"].as_str(),
+                    active["providerId"].as_str(),active["model"].as_str()) {
+                    if let (Some(adopted),Some(provider))=(
+                        context.state.store.get("rsi_adapter",adapter)
+                            .filter(|row|row["status"]=="accepted"
+                                && row["adapterSha256"]==active["sha256"]
+                                && row["evaluation"]["eligible"]==true),
+                        context.state.store.get("provider",provider_id)
+                            .filter(|row|row["enabled"]==true
+                                && row["model"]==model_name)) {
+                        let health=reqwest::Client::new()
+                            .get("http://127.0.0.1:4321/v1/models")
+                            .timeout(Duration::from_secs(2)).send().await
+                            .ok();
+                        let healthy=if let Some(reply)=health {
+                            reply.status().is_success()
+                                && reply.json::<Value>().await.ok()
+                                    .and_then(|value|value["data"]
+                                        .as_array().cloned())
+                                    .is_some_and(|list|list.iter()
+                                        .any(|row|row["id"]==model_name))
+                        }else{false};
+                        if healthy {
+                            child_input["providerId"]=json!(provider_id);
+                            child_input["model"]=json!(model_name);
+                            child_input["rsiModelWeightLineage"]=json!({
+                                "source":"adopted_parameter_evolution_used_by_descendant_v1",
+                                "adapterId":adapter,"adapterSha256":active["sha256"],
+                                "evaluationSha256":adopted["evaluationSha256"],
+                                "newGeneratorCommit":head,
+                                "providerId":provider["id"],
+                                "actualInferenceProviderVerified":true,
+                                "nextGenerationQualityNotYetProven":true
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // After a measured native adoption, the descendant must be offered
         // the next domain rather than re-solving a saturated original target.
         // The new generator still independently plans, compiles and evaluates.
@@ -3895,6 +3944,7 @@ async fn run_loop(
         generation["recursiveLaboratory"]=current["input"]["rsiRecursiveLaboratory"].clone();
         generation["principleModel"]=current["input"]["rsiPrincipleModel"].clone();
         generation["principleCurriculum"]=current["input"]["rsiPrincipleCurriculum"].clone();
+        generation["modelWeightLineage"]=current["input"]["rsiModelWeightLineage"].clone();
         generation["controllerPlan"]=current["input"]["rsiNativePlan"]["systemAgenda"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
