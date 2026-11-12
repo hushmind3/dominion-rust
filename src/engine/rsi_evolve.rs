@@ -5515,12 +5515,30 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let objective=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
                 .map(str::to_string)).unwrap_or_default();
-        format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nCURRENT TARGET SOURCE (read again if the SHA changed):\n{}",
+        // A past regression supplied RESEARCH DIGEST as "CURRENT TARGET
+        // SOURCE" instead of source bytes. Small models then spent the entire
+        // 10-minute generation rediscovering code, never writing any Rust.
+        // The compiled descendant must re-read the already-indexed ACTUAL
+        // checkout and deliver line-numbered, source-hashed excerpts for its
+        // own architecture target. Stale index paths are never trusted.
+        let current_source=focus_file_context(&state,
+            &json!({"labDir":job["input"]["rsiSourceDir"]}),&job["input"]);
+        let research=job["input"]["rsiPromptResearch"].as_str().unwrap_or("")
+            .chars().take(1100).collect::<String>();
+        let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
+        job["rsiSourceContextDelivered"]=json!(!current_source.is_empty());
+        state.store.audit("rsi.compiled_descendant_source_bound",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "architectureTarget":target,
+            "sourceContextChars":current_source.chars().count(),
+            "sourceHashGrounded":current_source.contains("sourceSha256:"),
+            "qualityProven":false
+        }));
+        format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nTARGET COMPONENT IN MY COMPILED PLAN: {}\n\nCURRENT SOURCE WITH REAL LINE NUMBERS AND sourceSha256:\n{}\n\nPRIOR RESEARCH (not current source):\n{}\n\nYou have the current source now. Start with rsi_system_plan and perform a concrete workspace_replace or workspace_replace_function on the indicated file. Do not loop over code_search or workspace_read_range when the source excerpt is sufficient.",
             crate::engine::rsi_system::instruction(
                 &job["input"]["rsiSystemBlueprint"],&objective),
-            job["input"]["rsiImprovementDirective"],feedback,
-            job["input"]["rsiPromptResearch"].as_str().unwrap_or("")
-                .chars().take(3600).collect::<String>())
+            job["input"]["rsiImprovementDirective"],feedback,target,
+            current_source,research)
     }else{
         format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
             job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
