@@ -3935,7 +3935,7 @@ async fn run_loop(
                 || plan["architectureFrontier"]!=json!(
                     crate::engine::rsi_system::architecture_frontier(
                         &context.state,&plan["systemBlueprint"],&recorded_history,
-                        child_input["rsiIndexId"].as_str().unwrap_or("")))
+                        child_input["rsiIndexId"].as_str().unwrap_or(""),&lab))
                 || plan["architectureTarget"]!=plan["architectureFrontier"]
                     .as_array().and_then(|rows|rows.first()).cloned()
                     .unwrap_or(Value::Null)
@@ -5251,7 +5251,7 @@ fn compiled_system_generation_plan(
     // A predecessor's verified design remains authoritative for its child.
     // An uncovered module is a search opportunity, NEVER a demonstrated gain.
     let frontier=crate::engine::rsi_system::architecture_frontier(
-        state,&blueprint,history,input["rsiIndexId"].as_str().unwrap_or(""));
+        state,&blueprint,history,input["rsiIndexId"].as_str().unwrap_or(""),root);
     let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
     let architecture_domain=architecture_target["domain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
@@ -5420,7 +5420,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let directive=crate::engine::rsi_system::improvement_directive(&history);
         let frontier=crate::engine::rsi_system::architecture_frontier(
             &state,&blueprint,&history,
-            job["input"]["rsiIndexId"].as_str().unwrap_or(""));
+            job["input"]["rsiIndexId"].as_str().unwrap_or(""),
+            Path::new(job["input"]["rsiSourceDir"].as_str().unwrap_or("")));
         let domain=plan["domain"].as_str().filter(|v|DOMAINS.contains(v))
             .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
         let selection=match plan["selection"].as_str() {
