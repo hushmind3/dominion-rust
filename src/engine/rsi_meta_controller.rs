@@ -313,7 +313,8 @@ pub(crate) fn steer_factorial(mut policy:Value,experiment:&Value)->Value {
 /// and the separate reflexive curriculum as ordinary Rust source.
 pub(crate) fn steer_reflexive(mut policy:Value,program:&Value)->Value {
     let Some(phase)=program["phase"].as_str() else{return policy};
-    if !matches!(phase,"seed"|"transfer"|"return"){return policy;}
+    if !matches!(phase,"seed"|"transfer"|"return"|
+        "redesign_experiment"|"execute_revised_experiment"){return policy;}
     let selected=&program["target"];
     let Some(path)=selected["path"].as_str() else{return policy};
     if !crate::engine::rsi::safe_path(path) {return policy;}
@@ -338,6 +339,38 @@ pub(crate) fn steer_reflexive(mut policy:Value,program:&Value)->Value {
     }
     let mut unsigned=policy.clone();
     if let Some(obj)=unsigned.as_object_mut(){obj.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&unsigned).unwrap_or_default())));
+    policy
+}
+/// The accepted model-authored program graph is not a fixed stage list.
+/// The current recompiled meta-controller executes its selected node as a
+/// real source-editing assignment. Its policy and graph-selection logic are
+/// ordinary Rust and can themselves be rewritten by a later descendant.
+pub(crate) fn steer_open_program(mut policy:Value,graph:&Value)->Value {
+    if graph["source"]!="compiled_descendant_open_improvement_program_v1" {
+        return policy;
+    }
+    let target=&graph["target"];
+    let Some(path)=target["path"].as_str() else{return policy};
+    if !crate::engine::rsi::safe_path(path){return policy;}
+    let prediction=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==*target).cloned()
+        .unwrap_or_else(||json!({
+            "target":target,"predictedAcceptance":0.5,"uncertainty":0.5,
+            "observedTrials":0,"source":"model_authored_graph_exploration_prior"
+        }));
+    policy["target"]=target.clone();
+    policy["prediction"]=prediction.clone();
+    policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
+    policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
+    policy["selectionMode"]=json!("authored_open_improvement_program");
+    policy["openImprovementRevision"]=graph["revision"].clone();
+    policy["openImprovementProgramSha256"]=graph["programSha256"].clone();
+    policy["openImprovementNodeId"]=graph["nodeId"].clone();
+    let mut unsigned=policy.clone();
+    if let Some(body)=unsigned.as_object_mut(){body.remove("revision");}
     policy["revision"]=json!(format!("{:x}",Sha256::digest(
         serde_json::to_vec(&unsigned).unwrap_or_default())));
     policy
