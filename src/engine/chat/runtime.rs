@@ -173,6 +173,9 @@ fn rsi_complete_system_bundle(session:&Value,operations:&[Value])->bool {
 /// three initial focus excerpts. It is eligible ONLY with an independently
 /// witnessed write and an explicit model-authored design path.
 fn rsi_verified_bundle_write(session:&Value,args:&Value,op:&Value)->bool {
+    // A caller's explicit single-file constraint always wins over a
+    // model-authored multi-file redesign proposal.
+    if session["rsiExplicitFocus"]==true{return false;}
     let Some(targets)=session["rsiSystemDesign"]["targetFiles"].as_array()
         .filter(|files|files.len()>1) else{return false;};
     let Some(path)=args["path"].as_str()
