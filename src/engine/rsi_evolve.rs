@@ -3465,7 +3465,7 @@ async fn run_loop(
                         let local_url=provider["baseUrl"].as_str()
                             .filter(|url|url.starts_with("http://127.0.0.1:")
                                 && url.ends_with("/v1")
-                                && active["baseUrl"]==*url);
+                                && active["baseUrl"].as_str()==Some(*url));
                         let health=if let Some(url)=local_url {
                             reqwest::Client::new()
                                 .get(format!("{url}/models"))
