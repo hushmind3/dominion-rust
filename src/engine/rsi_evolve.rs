@@ -163,6 +163,20 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
             .sqrt()
             .min(3.0)
     };
+    // Forecast error is a measured property of this domain's past predictions,
+    // so an evolved search formula can learn to trust or avoid a target whose
+    // expected gain the coordinator has repeatedly misjudged.
+    let forecast_rows=rows.iter()
+        .filter(|row|row["forecast"]["error"].as_f64().is_some())
+        .collect::<Vec<_>>();
+    let forecast_error=if forecast_rows.is_empty() {0.0} else {
+        forecast_rows.iter().filter_map(|row|row["forecast"]["error"].as_f64())
+            .sum::<f64>()/forecast_rows.len() as f64
+    };
+    let forecast_bias=if forecast_rows.is_empty() {0.0} else {
+        forecast_rows.iter().filter_map(|row|row["forecast"]["bias"].as_f64())
+            .sum::<f64>()/forecast_rows.len() as f64
+    };
     BTreeMap::from([
         ("attempts".to_string(), attempts),
         ("accepted".to_string(), accepted),
@@ -179,7 +193,49 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
         ("objectiveMatch".to_string(), objective_match),
         ("unresolved".to_string(), unresolved),
         ("exploration".to_string(), exploration),
+        ("forecastError".to_string(), forecast_error),
+        ("forecastBias".to_string(), forecast_bias),
     ])
+}
+
+/// Predict the next generation's verified holdout gain from measured history.
+/// The signed prediction bias is subtracted, so a coordinator that repeatedly
+/// over-predicts stops re-committing the same overestimate.
+fn forecast_next(history: &[Value], domain: &str, basis: &str) -> Value {
+    let domain_rows = history.iter()
+        .filter(|row| row["forecast"]["domain"].as_str() == Some(domain))
+        .collect::<Vec<_>>();
+    let measured = history.iter()
+        .filter(|row| row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().is_some())
+        .collect::<Vec<_>>();
+    let pool = if !domain_rows.is_empty() { &domain_rows } else { &measured };
+    let actuals = pool.iter()
+        .filter_map(|row| row["evaluation"]["metrics"]["improvedHoldouts"].as_f64())
+        .collect::<Vec<_>>();
+    if actuals.is_empty() {
+        return json!({"domain":domain,"expectedImprovedHoldouts":0.0,
+            "priorError":Value::Null,"priorBias":Value::Null,
+            "basis":"no_measured_history","decisionBasis":basis});
+    }
+    let mean = actuals.iter().sum::<f64>() / actuals.len() as f64;
+    let errors = domain_rows.iter()
+        .filter_map(|row| row["forecast"]["error"].as_f64())
+        .collect::<Vec<_>>();
+    let biases = domain_rows.iter()
+        .filter_map(|row| row["forecast"]["bias"].as_f64())
+        .collect::<Vec<_>>();
+    let bias = if biases.is_empty() { 0.0 }
+        else { biases.iter().sum::<f64>() / biases.len() as f64 };
+    let prior_error = if errors.is_empty() { Value::Null }
+        else { json!(errors.iter().sum::<f64>() / errors.len() as f64) };
+    json!({
+        "domain":domain,
+        "expectedImprovedHoldouts":(mean-bias).max(0.0),
+        "priorError":prior_error,
+        "priorBias":if biases.is_empty() {Value::Null} else {json!(bias)},
+        "basis":if domain_rows.is_empty() {"measured_global_history"} else {"measured_domain_history"},
+        "decisionBasis":basis,
+    })
 }
 
 fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f64> {
@@ -3839,6 +3895,23 @@ async fn run_loop(
             .unwrap_or(0)
             .max(accepted_streak);
         record["maxAcceptedStreak"] = json!(max_streak);
+        // Compare the forecast made before this generation with what the
+        // independent paired evaluation actually measured. The error becomes
+        // a searchable feature and corrects the next forecast.
+        let prior_forecast = record["nextDecision"]["prediction"].clone();
+        if let (Some(expected), Some(actual)) = (
+            prior_forecast["expectedImprovedHoldouts"].as_f64(),
+            generation["evaluation"]["metrics"]["improvedHoldouts"].as_f64(),
+        ) {
+            generation["forecast"] = json!({
+                "domain": prior_forecast["domain"],
+                "predictedImprovedHoldouts": expected,
+                "actualImprovedHoldouts": actual,
+                "error": (expected - actual).abs(),
+                "bias": expected - actual,
+                "basis": prior_forecast["basis"],
+            });
+        }
         // Three consecutive adopted generations are the documented threshold
         // for calling the capability demonstrated, not a single lucky patch.
         let mut evidence_record=record.clone();
@@ -3903,10 +3976,12 @@ async fn run_loop(
         };
         let next_domain = select_domain_for_state(&context.state, &decision_history, &decision_objective);
         let reuse = method_reuse_decision(&context.state, input, &next_domain);
+        let next_prediction = forecast_next(&decision_history, &next_domain, decision_basis);
         record["nextDecision"] = json!({
             "basis": decision_basis,
             "fromGeneration": attempt,
             "nextDomain": next_domain,
+            "prediction": next_prediction,
             "knowledgeId": generation_knowledge,
             "headCommit": record["headCommit"],
             "trialAlgorithmId": record["nextTrialAlgorithmId"],
@@ -4739,6 +4814,35 @@ mod tests {
         state.store.put("job",&json!({"id":"campaign","kind":"rsi_evolve","status":"running","input":{"rsiNativeApproved":true}})).unwrap();
         JobContext::new(state.clone(), "campaign".into())
     }
+    #[test]
+    fn forecast_next_corrects_measured_bias_and_exposes_its_error() {
+        let history=vec![
+            json!({"domain":"memory","forecast":{"domain":"memory","predictedImprovedHoldouts":3.0,
+                "actualImprovedHoldouts":1.0,"error":2.0,"bias":2.0},
+                "evaluation":{"metrics":{"improvedHoldouts":1}}}),
+            json!({"domain":"memory","forecast":{"domain":"memory","predictedImprovedHoldouts":3.0,
+                "actualImprovedHoldouts":2.0,"error":1.0,"bias":1.0},
+                "evaluation":{"metrics":{"improvedHoldouts":2}}}),
+        ];
+        let forecast=forecast_next(&history,"memory","accepted_implementation");
+        assert_eq!(forecast["basis"],"measured_domain_history");
+        // Mean measured gain 1.5 minus mean bias 1.5 leaves no expected gain,
+        // so an over-predicting coordinator stops repeating its claim.
+        assert_eq!(forecast["expectedImprovedHoldouts"].as_f64(),Some(0.0),"{}",forecast);
+        assert_eq!(forecast["priorError"].as_f64(),Some(1.5));
+        let features=search_features(&history,"memory","");
+        assert_eq!(features.get("forecastError"),Some(&1.5));
+        assert_eq!(features.get("forecastBias"),Some(&1.5));
+    }
+
+    #[test]
+    fn forecast_without_measurements_claims_nothing() {
+        let forecast=forecast_next(&[],"tools","no_progress");
+        assert_eq!(forecast["basis"],"no_measured_history");
+        assert_eq!(forecast["expectedImprovedHoldouts"].as_f64(),Some(0.0));
+        assert!(forecast["priorError"].is_null());
+    }
+
     #[test]
     fn verified_adoption_opens_a_new_source_goal_only_when_opted_in() {
         let root=json!({"rsiExpandAfterGain":true,"rsiObjective":"fix one file"});

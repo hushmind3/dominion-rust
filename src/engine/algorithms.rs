@@ -92,6 +92,8 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
     "objectiveMatch",
     "unresolved",
     "exploration",
+    "forecastError",
+    "forecastBias",
 ];
 
 fn expression_sample(kind: &str) -> std::collections::BTreeMap<String, f64> {
