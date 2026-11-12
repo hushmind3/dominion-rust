@@ -485,6 +485,29 @@ mod tests {
         assert_eq!(study(&[g])["principles"].as_array().unwrap().len(),0);
     }
     #[test]
+    fn bad_heldout_forecasts_trigger_a_source_rewrite_of_the_meta_learner(){
+        let samples=(0..3).map(|i|{
+            let mut g=trial(&format!("badprediction-{i}"),
+                "overconfident domain-specific technique",
+                "src/engine/models.rs","models",false,false,false);
+            g["openImprovementProgram"]["principleSelectionEvidence"]=json!({
+                "caseQualityPosterior":0.95});
+            g["openImprovementProgram"]["principleLearningSha256"]
+                =json!("f".repeat(64));
+            g["principleLearning"]=json!({"sha256":"f".repeat(64)});
+            g
+        }).collect::<Vec<_>>();
+        let ledger=study(&samples);
+        assert_eq!(ledger["predictiveCalibration"]["measuredCases"],3);
+        assert_eq!(ledger["predictiveCalibration"]["needsLearnerSourceRevision"],true);
+        assert!(ledger["predictiveCalibration"]["meanBrierError"]
+            .as_f64().is_some_and(|e|e>0.8));
+        let mut forged=samples;
+        forged[0]["pairedMeasured"]=json!(false);
+        assert_eq!(study(&forged)["predictiveCalibration"]["measuredCases"],2);
+        assert_eq!(study(&forged)["predictiveCalibration"]["needsLearnerSourceRevision"],false);
+    }
+    #[test]
     fn model_prose_without_independent_paired_evidence_never_trains_principle(){
         let mut g=trial("false","invented gain","src/engine/memory.rs",
             "memory",false,true,true);
