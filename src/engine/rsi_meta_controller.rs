@@ -495,7 +495,37 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
         candidate["transferHypotheses"]=json!(bridges);
         transferred|=bonus>0.0;
     }
-    if !transferred{return policy;}
+    // Keep negative and neutral trial evidence even when no peer method is
+    // activated. The next compiled descendant can change its search rule
+    // without mislabeling a rejected transfer as a successful design.
+    let learning=alternatives.iter()
+        .flat_map(|candidate|candidate["transferHypotheses"].as_array()
+            .into_iter().flatten())
+        .map(|bridge|json!({
+            "donorCandidateId":bridge["candidateId"],
+            "recipientRole":bridge["toRole"],
+            "recipientSourceSha256":bridge["toSourceSha256"],
+            "observedTransferTrials":bridge["independentlyMeasuredTransferTrials"],
+            "adoptedTransferTrials":bridge["recipientSourceAdoptions"],
+            "matchedControlTrials":bridge["matchedControlTrials"],
+            "matchedControlAdoptions":bridge["matchedControlAdoptions"],
+            "negativeTransferSignal":bridge["negativeTransferSignal"]
+        })).collect::<Vec<_>>();
+    policy["peerMethodLearning"]=json!({
+        "source":"matched_executed_peer_method_observation_v1",
+        "observations":learning,
+        "causalSuperiorityProven":false,
+        "isolationRequired":true
+    });
+    if !transferred{
+        if !learning.is_empty(){
+            policy["revision"]=json!(format!("{:x}",Sha256::digest(
+                serde_json::to_vec(&json!([
+                    original_revision,policy["peerMethodLearning"]
+                ])).unwrap_or_default())));
+        }
+        return policy;
+    }
     alternatives.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
         .total_cmp(&a["score"].as_f64().unwrap_or(0.0))
         .then_with(||a["role"].as_str().cmp(&b["role"].as_str()))
@@ -539,7 +569,8 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
     policy["revision"]=json!(format!("{:x}",Sha256::digest(
         serde_json::to_vec(&json!([
             original_revision,policy["target"],policy["alternatives"],
-            policy["controlPolicy"],policy["peerMethodTransfer"]
+            policy["controlPolicy"],policy["peerMethodTransfer"],
+            policy["peerMethodLearning"]
         ])).unwrap_or_default())));
     policy
 }
@@ -738,18 +769,48 @@ pub(crate) fn instruction(policy:&Value)->String {
              evaluator to measure it:\n{}\n",rows.join("\n")
         ));
     }
+    let negative=policy["peerMethodLearning"]["observations"].as_array()
+        .into_iter().flatten()
+        .filter(|row|row["negativeTransferSignal"]==true)
+        .take(4)
+        .map(|row|format!("donor={} toRole={} transfer {}/{} vs matched non-transfer {}/{}",
+            row["donorCandidateId"],row["recipientRole"],
+            row["adoptedTransferTrials"],row["observedTransferTrials"],
+            row["matchedControlAdoptions"],row["matchedControlTrials"]))
+        .collect::<Vec<_>>();
+    if !negative.is_empty(){
+        message.push_str(&format!(
+            "\nOBSERVATIONAL NEGATIVE TRANSFER (not causal proof):\n{}\n\
+             Prefer redesigning the method or testing a clean alternative; \
+             do not reward a failing foreign method merely for being cited.\n",
+             negative.join("\n")));
+    }
     message
 }
 
 /// Bounded, independently evaluated ideas from compatible foreign lineages.
-pub(crate) fn peer_instruction(peers:&Value)->String {
-    let lines=peers["references"].as_array().into_iter().flatten().take(3)
-        .map(|row|format!("peer={} roles={} hypothesis={} design={} aligned={}",
+pub(crate) fn peer_instruction(peers:&Value,policy:&Value)->String {
+    // The non-transfer control must not see foreign method prompts.
+    // Transferred variants see only the one assigned, source-matched donor.
+    if policy["peerMethodTransfer"]["active"]!=true
+        || peers["comparisonProfileSha256"]
+            !=policy["peerMethodTransfer"]["comparisonProfileSha256"] {
+        return String::new();
+    }
+    let Some(donor)=policy["peerMethodTransfer"]["activeDonorCandidateId"].as_str()
+        else{return String::new()};
+    let lines=peers["references"].as_array().into_iter().flatten()
+        .filter(|row|row["candidateId"]==donor
+            && row["comparisonProfileSha256"]==peers["comparisonProfileSha256"])
+        .take(1)
+        .map(|row|format!(
+            "single assigned donor={} roles={} hypothesis={} design={} aligned={}",
             row["campaignId"],row["roles"],row["hypothesis"],
             row["designSummary"],row["alignedSourceFiles"]))
         .collect::<Vec<_>>();
     if lines.is_empty(){String::new()}else{
-        format!("\nVERIFIED PEER LINEAGE REFERENCES (ideas only):\n{}\n",lines.join("\n"))
+        format!("\nISOLATED PEER METHOD REFERENCE (ideas only, never automatic patch reuse):\n{}\n",
+            lines.join("\n"))
     }
 }
 
@@ -951,6 +1012,18 @@ mod tests{
         assert_eq!(observation["portableMethodObservation"]
             ["portableMethodSuperiorityProven"],false);
         assert!(instruction(&evolved).contains("PORTABLE METHOD HYPOTHESIS"));
+        assert!(peer_instruction(&peer,&original).is_empty());
+        let single_peer=peer_instruction(&peer,&evolved);
+        assert!(single_peer.contains("ISOLATED PEER METHOD REFERENCE"));
+        assert!(single_peer.contains("peer=other") || single_peer.contains("donor=other"));
+        let mut second_peer=peer.clone();
+        second_peer["references"].as_array_mut().unwrap().push(json!({
+            "campaignId":"unassigned","candidateId":"other-candidate",
+            "comparisonProfileSha256":"f".repeat(64),
+            "hypothesis":"must not leak into isolated prompt"
+        }));
+        assert!(!peer_instruction(&second_peer,&evolved)
+            .contains("must not leak into isolated prompt"));
         assert_ne!(evolved["revision"],original["revision"]);
         let mut drift=peer.clone();
         drift["references"][0]["identicalSourceFiles"]=json!(0);
@@ -1036,6 +1109,38 @@ mod tests{
         failed_receipt["comparisonProfileSha256"]=json!("f".repeat(64));
         assert_eq!(feedback(&evolved,&failed_receipt)["portableMethodObservation"]
             ["attributableDonorCandidateId"],"verified-1");
+        // Four matched non-transfer adoptions against four donor failures
+        // suppress transfer and preserve the negative evidence for method learning.
+        let controls=(0..4).map(|i|{
+            let job=format!("nontransfer-{i}");
+            json!({
+                "jobId":job,"generatorCommit":"d".repeat(40),
+                "metaPolicyExecuted":true,
+                "comparisonProfileSha256":"f".repeat(64),
+                "metaPolicy":{"target":{"role":"learning",
+                    "path":"src/engine/learning.rs",
+                    "sourceSha256":"a".repeat(64)}},
+                "focusFiles":["src/engine/learning.rs"],
+                "candidateOrigin":"model_driven_detached_worktree",
+                "accepted":true,"pairedRevalidated":true,
+                "acceptedCommit":"b".repeat(40),
+                "acceptedSourceHashes":{"src/engine/learning.rs":"c".repeat(64)},
+                "systemDesign":{"source":"model_authored_system_design",
+                    "generatorCommit":"d".repeat(40),
+                    "generationJobId":job,"component":"learning",
+                    "targetFiles":["src/engine/learning.rs"]},
+                "evaluation":{"verdict":"accepted","metrics":{"eligible":true}}
+            })
+        }).collect::<Vec<_>>();
+        assert!(controls.iter().all(independent_adoption));
+        let mut matched=rejected.clone();
+        matched.extend(controls);
+        let suppressed=evolve_from_peer_methods(original.clone(),&peer,&matched);
+        assert_eq!(suppressed["target"]["role"],"memory");
+        assert_eq!(suppressed["peerMethodLearning"]["observations"][0]
+            ["negativeTransferSignal"],true);
+        assert!(instruction(&suppressed).contains("OBSERVATIONAL NEGATIVE TRANSFER"));
+        assert!(!peer_instruction(&peer,&suppressed).contains("ISOLATED"));
         let mut repair=original.clone();
         repair["metaRepairChosen"]=json!(true);
         assert_eq!(evolve_from_peer_methods(repair.clone(),&peer,&[])["target"],
