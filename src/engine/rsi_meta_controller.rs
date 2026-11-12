@@ -377,9 +377,12 @@ pub(crate) fn instruction(policy:&Value)->String {
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Source-bound prediction history={}. Cross-revision outcomes are discounted.\n\
-        Prediction-method repair evidence={}. If mode=repair_own_source_bound_prediction_rule, \
-        edit the executable source-bound estimator and its selection behavior, \
-        not the external independent evaluator.\n\
+        Prediction-method repair evidence={}. If mode=source_bound_prediction_repair_execution, \
+        you are the recompiled successor selected to edit \
+        src/engine/rsi_prequential.rs. Read its actual current source, modify \
+        the executable forecast update or target-selection logic, and submit \
+        a real Rust patch. Never claim success from a plan, tool count, or \
+        inherited prediction; only the later independent evaluator can adopt it.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\

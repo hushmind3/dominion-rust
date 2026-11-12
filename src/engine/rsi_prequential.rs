@@ -8,6 +8,7 @@
 //! This module lives in the editable descendant and may itself evolve. It
 //! never promotes patches or overrides the frozen evaluator.
 use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
 
 fn hex(value:&Value,length:usize)->bool{
     value.as_str().is_some_and(|s|
@@ -25,6 +26,12 @@ fn measured(policy:&Value,g:&Value)->bool{
         && g["descendantPlan"]["architectureTarget"]==policy["target"]
         && g["descendantPlan"]["generatorCommit"]==g["generatorCommit"]
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["metaPolicyExecuted"]["source"]=="running_compiled_descendant_meta_controller"
+        && g["metaPolicyExecuted"]["metaRevision"]==policy["revision"]
+        // A valid plan is not an executed experiment. The actual worker
+        // must have been directed to inspect and edit the forecast target.
+        && g["focusFiles"].as_array().is_some_and(|paths|
+            paths.iter().any(|p|p==&policy["target"]["path"]))
         && g["candidateOrigin"]=="model_driven_detached_worktree"
         && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && g["pairedMeasured"]==true
@@ -133,6 +140,101 @@ pub(crate) fn calibrate(
     })
 }
 
+
+/// An inherited prediction-repair decision must survive composition with
+/// principle learning, recurrent rewrites and the factorial scheduler. The
+/// compiled successor can change this arbiter in a future generation.
+pub(crate) fn arbitrate_repair(
+    mut meta:Value,frontier:&[Value],allowed:&[&str],
+    automatic:bool,stage_active:bool
+)->Value{
+    let repair=meta["predictionRuleRepair"].clone();
+    if repair["source"]!="independently_observed_forecast_drift_v1"
+        || repair["repairRuleSourceSelected"]!=true {return meta;}
+    let allowed_now=automatic && !stage_active && allowed.contains(&"improver");
+    let path="src/engine/rsi_prequential.rs";
+    let selected=frontier.iter().find(|target|
+        target["path"]==path && target["role"]=="improvement_methods"
+        && target["domain"]=="improver" && hex(&target["sourceSha256"],64)
+        && meta["alternatives"].as_array().is_some_and(|alternatives|
+            alternatives.iter().any(|entry|entry["target"]==**target)));
+    if !allowed_now || selected.is_none(){
+        meta["predictionRuleRepair"]["active"]=json!(false);
+        meta["predictionRuleRepair"]["deferredBy"]=json!(
+            if stage_active{"verified_successor_stage"}
+            else if !automatic{"manual_source_selection"}
+            else{"owner_domain_or_source_not_available"});
+        return meta;
+    }
+    let target=selected.expect("checked").clone();
+    let winner=meta["alternatives"].as_array().into_iter().flatten()
+        .find(|entry|entry["target"]==target).cloned()
+        .expect("frontier selection already required matching alternative");
+    let old_revision=meta["revision"].clone();
+    if meta["principleLearning"]["active"]==true{
+        meta["principleLearning"]["active"]=json!(false);
+        meta["principleLearning"]["nextTrialRequired"]=json!(false);
+        meta["principleLearning"]["deferredBy"]=
+            json!("source_bound_prediction_repair");
+    }
+    if meta["recursiveProgram"]["active"]==true {
+        meta["recursiveProgram"]["active"]=json!(false);
+        meta["recursiveProgram"]["deferredBy"]=
+            json!("source_bound_prediction_repair");
+    }
+    meta["target"]=target.clone();
+    meta["selectionEvidence"]=winner.clone();
+    meta["forecast"]["acceptanceProbability"]=
+        winner["predictedAdoptionProbability"].clone();
+    meta["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    meta["mode"]=json!("source_bound_prediction_repair_execution");
+    meta["predictionRuleRepair"]["active"]=json!(true);
+    meta["predictionRuleRepair"]["executionTarget"]=target.clone();
+    meta["predictionRuleRepair"]["scheduledBy"]=json!("compiled_descendant_source_rewrite_arbiter");
+    meta["predictionRuleRepair"]["requiresIndependentPairedReceipt"]=json!(true);
+    meta["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([old_revision,target,winner,
+            meta["predictionRuleRepair"],meta["principleLearning"],
+            meta["recursiveProgram"]])).unwrap_or_default())));
+    meta
+}
+
+/// Persist a distinction between scheduled meta repair, actual scoped edits,
+/// and independently measured/adopted source code. Neither an instruction nor
+/// a compiler check counts as empirical method improvement.
+pub(crate) fn repair_execution_evidence(g:&Value)->Value{
+    let program=&g["metaPolicy"]["predictionRuleRepair"];
+    let active=program["active"]==true;
+    let target=&program["executionTarget"];
+    let valid=active
+        && target==&g["metaPolicy"]["target"]
+        && target==&g["descendantPlan"]["architectureTarget"]
+        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["metaPolicyExecuted"]["metaRevision"]==g["metaPolicy"]["revision"]
+        && g["metaPolicyExecuted"]["source"]=="running_compiled_descendant_meta_controller";
+    let path=target["path"].as_str().filter(|s|crate::engine::rsi::safe_path(s));
+    let focused=valid && path.is_some_and(|p|g["focusFiles"]
+        .as_array().is_some_and(|rows|rows.iter().any(|row|row==p)));
+    let edited=focused && path.is_some_and(|p|g["changedSourcePaths"]
+        .as_array().is_some_and(|rows|rows.iter().any(|row|row==p)));
+    let measured=edited && g["pairedMeasured"]==true;
+    let adopted=measured && g["accepted"]==true
+        && g["pairedRevalidated"]==true
+        && path.is_some_and(|p|hex(&g["acceptedSourceHashes"][p],64));
+    json!({
+        "source":"compiled_descendant_source_prediction_repair_evidence_v1",
+        "planned":active,"compiledPlanExecuted":valid,
+        "actualWorkerFocusedOnSource":focused,
+        "evaluatedCandidateEditedSource":edited,
+        "originalPairedReceiptReplayed":measured,
+        "sourceIndependentlyAdopted":adopted,
+        "metaMethodPerformanceGainProven":false,
+        "repairProgramRevision":g["metaPolicy"]["revision"],
+        "sourcePath":target["path"],
+        "deferredBy":program["deferredBy"]
+    })
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -149,6 +251,9 @@ mod tests{
                 "generatorCommit":"c".repeat(40)},
             "generatorCommit":"c".repeat(40),
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "metaPolicyExecuted":{"source":"running_compiled_descendant_meta_controller",
+                "metaRevision":policy["revision"]},
+            "focusFiles":[policy["target"]["path"]],
             "candidateOrigin":"model_driven_detached_worktree",
             "candidateId":"candidate-1","pairedMeasured":true,
             "accepted":adopted,"pairedRevalidated":adopted,
@@ -192,6 +297,56 @@ mod tests{
             b["probability"].as_f64().unwrap());
         assert_eq!(a["exactSourceTrials"],1);
         assert_eq!(b["discountedTransferTrials"],1);
+    }
+
+    #[test]
+    fn true_execution_requires_actual_source_focus_and_compiled_meta_revision(){
+        let p=policy("src/engine/memory.rs");
+        let mut g=observed(&p,false);
+        assert_eq!(feedback(&p,&g,false)["independentlyMeasured"],true);
+        g["focusFiles"]=json!(["src/engine/learning.rs"]);
+        assert_eq!(feedback(&p,&g,false)["independentlyMeasured"],false);
+        g["focusFiles"]=json!(["src/engine/memory.rs"]);
+        g["metaPolicyExecuted"]["metaRevision"]=json!("c".repeat(64));
+        assert_eq!(feedback(&p,&g,false)["independentlyMeasured"],false);
+    }
+
+    #[test]
+    fn compiled_arbiter_preserves_repair_and_does_not_forge_execution(){
+        let p=policy("src/engine/memory.rs");
+        let repair_target=json!({"role":"improvement_methods","domain":"improver",
+            "path":"src/engine/rsi_prequential.rs",
+            "sourceSha256":"e".repeat(64)});
+        let winner=json!({"target":repair_target,
+            "predictedAdoptionProbability":0.35,"uncertainty":0.2});
+        let mut meta=p.clone();
+        meta["target"]=json!({"role":"memory","domain":"memory",
+            "path":"src/engine/memory.rs","sourceSha256":"b".repeat(64)});
+        meta["alternatives"]=json!([winner]);
+        meta["principleLearning"]=json!({"active":true,"nextTrialRequired":true});
+        meta["recursiveProgram"]=json!({"active":true});
+        meta["predictionRuleRepair"]=json!({
+            "source":"independently_observed_forecast_drift_v1",
+            "repairRuleSourceSelected":true});
+        let chosen=arbitrate_repair(meta.clone(),&[repair_target.clone()],
+            &["memory","improver"],true,false);
+        assert_eq!(chosen["target"],repair_target);
+        assert_eq!(chosen["mode"],"source_bound_prediction_repair_execution");
+        assert_eq!(chosen["principleLearning"]["active"],false);
+        assert_eq!(chosen["recursiveProgram"]["active"],false);
+        assert_eq!(chosen["predictionRuleRepair"]["active"],true);
+        let mut generation=observed(&p,false);
+        generation["metaPolicy"]=chosen.clone();
+        generation["descendantPlan"]["metaPolicy"]=chosen.clone();
+        generation["descendantPlan"]["architectureTarget"]=chosen["target"].clone();
+        let planned=repair_execution_evidence(&generation);
+        assert_eq!(planned["planned"],true);
+        assert_eq!(planned["sourceIndependentlyAdopted"],false);
+        assert_eq!(planned["evaluatedCandidateEditedSource"],false);
+        let stage=arbitrate_repair(meta,&[repair_target],&["improver"],true,true);
+        assert_eq!(stage["predictionRuleRepair"]["active"],false);
+        assert_eq!(stage["predictionRuleRepair"]["deferredBy"],
+            "verified_successor_stage");
     }
     #[test]
     fn unsigned_past_feedback_is_not_self_training_evidence(){

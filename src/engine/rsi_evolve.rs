@@ -3595,6 +3595,9 @@ async fn run_loop(
         generation["pairedRevalidated"]=independently_checked["pairedRevalidated"].clone();
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],independently_checked);
+        generation["predictionRepairEvidence"]=
+            crate::engine::rsi_prequential::repair_execution_evidence(
+                independently_checked);
         generation["principleLearningFeedback"]=
             crate::engine::rsi_principle_learning::feedback(
                 &generation["metaPolicy"],independently_checked);
@@ -4279,6 +4282,10 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         &history,&frontier,inherited_meta,&permitted,auto,stage.is_object());
     let inherited_meta=crate::engine::rsi_principle_learning::recompose(
         &history,&frontier,inherited_meta,&permitted,auto,stage.is_object());
+    // A statistically triggered self-repair must be the actual next source
+    // experiment, not a forecast silently superseded by another scheduler.
+    let inherited_meta=crate::engine::rsi_prequential::arbitrate_repair(
+        inherited_meta,&frontier,&permitted,auto,stage.is_object());
     let initial_symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&inherited_meta,&permitted);
     let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
@@ -4304,6 +4311,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         // A learned principle experiment has to execute on its selected
         // source; otherwise its downstream payoff can never be observed.
         && inherited_meta["principleLearning"]["active"]!=true
+        && inherited_meta["predictionRuleRepair"]["active"]!=true
         // Complete an actual descendant meta-code rewrite before allowing
         // a speculative factorial schedule to replace its source target.
         && !(inherited_meta["recursiveProgram"]["active"]==true
@@ -4421,6 +4429,12 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         })).collect();
     }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
+    if meta["predictionRuleRepair"]["active"]==true {
+        descendant_policy["checkpointAfter"]=json!(2);
+        descendant_policy["preferredTool"]=json!("workspace_replace_range");
+        descendant_policy["predictionMethodRewriteSource"]=
+            meta["predictionRuleRepair"]["executionTarget"]["path"].clone();
+    }
     if meta["recursiveProgram"]["active"]==true
         && meta["recursiveProgram"]["phase"]=="rewrite_meta_method" {
         descendant_policy["checkpointAfter"]=json!(2);
