@@ -68,7 +68,7 @@ fn candidates(state:&AppState,input:&Value)->Vec<Value>{
             }
         }
     }
-    routes.truncate(20);
+    routes.truncate(12);
     routes
 }
 fn verified_attempt(g:&Value)->bool{
@@ -93,6 +93,56 @@ fn outcome(g:&Value)->Option<f64>{
     // reward. Regressions lower measured task performance across domains.
     Some((if accepted{1.0+0.05*gains}else{0.0})-0.08*regress)
 }
+
+fn same_source_profile_trial(
+    g:&Value,revision:&str,profile:&str,objective:&str,domain:&str
+)->bool{
+    g["generatorCommit"]==revision
+        &&g["comparisonProfileSha256"]==profile
+        &&g["objectiveId"]==objective
+        &&g["domain"]==domain
+        &&g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        &&verified_attempt(g)
+        &&outcome(g).is_some()
+}
+fn matched_cohort(
+    history:&[Value],route:&Value,revision:&str,
+    profile:&str,objective:&str,domain:&str
+)->Value{
+    let mut trials=0u64;
+    let mut wins=0u64;
+    let mut gain=0.0f64;
+    let mut regressions=0u64;
+    let mut distinct=BTreeSet::<String>::new();
+    for g in history{
+        if !same_route(&g["modelEcologyExecuted"],route)
+            ||!same_source_profile_trial(g,revision,profile,objective,domain){
+            continue;
+        }
+        let key=g["candidateId"].as_str()
+            .or_else(||g["jobId"].as_str()).unwrap_or("");
+        if key.is_empty()||!distinct.insert(key.to_string()){continue;}
+        trials+=1;
+        gain+=outcome(g).unwrap_or(0.0);
+        if g["accepted"]==true &&g["pairedRevalidated"]==true {wins+=1;}
+        regressions+=g["evaluation"]["metrics"]["regressions"]
+            .as_u64().unwrap_or(0).min(12);
+    }
+    json!({
+        "sameGeneratorCommit":revision,
+        "sameIndependentProfile":profile,
+        "sameObjectiveId":objective,
+        "sameDomain":domain,
+        "comparedGenerations":trials,
+        "adoptedSourceTrials":wins,
+        "measuredRegressions":regressions,
+        "meanHeldoutSourceImprovement":if trials==0{Value::Null}
+            else{json!(gain/trials as f64)},
+        "independentlyReplayedSourceOutcome":true,
+        "samePromptOrModelWeightClaim":false,
+        "modelCausalityProven":false
+    })
+}
 fn statistics(history:&[Value],route:&Value,domain:&str)->Value{
     let mut attempts=0u64;
     let mut measured=0u64;
@@ -114,7 +164,7 @@ fn statistics(history:&[Value],route:&Value,domain:&str)->Value{
             *domains.entry(d.clone()).or_insert(0)+=1;
             if g["accepted"]==true &&g["pairedRevalidated"]==true {adoptions+=1;}
             if d==domain {local_n+=1;same_domain+=reward;}
-            if matched.len()<12 {
+            if matched.len()<5 {
                 matched.push(json!({
                     "generationJobId":g["jobId"],
                     "parentCommit":g["generatorCommit"],
@@ -155,25 +205,57 @@ pub(crate) fn plan(
         &&input["rsiSystemEvolution"]==true;
     let routes=if enabled {candidates(state,input)} else {Vec::new()};
     let current=routes.first().cloned().unwrap_or_else(||owner.clone());
-    let mut scores=routes.iter().map(|route|{
-        let evidence=statistics(history,route,domain);
+    let profile=crate::engine::rsi_lineage_transfer::profile(input)
+        .unwrap_or_default();
+    // The same objective key used in the actual generation receipt.
+    let task=if input["rsiAutonomous"]==true{domain}
+        else{input["rsiObjective"].as_str().unwrap_or("")};
+    let objective=crate::engine::memory::stable_id(&[task]);
+    let scores=routes.iter().map(|route|{
+        let mut evidence=statistics(history,route,domain);
+        evidence["sameSourceCohort"]=matched_cohort(
+            history,route,revision,&profile,&objective,domain);
         (route.clone(),evidence)
     }).collect::<Vec<_>>();
-    // New model choices get actual independent trials, rather than a
-    // simulated supremacy declaration based on parameter count.
+    let incumbent_matched=scores.first()
+        .and_then(|r|r.1["sameSourceCohort"]["comparedGenerations"].as_u64())
+        .unwrap_or(0);
+    let incumbent_score=scores.first()
+        .and_then(|r|r.1["sameSourceCohort"]["meanHeldoutSourceImprovement"].as_f64())
+        .unwrap_or(0.0);
+    let paired_preference=if incumbent_matched>=2{
+        scores.iter().enumerate().skip(1).filter_map(|(i,(_,stats))|{
+            let matched=&stats["sameSourceCohort"];
+            if matched["comparedGenerations"].as_u64().unwrap_or(0)<2
+                ||matched["adoptedSourceTrials"].as_u64().unwrap_or(0)==0
+                ||matched["measuredRegressions"].as_u64().unwrap_or(u64::MAX)>0 {
+                return None;
+            }
+            let value=matched["meanHeldoutSourceImprovement"].as_f64()?;
+            if value<=incumbent_score+0.20 {None}else{Some((i,value))}
+        }).max_by(|a,b|a.1.total_cmp(&b.1))
+    }else{None};
+    // When no controlled same-source/profile cohort exists, cumulative
+    // outcomes are exploration hints only, NOT an API-model win.
     let mut explore=scores.iter().enumerate()
         .filter(|(_,(_,stats))|stats["attempts"].as_u64().unwrap_or(0)<2)
         .map(|(i,_)|i).collect::<Vec<_>>();
     explore.sort_by(|a,b|scores[*a].1["attempts"].as_u64()
         .cmp(&scores[*b].1["attempts"].as_u64())
         .then(a.cmp(b)));
-    let index=if let Some(&first)=explore.first(){Some(first)}
-    else{scores.iter().enumerate().max_by(|(_,a),(_,b)|
-        a.1["rankScore"].as_f64().unwrap_or(0.0)
-            .total_cmp(&b.1["rankScore"].as_f64().unwrap_or(0.0)))
-        .map(|(i,_)|i)};
+    let index=if let Some((i,_))=paired_preference{Some(i)}
+        else if let Some(&first)=explore.first(){Some(first)}
+        else{scores.iter().enumerate().max_by(|(_,a),(_,b)|
+            a.1["rankScore"].as_f64().unwrap_or(0.0)
+                .total_cmp(&b.1["rankScore"].as_f64().unwrap_or(0.0)))
+            .map(|(i,_)|i)};
     let selected=index.map(|i|scores[i].0.clone())
         .unwrap_or_else(||current.clone());
+    let choice_type=if paired_preference.is_some(){
+        "same_source_profile_heldout_preference"
+    }else if !explore.is_empty(){
+        "unmatched_actor_exploration"
+    }else{"cross_commit_transfer_hypothesis_not_model_proof"};
     let source=if enabled &&!scores.is_empty(){
         "compiled_descendant_model_actor_ecology_v1"
     }else{"owner_fixed_model_no_route_change"};
@@ -184,7 +266,11 @@ pub(crate) fn plan(
         "active":enabled&&!scores.is_empty(),
         "ownerBaseline":owner,
         "selected":selected,
-        "selectedBy":"real_child_outcomes_exploration_and_transfer",
+        "selectedBy":choice_type,
+        "matchedSourceComparisonAvailable":paired_preference.is_some(),
+        "comparisonProfileSha256":profile,
+        "comparisonObjectiveId":objective,
+        "sourceRevisionsNeverPooledAsPairedModelProof":true,
         "alternatives":scores.iter().map(|(route,stat)|json!({
             "route":route,"evidence":stat
         })).collect::<Vec<_>>(),
@@ -325,6 +411,33 @@ mod tests{
         assert_eq!(route["providerId"],"api-provider");
         assert_eq!(route["model"],"gpt-external");
         assert!(route.get("weightsUpdated").is_none());
+    }
+    #[test] fn same_commit_and_frozen_profile_required_for_strong_actor_comparison(){
+        let route=identity("remote","model-1");
+        let objective=crate::engine::memory::stable_id(&["tools"]);
+        let mut row=json!({
+            "generatorCommit":"a".repeat(40),
+            "comparisonProfileSha256":"p".repeat(64),
+            "objectiveId":objective,
+            "domain":"tools",
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "candidateId":"independent-source-1",
+            "modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
+                "actuallyUsedInGeneration":true,"actualModelCalls":1,
+                "providerId":"remote","model":"model-1"},
+            "candidateOrigin":"model_driven_detached_worktree",
+            "pairedMeasured":true,"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"b".repeat(40),
+            "evaluation":{"metrics":{"eligible":true,
+                "measurements":[{"id":"real-holdout"}],"improvedHoldouts":2}}
+        });
+        let measure=matched_cohort(&[row.clone()],&route,&"a".repeat(40),
+            &"p".repeat(64),&objective,"tools");
+        assert_eq!(measure["comparedGenerations"],1);
+        row["generatorCommit"]=json!("c".repeat(40));
+        let invalid=matched_cohort(&[row],&route,&"a".repeat(40),
+            &"p".repeat(64),&objective,"tools");
+        assert_eq!(invalid["comparedGenerations"],0);
     }
 
     #[test] fn eligible_external_api_routes_rotate_into_real_descendant_work(){
