@@ -37,6 +37,12 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
         tool("workspace_replace", "Edit a small source range without rewriting the whole file (approval required). Either supply a unique oldText, or the startLine/endLine and expectedSha256 from workspace_read_range. For line mode, newText replaces those inclusive lines.", object(json!({"path": text("Relative file path"), "oldText": text("Option A: exact existing source text, occurring once"), "startLine":json!({"type":"integer","minimum":1,"description":"Option B: first line from workspace_read_range"}), "endLine":json!({"type":"integer","minimum":1,"description":"Option B: inclusive last line; max 120 lines"}), "newText": text("Replacement code text (do not include numbered line prefixes)"), "expectedSha256": text("Required in line mode: sourceSha256 from workspace_read_range; optional in oldText mode")}), vec!["path","newText"])),
+        tool("workspace_replace_function", "Replace one existing, uniquely named top-level Rust function from a version-checked source hash. Send a complete fn declaration and body; all unrelated source remains byte-for-byte unchanged.", object(json!({
+            "path": text("Relative Rust .rs source path"),
+            "functionName": text("Unique existing top-level Rust function name"),
+            "newText": text("Complete replacement Rust function with body"),
+            "expectedSha256": text("Full-file SHA-256 returned by workspace_read_range")
+        }), vec!["path","functionName","newText","expectedSha256"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
         tool("file_read", "Read any UTF-8 text file using an absolute path", object(json!({"path": text("Absolute file path")}), vec!["path"])),
@@ -103,6 +109,7 @@ pub fn requires_approval(name: &str) -> bool {
         name,
         "workspace_write"
             | "workspace_replace"
+            | "workspace_replace_function"
             | "file_write"
             | "shell_exec"
             | "terminal_exec"
@@ -112,7 +119,7 @@ pub fn requires_approval(name: &str) -> bool {
 }
 
 pub fn rsi_allowed(name:&str)->bool{
-    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
+    matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_function"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
 
 pub async fn execute(
@@ -193,6 +200,14 @@ pub async fn execute(
             } else {
                 replace_line_span(ctx,&path,args,&new_text,run_id).await
             }
+        }
+        "workspace_replace_function" => {
+            let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
+            replace_compiled_rust_function(ctx,&path,
+                &required_arg(args,"functionName")?,
+                &required_arg(args,"newText")?,
+                &required_arg(args,"expectedSha256")?,
+                run_id).await
         }
         "workspace_write" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
@@ -891,6 +906,90 @@ async fn replace_line_span(
         result["reorderedLineEndpoints"]=json!(reordered);
     }
     Ok(result)
+}
+
+/// Extract existing unindented Rust functions without rewriting unrelated
+/// modules. An ambiguous nested/generic signature is rejected rather than
+/// pretending an unsafe approximate span is a verified model edit.
+fn rsi_top_level_functions(source:&str)->Vec<(String,&str)> {
+    let mut starts=Vec::<(String,usize)>::new();
+    let mut offset=0usize;
+    for line in source.split_inclusive('\n') {
+        let text=line.trim_end_matches(['\r','\n']);
+        if let Some((prefix,tail))=text.split_once("fn ") {
+            if matches!(prefix,""|"pub "|"pub(crate) "|"async "|
+                "pub async "|"pub(crate) async "|"unsafe "|"pub unsafe "|
+                "const "|"pub const ") {
+                let name=tail.chars().take_while(|c|c.is_ascii_alphanumeric()||*c=='_')
+                    .collect::<String>();
+                if !name.is_empty() && tail[name.len()..].trim_start().starts_with('(') {
+                    starts.push((name,offset));
+                }
+            }
+        }
+        offset+=line.len();
+    }
+    starts.iter().enumerate().map(|(i,(name,start))|{
+        let end=starts.get(i+1).map_or(source.len(),|(_,next)|*next);
+        (name.clone(),&source[*start..end])
+    }).collect()
+}
+
+/// Derived from Sub1's verified source-function tool. It uses a complete,
+/// model-authored function and exact original SHA, never a predefined
+/// optimization, and returns an actual written-byte receipt. The ordinary
+/// independent paired runner alone decides whether it improves a capability.
+async fn replace_compiled_rust_function(
+    ctx:&ToolContext<'_>,path:&Path,function:&str,new_text:&str,
+    expected_sha256:&str,run_id:&str
+)->Result<Value,String> {
+    if path.extension().and_then(|s|s.to_str())!=Some("rs") {
+        return Err("workspace_replace_function requires a Rust source file".into());
+    }
+    if function.is_empty() || !function.chars().next()
+        .is_some_and(|c|c.is_ascii_alphabetic()||c=='_')
+        || !function.chars().all(|c|c.is_ascii_alphanumeric()||c=='_')
+        || expected_sha256.len()!=64
+        || !expected_sha256.bytes().all(|c|c.is_ascii_hexdigit()) {
+        return Err("workspace_replace_function requires a valid function name and observed SHA".into());
+    }
+    if new_text.is_empty() || new_text.len()>16000 || !new_text.trim_end().ends_with('}') {
+        return Err("workspace_replace_function requires exactly one complete Rust function".into());
+    }
+    let repl=rsi_top_level_functions(new_text);
+    if repl.len()!=1 || repl[0].0!=function {
+        return Err("workspace_replace_function expects a whole matching top-level function".into());
+    }
+    let original=tokio::fs::read_to_string(path).await.map_err(|e|e.to_string())?;
+    let expected=expected_sha256.to_ascii_lowercase();
+    let observed=format!("{:x}",Sha256::digest(original.as_bytes()));
+    if observed!=expected {
+        return Ok(json!({"error":"Source changed since observation",
+            "staleVersion":true,"observedSha256":observed,"expectedSha256":expected}));
+    }
+    let matches=rsi_top_level_functions(&original).into_iter()
+        .filter(|(name,_)|name==function).collect::<Vec<_>>();
+    if matches.len()!=1 {
+        return Err("workspace_replace_function did not find one unique existing target".into());
+    }
+    let old=matches[0].1;
+    let Some(close)=old.rfind("\n}\n") else {
+        return Err("workspace_replace_function cannot identify a complete final closing brace".into());
+    };
+    let suffix=&old[close+3..];
+    let updated=original.replacen(old,
+        &format!("{}\n{}",new_text.trim_end(),suffix),1);
+    if updated==original {
+        return Err("workspace_replace_function produced no changed source".into());
+    }
+    let mut receipt=checked_write(ctx,path,&updated,run_id,true,Some(&expected)).await?;
+    receipt["replaced"]=json!(receipt["written"]==true);
+    receipt["replacedFunction"]=json!(function);
+    receipt["editMode"]=json!("sha_bound_full_function");
+    if receipt["written"]==true {
+        receipt["postSha256"]=json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
+    }
+    Ok(receipt)
 }
 
 async fn checked_write(
