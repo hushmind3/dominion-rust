@@ -327,9 +327,8 @@ pub(crate) async fn live_generator_competition(
         plan["decision"]=json!("untrusted_local_endpoint_keep_incumbent");
         plan["selectedProviderId"]=input["providerId"].clone();
         plan["selectedModel"]=input["model"].clone();
-        let old=plan["revision"].take();
+        if let Some(row)=plan.as_object_mut(){row.remove("revision");}
         plan["revision"]=json!(sha(&plan));
-        let _=old;
         return plan;
     };
     let reachable=match reqwest::Client::new()
@@ -345,7 +344,6 @@ pub(crate) async fn live_generator_competition(
         plan["decision"]=json!("unavailable_local_challenger_keep_incumbent");
         plan["selectedProviderId"]=input["providerId"].clone();
         plan["selectedModel"]=input["model"].clone();
-        plan["revision"]=Value::Null;
         if let Some(row)=plan.as_object_mut(){row.remove("revision");}
         plan["revision"]=json!(sha(&plan));
     }
