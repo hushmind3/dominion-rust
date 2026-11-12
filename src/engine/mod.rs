@@ -41,6 +41,7 @@ pub mod rsi_open_topology;
 pub mod rsi_recursive_scientist;
 pub mod rsi_improvement_algebra;
 pub mod rsi_method_generalization;
+pub mod rsi_negative_transfer;
 pub mod rsi_model_lineage;
 pub mod rsi_evolve;
 pub mod rsi_edit_genome;
