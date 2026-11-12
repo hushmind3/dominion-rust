@@ -250,8 +250,15 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             || body["selectionPolicy"]!="automatic") {
         return error("모델 포트폴리오 탐색은 자동 전체 지능 개선 모드에서만 선택할 수 있습니다.".into());
     }
-    if body["modelCandidates"].as_array().is_some_and(|list|list.len()>24) {
-        return error("모델 후보는 최대 24개로 제한합니다.".into());
+    if !body["modelCandidates"].is_null()
+        && body["modelCandidates"].as_array().is_none() {
+        return error("모델 후보는 연결된 제공자와 모델의 목록이어야 합니다.".into());
+    }
+    if body["modelCandidates"].as_array().is_some_and(|list|
+        list.len()>24 || list.iter().any(|item|
+            item["providerId"].as_str().is_none_or(str::is_empty)
+            || item["model"].as_str().is_none_or(str::is_empty))) {
+        return error("모델 후보는 최대 24개이며 제공자와 모델 이름이 필요합니다.".into());
     }
     let _start_guard=if continuous{
         if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
