@@ -75,6 +75,60 @@ pub(crate) fn transition_graph(history:&[Value])->Value{
         "edges":edges,"hasMeasuredCausalInterventions":false})
 }
 
+
+/// A slow-timescale controller updates the priority of *learning how to
+/// improve another capability*. Only verified ancestor->child transitions
+/// can supply observations; directional association is not treated as a
+/// causal effect or an adoption label.
+pub(crate) fn apply_reciprocal_feedback(mut meta:Value,graph:&Value)->Value{
+    let Some(mut alternatives)=meta["alternatives"].as_array().cloned()
+        else{return meta};
+    if graph["source"]!="compiled_cross_capability_observation_graph_v1"{
+        return meta;
+    }
+    for candidate in &mut alternatives{
+        let Some(role)=candidate["role"].as_str() else{continue};
+        let mut outgoing=0u64;
+        let mut reciprocal=0u64;
+        let edges=graph["edges"].as_array();
+        for edge in edges.into_iter().flatten(){
+            if edge["from"]!=role{continue;}
+            let Some(destination)=edge["to"].as_str() else{continue};
+            outgoing+=edge["nextGenerationAdoptions"].as_u64().unwrap_or(0);
+            let backwards=edges.into_iter().flatten().find(|reverse|
+                reverse["from"]==destination && reverse["to"]==role)
+                .and_then(|reverse|reverse["nextGenerationAdoptions"].as_u64())
+                .unwrap_or(0);
+            reciprocal+=backwards.min(
+                edge["nextGenerationAdoptions"].as_u64().unwrap_or(0));
+        }
+        let bonus=0.09*(outgoing.min(5) as f64/5.0)
+            +0.20*(reciprocal.min(3) as f64/3.0);
+        candidate["recursiveProductivityBonus"]=json!(bonus);
+        candidate["observedOutboundDescendantGains"]=json!(outgoing);
+        candidate["observedReciprocalGains"]=json!(reciprocal);
+        let old=candidate["score"].as_f64().unwrap_or(0.0);
+        candidate["score"]=json!(old+bonus);
+    }
+    alternatives.sort_by(|a,b|
+        b["score"].as_f64().unwrap_or(0.0).total_cmp(
+            &a["score"].as_f64().unwrap_or(0.0))
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str())));
+    let Some(winner)=alternatives.first().cloned() else{return meta};
+    let old=meta["revision"].clone();
+    meta["target"]=winner["target"].clone();
+    meta["selectionEvidence"]=winner.clone();
+    meta["alternatives"]=json!(alternatives);
+    meta["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+    meta["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    meta["mode"]=json!("recursive_capability_coadaptation");
+    meta["reciprocalLearningEvidence"]=graph.clone();
+    meta["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([old,graph,meta["alternatives"]]))
+            .unwrap_or_default())));
+    meta
+}
+
 fn score_partner(primary:&Value,other:&Value,graph:&Value)->Option<(f64,Value)>{
     let a=primary["role"].as_str()?;
     let b=other["role"].as_str()?;

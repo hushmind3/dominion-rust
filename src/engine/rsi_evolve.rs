@@ -4135,6 +4135,9 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         &history,&frontier,&permitted,inherited.as_deref());
     let transferred_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
         raw_meta,&peers);
+    let recursive_graph=crate::engine::rsi_symbiosis::transition_graph(&history);
+    let transferred_meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
+        transferred_meta,&recursive_graph);
     let proposed_stage=crate::engine::rsi_system::inherited_stage(&history,&frontier);
     // Owner-constrained goals cannot be hijacked by older optional stages.
     let stage=if proposed_stage["domain"].as_str()
