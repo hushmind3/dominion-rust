@@ -3,6 +3,12 @@ name: Sub4 model-authored whole intelligence RSI
 # generation's code, not a fixed source operator or a mocked model answer.
 on:
   workflow_dispatch:
+    inputs:
+      use_remote_model:
+        description: "Use an explicitly configured high-capacity OpenAI-compatible model via SUB4_LIVE_API_KEY"
+        type: boolean
+        required: false
+        default: false
   push:
     branches: [dominion-sub4]
     paths:
@@ -21,8 +27,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 85
     env:
-      SUB4_MODEL_KIND: ollama
-      SUB4_MODEL_NAME: qwen2.5-coder:7b-instruct
+      SUB4_MODEL_KIND: ${{ inputs.use_remote_model && 'openai' || 'ollama' }}
+      SUB4_MODEL_NAME: ${{ inputs.use_remote_model && (vars.SUB4_LIVE_MODEL || 'gpt-4.1') || 'qwen2.5-coder:7b-instruct' }}
+      SUB4_MODEL_API_BASE: ${{ vars.SUB4_LIVE_ENDPOINT || 'https://api.openai.com/v1/chat/completions' }}
+      SUB4_MODEL_API_KEY: ${{ secrets.SUB4_LIVE_API_KEY }}
       SUB4_SYSTEM_GOAL: '1'
       SUB4_NATIVE_INDUCTION: '0'
       SUB4_EXPECT_COMPLETION: '1'
@@ -55,6 +63,7 @@ jobs:
           cargo test --release --locked --bin dominion-rust compiled_descendant_plan_cannot_be_overruled_by_parent_policy -- --nocapture
           cargo build --release --locked --bin dominion-rust
       - name: Install an actual coding model with 16k context
+        if: env.SUB4_MODEL_KIND == 'ollama'
         run: |
           curl -fsSL https://ollama.com/install.sh -o "$RUNNER_TEMP/ollama-install.sh"
           sh "$RUNNER_TEMP/ollama-install.sh"
@@ -71,6 +80,19 @@ jobs:
             exit 1
           fi
           ollama pull "$SUB4_MODEL_NAME"
+      - name: Start private OpenAI-compatible gateway for approved hosted model
+        if: env.SUB4_MODEL_KIND == 'openai'
+        run: |
+          test -n "$SUB4_MODEL_API_KEY"
+          nohup node scripts/sub4-live-rsi.mjs proxy > "$RUNNER_TEMP/sub4-model-proxy.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5667/v1/models >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          # The model proxy can have no /models endpoint upstream, so verify
+          # the local gateway process remains alive rather than claiming a model
+          # response from the health request.
+          test -s "$RUNNER_TEMP/sub4-model-proxy.log" || true
       - name: Launch the exact newly built native Rust source and ledger
         run: |
           mkdir -p "$RUNNER_TEMP/sub4-live/data/rsi-build" "$RUNNER_TEMP/sub4-live/workspace"
@@ -113,6 +135,7 @@ jobs:
             ${{ runner.temp }}/sub4-live/whole-system-receipt.json
             ${{ runner.temp }}/sub4-live/engine.log
             ${{ runner.temp }}/sub4-ollama.log
+            ${{ runner.temp }}/sub4-model-proxy.log
             ${{ runner.temp }}/sub4-live/data/rsi-paired/**/candidate.patch
             ${{ runner.temp }}/sub4-live/data/rsi-paired/**/plan.json
             ${{ runner.temp }}/sub4-live/data/rsi-paired/**/report.json
