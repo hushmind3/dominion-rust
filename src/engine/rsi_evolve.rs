@@ -3292,6 +3292,11 @@ async fn run_loop(
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
             if plan["principleLearning"].is_object()
+                && !crate::engine::rsi_principle_learning::verify_replay(
+                    &context.state,&history) {
+                return Err("외부 감독자가 학습 근거 후보의 실제 독립 평가를 재검증하지 못했습니다.".into());
+            }
+            if plan["principleLearning"].is_object()
                 && (!crate::engine::rsi_principle_learning::valid(
                     &plan["principleLearning"],&history)
                     || plan["metaPolicy"]["principleLearningSha256"]
@@ -4437,6 +4442,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let mut history=state.store.all("rsi_generation").into_iter()
         .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
     history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    if !crate::engine::rsi_principle_learning::verify_replay(&state,&history) {
+        return Err("후손 원리 학습의 후보별 독립 평가 기록을 재생하지 못했습니다.".into());
+    }
     let objective=selection_objective(input);
     let source=input["rsiGeneratorSourceDir"].as_str()
         .or_else(||input["rsiSourceDir"].as_str())
@@ -5099,6 +5107,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("후손의 성공·실패 학습 계보가 현재 기록과 다릅니다.".into());
         }
         let pinned=job["input"]["rsiControllerPlan"].is_object();
+        if pinned && !crate::engine::rsi_principle_learning::verify_replay(
+            &state,&history) {
+            return Err("재컴파일된 후손의 학습 자료와 평가 후보 원본이 일치하지 않습니다.".into());
+        }
         if pinned {
             let profile=crate::engine::rsi_profile::from_input(&job["input"])?;
             crate::engine::rsi_system::validate_peer_references(
