@@ -10,10 +10,11 @@ use tokio::process::Command;
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
 
-/// A branch must be an explicitly owned RSI work checkout, never main or a
-/// sibling competitor's source. Preserve the legacy dominion-sub checkout.
+/// An RSI source checkout must be an explicitly owned development branch,
+/// never main or a competing agent's branch. Legacy experiments are supported
+/// only when their source provenance is bound to that exact checkout.
 pub(crate) fn rsi_work_branch(branch: &str) -> bool {
-    matches!(branch, "dominion-sub" | "dominion-sub3")
+    matches!(branch, "dominion-champion" | "dominion-sub" | "dominion-sub3")
 }
 
 /// Legacy experiments did not record a source branch. They may only be
@@ -1169,15 +1170,24 @@ mod tests {
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
+        assert!(rsi_work_branch("dominion-champion"));
         assert!(rsi_work_branch("dominion-sub3"));
         assert!(rsi_work_branch("dominion-sub"));
+        assert!(owns_application_branch("dominion-champion",Some("dominion-champion")));
+        assert!(!owns_application_branch("dominion-champion",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-champion",Some("dominion-sub")));
+        assert!(!owns_application_branch("dominion-champion",Some("main")));
+        assert!(!owns_application_branch("dominion-champion",None),
+            "new champion experiments require an exact recorded source branch");
+        assert!(!owns_application_branch("dominion-champion",Some("")),
+            "missing campaign provenance cannot authorize a source write");
         assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
         assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
         assert!(!owns_application_branch("dominion-sub3",None));
         assert!(!owns_application_branch("dominion-sub3",Some("")));
         assert!(owns_application_branch("dominion-sub",None));
         assert!(!owns_application_branch("main",Some("main")));
-        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
+        for forbidden in ["main","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other","dominion-champion-other"] {
             assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
     }
@@ -1202,7 +1212,7 @@ mod tests {
         std::fs::write(source.join("src/engine/rsi.rs"),"// source\n").unwrap();
         std::fs::write(source.join("web/src/pages/Demo.tsx"),"export const version = 1\n").unwrap();
         git_local(&source,&["init","-q"]);
-        git_local(&source,&["checkout","-b","dominion-sub3"]);
+        git_local(&source,&["checkout","-b","dominion-champion"]);
         git_local(&source,&["add","."]);
         git_local(&source,&["-c","user.email=ci@example.com","-c","user.name=CI","commit","-qm","base"]);
         let base=git_local(&source,&["rev-parse","HEAD"]);
@@ -1211,7 +1221,7 @@ mod tests {
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source.to_str().unwrap()}));
         let input=json!({
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
-            "rsiSourceBranch":"dominion-sub3",
+            "rsiSourceBranch":"dominion-champion",
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
             "model":"test-model",
             "rsiFrozenCases":[
@@ -1224,7 +1234,7 @@ mod tests {
         git_local(&source,&["checkout","-b","dominion-sub2"]);
         assert!(prepare(&context,&job["input"]).await.is_err(),
             "same-commit sibling work branches must not inherit a queued source job");
-        git_local(&source,&["checkout","dominion-sub3"]);
+        git_local(&source,&["checkout","dominion-champion"]);
         let worktree=prepare(&context,&job["input"]).await.unwrap();
         assert_ne!(worktree.path,source);
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);
