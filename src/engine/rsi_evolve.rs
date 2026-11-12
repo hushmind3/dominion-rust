@@ -4266,8 +4266,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }
     let campaign = job["input"]["rsiCampaignId"]
         .as_str()
-        .ok_or("자동 개선 ID 없음")?;
-    if state.store.get("job", campaign).is_none_or(|p| {
+        .ok_or("자동 개선 ID 없음")?.to_string();
+    if state.store.get("job", &campaign).is_none_or(|p| {
         p["kind"] != "rsi_evolve" || p["status"] != "running" || p["cancelRequested"] == true
     }) {
         return Err("자동 개선이 중단되었습니다.".into());
@@ -4383,7 +4383,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "architectureComponents":blueprint["architecture"].as_array().map(Vec::len),
             "improvementDirective":expected["mode"]
         }));
-        let campaign_record=state.store.get("rsi_campaign",campaign)
+        let campaign_record=state.store.get("rsi_campaign",&campaign)
             .unwrap_or(Value::Null);
         // Recompute the context from the NEW generator's code. A previous
         // resident server can neither select the prompt nor re-inject stale
@@ -4393,7 +4393,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let focus=focus_file_context(&state,
             &json!({"labDir":source}),&job["input"]);
         let capsule=|text:&str,limit:usize|text.chars().take(limit).collect::<String>();
-        let owner=state.store.get("job",campaign)
+        let owner=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
                 .map(str::to_string)).unwrap_or_default();
         format!("{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
