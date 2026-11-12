@@ -260,6 +260,11 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
         .then_with(||a.2["role"].as_str().cmp(&b.2["role"].as_str())));
     let mut best=ranked.first().map(|row|row.2.clone()).unwrap_or(Value::Null);
     let interference=cross_component_interference(history,&sources,commit);
+    let weight_method=crate::engine::rsi_weight_productivity::plan(
+        history,frontier,commit);
+    let weight_revision_ready=weight_method["redesignTrainingMethod"]==true
+        && crate::engine::rsi_weight_productivity::valid(
+            &weight_method,frontier,commit,history.len());
     // Two independent, same-profile, single-source counterexamples are
     // sufficient to prioritize a *new paired experiment*, never adoption.
     // Pair the damaged capability with the source suspected of interfering.
@@ -273,6 +278,16 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
             "observedRegressions":0,"acceptedImprovements":0});
     }
     let selected_interference=paired_risk.cloned().unwrap_or(Value::Null);
+    // Weight-level validation may look promising even when the adapted
+    // compiled descendant is a worse source improver.  A method rewrite
+    // is an independent experiment, not proof of model quality or causality.
+    let method_redesign=paired_risk.is_none()&&weight_revision_ready;
+    if method_redesign {
+        best=json!({"role":weight_method["target"]["role"],
+            "target":weight_method["target"],
+            "measuredHoldouts":0,"unresolvedBehavior":0,
+            "observedRegressions":0,"acceptedImprovements":0});
+    }
     // If independent experiments repeatedly fail on a real capability,
     // the next DOMINION must invent a different improvement MECHANISM and
     // rewrite the stalled capability at the same time. More retries of the
@@ -284,6 +299,8 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
     }else{Value::Null};
     let phase=if paired_risk.is_some(){
         "investigate_repeated_cross_component_negative_transfer"
+    }else if method_redesign {
+        "rewrite_model_training_method_after_measured_descendant_productivity_loss"
     }else if stalled && meta.is_object(){
         "invent_better_improvement_method_for_failed_intelligence"
     }else if best["unresolvedBehavior"].as_u64().unwrap_or(0)>0
@@ -300,6 +317,8 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
             &&pair["source"]["path"]!=best["target"]["path"]{
             focus.push(pair["source"].clone());
         }
+    }else if method_redesign {
+        focus=weight_method["focus"].as_array().cloned().unwrap_or(focus);
     }else if meta.is_object()&&meta["path"]!=best["target"]["path"]{
         focus.push(meta.clone());
     }
@@ -316,6 +335,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
             .take(32).collect::<Vec<_>>(),
         "crossComponentInterference":interference,
         "selectedInterferenceExperiment":selected_interference,
+        "modelMethodProductivity":weight_method,
         "interferenceCausalityProven":false,
         "nextGenerationMustRewriteIntelligence":true,
         "newMethodMayRewriteThisPolicy":true,
@@ -360,6 +380,11 @@ pub(crate) fn apply(agenda:&mut Value,ledger:&Value){
     agenda["principleCurriculum"]=Value::Null;
     agenda["factorialExperiment"]=Value::Null;
     agenda["wholeDominionGrowth"]=ledger.clone();
+    if ledger["modelMethodProductivity"]["redesignTrainingMethod"]==true
+        &&ledger["phase"]==
+            "rewrite_model_training_method_after_measured_descendant_productivity_loss" {
+        agenda["weightMethodLearning"]=ledger["modelMethodProductivity"].clone();
+    }
 }
 pub(crate) fn instruction(p:&Value)->String{
     if p["source"]!="descendant_whole_dominion_growth_v1"{
@@ -383,10 +408,13 @@ pub(crate) fn instruction(p:&Value)->String{
         without later capability transfer is not recursive intelligence gain. \
         Propose source-changing new intelligence when existing capabilities \
         cannot solve the weakness. Never substitute an API model ranking or \
-        LoRA training for complete-agent self-improvement.",
+        LoRA training for complete-agent self-improvement. \
+        Weight-to-method descendant productivity experiment: {}.",
         p["phase"],p["revision"],
         p["target"]["role"],p["target"]["path"],p["capabilityLedger"],
-        p["selectedInterferenceExperiment"])
+        p["selectedInterferenceExperiment"],
+        crate::engine::rsi_weight_productivity::instruction(
+            &p["modelMethodProductivity"]))
 }
 #[cfg(test)]
 mod tests{
