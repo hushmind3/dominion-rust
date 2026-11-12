@@ -1450,7 +1450,7 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     }
     for node in verification["nodes"].as_array().unwrap() {
         let tool = node["tool"].as_str().unwrap_or("");
-        if !tools::rsi_allowed(tool) || matches!(tool, "rsi_method_propose" | "algorithm_propose") {
+        if !tools::rsi_allowed(tool) || matches!(tool, "rsi_method_propose" | "algorithm_propose" | "rsi_system_plan") {
             return Err(format!("학습 절차에서 실행할 수 없는 도구: {tool}"));
         }
     }
