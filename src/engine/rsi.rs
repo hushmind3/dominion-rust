@@ -432,6 +432,13 @@ fn measured_capability_metrics(state:&AppState,candidate:&Value)->Option<Value> 
     Some(recomputed)
 }
 
+/// Independently replay the candidate-bound baseline/candidate measurements.
+/// The full-system planning path uses this to ensure that a proposed model
+/// architecture cannot inherit an unmeasured or forged source revision.
+pub(crate) fn verified_pair_receipt(state:&AppState,candidate:&Value)->bool {
+    measured_capability_metrics(state,candidate).is_some()
+}
+
 /// A successful patch is not proof that a system can improve its own
 /// improvement mechanism. Require a verified meta holdout gain followed by a
 /// verified cross-domain gain from the newly compiled descendant generator.
