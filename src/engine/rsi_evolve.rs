@@ -3730,57 +3730,75 @@ async fn run_loop(
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
         let evaluation_profile_sha=
             crate::engine::rsi_profile::from_input(input)?["sha256"].clone();
-        let generation_details = json!({
-            "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
-            "boundaryResult":current["rsiBoundaryResult"],
-            "elapsedMs":worker_started.elapsed().as_millis() as u64,"domain":current["rsiDomain"],
-            "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
-            "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
-            "systemEvolution":input["rsiSystemEvolution"],
-            // A missing explicit profile still runs the DEFAULT frozen
-            // evaluator. Record the actual frozen profile digest, not a
-            // null user-input field, or measured learning silently vanishes.
-            "evaluationProfileSha256":evaluation_profile_sha,
-            "architectureTarget":current["input"]["rsiArchitectureTarget"],
-            "systemBlueprint":current["input"]["rsiSystemBlueprint"],
-            "improvementDirective":current["input"]["rsiImprovementDirective"],
-            "lineageSha256":current["input"]["rsiLineageCapsule"]["sha256"],
-            "lineageVerified":current["rsiLineageVerified"],
-            "comparativeMode":current["input"]["rsiComparativeMode"],
-            "successorStage":current["input"]["rsiSuccessorStage"],
-            "interactionGraphSha256":current["input"]["rsiInteractionGraph"]["sha256"],
-            "coDesignPortfolio":current["input"]["rsiCoDesignPortfolio"],
-            "factorialExperiment":current["input"]["rsiFactorialExperiment"],
-            "reflexiveProgram":current["input"]["rsiReflexiveProgram"],
-            "openImprovementProgram":current["input"]["rsiOpenImprovementProgram"],
-            "principleLearning":current["input"]["rsiPrincipleLearning"],
-            "apiRoutePolicy":current["input"]["rsiApiRoutePolicy"],
-            "mutualProgram":current["input"]["rsiMutualProgram"],
-            "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
-            "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
-                .as_array().map(|rows|rows.iter().filter_map(|row|
-                    row["candidateId"].as_str()).take(4).collect::<Vec<_>>()).unwrap_or_default(),
-            "controllerPlan":current["input"]["rsiControllerPlan"],
-            "systemBlueprintVerified":current["rsiSystemBlueprintVerified"],
-            "methodProposals":session.and_then(|id|context.state.store.get("session",id))
-                .map(|row|row["rsiMethodProposals"].clone()).unwrap_or(Value::Null),
-            "systemDesign":session.and_then(|id|context.state.store.get("session",id))
-                .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null),
-            "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
-            "researchFingerprint":research_fingerprint,
-            "editEvidence":current["result"]["rsi"]["editEvidence"],
-            "editPolicy":current["input"]["rsiEditPolicy"],
-            "programStages":program_stages,
-            "editMethodReward":Value::Null,
-            "diffBytes":current["result"]["rsi"]["diffBytes"],
-            "captureError":current["result"]["rsi"]["captureError"],
-            "repairFailure":current["result"]["repairError"],
-            "nativeMutation":current["result"]["nativeMutation"],
-            "candidateOrigin":current["result"]["rsi"]["candidateOrigin"],
-            "compilerRepairReceipts":current["result"]["compilerRepairReceipts"],
-            "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
-        generation.as_object_mut().expect("generation object")
-            .extend(generation_details.as_object().expect("generation details object").clone());
+        // Keep the serialized evidence schema unchanged. One giant json!
+        // expansion overflows Rust's default macro recursion limit and
+        // prevents a freshly rebuilt successor from compiling at all.
+        // Independent fragments have the same keys and are flattened into
+        // the generation journal before any evaluation or adoption.
+        let generation_details = [
+            json!({
+                "researchDelivered":current["rsiResearchDelivered"],
+                "workerMarker":current["result"]["rsi"]["fixturePhase"],
+                "boundaryResult":current["rsiBoundaryResult"],
+                "elapsedMs":worker_started.elapsed().as_millis() as u64,
+                "domain":current["rsiDomain"],
+                "toolsUsed":tools_used,
+                "builtInToolsUsed":capabilities_used,
+                "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
+                "systemEvolution":input["rsiSystemEvolution"],
+                // The default frozen evaluator has an actual profile digest.
+                "evaluationProfileSha256":evaluation_profile_sha,
+                "architectureTarget":current["input"]["rsiArchitectureTarget"],
+                "systemBlueprint":current["input"]["rsiSystemBlueprint"],
+                "improvementDirective":current["input"]["rsiImprovementDirective"]
+            }),
+            json!({
+                "lineageSha256":current["input"]["rsiLineageCapsule"]["sha256"],
+                "lineageVerified":current["rsiLineageVerified"],
+                "comparativeMode":current["input"]["rsiComparativeMode"],
+                "successorStage":current["input"]["rsiSuccessorStage"],
+                "interactionGraphSha256":current["input"]["rsiInteractionGraph"]["sha256"],
+                "coDesignPortfolio":current["input"]["rsiCoDesignPortfolio"],
+                "factorialExperiment":current["input"]["rsiFactorialExperiment"],
+                "reflexiveProgram":current["input"]["rsiReflexiveProgram"],
+                "openImprovementProgram":current["input"]["rsiOpenImprovementProgram"],
+                "principleLearning":current["input"]["rsiPrincipleLearning"],
+                "apiRoutePolicy":current["input"]["rsiApiRoutePolicy"],
+                "mutualProgram":current["input"]["rsiMutualProgram"]
+            }),
+            json!({
+                "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
+                "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
+                    .as_array().map(|rows|rows.iter().filter_map(|row|
+                        row["candidateId"].as_str()).take(4).collect::<Vec<_>>()).unwrap_or_default(),
+                "controllerPlan":current["input"]["rsiControllerPlan"],
+                "systemBlueprintVerified":current["rsiSystemBlueprintVerified"],
+                "methodProposals":session.and_then(|id|context.state.store.get("session",id))
+                    .map(|row|row["rsiMethodProposals"].clone()).unwrap_or(Value::Null),
+                "systemDesign":session.and_then(|id|context.state.store.get("session",id))
+                    .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null),
+                "hypothesisMessageId":current["result"]["rsi"]["modelMessageId"],
+                "researchFingerprint":research_fingerprint,
+                "editEvidence":current["result"]["rsi"]["editEvidence"],
+                "editPolicy":current["input"]["rsiEditPolicy"],
+                "programStages":program_stages
+            }),
+            json!({
+                "editMethodReward":Value::Null,
+                "diffBytes":current["result"]["rsi"]["diffBytes"],
+                "captureError":current["result"]["rsi"]["captureError"],
+                "repairFailure":current["result"]["repairError"],
+                "nativeMutation":current["result"]["nativeMutation"],
+                "candidateOrigin":current["result"]["rsi"]["candidateOrigin"],
+                "compilerRepairReceipts":current["result"]["compilerRepairReceipts"],
+                "accepted":false,
+                "createdAt":chrono::Utc::now().to_rfc3339()
+            }),
+        ];
+        for evidence in generation_details {
+            generation.as_object_mut().expect("generation object")
+                .extend(evidence.as_object().expect("evidence object").clone());
+        }
         generation["requestedModel"]=current["input"]["model"].clone();
         generation["requestedProviderId"]=current["input"]["providerId"].clone();
         generation["apiModelPolicy"]=current["input"]["rsiApiRoutePolicy"].clone();
