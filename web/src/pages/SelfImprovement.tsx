@@ -13,7 +13,7 @@ type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:strin
  evidence?:{path?:number;symbols?:number;body?:number;domain?:number;priorProductive?:number}}
 type FocusSelection={source?:string;domain?:string;policyRevision?:string;
  candidates?:FocusCandidate[]}
-type SystemBlueprint={generatorCommit?:string;sourceTreeSha256?:string;sourceInventory?:{path:string;sha256:string}[];architecture?:{role:string}[]}
+type SystemBlueprint={generatorCommit?:string;sourceTreeSha256?:string;sourceFileCount?:number;sourceInventoryTruncated?:boolean;sourceInventory?:{path:string;sha256:string}[];architecture?:{role:string}[]}
 type SystemDesign={component?:string;hypothesis?:string;design?:string;nextDomain?:string;targetFiles?:string[];status?:string}
 type SystemControllerPlan={source?:string;generatorCommit?:string;domain?:string;historyCount?:number}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
@@ -29,7 +29,7 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection;
  systemBlueprintVerified?:boolean;systemBlueprint?:SystemBlueprint;systemDesign?:SystemDesign;
  improvementDirective?:{mode?:string;sourceGenerationId?:string};
- controllerPlan?:SystemControllerPlan;metaEvaluation?:{tasks?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
+ controllerPlan?:SystemControllerPlan;metaEvaluation?:{tasks?:number;domains?:string[];perEpisodeTokenLimit?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
 type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStreak:number;
@@ -256,7 +256,7 @@ export function SelfImprovementPage(){
     {item.controllerPlan?.source==='compiled_descendant_system_controller_v2'&&<div className="mt-2 rounded-lg border border-[#D9E3D3] bg-white p-3">
      <p className="font-semibold text-[#4E6B45]">재빌드된 후손의 시스템 설계·제어권</p>
      <p className="mt-1 text-[#7C7469]">실행기: {item.controllerPlan.generatorCommit?.slice(0,10)} · 이전 세대 {item.controllerPlan.historyCount||0}건 계승 · 다음 영역 {item.controllerPlan.domain||'탐색 중'}</p>
-     <p className="mt-1 text-[#7C7469]">전체 소스 자기모형: {item.systemBlueprint?.sourceInventory?.length||0}개 파일 · {item.systemBlueprint?.architecture?.length||0}개 구성요소 · 지문 {item.systemBlueprint?.sourceTreeSha256?.slice(0,12)||'없음'}</p>
+     <p className="mt-1 text-[#7C7469]">전체 소스 자기모형: {item.systemBlueprint?.sourceFileCount??item.systemBlueprint?.sourceInventory?.length??0}개 파일 · {item.systemBlueprint?.architecture?.length||0}개 구성요소 · 지문 {item.systemBlueprint?.sourceTreeSha256?.slice(0,12)||'없음'}</p>
      <p className="mt-1 text-[#7C7469]">다음 행동: {item.improvementDirective?.mode||'없음'} · {item.systemBlueprintVerified?'후손 재검증 완료':'후손 재검증 증거 없음'}</p>
     </div>}
     {item.systemDesign?.hypothesis&&<div className="mt-2 rounded-lg border border-[#E7E0D5] bg-white p-3">
@@ -264,10 +264,10 @@ export function SelfImprovementPage(){
      <p className="mt-1 text-[#7C7469]">{item.systemDesign.hypothesis}</p>
      <p className="mt-1 text-[#81786B]">변경 대상: {item.systemDesign.targetFiles?.join(', ')||'없음'} · 다음 목표 {item.systemDesign.nextDomain||'미지정'} · {item.accepted?'독립 평가 채택':'미채택 설계'}</p>
     </div>}
-    {item.metaEvaluation?.episodes?.length?<div className="mt-3 rounded-lg border border-[#D9E3D3] bg-white p-3"><p className="font-semibold">개선기 자체의 후속 코딩 평가 · {item.metaEvaluation.tasks}개 과제</p>
+    {item.metaEvaluation?.episodes?.length?<div className="mt-3 rounded-lg border border-[#D9E3D3] bg-white p-3"><p className="font-semibold">개선기 자체의 후속 코딩 평가 · {item.metaEvaluation.tasks}개 과제{item.metaEvaluation.domains?.length?` (${item.metaEvaluation.domains.join(', ')})`:''}</p>
      <div className="mt-2 grid grid-cols-2 gap-2">{(['baseline','candidate'] as const).map(arm=><div key={arm}><strong>{arm==='baseline'?'이전 개선기':'수정된 개선기'}</strong>
       {item.metaEvaluation?.episodes?.filter(row=>row.arm===arm).map(row=><p key={row.task} className="mt-1 text-[11px] text-[#7C7469]">과제 {row.task+1}: {(row.quality*100).toFixed(1)}% · {row.usage?.calls||0}회 호출 · {(row.usage?.totalTokens||0).toLocaleString()}토큰</p>)}</div>)}</div>
-     <p className="mt-2 text-[11px] text-[#7C7469]">같은 모델·원본 소스·과제별 예산으로 실제 패치를 생성하고 동결된 검사로 평가했습니다. 두 과제의 결과이며, 모든 분야의 향상을 증명하지는 않습니다.</p></div>:null}
+     <p className="mt-2 text-[11px] text-[#7C7469]">같은 모델·원본 소스·과제별 예산으로 실제 패치를 생성하고 동결된 검사로 평가했습니다.{item.metaEvaluation.perEpisodeTokenLimit?` 각 비교군 최대 ${item.metaEvaluation.perEpisodeTokenLimit.toLocaleString()}토큰`:''} 과제별 실제 측정이며, 전체 지능 향상이나 무한 재귀를 증명하지는 않습니다.</p></div>:null}
     {item.generatorCommit&&<p className="mt-2 text-[#81786B]">실행기 {item.generatorCommit.slice(0,10)}{item.acceptedCommit?` · 채택 ${item.acceptedCommit.slice(0,10)}`:''}</p>}
    </div>)}</div></details>}
   </Panel>}
