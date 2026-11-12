@@ -22,27 +22,28 @@ const COMPONENTS: &[(&str,&[&str])] = &[
  * an inherited design. Failed research-only descendants must not erase the
  * last successful design, and unverified prose must never become policy.
  */
-fn last_verified_system_design(history: &[Value]) -> Option<&Value> {
-    history.iter().rev().find(|generation| {
-        let design = &generation["systemDesign"];
-        generation["accepted"] == true
-            && generation["pairedRevalidated"] == true
-            && generation["evaluation"]["metrics"]["eligible"] == true
-            && generation["candidateOrigin"] == "model_driven_detached_worktree"
-            && generation["acceptedCommit"].as_str().is_some_and(|s| !s.is_empty())
-            && design["source"] == "model_authored_system_design"
-            && design["generatorCommit"] == generation["generatorCommit"]
-            && design["generationJobId"] == generation["jobId"]
-            && design["targetFiles"].as_array().is_some_and(|paths| {
-                !paths.is_empty() && paths.iter().all(|entry| entry.as_str().is_some_and(|path| {
+fn valid_adopted_system_design(generation:&Value)->bool {
+    let design=&generation["systemDesign"];
+    generation["accepted"]==true
+        && generation["pairedRevalidated"]==true
+        && generation["evaluation"]["metrics"]["eligible"]==true
+        && generation["candidateOrigin"]=="model_driven_detached_worktree"
+        && generation["acceptedCommit"].as_str().is_some_and(|commit|
+            commit.len()==40 && commit.bytes().all(|b|b.is_ascii_hexdigit()))
+        && design["source"]=="model_authored_system_design"
+        && design["generatorCommit"]==generation["generatorCommit"]
+        && design["generationJobId"]==generation["jobId"]
+        && design["targetFiles"].as_array().is_some_and(|paths|
+            !paths.is_empty() && paths.iter().all(|item|
+                item.as_str().is_some_and(|path|
                     generation["acceptedSourceHashes"][path].as_str()
-                        .is_some_and(|hash| hash.len() == 64
-                            && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-                }))
-            })
-    })
+                        .is_some_and(|hash|hash.len()==64
+                            && hash.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 
+fn last_verified_system_design(history:&[Value])->Option<&Value>{
+    history.iter().rev().find(|row|valid_adopted_system_design(row))
+}
 
 /**
  * Whole-source fingerprint: component examples are never a hard-coded
@@ -318,7 +319,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         let mut known=inventory.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<std::collections::BTreeSet<_>>();
         for (relative,roles,row) in &discovered {
-            if inventory.len()>=24{break;}
+            if inventory.len()>=12{break;}
             if roles.contains(role) && known.insert(relative.clone()){
                 inventory.push(row.clone());
             }
@@ -815,47 +816,71 @@ pub(crate) fn revalidated_history(
 /// intended file to its CURRENT architecture evidence, and advances a stage
 /// only when a generation has really attempted the previous stage.
 pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Value {
-    let Some(parent)=last_verified_system_design(history) else{return Value::Null};
-    let Some(stages)=parent["systemDesign"]["successorStages"].as_array() else{
-        return Value::Null;
-    };
-    if stages.is_empty(){return Value::Null;}
-    let design_id=&parent["systemDesign"]["id"];
-    let mut attempts=0usize;
-    // A retry_failed program keeps a failed stage active until a later real
-    // success. An avoid_failed stage advances after one failed attempt.
-    // Every decision is based on persisted child execution receipts.
-    for executed in history.iter().filter(|g|
-        g["successorStage"]["designId"]==*design_id
-            && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"){
-        if executed["successorStage"]["stageIndex"].as_u64()!=Some(attempts as u64){
-            continue;
+    // A new adopted design may supersede an older method. If it has no
+    // explicit program, however, do not silently erase a still-incomplete
+    // independently adopted A->B->A loop from an earlier generation.
+    for (position,parent) in history.iter().enumerate().rev(){
+        if !valid_adopted_system_design(parent){continue;}
+        let design=&parent["systemDesign"];
+        let mut stages=design["successorStages"].as_array()
+            .filter(|v|!v.is_empty()).cloned()
+            .unwrap_or_else(||crate::engine::rsi_open_topology::derived_cycle_stages(design));
+        if stages.is_empty(){continue;}
+        // A bounded, causal next-generation program can be evolved by source
+        // changes in descendants; it is not required to keep the old policy.
+        stages.truncate(8);
+        let design_id=&design["id"];
+        if !design_id.is_string(){continue;}
+        let later=&history[position+1..];
+        let mut cursor=0usize;
+        let mut repeated=0usize;
+        for executed in later.iter().filter(|g|
+            g["successorStage"]["designId"]==*design_id
+                && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary") {
+            if executed["successorStage"]["stageIndex"].as_u64()!=Some(cursor as u64){
+                continue;
+            }
+            repeated+=1;
+            let successful=executed["accepted"]==true
+                && executed["pairedRevalidated"]==true;
+            let retry=executed["successorStage"]["learningPolicy"]=="retry_failed"
+                && !successful;
+            let max_retries=executed["successorStage"]["maxRetries"].as_u64()
+                .unwrap_or(2).min(8) as usize;
+            if !retry || repeated>max_retries {
+                cursor+=1;
+                repeated=0;
+            }
         }
-        let successful=executed["accepted"]==true
-            && executed["pairedRevalidated"]==true;
-        if successful || executed["successorStage"]["learningPolicy"]!="retry_failed"{
-            attempts+=1;
-        }
+        let Some(stage)=stages.get(cursor) else{continue};
+        let Some(role)=stage["role"].as_str() else{continue};
+        let Some(domain)=stage["domain"].as_str() else{continue};
+        if !crate::engine::rsi_evolve::DOMAINS.contains(&domain){continue;}
+        let Some(original_path)=stage["path"].as_str()
+            .filter(|p|crate::engine::rsi::safe_path(p)) else{continue};
+        let candidate=frontier.iter().find(|row|
+            row["role"]==role && row["domain"]==domain
+                && row["path"]==original_path)
+            .or_else(||frontier.iter().find(|row|
+                row["role"]==role && row["domain"]==domain));
+        let Some(target)=candidate else{continue};
+        let Some(hash)=target["sourceSha256"].as_str().filter(|sha|
+            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+            else{continue};
+        let mut bound=stage.clone();
+        bound["originalPlannedPath"]=json!(original_path);
+        bound["path"]=target["path"].clone();
+        bound["sourceSha256"]=json!(hash);
+        bound["designId"]=design_id.clone();
+        bound["stageIndex"]=json!(cursor);
+        bound["acceptedParentCommit"]=parent["acceptedCommit"].clone();
+        bound["source"]="rebound_verified_model_successor_program_v1".into();
+        bound["methodOrigin"]=stage["source"].clone();
+        bound["actualRole"]=target["role"].clone();
+        bound["qualityProven"]=json!(false);
+        return bound;
     }
-    let Some(stage)=stages.get(attempts) else{return Value::Null};
-    let Some(path)=stage["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p))
-        else{return Value::Null};
-    let Some(role)=stage["role"].as_str() else{return Value::Null};
-    let Some(target)=frontier.iter().find(|row|
-        row["path"]==path && row["role"]==role
-            && row["domain"]==stage["domain"]
-            && row["sourceSha256"].as_str().is_some_and(|hash|
-                hash.len()==64 && hash.bytes().all(|c|c.is_ascii_hexdigit()))) else{
-        return Value::Null;
-    };
-    let mut binding=stage.clone();
-    binding["designId"]=design_id.clone();
-    binding["stageIndex"]=json!(attempts);
-    binding["acceptedParentCommit"]=parent["acceptedCommit"].clone();
-    binding["sourceSha256"]=target["sourceSha256"].clone();
-    binding["source"]="rebound_verified_model_successor_program_v1".into();
-    binding["qualityProven"]=json!(false);
-    binding
+    Value::Null
 }
 
 /// Reuse the model's target only when its *source change*, not its
