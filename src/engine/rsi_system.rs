@@ -355,20 +355,57 @@ pub(crate) fn validate_plan_evidence(
     index_id:&str,plan:&Value,history:&[Value]
 )->Result<(),String>{
     use std::collections::{BTreeMap,BTreeSet};
+    // Verify real source bytes, not equality to the parent's old source
+    // discovery algorithm. Descendants may enlarge their source taxonomy
+    // without bypassing the immutable filesystem or hash boundaries.
     let actual=source_inventory(root);
-    let digest=format!("{:x}",Sha256::digest(
-        serde_json::to_vec(&actual).map_err(|e|e.to_string())?));
     let blueprint=&plan["systemBlueprint"];
+    let declared=blueprint["sourceInventory"].as_array()
+        .filter(|rows|!rows.is_empty()&&rows.len()<=4096)
+        .ok_or("후손의 지능 소스 목록 오류")?;
+    let digest=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(declared).map_err(|e|e.to_string())?));
     if blueprint["generatorCommit"]!=commit
         || blueprint["sourceTreeSha256"]!=digest
         || plan["sourceTreeSha256"]!=digest
-        || blueprint["sourceInventory"]!=json!(actual)
-        || blueprint["sourceFileCount"].as_u64()!=Some(actual.len() as u64){
-        return Err("후손의 전체 소스 스냅샷과 현재 소스 파일이 일치하지 않습니다.".into());
+        || blueprint["sourceFileCount"].as_u64()!=Some(declared.len() as u64){
+        return Err("후손 소스 계보와 전체 소스 스냅샷이 다릅니다.".into());
     }
-    let known=actual.iter().filter_map(|row|
-        Some((row["path"].as_str()?.to_string(),row["sha256"].as_str()?.to_string())))
-        .collect::<BTreeMap<_,_>>();
+    let base=fs::canonicalize(root).map_err(|e|e.to_string())?;
+    let mut known=BTreeMap::<String,String>::new();
+    for row in declared {
+        let path=row["path"].as_str()
+            .filter(|p|crate::engine::rsi::safe_path(p))
+            .ok_or("후손이 제시한 소스 경로가 안전하지 않습니다.")?;
+        let sha=row["sha256"].as_str().filter(|s|
+            s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit()))
+            .ok_or("후손의 소스 해시가 유효하지 않습니다.")?;
+        let file=fs::canonicalize(base.join(path))
+            .map_err(|_|"후손이 제시한 소스가 실제 저장소에 없습니다.".to_string())?;
+        if !file.starts_with(&base)||!file.is_file(){
+            return Err("소스 경로가 격리된 저장소 밖에 있습니다.".into());
+        }
+        let bytes=fs::read(&file).map_err(|e|e.to_string())?;
+        if bytes.len()>2_000_000
+            || row["bytes"].as_u64()!=Some(bytes.len() as u64)
+            || format!("{:x}",Sha256::digest(&bytes))!=sha
+            || known.insert(path.to_string(),sha.to_string()).is_some(){
+            return Err("후손 소스 목록이 실제 파일 내용과 다릅니다.".into());
+        }
+        if crate::engine::code_index::indexed_source_hash(state,index_id,path)
+            .is_some_and(|indexed|indexed!=sha){
+            return Err("후손 소스와 기존 인덱스가 일치하지 않습니다.".into());
+        }
+    }
+    // Previously observed sources remain a factual minimum: an evolved
+    // scanner may ADD new programming languages and intelligence modules,
+    // but cannot hide any old source or forge its contents.
+    if actual.iter().any(|row|{
+        let Some(path)=row["path"].as_str() else{return true;};
+        known.get(path).map(String::as_str)!=row["sha256"].as_str()
+    }){
+        return Err("기존 실행 소스가 후손의 자기모형에서 누락됐습니다.".into());
+    }
     let components=blueprint["architecture"].as_array()
         .filter(|c|!c.is_empty()&&c.len()<=64)
         .ok_or("후손의 지능 구성요소 목록 오류")?;
@@ -395,7 +432,7 @@ pub(crate) fn validate_plan_evidence(
             if !mapped.insert(path.to_string())
                 || known.get(path).map(String::as_str)!=Some(sha)
                 || crate::engine::code_index::indexed_source_hash(state,index_id,path)
-                    .as_deref()!=Some(sha){
+                    .as_deref().is_some_and(|indexed|indexed!=sha){
                 return Err("구성요소 소스와 현재 색인의 SHA-256이 다릅니다.".into());
             }
         }
@@ -418,7 +455,7 @@ pub(crate) fn validate_plan_evidence(
             || !ownership.get(role).is_some_and(|files|files.contains(path))
             || known.get(path).map(String::as_str)!=Some(sha)
             || crate::engine::code_index::indexed_source_hash(state,index_id,path)
-                .as_deref()!=Some(sha)
+                .as_deref().is_some_and(|indexed|indexed!=sha)
             || !available.insert((role.to_string(),domain.to_string(),
                 path.to_string(),sha.to_string())){
             return Err("후손 탐색 결정의 소스·역할·인덱스 근거 오류".into());
