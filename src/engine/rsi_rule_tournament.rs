@@ -23,6 +23,7 @@ fn comparable(row:&Value)->bool {
         && row["evaluation"]["evidenceSha256"].as_str()
             .is_some_and(|sha|sha.len()==64)
         && row["pairedRevalidated"]==true
+        && row["modelAttributionConsistent"]==true
         && row["candidateOrigin"]=="model_driven_detached_worktree"
         && row["nativeMutation"].is_null()
         && row["tokenUsage"]["calls"].as_u64().is_some_and(|n|n>0)
@@ -100,6 +101,7 @@ mod tests {
         json!({"jobId":job,"tokens":2300,"candidateId":job,
             "pairedRevalidated":true,"candidateOrigin":"model_driven_detached_worktree",
             "nativeMutation":null,"tokenUsage":{"calls":1},
+            "modelAttributionConsistent":true,
             "sourceBranch":"dominion-sub2","domain":"learning",
             "comparisonProfileSha256":"frozen-profile",
             "accepted":accepted,"evidenceVerified":accepted,
