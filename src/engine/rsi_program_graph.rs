@@ -260,7 +260,17 @@ pub(crate) fn handoff(history:&[Value])->Value {
                 && g["systemDesign"]["openProgram"]==plan["program"])
                 else{continue};
             let ancestor=&author["openImprovementProgram"]["program"];
-            if valid_authored(ancestor) && ancestor["revision"]!=plan["programSha256"] {
+            let rewritten_source=author["changedSourcePaths"].as_array()
+                .is_some_and(|changed|
+                    changed.iter().filter_map(Value::as_str).any(|p|
+                        matches!(p,"src/engine/rsi_program_graph.rs"
+                            |"src/engine/rsi_meta_controller.rs")
+                        && author["acceptedSourceHashes"][p].as_str()
+                            .is_some_and(|h|h.len()==64
+                                && h.bytes().all(|b|b.is_ascii_hexdigit()))));
+            if valid_authored(ancestor)
+                && ancestor["revision"]!=plan["programSha256"]
+                && rewritten_source {
                 rewrites.push(json!({
                     "authorGenerationId":author["id"],
                     "executingGenerationId":descendant["id"],
@@ -355,6 +365,56 @@ mod tests {
         assert_eq!(next["nodeId"],"new_algorithm");
         assert!(valid(&next,&history,&f,&two),
             "a new role target must execute if its current source is indexed");
+    }
+    #[test]
+    fn an_adopted_program_rewrite_counts_only_after_the_new_program_executes(){
+        let old=authored();
+        let mut new=old.clone();
+        // Rewrite not only content but its conditional improvement structure:
+        // future branches can evolve rather than follow preset phases.
+        new["edges"][0]["to"]=json!("rewrite_program");
+        new["revision"]=Value::Null;
+        let mut unsigned=new.clone();
+        unsigned.as_object_mut().unwrap().remove("revision");
+        new["revision"]=json!(sha(&unsigned));
+        assert!(valid_authored(&new));
+        let f=frontier();let zero="0".repeat(40);let one="1".repeat(40);
+        let two="2".repeat(40);let three="3".repeat(40);
+        let first=parent("first",&one,&zero,old.clone(),Value::Null);
+        let p1=synthesize(&[first.clone()],&f,&["memory","improver"],&one);
+        let mut author=parent("rewriter",&two,&one,new.clone(),p1.clone());
+        author["metaPolicy"]=json!({
+            "selectionMode":"authored_open_improvement_program",
+            "revision":"m","openImprovementRevision":p1["revision"]
+        });
+        author["compiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":one,"metaRevision":"m",
+            "openImprovementRevision":p1["revision"]
+        });
+        author["changedSourcePaths"]=json!([
+            "src/engine/memory.rs","src/engine/rsi_program_graph.rs"]);
+        author["acceptedSourceHashes"]["src/engine/rsi_program_graph.rs"]
+            =json!("b".repeat(64));
+        let pre=vec![first.clone(),author.clone()];
+        let p2=synthesize(&pre,&f,&["memory","improver"],&two);
+        assert_eq!(p2["programSha256"],new["revision"]);
+        assert!(valid(&p2,&pre,&f,&two));
+        let mut execution=parent("new-method-exec",&three,&two,Value::Null,p2.clone());
+        execution["metaPolicy"]=json!({
+            "selectionMode":"authored_open_improvement_program",
+            "revision":"q","openImprovementRevision":p2["revision"]
+        });
+        execution["compiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":two,"metaRevision":"q",
+            "openImprovementRevision":p2["revision"]
+        });
+        let mut history=vec![first,author,execution];
+        assert_eq!(handoff(&history)["executedProgramRewrites"],1);
+        history[2]["compiledPlanExecuted"]["openImprovementRevision"]
+            =json!("wrong");
+        assert_eq!(handoff(&history)["executedProgramRewrites"],0);
     }
     #[test]
     fn no_independent_adoption_never_mints_a_next_generation_program(){
