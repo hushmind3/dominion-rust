@@ -67,6 +67,15 @@ pub fn definitions() -> Vec<Value> {
             "design":text("New executable architecture or algorithm to implement"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24,"uniqueItems":true}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
+            "newComponents":json!({"type":"array","maxItems":8,
+                "description":"Optional model-invented new intelligence roles. Every proposed module and a DISTINCT executable integration file must be changed and independently adopted before the next compiled descendant inherits the role.",
+                "items":{"type":"object","properties":{
+                    "role":{"type":"string"},"domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                    "purpose":{"type":"string"},
+                    "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}
+                },"required":["role","domain","purpose","sourcePaths","integrationPaths"],
+                    "additionalProperties":false}}),
             "successorStages":json!({"type":"array","maxItems":8,
                 "description":"Up to eight model-designed next-generation improvement stages. A rebuilt descendant independently rebinds stage source hashes and may change the program based on verified outcomes.",
                 "items":{"type":"object","properties":{
