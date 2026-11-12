@@ -144,7 +144,7 @@ pub(crate) fn decide(
     // source revisions supply transferable hypotheses, not "matched"
     // proof. Learning can survive a successful source commit changing HEAD.
     let mut transfer=BTreeMap::<(String,String),Trial>::new();
-    for key in pool.keys(){transfer.insert(key.clone(),Trial::default());}
+    for key in pool.keys(){transfer.insert((*key).clone(),Trial::default());}
     for g in history {
         if g["generatorCommit"]==commit
             || g["comparisonProfileSha256"]!=profile
@@ -174,7 +174,7 @@ pub(crate) fn decide(
         if trial.quality() <= baseline_score+0.25 {continue;}
         if !confirmed || trial.quality()>
             pool.get(&preferred).map(Trial::quality).unwrap_or(-1e10) {
-            preferred=key.clone();
+            preferred=(*key).clone();
             confirmed=true;
         }
     }
@@ -192,7 +192,7 @@ pub(crate) fn decide(
                 .max_by(|a,b|a.1.quality().total_cmp(&b.1.quality())
                     .then_with(||b.0.cmp(a.0)));
             if let Some((key,_))=inherited{
-                preferred=key.clone();
+                preferred=(*key).clone();
                 mode="cross_revision_transfer_hypothesis_not_proven";
             }
         }
@@ -205,7 +205,7 @@ pub(crate) fn decide(
                     if *a.0==original {std::cmp::Ordering::Less}
                     else if *b.0==original {std::cmp::Ordering::Greater}
                     else{a.0.cmp(b.0)}
-                })).map(|(key,_)|key.clone()).unwrap_or(original.clone());
+                })).map(|(key,_)|(*key).clone()).unwrap_or(original.clone());
         if mode!="cross_revision_transfer_hypothesis_not_proven"{
             preferred=key;
             mode="paired_exploration_not_quality_proof";
@@ -261,7 +261,7 @@ pub(crate) fn choose(
     // absent, the user opted in to the configured enabled provider pool.
     let listed=input["rsiModelCandidates"].as_array();
     let candidates=if let Some(list)=listed{
-        list.clone()
+        list.to_vec()
     }else{
         state.store.all("provider").into_iter()
             .filter(|p|p["enabled"]!=false)
