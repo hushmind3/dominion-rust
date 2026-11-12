@@ -48,6 +48,10 @@ fn comparable(g:&Value, commit:&str, profile:&str, domain:&str, objective:&str)-
         && g["nativeMutation"].is_null()
         && g["generatorProviderId"].as_str().is_some_and(identifier)
         && g["generatorModel"].as_str().is_some_and(identifier)
+        && (!g["modelRoute"].is_object()
+            || (g["modelRouteExecuted"]==true
+                && g["modelRoute"]["selected"]["providerId"]==g["generatorProviderId"]
+                && g["modelRoute"]["selected"]["model"]==g["generatorModel"]))
 }
 #[derive(Default)]
 struct Trial {
@@ -279,6 +283,33 @@ pub(crate) fn choose(
     let Some(profile)=crate::engine::rsi_meta_controller::comparison_profile(input)
         else{return Value::Null};
     decide(history,&baseline,&pool,commit,&profile,domain,objective)
+}
+/// Post-evaluation evidence available to the next rebuilt model ecology.
+/// The model's training or endpoint quality is not claimed from a source
+/// improvement; independent outcomes are retained as separate observations.
+pub(crate) fn observation(g:&Value)->Value{
+    let route=&g["modelRoute"];
+    let actual=route.is_object()&&g["modelRouteExecuted"]==true
+        && route["selected"]["providerId"]==g["generatorProviderId"]
+        && route["selected"]["model"]==g["generatorModel"];
+    json!({
+        "source":"executed_model_ecology_observation_v1",
+        "routeRevision":route["revision"],
+        "routeActuallyUsedForInference":actual,
+        "generatorProviderId":g["generatorProviderId"],
+        "generatorModel":g["generatorModel"],
+        "pairedRevalidated":g["pairedRevalidated"]==true,
+        "sourceCandidateAdopted":actual&&source_bound_candidate(g),
+        "improvedHoldouts":if actual&&g["pairedRevalidated"]==true{
+            g["evaluation"]["metrics"]["improvedHoldouts"].clone()
+        }else{Value::Null},
+        "regressions":if actual&&g["pairedRevalidated"]==true{
+            g["evaluation"]["metrics"]["regressions"].clone()
+        }else{Value::Null},
+        "foundationWeightsChanged":false,
+        "externalApiWeightsChanged":false,
+        "fullIntelligenceModelSuperiorityProven":false
+    })
 }
 /// An older supervisor may check only IMMUTABLE facts. It must not
 /// recompute or impose its own outdated model-ranking algorithm on a newer
