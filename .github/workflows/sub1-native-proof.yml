@@ -1,17 +1,6 @@
 name: Sub1 independently verified native RSI lineage
 
 on:
-  push:
-    branches: [dominion-sub1]
-    paths:
-      - '.github/workflows/sub1-native-proof.yml'
-      - 'scripts/sub1-native-proof.mjs'
-      - 'src/engine/rsi_mutation.rs'
-      - 'src/engine/rsi_bayesian_accumulator.rs'
-      - 'src/engine/rsi_evolve.rs'
-      - 'src/engine/rsi_worktree.rs'
-      - 'src/engine/jobs.rs'
-      - 'src/api/rsi.rs'
   workflow_dispatch:
 
 permissions:
@@ -23,7 +12,6 @@ concurrency:
 
 jobs:
   native-lineage:
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[rsi-lineage]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
