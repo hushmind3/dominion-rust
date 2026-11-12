@@ -37,8 +37,17 @@ An observation must have all of the following:
    passing case that now fails, or an explicit metric regression.
 5. Evidence for one edge remains partitioned by evaluation profile.
    Duplicate cases in a single candidate do not multiply the evidence.
-6. Two distinct independently evaluated candidates in the same profile are
-   required before the edge may redirect the next generation's edit focus.
+6. Two distinct independently evaluated candidates AND at least two distinct
+   regressed holdout case IDs in the same frozen profile are required before
+   the edge may redirect the next generation's edit focus.
+7. Every intervention must carry its original compiled generation's
+   `systemAgenda.frontier` snapshot, including the precise source SHA-256.
+   Historic failures remain in the evidence ledger, but only a cohort whose
+   `generatorCommit` and frozen source hash still match the current source
+   revision can force a new paired repair. This avoids replaying an outdated
+   diagnosis against a newly rewritten descendant.
+8. The actual model-authored design's `targetFiles` must include the
+   isolated changed source file; an unrelated diff cannot acquire that role.
 
 The newly selected phase
 \`investigate_repeated_cross_component_negative_transfer\` chooses the
@@ -64,10 +73,9 @@ original server-owned frozen evaluator can decide adoption.
 
 ## Deliberate limitations
 
-This initial implementation does not assert causal identification, a passed CI,
+This revision does not assert causal identification, a passed CI,
 a completed autonomous RSI cycle, a trained model weight change, or general
-competence retention. It uses 2 witnessed single-path edits as an *exploration*
-threshold, not statistical significance. The two-role repair must still be
+competence retention. It uses 2 independently evaluated single-path edits and 2 distinct damaged holdouts as an *exploration* threshold, not statistical significance. The two-role repair must still be
 authored, independently tested and adopted before being called an improvement.
 
 ### Source and test map
@@ -98,3 +106,20 @@ These papers motivate architecture, not a claim that Dominion reproduces
 their published results. The next experiment is an independently measured
 three-arm source-edit comparison on the same frozen holdout profile, followed
 by a rebuilt-child cross-role retention test.
+
+## November 13 follow-up: revision-scoped recursive transfer learning
+
+Commit: `88dccf043ed10436712f8b7a17e9e1643739fe54`.
+
+Previously, historical single-source regressions could be aggregated under an
+unchanged profile and repeatedly steer subsequent descendants, even after the
+originating intelligence file had changed. The new learner retains the historic
+cohort as a diagnostic memory while giving decision authority only to a current
+`(generatorCommit, sourceAnchorSha256, comparisonProfileSha256)` cohort.
+It also separates distinct candidate executions from distinct holdout failures.
+
+The focus remains an independently evaluated hypothesis rather than a claim of
+causal discovery. The child inherits both the hypothesis generator and the
+ability to rewrite its method for choosing and repairing interacting intelligence.
+Neither the expanded Rust tests nor a real multi-generation run were executed in
+this documentation-only follow-up.
