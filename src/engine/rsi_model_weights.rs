@@ -91,6 +91,7 @@ pub(crate) async fn run_tool(
         return Err("같은 후손의 모델 산출물을 덮어쓰지 않습니다.".into());
     }
     let mut cmd=Command::new("python3");
+    cmd.kill_on_drop(true);
     cmd.arg(script).arg("--manifest").arg(manifest_path)
         .arg("--output").arg(&destination)
         .current_dir(work).env("PYTHONNOUSERSITE","1");
@@ -152,6 +153,93 @@ mod tests{
 }
 
 
+
+fn paired_gate(m:&Value,case_sha:&str)->Result<bool,String>{
+    if m["source"]!="separate_parent_paired_lora_oracle_v1"
+        ||m["caseSha256"].as_str()!=Some(case_sha)
+        ||m["privateExamplesReturned"]!=false{
+        return Err("평가기 출처 또는 비공개 사례 증거가 유효하지 않습니다.".into());
+    }
+    let n=m["measuredExamples"].as_u64().filter(|v|(8..=256).contains(v))
+        .ok_or("독립 평가의 사례 수가 부족하거나 비정상적입니다.")?;
+    let wins=m["individuallyImproved"].as_u64().filter(|v|*v<=n)
+        .ok_or("쌍별 모델 개선 사례 수가 유효하지 않습니다.")?;
+    let groups=m["domains"].as_object().filter(|v|v.len()>=2 && v.len()<=32)
+        .ok_or("평가가 여러 지능 분야를 포함하지 않습니다.")?;
+    if m["distinctDomains"].as_u64()!=Some(groups.len() as u64){
+        return Err("분야 수와 실제 평가 계수가 다릅니다.".into());
+    }
+    let mean=|v:&Value,key:&str|v[key].as_f64()
+        .filter(|value|value.is_finite()&&*value>=0.0&&*value<100.0);
+    let before=mean(m,"baselineMeanLoss").ok_or("기준 모델 손실 오류")?;
+    let after=mean(m,"candidateMeanLoss").ok_or("후보 모델 손실 오류")?;
+    let mut counted=0u64;
+    let mut weighted_before=0.0;
+    let mut weighted_after=0.0;
+    let mut no_regression=true;
+    for row in groups.values(){
+        let k=row["examples"].as_u64().filter(|v|*v>=2)
+            .ok_or("분야별 비교 사례가 너무 적습니다.")?;
+        let a=mean(row,"baselineMeanLoss").ok_or("분야 기준 손실 오류")?;
+        let b=mean(row,"candidateMeanLoss").ok_or("분야 후보 손실 오류")?;
+        counted=counted.saturating_add(k);
+        weighted_before+=a*k as f64;
+        weighted_after+=b*k as f64;
+        if b>a+0.02{no_regression=false;}
+    }
+    if counted!=n
+        ||(weighted_before/n as f64-before).abs()>0.000001
+        ||(weighted_after/n as f64-after).abs()>0.000001{
+        return Err("쌍 비교의 전체 수치와 분야별 수치가 일치하지 않습니다.".into());
+    }
+    Ok(before-after>=0.02
+        && wins.saturating_mul(3)>=n.saturating_mul(2)
+        && no_regression)
+}
+
+#[cfg(test)]
+mod model_promotion_tests{
+    use super::*;
+    fn evidence()->Value{
+        json!({
+            "source":"separate_parent_paired_lora_oracle_v1",
+            "caseSha256":"a".repeat(64),"privateExamplesReturned":false,
+            "measuredExamples":12,"distinctDomains":3,
+            "individuallyImproved":10,
+            "baselineMeanLoss":1.2,"candidateMeanLoss":0.9,
+            "domains":{
+                "learning":{"examples":4,"baselineMeanLoss":1.2,"candidateMeanLoss":0.9},
+                "memory":{"examples":4,"baselineMeanLoss":1.2,"candidateMeanLoss":0.9},
+                "tools":{"examples":4,"baselineMeanLoss":1.2,"candidateMeanLoss":0.9}
+            }
+        })
+    }
+    #[test]
+    fn only_consistent_multidomain_paired_improvement_can_promote(){
+        assert_eq!(paired_gate(&evidence(),&"a".repeat(64)).unwrap(),true);
+    }
+    #[test]
+    fn any_domain_regression_disqualifies_the_candidate(){
+        let mut m=evidence();
+        m["domains"]["memory"]["candidateMeanLoss"]=json!(1.3);
+        m["candidateMeanLoss"]=json!((0.9+1.3+0.9)/3.0);
+        assert!(!paired_gate(&m,&"a".repeat(64)).unwrap());
+    }
+    #[test]
+    fn inconsistent_aggregate_or_wrong_dataset_sha_fails_closed(){
+        let mut m=evidence();
+        m["measuredExamples"]=json!(11);
+        assert!(paired_gate(&m,&"a".repeat(64)).is_err());
+        assert!(paired_gate(&evidence(),&"b".repeat(64)).is_err());
+    }
+    #[test]
+    fn a_single_domain_cannot_disguise_itself_as_two(){
+        let mut m=evidence();
+        m["domains"]=json!({"memory":{"examples":12,
+            "baselineMeanLoss":1.2,"candidateMeanLoss":0.9}});
+        assert!(paired_gate(&m,&"a".repeat(64)).is_err());
+    }
+}
 // The parent coordinator calls this after a descendant has finished running.
 // It is deliberately separate from the editable generation's source oracle.
 // Private evaluation cases never enter the prompt or generation JSON.
@@ -195,7 +283,8 @@ pub(crate) async fn evaluate_candidate(
         }
         let case_sha=manifest["casesSha256"].as_str().filter(|s|hex(s))
             .ok_or("독립 평가 사례 해시 없음")?;
-        if sha_file(&dataset)?!=case_sha || case_sha==candidate["trainingDataSha256"]{
+        if sha_file(&dataset)?!=case_sha
+            ||candidate["trainingDataSha256"].as_str()==Some(case_sha){
             return Err("평가 사례 해시 불일치 또는 학습 자료 재사용".into());
         }
         let trusted=fs::canonicalize(coordinator_source.join("scripts/sub4_adapter_eval.py"))
@@ -206,12 +295,15 @@ pub(crate) async fn evaluate_candidate(
             return Err("후보가 평가기 경로를 바꾸었습니다.".into());
         }
         let script_sha=sha_file(&trusted)?;
-        let result=tokio::time::timeout(Duration::from_secs(900),Command::new("python3")
-            .arg(&trusted).arg("--base").arg(&base)
+        let mut evaluator=Command::new("python3");
+        evaluator.kill_on_drop(true);
+        evaluator.arg(&trusted).arg("--base").arg(&base)
             .arg("--adapter").arg(&adapter).arg("--cases").arg(&dataset)
             .arg("--case-sha").arg(case_sha)
-            .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1")
-            .output()).await.map_err(|_|"독립 모델 평가 시간이 초과되었습니다.".to_string())?
+            .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1");
+        let result=tokio::time::timeout(Duration::from_secs(900),
+            evaluator.output()).await
+            .map_err(|_|"독립 모델 평가 시간이 초과되었습니다.".to_string())?
             .map_err(|e|e.to_string())?;
         if !result.status.success(){
             return Err(String::from_utf8_lossy(&result.stderr)
@@ -221,31 +313,7 @@ pub(crate) async fn evaluate_candidate(
         let metrics=stdout.lines().rev().find_map(|line|line.strip_prefix(
             "DOMINION_ADAPTER_EVAL=").and_then(|s|serde_json::from_str::<Value>(s).ok()))
             .ok_or("평가기가 쌍 비교 영수증을 반환하지 않았습니다.")?;
-        if metrics["source"]!="separate_parent_paired_lora_oracle_v1"
-            || metrics["caseSha256"]!=case_sha
-            || metrics["measuredExamples"].as_u64().unwrap_or(0)<8
-            || metrics["distinctDomains"].as_u64().unwrap_or(0)<2
-            || metrics["privateExamplesReturned"]!=false{
-            return Err("독립 쌍 비교 증거가 부족합니다.".into());
-        }
-        let base_loss=metrics["baselineMeanLoss"].as_f64()
-            .filter(|v|v.is_finite()&&*v>=0.0&&*v<100.0).ok_or("기준 손실 오류")?;
-        let candidate_loss=metrics["candidateMeanLoss"].as_f64()
-            .filter(|v|v.is_finite()&&*v>=0.0&&*v<100.0).ok_or("후보 손실 오류")?;
-        let n=metrics["measuredExamples"].as_u64().unwrap_or(0);
-        let improved=metrics["individuallyImproved"].as_u64().unwrap_or(0);
-        let domains=metrics["domains"].as_object().ok_or("분야별 쌍 비교 누락")?;
-        let enough=domains.len()>=2 && domains.values().all(|v|{
-            let a=v["candidateMeanLoss"].as_f64();
-            let b=v["baselineMeanLoss"].as_f64();
-            v["examples"].as_u64().unwrap_or(0)>0
-                && a.is_some_and(|x|x.is_finite()&&x>=0.0)
-                && b.is_some_and(|x|x.is_finite()&&x>=0.0)
-                && a.unwrap_or(f64::MAX)<=b.unwrap_or(f64::NEG_INFINITY)+0.02
-        });
-        let promoted=base_loss-candidate_loss>=0.02
-            && improved.saturating_mul(3)>=n.saturating_mul(2)
-            && enough;
+        let promoted=paired_gate(&metrics,case_sha)?;
         Ok::<Value,String>(json!({
             "source":"independent_parent_model_adapter_pair_v1",
             "campaignId":campaign_id,"generationJobId":generation["jobId"],
