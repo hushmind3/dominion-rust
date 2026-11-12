@@ -142,18 +142,6 @@ pub fn resolved_base_url(provider: &Value) -> String {
     // OpenCode Go publishes its OpenAI-compatible base under
     // /inference/go/openai/v1. Older records still carry /zen/go/v1, so
     // every route resolves to the documented URL.
-    // The model call path uses OpenAI-compatible /chat/completions, while
-    // Ollama's default address is the bare http://host:11434. Without
-    // normalizing the API prefix, a real local model receives HTTP 404.
-    // Model discovery still strips /v1 for its native /api/tags endpoint.
-    if provider["kind"].as_str() == Some("ollama") {
-        let root = resolved.strip_suffix("/api").unwrap_or(&resolved);
-        return if root.ends_with("/v1") {
-            root.to_string()
-        } else {
-            format!("{root}/v1")
-        };
-    }
     if provider["integration"].as_str() == Some("opencode-go") {
         if resolved.starts_with("https://opencode.ai/zen/go")
             || resolved == "https://opencode.ai/inference/go"
@@ -611,26 +599,6 @@ mod tests {
         assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_err());
         // Keyed routes are not subject to the anonymous limit.
         assert!(reserve_generation(base, "Qwen3.8-27B-test", None).is_ok());
-    }
-
-    #[test]
-    fn ollama_default_and_remote_hosts_resolve_to_live_chat_endpoint() {
-        for raw in [
-            "http://127.0.0.1:11434",
-            "http://192.168.0.28:11434/",
-            "http://127.0.0.1:11434/api",
-            "http://127.0.0.1:11434/v1"
-        ] {
-            let provider=json!({"id":"ollama-live","kind":"ollama",
-                "enabled":true,"baseUrl":raw,"model":"qwen3:4b-instruct"});
-            let route=route_from_provider(&state(),&provider,None).unwrap();
-            assert!(route.base_url.ends_with("/v1"),"{raw} -> {}",route.base_url);
-            assert_eq!(route.base_url.matches("/v1").count(),1);
-            assert_eq!(format!("{}/chat/completions",route.base_url),
-                format!("{}/chat/completions",resolved_base_url(&provider)));
-        }
-        let cloud=json!({"kind":"openai","baseUrl":"https://api.example.net/v1"});
-        assert_eq!(resolved_base_url(&cloud),"https://api.example.net/v1");
     }
 
     #[test]

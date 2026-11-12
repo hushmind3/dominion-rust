@@ -65,11 +65,7 @@ pub(super) async fn tool_manual(native: &[Value], query: &str) -> String {
             function.get("parameters").cloned().unwrap_or(json!({}))
         ));
     }
-    // A hard-coded workspace_read example was shown even when that tool was
-    // absent from the native menu, training small models to call a denied
-    // name instead of executing the selected source edit.
-    manual.push_str("\nUse ONLY one of the listed tool names. Copy actual observed source into oldText, and provide the intended replacement in newText. Never copy examples or placeholder values as an edit.");
-
+    manual.push_str("\nExample: <tool_call>{\"name\":\"workspace_read\",\"arguments\":{\"path\":\"a.txt\"}}</tool_call>");
     manual
 }
 

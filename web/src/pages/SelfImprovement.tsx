@@ -2,7 +2,6 @@ import {useEffect,useState} from 'react'
 import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Square,Download} from 'lucide-react'
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
-import {RsiTargetEvidence,type RsiTargetSelection} from '../components/RsiTargetEvidence'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
 import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 
@@ -10,6 +9,10 @@ type Measurement={id:string;metrics:{key:string;baseline:number;candidate:number
 type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'|'inconclusive';
  canSelectCandidate:boolean;selected?:string;metrics:{pairedCases:number;regressions:number;measurements?:Measurement[]}}
 type InstallJob={id:string;status:string;error?:string;result?:{installed?:string}}
+type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:string;policyError?:string;
+ evidence?:{path?:number;symbols?:number;body?:number;domain?:number;priorProductive?:number}}
+type FocusSelection={source?:string;domain?:string;policyRevision?:string;
+ candidates?:FocusCandidate[]}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
@@ -17,7 +20,7 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusSelection?:RsiTargetSelection;tokenUsage?:{promptTokens?:number;completionTokens?:number;calls?:number;estimatedCalls?:number}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection}[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
@@ -203,13 +206,18 @@ export function SelfImprovementPage(){
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
    {!working&&hasSelected&&<div className="mt-4 rounded-xl border border-[#D9E3D3] bg-[#F2F6EF] p-4"><p className="text-[13px] font-semibold">{campaign.selectedVersionRunning?'검증한 버전이 현재 4317에서 실행 중입니다':installing?'검증본을 빌드하고 있습니다':install?.status==='completed'?'빌드 완료 · 서버 재연결 확인 중':'선택한 개선본을 실제 사용하는 프로그램에 반영할 수 있습니다'}</p><p className="mt-1 text-[12px] text-[#7C7469]">{campaign.sourceSnapshot?'작업 시작 시 미저장 코드가 있었습니다. 파일을 보존하기 위해 자동 반영은 제한합니다.':'작업 브랜치만 반영하며 메인과 다른 서비스의 설정은 유지합니다.'}</p>{!campaign.selectedVersionRunning&&!campaign.sourceSnapshot&&<Button className="mt-3" variant="primary" disabled={busy||installing} onClick={()=>void apply()}>{installing?<LoaderCircle size={14} className="animate-spin"/>:<Download size={14}/>}검증본을 4317에 반영</Button>}</div>}
    {activeSearch&&<div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-[#FAF7F1] px-3 py-2 text-[11px] text-[#7C7469]"><span className="font-semibold text-[#5C544A]">다음 연구를 고르는 방식</span><span>{activeSearch.name}</span></div>}
-   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">지난 비교 결과</summary><div className="mt-2 grid gap-2">
-    {campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
-     <p>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}{item.domainSelection==='algorithm_trial'?' · 전략 시험':item.domainSelection==='research_continuation'?' · 연구 계속':''}{item.trialOutcome?.verdict?' · 시험 '+item.trialOutcome.verdict:''}</p>
-     {item.tokenUsage&&<p className="mt-1 text-[11px] text-[#7C7469]">입력 {(item.tokenUsage.promptTokens||0).toLocaleString()} · 출력 {(item.tokenUsage.completionTokens||0).toLocaleString()} 토큰{item.tokenUsage.estimatedCalls?' · 추정 '+item.tokenUsage.estimatedCalls+'회':''}</p>}
-     <RsiTargetEvidence selection={item.focusSelection}/>
-    </div>)}
-   </div></details>}
+   {campaign.history&&campaign.history.length>0&&<details className="mt-3 text-[12px]"><summary className="cursor-pointer text-[#7C7469]">세대별 실행·탐색 근거</summary><div className="mt-2 grid gap-2">{campaign.history.map(item=><div key={item.attempt} className="rounded-lg bg-[#FAF7F1] p-3">
+    <strong>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}</strong>
+    <p className="mt-1 text-[#7C7469]">탐색 분야: {item.domain||'미측정'}{item.domainSelection==='algorithm_trial'?' · 신규 탐색식 시험':item.domainSelection==='research_continuation'?' · 이전 연구 계승':''}{item.trialOutcome?.verdict?` · 평가: ${item.trialOutcome.verdict}`:''}</p>
+    {item.focusSelection?.candidates?.length?<div className="mt-2 space-y-1">
+     <p className="font-semibold text-[#665D50]">선택한 코드와 판단 근거 · {item.focusSelection.source==='indexed_evidence'?'인덱스 기반':'사용자 지정'}{item.focusSelection.policyRevision?` · 정책 ${item.focusSelection.policyRevision.slice(0,10)}`:''}</p>
+     {item.focusSelection.candidates.map(file=><div key={file.path} className="rounded-md border border-[#E7E0D5] bg-white px-2 py-1.5">
+      <div className="flex flex-wrap justify-between gap-2"><code className="break-all">{file.path}</code><span>{Number.isFinite(file.score)?`점수 ${file.score?.toFixed(2)}`:'점수 미측정'}</span></div>
+      <p className="mt-0.5 text-[#81786B]">{file.scoring==='expression'?'모델 생성 탐색식':'기본 근거 탐색'}{file.policyError?' · 탐색식 오류로 기본 방식 사용':''}{file.sourceHash?` · 원본 ${file.sourceHash.slice(0,10)}`:''}</p>
+     </div>)}
+    </div>:item.focusFiles?.length?<p className="mt-2 text-[#81786B]">대상 파일: {item.focusFiles.join(', ')}</p>:null}
+    {item.generatorCommit&&<p className="mt-2 text-[#81786B]">실행기 {item.generatorCommit.slice(0,10)}{item.acceptedCommit?` · 채택 ${item.acceptedCommit.slice(0,10)}`:''}</p>}
+   </div>)}</div></details>}
   </Panel>}
   {campaign?.comparison&&<Results comparison={campaign.comparison} waiting={working&&campaign.phase==='waiting_for_choice'} busy={busy} onChoose={side=>void choose(side)}/>}
  </div>

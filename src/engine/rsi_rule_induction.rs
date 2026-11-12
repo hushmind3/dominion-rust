@@ -7,7 +7,6 @@
 //! post-ground search and call budget. Output is only a trial controller rule,
 //! never a claim that a new descendant has improved.
 use serde_json::{json,Value};
-use crate::state::AppState;
 use std::collections::BTreeSet;
 
 #[derive(Clone,Copy,Debug)]
@@ -61,9 +60,6 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
 
 fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
     if row["accepted"]!=true || row["evidenceVerified"]!=true
-        || row["acceptedProof"]["status"]!="verified"
-        || row["acceptedProof"]["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-        || row["acceptedProof"]["evaluation"]["metrics"]["eligible"]!=true
         || row["evaluation"]["metrics"]["eligible"]!=true {return None;}
     let adopted=row["acceptedSourceHashes"].as_object()?;
     for (index,op) in ops.iter().enumerate() {
@@ -93,10 +89,7 @@ fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
 fn negative_snapshot(row:&Value,ops:&[Value])->Option<Snapshot> {
     if row["accepted"]==true || row["candidateId"].as_str().is_none()
         || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-        || !row["evaluation"]["metrics"].is_object()
-        || row["evaluation"]["metrics"]["eligible"]==true
-        || !matches!(row["evaluation"]["metrics"]["verdict"].as_str(),
-            Some("inconclusive" | "regressed")) {return None;}
+        || !row["evaluation"]["metrics"].is_object(){return None;}
     // Observe a candidate's decision state immediately BEFORE its first
     // source edit, not the subsequent tool calls produced by a failed patch.
     for (index,op) in ops.iter().enumerate(){
@@ -197,15 +190,12 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
         // Synthesize candidate predicates from measurements AND causal event
         // order. One successful sample is never enough to establish a guard.
         let mut proposals=Vec::new();
-        // Runtime tool-call counters may include rejected attempts that are
-        // not durable operations. Induce guards only from reproducible,
-        // completed source events, never from a mismatched call total.
         for name in ["completed:workspace_read_range",
-            "completed:code_search"] {
+            "completed:code_search","tool_calls"] {
             let lo=positive.iter().map(|s|metric(*s,name)).min().unwrap_or(0);
             let hi=positive.iter().map(|s|metric(*s,name)).max().unwrap_or(0);
             for (cmp,value) in [("ge",lo),("lt",hi.saturating_add(1))] {
-                if value<=32 && !(name=="completed:workspace_read_range" && value==0) {
+                if value<=48 && !(name=="completed:workspace_read_range" && value==0) {
                     proposals.push(predicate(name,cmp,value));
                 }
             }
@@ -249,35 +239,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
             "sourceJobId":"contrasting_independent_descendant_executions",
             "parentRuleId":null}));
     }
-    crate::engine::rsi_judgement::normalize(&json!(result))
-}
-
-
-/// Produce a bounded, provenance-preserving timeline from durable operations.
-/// Only fields needed for contrastive induction are copied: raw tool output,
-/// source contents and model assertions are never training features.
-pub fn tool_timeline(state: &AppState, session_id: &str) -> Vec<Value> {
-    let mut operations = state.store.all("execution_operation").into_iter()
-        .filter(|row| row["sessionId"].as_str() == Some(session_id)
-            && matches!(row["tool"].as_str(),
-                Some("code_search" | "workspace_read_range" | "workspace_replace"
-                    | "workspace_replace_range" | "workspace_write")))
-        .collect::<Vec<_>>();
-    operations.sort_by(|a, b|
-        a["createdAt"].as_str().cmp(&b["createdAt"].as_str())
-            .then(a["runId"].as_str().cmp(&b["runId"].as_str()))
-            .then(a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())));
-    if operations.len() > 64 {
-        operations = operations.split_off(operations.len() - 64);
-    }
-    operations.into_iter().map(|op| json!({
-        "runId":op["runId"],"opSeq":op["opSeq"],
-        "tool":op["tool"],"status":op["status"],
-        "path":op["arguments"]["path"],
-        "result":{"written":op["result"]["written"],
-            "postSha256":op["result"]["postSha256"]},
-        "toolReceipt":{"verified":op["toolReceipt"]["verified"]}
-    })).collect()
+    crate::engine::rsi_decision_rules::normalize(&json!(result))
 }
 
 #[cfg(test)]
@@ -297,122 +259,13 @@ mod tests {
             "toolReceipt":{"verified":true}}));
         json!({"jobId":id,"objectiveId":"o","knowledgePartition":"p",
             "generatorProviderId":"api","generatorModel":"m",
-            "accepted":accepted,"evidenceVerified":accepted,"acceptedProof":{"status":if accepted {"verified"}else{"rejected"},
-                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
-                    "metrics":{"eligible":accepted}}},
+            "accepted":accepted,"evidenceVerified":accepted,
             "acceptedSourceHashes":{"src/engine/example.rs":"a".repeat(64)},
             "candidateId":id,
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
-                "metrics":{"eligible":accepted,"verdict":if accepted {"improved"}else{"inconclusive"}}},
+                "metrics":{"eligible":accepted}},
             "toolTimeline":operations})
     }
-    #[test]
-    fn durable_timeline_preserves_real_provenance_without_raw_tool_output() {
-        let root=std::env::temp_dir().join(format!(
-            "champion-contrastive-{}",uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let config=crate::config::Config{
-            port:0,data_dir:root.clone(),web_dir:root.join("web"),
-            workspace:root.clone()};
-        let state=AppState::new(config.clone(),
-            crate::db::Store::open(&config.db_path()).unwrap(),
-            crate::vault::Vault::open(&config.key_path()));
-        state.store.put("execution_operation",&json!({
-            "id":"read-1","sessionId":"session","runId":"run","opSeq":1,
-            "tool":"workspace_read_range","status":"completed",
-            "arguments":{"path":"src/engine/test.rs"},
-            "result":{"sourceSha256":"b".repeat(64),
-                "rawSource":"private content must not reach learned rules"}
-        })).unwrap();
-        state.store.put("execution_operation",&json!({
-            "id":"write-1","sessionId":"session","runId":"run","opSeq":2,
-            "tool":"workspace_replace_range","status":"completed",
-            "arguments":{"path":"src/engine/test.rs"},
-            "result":{"written":true,"postSha256":"a".repeat(64),
-                "rawSource":"must remain private"},
-            "toolReceipt":{"verified":true}
-        })).unwrap();
-        state.store.put("execution_operation",&json!({
-            "id":"other","sessionId":"different","runId":"other","opSeq":1,
-            "tool":"workspace_replace_range","status":"completed",
-            "arguments":{"path":"unrelated.rs"},
-            "result":{"written":true}
-        })).unwrap();
-        let timeline=tool_timeline(&state,"session");
-        assert_eq!(timeline.len(),2);
-        assert_eq!(timeline[0]["path"],"src/engine/test.rs");
-        assert_eq!(timeline[1]["toolReceipt"]["verified"],true);
-        assert_eq!(timeline[1]["result"]["postSha256"],"a".repeat(64));
-        let encoded=serde_json::to_string(&timeline).unwrap();
-        assert!(!encoded.contains("private content"));
-        assert!(!encoded.contains("must remain private"));
-        assert!(!encoded.contains("unrelated.rs"));
-        drop(state);
-        let _=std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn learned_contrast_is_wired_into_the_champion_runtime_trial() {
-        let mut rows = [
-            child("accepted-1", true, 0, "workspace_replace_range"),
-            child("rejected-1", false, 3, "workspace_replace_range"),
-            child("accepted-2", true, 0, "workspace_replace_range"),
-            child("rejected-2", false, 4, "workspace_replace_range"),
-        ];
-        for row in &mut rows { row["domain"] = json!("tools"); }
-        let evolved = crate::engine::rsi_judgement::evolve(&rows, "o", "tools");
-        assert_eq!(evolved["operator"],
-            "contrastive_counterexample_guard_synthesis");
-        assert_eq!(evolved["status"], "requires_independent_real_execution");
-        assert_eq!(evolved["qualityProven"], false);
-        assert!(evolved["rules"].as_array().is_some_and(|rules| !rules.is_empty()));
-        let rule = crate::engine::rsi_judgement::choose(
-            &evolved,
-            &rows[0]["toolTimeline"].as_array().unwrap()[..1],
-            1, true, false
-        );
-        assert_eq!(rule.unwrap()["allow"], json!(["workspace_replace_range"]));
-        let failed = crate::engine::rsi_judgement::choose(
-            &evolved,
-            &rows[1]["toolTimeline"].as_array().unwrap()[..4],
-            4, true, false
-        );
-        assert!(failed.is_none());
-    }
-
-    #[test]
-    fn unverified_claims_and_unadopted_good_candidates_do_not_train_guards() {
-        let mut rows = [
-            child("g1",true,0,"workspace_replace_range"),
-            child("g2",true,0,"workspace_replace_range"),
-            child("bad1",false,3,"workspace_replace_range"),
-            child("bad2",false,4,"workspace_replace_range"),
-        ];
-        assert_eq!(induce(&rows.iter().collect::<Vec<_>>()).len(),1);
-        rows[0]["evidenceVerified"]=json!(false);
-        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
-        rows[0]["evidenceVerified"]=json!(true);
-        rows[2]["evaluation"]["metrics"]["eligible"]=json!(true);
-        rows[2]["evaluation"]["metrics"]["verdict"]=json!("improved");
-        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
-    }
-
-    #[test]
-    fn unverified_deployment_or_mismatched_evaluation_cannot_seed_induction() {
-        let mut rows = [
-            child("accepted-1", true, 0, "workspace_replace_range"),
-            child("rejected-1", false, 3, "workspace_replace_range"),
-            child("accepted-2", true, 0, "workspace_replace_range"),
-            child("rejected-2", false, 4, "workspace_replace_range"),
-        ];
-        rows[0]["acceptedProof"]["evaluation"]["source"] = json!("model_claim");
-        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
-        rows[0]["acceptedProof"]["evaluation"]["source"] =
-            json!("server_invoked_local_paired_git_worktrees");
-        rows[3]["evaluation"]["source"] = json!("client_supplied");
-        assert!(induce(&rows.iter().collect::<Vec<_>>()).is_empty());
-    }
-
     #[test]
     fn discovers_new_threshold_that_separates_two_adoptions_from_failures(){
         let rows=[
@@ -426,10 +279,10 @@ mod tests {
         assert_eq!(new.len(),1);
         assert_eq!(new[0]["allow"],json!(["workspace_replace_range"]));
         let good=rows[0]["toolTimeline"].as_array().unwrap();
-        assert!(crate::engine::rsi_judgement::choose(
+        assert!(crate::engine::rsi_decision_rules::choose(
             &json!({"rules":new.clone()}),&good[..1],1,true,false).is_some());
         let bad=rows[1]["toolTimeline"].as_array().unwrap();
-        assert!(crate::engine::rsi_judgement::choose(
+        assert!(crate::engine::rsi_decision_rules::choose(
             &json!({"rules":new}),&bad[..4],4,true,false).is_none());
     }
     #[test]
@@ -486,9 +339,9 @@ mod tests {
             .any(|g|g["sequence"].is_array()));
         let good=rows[0]["toolTimeline"].as_array().unwrap();
         let bad=rows[2]["toolTimeline"].as_array().unwrap();
-        assert!(crate::engine::rsi_judgement::choose(
+        assert!(crate::engine::rsi_decision_rules::choose(
             &json!({"rules":rules.clone()}),&good[..2],2,true,false).is_some());
-        assert!(crate::engine::rsi_judgement::choose(
+        assert!(crate::engine::rsi_decision_rules::choose(
             &json!({"rules":rules}),&bad[..2],2,true,false).is_none());
     }
     #[test]

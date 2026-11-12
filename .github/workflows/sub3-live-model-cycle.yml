@@ -1,29 +1,20 @@
-name: Champion real-model RSI cycle attempt
+name: Sub3 real-model RSI cycle attempt
 
 on:
   push:
-    branches: [dominion-champion]
+    branches: [dominion-sub3]
     paths:
-      - '.github/workflows/champion-live-model-cycle.yml'
-      - 'scripts/champion-live-model-campaign.mjs'
-      - 'src/engine/chat/runtime.rs'
-      - 'src/engine/rsi_evolve.rs'
-      - 'src/engine/rsi.rs'
-      - 'src/engine/rsi_action_program.rs'
-      - 'src/engine/rsi_repair_synthesis.rs'
-      - 'src/engine/rsi_success_ablation.rs'
-      - 'src/engine/rsi_judgement.rs'
-      - 'src/engine/rsi_worktree.rs'
-      - 'src/engine/jobs.rs'
+      - '.github/workflows/sub3-live-model-cycle.yml'
+      - 'scripts/sub3-live-model-campaign.mjs'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel an obsolete experimental harness when a new Champion revision lands.
+# Cancel an obsolete experimental harness when a new Sub3 revision lands.
 # A previous result cannot validate code that was added after its run started.
 concurrency:
-  group: dominion-champion-live-model-cycle
+  group: dominion-sub3-live-model-cycle
   cancel-in-progress: true
 
 jobs:
@@ -32,12 +23,10 @@ jobs:
     timeout-minutes: 115
     env:
       DOMINION_PORT: '43173'
+      SUB3_LIVE_REPORT: benchmark/sub3-live-campaign-result.json
+      # Evaluate the unchanged current source, then its actual descendants.
       DOMINION_JOB_WORKERS: '1'
       DOMINION_EXPERIMENT_SCHEDULER: '0'
-      CHAMPION_LIVE_REPORT: benchmark/champion-live-campaign-result.json
-      # Build the latest RSI harness; only restore the historical target bug.
-      # The extended run lets a proven adopted child re-plan residual domains.
-      BASE_SHA: 1d94e1da1ed4f47243a793ab0625182f5a2c9656
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,8 +36,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/champion-live-model-campaign.mjs probe | tee /tmp/champion-model-probe.log
-          if grep -Fq 'CHAMPION_MODEL_REACHABLE=true' /tmp/champion-model-probe.log; then
+          node scripts/sub3-live-model-campaign.mjs probe | tee /tmp/sub3-model-probe.log
+          if grep -Fq 'SUB3_MODEL_REACHABLE=true' /tmp/sub3-model-probe.log; then
             echo "reachable=true" >> "$GITHUB_OUTPUT"
           else
             echo "reachable=false" >> "$GITHUB_OUTPUT"
@@ -75,27 +64,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The actual RSI generator is built from the campaign source commit.
-          # Running an old BASE_SHA here silently drops newer Champion harness fixes.
-          # Preserve the current engine, while restoring ONLY the historic
-          # decomposition bug in the detached experiment worktree.
-          git worktree add --detach "$RUNNER_TEMP/champion-source" "$GITHUB_SHA"
-          git show "$BASE_SHA:src/engine/decompose.rs" > "$RUNNER_TEMP/champion-source/src/engine/decompose.rs"
-          if git -C "$RUNNER_TEMP/champion-source" diff --quiet -- src/engine/decompose.rs; then
-            echo 'Historic decomposition bug was not restored; refusing a vacuous RSI trial' >&2
-            exit 1
-          fi
-          git -C "$RUNNER_TEMP/champion-source" add src/engine/decompose.rs
-          git -C "$RUNNER_TEMP/champion-source" -c user.name="DOMINION RSI fixture" -c user.email="rsi@localhost" -c commit.gpgsign=false commit -m "Experiment fixture: restore historical decomposition failure"
-          echo "CHAMPION_RUNTIME_HARNESS_COMMIT=$GITHUB_SHA"
-          echo "CHAMPION_EXPERIMENT_SOURCE_COMMIT=$(git -C "$RUNNER_TEMP/champion-source" rev-parse HEAD)"
-          export DOMINION_DATA="$RUNNER_TEMP/champion-data"
-          export DOMINION_WORKSPACE="$RUNNER_TEMP/champion-source"
-          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/champion-source"
+          # Never restore a known historical bug to manufacture a first gain.
+          git worktree add --detach "$RUNNER_TEMP/sub3-source" "$GITHUB_SHA"
+          test -z "$(git -C "$RUNNER_TEMP/sub3-source" status --porcelain)"
+          echo "SUB3_RUNTIME_HARNESS_COMMIT=$GITHUB_SHA"
+          echo "SUB3_EXPERIMENT_SOURCE_COMMIT=$(git -C "$RUNNER_TEMP/sub3-source" rev-parse HEAD)"
+          export DOMINION_DATA="$RUNNER_TEMP/sub3-data"
+          export DOMINION_WORKSPACE="$RUNNER_TEMP/sub3-source"
+          export DOMINION_SOURCE_WORKSPACE="$RUNNER_TEMP/sub3-source"
           mkdir -p "$DOMINION_DATA"
-          node scripts/champion-live-model-campaign.mjs proxy > "$RUNNER_TEMP/champion-proxy.log" 2>&1 &
+          node scripts/sub3-live-model-campaign.mjs proxy > "$RUNNER_TEMP/sub3-proxy.log" 2>&1 &
           proxy_pid=$!
-          ./target/release/dominion-rust > "$RUNNER_TEMP/champion-engine.log" 2>&1 &
+          ./target/release/dominion-rust > "$RUNNER_TEMP/sub3-engine.log" 2>&1 &
           engine_pid=$!
           trap 'kill "$proxy_pid" "$engine_pid" 2>/dev/null || true' EXIT
           for i in $(seq 1 100); do
@@ -103,8 +83,8 @@ jobs:
             sleep 1
           done
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
-          node scripts/champion-live-model-campaign.mjs run
-          cat "$CHAMPION_LIVE_REPORT"
+          node scripts/sub3-live-model-campaign.mjs run
+          cat "$SUB3_LIVE_REPORT"
           # Count executed range edits AND rejected native proposals. A proposed
           # tool call in an assistant message is not evidence of a file write.
           # The detached runner contains only this public test task's model text.
@@ -164,22 +144,22 @@ jobs:
               trace={"operations":operations[-30:],"checkpoints":checkpoints[-15:],
                      "toolErrors":tool_errors[-30:],"lastAssistant":assistant[-12:],"summary":summary}
               os.makedirs("benchmark",exist_ok=True)
-              with open("benchmark/champion-rsi-action-trace.json","w") as out:
+              with open("benchmark/sub3-rsi-action-trace.json","w") as out:
                   json.dump(trace,out,ensure_ascii=False,indent=2)
-              report=os.environ.get("CHAMPION_LIVE_REPORT")
+              report=os.environ.get("SUB3_LIVE_REPORT")
               if report and os.path.exists(report):
                   with open(report) as source: campaign=json.load(source)
                   campaign["executionTrace"]=summary
                   with open(report,"w") as target: json.dump(campaign,target,ensure_ascii=False,indent=2)
-              print("CHAMPION_RSI_ACTION_TRACE="+json.dumps(trace,ensure_ascii=False))
+              print("SUB3_RSI_ACTION_TRACE="+json.dumps(trace,ensure_ascii=False))
           except Exception as error:
-              print("CHAMPION_RSI_ACTION_TRACE_UNAVAILABLE="+str(error))
+              print("SUB3_RSI_ACTION_TRACE_UNAVAILABLE="+str(error))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: champion-real-model-attempt
+          name: sub3-real-model-attempt
           path: |
-            benchmark/champion-live-campaign-result.json
-            benchmark/champion-rsi-action-trace.json
+            benchmark/sub3-live-campaign-result.json
+            benchmark/sub3-rsi-action-trace.json
           if-no-files-found: ignore

@@ -606,11 +606,11 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A slow *cloud* route can be skipped for later failover. Local models
-        // on CPU can legitimately exceed 60 s while performing a real tool
-        // call; quarantining their only route mid-turn prevents finishing the
-        // already-running task. Local concurrency and turn budgets still apply.
-        if !candidate.local && candidate_started.elapsed() >= std::time::Duration::from_secs(60) {
+        // A two-minute answer is not a usable room participant. Remember it
+        // so the next round does not pay the same price again.
+        let rsi_run = state.store.get("session",session_id)
+            .is_some_and(|session| session["rsiRun"] == true);
+        if should_mark_slow_provider(candidate_started.elapsed(), rsi_run) {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -672,16 +672,23 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
-/// Demand an executable tool action only for an RSI edit-only model menu.
+/// Once a focused RSI generation has genuine source evidence and only edit
+/// functions remain, require the native OpenAI-compatible model to choose an
+/// actual tool action instead of another prose explanation. The model still
+/// authors the patch; the independent frozen verifier decides usefulness.
+/// Autonomous RSI runs can already spend up to their explicit time/token
+/// limits. A slow but productive first response must not blacklist the only
+/// selected provider before the model can issue its source-edit action.
+/// Ordinary chats retain the existing slow-route failover heuristic.
+fn should_mark_slow_provider(elapsed: std::time::Duration, rsi_run: bool) -> bool {
+    !rsi_run && elapsed >= std::time::Duration::from_secs(60)
+}
+
 fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
-    // Auto-selected, SHA-grounded RSI targets must have the same executable
-    // edit contract as owner-selected targets. Without this, an autonomous
-    // descendant can finish with prose instead of even trying a tool.
     session["rsiRun"] == true
-        && (session["rsiExplicitFocus"] == true || session["rsiMetaFocusActive"] == true)
-        && (session["rsiFocusContextReady"] == true
-            || session["rsiSourceReadObserved"] == true)
-        && !tools.is_empty() && tools.iter().all(|tool| matches!(
+        && session["rsiExplicitFocus"] == true
+        && !tools.is_empty()
+        && tools.iter().all(|tool| matches!(
             tool["function"]["name"].as_str(),
             Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
         ))
@@ -1964,6 +1971,32 @@ mod tests {
     }
 
     #[test]
+    fn rsi_time_budget_does_not_blacklist_its_only_model_after_a_slow_read() {
+        assert!(should_mark_slow_provider(std::time::Duration::from_secs(61), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(59), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(61), true));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(600), true));
+    }
+
+    #[test]
+    fn a_grounded_rsi_edit_only_stage_requires_a_model_action() {
+        let focus = json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let tools = vec![
+            json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_write"}}),
+        ];
+        assert!(rsi_edit_requires_tool(&focus,&tools));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&tools));
+        assert!(!rsi_edit_requires_tool(&json!({}),&tools));
+        let mut reads = tools.clone();
+        reads.push(json!({"type":"function","function":{"name":"workspace_read_range"}}));
+        assert!(!rsi_edit_requires_tool(&focus,&reads),
+            "do not force a write before collecting source evidence");
+        assert!(!rsi_edit_requires_tool(&focus,&[]));
+    }
+
+    #[test]
     fn local_chat_template_never_receives_openai_reasoning_effort() {
         let mut body = json!({"model":"llama3.2:3b"});
         apply_reasoning_options(
@@ -1990,25 +2023,6 @@ mod tests {
         let mut api = json!({"model":"reasoning-model"});
         apply_reasoning_options(&mut api, "openai", Some(true), Some("high"));
         assert_eq!(api["reasoning_effort"], "high", "{api}");
-    }
-
-    #[test]
-    fn source_edit_only_menu_requires_action_without_forcing_research_to_write() {
-        let focus=json!({"rsiRun":true,"rsiExplicitFocus":true,
-            "rsiFocusContextReady":true});
-        let auto=json!({"rsiRun":true,"rsiMetaFocusActive":true,
-            "rsiFocusContextReady":true});
-        let edits=vec![json!({"function":{"name":"workspace_replace_range"}}),
-            json!({"function":{"name":"workspace_replace"}}),
-            json!({"function":{"name":"workspace_write"}})];
-        assert!(rsi_edit_requires_tool(&focus,&edits));
-        assert!(rsi_edit_requires_tool(&auto,&edits));
-        assert!(rsi_edit_requires_tool(&json!({"rsiRun":true,
-            "rsiMetaFocusActive":true,"rsiSourceReadObserved":true}),&edits));
-        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true,
-            "rsiMetaFocusActive":true,"rsiFocusContextReady":false}),&edits));
-        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits));
-        assert!(!rsi_edit_requires_tool(&focus,&[json!({"function":{"name":"workspace_read_range"}})]));
     }
 
     #[test]

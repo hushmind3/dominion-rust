@@ -38,7 +38,10 @@ fn is_source(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    if name.ends_with(".min.js") || name.ends_with(".lock") || name.starts_with('.') {
+    // The coordinator's evaluation corpus is not source-edit context. Keep
+    // it out of discovery, target selection and automatically inlined excerpts.
+    if name == "rsi_oracle_fixture.rs"
+        || name.ends_with(".min.js") || name.ends_with(".lock") || name.starts_with('.') {
         return false;
     }
     matches!(

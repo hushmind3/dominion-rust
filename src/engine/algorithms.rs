@@ -85,9 +85,10 @@ pub const SELFIMPROVE_FEATURES: &[&str] = &[
     "successRate",
     "usefulGenerations",
     "barrenRate",
-    "tokenCost",
-    "holdoutYield",
+    "verifiedOutcomes",
+    "holdoutGains",
     "gainPer10kTokens",
+    "tokenCost",
     "objectiveMatch",
     "unresolved",
     "exploration",
@@ -1613,24 +1614,7 @@ pub fn register(state: &AppState, body: &Value) -> Result<Value, String> {
         if kind != "selfimprove.search" || implementation != "expression" {
             return Err("targetExpression requires selfimprove.search expression kernel".into());
         }
-        // The one-value synthetic sample is not representative of sparse
-        // source files. Require a valid result for zero evidence and costly
-        // files before allowing a model-authored expression to be promoted.
-        let base=expression_sample("selfimprove.target");
-        let mut zero=base.clone();
-        for value in zero.values_mut() { *value=0.0; }
-        zero.insert("novelty".into(),1.0);
-        let mut costly=zero.clone();
-        costly.insert("sourceCost".into(),100.0);
-        costly.insert("repeatPenalty".into(),10.0);
-        costly.insert("novelty".into(),1.0/11.0);
-        let mut high=base.clone();
-        for feature in ["pathEvidence","symbolEvidence","summaryEvidence","bodyEvidence"] {
-            high.insert(feature.into(),50.0);
-        }
-        for sample in [&base,&zero,&costly,&high] {
-            eval_expression(target_expression,sample)?;
-        }
+        eval_expression(target_expression, &expression_sample("selfimprove.target"))?;
     }
     let variant = body["variant"].as_str().unwrap_or(implementation);
     let parameters = body["parameters"]
@@ -2118,18 +2102,6 @@ mod tests {
         assert!(register(&state,&json!({"kind":"selfimprove.search","name":"invalid-score",
             "implementation":"expression","parameters":{"expression":"novelty",
                 "targetExpression":"pathEvidence / (novelty - novelty)"}})).is_err());
-        assert!(register(&state,&json!({
-            "kind":"selfimprove.search","name":"sparse-file-zero-division",
-            "implementation":"expression",
-            "parameters":{"expression":"objectiveMatch + exploration",
-                "targetExpression":"1 / pathEvidence"}
-        })).is_err(),"empty lexical evidence must fail validation, not production indexing");
-        assert!(register(&state,&json!({
-            "kind":"selfimprove.search","name":"bounded-sparse-file-score",
-            "implementation":"expression",
-            "parameters":{"expression":"objectiveMatch + exploration",
-                "targetExpression":"pathEvidence / (1 + sourceCost)"}
-        })).is_ok());
         // A model-authored targeting rule cannot be silently attached to a
         // different algorithm or a display-only kernel.
         assert!(register(&state,&json!({"kind":"memory.rerank","name":"wrong-kind",

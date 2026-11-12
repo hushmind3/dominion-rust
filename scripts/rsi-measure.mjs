@@ -8,23 +8,9 @@ const root=process.env.RSI_TEMP;
 const plan=JSON.parse(fs.readFileSync(process.env.RSI_PLAN,'utf8'));
 const hash=data=>crypto.createHash('sha256').update(data).digest('hex');
 const logs=[];
-// Candidate build scripts and test binaries must not inherit arbitrary
-// production API keys/tokens from the outer coordinator environment.
-// This is environment hygiene, not a process/filesystem/OS sandbox.
-const allowedEnvironment=[
- 'PATH','HOME','USER','LOGNAME','LANG','LC_ALL','TMPDIR','TMP','TEMP',
- 'CARGO_HOME','RUSTUP_HOME','RUSTUP_TOOLCHAIN','CARGO_BUILD_TARGET',
- 'SDKROOT','MACOSX_DEPLOYMENT_TARGET','CC','CXX','AR','LD',
- 'PKG_CONFIG_PATH','PKG_CONFIG_LIBDIR','PKG_CONFIG_SYSROOT_DIR',
- 'CMAKE_PREFIX_PATH','CI','RSI_TEMP','RSI_PLAN','RSI_BASE_SHA',
- 'RSI_REPORT','RSI_PATCH','RSI_BUILD_CACHE'
-];
-const childEnvironment=Object.fromEntries(allowedEnvironment
- .filter(key=>typeof process.env[key]==='string')
- .map(key=>[key,process.env[key]]));
 const run=(exe,args,cwd)=>{
  const result=spawnSync(exe,args,{cwd,encoding:'utf8',timeout:360000,maxBuffer:8*1024*1024,
-  env:{...childEnvironment,CARGO_TARGET_DIR:path.join(process.env.RSI_BUILD_CACHE||path.join(root,'build'),path.basename(cwd))}});
+  env:{...process.env,CARGO_TARGET_DIR:path.join(process.env.RSI_BUILD_CACHE||path.join(root,'build'),path.basename(cwd))}});
  const text=(result.stdout||'')+'\n'+(result.stderr||'');
  logs.push(text.slice(-80000));
  return {ok:result.status===0&&!result.error,text,stdout:result.stdout||''};
@@ -58,7 +44,7 @@ const cases=[];
 for(const spec of plan.cases){
  const metrics=spec.metrics||[];
  const repetitions=metrics.length?6:1;
- const arms={baseline:{pass:true,values:[]},candidate:{pass:true,values:[]}};
+ const arms={baseline:{pass:true,values:[],behavior:[]},candidate:{pass:true,values:[],behavior:[]}};
  for(let sample=0;sample<repetitions;sample++){
   // Balance ordering so thermal/cache drift cannot always favor candidate.
   for(const label of sample%2?['candidate','baseline']:['baseline','candidate']){
@@ -75,6 +61,15 @@ for(const spec of plan.cases){
     let values;try{values=JSON.parse(entries[0].split('DOMINION_RSI_METRIC ')[1])}catch{arm.pass=false;continue}
     if(metrics.some(metric=>!Number.isFinite(values[metric.key])||values[metric.key]<0)){arm.pass=false;continue}
     arm.values.push(values);
+    // The frozen oracle prints the same observations in BOTH revisions.
+    const behaviorLines=result.stdout.split('\n')
+      .filter(line=>line.includes('DOMINION_RSI_BEHAVIOR '));
+    if(spec.holdout!==true&&behaviorLines.length===1){
+      try{
+        const observed=JSON.parse(behaviorLines[0].split('DOMINION_RSI_BEHAVIOR ')[1]);
+        if(Array.isArray(observed))arm.behavior.push(observed);
+      }catch{}
+    }
    }
    verifyOracle();
   }
@@ -84,7 +79,24 @@ for(const spec of plan.cases){
   measured[metric.key]={baseline:median(arms.baseline.values.map(v=>v[metric.key])),
    candidate:median(arms.candidate.values.map(v=>v[metric.key])),samples:repetitions};
  }
- cases.push({id:spec.id,baselinePass:arms.baseline.pass,candidatePass:arms.candidate.pass,metrics:measured});
+ // Quality metrics and pass/fail remain identical. These are training
+ // counterexamples, not a new or automatically passed holdout test.
+ const failedBehaviors=label=>(spec.holdout===true?[]:(arms[label].behavior[0]||[]))
+  .filter(item=>Number.isInteger(item.expectedSegments)
+    && Number.isInteger(item.observedSegments)
+    && item.expectedSegments!==item.observedSegments
+    && typeof item.input==='string')
+  .slice(0,6).map(item=>({
+    input:item.input.slice(0,240),
+    expectedSegments:item.expectedSegments,
+    observedSegments:item.observedSegments,
+    steps:Array.isArray(item.steps)?item.steps.slice(0,8)
+      .map(s=>String(s).slice(0,160)):[]
+  }));
+ cases.push({id:spec.id,baselinePass:arms.baseline.pass,candidatePass:arms.candidate.pass,
+  metrics:measured,behavioralCounterexamples:{
+    baseline:failedBehaviors('baseline'),candidate:failedBehaviors('candidate')
+  }});
 }
 verifyOracle();
 const evidence=`baseCommit=${process.env.RSI_BASE_SHA}\noracleSha256=${plan.oracleSha256||''}\n${logs.join('\n')}\n${JSON.stringify(cases)}\n`;

@@ -24,14 +24,14 @@ pub fn normalize(raw:&Value)->Vec<Value>{
             },
             "tighten"|"widen"=>{
                 let Some(metric)=op["metric"].as_str().filter(|s|matches!(*s,
-                    "calls"|"edit_attempts"|"read_calls"|
+                    "tool_calls"|"edit_attempts"|"search_after_ground"|
                     "completed:code_search"|"completed:workspace_read_range")) else {continue;};
                 let Some(value)=op["value"].as_u64().filter(|v|*v<=24) else {continue;};
                 json!({"kind":kind,"metric":metric,"value":value})
             },
             "prune"=>{
                 let Some(metric)=op["metric"].as_str().filter(|s|matches!(*s,
-                    "calls"|"completed:code_search"|"read_calls")) else {continue;};
+                    "tool_calls"|"completed:code_search"|"search_after_ground")) else {continue;};
                 json!({"kind":kind,"metric":metric})
             },
             _=>continue,
@@ -83,7 +83,7 @@ fn stage_rule(guard:&Value,op:&Value)->Value {
 /// text supplied by an LLM.
 pub fn apply(program:&[Value],raw_rules:&[Value])->Vec<Value> {
     let mut output=Vec::new();
-    for rule in crate::engine::rsi_judgement::normalize(&json!(raw_rules)) {
+    for rule in crate::engine::rsi_decision_rules::normalize(&json!(raw_rules)) {
         let mut proposal=rule.clone();
         for op in normalize(&json!(program)) {
             match op["kind"].as_str().unwrap_or("") {
@@ -106,36 +106,10 @@ pub fn apply(program:&[Value],raw_rules:&[Value])->Vec<Value> {
                 _=>{},
             }
         }
-        let normalized=crate::engine::rsi_judgement::normalize(&json!([proposal]));
+        let normalized=crate::engine::rsi_decision_rules::normalize(&json!([proposal]));
         output.push(normalized.into_iter().next().unwrap_or(rule));
     }
-    crate::engine::rsi_judgement::normalize(&json!(output))
-}
-
-
-/// Apply a descendant's rewrite grammar only once to inherited rules.
-/// Newly synthesized guards still receive the inherited grammar, but rules
-/// already rewritten in the parent must not be nested again each generation.
-pub fn apply_descendant(
-    program:&[Value], parent_program:&[Value], parent_rules:&Value,
-    candidates:&[Value],
-)->Vec<Value>{
-    let rules=crate::engine::rsi_judgement::normalize(&json!(candidates));
-    if normalize(&json!(program))!=normalize(&json!(parent_program)){
-        return apply(program,&rules);
-    }
-    let inherited=crate::engine::rsi_judgement::normalize(parent_rules)
-        .into_iter().filter_map(|rule|rule["id"].as_str().map(str::to_string))
-        .collect::<BTreeSet<_>>();
-    let mut output=Vec::new();
-    for rule in rules {
-        if rule["id"].as_str().is_some_and(|id|inherited.contains(id)) {
-            output.push(rule);
-        } else {
-            output.extend(apply(program,&[rule]));
-        }
-    }
-    crate::engine::rsi_judgement::normalize(&json!(output))
+    crate::engine::rsi_decision_rules::normalize(&json!(output))
 }
 
 /// Mutate the AST-generating algorithm from the actual previous execution.
@@ -178,10 +152,8 @@ pub fn evolve(parent:&[Value],observation:&Value)->Vec<Value>{
         new_op=Some(json!({"kind":"prune","metric":"completed:code_search"}));
     }
     if new_op.is_none()
-        && (observation["observedSourceEdits"].as_u64().unwrap_or(0)>0
-            || observation["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0)
-        && observation["sourceIntegrity"]["failedChecks"].as_array()
-            .or_else(||observation["verification"]["checks"].as_array()).is_some_and(|checks|
+        && observation["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0
+        && observation["verification"]["checks"].as_array().is_some_and(|checks|
             checks.iter().any(|check|check["passed"]!=true
                 && check["label"].as_str().is_some_and(|name|name.starts_with("cargo check")))) {
         // An actually executed source edit did not compile. Evolve the
@@ -205,8 +177,7 @@ pub fn evolve(parent:&[Value],observation:&Value)->Vec<Value>{
             "value":searches.saturating_add(1).min(24)}));
     }
     if new_op.is_none() && observation["candidateId"].is_null()
-        && (observation["rsiJudgementEffects"].as_array().is_some_and(|x|!x.is_empty())
-            || observation["ruleExecutions"].as_array().is_some_and(|x|!x.is_empty())) {
+        && observation["ruleExecutions"].as_array().is_some_and(|x|!x.is_empty()) {
         let reads=timeline.into_iter().flatten().filter(|x|
             x["tool"]=="workspace_read_range" && x["status"]=="completed")
             .count() as u64;
@@ -240,7 +211,7 @@ mod tests{
         assert_eq!(grammar[0]["kind"],"switch_edit");
         let child=apply(&grammar,&[rule()]);
         assert_eq!(child[0]["allow"],json!(["workspace_replace"]));
-        assert_ne!(child[0]["id"],crate::engine::rsi_judgement::normalize(
+        assert_ne!(child[0]["id"],crate::engine::rsi_decision_rules::normalize(
             &json!([rule()]))[0]["id"]);
         assert!(evolve(&grammar,&json!({"jobId":"g2","tokens":0})).eq(&grammar));
     }
@@ -298,22 +269,4 @@ mod tests{
             "value":10000})],&[rule()]);
         assert_eq!(malformed.len(),1);
     }
-    #[test]
-    fn inherited_rewrite_is_applied_once_across_descendant_generations(){
-        let program=vec![json!({"kind":"widen",
-            "metric":"completed:workspace_read_range","value":2})];
-        let first=apply(&program,&[rule()]);
-        let inherited=apply_descendant(&program,&program,&json!(first),&first);
-        assert_eq!(first,inherited,
-            "the same grammar must not rewrap the parent rule every generation");
-        let additional=json!({"guard":{"metric":"read_calls","cmp":"ge","value":1},
-            "allow":["workspace_replace_range"]});
-        let mut both=first.clone();both.push(additional);
-        let next=apply_descendant(&program,&program,&json!(first),&both);
-        assert_eq!(next.len(),2);
-        assert_eq!(next[0]["id"],first[0]["id"]);
-        assert!(next[1]["guard"]["any"].is_array(),
-            "only the newly synthesized rule receives the inherited rewriter");
-    }
-
 }

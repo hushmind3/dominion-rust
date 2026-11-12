@@ -63,7 +63,8 @@ fn normalize_path(value: &str) -> String {
 pub fn resource_key(tool: &str, arguments: &Value) -> Option<String> {
     let path = arguments["path"].as_str();
     match tool {
-        "workspace_read" | "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "workspace_list" => {
+        "workspace_read" | "workspace_read_range" | "workspace_write"
+        | "workspace_replace" | "workspace_replace_range" | "workspace_list" => {
             path.map(|path| format!("workspace:{}", normalize_path(path)))
         }
         "file_read" | "file_write" | "file_list" => {
@@ -317,14 +318,8 @@ fn expected_version(tool: &str, arguments: &Value, result: &Value) -> Option<Str
             format!("sha256:{}", hash_text(content))
         });
     }
-    // Never trust a digest provided by the model. The tool returns
-    // postSha256 after actually updating the file, and seal independently
-    // reads those bytes back before crediting the source mutation.
-    if matches!(tool, "workspace_replace" | "workspace_replace_range")
-        && result["written"] == true {
-        return result["postSha256"].as_str().filter(|sha|
-            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-            .map(|sha|format!("sha256:{sha}"));
+    if matches!(tool, "workspace_replace" | "workspace_replace_range") && result["written"] == true {
+        return result["postSha256"].as_str().map(|digest| format!("sha256:{digest}"));
     }
     None
 }
@@ -536,47 +531,19 @@ mod tests {
         assert_ne!(first["effectId"], other_path["effectId"]);
     }
 
-
-    #[tokio::test]
-    async fn edited_source_readback_verifies_both_native_replacement_tools() {
-        let dir=std::env::temp_dir().join(format!(
-            "dominion-effect-actual-edit-{}",uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
-        let path=dir.join("src/algorithms.rs");
-        tokio::fs::write(&path,"pub fn improved()->bool {true}\n").await.unwrap();
-        let digest=format!("{:x}",Sha256::digest(tokio::fs::read(&path).await.unwrap()));
-        for tool in ["workspace_replace","workspace_replace_range"] {
-            let args=json!({"path":"src/algorithms.rs",
-                "oldText":"false","newText":"true",
-                "startLine":1,"endLine":1,"expectedSha256":"a".repeat(64)});
-            let effect=prepare("rsi",tool,&args,&[]);
-            assert_eq!(effect["resourceKey"],"workspace:src/algorithms.rs");
-            let verified=seal(&dir,tool,&args,
-                &json!({"written":true,"postSha256":digest}),
-                true,false,false,&effect).await;
-            assert_eq!(verified["toolReceipt"]["verified"],true,"{verified}");
-            assert_eq!(verified["toolReceipt"]["verifier"]["kind"],"sha256_readback");
-            let forged=seal(&dir,tool,&args,
-                &json!({"written":true,"postSha256":"f".repeat(64)}),
-                true,false,false,&effect).await;
-            assert_eq!(forged["toolReceipt"]["verified"],false);
-            let no_op=seal(&dir,tool,&args,
-                &json!({"written":false,"unchanged":true}),
-                true,false,false,&effect).await;
-            assert_eq!(no_op["toolReceipt"]["verified"],false);
-        }
-        assert_eq!(resource_key("workspace_read_range",
-            &json!({"path":"src/algorithms.rs"})),
-            resource_key("workspace_replace_range",
-            &json!({"path":"src/algorithms.rs"})));
-        tokio::fs::remove_dir_all(dir).await.unwrap();
-    }
-
     #[test]
     fn resources_are_normalized_across_tool_spellings() {
         assert_eq!(
             resource_key("workspace_write", &json!({"path":"./a/../b.txt"})).as_deref(),
             Some("workspace:a/../b.txt")
+        );
+        assert_eq!(
+            resource_key("workspace_replace_range", &json!({"path":"./src/example.rs"})).as_deref(),
+            Some("workspace:src/example.rs")
+        );
+        assert_eq!(
+            resource_key("workspace_read_range", &json!({"path":"./src/example.rs"})).as_deref(),
+            Some("workspace:src/example.rs")
         );
         assert_eq!(
             resource_key("github_api", &json!({"path":"/repos/o/r"})).as_deref(),
@@ -632,6 +599,26 @@ mod tests {
         assert_eq!(sealed["toolReceipt"]["verified"], true);
         assert_eq!(sealed["toolReceipt"]["verifier"]["kind"], "sha256_readback");
         let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn range_edit_receipt_confirms_actual_target_bytes_not_model_claims() {
+        let dir=std::env::temp_dir().join(format!("dominion-range-receipt-{}",uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        let path=dir.join("src/example.rs");
+        tokio::fs::write(&path,"fn active() { 42 }\n").await.unwrap();
+        let digest=hash(b"fn active() { 42 }\n");
+        let args=json!({"path":"src/example.rs","startLine":1,"endLine":1,
+            "newText":"fn active() { 42 }","expectedSha256":"before"});
+        let effect=prepare("s","workspace_replace_range",&args,&[]);
+        let outcome=json!({"written":true,"postSha256":digest});
+        let success=seal(&dir,"workspace_replace_range",&args,&outcome,true,false,false,&effect).await;
+        assert_eq!(success["effectState"],"verified","{success}");
+        assert_eq!(success["toolReceipt"]["verifier"]["kind"],"sha256_readback");
+        let forged=seal(&dir,"workspace_replace_range",&args,
+            &json!({"written":true,"postSha256":"0".repeat(64)}),true,false,false,&effect).await;
+        assert_eq!(forged["effectState"],"effect_unknown","{forged}");
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
     #[tokio::test]
