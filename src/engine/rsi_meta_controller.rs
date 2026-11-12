@@ -563,6 +563,30 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
 mod tests{
     use super::*;
     #[test]
+    fn repeated_measured_brier_drift_selects_own_prediction_source_with_cooldown() {
+        let predictors=json!({"role":"improvement_methods","domain":"improver",
+            "path":"src/engine/rsi_prequential.rs","sourceSha256":"a".repeat(64),
+            "sourceBytes":5000,"verifiedRoleChanged":false});
+        let memory=json!({"role":"memory","domain":"memory",
+            "path":"src/engine/memory.rs","sourceSha256":"b".repeat(64),
+            "sourceBytes":3000,"verifiedRoleChanged":false});
+        let mut history=(0..4).map(|_|json!({"pairedMeasured":true,
+            "metaLearning":{"source":"source_bound_prequential_feedback_v1",
+                "nextPolicyCanTrainFromObservation":true,
+                "brierError":0.85}})).collect::<Vec<_>>();
+        let result=synthesize(&history,&[memory.clone(),predictors.clone()],
+            &["memory","improver"],None);
+        assert_eq!(result["target"]["path"],"src/engine/rsi_prequential.rs");
+        assert_eq!(result["predictionRuleRepair"]["repairRuleSourceSelected"],true);
+        assert_eq!(result["mode"],"repair_own_source_bound_prediction_rule");
+        history.push(json!({"pairedMeasured":true,
+            "focusFiles":["src/engine/rsi_prequential.rs"]}));
+        let retry=synthesize(&history,&[memory,predictors],&["memory","improver"],None);
+        assert_eq!(retry["predictionRuleRepair"]["cooldown"],true);
+        assert_eq!(retry["predictionRuleRepair"]["repairRuleSourceSelected"],false);
+    }
+
+    #[test]
     fn adopted_improver_rewrite_links_to_independently_adopted_harness_successor(){
         let origin="a".repeat(40);
         let revised="b".repeat(40);

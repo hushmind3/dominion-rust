@@ -1130,6 +1130,35 @@ pub(crate) fn verified_handoff(history:&[Value])->bool {
 mod tests {
     use super::*;
     #[test]
+    fn forged_prediction_history_without_original_job_and_pair_is_censored() {
+        let root=std::env::temp_dir().join(format!("champion-meta-{}",
+            uuid::Uuid::new_v4()));
+        let config=crate::config::Config {
+            port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()
+        };
+        let store=crate::db::Store::open(&config.db_path()).unwrap();
+        let vault=crate::vault::Vault::open(&config.key_path());
+        let state=crate::state::AppState::new(config,store,vault);
+        let source=json!({"jobId":"missing-job","candidateId":"invented",
+            "pairedMeasured":true,"pairedRevalidated":true,"accepted":true,
+            "metaPolicy":{"source":"compiled_editable_meta_controller_v1",
+                "revision":"f".repeat(64),
+                "target":{"role":"memory","path":"src/engine/memory.rs",
+                    "sourceSha256":"a".repeat(64)},
+                "forecast":{"acceptanceProbability":0.9}},
+            "metaLearning":{"source":"source_bound_prequential_feedback_v1",
+                "brierError":0.0,"actualTargetAdoption":true,
+                "nextPolicyCanTrainFromObservation":true}});
+        let checked=revalidated_history(&state,&[source]);
+        assert_eq!(checked[0]["pairedMeasured"],false);
+        assert_eq!(checked[0]["pairedRevalidated"],false);
+        assert_eq!(checked[0]["metaLearning"]["independentlyMeasured"],false);
+        assert_eq!(checked[0]["metaLearning"]["nextPolicyCanTrainFromObservation"],false);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn systemic_handoff_requires_rebuilt_model_authored_design_and_real_source_receipts() {
         let make=|i:usize,component:&str,domain:&str| {
             let parent=format!("{:040x}",i+1);
