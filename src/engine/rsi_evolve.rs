@@ -5353,7 +5353,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // search-policy trial. That trial remains pending for a later generation.
     let selected_trial=if failed_patch_domain.is_some(){None}else{trial_id};
     let (domain, domain_selection, strategy) = if job["input"]["rsiSystemEvolution"]==true {
-        let plan=&job["input"]["rsiDescendantPlan"];
+        let plan=job["input"]["rsiDescendantPlan"].clone();
         let blueprint=crate::engine::rsi_system::blueprint(
             Path::new(job["input"]["rsiSourceDir"].as_str()
                 .ok_or("후손 시스템 소스 없음")?),&commit,&history);
