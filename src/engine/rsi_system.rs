@@ -11,6 +11,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
+    ("scientific_method",&["src/engine/rsi_recursive_scientist.rs"]),
+    ("experimental_design",&["src/engine/rsi_factorial.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
@@ -605,9 +607,14 @@ pub(crate) fn propose(
                 && !sources.iter().any(|s|s==path))) {
                 return Err("신규 지능의 실행 연결 파일이 소스 설계에 포함되지 않았습니다.".into());
             }
+            let improves=proposal["improvesRole"].as_str()
+                .filter(|r|*r!=role && valid_role(r)
+                    && (assignments.contains_key(*r)
+                        || COMPONENTS.iter().any(|(name,_)|*name==*r)))
+                .unwrap_or("improvement_methods");
             new_components.push(json!({"role":role,"domain":domain,
                 "purpose":purpose,"sourcePaths":sources,
-                "integrationPaths":wires,
+                "integrationPaths":wires,"improvesRole":improves,
                 "qualityProven":false}));
         }
     }
