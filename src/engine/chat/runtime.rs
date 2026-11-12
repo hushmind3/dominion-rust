@@ -1038,7 +1038,8 @@ async fn run_turn_body(
             tool_definitions.retain(|definition|matches!(tool_name(definition),
                 "code_search"|"workspace_read_range"|"workspace_replace"
                 |"workspace_replace_range"|"workspace_replace_function"
-                |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"));
+                |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"
+                |"rsi_train_local_adapter"));
         }
     }
     let compiled = if is_room {

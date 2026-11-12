@@ -1028,6 +1028,24 @@ impl Store {
         }
     }
 
+    /// Query every audited call from this session and provider (not a bounded
+    /// global log). Only actual tokens from the adopted route count.
+    pub fn session_provider_usage(&self, session_id: &str, provider_id: &str) -> Value {
+        let conn = self.conn.lock().unwrap();
+        let result=conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0)
+             FROM audit WHERE event='model.usage'
+             AND json_extract(detail,'$.sessionId')=?1
+             AND json_extract(detail,'$.providerId')=?2",
+            params![session_id,provider_id],
+            |row| Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?))
+        );
+        match result {
+            Ok((calls,tokens))=>json!({"calls":calls.max(0),"totalTokens":tokens.max(0)}),
+            Err(_)=>json!({"calls":0,"totalTokens":0})
+        }
+    }
+
     pub fn recent_audit(&self, limit: usize) -> Vec<Value> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn
