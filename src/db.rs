@@ -1002,6 +1002,36 @@ impl Store {
         rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
     }
 
+    /// Original, append-only provider+model audit. A model choice can earn
+    /// downstream RSI credit only when this EXACT route actually served the
+    /// generation session. Zero-token and mixed-route sessions cannot win.
+    pub fn api_route_usage(&self,session_id:&str,provider:&str,model:&str)->Value {
+        let conn=self.conn.lock().unwrap();
+        let result=conn.query_row(
+            "SELECT COUNT(*),
+                COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0),
+                COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1
+                    THEN 1 ELSE 0 END),0)
+             FROM audit WHERE event='model.usage'
+                AND json_extract(detail,'$.sessionId')=?1
+                AND json_extract(detail,'$.providerId')=?2
+                AND json_extract(detail,'$.model')=?3
+                AND CAST(json_extract(detail,'$.totalTokens') AS INTEGER)>0",
+            params![session_id,provider,model],|row|{
+                Ok((row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,
+                    row.get::<_,i64>(2)?))
+            });
+        match result{
+            Ok((calls,tokens,estimated))=>json!({
+                "calls":calls.max(0),"totalTokens":tokens.max(0),
+                "estimatedCalls":estimated.max(0),
+                "matchedExactProviderModelSession":calls>0 && tokens>0
+            }),
+            Err(_)=>json!({"calls":0,"totalTokens":0,"estimatedCalls":0,
+                "matchedExactProviderModelSession":false})
+        }
+    }
+
     pub fn session_usage(&self, session_id: &str) -> Value {
         let conn = self.conn.lock().unwrap();
         let summary = conn.query_row(
