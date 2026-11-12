@@ -4471,6 +4471,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // and then use the rebuilt method to redesign a different subsystem.
     // Do not interrupt an already-adopted A→B→A complement/return phase.
     let reflexive_program=if explicit || paired_descendant_target(input)
+        || input["rsiAutonomous"]!=true
         || matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
         Value::Null
     }else{
