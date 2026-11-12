@@ -26,6 +26,14 @@ if [[ -n "$(git -C "$source_repo" status --porcelain --untracked-files=normal)" 
   echo 'Refusing to clone a dirty experiment source' >&2
   exit 2
 fi
+# Branch provenance must be anchored in the original checkout or an exact
+# remote-tracking sub3 ref (actions/checkout can leave HEAD detached).
+source_ref=$(git -C "$source_repo" symbolic-ref --quiet HEAD || true)
+tracking_ref=$(git -C "$source_repo" rev-parse --verify 'refs/remotes/origin/dominion-sub3^{commit}' 2>/dev/null || true)
+if [[ "$source_ref" != 'refs/heads/dominion-sub3' && "$tracking_ref" != "$revision" ]]; then
+  echo 'Source revision is not the owned sub3 branch tip' >&2
+  exit 2
+fi
 mkdir -p "$(dirname "$target")"
 # A separate .git directory means the owned sub3 branch can be checked out
 # even if the runner has dominion-sub3 active in its original worktree.
