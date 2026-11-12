@@ -57,9 +57,11 @@ struct Trial {
     gains:u64,
     regressions:u64,
     tokens:u64,
+    observedChildren:u64,
+    productiveChildren:u64,
 }
 impl Trial{
-    fn update(&mut self,g:&Value){
+    fn update(&mut self,g:&Value,history:&[Value]){
         self.attempts+=1;
         self.tokens+=g["tokens"].as_u64().unwrap_or(0);
         if g["pairedRevalidated"]==true{
@@ -69,7 +71,27 @@ impl Trial{
             self.regressions+=g["evaluation"]["metrics"]["regressions"]
                 .as_u64().unwrap_or(0).min(128);
         }
-        if source_bound_candidate(g){self.accepted+=1;}
+        if source_bound_candidate(g){
+            self.accepted+=1;
+            // Real downstream productivity is a second, separate learning
+            // signal. Only a rebuilt binary's independent, adopted task
+            // improvement can credit the parent model selection.
+            if let Some(head)=g["acceptedCommit"].as_str() {
+                for child in history.iter().filter(|child|
+                    child["generatorCommit"].as_str()==Some(head)
+                    && child["generatorBinarySha256"].as_str().is_some_and(|h|
+                        !h.is_empty())
+                    && child["generatorBinarySha256"]!=g["generatorBinarySha256"]
+                    && child["jobId"]!=g["jobId"]) {
+                    self.observedChildren+=1;
+                    if source_bound_candidate(child)
+                        && child["evaluation"]["metrics"]["improvedHoldouts"]
+                            .as_u64().unwrap_or(0)>0 {
+                        self.productiveChildren+=1;
+                    }
+                }
+            }
+        }
     }
     fn quality(&self)->f64{
         // Penalize build/no-patch failures and verified regressions, not
@@ -79,11 +101,15 @@ impl Trial{
             -0.9*self.regressions as f64
             -0.20*(self.attempts-self.accepted) as f64)
             /(self.attempts+2) as f64
+            +0.35*(self.productiveChildren as f64)
+                /(self.observedChildren as f64+2.0)
     }
     fn evidence(&self)->Value{
         json!({"attempts":self.attempts,"independentPairedRuns":self.paired,
             "sourceAdoptions":self.accepted,"aggregateHoldoutGains":self.gains,
             "aggregateRegressions":self.regressions,"tokensSpent":self.tokens,
+            "observedRebuiltDescendants":self.observedChildren,
+            "productiveRebuiltDescendants":self.productiveChildren,
             "observedCodeGenerationUtility":self.quality()})
     }
 }
@@ -108,7 +134,27 @@ pub(crate) fn decide(
         raw+=1;
         let key=(g["generatorProviderId"].as_str().unwrap().to_owned(),
             g["generatorModel"].as_str().unwrap().to_owned());
-        if let Some(trial)=pool.get_mut(&key){trial.update(g);}
+        if let Some(trial)=pool.get_mut(&key){trial.update(g,history);}
+    }
+    // Historical same-task/same-frozen-suite generations from OTHER real
+    // source revisions supply transferable hypotheses, not "matched"
+    // proof. Learning can survive a successful source commit changing HEAD.
+    let mut transfer=BTreeMap::<(String,String),Trial>::new();
+    for key in pool.keys(){transfer.insert(key.clone(),Trial::default());}
+    for g in history {
+        if g["generatorCommit"]==commit
+            || g["comparisonProfileSha256"]!=profile
+            || g["objectiveId"]!=objective
+            || g["domain"]!=domain
+            || g["systemEvolution"]!=true
+            || g["generatorCommit"].as_str().is_none_or(str::is_empty)
+            || g["generatorBinarySha256"].as_str().is_none_or(str::is_empty)
+            || !g["nativeMutation"].is_null() {continue;}
+        let (Some(id),Some(model))=(g["generatorProviderId"].as_str(),
+            g["generatorModel"].as_str()) else{continue};
+        if let Some(t)=transfer.get_mut(&(id.to_string(),model.to_string())){
+            t.update(g,history);
+        }
     }
     let baseline_score=pool.get(&original).map(Trial::quality).unwrap_or(0.0);
     let baseline_evidence=pool.get(&original).map(Trial::evidence)
@@ -130,6 +176,22 @@ pub(crate) fn decide(
     }
     let mut mode="evidence_based_model_routing";
     if !confirmed{
+        // When a newly accepted descendant changes source HEAD, do not
+        // reset learned model choice to a frozen baseline forever. Prior
+        // independent outcomes over another code revision can nominate a
+        // *provisional* challenger; a new matched A/B cohort must still be
+        // measured before calling it a better source-generation model.
+        if raw==0{
+            let inherited=transfer.iter().filter(|(_,trial)|
+                trial.paired>=2 && trial.accepted>=1
+                && trial.gains>trial.regressions)
+                .max_by(|a,b|a.1.quality().total_cmp(&b.1.quality())
+                    .then_with(||b.0.cmp(a.0)));
+            if let Some((key,_))=inherited{
+                preferred=key.clone();
+                mode="cross_revision_transfer_hypothesis_not_proven";
+            }
+        }
         // Actively measure the existing baseline before testing alternatives,
         // then fill the least-observed arm. The next generation will see
         // the REAL result, not a router's invented forecast.
@@ -140,13 +202,17 @@ pub(crate) fn decide(
                     else if *b.0==original {std::cmp::Ordering::Greater}
                     else{a.0.cmp(b.0)}
                 })).map(|(key,_)|key.clone()).unwrap_or(original.clone());
-        preferred=key;
-        mode="paired_exploration_not_quality_proof";
+        if mode!="cross_revision_transfer_hypothesis_not_proven"{
+            preferred=key;
+            mode="paired_exploration_not_quality_proof";
+        }
     }
     let selected_evidence=pool.get(&preferred)
         .map(Trial::evidence).unwrap_or(Value::Null);
     let list=pool.iter().map(|(key,trial)|{
         json!({"endpoint":endpoint_value(key),"evidence":trial.evidence(),
+            "historicalTransferPrior":transfer.get(key)
+                .map(Trial::evidence).unwrap_or(Value::Null),
             "matchedFrozenCohort":true})
     }).collect::<Vec<_>>();
     let mut receipt=json!({
@@ -271,6 +337,18 @@ mod tests{
         assert_eq!(plan["selected"],b);
         assert_eq!(plan["sourceGenerationQualityPromoted"],true);
         assert_eq!(plan["externalApiWeightsModified"],false);
+    }
+    #[test]
+    fn a_rebuilt_descendant_inherits_candidate_prior_without_fake_proof(){
+        let a=ep("api");let b=ep("local");
+        let mut history=vec![sample("api",false,0),
+            sample("local",true,5),sample("local",true,5)];
+        for row in &mut history{row["generatorCommit"]=json!("old");}
+        let candidate=decide(&history,&a,&[b.clone()],"new","p","learning","o");
+        assert_eq!(candidate["selected"],b);
+        assert_eq!(candidate["selectionMode"],
+            "cross_revision_transfer_hypothesis_not_proven");
+        assert_eq!(candidate["sourceGenerationQualityPromoted"],false);
     }
     #[test]
     fn different_revision_or_suite_never_promotes_a_model(){
