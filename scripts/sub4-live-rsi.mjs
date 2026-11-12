@@ -276,7 +276,12 @@ if(mode==='probe'){
       g.accepted && g.pairedMeasured && g.pairedRevalidated &&
       g.candidateOrigin==='model_driven_detached_worktree' &&
       g.predictionRepairEvidence?.sourceIndependentlyAdopted!==true &&
-      g.focusFiles?.some(path=>path!=='src/engine/rsi_prequential.rs'));
+      g.domain!=='improver' &&
+      Array.isArray(g.focusFiles) &&
+      g.focusFiles.some(path=>path!=='src/engine/rsi_prequential.rs') &&
+      Array.isArray(g.systemDesign?.targetFiles) &&
+      g.systemDesign.targetFiles.some(path=>
+        typeof g.acceptedSourceHashes?.[path]==='string'));
     receipt.predictionRepairProof={
       scheduledAttempts:repairs.length,
       compiledPlanExecutions:repairs.filter(g=>

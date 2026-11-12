@@ -232,6 +232,13 @@ pub(crate) fn repair_execution_evidence(g:&Value)->Value{
         "evaluatedCandidateEditedSource":edited,
         "originalPairedReceiptReplayed":measured,
         "sourceIndependentlyAdopted":adopted,
+        "independentMetaHoldoutGainObserved":adopted
+            && g["evaluation"]["metrics"]["metaHoldoutGains"]
+                .as_u64().unwrap_or(0)>0,
+        "metaHoldoutGainCount":if adopted {
+            g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64()
+                .unwrap_or(0)
+        }else{0},
         "metaMethodPerformanceGainProven":false,
         "repairProgramRevision":g["metaPolicy"]["revision"],
         "sourcePath":target["path"],
