@@ -265,7 +265,7 @@ fn reciprocal_evolution_contract(
             +3.0*((gain_ab+gain_ba) as f64)
             +0.5*((joint_ab+joint_ba) as f64)
             -6.0*((regression_ab+regression_ba) as f64)
-            +if reversal_prior{24.0}else{0.0}
+            + (if reversal_prior{24.0}else{0.0})
             +meta_prior+unexplored+1.0/(1.0+attempts);
         Some((candidate.clone(),score,forward,reverse,observed_joint,
             gain_ab,gain_ba,regression_ab,regression_ba))
@@ -773,8 +773,10 @@ pub(crate) fn instruction(policy:&Value)->String {
         prompt.push_str(&format!(
             "\n[EXECUTABLE RECIPROCAL SYSTEM EXPERIMENT]\n\
             Primary role={} file={} SHA={}. Partner role={} file={} SHA={}. \
-            Observed parent-to-child transfers forward={}, reverse={}, jointly adopted designs={}. \
-            These temporal observations are NOT proof of a causal improvement. \
+            Observed parent-to-child transitions forward={}, reverse={}, jointly adopted designs={}. \
+            Independently paired isolated holdout gains A-to-B={}, B-to-A={}; \
+            observed regressions A-to-B={}, B-to-A={}. \
+            These observations are NOT proof of a causal improvement. \
             When automatic whole-system focus includes both files, inspect \
             both exact source versions, invent an interaction in which each \
             capability improves the other's future improvement procedure, \
@@ -784,7 +786,21 @@ pub(crate) fn instruction(policy:&Value)->String {
             pair["primary"]["sourceSha256"],pair["partner"]["role"],
             pair["partner"]["path"],pair["partner"]["sourceSha256"],
             pair["observedForwardTransfers"],pair["observedReverseTransfers"],
-            pair["observedJointAdoptions"]
+            pair["observedJointAdoptions"],
+            pair["measuredForwardHoldoutGains"],pair["measuredReverseHoldoutGains"],
+            pair["measuredForwardRegressions"],pair["measuredReverseRegressions"]
+        ));
+    }
+    if policy["reciprocalContinuation"]["source"]==
+        "verified_descendant_reverse_redesign_v1" {
+        prompt.push_str(&format!(
+            "\n[RECURSIVE REVERSAL AFTER VERIFIED TWO-SOURCE ADOPTION]\n\
+            The last compiled descendant adopted both role implementations. \
+            Now select role {} and redesign its source so the prior role {} \
+            gains a BETTER future improvement procedure. This is a new trial, \
+            not a proven recursive gain.\n",
+            policy["reciprocalContinuation"]["nextRole"],
+            policy["reciprocalContinuation"]["priorRole"]
         ));
     }
     prompt
