@@ -3024,6 +3024,7 @@ async fn run_loop(
                 return Err("후손 계획의 소스·세대·색인·전체 시스템 계보 불일치".into());
             }
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+            child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
             descendant_plan=plan;
@@ -4074,29 +4075,54 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let inherited=if parent["input"]["selectionPolicy"]=="automatic"{
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
-    // A parent's suggested domain is not a successor's independent policy.
-    // Only a source-backed, independently adopted design may constrain it.
-    let selected=inherited;
-    let (domain,selection,strategy)=select_generation_strategy(
-        &state,&history,&objective,None,None,selected,revision);
     let lab=campaign["labDir"].as_str().ok_or("후손 소스 경로 없음")?;
     let blueprint=crate::engine::rsi_system::blueprint(Path::new(lab),revision,&history);
+    let frontier=crate::engine::rsi_system::architecture_frontier(
+        &state,&blueprint,&history,campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab));
+    // Only the rebuilt descendant chooses coverage gaps. Explicit narrow
+    // owner objectives still constrain the choice to their own domains.
+    let architecture_target=frontier.iter().find(|row|
+        candidate_domains(&objective).contains(&row["domain"].as_str().unwrap_or("")))
+        .cloned().unwrap_or(Value::Null);
+    let auto=parent["input"]["selectionPolicy"]=="automatic";
+    let selected=inherited.clone().or_else(||if auto {
+        architecture_target["domain"].as_str().map(str::to_string)
+    }else{None});
+    let (domain,selection,strategy)=select_generation_strategy(
+        &state,&history,&objective,None,None,selected,revision);
     let mut focus=parent["input"].clone();
     focus["rsiTargetDomain"]=json!(domain);
     focus["rsiIndexId"]=campaign["planIndexId"].clone();
     let policy=strategy["id"].as_str()
         .and_then(|id|state.store.get("algorithm",id))
         .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
-    let ranked=if focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+    let mut ranked=if focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
         choose_focus_files(&state,&focus,&history,policy.as_ref())
     }else{Vec::new()};
+    if auto && inherited.is_none() && architecture_target["domain"]==domain
+        && focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+        if let (Some(path),Some(hash))=(
+            architecture_target["path"].as_str(),
+            architecture_target["sourceSha256"].as_str()) {
+            ranked.retain(|item|item["path"]!=path);
+            ranked.insert(0,json!({"path":path,"sourceHash":hash,
+                "source":"compiled_descendant_architecture_frontier",
+                "role":architecture_target["role"],
+                "sourceIndexId":campaign["planIndexId"]}));
+            ranked.truncate(3);
+        }
+    }
     let plan=json!({
         "source":"compiled_descendant_system_plan_v1",
         "generatorCommit":revision,"campaignId":campaign_id,
         "attempt":campaign["planAttempt"],"historyCount":history.len(),
         "indexId":campaign["planIndexId"],
         "domain":domain,"selection":selection,"strategy":strategy,
-        "rankedFiles":ranked,"systemBlueprint":blueprint
+        "rankedFiles":ranked,"systemBlueprint":blueprint,
+        "architectureFrontier":frontier,
+        "architectureTarget":architecture_target,
+        "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
+        "decisionOwner":"rebuilt_compiled_descendant"
     });
     println!("{plan}");
     Ok(())
@@ -4153,6 +4179,27 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let compiled_plan=compiled_system_target(&job,&commit,history.len())?;
+    if compiled_plan.is_some() {
+        let refreshed_history=crate::engine::rsi_system::revalidated_history(&state,&history);
+        let root=Path::new(job["input"]["rsiSourceDir"].as_str()
+            .ok_or("후손 소스가 없습니다.")?);
+        let model=crate::engine::rsi_system::blueprint(root,&commit,&refreshed_history);
+        let frontier=crate::engine::rsi_system::architecture_frontier(
+            &state,&model,&refreshed_history,
+            job["input"]["rsiIndexId"].as_str().unwrap_or(""),root);
+        let plan=&job["input"]["rsiDescendantPlan"];
+        let allowed_domains=candidate_domains(&objective);
+        let expected_target=frontier.iter().find(|row|
+            allowed_domains.contains(&row["domain"].as_str().unwrap_or("")))
+            .cloned().unwrap_or(Value::Null);
+        if plan["architectureFrontier"]!=json!(frontier)
+            || plan["architectureTarget"]!=expected_target
+            || job["input"]["rsiArchitectureTarget"]!=expected_target
+            || plan["sourceTreeSha256"]!=model["sourceTree"]["sourceTreeSha256"]
+            || plan["systemBlueprint"]!=model {
+            return Err("후손의 실제 소스 구조·개선 계보와 실행 계획이 불일치합니다.".into());
+        }
+    }
     let (mut domain, mut domain_selection, mut strategy)=if let Some((domain,selection,strategy))=&compiled_plan {
         (domain.clone(),*selection,strategy.clone())
     } else {
@@ -4237,7 +4284,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiSystemBlueprintVerified"]=json!(true);
         let directive=crate::engine::rsi_system::instruction(
             &model,job["input"]["rsiObjective"].as_str().unwrap_or(""));
-        format!("{directive}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        let target=&job["input"]["rsiArchitectureTarget"];
+        let frontier_context=if target["domain"]==domain {
+            format!("\nCompiled descendant architecture target: role={} source={} currentSha256={} reason={}. Inspect source and make an actual cross-module change when needed. This is a proposed experiment, not a proven gain.\n",
+                target["role"],target["path"],target["sourceSha256"],target["reason"])
+        }else{String::new()};
+        format!("{directive}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
