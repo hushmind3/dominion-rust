@@ -3548,14 +3548,27 @@ async fn run_loop(
         child_input["rsiTargetDomain"]=json!(target_domain);
         if input["rsiSystemEvolution"]==true && native_planning {
             let model=&record["nextGenerationPlan"]["systemBlueprint"];
-            if model["source"]!="compiled_descendant_system_blueprint_v1"
-                || model["generatorCommit"]!=head
-                || model["historyCount"].as_u64()!=Some(record["history"].as_array()
-                    .map(Vec::len).unwrap_or(0) as u64)
-                || model["architecture"].as_array().is_none_or(|a|a.len()!=7) {
-                return Err("후손 전체 시스템 자기모형의 revision·계보 검증 실패".into());
+            let agenda=&record["nextGenerationPlan"]["systemAgenda"];
+            // The old coordinator verifies immutable source identity only:
+            // it must not recompute or veto the new intelligence's ranking.
+            crate::engine::rsi_system::validate_system_agenda(
+                &context.state,model,agenda,
+                child_input["rsiIndexId"].as_str().unwrap_or(""),
+                &lab,&head,recorded_history.len())?;
+            if agenda["target"].is_object()
+                && agenda["target"]["domain"]!=target_domain
+                && crate::engine::rsi_system::inherited_domain(&recorded_history)
+                    .as_deref()!=Some(target_domain.as_str()) {
+                return Err("후손의 재설계 목표와 실제 선택 분야가 다릅니다.".into());
             }
             child_input["rsiSystemBlueprint"]=model.clone();
+            child_input["rsiSystemAgenda"]=agenda.clone();
+            child_input["rsiSelectedDomain"]=json!(target_domain);
+            child_input["rsiDecisionInput"]=json!({
+                "source":"compiled_descendant_self_controller_v1",
+                "generatorCommit":head,"target":agenda["target"],
+                "sourceTreeSha256":model["sourceTreeSha256"]
+            });
         }
         // The actual new generator's domain is known now. Incorporate
         // independently measured cross-objective examples only within this
@@ -3826,7 +3839,9 @@ async fn run_loop(
         // Keep serde_json's macro recursion bounded while preserving
         // native provenance as first-class generation evidence.
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
+        generation["systemAgenda"]=current["input"]["rsiSystemAgenda"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["inheritedMetaMethod"]=current["rsiInheritedMetaMethod"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["candidateOrigin"]=current["result"]["rsi"]["candidateOrigin"].clone();
@@ -4812,49 +4827,65 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     let scoped_input=native_plan_source_input(&job["input"],campaign);
     let source_input=&scoped_input;
     let objective=selection_objective(source_input);
-    // The accepted model's next target is executable descendant policy,
-    // never a substitute for the frozen source evaluation.
-    let inherited=if source_input["rsiSystemEvolution"]==true
-        && source_input["selectionPolicy"]=="automatic"{
+    let action_history=improvement_history(state,source_input,&history,campaign_id);
+    let system_mode=source_input["rsiSystemEvolution"]==true;
+    let automatic=system_mode && source_input["selectionPolicy"]=="automatic"
+        && source_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty);
+    let lab=campaign["labDir"].as_str().unwrap_or("");
+    // The newly compiled intelligence, rather than the old supervisor,
+    // models the whole versioned source and decides what to redesign.
+    let model=if system_mode {
+        if lab.is_empty(){return Err("후손의 실제 소스 디렉터리가 없습니다.".into());}
+        crate::engine::rsi_system::blueprint(Path::new(lab),binary_commit,&history)
+    }else{Value::Null};
+    let agenda=if system_mode {
+        crate::engine::rsi_system::system_agenda(state,&model,&history,
+            campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab))
+    }else{Value::Null};
+    let inherited=if automatic {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
-    let selected_domain=inherited.clone().or_else(||campaign["planSelectedDomain"].as_str()
-        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    let self_domain=if automatic {
+        agenda["target"]["domain"].as_str()
+            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
+    }else{None};
+    let explicit=campaign["planSelectedDomain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
+    let selected=inherited.or(self_domain).or(explicit);
     let trial_id=campaign["planTrialAlgorithmId"].as_str()
         .filter(|id|!id.is_empty()).map(str::to_string);
-    let action_history=improvement_history(state,source_input,&history,campaign_id);
-    let trial=if inherited.is_some(){None}else{trial_id};
+    let owns_choice=automatic && selected.is_some();
+    let trial=if owns_choice{None}else{trial_id};
+    let continuation=if owns_choice{None}else{research_continuation(&action_history)};
     let (domain,selection,strategy)=select_generation_strategy(
         state,if trial.is_some(){&history}else{&action_history},&objective,
-        if inherited.is_some(){None}else{research_continuation(&action_history)},
-        trial,selected_domain,binary_commit);
+        continuation,trial,selected,binary_commit);
     let mut focus_input=source_input.clone();
     focus_input["rsiTargetDomain"]=json!(domain);
     focus_input["rsiIndexId"]=campaign["planIndexId"].clone();
     let ranked=if focus_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
-        let policy=strategy["id"].as_str()
-            .and_then(|id|state.store.get("algorithm",id))
-            .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
-        choose_focus_files(state,&focus_input,&action_history,policy.as_ref())
-    } else {
-        Vec::new()
-    };
-    // Restrict the native descendant's chosen files to the exact indexed
-    // revision of its own detached source. Invalid paths no longer abort the
-    // generation; the model can still search if no ranked source remains.
-    let ranked=if source_input["rsiSystemEvolution"]==true {
-        let lab=campaign["labDir"].as_str()
-            .ok_or("후손 계획의 실제 소스 디렉터리가 없습니다.")?;
+        let self_focus=if automatic {
+            agenda["focus"].as_array().into_iter().flatten().take(2)
+                .filter_map(|row|{
+                    let path=row["path"].as_str()?;
+                    Some(json!({"path":path,"sourceHash":row["sourceSha256"],
+                        "systemRole":row["role"],"systemDomain":row["domain"]}))
+                }).collect::<Vec<_>>()
+        }else{Vec::new()};
+        if !self_focus.is_empty(){self_focus}
+        else{
+            let policy=strategy["id"].as_str()
+                .and_then(|id|state.store.get("algorithm",id))
+                .or_else(||crate::engine::algorithms::active(state,"selfimprove.search"));
+            choose_focus_files(state,&focus_input,&action_history,policy.as_ref())
+        }
+    }else{Vec::new()};
+    let ranked=if system_mode {
         verified_descendant_focus(state,
             campaign["planIndexId"].as_str().unwrap_or(""),
             Path::new(lab),ranked)
     }else{ranked};
     let target_plan=generation_target_plan(&domain,selection,&strategy,binary_commit);
-    let system_blueprint=if source_input["rsiSystemEvolution"]==true {
-        let root=campaign["labDir"].as_str()
-            .ok_or("후손 시스템 소스가 없습니다.")?;
-        crate::engine::rsi_system::blueprint(Path::new(root),binary_commit,&history)
-    }else{Value::Null};
     Ok(json!({
         "source":"compiled_generator_plan_v1",
         "generatorCommit":binary_commit,
@@ -4865,7 +4896,7 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "domain":domain,"selection":selection,"strategy":strategy,
         "targetPlan":target_plan,
         "improvementDirective":generation_improvement_directive(source_input,&action_history),
-        "systemBlueprint":system_blueprint,
+        "systemBlueprint":model,"systemAgenda":agenda,
         "rankedFiles":ranked
     }))
 }
