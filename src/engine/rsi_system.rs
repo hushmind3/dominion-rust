@@ -636,7 +636,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         improvement ability of later recompiled descendants, not merely\n\
         acceptance counts. Rewrite rsi_principle_learning.rs when its own\n\
         evidence model, reward assignment or generalization logic is weak.\n\
-        Improvement targets include models.rs/model runtime, memory, learning\n\
+        Improve actual API-driven intelligence: models.rs, router.rs, gateway.rs, memory, learning\n\
         and tools: use actual source edits and compare task behavior.\n\
         If assigned a concrete downstream coding task: solve THAT task with \
         your current improved intelligence. Do not substitute unrelated agent \
