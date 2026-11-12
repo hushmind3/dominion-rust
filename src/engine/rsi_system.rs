@@ -582,7 +582,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         You may change Rust, TypeScript and Python source; for Rust functions \
         use workspace_replace_function, for any language use workspace_replace \
         (line mode or exact oldText), and create new modules with workspace_write. \
-        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Explain a source-grounded dependency from one subsystem's change to another subsystem's NEXT improvement capacity, and set successorStages to test that continuation. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
+        Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, models, learning, tools and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. For actual cross-subsystem redesign, declare interactionEdges [{fromRole,toRole,fromPath,toPath,mechanism,expectedEffect}] that bind distinct source edits, and successorStages for the NEXT compiled descendant. Explain how A improves B's ability to improve A again. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
         Predict source-candidate creation, independent adoption, meta improvement and regressions with expectedOutcomes in rsi_system_plan BEFORE editing. The independent evaluator later calibrates this forecast and your descendant learns from its errors. Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
@@ -743,6 +743,48 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 실제 구성요소에 할당해야 합니다.".into());
     }
+    // Explicit source-bound A->B interactions are hypotheses until two actual
+    // edits and an independent source-adoption receipt exist. Disjoint
+    // componentFiles prevent claiming the same changed file for both roles.
+    let mut edges=Vec::<Value>::new();
+    if let Some(rows)=body["interactionEdges"].as_array(){
+        if component!="system" || rows.len()>16 {
+            return Err("상호 개선 계획은 2개 이상 역할의 결합 설계여야 합니다.".into());
+        }
+        let mut unique_edges=std::collections::BTreeSet::new();
+        for edge in rows {
+            let from=edge["fromRole"].as_str()
+                .filter(|r|roles.iter().any(|x|x.as_str()==Some(*r)))
+                .ok_or("상호개선 출발 역할이 구성요소에 없습니다.")?;
+            let to=edge["toRole"].as_str()
+                .filter(|r|roles.iter().any(|x|x.as_str()==Some(*r)))
+                .ok_or("상호개선 도착 역할이 구성요소에 없습니다.")?;
+            let from_path=edge["fromPath"].as_str()
+                .filter(|p|crate::engine::rsi::safe_path(p)
+                    && assignments[from].as_array().is_some_and(|items|
+                        items.iter().any(|item|item.as_str()==Some(*p))))
+                .ok_or("출발 구성요소의 실제 수정 파일이 필요합니다.")?;
+            let to_path=edge["toPath"].as_str()
+                .filter(|p|crate::engine::rsi::safe_path(p)
+                    && assignments[to].as_array().is_some_and(|items|
+                        items.iter().any(|item|item.as_str()==Some(*p))))
+                .ok_or("도착 구성요소의 실제 수정 파일이 필요합니다.")?;
+            let mechanism=edge["mechanism"].as_str()
+                .filter(|v|(25..=1600).contains(&v.chars().count()))
+                .ok_or("상호개선 관계의 구체적 메커니즘이 필요합니다.")?;
+            let expected=edge["expectedEffect"].as_str()
+                .filter(|v|(15..=1200).contains(&v.chars().count()))
+                .ok_or("상호개선의 관찰 가능한 예상 효과가 필요합니다.")?;
+            if from==to || from_path==to_path
+                || !unique_edges.insert((from.to_string(),to.to_string())) {
+                return Err("상호개선 관계는 서로 다른 두 구성요소와 소스여야 합니다.".into());
+            }
+            edges.push(json!({"fromRole":from,"toRole":to,
+                "fromPath":from_path,"toPath":to_path,
+                "mechanism":mechanism,"expectedEffect":expected,
+                "qualityProven":false}));
+        }
+    }
     // Successor program is a model-authored decision schedule, not a claim
     // that the tasks are done. The compiled child will rebind each stage to
     // the actual post-adoption source and may reject it if the code changed.
@@ -799,7 +841,8 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,roles,assignments,next,hypothesis,design,paths,stages,expectations
+        commit,component,roles,assignments,next,hypothesis,design,paths,
+        edges,stages,expectations
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -807,6 +850,7 @@ pub(crate) fn propose(
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
         "components":roles,"componentFiles":assignments,
+        "interactionEdges":edges,
         "successorStages":stages,
         "expectedOutcomes":expectations,
         "nextDomain":next,"hypothesis":hypothesis,
