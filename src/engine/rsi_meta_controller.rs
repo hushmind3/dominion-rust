@@ -64,9 +64,59 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
             && independent_adoption(child)
     ).count()
 }
+
+/// Learn an explicit categorical distribution over causal failure modes.
+/// A scalar benchmark score cannot tell an agent whether to improve its
+/// hypothesis, compiler repair procedure, code writer or predictor.
+/// Dirichlet smoothing avoids certainty from one sparse experiment.
+const OUTCOME_CLASSES:[&str;5]=[
+    "adopted","compiler_failure","no_verified_code_candidate",
+    "behavior_regression","no_independent_gain"
+];
+fn observed_class(g:&Value)->Option<&'static str>{
+    if independent_adoption(g){return Some("adopted");}
+    if g["evaluation"]["verdict"]=="build_failed"
+        || g["error"].as_str().is_some_and(|e|
+            e.contains("compiler")||e.contains("compile")){
+        return Some("compiler_failure");
+    }
+    if g["candidateId"].is_null(){
+        if g["result"].is_object()||g["attemptedCandidateId"].is_string()
+            || g["error"].is_string(){return Some("no_verified_code_candidate");}
+        return None;
+    }
+    if g["evaluation"]["metrics"]["regressions"]
+        .as_u64().is_some_and(|count|count>0){
+        return Some("behavior_regression");
+    }
+    if g["evaluation"]["verdict"].as_str().is_some(){
+        return Some("no_independent_gain");
+    }
+    None
+}
+fn failure_distribution(rows:&[&Value])->Value{
+    let mut counts=[0u64;5];
+    for row in rows{
+        if let Some(class)=observed_class(row){
+            if let Some(index)=OUTCOME_CLASSES.iter().position(|item|*item==class){
+                counts[index]+=1;
+            }
+        }
+    }
+    let total=counts.iter().sum::<u64>();
+    let mut posterior=serde_json::Map::new();
+    // One pseudocount per category: no zero-probability failure mode.
+    for (index,class) in OUTCOME_CLASSES.iter().enumerate(){
+        posterior.insert((*class).into(),
+            json!((counts[index] as f64+1.0)/(total as f64+5.0)));
+    }
+    Value::Object(posterior)
+}
+
 fn confidence_adjustment(history:&[Value])->f64{
     let errors=history.iter().filter_map(|row|
-        row["metaLearning"]["brierError"].as_f64()
+        row["metaLearning"]["categoricalBrier"].as_f64()
+            .or_else(||row["metaLearning"]["brierError"].as_f64())
             .filter(|value|value.is_finite() && *value>=0.0 && *value<=1.0))
         .rev().take(12).collect::<Vec<_>>();
     if errors.is_empty(){return 1.0;}
@@ -98,6 +148,7 @@ pub(crate) fn synthesize(
             g["candidateId"].is_null() && g["accepted"]!=true).count();
         let productivity=relevant.iter()
             .map(|g|next_generation_productivity(history,g)).sum::<usize>();
+        let failure_posterior=failure_distribution(&relevant);
         let probability=(adopted as f64+1.0)/(attempts as f64+2.0);
         let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
         let coverage=if target["verifiedRedesigns"].as_u64().unwrap_or(0)>0{0.0}else{0.22};
@@ -106,6 +157,9 @@ pub(crate) fn synthesize(
         let cost=(size/12_000.0).min(1.0);
         let penalty=regressions as f64/(attempts.max(1) as f64);
         let stall=fruitless as f64/(attempts.max(1) as f64);
+        let compiler_risk=failure_posterior["compiler_failure"].as_f64().unwrap_or(0.2);
+        let regression_risk=failure_posterior["behavior_regression"].as_f64().unwrap_or(0.2);
+        let edit_risk=failure_posterior["no_verified_code_candidate"].as_f64().unwrap_or(0.2);
         let clade=(productivity as f64/(adopted.max(1) as f64)).min(3.0);
         // UCB-style uncertainty, Bayesian shrinkage, and descendant
         // productivity provide a bounded, auditable choice. A failed edit is
@@ -113,12 +167,15 @@ pub(crate) fn synthesize(
         let score=0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
-            -0.12*penalty-0.07*stall-0.035*cost;
+            -0.12*penalty-0.07*stall-0.035*cost
+            -0.09*compiler_risk-0.06*regression_risk-0.06*edit_risk;
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
             "score":score,"predictedAdoptionProbability":probability,
-            "uncertainty":epistemic*calibration,"attempts":attempts,
+            "uncertainty":epistemic*calibration,
+            "failurePosterior":failure_posterior,
+            "attempts":attempts,
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
             "productiveDescendantAdoptions":productivity,
@@ -171,6 +228,7 @@ pub(crate) fn synthesize(
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
+            "failurePosterior":winner["failurePosterior"],
             "calibrationFactor":calibration,
             "qualityProven":false},
         "metaMechanismSource":"src/engine/rsi_meta_controller.rs",
@@ -326,7 +384,20 @@ pub(crate) fn next_method_hypothesis(policy:&Value,history:&[Value])->Value{
     let surprise=last.and_then(|g|g["metaLearning"]["brierError"].as_f64())
         .unwrap_or(0.25);
     let predicted=selected["predictedAdoptionProbability"].as_f64().unwrap_or(0.5);
-    let proposed=if surprise>0.35 {
+    let failures=&selected["failurePosterior"];
+    let compiler=failures["compiler_failure"].as_f64().unwrap_or(0.2);
+    let missing_edit=failures["no_verified_code_candidate"].as_f64().unwrap_or(0.2);
+    let regression=failures["behavior_regression"].as_f64().unwrap_or(0.2);
+    let plateau=failures["no_independent_gain"].as_f64().unwrap_or(0.2);
+    let proposed=if compiler>=0.32 {
+        "compiler_guided_meta_repair_and_source_contract_evolution"
+    }else if missing_edit>=0.32 {
+        "invent_a_new_executable_code_editing_method"
+    }else if regression>=0.32 {
+        "counterexample_guided_causal_meta_rewrite"
+    }else if plateau>=0.36 {
+        "diverse_cross_task_architecture_hybridization"
+    }else if surprise>0.35 {
         "revise_uncertainty_and_counterfactual_evaluation"
     }else if selected["editsWithoutCandidate"].as_u64().unwrap_or(0)>1 {
         "invent_alternative_source_edit_method"
@@ -343,6 +414,7 @@ pub(crate) fn next_method_hypothesis(policy:&Value,history:&[Value])->Value{
         "methodFamily":proposed,
         "estimatedAdoptionProbability":predicted,
         "observedSurprise":surprise,
+        "failurePosterior":failures,
         "requiredImplementation":["task_agent_source","self_improvement_source"],
         "qualityProven":false,
         "agentOwnsImplementation":true
@@ -401,6 +473,18 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
         (Some(p),Some(success))=>Some((p-if success{1.0}else{0.0}).powi(2)),
         _=>None
     };
+    let class=observed_class(generation);
+    let categorical_brier=class.and_then(|actual|{
+        let probs=&policy["forecast"]["failurePosterior"];
+        let mut error=0.0;
+        for label in OUTCOME_CLASSES {
+            let probability=probs[label].as_f64().filter(|p|p.is_finite()
+                && *p>=0.0&&*p<=1.0)?;
+            let truth=if label==actual{1.0}else{0.0};
+            error+=(probability-truth).powi(2);
+        }
+        Some((error/2.0).min(1.0))
+    });
     json!({
         "policyRevision":policy["revision"],
         "targetRole":policy["target"]["role"],
@@ -408,6 +492,8 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
         "independentlyMeasured":observed.is_some(),
         "actualModelAuthoredAdoption":observed,
         "brierError":brier,
+        "categoricalBrier":categorical_brier,
+        "observedFailureClass":class,
         "failureKind":if independent_adoption(generation){"adopted"}
             else{failure_kind(generation)},
         "attemptedSourceChange":generation["candidateId"].is_string(),
