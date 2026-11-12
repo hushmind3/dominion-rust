@@ -373,3 +373,111 @@ pub(crate) fn valid_return_lineage(history:&[Value],stage:&Value)->bool{
                 )))
     )
 }
+
+
+/// Resume a model-written, source-bound improvement programme across multiple
+/// independently accepted descendants. An accepted child that writes its own
+/// next programme supersedes this one; failed generations do not advance it.
+/// Supports novel cycles A->B->C->A without hardcoding role names.
+pub(crate) fn inherited_programme_stage(
+    history:&[Value],frontier:&[Value]
+)->Option<Value>{
+    let last=history.iter().rev().find(|g|accepted(g))?;
+    // The latest accepted child's own programme is authoritative and will be
+    // handled by rsi_system::inherited_stage before this fallback.
+    if last["systemDesign"]["successorStages"].as_array()
+        .is_some_and(|stages|!stages.is_empty()) {return None;}
+    for origin in history.iter().rev().filter(|g|accepted(g)
+        && g["id"]!=last["id"]){
+        let Some(stages)=origin["systemDesign"]["successorStages"].as_array()
+            .filter(|rows|!rows.is_empty() && rows.len()<=8)else{continue};
+        let Some(origin_commit)=origin["acceptedCommit"].as_str()else{continue};
+        let mut cursor=0usize;
+        let mut commit=origin_commit;
+        // Every completed step must be an independently adopted source
+        // revision that executed the specific authored step, in order.
+        for child in history.iter().filter(|g|accepted(g)){
+            if cursor>=stages.len(){break;}
+            let stage=&child["successorStage"];
+            if child["generatorCommit"]==commit
+                && stage["programmeOriginDesignId"]==origin["systemDesign"]["id"]
+                && stage["programmeOriginCommit"]==origin["acceptedCommit"]
+                && stage["programmeStageIndex"].as_u64()==Some(cursor as u64)
+                && stage["role"]==stages[cursor]["role"]
+                && stage["path"]==stages[cursor]["path"] {
+                let Some(next)=child["acceptedCommit"].as_str()else{break};
+                commit=next;
+                cursor+=1;
+            }
+        }
+        if cursor==0 || cursor>=stages.len()
+            || last["acceptedCommit"].as_str()!=Some(commit){continue;}
+        let stage=&stages[cursor];
+        let (Some(role),Some(domain),Some(path))=(
+            stage["role"].as_str(),stage["domain"].as_str(),
+            stage["path"].as_str())else{continue};
+        let Some(current)=frontier.iter().find(|row|
+            row["role"]==role && row["domain"]==domain && row["path"]==path)
+            else{continue};
+        return Some(json!({
+            "phase":"continue_model_authored_improvement_programme",
+            "role":role,"domain":domain,"path":path,
+            "sourceSha256":current["sourceSha256"],
+            "objective":stage["objective"],
+            "sourceDesignId":origin["systemDesign"]["id"],
+            "predecessorCommit":origin["acceptedCommit"],
+            "programmeOriginDesignId":origin["systemDesign"]["id"],
+            "programmeOriginCommit":origin["acceptedCommit"],
+            "programmeStageIndex":cursor,
+            "programmeProgressAccepted":cursor,
+            "programmeProgressLastCommit":last["acceptedCommit"],
+            "learningPolicy":stage["learningPolicy"].as_str()
+                .unwrap_or("avoid_failed"),
+            "toolPolicy":stage["toolPolicy"].as_str()
+                .unwrap_or("allow_new_modules"),
+            "executionPolicy":stage["executionPolicy"].as_str()
+                .unwrap_or("explore_then_edit"),
+            "qualityProven":false
+        }));
+    }
+    None
+}
+
+/// The external coordinator validates immutable commit/source receipts and
+/// stage order. It does NOT re-run the earlier model's scheduling equation.
+pub(crate) fn valid_programme_lineage(history:&[Value],stage:&Value)->bool{
+    let Some(origin)=history.iter().find(|g|accepted(g)
+        && g["systemDesign"]["id"]==stage["programmeOriginDesignId"]
+        && g["acceptedCommit"]==stage["programmeOriginCommit"])else{return false};
+    let Some(index)=stage["programmeStageIndex"].as_u64()
+        .map(|n|n as usize)else{return false};
+    let Some(stages)=origin["systemDesign"]["successorStages"].as_array()
+        else{return false};
+    if index>=stages.len()
+        || stages[index]["role"]!=stage["role"]
+        || stages[index]["path"]!=stage["path"]
+        || stages[index]["domain"]!=stage["domain"] {return false;}
+    if index==0 {
+        return origin["acceptedCommit"]==stage["predecessorCommit"];
+    }
+    let mut cursor=0usize;
+    let mut commit=origin["acceptedCommit"].as_str().unwrap_or("");
+    for child in history.iter().filter(|g|accepted(g)){
+        if cursor>=index{break;}
+        let prior=&child["successorStage"];
+        if child["generatorCommit"]==commit
+            && prior["programmeOriginDesignId"]==origin["systemDesign"]["id"]
+            && prior["programmeOriginCommit"]==origin["acceptedCommit"]
+            && prior["programmeStageIndex"].as_u64()==Some(cursor as u64)
+            && prior["role"]==stages[cursor]["role"]
+            && prior["path"]==stages[cursor]["path"]{
+            let Some(next)=child["acceptedCommit"].as_str()else{return false};
+            commit=next;
+            cursor+=1;
+        }
+    }
+    cursor==index && stage["programmeProgressAccepted"].as_u64()==Some(index as u64)
+        && stage["programmeProgressLastCommit"].as_str()==Some(commit)
+        && history.iter().any(|g|accepted(g)
+            && g["acceptedCommit"]==commit)
+}
