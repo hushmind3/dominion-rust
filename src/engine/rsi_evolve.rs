@@ -3227,8 +3227,11 @@ async fn run_loop(
             }
             if plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
-                || plan["systemBlueprint"]["architecture"].as_array()
-                    .is_none_or(|items|items.len()!=7)
+                || plan["systemBlueprint"]["architecture"].as_array().is_none_or(|items|
+                    items.is_empty() || items.len()>64 || items.iter().any(|item|
+                        item["role"].as_str().is_none_or(|role|role.is_empty() || role.len()>64)))
+                || !plan["systemBlueprint"]["sourceTreeSha256"].as_str()
+                    .is_some_and(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit()))
                 || !plan["improvementDirective"].is_object() {
                 return Err("후손 시스템 자기모형·실패 학습·계보가 일치하지 않습니다.".into());
             }
