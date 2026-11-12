@@ -403,10 +403,17 @@ pub fn confirm_deployment(
 fn measured_capability_metrics(state:&AppState,candidate:&Value)->Option<Value> {
     let id=candidate["id"].as_str()?;
     let evaluation=&candidate["evaluation"];
-    let receipt=state.store.all("rsi_pair").into_iter().find(|row|
-        row["candidateId"]==id
-            && row["evidenceSha256"]==evaluation["evidenceSha256"]
-            && row["report"]["reportSha256"]==evaluation["reportSha256"])?;
+    // The server writes the SHA of the original evidence file to
+    // evaluation.evidenceSha256. It never writes evaluation.reportSha256.
+    // Compare against the authenticated receipt and its raw report, not a
+    // missing summary field. Bind the receipt to THIS candidate (Sub3's
+    // successful recursive proof uses the same candidate-keyed identity).
+    let receipt=state.store.get("rsi_pair",&format!("rsi-pair-{id}"))?;
+    if receipt["candidateId"]!=id
+        || receipt["runner"]!="local_gitrepo_not_os_sandbox"
+        || receipt["evidenceSha256"]!=evaluation["evidenceSha256"]
+        || receipt["report"]["reportSha256"]!=receipt["evidenceSha256"]
+    {return None;}
     let report=&receipt["report"];
     if report["baseCommit"]!=candidate["baseCommit"]
         || report["patchSha256"]!=candidate["patchSha256"]
@@ -615,17 +622,36 @@ mod tests {
                 "evaluation":{"id":evaluation_id,"source":"server_invoked_local_paired_git_worktrees",
                     "evidenceSha256":"a".repeat(64),"reportSha256":"a".repeat(64),
                     "verdict":"improved","metrics":metrics}}));
-            state.store.put("rsi_pair",&json!({"id":format!("receipt-{i}"),
+            state.store.put("rsi_pair",&json!({"id":format!("rsi-pair-{id}"),
                 "candidateId":id,"evidenceSha256":"a".repeat(64),
+                "runner":"local_gitrepo_not_os_sandbox",
                 "verdict":"improved","metrics":metrics,"report":report}));
             history.push(json!({"accepted":true,"candidateId":id,
                 "generatorCommit":revisions[i],"acceptedCommit":revisions[i+1],
                 "evaluation":{"evidenceSha256":"a".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history),"validated meta improvement followed by verified transfer");
+        // Regression for the actual 2026-11-12 Sub2 failure: the server
+        // records evidenceSha256 but not evaluation.reportSha256. Three
+        // genuine paired improvements must not become false negatives.
+        for i in 0..3 {
+            let candidate=state.store.get("rsi_candidate",&format!("proof-{i}")).unwrap();
+            assert!(candidate["evaluation"]["reportSha256"].is_null());
+            assert!(measured_capability_metrics(&state,&candidate).is_some());
+        }
+        // An unauthenticated report cannot acquire a success verdict by
+        // changing its summary. The frozen pair is always recomputed.
+        let mut tampered=state.store.get("rsi_pair","rsi-pair-proof-1").unwrap();
+        tampered["report"]["reportSha256"]=json!("f".repeat(64));
+        state.store.put("rsi_pair",&tampered).unwrap();
+        assert!(!capability_proven(&state,&history));
+        tampered["report"]["reportSha256"]=json!("a".repeat(64));
+        state.store.put("rsi_pair",&tampered).unwrap();
+        assert!(capability_proven(&state,&history));
+
         // A missing independent receipt or a rewritten measurement cannot
         // be compensated for with a truthful-looking aggregate.
-        let valid_receipt=state.store.get("rsi_pair","receipt-2").unwrap();
+        let valid_receipt=state.store.get("rsi_pair","rsi-pair-proof-2").unwrap();
         let mut forged_receipt=valid_receipt.clone();
         forged_receipt["report"]["cases"][2]["metrics"]["quality"]["candidate"]=json!(0.5);
         state.store.put("rsi_pair",&forged_receipt);
