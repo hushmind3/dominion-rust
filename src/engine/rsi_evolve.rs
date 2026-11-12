@@ -5504,6 +5504,7 @@ fn compiled_system_generation_plan(
         && !successor_stage.is_object()
         && principle["target"].is_object()
         && principle["methodTarget"].is_object()
+        && principle["shouldProbeTaskMethod"]==true
         && matches!(phase,"invent_new_intelligence"|"observe_factorial");
     let scientific_active=!explicit_focus && !principle_active
         && suggested["target"].is_object()
