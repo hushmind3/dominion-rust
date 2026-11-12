@@ -73,6 +73,18 @@ pub fn definitions() -> Vec<Value> {
                     "workspace_replace_range","workspace_write","rsi_system_plan","rsi_method_propose"]},
                 "minItems":2,"maxItems":8,"description":"Optional NEW tool sequence for the NEXT descendant. Source range read must precede actual edit; only adopted source designs may transfer it."}),
             "methodHypothesis":text("Optional falsifiable rationale for changing the next descendant's executable method"),
+            "improvementRules":json!({"type":"array","maxItems":12,
+                "description":"OPEN improvement algebra: model invents new source-executed rules over any number of intelligence subsystem roles. Rules that change code and pass independent adoption become graph operators in later compiled descendants; cycles and method rewrites are discovered, not hand-coded.",
+                "items":{"type":"object","properties":{
+                    "name":{"type":"string"},
+                    "premises":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "products":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "methodRole":{"type":"string"},
+                    "methodPath":{"type":"string"},
+                    "hypothesis":{"type":"string"},
+                    "observable":{"type":"string"}},
+                    "required":["name","premises","products","methodRole",
+                        "methodPath","hypothesis","observable"]}}),
             "newComponents":json!({"type":"array","maxItems":8,
                 "description":"For component=system: executable NEW intelligence subsystems. Must name a distinct role, sourcePaths actually authored, integrationPaths changed to wire it into the runtime, and the capability it learns to improve.",
                 "items":{"type":"object","properties":{
