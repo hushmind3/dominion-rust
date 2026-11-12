@@ -196,6 +196,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
             let cycle_member=best_cycle.iter().any(|e|e["ruleId"]==id
                 && e["to"]==product.as_str().unwrap_or(""));
             let score=(if cycle_member{500}else{0})
+                + (if revise{1100}else{0})
                 + (if fresh_activation && premise_observed{900}else{0})
                 + (if premise_observed{180}else{0})
                 + (if trials.is_empty(){160}else{0})
