@@ -6,7 +6,7 @@ use crate::{
         experience,
         jobs::{self, JobContext},
         memory::MemoryScope,
-        rsi_worktree, tools,
+        rsi, rsi_worktree, tools,
     },
     state::AppState,
 };
