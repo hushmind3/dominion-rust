@@ -4121,6 +4121,11 @@ async fn run_loop(
         // not the coordinator's intention or an assistant message.
         let action_session=session.and_then(|sid|context.state.store.get("session",sid))
             .unwrap_or(Value::Null);
+        generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
+        generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
+        generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
+        generation["systemDesign"]=action_session["rsiSystemDesign"].clone();
         generation["actionExecution"]=json!({
             "focusApplied":action_session["rsiPolicyFocus"]==true,
             "editCheckpointReached":action_session["rsiPolicyCheckpointReached"]==true,
@@ -4178,8 +4183,27 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    // The independent paired oracle remains the only source
+                    // of quality credit. A whole-system generation additionally
+                    // needs a MODEL-authored design tied to its changed files.
+                    generation["candidateOrigin"]=candidate["origin"].clone();
+                    generation["pairedRevalidated"]=json!(
+                        rsi::verified_pair_receipt(&context.state,&candidate));
+                    let model_design=&generation["systemDesign"];
+                    let authored_system_change=input["rsiSystemEvolution"]!=true
+                        || (candidate["origin"]=="model_driven_detached_worktree"
+                            && model_design["source"]=="model_authored_system_design"
+                            && model_design["generatorCommit"]==head
+                            && model_design["generationJobId"]==child_id
+                            && model_design["targetFiles"].as_array().is_some_and(|files|
+                                files.iter().filter_map(Value::as_str).any(|path|
+                                    candidate["paths"].as_array().is_some_and(|changed|
+                                        changed.iter().any(|item|item.as_str()==Some(path)))))
+                            && generation["systemBlueprintVerified"]==true);
                     let eligible = candidate["status"] == "verified"
-                        && candidate["evaluation"]["metrics"]["eligible"] == true;
+                        && candidate["evaluation"]["metrics"]["eligible"] == true
+                        && generation["pairedRevalidated"]==true
+                        && authored_system_change;
                     let winner = if eligible {
                         "candidate"
                     } else if candidate["status"] == "rejected" {
@@ -4373,7 +4397,10 @@ async fn run_loop(
             .ok_or("세대 목록 손상")?.push(generation.clone());
         record["capabilityDemonstrated"] = json!(max_streak >= 3
             && crate::engine::rsi::campaign_capability_proven(
-                &context.state,&evidence_record));
+                &context.state,&evidence_record)
+            && (input["rsiSystemEvolution"]!=true
+                || crate::engine::rsi_system::system_capability_proven(
+                    &context.state,&evidence_record["history"])));
         // Persist the real outcome of the newly executed recovery policy.
         // A ranking score or a source write is not a validated improvement;
         // this is the observed action utility that the next built generator
