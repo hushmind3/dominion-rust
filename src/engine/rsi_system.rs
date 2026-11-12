@@ -428,6 +428,7 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
             .then(a["sourceBytes"].as_u64().cmp(&b["sourceBytes"].as_u64()))
             .then(a["role"].as_str().cmp(&b["role"].as_str()))
     });
+    frontier.truncate(64);
     frontier
 }
 
@@ -510,17 +511,33 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
 pub(crate) fn validate_system_agenda(state:&crate::state::AppState,
     model:&Value,agenda:&Value,index_id:&str,root:&Path,
     commit:&str,history_len:usize)->Result<(),String>{
-    let facts=source_facts(root);
+    // The external supervisor cannot require its OWN source inventory
+    // algorithm to equal the descendant's: that would freeze the
+    // self-modifying architecture analyzer and block legitimate revisions.
+    // The measured binary commit and each selected actual source SHA bind
+    // the controller to real code without replaying its ranking algorithm.
+    let fingerprint=model["sourceTreeSha256"].as_str()
+        .is_some_and(|sha|sha.len()==64
+            && sha.bytes().all(|byte|byte.is_ascii_hexdigit()));
     if model["generatorCommit"]!=commit
         || model["historyCount"].as_u64()!=Some(history_len as u64)
-        || model["sourceTreeSha256"]!=facts["sha256"]
-        || model["sourceFileCount"]!=facts["fileCount"]
+        || !fingerprint
+        || !model["sourceFileCount"].as_u64()
+            .is_some_and(|count|count>0 && count<=2048)
         || model["architecture"].as_array().is_none_or(|roles|
             roles.is_empty()||roles.len()>64)
         || agenda["source"]!="compiled_descendant_self_controller_v1"
         || agenda["generatorCommit"]!=commit
         || agenda["sourceTreeSha256"]!=model["sourceTreeSha256"] {
         return Err("후손의 전체 소스 구조와 세대 ID가 일치하지 않습니다.".into());
+    }
+    let preview=model["sourceInventory"].as_array()
+        .filter(|rows|rows.len()<=64)
+        .ok_or("후손 자기모형의 소스 표본 형식 오류")?;
+    for row in preview {
+        if !source_entry_valid(state,root,index_id,row,"sha256") {
+            return Err("후손이 보고한 실제 소스 표본의 해시가 다릅니다.".into());
+        }
     }
     let rows=agenda["frontier"].as_array()
         .filter(|rows|rows.len()<=64)
@@ -551,7 +568,10 @@ pub(crate) fn validate_system_agenda(state:&crate::state::AppState,
 /// This is a new *trial* for the next generation, not proof that the proposed
 /// program already improved performance.
 pub(crate) fn inherited_program(history:&[Value])->Option<Value>{
-    let last=history.iter().rev().find(|row|accepted_model_design(row).is_some())?;
+    // A newer independently adopted source revision supersedes an older
+    // learned method, even if it chose to remove the old method. Reviving an
+    // earlier program after a new source adoption is stale policy inheritance.
+    let last=history.iter().rev().find(|row|row["accepted"]==true)?;
     let design=accepted_model_design(last)?;
     let sequence=design["actionProgram"].as_array()
         .filter(|seq|seq.len()>=2&&seq.len()<=8)?;
