@@ -145,20 +145,38 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
         .then_with(||b.1.cmp(&a.1))
         .then_with(||a.2["role"].as_str().cmp(&b.2["role"].as_str())));
     let best=ranked.first().map(|row|row.2.clone()).unwrap_or(Value::Null);
-    let phase=if best["unresolvedBehavior"].as_u64().unwrap_or(0)>0
+    // If independent experiments repeatedly fail on a real capability,
+    // the next DOMINION must invent a different improvement MECHANISM and
+    // rewrite the stalled capability at the same time. More retries of the
+    // unchanged planner do not constitute recursive self-improvement.
+    let stalled=best["unresolvedBehavior"].as_u64().unwrap_or(0)>=3
+        &&best["acceptedImprovements"].as_u64().unwrap_or(0)==0;
+    let meta=if stalled && best["role"]!="improvement_methods" {
+        sources.get("improvement_methods").cloned().unwrap_or(Value::Null)
+    }else{Value::Null};
+    let phase=if stalled && meta.is_object(){
+        "invent_better_improvement_method_for_failed_intelligence"
+    }else if best["unresolvedBehavior"].as_u64().unwrap_or(0)>0
         ||best["observedRegressions"].as_u64().unwrap_or(0)>0{
         "repair_measured_whole_agent_weakness"
     }else if best["measuredHoldouts"].as_u64().unwrap_or(0)==0{
         "learn_unmeasured_intelligence_capability"
     }else{"extend_verified_whole_agent_capability"};
+    let mut focus=if best["target"].is_object(){
+        vec![best["target"].clone()]
+    }else{Vec::new()};
+    if meta.is_object()&&meta["path"]!=best["target"]["path"]{
+        focus.push(meta.clone());
+    }
     let mut ledger=json!({
         "source":"descendant_whole_dominion_growth_v1",
         "generatorCommit":commit,"historyCount":history.len(),
         "independentlyMeasuredGenerations":assessed_generations,
         "phase":phase,
         "target":best["target"],
-        "focus":if best["target"].is_object(){vec![best["target"].clone()]}
-            else{Vec::new()},
+        "focus":focus,
+        "improvementMethodSource":meta,
+        "failedMethodReinventionRequired":stalled,
         "capabilityLedger":ranked.into_iter().map(|row|row.2)
             .take(32).collect::<Vec<_>>(),
         "nextGenerationMustRewriteIntelligence":true,
@@ -184,7 +202,8 @@ pub(crate) fn valid(p:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
             pinned(&Value::Object(target.clone()))
                 &&frontier.iter().any(|row|row==&p["target"]))
         &&p["focus"].as_array().is_some_and(|items|
-            items.len()==1&&items[0]==p["target"])
+            (1..=2).contains(&items.len()) &&items[0]==p["target"]
+                &&items.iter().all(|item|pinned(item)&&frontier.contains(item)))
 }
 pub(crate) fn apply(agenda:&mut Value,ledger:&Value){
     if ledger["source"]!="descendant_whole_dominion_growth_v1"
@@ -260,6 +279,24 @@ mod tests{
         assert_eq!(agenda["target"]["role"],"memory");
         assert_eq!(agenda["wholeDominionGrowth"]["revision"],
             result["revision"]);
+    }
+    #[test]
+    fn repeated_memory_failure_forces_a_new_method_and_a_memory_rewrite(){
+        let frontier=vec![
+            role("memory","src/engine/memory.rs"),
+            role("tools","src/engine/tools.rs"),
+            role("improvement_methods","src/engine/rsi_whole_agent.rs")];
+        let history=vec![
+            evaluation("memory",false,false),
+            evaluation("memory",false,false),
+            evaluation("memory",false,false)];
+        let p=plan(&history,&frontier,"c");
+        assert_eq!(p["phase"],
+            "invent_better_improvement_method_for_failed_intelligence");
+        assert_eq!(p["target"]["role"],"memory");
+        assert_eq!(p["focus"][0]["role"],"memory");
+        assert_eq!(p["focus"][1]["role"],"improvement_methods");
+        assert!(valid(&p,&frontier,"c",3));
     }
     #[test]
     fn unverified_fake_gain_does_not_change_whole_agent_ability_ledger(){
