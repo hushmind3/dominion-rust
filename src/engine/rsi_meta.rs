@@ -67,8 +67,9 @@ async fn build(context:&JobContext, source:&Path, target:&Path) -> Result<PathBu
     Ok(binary)
 }
 
-async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, source:&Path,
-    source_commit:&str, outer_input:&Value, task:usize, arm:&str, root:&Path) -> Result<Value,String> {
+async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
+    generator_source:&Path, source:&Path, source_commit:&str,
+    outer_input:&Value, task:usize, arm:&str, root:&Path) -> Result<Value,String> {
     // Different instructions and example wording are held out from the outer
     // improver's development trace. Neither arm sees grading sentences.
     let request=if task==0 {
@@ -98,6 +99,21 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
         "rsiLocalOnly":outer_input["rsiLocalOnly"],
         "rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
         "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false});
+    // A downstream task exercises the ACTUAL compiled generator's intelligent
+    // controller, not a featureless worker shim. Baseline and candidate work
+    // against identical subject bytes; each carries its own pinned agent
+    // algorithm/harness/learning source for the verified self-model.
+    if outer_input["rsiSystemEvolution"]==true {
+        let mut history=context.state.store.all("rsi_generation").into_iter()
+            .filter(|row|row["campaignId"]==context.job_id)
+            .collect::<Vec<_>>();
+        history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+        input["rsiSystemEvolution"]=json!(true);
+        input["rsiGeneratorSourceDir"]=json!(generator_source);
+        input["rsiSystemBlueprint"]=crate::engine::rsi_system::blueprint(
+            generator_source,generator_commit,&history);
+        input["rsiImprovementDirective"]=crate::engine::rsi_system::improvement_directive(&history);
+    }
     // Use the same frozen registration cases in each arm; never nest meta eval.
     input["rsiFrozenCases"]=outer_input["rsiFrozenCases"].as_array().map(|cases|
         cases.iter().filter(|c|c["id"]!="meta-downstream-editing").cloned().collect::<Vec<_>>()).map_or(Value::Null,|c|json!(c));
@@ -125,6 +141,11 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
     let candidate=child["result"]["rsi"]["candidateId"].as_str().and_then(|id|context.state.store.get("rsi_candidate",id));
     let mut result=json!({"jobId":id,"task":task,"arm":arm,"generatorCommit":generator_commit,
         "subjectCommit":source_commit,"generatorBinarySha256":sha(std::fs::read(binary).map_err(|e|e.to_string())?),
+        "generatorSourceTreeSha256":child["input"]["rsiSystemBlueprint"]["sourceTreeSha256"],
+        "systemBlueprintVerified":child["rsiSystemBlueprintVerified"],
+        "generationRuntimeMode":if child["input"]["rsiSystemEvolution"]==true {
+            "compiled_system_controller"
+        } else {"regular_worker"},
         "providerId":outer_input["providerId"],"model":outer_input["model"],
         "tokenLimit":24000,"timeLimitSeconds":240,"usage":usage,"elapsedMs":started.elapsed().as_millis() as u64,
         "workerOk":outcome.as_ref().is_ok_and(|o|o.status.success()),"quality":0.0,"actualModelRoutes":routes,
@@ -191,7 +212,9 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
             for arm in if task==0 {["baseline","candidate"]}else{["candidate","baseline"]} {
                 let binary=if arm=="baseline"{&saved}else{&upgraded};
                 let revision=if arm=="baseline"{base}else{&commit};
-                rows.push(episode(context,binary,revision,source,base,&outer["input"],task,arm,output).await?);
+                let generator_source=if arm=="baseline"{source}else{&variant};
+                rows.push(episode(context,binary,revision,generator_source,source,base,
+                    &outer["input"],task,arm,output).await?);
             }
         }
         if rows.iter().any(|row|row["usage"]["calls"].as_u64().unwrap_or(0)==0) {
