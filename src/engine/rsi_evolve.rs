@@ -4637,7 +4637,24 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiWorkerContextPlan"]=plan;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
+    // Actually switch the CHILD model route to independently adopted
+    // PEFT weights. A model path in the prompt never counts as applied.
+    // The sidecar is limited to this detached generation and removed after
+    // the model's full source-editing turn (including its tool calls).
+    let model_inference=crate::engine::rsi_model_weights::launch(&state,&job).await?;
+    let model_provider=model_inference.as_ref().map(|server|server.provider_id.clone());
+    if let Some(server)=&model_inference {
+        job["input"]["providerId"]=json!(server.provider_id);
+        job["input"]["model"]=json!("dominion-promoted-lora");
+        job["rsiAdapterInferenceExecuted"]=server.evidence.clone();
+        state.store.put("job",&job).ok_or("채택 모델 추론 경로 저장 실패")?;
+    }
     let result = jobs::run_prompt(&context, &job).await;
+    // Unload the model, regardless of model or tool execution outcome.
+    drop(model_inference);
+    if let Some(id)=model_provider {
+        crate::engine::rsi_model_weights::disable_inference(&state,&id);
+    }
     match result {
         Ok(value) => {
             context.checkpoint(json!({"status":"completed","result":value}))?;
