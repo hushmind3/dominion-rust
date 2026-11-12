@@ -95,7 +95,8 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str, sourc
         "rsiDiagnostic":{"failed":1,"domain":"tools","focusFiles":["src/engine/decompose.rs"]},
         "rsiTargetPlan":{"domain":"tools","selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
         "rsiFrozenCases":rsi_worktree::metric_cases(),"rsiNativeInduction":false,
-        "rsiMetaEpisode":true,"rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
+        "rsiMetaEpisode":true,"rsiLocalOnly":outer_input["rsiLocalOnly"],
+        "rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
         "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false});
     // Use the same frozen registration cases in each arm; never nest meta eval.
     input["rsiFrozenCases"]=outer_input["rsiFrozenCases"].as_array().map(|cases|
