@@ -299,6 +299,100 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
         .then(||domain.to_string())
 }
 
+/// Recompute whole-system recursion from model-produced source changes,
+/// actual compiled planner ownership, independent paired receipts and a
+/// cumulative set of redesigned intelligence components. Speeding up one
+/// memorized benchmark three times is never whole-system evolution.
+pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&Value)->bool {
+    let Some(rows)=history.as_array() else {return false;};
+    let mut chain=0usize;
+    let mut prior_commit=String::new();
+    let mut prior_binary=String::new();
+    let mut covered=std::collections::BTreeSet::new();
+    let mut independently_planned=0usize;
+    for generation in rows {
+        if generation["accepted"]!=true {chain=0;prior_commit.clear();covered.clear();continue;}
+        let Some(candidate)=generation["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else {
+            chain=0;prior_commit.clear();covered.clear();continue;
+        };
+        let Some(generator)=generation["generatorCommit"].as_str() else {return false;};
+        let Some(accepted)=generation["acceptedCommit"].as_str() else {return false;};
+        let Some(binary)=generation["generatorBinarySha256"].as_str() else {return false;};
+        if chain>0 && (generator!=prior_commit || binary==prior_binary) {
+            chain=0;covered.clear();independently_planned=0;
+        }
+        let model=&generation["systemBlueprint"];
+        let design=&generation["systemDesign"];
+        let plan=&generation["descendantPlan"];
+        let changed=candidate["paths"].as_array().cloned().unwrap_or_default();
+        let independently_verified=
+            generation["pairedRevalidated"]==true
+            && crate::engine::rsi::verified_pair_receipt(state,&candidate)
+            && candidate["status"]=="verified"
+            && candidate["origin"]=="model_driven_detached_worktree"
+            && candidate["experimentAdoption"]["commit"]==accepted
+            && candidate["baseCommit"]==generator
+            && generation["candidateOrigin"]==candidate["origin"]
+            && generation["systemEvolution"]==true
+            && generation["systemBlueprintVerified"]==true
+            && model["generatorCommit"]==generator
+            && model["architecture"].as_array().is_some_and(|a|a.len()==7)
+            && model["sourceTreeSha256"].as_str().is_some_and(|h|
+                h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit()))
+            && plan["source"]=="compiled_descendant_system_controller_v3"
+            && plan["generatorCommit"]==generator
+            && plan["systemBlueprint"]==*model
+            && design["source"]=="model_authored_system_design"
+            && design["generatorCommit"]==generator
+            && design["generationJobId"]==generation["jobId"]
+            && changed.iter().filter_map(Value::as_str).any(|path|
+                design["targetFiles"].as_array().is_some_and(|targets|
+                    targets.iter().any(|target|target.as_str()==Some(path)))
+                    && generation["acceptedSourceHashes"][path]
+                        .as_str().is_some_and(|hash|
+                            hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())))
+            && generation["evaluation"]["metrics"]["eligible"]==true
+            && generation["evaluation"]["metrics"]["regressions"]==0;
+        if !independently_verified {
+            chain=0;prior_commit.clear();covered.clear();independently_planned=0;
+            continue;
+        }
+        for path in changed.iter().filter_map(Value::as_str) {
+            let role=match path {
+                "src/engine/algorithms.rs" | "src/engine/reasoning.rs"
+                    | "src/engine/algorithm_eval.rs"=>"algorithms",
+                "src/engine/jobs.rs" | "src/engine/rsi_worktree.rs"
+                    | "src/engine/decompose.rs" | "src/engine/chat/mod.rs"=>"harness",
+                "src/engine/memory.rs" | "src/engine/room_state.rs"
+                    | "src/engine/room_knowledge.rs"=>"memory",
+                "src/engine/learning.rs" | "src/engine/experience.rs"
+                    | "src/engine/procedure.rs"=>"learning",
+                "src/engine/tools.rs" | "src/engine/browser.rs"
+                    | "src/engine/mcp.rs"=>"tools",
+                "src/engine/rsi_evolve.rs" | "src/engine/rsi_mutation.rs"
+                    | "src/engine/rsi_system.rs"=>"improvement_methods",
+                _=>continue
+            };
+            if generation["acceptedSourceHashes"][path].is_string() {
+                covered.insert(role);
+            }
+        }
+        if chain>0 {independently_planned+=1;}
+        chain+=1;
+        prior_commit=accepted.to_string();
+        prior_binary=binary.to_string();
+        // Scope is the intelligence-bearing software stack, not the UI.
+        // Six physically edited roles must all be represented by adopted code.
+        if chain>=3 && independently_planned>=2
+            && ["algorithms","harness","memory","learning","tools",
+                "improvement_methods"].iter().all(|role|covered.contains(role)) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
