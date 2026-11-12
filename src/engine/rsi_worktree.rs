@@ -260,10 +260,9 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     if !git(&source,&["status","--porcelain","--untracked-files=normal"]).await?.is_empty() {
         return Err("원본에 다른 변경사항이 있어 자기개선 작업을 시작하지 않았습니다.".into());
     }
-    let path=std::env::temp_dir().join(format!("dominion-rsi-{}",uuid::Uuid::new_v4()));
-    let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
-    // Detached Git worktree, not a new branch; the running server checkout stays pristine.
-    git(&source,&["worktree","add","--detach",name,base]).await?;
+    // Validate the compiled successor's archive choice BEFORE allocating
+    // any worktree. A rejected/forged archived parent must not leak an
+    // orphan detached checkout during failed preflight.
     if input["rsiDescendantPlan"].is_object() {
         let verified=&input["rsiArchiveSelection"];
         crate::engine::rsi_archive::validate_selected(
@@ -272,6 +271,10 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
             return Err("후손 계획의 탐색 부모와 적용 대상이 다릅니다.".into());
         }
     }
+    let path=std::env::temp_dir().join(format!("dominion-rsi-{}",uuid::Uuid::new_v4()));
+    let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
+    // Detached Git worktree, not a new branch; the running server checkout stays pristine.
+    git(&source,&["worktree","add","--detach",name,base]).await?;
     if let Some(id)=input["rsiInheritedCandidateId"].as_str().filter(|id|!id.is_empty()) {
         if let Err(error)=inherit_neutral_patch(context,&path,base,id).await {
             let _=git(&source,&["worktree","remove","--force",name]).await;
