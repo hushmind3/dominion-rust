@@ -74,6 +74,14 @@ pub fn definitions() -> Vec<Value> {
             "hypothesis":text("Falsifiable causal limitation; at least 20 characters"),
             "design":text("Executable architecture, interface contracts, memory/learning/tool changes and failure handling; at least 30 characters"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "expectedOutcomes":json!({"type":"object",
+                "description":"Probability estimates before code modification; independently calibrated after evaluation.",
+                "properties":{
+                    "candidateCaptured":{"type":"number","minimum":0,"maximum":1},
+                    "adoption":{"type":"number","minimum":0,"maximum":1},
+                    "metaImprovement":{"type":"number","minimum":0,"maximum":1},
+                    "regression":{"type":"number","minimum":0,"maximum":1}
+                },"additionalProperties":false}),
             "successorStages":json!({"type":"array","maxItems":8,
                 "description":"Executable planning intentions for the NEXT compiled descendant. Each stage is rebound to fresh indexed source; no stage receives improvement credit before actual editing.",
                 "items":{"type":"object","properties":{
@@ -154,9 +162,13 @@ pub async fn execute(
     // tool gateway, not just by hiding a schema in the next model turn.
     // Only the isolated successor session may inherit this restriction.
     if isolated_rsi && name=="workspace_write"
-        && ctx.store.get("session",ctx.session_id).is_some_and(|session|
+        && ctx.store.get("session",ctx.session_id).is_some_and(|session|{
+            let policy=if session["rsiSuccessorStage"].is_object(){
+                &session["rsiSuccessorStage"]
+            }else{&session["rsiMetaControlPolicy"]};
             session["rsiSystemEvolution"]==true
-            && session["rsiSuccessorStage"]["toolPolicy"]=="patch_only") {
+                && policy["toolPolicy"]=="patch_only"
+        }) {
         return Err("계승된 후손 도구 정책(patch_only)은 신규 파일 생성을 허용하지 않습니다.".into());
     }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_function") {

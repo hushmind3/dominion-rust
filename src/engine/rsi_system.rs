@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -91,7 +91,7 @@ fn design_role_files<'a>(design:&'a Value,role:&str)->Option<&'a Vec<Value>> {
 /// A bundle is implemented only if every declared file is in the independently
 /// measured source diff, with an unchanged design-to-role mapping. No
 /// automatic "model says succeeded" or inferred coverage is accepted.
-pub(crate) fn design_implemented(design:&Value,changed:&[Value])->bool {
+pub(crate) pub(crate) fn design_implemented(design:&Value,changed:&[Value])->bool {
     let Some(targets)=design["targetFiles"].as_array().filter(|files|!files.is_empty())
         else{return false;};
     let roles=design_roles(design);
@@ -428,7 +428,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         hashes with code_search/workspace_read_range and WRITE the required \
         cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
         Before editing call rsi_system_plan(component, nextDomain, hypothesis, design, targetFiles). For a coupled redesign of algorithm, harness, memory, learning, tools, and improvement methods, use component=system and explicitly assign each file to one role with components and componentFiles. Then WRITE ALL the named source files: partially implemented designs receive no credit. New roles and source modules are allowed. Optionally author successorStages [{role,domain,path,objective,learningPolicy,toolPolicy,executionPolicy}]: the accepted descendant will apply observed-failure task ranking, source-edit focus and restricted tool access from these fields; only after your source is independently adopted will the NEW compiled descendant read its own code and attempt those next tasks. A design and a saved stage alone earn zero. At least one adopted generation must INVENT an executable method with rsi_method_propose and a later compiled descendant must EXECUTE it with verified postconditions. \
-        Improve the intelligence control loop, not only a benchmark number. \
+        Predict source-candidate creation, independent adoption, meta improvement and regressions with expectedOutcomes in rsi_system_plan BEFORE editing. The independent evaluator later calibrates this forecast and your descendant learns from its errors. Improve the intelligence control loop, not only a benchmark number. \
         Make your next-generation planning and implementation behavior better, \
         not only an external product function. The independently frozen paired \
         evaluator alone decides adoption; do not edit the evaluator. \
@@ -627,10 +627,24 @@ pub(crate) fn propose(
                 "qualityProven":false}));
         }
     }
+    // Immutable model proposal forecast precedes any edit or evaluation.
+    let mut expectations=serde_json::Map::new();
+    if let Some(predicted)=body["expectedOutcomes"].as_object() {
+        if predicted.is_empty() || predicted.len()>4 {
+            return Err("예측 결과는 1~4개 지표가 필요합니다.".into());
+        }
+        for (name,p) in predicted {
+            if !matches!(name.as_str(),"candidateCaptured"|"adoption"|"metaImprovement"|"regression")
+                || p.as_f64().is_none_or(|value|!value.is_finite()||!(0.0..=1.0).contains(&value)) {
+                return Err("결과 예측은 허용된 지표와 0~1 확률이어야 합니다.".into());
+            }
+            expectations.insert(name.clone(),p.clone());
+        }
+    }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,roles,assignments,next,hypothesis,design,paths,stages
+        commit,component,roles,assignments,next,hypothesis,design,paths,stages,expectations
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
@@ -639,6 +653,7 @@ pub(crate) fn propose(
         "generatorCommit":commit,"component":component,
         "components":roles,"componentFiles":assignments,
         "successorStages":stages,
+        "expectedOutcomes":expectations,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false
