@@ -13,6 +13,9 @@ type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:strin
  evidence?:{path?:number;symbols?:number;body?:number;domain?:number;priorProductive?:number}}
 type FocusSelection={source?:string;domain?:string;policyRevision?:string;
  candidates?:FocusCandidate[]}
+type SystemBlueprint={generatorCommit?:string;sourceTreeSha256?:string;sourceInventory?:{path:string;sha256:string}[];architecture?:{role:string}[]}
+type SystemDesign={component?:string;hypothesis?:string;design?:string;nextDomain?:string;targetFiles?:string[];status?:string}
+type SystemControllerPlan={source?:string;generatorCommit?:string;domain?:string;historyCount?:number}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  systemEvolution?:boolean;systemSourceWrites?:number;evaluationEpisodes?:number;metaEvaluationProgress?:{arm?:string;task?:number};
  reusedArtifacts?:number;preservedFailureAttempts?:number;modelCalls?:number;verifiedSourceWrites?:number;candidateCount?:number;applicationError?:string;applyWhenFinished?:boolean;
@@ -23,7 +26,10 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection;metaEvaluation?:{tasks?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection;
+ systemBlueprintVerified?:boolean;systemBlueprint?:SystemBlueprint;systemDesign?:SystemDesign;
+ improvementDirective?:{mode?:string;sourceGenerationId?:string};
+ controllerPlan?:SystemControllerPlan;metaEvaluation?:{tasks?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
 type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStreak:number;
@@ -50,7 +56,7 @@ const stops:Record<string,string>={capability_demonstrated:'검증된 개선을 
  no_progress:'새로운 근거나 변경이 없어 반복 호출을 멈췄습니다.'}
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
- diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
+ diagnosing_and_editing:'문제를 찾고 개선하는 중',planning_next_generator:'개선된 후손이 다음 세대 구조를 계획하는 중',measuring:'기존 버전과 개선 버전 비교 중',
  waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중',model_editing:'선택한 모델이 실제 소스를 수정하는 중',compiling_candidate:'수정한 코드 컴파일 검사 중',review:'수정 증거 수집 완료',paired_experiment:'독립 비교 실행 중',meta_evaluating:'이전 개선기와 수정된 개선기의 후속 코딩 성과 비교 중'}
 const winners={candidate:'개선 버전이 우세합니다',baseline:'기존 버전이 우세합니다',inconclusive:'아직 우열을 확인하지 못했습니다'}
 function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiting:boolean;busy:boolean;onChoose:(side:'baseline'|'candidate')=>void}){
@@ -241,12 +247,23 @@ export function SelfImprovementPage(){
     <strong>{item.attempt}번째 · {item.accepted?'검증 버전 선택':(item.newFindings||0)>0?'연구 보존':item.error?'개선 효과 확인 못함':'새로운 진전 없음'}</strong>
     <p className="mt-1 text-[#7C7469]">탐색 분야: {item.domain||'미측정'}{item.domainSelection==='algorithm_trial'?' · 신규 탐색식 시험':item.domainSelection==='research_continuation'?' · 이전 연구 계승':''}{item.trialOutcome?.verdict?` · 평가: ${item.trialOutcome.verdict}`:''}</p>
     {item.focusSelection?.candidates?.length?<div className="mt-2 space-y-1">
-     <p className="font-semibold text-[#665D50]">선택한 코드와 판단 근거 · {item.focusSelection.source==='indexed_evidence'?'인덱스 기반':'사용자 지정'}{item.focusSelection.policyRevision?` · 정책 ${item.focusSelection.policyRevision.slice(0,10)}`:''}</p>
+     <p className="font-semibold text-[#665D50]">선택한 코드와 판단 근거 · {item.focusSelection.source==='indexed_evidence'?'인덱스 기반':item.focusSelection.source==='rebuilt_descendant_controller'?'후손 실행기 직접 선택':item.focusSelection.source==='owner_selected'?'사용자 지정':'실행기 선택'}{item.focusSelection.policyRevision?` · 정책 ${item.focusSelection.policyRevision.slice(0,10)}`:''}</p>
      {item.focusSelection.candidates.map(file=><div key={file.path} className="rounded-md border border-[#E7E0D5] bg-white px-2 py-1.5">
       <div className="flex flex-wrap justify-between gap-2"><code className="break-all">{file.path}</code><span>{Number.isFinite(file.score)?`점수 ${file.score?.toFixed(2)}`:'점수 미측정'}</span></div>
       <p className="mt-0.5 text-[#81786B]">{file.scoring==='expression'?'모델 생성 탐색식':'기본 근거 탐색'}{file.policyError?' · 탐색식 오류로 기본 방식 사용':''}{file.sourceHash?` · 원본 ${file.sourceHash.slice(0,10)}`:''}</p>
      </div>)}
     </div>:item.focusFiles?.length?<p className="mt-2 text-[#81786B]">대상 파일: {item.focusFiles.join(', ')}</p>:null}
+    {item.controllerPlan?.source==='compiled_descendant_system_controller_v2'&&<div className="mt-2 rounded-lg border border-[#D9E3D3] bg-white p-3">
+     <p className="font-semibold text-[#4E6B45]">재빌드된 후손의 시스템 설계·제어권</p>
+     <p className="mt-1 text-[#7C7469]">실행기: {item.controllerPlan.generatorCommit?.slice(0,10)} · 이전 세대 {item.controllerPlan.historyCount||0}건 계승 · 다음 영역 {item.controllerPlan.domain||'탐색 중'}</p>
+     <p className="mt-1 text-[#7C7469]">전체 소스 자기모형: {item.systemBlueprint?.sourceInventory?.length||0}개 파일 · {item.systemBlueprint?.architecture?.length||0}개 구성요소 · 지문 {item.systemBlueprint?.sourceTreeSha256?.slice(0,12)||'없음'}</p>
+     <p className="mt-1 text-[#7C7469]">다음 행동: {item.improvementDirective?.mode||'없음'} · {item.systemBlueprintVerified?'후손 재검증 완료':'후손 재검증 증거 없음'}</p>
+    </div>}
+    {item.systemDesign?.hypothesis&&<div className="mt-2 rounded-lg border border-[#E7E0D5] bg-white p-3">
+     <p className="font-semibold">이번 세대가 제안한 새 지능 구조 · {item.systemDesign.component||'전반'}</p>
+     <p className="mt-1 text-[#7C7469]">{item.systemDesign.hypothesis}</p>
+     <p className="mt-1 text-[#81786B]">변경 대상: {item.systemDesign.targetFiles?.join(', ')||'없음'} · 다음 목표 {item.systemDesign.nextDomain||'미지정'} · {item.accepted?'독립 평가 채택':'미채택 설계'}</p>
+    </div>}
     {item.metaEvaluation?.episodes?.length?<div className="mt-3 rounded-lg border border-[#D9E3D3] bg-white p-3"><p className="font-semibold">개선기 자체의 후속 코딩 평가 · {item.metaEvaluation.tasks}개 과제</p>
      <div className="mt-2 grid grid-cols-2 gap-2">{(['baseline','candidate'] as const).map(arm=><div key={arm}><strong>{arm==='baseline'?'이전 개선기':'수정된 개선기'}</strong>
       {item.metaEvaluation?.episodes?.filter(row=>row.arm===arm).map(row=><p key={row.task} className="mt-1 text-[11px] text-[#7C7469]">과제 {row.task+1}: {(row.quality*100).toFixed(1)}% · {row.usage?.calls||0}회 호출 · {(row.usage?.totalTokens||0).toLocaleString()}토큰</p>)}</div>)}</div>
