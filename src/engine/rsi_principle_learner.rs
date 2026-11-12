@@ -212,6 +212,47 @@ pub(crate) fn learn(history:&[Value],frontier:&[Value])->Value{
     model["sha256"]=json!(digest(&model));model
 }
 
+/// Invent a new OPERATOR by recombining two independently adopted methods
+/// that each enabled measured child intelligence improvements. A combination
+/// is an unproven model-authored hypothesis until its OWN source and child
+/// outcomes are independently evaluated. No fixed composition grammar.
+fn composition_hypothesis(model:&Value,preferred_role:&str)->Value{
+    let proven=model["edges"].as_array().into_iter().flatten()
+        .filter(|edge|edge["verifiedDirectChildTrials"].as_u64().unwrap_or(0)>0
+            && edge["independentlyAdoptedChildren"].as_u64().unwrap_or(0)>0)
+        .collect::<Vec<_>>();
+    let mut pairs=Vec::new();
+    for (index,left) in proven.iter().enumerate(){
+        for right in proven.iter().skip(index+1){
+            if left["name"]==right["name"]||
+                left["improvesRole"]==right["improvesRole"]{continue;}
+            let relevant=left["improvesRole"]==preferred_role
+                ||right["improvesRole"]==preferred_role;
+            let score=left["predictionScore"].as_f64().unwrap_or(0.0)
+                +right["predictionScore"].as_f64().unwrap_or(0.0)
+                +if relevant{0.25}else{0.0};
+            pairs.push((score,(*left).clone(),(*right).clone()));
+        }
+    }
+    pairs.sort_by(|a,b|b.0.total_cmp(&a.0)
+        .then_with(||a.1["name"].as_str().cmp(&b.1["name"].as_str()))
+        .then_with(||a.2["name"].as_str().cmp(&b.2["name"].as_str())));
+    let Some((_,a,b))=pairs.first()else{return Value::Null};
+    let mut new=json!({
+        "source":"cross_capability_principle_synthesis_v1",
+        "composedFrom":[a["name"],b["name"]],
+        "parentEvidence":[{"name":a["name"],
+            "observedTarget":a["improvesRole"],
+            "verifiedChildAdoptions":a["independentlyAdoptedChildren"]},
+            {"name":b["name"],
+            "observedTarget":b["improvesRole"],
+            "verifiedChildAdoptions":b["independentlyAdoptedChildren"]}],
+        "newTargetRole":preferred_role,
+        "requireNewExecutableMethod":true,
+        "qualityProven":false,"causalityProven":false
+    });
+    new["sha256"]=json!(digest(&new));new
+}
 /// Decide WHAT subsystem to improve next from measured descendant outcomes,
 /// rather than only counting source rewrites of the meta-controller.
 pub(crate) fn plan(
@@ -272,6 +313,8 @@ pub(crate) fn plan(
     let winner=ranked.first().cloned().unwrap_or(Value::Null);
     let capability=winner["sourceTarget"].clone();
     let method=method_source(frontier).cloned().unwrap_or(Value::Null);
+    let composed=composition_hypothesis(model,
+        capability["role"].as_str().unwrap_or(""));
     // New principle generation changes BOTH a real capability and the
     // method that creates improved capabilities, when both are available.
     let mut focus=vec![];
@@ -283,13 +326,16 @@ pub(crate) fn plan(
         "source":"compiled_adaptive_improvement_principle_curriculum_v1",
         "generatorCommit":commit,"historyCount":history.len(),
         "modelSha256":model["sha256"],
-        "phase":if winner["hasMeasuredDescendantTransfer"]==true {
+        "phase":if composed.is_object(){
+            "synthesize_new_improvement_principle"
+        }else if winner["hasMeasuredDescendantTransfer"]==true {
             "transfer_and_reinvent_principle"
         }else{"discover_new_cross_intelligence_principle"},
         "target":capability,
         "methodSource":method,
         "focus":focus,
         "bestObservedPrinciple":winner["bestTransferredPrinciple"],
+        "compositionHypothesis":composed,
         "rankedRoles":ranked.into_iter().take(16).collect::<Vec<_>>(),
         "externalEvaluator":"frozen_paired_oracle",
         "improvedNextGenerationCapabilityNotAssumed":true,
@@ -340,7 +386,7 @@ pub(crate) fn instruction(policy:&Value,model:&Value)->String{
     }
     format!("[OPEN PRINCIPLE-TO-CAPABILITY META-LEARNING]\n\
         Phase={} targetRole={} source={} methodSource={}. \
-        Transfer evidence={} source method predictor={}. \
+        Transfer evidence={} new source-changing composition={}         source method predictor={}. \
         Write a NEW improvementPrinciples entry via rsi_system_plan with \
         name, methodRole, methodSourcePaths, improvesRoles, mechanism, \
         falsifiableOutcome. Actually rewrite the claimed method source and \
@@ -353,7 +399,7 @@ pub(crate) fn instruction(policy:&Value,model:&Value)->String{
         may rewrite this learning algorithm. Frozen evaluator stays external.",
         policy["phase"],policy["target"]["role"],policy["target"]["path"],
         policy["methodSource"]["path"],policy["bestObservedPrinciple"],
-        model["sha256"])
+        policy["compositionHypothesis"],model["sha256"])
 }
 
 #[cfg(test)]
@@ -408,6 +454,25 @@ mod tests{
         let mut fake=child;fake["generatorCommit"]=json!("d".repeat(40));
         let other=learn(&[parent,fake],&frontier);
         assert_eq!(other["edges"][0]["verifiedDirectChildTrials"],0);
+    }
+    #[test]
+    fn two_verified_methods_from_different_intelligences_propose_new_composition(){
+        let model=json!({"edges":[
+            {"name":"derive_memory","improvesRole":"memory",
+                "verifiedDirectChildTrials":2,"independentlyAdoptedChildren":1,
+                "predictionScore":1.4},
+            {"name":"revise_tools","improvesRole":"tools",
+                "verifiedDirectChildTrials":1,"independentlyAdoptedChildren":1,
+                "predictionScore":1.7}]});
+        let composition=composition_hypothesis(&model,"memory");
+        assert_eq!(composition["source"],"cross_capability_principle_synthesis_v1");
+        assert_eq!(composition["composedFrom"][0],"derive_memory");
+        assert_eq!(composition["composedFrom"][1],"revise_tools");
+        assert_eq!(composition["qualityProven"],false);
+        let insufficient=json!({"edges":[{
+            "name":"unverified","improvesRole":"memory",
+            "verifiedDirectChildTrials":2,"independentlyAdoptedChildren":0}]});
+        assert!(composition_hypothesis(&insufficient,"memory").is_null());
     }
     #[test]
     fn rejected_source_or_method_without_real_edited_file_never_trains_model(){
