@@ -387,6 +387,24 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
                 "error":"원본 web/node_modules가 없어 독립 타입 검사를 실행하지 않았습니다."}));
         }
     }
+    // Python is now a first-class changeable intelligence module.
+    // Validate syntax in memory, never writing __pycache__ into the
+    // candidate worktree before Git captures its actual changed source.
+    let mut python_paths=patch.lines().filter_map(|line|{
+        let row=line.strip_prefix("diff --git a/")?;
+        let (left,right)=row.split_once(" b/")?;
+        (left==right && left.ends_with(".py")
+            && crate::engine::rsi::safe_path(left)).then(||left.to_string())
+    }).collect::<Vec<_>>();
+    python_paths.sort();python_paths.dedup();
+    if !python_paths.is_empty(){
+        let mut command=Command::new("python3");
+        command.current_dir(&worktree.path)
+            .arg("-c").arg("import ast,pathlib,sys; [ast.parse(pathlib.Path(p).read_text(encoding='utf-8'),filename=p) for p in sys.argv[1:]]");
+        for path in &python_paths {command.arg(path);}
+        checks.push(check_result("python3 AST model/learning module validation",
+            run(command,Duration::from_secs(60)).await));
+    }
     checks
 }
 pub async fn finish(

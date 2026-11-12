@@ -52,6 +52,7 @@ fn is_source(path: &Path) -> bool {
                 | "js"
                 | "jsx"
                 | "mjs"
+                | "py"
                 | "cjs"
                 | "css"
                 | "html"
@@ -155,6 +156,18 @@ fn rust_symbol(line: &str) -> Option<(&'static str, String)> {
             if !name.is_empty() {
                 return Some((kind, name));
             }
+        }
+    }
+    None
+}
+
+fn python_symbol(line: &str) -> Option<(&'static str, String)> {
+    let rest=line.strip_prefix("async ").unwrap_or(line);
+    for (prefix,kind) in [("def ","fn"),("class ","class")]{
+        if let Some(text)=rest.strip_prefix(prefix){
+            let name=text.chars().take_while(|ch|ch.is_alphanumeric()||*ch=='_')
+                .collect::<String>();
+            if !name.is_empty(){return Some((kind,name));}
         }
     }
     None
@@ -364,6 +377,8 @@ fn parse_file(rel: &str, content: &str) -> Value {
             rust_symbol(trimmed)
         } else if matches!(language.as_str(), "ts" | "tsx" | "js" | "jsx") {
             script_symbol(trimmed)
+        } else if language=="py" {
+            python_symbol(trimmed)
         } else {
             None
         };
@@ -1018,6 +1033,8 @@ pub fn bounded_focus_context(
             } else if matches!(path.rsplit_once('.').map(|(_,ext)|ext),
                 Some("ts"|"tsx"|"js"|"jsx")) {
                 script_symbol(trimmed)
+            } else if path.ends_with(".py") {
+                python_symbol(trimmed)
             } else { None };
             found.map(|(kind,name)|json!({"kind":kind,"name":name,"line":index+1}))
         }).collect::<Vec<_>>()
