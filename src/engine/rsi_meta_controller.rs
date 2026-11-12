@@ -84,7 +84,7 @@ fn generalization_evidence(
     }
     let mut domains=std::collections::BTreeMap::<String,(u64,u64,u64)>::new();
     for generation in history {
-        if independent_outcome(generation).is_none()
+        if !crate::engine::rsi_principle_learning::independent_trial(generation)
             || generation["candidateId"].as_str().is_none()
             || !generation["changedSourcePaths"].as_array().is_some_and(|paths|
                 paths.iter().any(|candidate|candidate.as_str()==Some(path))) {
@@ -140,7 +140,7 @@ fn generalization_evidence(
 /// The compiled source and frozen pair are evaluated before they can teach the
 /// next generation; no model-reported outcome is accepted as training data.
 fn heldout_quality(g:&Value)->Vec<(bool,bool)> {
-    if independent_outcome(g).is_none()
+    if !crate::engine::rsi_principle_learning::independent_trial(g)
         || g["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
         || g["candidateId"].as_str().is_none()
         || g["generatorCommit"].as_str().is_none_or(|sha|sha.len()!=40)
@@ -801,12 +801,20 @@ mod tests {
         let baseline=synthesize(&[],&frontier,&["memory","tools"],None,
             &json!({}),&json!({}),&json!({"edges":[]}));
         let rejected=json!({
-            "id":"evaluated","candidateId":"candidate-a",
+            "id":"evaluated","jobId":"job-evaluated","candidateId":"candidate-a",
             "generatorCommit":"a".repeat(40),
             "pairedMeasured":true,"pairedRevalidated":false,"accepted":false,
-            "metaPolicy":{"target":{"role":"memory"}},
+            "evaluationProfileSha256":"e".repeat(64),
+            "metaPolicy":{"revision":"d".repeat(64),"target":{"role":"memory"}},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":"a".repeat(40),"metaRevision":"d".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),"generationJobId":"job-evaluated",
+                "component":"memory","targetFiles":["src/engine/memory.rs"],
+                "hypothesis":"Rewrite the memory retrieval algorithm to remove downstream errors"},
             "changedSourcePaths":["src/engine/memory.rs"],
-            "evaluation":{"metrics":{"eligible":false,"verdict":"regressed",
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":false,"verdict":"regressed",
                 "regressions":1,"measurements":[
                     {"domain":"tools","holdout":true,"baselinePass":true,
                         "candidatePass":false,"metrics":[]},
@@ -861,9 +869,15 @@ mod tests {
             let revision="a".repeat(64);
             history.push(json!({
                 "id":format!("prequential-{i}"),
+                "jobId":format!("job-prequential-{i}"),
                 "candidateId":format!("forecast-{i}"),
                 "generatorCommit":"b".repeat(40),
                 "evaluationProfileSha256":"c".repeat(64),
+                "systemDesign":{"source":"model_authored_system_design",
+                    "generatorCommit":"b".repeat(40),
+                    "generationJobId":format!("job-prequential-{i}"),
+                    "component":"memory","targetFiles":["src/engine/memory.rs"],
+                    "hypothesis":"A measured source-level repair should improve heldout task quality"},
                 "pairedMeasured":true,"accepted":false,
                 "changedSourcePaths":["src/engine/memory.rs"],
                 "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
