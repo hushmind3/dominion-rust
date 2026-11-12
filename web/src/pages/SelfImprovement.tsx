@@ -14,6 +14,7 @@ type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:strin
 type FocusSelection={source?:string;domain?:string;policyRevision?:string;
  candidates?:FocusCandidate[]}
 type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
+ systemEvolution?:boolean;systemSourceWrites?:number;evaluationEpisodes?:number;metaEvaluationProgress?:{arm?:string;task?:number};
  modelCalls?:number;verifiedSourceWrites?:number;candidateCount?:number;applicationError?:string;applyWhenFinished?:boolean;
  activeWorker?:{phase?:string;generatorCommit?:string;focusFiles?:string[]};diagnosis?:{failed?:number};
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
@@ -22,7 +23,7 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection;metaEvaluation?:{tasks?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
 type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStreak:number;
@@ -30,8 +31,8 @@ type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStre
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
- short:{label:'짧게',maxAttempts:3,tokenBudget:60000,timeBudgetSeconds:900},
- normal:{label:'보통',maxAttempts:6,tokenBudget:180000,timeBudgetSeconds:1800},
+ short:{label:'기본',maxAttempts:2,tokenBudget:180000,timeBudgetSeconds:3600},
+ normal:{label:'확장',maxAttempts:4,tokenBudget:360000,timeBudgetSeconds:7200},
  long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
 } as const
 type Workload=keyof typeof workloads
@@ -49,11 +50,11 @@ const stops:Record<string,string>={capability_demonstrated:'검증된 개선을 
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
  diagnosing_and_editing:'문제를 찾고 개선하는 중',measuring:'기존 버전과 개선 버전 비교 중',
- waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중',model_editing:'딥시크가 실제 소스를 수정하는 중',compiling_candidate:'수정한 코드 컴파일 검사 중',review:'수정 증거 수집 완료',paired_experiment:'독립 비교 실행 중'}
+ waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중',model_editing:'딥시크가 실제 소스를 수정하는 중',compiling_candidate:'수정한 코드 컴파일 검사 중',review:'수정 증거 수집 완료',paired_experiment:'독립 비교 실행 중',meta_evaluating:'이전 개선기와 수정된 개선기의 후속 코딩 성과 비교 중'}
 const winners={candidate:'개선 버전이 우세합니다',baseline:'기존 버전이 우세합니다',inconclusive:'아직 우열을 확인하지 못했습니다'}
 function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiting:boolean;busy:boolean;onChoose:(side:'baseline'|'candidate')=>void}){
  const rows=comparison.metrics.measurements?.flatMap(test=>test.metrics.map(metric=>({
-  label:test.id+' · '+({quality:'품질',elapsedMs:'실행 시간',tokens:'토큰',contextChars:'문맥 글자 수'}[metric.key]||metric.key),
+  label:(test.id==='meta-downstream-editing'?'개선기의 실제 후속 코딩 성과':test.id)+' · '+({quality:'품질',elapsedMs:'실행 시간',tokens:'토큰',contextChars:'문맥 글자 수'}[metric.key]||metric.key),
   values:{baseline:metric.baseline,candidate:metric.candidate},
   format:(v:number)=>metric.key==='quality'?(v*100).toFixed(1)+'%':metric.key==='elapsedMs'?v.toFixed(2)+' ms':v.toLocaleString()
  })))||[]
@@ -143,7 +144,7 @@ export function SelfImprovementPage(){
   try{
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
     providerId,model,...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,applyWhenFinished:true,expandAfterGain:true,nativeInduction:false,reasoningEffort:'low',maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
+    selectionPolicy:selection,evolutionTarget:'system',applyWhenFinished:true,expandAfterGain:true,nativeInduction:false,reasoningEffort:'low',maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
    setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
@@ -181,15 +182,16 @@ export function SelfImprovementPage(){
  const status=campaign?campaign.status==='completed'?(adopted>0?'검증된 개선본을 선택했습니다':research>0?'연구를 보존했습니다 · 채택한 코드 없음':'개선 근거가 없어 종료했습니다'):campaign.status==='cancelled'?'중단했습니다':
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
-  <Headline eyebrow="DOMINION" title="자기개선" description="모델이 현재 코드의 실패를 진단하고 직접 수정합니다. 독립 검증을 통과한 버전을 빌드해 다음 개선과 실제 프로그램에 사용합니다."
+  <Headline eyebrow="DOMINION" title="재귀적 자기개선" description="딥시크가 DOMINION의 알고리즘과 실행 하네스를 수정합니다. 이전 개선기와 수정된 개선기를 실제 후속 코딩 과제로 비교하고, 검증된 버전이 다음 개선을 이어갑니다."
    actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
   <Notice message={error||providers.error||install?.error||campaign?.applicationError||campaign?.error||''}/>
   <Panel className="p-5 sm:p-7">
-   <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-lg font-bold">버튼 한 번으로 실제 코드 개선</h2>
+   <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-lg font-bold">버튼 한 번으로 시스템 자기개선</h2>
     <p className="mt-2 text-[13px] text-[#5C544A]">{enabled.find(p=>p.id===providerId)?.name||'서비스 확인 중'} · <strong>{model||'모델 확인 중'}</strong></p>
-    <p className="mt-2 text-[12px] text-[#7C7469]">진단 → 모델 소스 수정 → 컴파일·독립 비교 → {selection==='automatic'?'개선본 자동 채택':'직접 선택'} → 후속 실행 → 프로젝트 반영</p></div>
+    <p className="mt-2 text-[12px] text-[#7C7469]">전체 코드 탐색 → 개선기 수정 → 후속 작업 A/B 평가 → {selection==='automatic'?'자동 채택':'직접 선택'} → 새 개선기로 재실행</p></div>
     <Button variant="primary" onClick={()=>void start()} disabled={busy||working||installing||!providerId||!model.trim()}>
      {busy||working||installing?<LoaderCircle size={16} className="animate-spin"/>:<Play size={16}/>}{installing?'프로그램에 반영 중':working?'자기개선 실행 중':'자기개선 시작'}</Button></div>
+   <p className="mt-3 text-[12px] text-[#5C544A]">수정 범위: 알고리즘 · 자기개선기 · 도구/문맥 하네스 · 기억/학습 · 백엔드 · 프론트 전체. 외부 API 모델은 딥시크 플래시로 고정합니다.</p>
    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] text-[#7C7469]">최대 {budget.maxAttempts}회 · {(budget.tokenBudget/10000).toLocaleString()}만 토큰 · {budget.timeBudgetSeconds/60}분. 개선을 확인하지 못하면 기존 버전을 유지합니다.</p>
     <Button variant="ghost" disabled={working||installing} onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'고급 설정'}</Button></div>
   </Panel>
@@ -212,7 +214,8 @@ export function SelfImprovementPage(){
     <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||installing||!providerId||!model.trim()} onClick={()=>void start(true)}><Play size={14}/>같은 목표로 이어가기</Button></div>}</div>
    {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
-   <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'실제 모델 호출',value:campaign.modelCalls||0},{label:'검증된 소스 수정',value:campaign.verifiedSourceWrites||0},{label:'생성한 코드 후보',value:campaign.candidateCount||0},{label:'독립 검증 채택',value:adopted}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
+   <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'실제 모델 호출',value:campaign.modelCalls||0},{label:'개선기 소스 수정',value:campaign.systemSourceWrites||0},{label:'개선기 코드 후보',value:campaign.candidateCount||0},{label:'독립 검증 채택',value:adopted}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
+   <p className="mt-3 text-[12px] text-[#5C544A]">후속 코딩 평가 {campaign.evaluationEpisodes||0}회{campaign.metaEvaluationProgress?.arm?' · '+(campaign.metaEvaluationProgress.arm==='baseline'?'이전 개선기':'수정된 개선기')+' · 과제 '+((campaign.metaEvaluationProgress.task||0)+1):''}</p>
    <p className="mt-3 text-[11px] text-[#7C7469]">실행 모델: {campaign.model||model} · 채택 버전으로 후속 실행 {inherited}회{campaign.activeWorker?.generatorCommit?' · 현재 실행기 '+campaign.activeWorker.generatorCommit.slice(0,10):''}</p>
    {campaign.activeWorker?.focusFiles?.length?<p className="mt-1 break-all text-[11px] text-[#7C7469]">수정 대상: {campaign.activeWorker.focusFiles.join(', ')}</p>:null}
    <details className="mt-3 rounded-xl border border-[#E7E0D5] bg-white p-4">
@@ -239,6 +242,10 @@ export function SelfImprovementPage(){
       <p className="mt-0.5 text-[#81786B]">{file.scoring==='expression'?'모델 생성 탐색식':'기본 근거 탐색'}{file.policyError?' · 탐색식 오류로 기본 방식 사용':''}{file.sourceHash?` · 원본 ${file.sourceHash.slice(0,10)}`:''}</p>
      </div>)}
     </div>:item.focusFiles?.length?<p className="mt-2 text-[#81786B]">대상 파일: {item.focusFiles.join(', ')}</p>:null}
+    {item.metaEvaluation?.episodes?.length?<div className="mt-3 rounded-lg border border-[#D9E3D3] bg-white p-3"><p className="font-semibold">개선기 자체의 후속 코딩 평가 · {item.metaEvaluation.tasks}개 과제</p>
+     <div className="mt-2 grid grid-cols-2 gap-2">{(['baseline','candidate'] as const).map(arm=><div key={arm}><strong>{arm==='baseline'?'이전 개선기':'수정된 개선기'}</strong>
+      {item.metaEvaluation?.episodes?.filter(row=>row.arm===arm).map(row=><p key={row.task} className="mt-1 text-[11px] text-[#7C7469]">과제 {row.task+1}: {(row.quality*100).toFixed(1)}% · {row.usage?.calls||0}회 호출 · {(row.usage?.totalTokens||0).toLocaleString()}토큰</p>)}</div>)}</div>
+     <p className="mt-2 text-[11px] text-[#7C7469]">같은 모델·원본 소스·과제별 예산으로 실제 패치를 생성하고 동결된 검사로 평가했습니다. 두 과제의 결과이며, 모든 분야의 향상을 증명하지는 않습니다.</p></div>:null}
     {item.generatorCommit&&<p className="mt-2 text-[#81786B]">실행기 {item.generatorCommit.slice(0,10)}{item.acceptedCommit?` · 채택 ${item.acceptedCommit.slice(0,10)}`:''}</p>}
    </div>)}</div></details>}
   </Panel>}

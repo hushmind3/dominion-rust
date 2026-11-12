@@ -166,12 +166,27 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         && op["origin"]=="model" && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
         && matches!(op["tool"].as_str(),Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))).count();
+    let proposal_sessions=children.iter().filter(|j|j["input"]["rsiMetaEpisode"]!=true)
+        .filter_map(|j|j["sessionId"].as_str()).collect::<std::collections::HashSet<_>>();
+    let system_writes=state.store.all("execution_operation").iter().filter(|op|
+        op["sessionId"].as_str().is_some_and(|id|proposal_sessions.contains(id))
+        && op["origin"]=="model" && op["status"]=="completed"
+        && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true).count();
+    record["systemSourceWrites"]=json!(system_writes);
+    record["evaluationEpisodes"]=json!(children.iter().filter(|j|j["input"]["rsiMetaEpisode"]==true).count());
     let candidates=state.store.all("rsi_candidate").iter().filter(|c|
-        c["experimentCampaignId"].as_str()==Some(id)).count();
+        c["experimentCampaignId"].as_str()==Some(id) && c["rsiJobId"].as_str()
+            .and_then(|id|state.store.get("job",id)).is_some_and(|j|j["input"]["rsiMetaEpisode"]!=true)).count();
     record["modelCalls"]=json!(calls);record["verifiedSourceWrites"]=json!(writes);
     record["candidateCount"]=json!(candidates);
     record["tokens"]=json!(tokens.max(record["tokens"].as_u64().unwrap_or(0)));
     record["tokensEstimated"]=json!(estimated || record["tokensEstimated"]==true);
+    record["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
+    record["scope"]=json!({"mode":"whole_source","includes":["algorithms","improver","harness","memory","learning","tools","backend","frontend"],"indexedFiles":job["input"]["rsiIndexFiles"]});
+    if record["phase"]=="measuring" && job["rsiPhase"]=="meta_evaluating" {
+        record["phase"]=json!("meta_evaluating");
+        record["metaEvaluationProgress"]=json!({"arm":job["rsiMetaArm"],"task":job["rsiMetaTask"],"jobId":job["rsiMetaActiveJobId"]});
+    }
     if let Some(active)=children.iter().find(|j|Some(&j["id"])==record.get("activeGenerationJobId")) {
         record["activeWorker"]=json!({"id":active["id"],"status":active["status"],
             "phase":active["rsiPhase"],"generatorCommit":active["input"]["rsiGeneratorCommit"],
@@ -341,7 +356,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
     let autonomous = request.is_empty();
-    let objective = if autonomous {
+    let objective = if autonomous && continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true {
+        "DOMINION 전체 소스의 알고리즘·하네스·학습·기억·도구를 탐색하여 자기개선기 자체를 수정하고, 고정된 딥시크 모델과 동일 예산에서 이전 개선기보다 나은 후속 코딩 성과를 독립 평가한다.".to_string()
+    } else if autonomous {
         "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
         request.to_string()
@@ -391,6 +408,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
         "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
@@ -449,6 +467,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     }
     let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
     cases.extend(crate::engine::rsi_worktree::metric_cases());
+    if input["rsiSystemEvolution"]==true {cases.push(crate::engine::rsi_meta::case());}
     input["rsiFrozenCases"]=json!(cases);
     match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
         Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),

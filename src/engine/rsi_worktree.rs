@@ -926,7 +926,11 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     let runner=output_dir.join("rsi-lab.sh");
     std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
     std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
-    let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
+    let meta_required=candidate["cases"].as_array().is_some_and(|cases|
+        cases.iter().any(|case|case["id"]=="meta-downstream-editing"));
+    let static_cases=candidate["cases"].as_array().into_iter().flatten()
+        .filter(|case|case["id"]!="meta-downstream-editing").cloned().collect::<Vec<_>>();
+    let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":static_cases});
     if candidate["cases"].as_array().into_iter().flatten().any(|c|c["filter"].as_str().is_some_and(|f|f.starts_with("rsi_frozen_oracle::"))){
         let oracle=include_str!("rsi_oracle_fixture.rs");
         let file=std::fs::canonicalize(&output_dir).map_err(|e|e.to_string())?.join("frozen-oracle.rs");
@@ -958,7 +962,7 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
             .chars().rev().take(1200).collect::<String>().chars().rev().collect::<String>()));
     }
     let report_text=std::fs::read_to_string(&report_file).map_err(|e|e.to_string())?;
-    let report:Value=serde_json::from_str(&report_text).map_err(|e|e.to_string())?;
+    let mut report:Value=serde_json::from_str(&report_text).map_err(|e|e.to_string())?;
     let evidence_path=output_dir.join("report.json.evidence.txt");
     let evidence_meta=std::fs::metadata(&evidence_path).map_err(|e|e.to_string())?;
     if evidence_meta.len()>24*1024*1024 {
@@ -972,7 +976,23 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         || report["oracleVersion"]!=candidate["oracleVersion"] {
         return Err("원본·패치·평가 기준 또는 실행 증거의 해시가 일치하지 않습니다.".into());
     }
+    let mut evidence_sha=evidence_sha;
+    let mut meta_receipt=Value::Null;
+    if meta_required {
+        context.checkpoint(json!({"rsiPhase":"meta_evaluating"}))?;
+        meta_receipt=crate::engine::rsi_meta::evaluate(context,&candidate,source,&output_dir).await?;
+        report["cases"].as_array_mut().ok_or("측정 사례 없음")?.push(meta_receipt["measurement"].clone());
+        report["metaEvaluation"]=meta_receipt.clone();
+        let mut combined=evidence;
+        combined.extend_from_slice(b"\nDOMINION_INDEPENDENT_DOWNSTREAM_EPISODES\n");
+        combined.extend_from_slice(&serde_json::to_vec(&meta_receipt).map_err(|e|e.to_string())?);
+        evidence_sha=format!("{:x}",Sha256::digest(&combined));
+        report["reportSha256"]=json!(evidence_sha);
+        std::fs::write(&evidence_path,combined).map_err(|e|e.to_string())?;
+        std::fs::write(&report_file,serde_json::to_vec_pretty(&report).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    }
     let mut updated=rsi::evaluate(state,id,&report)?;
+    if meta_required {updated["metaEvaluation"]=meta_receipt;}
     let verdict=updated["evaluation"]["metrics"]["verdict"].clone();
     let metrics=updated["evaluation"]["metrics"].clone();
     // This evaluation came from a real local script invocation, not a

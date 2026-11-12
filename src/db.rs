@@ -995,6 +995,13 @@ impl Store {
 
     /// Token totals for one session, including calls made before usage was
     /// attached to messages. Audit is the durable source of truth.
+    pub fn session_model_routes(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        let conn=self.conn.lock().unwrap();
+        let mut stmt=conn.prepare("SELECT DISTINCT json_extract(detail,'$.providerId'), json_extract(detail,'$.model') FROM audit WHERE event='model.usage' AND json_extract(detail,'$.sessionId')=?1").map_err(|e|e.to_string())?;
+        let rows=stmt.query_map([session_id],|row|Ok(json!({"providerId":row.get::<_,String>(0)?,"model":row.get::<_,String>(1)?}))).map_err(|e|e.to_string())?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
+    }
+
     pub fn session_usage(&self, session_id: &str) -> Value {
         let conn = self.conn.lock().unwrap();
         let summary = conn.query_row(

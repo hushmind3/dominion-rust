@@ -546,6 +546,13 @@ pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &st
     })
 }
 
+pub fn campaign_model_tokens(state:&AppState, id:&str)->u64 {
+    let sessions=state.store.all("job").into_iter().filter(|job|
+        job["kind"]=="rsi_generation" && job["input"]["rsiCampaignId"]==id)
+        .filter_map(|job|job["sessionId"].as_str().map(str::to_string)).collect::<BTreeSet<_>>();
+    sessions.iter().map(|id|state.store.session_usage(id)["totalTokens"].as_u64().unwrap_or(0)).sum()
+}
+
 pub fn remaining_output_tokens(
     state: &AppState,
     session_id: &str,
@@ -576,14 +583,17 @@ pub fn remaining_output_tokens(
         // still return None so the provider's own context/output limits apply.
         return Ok(None);
     };
-    let prior = parent["evolution"]["activeBaseTokens"]
-        .as_u64()
-        .unwrap_or(0);
+    let total = campaign_model_tokens(state,&id);
     let spent = state.store.session_usage(session_id)["totalTokens"]
         .as_u64()
         .unwrap_or(0);
-    let available =
-        budget.saturating_sub(prior.saturating_add(spent).saturating_add(prompt_estimate));
+    // Preserve accounted historical usage when old ledgers no longer contain
+    // their generation sessions. Never reset an already spent campaign budget.
+    let total=total.max(parent["evolution"]["activeBaseTokens"].as_u64().unwrap_or(0).saturating_add(spent));
+    let mut available = budget.saturating_sub(total.saturating_add(prompt_estimate));
+    if let Some(cap)=state.store.get("session",session_id).and_then(|s|s["rsiEpisodeTokenLimit"].as_u64()) {
+        available=available.min(cap.saturating_sub(spent.saturating_add(prompt_estimate)));
+    }
     if available < 256 {
         return Err("rsi_token_budget: 자동 개선의 토큰 예산이 부족해 다음 모델 호출을 중단했습니다.".into());
     }
@@ -1009,6 +1019,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                     &json!({"status":"needs_review","cancelRequested":true,"error":"자동 개선 종료 시 중단된 세대 작업"}));
             }
         }
+    }
+    if input["rsiSystemEvolution"]==true {
+        record["tokens"]=json!(campaign_model_tokens(&context.state,&context.job_id));
     }
     elapsed(&mut record, started);
     match result {
@@ -2947,7 +2960,7 @@ async fn run_loop(
         }
         // Diagnose through the rebuilt executable, never through the old server's
         // implementation. Fixed-model source improvement remains model-authored.
-        if input["rsiAutonomous"]==true && input["rsiNativeInduction"]!=true {
+        if input["rsiAutonomous"]==true && input["rsiNativeInduction"]!=true && input["rsiSystemEvolution"]!=true {
             let mut probe=Command::new(&binary);probe.arg("--rsi-diagnose");
             let output=command(context,probe,Duration::from_secs(10)).await?;
             if !output.status.success() { return Err("선택 버전의 능력 진단 실행 실패".into()); }
@@ -3023,6 +3036,16 @@ async fn run_loop(
                 });
             }
         }
+        if input["rsiSystemEvolution"]==true {
+            let evidence=crate::engine::rsi_meta::development_evidence(&context.state);
+            child_input["rsiSelectedDomain"]=json!("improver");
+            child_input["rsiDecisionInput"]=json!({"basis":"owner_system_evolution_scope","targetDomain":"improver"});
+            child_input["rsiObjective"]=json!("DOMINION 자체 개선기의 알고리즘·하네스·탐색·학습을 실제 소스로 개선하여 같은 고정 모델과 예산에서 후속 코드 개선 성과를 높인다.");
+            child_input["rsiFocusFiles"]=evidence.as_ref().map(|e|e["focusFiles"].clone()).unwrap_or_else(||json!([]));
+            child_input["rsiSystemEvidence"]=json!(evidence);
+            child_input["prompt"]=json!(format!(
+                "DOMINION 재귀적 시스템 자기개선 작업입니다. 고정된 API 모델을 운용하는 알고리즘, 후보 생성·선택, 실행 하네스, 문맥·기억·학습·도구 코드를 직접 수정할 수 있습니다. 전체 코드가 탐색 범위이며 이번 변경은 개선기 자신의 후속 문제 해결 성과를 높여야 합니다.\n사용자가 지정한 목표: {}\n실제 과거 실행의 개발 증거(현재 소스에서도 원인을 확인할 것): {}\n수정된 개선기를 별도 실행 파일로 빌드하고 이전 개선기와 동일 모델·예산의 후속 소스 수정 과제를 수행시켜 독립 평가합니다. 제품 버그만 직접 고치는 것으로 이 과제를 대체하지 마세요. 하드코딩·평가기 변경·무검증 성공 주장은 금지합니다. 소스를 해시와 함께 읽고 workspace_replace_range로 실제 수정하세요. 독립 평가와 재빌드는 실행기가 수행합니다.", input["rsiObjective"], child_input["rsiSystemEvidence"]));
+        }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_candidates=context.state.store.all("experience").into_iter()
             .filter(|item|item["status"]=="active" && item["partitionKey"]==research_scope(&child_input).partition_key
@@ -3081,7 +3104,7 @@ async fn run_loop(
                 "sourceIndexId":child_input["rsiIndexId"]
             });
         } else {
-            child_input["rsiAutoFocus"]=json!(child_input["rsiDiagnostic"].is_object());
+            child_input["rsiAutoFocus"]=json!(child_input["rsiDiagnostic"].is_object() || input["rsiSystemEvolution"]==true);
             child_input["rsiFocusSelection"]=json!({"source":if child_input["rsiDiagnostic"].is_object(){"runtime_diagnosis"}else{"user_selected"}});
         }
         // This is the system's learned *execution method*, independently of
@@ -3431,6 +3454,11 @@ async fn run_loop(
                     .or_else(|| current["error"].as_str())
                     .unwrap_or("유효한 변경이나 검사 통과 없음"));
             }
+        }
+        if input["rsiSystemEvolution"]==true {
+            record["tokens"]=json!(campaign_model_tokens(&context.state,&context.job_id));
+            generation["metaEvaluation"]=candidate_id.and_then(|id|
+                context.state.store.get("rsi_candidate",id)).map(|c|c["metaEvaluation"].clone()).unwrap_or(Value::Null);
         }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
@@ -3995,7 +4023,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let paired_target=paired_descendant_target(&job["input"]) || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
+    let paired_target=paired_descendant_target(&job["input"]) || job["input"]["rsiSystemEvolution"]==true || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|_|!paired_target)
         .filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
@@ -5027,6 +5055,21 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn downstream_episodes_share_the_campaign_budget_and_keep_their_own_cap() {
+        let (state,root)=state();let context=parent(&state);
+        context.checkpoint(json!({"input":{"limits":{"tokenBudget":2000}}})).unwrap();
+        for (id,tokens) in [("a",1100),("b",300)] {
+            state.store.put("session",&json!({"id":id,"rsiCampaignId":"campaign"}));
+            state.store.put("job",&json!({"id":id,"kind":"rsi_generation","sessionId":id,
+                "input":{"rsiCampaignId":"campaign","rsiMetaEpisode":true}}));
+            state.store.audit("model.usage",json!({"sessionId":id,"totalTokens":tokens}));
+        }
+        assert_eq!(remaining_output_tokens(&state,"a",100).unwrap(),Some(500));
+        state.store.put("session",&json!({"id":"b","rsiCampaignId":"campaign","rsiEpisodeTokenLimit":500}));
+        assert!(remaining_output_tokens(&state,"b",100).is_err());
+        let _=std::fs::remove_dir_all(root);
     }
     #[cfg(unix)]
     #[tokio::test]
