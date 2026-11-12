@@ -18,7 +18,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 
 // Unit tests are checked by Cargo, but are not executable intelligence
 // methods in a release descendant and must not pollute its editable frontier.
-fn runtime_source_file(path:&str)->bool{
+pub(crate) fn runtime_source_file(path:&str)->bool{
     let file=path.rsplit('/').next().unwrap_or(path);
     !file.ends_with("_tests.rs")
         && !file.ends_with("_fixture.rs")
