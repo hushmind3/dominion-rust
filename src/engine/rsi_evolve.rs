@@ -546,6 +546,13 @@ pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &st
     })
 }
 
+pub fn campaign_model_tokens(state:&AppState, id:&str)->u64 {
+    let sessions=state.store.all("job").into_iter().filter(|job|
+        job["kind"]=="rsi_generation" && job["input"]["rsiCampaignId"]==id)
+        .filter_map(|job|job["sessionId"].as_str().map(str::to_string)).collect::<BTreeSet<_>>();
+    sessions.iter().map(|id|state.store.session_usage(id)["totalTokens"].as_u64().unwrap_or(0)).sum()
+}
+
 pub fn remaining_output_tokens(
     state: &AppState,
     session_id: &str,
@@ -576,14 +583,17 @@ pub fn remaining_output_tokens(
         // still return None so the provider's own context/output limits apply.
         return Ok(None);
     };
-    let prior = parent["evolution"]["activeBaseTokens"]
-        .as_u64()
-        .unwrap_or(0);
+    let total = campaign_model_tokens(state,&id);
     let spent = state.store.session_usage(session_id)["totalTokens"]
         .as_u64()
         .unwrap_or(0);
-    let available =
-        budget.saturating_sub(prior.saturating_add(spent).saturating_add(prompt_estimate));
+    // Preserve accounted historical usage when old ledgers no longer contain
+    // their generation sessions. Never reset an already spent campaign budget.
+    let total=total.max(parent["evolution"]["activeBaseTokens"].as_u64().unwrap_or(0).saturating_add(spent));
+    let mut available = budget.saturating_sub(total.saturating_add(prompt_estimate));
+    if let Some(cap)=state.store.get("session",session_id).and_then(|s|s["rsiEpisodeTokenLimit"].as_u64()) {
+        available=available.min(cap.saturating_sub(spent.saturating_add(prompt_estimate)));
+    }
     if available < 256 {
         return Err("rsi_token_budget: 자동 개선의 토큰 예산이 부족해 다음 모델 호출을 중단했습니다.".into());
     }
@@ -1010,6 +1020,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }
         }
     }
+    if input["rsiSystemEvolution"]==true {
+        record["tokens"]=json!(campaign_model_tokens(&context.state,&context.job_id));
+    }
     elapsed(&mut record, started);
     match result {
         Ok(reason) => {
@@ -1343,7 +1356,7 @@ fn generation_context(state: &AppState, input: &Value, record: &Value) -> String
         if !recent.is_empty() {
             text.push_str("\n### 이전 시도의 실제 결과\n");
             for generation in recent.into_iter().rev() {
-                let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
+                    let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
                 let evidence=json!({"accepted":generation["accepted"],"commit":generation["acceptedCommit"],
                     "hypothesis":candidate.as_ref().map(|c|&c["hypothesis"]),"paths":candidate.as_ref().map(|c|&c["paths"]),
                     "verdict":generation["evaluation"]["verdict"],"error":generation["error"],
@@ -1738,14 +1751,39 @@ fn record_method_feedback(state: &AppState, generation: &Value, session_id: &str
     receipts
 }
 
+pub(crate) fn preserve_failed_research(state:&AppState, source:&str) {
+    let mut jobs=state.store.all("job").into_iter().filter(|job|
+        job["kind"]=="rsi_generation" && job["input"]["rsiKnowledgeSource"]==source
+        && (job["status"]!="completed" || job["result"]["rsi"]["candidateId"].is_null())
+        && !matches!(job["status"].as_str(),Some("running"|"queued"))).take(12).collect::<Vec<_>>();
+    jobs.reverse();
+    for job in jobs {
+        if let (Some(session),Some(id))=(job["sessionId"].as_str(),job["id"].as_str()) {
+            let scope=research_scope(&job["input"]);
+            let existing=format!("experience-rsi-{}",crate::engine::memory::stable_id(&[&scope.partition_key,id]));
+            if state.store.get("experience",&existing).is_some_and(|e|e["failureBackfilled"]==true){continue;}
+            if let Some(saved)=remember_research(state,&job["input"],&json!({"jobId":id,"accepted":false,"domain":job["rsiDomain"],
+                "candidateId":job["result"]["rsi"]["candidateId"],"error":job["error"]}),session) {
+                state.store.patch_if("experience",&saved,"id",&json!(saved),&json!({"failureBackfilled":true}));
+            }
+        }
+    }
+}
+
 fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
     let mut operations=state.store.all("execution_operation");
     operations.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64()).then(a["id"].as_str().cmp(&b["id"].as_str())));
     let mut artifacts=Vec::new();
     for op in operations {
-        if op["sessionId"]!=session || op["status"]!="completed" {continue;}
+        if op["sessionId"]!=session {continue;}
         let result=&op["result"];let args=&op["arguments"];
-        if result["error"].is_string() || result["ok"]==false {continue;}
+        if op["status"]!="completed" || result["error"].is_string() || result["ok"]==false {
+            let content=json!({"tool":op["tool"],"arguments":args,"error":op["error"],"result":result}).to_string();
+            let hash=format!("{:x}",Sha256::digest(json!([&op["tool"],args,&op["error"],&result["error"],&op["status"]]).to_string().as_bytes()));
+            artifacts.push(json!({"tool":"tool_failure","path":args["path"],"content":content.chars().take(4000).collect::<String>(),
+                "verified":false,"operationId":op["id"],"hash":hash}));
+            continue;
+        }
         let tool=op["tool"].as_str().unwrap_or("");
         let content=match tool {
             "workspace_read_range"|"http_fetch"=>result["content"].as_str().or_else(||result["text"].as_str()).unwrap_or("").to_string(),
@@ -1756,8 +1794,8 @@ fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
             _=>continue,
         };
         if content.trim().is_empty(){continue;}
-        let text=content.chars().take(2200).collect::<String>();
-        let body=json!({"tool":tool,"path":args["path"],"url":args["url"],"query":args["query"],"truncated":content.chars().count()>2200,
+        let text=content.chars().take(24_000).collect::<String>();
+        let body=json!({"tool":tool,"path":args["path"],"url":args["url"],"query":args["query"],"truncated":content.chars().count()>24_000,
             "startLine":result["startLine"],"endLine":result["endLine"],"sourceSha256":result["sourceSha256"],"content":text});
         // Queries, timing and operation IDs are provenance, not new findings.
         let hash=format!("{:x}",Sha256::digest(json!([tool,&body["path"],&body["url"],&body["sourceSha256"],&body["content"]]).to_string().as_bytes()));
@@ -1765,7 +1803,7 @@ fn research_artifacts(state:&AppState,session:&str)->Vec<Value>{
         let mut artifact=body;artifact["hash"]=json!(hash);artifact["operationId"]=op["id"].clone();artifacts.push(artifact);
     }
     // Keep a bounded set of actual findings, not just their call counters.
-    if artifacts.len()>40 {artifacts.truncate(40);}
+    if artifacts.len()>40 {artifacts.drain(..artifacts.len()-40);}
     artifacts
 }
 
@@ -1780,6 +1818,18 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
             artifacts.push(json!({"tool":"model_hypothesis","content":text,"verified":false,"sourceMessageId":note["id"],
                 "hash":format!("{:x}",Sha256::digest(content.as_bytes()))}));
         }
+    }
+    // Interrupted reasoning can contain the next exact implementation plan.
+    // Keep it as an unverified hypothesis, anchored to an observed source hash.
+    if let Some(message)=state.store.messages(session).iter().rev().find(|m|
+        m["role"]=="assistant" && m["reasoning"].as_str().is_some_and(|s|s.len()>100)).cloned() {
+        let path=input["rsiFocusFiles"].as_array().and_then(|files|files.first()).cloned().unwrap_or(Value::Null);
+        let source_hash=artifacts.iter().rev().find(|a|a["tool"]=="workspace_read_range" && a["path"]==path)
+            .map(|a|a["sourceSha256"].clone()).unwrap_or(Value::Null);
+        let content=message["reasoning"].as_str().unwrap_or("");
+        artifacts.insert(0,json!({"tool":"model_hypothesis","path":path,"sourceSha256":source_hash,
+            "content":content.chars().rev().take(12_000).collect::<String>().chars().rev().collect::<String>(),
+            "verified":false,"sourceMessageId":message["id"],"hash":format!("{:x}",Sha256::digest(content.as_bytes()))}));
     }
     let candidate=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id));
     let proposals = state.store.get("session",session)
@@ -1807,7 +1857,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
         "researchArtifacts":artifacts,"executableMethods":methods,
         "generationJobId":generation["jobId"],"domain":generation["domain"],
         "implementation_ref":if accepted {json!({"kind":"source_revision","commit":generation["acceptedCommit"],"paths":candidate.as_ref().map(|c|&c["paths"])})}else{Value::Null},
-        "evidence":{"candidateId":generation["candidateId"],"evaluation":generation["evaluation"],"accepted":accepted},
+        "evidence":{"candidateId":generation["candidateId"],"evaluation":generation["evaluation"],"accepted":accepted,"failure":generation["error"],"captureError":generation["captureError"]},
         "knowledgeApplications":applications,"laterGain":"unmeasured",
         "createdAt":previous["createdAt"].as_str().map(str::to_string).unwrap_or_else(||chrono::Utc::now().to_rfc3339()),"lastSeenAt":chrono::Utc::now().to_rfc3339()});
     state.store.put("experience",&record)?;
@@ -2360,11 +2410,13 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
     let records=experience::retrieve(state,&scope,&query,3);
     let root=match workspace.canonicalize(){Ok(root)=>root,Err(_)=>return String::new()};
     let mut rows=Vec::new();let mut receipts=Vec::new();let mut chars=0;
+    let max_rows=if input["rsiSystemEvolution"]==true {8}else{3};
+    let max_chars=if input["rsiSystemEvolution"]==true {48_000}else{16_000};
     let mut refreshes=BTreeMap::<String,Vec<Value>>::new();
     for record in records {
         let record_id=record["id"].as_str().unwrap_or("").to_string();
         for artifact in record["researchArtifacts"].as_array().into_iter().flatten(){
-            if rows.len()>=3 {break;}
+            if rows.len()>=max_rows {break;}
             let mut receipt=json!({"experienceId":record["id"],"artifactHash":artifact["hash"],"sourceOperationId":artifact["operationId"],"sourceMessageId":artifact["sourceMessageId"],"path":artifact["path"],"status":"provided"});
             let mut item=artifact.clone();
             match artifact["tool"].as_str(){
@@ -2433,7 +2485,7 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     if item["truncated"]==true {
                         if let (Ok(text),Some(start),Some(end))=(std::str::from_utf8(&bytes),item["startLine"].as_u64(),item["endLine"].as_u64()) {
                             let (complete,begin,last)=numbered_source_range(text,start,end);
-                            if !complete.is_empty() && complete.chars().count()<=12_000 {
+                            if !complete.is_empty() && complete.chars().count()<=24_000 {
                                 item["content"]=json!(complete);item["startLine"]=json!(begin);item["endLine"]=json!(last);
                                 item["truncated"]=json!(false);receipt["rangeHydrated"]=json!(true);
                                 receipt["deliveredChars"]=json!(complete.chars().count());
@@ -2447,7 +2499,12 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     receipt["sourceValidity"]=json!("unverified_external_source");
                     receipt["hypothesisValidity"]=json!("prior_external_research_unverified");
                 }
-                Some("model_hypothesis")=>{
+                Some("model_hypothesis"|"tool_failure")=>{
+                    if let (Some(relative),Some(expected))=(artifact["path"].as_str(),artifact["sourceSha256"].as_str()) {
+                        let current=root.join(relative).canonicalize().ok().filter(|p|p.starts_with(&root))
+                            .and_then(|p|std::fs::read(p).ok()).map(|bytes|format!("{:x}",Sha256::digest(bytes)));
+                        receipt["sourceValidity"]=json!(if current.as_deref()==Some(expected){"hash_verified_current_source"}else{"source_changed_hypothesis_unverified"});
+                    }
                     receipt["mode"]=json!("prior_model_hypothesis_unverified");
                     receipt["hypothesisValidity"]=json!("prior_hypothesis_unverified");
                 }
@@ -2459,11 +2516,12 @@ pub(crate) fn reuse_research(state:&AppState,input:&Value,workspace:&Path,sessio
                     && row["endLine"].as_u64()>=item["endLine"].as_u64()) {
                 receipt["coveredByDeliveredRange"]=json!(true);receipts.push(receipt);continue;
             }
-            let size=item.to_string().chars().count();if chars+size>16_000 {continue;}
+            let size=item.to_string().chars().count();if chars+size>max_chars {continue;}
             if receipts.iter().any(|r:&Value|r["artifactHash"]==receipt["artifactHash"]){continue;}
             chars+=size;
             rows.push(json!({"tool":item["tool"],"path":item["path"],"url":item["url"],
                 "startLine":item["startLine"],"endLine":item["endLine"],"content":item["content"],
+                "sourceSha256":item["sourceSha256"],
                 "truncated":item["truncated"],"experienceId":record["id"],
                 "sourceValidity":receipt["sourceValidity"],"hypothesisValidity":receipt["hypothesisValidity"]}));
             receipts.push(receipt);
@@ -2795,6 +2853,41 @@ fn generation_prompt_variants(
     ]
 }
 
+/// Development-only observations from the ACTUALLY RUNNING revision. No
+/// replacement source, expected patch or confirmation examples are supplied.
+/// The same probe is rerun in every rebuilt descendant before choosing a task.
+pub fn diagnose_capabilities() -> Value {
+    let cases = [
+        ("파일을 만들고 이름을 알려줘", 2usize),
+        ("문장을 고치고 결과를 보여줘", 2),
+        ("캐시를 지우고 다시 시작해", 2),
+    ];
+    let observations=cases.iter().map(|(input,expected)| {
+        let result=crate::engine::decompose::decompose(input,
+            &json!({"implementation":"numbered-first","parameters":{"kernel":"numbered-first"}}));
+        let observed=result["subtasks"].as_array().map_or(0,Vec::len);
+        json!({"input":input,"expectedSegments":expected,"observedSegments":observed,
+            "passed":observed==*expected})
+    }).collect::<Vec<_>>();
+    let failures=observations.iter().filter(|row|row["passed"]==false).count();
+    json!({"version":1,"generatorCommit":option_env!("DOMINION_BUILD_COMMIT"),
+        "domain":"tools","focusFiles":["src/engine/decompose.rs"],
+        "failed":failures,"observations":observations})
+}
+
+/// Shared coordinator transition. Downstream evaluation executes this exact
+/// transition too, so a candidate may improve either target binding or the
+/// worker's interpretation of it. No evaluator-specific substitute selector.
+fn bind_inherited_target(input:&mut Value, next:&Value) {
+    if let Some(domain)=next["nextDomain"].as_str().filter(|domain|DOMAINS.contains(domain)) {
+        input["rsiSelectedDomain"]=json!(domain);
+        input["rsiDecisionInput"]=next.clone();
+    }else {
+        input["rsiSelectedDomain"]=Value::Null;
+        input["rsiDecisionInput"]=Value::Null;
+    }
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -2923,6 +3016,24 @@ async fn run_loop(
                     .unwrap_or(Value::Null)
             };
         }
+        // Diagnose through the rebuilt executable, never through the old server's
+        // implementation. Fixed-model source improvement remains model-authored.
+        if input["rsiAutonomous"]==true && input["rsiNativeInduction"]!=true && input["rsiSystemEvolution"]!=true {
+            let mut probe=Command::new(&binary);probe.arg("--rsi-diagnose");
+            let output=command(context,probe,Duration::from_secs(10)).await?;
+            if !output.status.success() { return Err("선택 버전의 능력 진단 실행 실패".into()); }
+            let diagnosis:Value=serde_json::from_slice(&output.stdout).map_err(|e|e.to_string())?;
+            if diagnosis["generatorCommit"]!=head {return Err("진단 실행기 버전 불일치".into());}
+            record["diagnosis"]=diagnosis.clone();
+            if diagnosis["failed"].as_u64().unwrap_or(0)>0 {
+                child_input["rsiDiagnostic"]=diagnosis.clone();
+                child_input["rsiSelectedDomain"]=diagnosis["domain"].clone();
+                child_input["rsiFocusFiles"]=diagnosis["focusFiles"].clone();
+                child_input["rsiObjective"]=json!("실제 작업 분해 진단에서 실패한 순차 동작 인식을 개선한다. 기존 단일 명사와 기존 분해 동작을 보존하고 예문 전용 분기를 만들지 않는다.");
+                child_input["prompt"]=json!(format!(
+                    "DOMINION 실제 소스 자기개선입니다. 현재 실행 버전에서 관측한 개발 진단: {diagnosis}\n실패 원인을 소스에서 찾아 실제 코드를 수정하세요. 예문을 하드코딩하거나 평가기·테스트·진단 코드를 수정하지 마세요. 확인 평가는 별도로 동결되어 있습니다. workspace_read_range로 해당 구현과 해시를 확인한 뒤 workspace_replace_range로 근거 있는 최소 변경을 작성하세요. 빌드와 독립 비교는 실행기가 수행합니다."));
+            }
+        }
         let archive = crate::engine::rsi_archive::select(
             &context.state, &prior_history, &head, &child_input["rsiFrozenCases"]);
         child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
@@ -2949,16 +3060,7 @@ async fn run_loop(
         } else {
             record["nextTrialAlgorithmId"] = Value::Null;
         }
-        if let Some(domain) = record["nextDecision"]["nextDomain"]
-            .as_str()
-            .filter(|domain| DOMAINS.contains(domain))
-        {
-            child_input["rsiSelectedDomain"] = json!(domain);
-            child_input["rsiDecisionInput"] = record["nextDecision"].clone();
-        } else {
-            child_input["rsiSelectedDomain"] = Value::Null;
-            child_input["rsiDecisionInput"] = Value::Null;
-        }
+        bind_inherited_target(&mut child_input,&record["nextDecision"]);
         // After an independently accepted generation, the next task is
         // selected from the *measured paired residuals*, not from a stale
         // parent_next_decision computed for the former source revision.
@@ -2982,6 +3084,37 @@ async fn run_loop(
                     "metaTransferTarget":next["metaTransferTarget"]
                 });
             }
+        }
+        if input["rsiSystemEvolution"]==true {
+            // A system-evolution campaign must not re-pin every generation to
+            // its original improver file. The rebuilt descendant selects
+            // subsequent targets; the coordinator only preserves measured
+            // post-adoption constraints and the owner's explicit file choice.
+            let first_system_generation=attempt==1
+                && !prior_history.iter().any(|row|row["accepted"]==true);
+            let owner_focus=input["rsiFocusFiles"].as_array()
+                .is_some_and(|paths|!paths.is_empty());
+            let evidence=if first_system_generation {
+                crate::engine::rsi_meta::development_evidence(&context.state)
+            } else {None};
+            if first_system_generation && !owner_focus && input["rsiAutonomous"]==true {
+                child_input["rsiSelectedDomain"]=json!("improver");
+                child_input["rsiDecisionInput"]=json!({
+                    "basis":"initial_system_evolution","targetDomain":"improver"
+                });
+                child_input["rsiObjective"]=json!("DOMINION 자체 개선기의 알고리즘·하네스·탐색·학습을 실제 소스로 개선하여 같은 모델과 예산에서 후속 코드 개선 성과를 높인다.");
+            } else if expanded.is_none() && !paired_descendant_target(&child_input) {
+                // Never inherit a stale parent decision after an adoption.
+                child_input["rsiSelectedDomain"]=Value::Null;
+                child_input["rsiDecisionInput"]=Value::Null;
+            }
+            if !owner_focus {
+                child_input["rsiFocusFiles"]=json!([]);
+            }
+            child_input["rsiSystemEvidence"]=json!(evidence);
+            child_input["prompt"]=json!(format!(
+                "DOMINION 재귀적 시스템 자기개선 작업입니다. 선택한 API 또는 로컬 모델을 이용하여 알고리즘, 후보 생성·선택, 실행 하네스, 문맥·기억·학습·도구 코드를 직접 개선할 수 있습니다. 전체 소스가 탐색 범위이며, 검증된 후손은 다음 세대의 개선 계획도 생성해야 합니다.\n사용자가 지정한 목표: {}\n현재 세대의 개발 증거(현재 소스에서도 원인을 확인할 것): {}\n수정된 개선기를 실제 재빌드하고 이전 개선기와 동일 모델·예산의 후속 소스 수정 성과를 독립 평가합니다. 제품 버그 하나의 수정으로 이 과제를 대체하지 마세요. 평가기 변경이나 무검증 성공 주장은 허용되지 않습니다. 실제 소스 변경을 검증 가능한 근거로 남기세요.",
+                child_input["rsiObjective"],child_input["rsiSystemEvidence"]));
         }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_candidates=context.state.store.all("experience").into_iter()
@@ -3024,7 +3157,16 @@ async fn run_loop(
             "domain":target_domain,"selection":target_selection,
             "strategy":target_strategy,"generatorCommit":head
         });
-        if child_input["rsiFocusFiles"]
+        if input["rsiSystemEvolution"]==true
+            && input["rsiFocusFiles"].as_array().is_none_or(|files|files.is_empty()) {
+            // Only the rebuilt descendant ranks system-evolution files.
+            // The old resident coordinator must not pre-commit a stale guess.
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"pending_rebuilt_descendant_controller"
+            });
+        } else if child_input["rsiFocusFiles"]
             .as_array().is_none_or(|files|files.is_empty()) {
             let policy=target_strategy["id"].as_str()
                 .and_then(|id|context.state.store.get("algorithm",id))
@@ -3041,8 +3183,69 @@ async fn run_loop(
                 "sourceIndexId":child_input["rsiIndexId"]
             });
         } else {
-            child_input["rsiAutoFocus"]=json!(false);
-            child_input["rsiFocusSelection"]=json!({"source":"user_selected"});
+            child_input["rsiAutoFocus"]=json!(child_input["rsiDiagnostic"].is_object() || input["rsiSystemEvolution"]==true);
+            child_input["rsiFocusSelection"]=json!({"source":if child_input["rsiDiagnostic"].is_object(){"runtime_diagnosis"}else{"user_selected"}});
+        }
+        // The accepted *rebuilt* generator, not the original resident server,
+        // plans the next system-evolution task. The resident coordinator owns
+        // budgets, frozen evaluation and promotion; these fields are mutable
+        // runtime policy and must be allowed to evolve with source revisions.
+        if input["rsiSystemEvolution"]==true
+            && input["rsiFocusFiles"].as_array().is_none_or(|files|files.is_empty()) {
+            let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
+            std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
+            let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
+            let snapshot=json!({
+                "generatorCommit":head,"attempt":attempt,"input":child_input
+            });
+            std::fs::write(&plan_path,serde_json::to_vec(&snapshot).map_err(|e|e.to_string())?)
+                .map_err(|e|e.to_string())?;
+            let mut planner=Command::new(&binary);
+            planner.arg("--rsi-plan-generation").arg(&plan_path)
+                .current_dir(&lab)
+                .env("DOMINION_DATA",&context.state.config.data_dir)
+                .env("DOMINION_WORKSPACE",&lab)
+                .env_remove("DOMINION_DESKTOP_PARENT");
+            let output=command(context,planner,Duration::from_secs(30)).await;
+            let _=std::fs::remove_file(&plan_path);
+            let output=output?;
+            if !output.status.success() {
+                return Err(format!("재빌드된 개선기의 다음 세대 계획 실패: {}",
+                    String::from_utf8_lossy(&output.stderr)));
+            }
+            let plan:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("후손 계획 출력 형식 오류: {e}"))?;
+            if plan["generatorCommit"]!=head {return Err("후손 계획과 실행 소스 커밋이 다릅니다.".into());}
+            let domain=plan["domain"].as_str()
+                .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
+            let focus=plan["focusFiles"].as_array()
+                .ok_or("후손 계획에 소스 후보 목록이 없습니다.")?;
+            if focus.len()>8 || focus.iter().any(|file|file.as_str().is_none_or(|p|
+                !crate::engine::rsi::safe_path(p)
+                    || !lab.join(p).is_file()
+                    || crate::engine::code_index::indexed_source_hash(
+                        &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none())) {
+                return Err("후손이 허용되지 않은 소스 파일을 선택했습니다.".into());
+            }
+            child_input["rsiSelectedDomain"]=json!(domain);
+            child_input["rsiTargetDomain"]=json!(domain);
+            child_input["rsiTargetPlan"]=json!({
+                "domain":domain,"selection":plan["selection"],
+                "strategy":plan["strategy"],"generatorCommit":head
+            });
+            child_input["rsiFocusFiles"]=json!(focus);
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"rebuilt_descendant_controller",
+                "domain":domain,"candidates":plan["ranked"],
+                "sourceIndexId":child_input["rsiIndexId"],
+                "generatorCommit":head
+            });
+            context.state.store.audit("rsi.descendant_controller_plan",json!({
+                "campaignId":context.job_id,"attempt":attempt,
+                "generatorCommit":head,"domain":domain,
+                "focusFiles":focus,"selection":plan["selection"]
+            }));
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
@@ -3131,7 +3334,7 @@ async fn run_loop(
         let worker_timeout = if remaining == u64::MAX {
             7 * 24 * 3600
         } else {
-            remaining.clamp(1, 900)
+            remaining.max(1)
         };
         let output = command(context, worker, Duration::from_secs(worker_timeout)).await;
         let current = context
@@ -3391,6 +3594,11 @@ async fn run_loop(
                     .or_else(|| current["error"].as_str())
                     .unwrap_or("유효한 변경이나 검사 통과 없음"));
             }
+        }
+        if input["rsiSystemEvolution"]==true {
+            record["tokens"]=json!(campaign_model_tokens(&context.state,&context.job_id));
+            generation["metaEvaluation"]=candidate_id.and_then(|id|
+                context.state.store.get("rsi_candidate",id)).map(|c|c["metaEvaluation"].clone()).unwrap_or(Value::Null);
         }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
@@ -3918,6 +4126,81 @@ mod paired_descendant_target_tests {
         let mut speculative=evidence;
         speculative["rsiDecisionInput"]["basis"]=json!("parent_next_decision");
         assert!(!paired_descendant_target(&speculative));
+        let only_system=json!({"rsiSystemEvolution":true,"rsiSelectedDomain":"improver"});
+        assert!(!paired_descendant_target(&only_system),
+            "system mode cannot masquerade as independently measured target");
+    }
+}
+
+/// Ask the exact rebuilt descendant to plan its next improvement. This
+/// command is deliberately read-only and never starts a server or a model.
+fn system_evolution_target_hint(input:&Value, attempt:u64)->Option<String> {
+    if paired_descendant_target(input) {
+        input["rsiSelectedDomain"].as_str().map(str::to_string)
+    } else if attempt==1 && input["rsiAutonomous"]==true {
+        Some("improver".into())
+    } else {None}
+}
+
+pub fn plan_generation_from_file(path:&str)->Result<(),String> {
+    let snapshot:Value=serde_json::from_slice(&std::fs::read(path).map_err(|e|e.to_string())?)
+        .map_err(|e|e.to_string())?;
+    let commit=snapshot["generatorCommit"].as_str().ok_or("계획 생성기 버전이 없습니다.")?;
+    if option_env!("DOMINION_BUILD_COMMIT")!=Some(commit) {
+        return Err("계획 생성기 바이너리와 소스 커밋이 다릅니다.".into());
+    }
+    let input=&snapshot["input"];
+    if input["rsiSystemEvolution"]!=true {
+        return Err("전체 시스템 진화 작업만 후손 계획을 호출할 수 있습니다.".into());
+    }
+    let campaign=input["rsiCampaignId"].as_str().ok_or("계획 캠페인 ID가 없습니다.")?;
+    let config=crate::config::Config::from_env();
+    let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
+    let vault=crate::vault::Vault::open(&config.key_path());
+    let state=AppState::new(config,store,vault);
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
+    history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    let objective=selection_objective(input);
+    let (domain,selection,strategy)=select_generation_strategy(
+        &state,&history,&objective,None,None,
+        system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0)),
+        commit);
+    let mut source_input=input.clone();
+    source_input["rsiTargetDomain"]=json!(domain);
+    source_input["rsiSelectedDomain"]=json!(domain);
+    let policy=strategy["id"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
+    let ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
+    let focus=ranked.iter().filter_map(|row|row["path"].as_str())
+        .filter(|p|crate::engine::rsi::safe_path(p))
+        .take(8).collect::<Vec<_>>();
+    println!("{}",json!({
+        "generatorCommit":commit,"domain":domain,
+        "selection":selection,"strategy":strategy,
+        "focusFiles":focus,"ranked":ranked
+    }));
+    Ok(())
+}
+
+#[cfg(test)]
+mod system_evolution_handoff_tests {
+    use super::*;
+    #[test]
+    fn measured_descendant_targets_survive_but_stale_parent_hints_do_not() {
+        let first=json!({"rsiSystemEvolution":true,"rsiAutonomous":true,"rsiSelectedDomain":"memory"});
+        assert_eq!(system_evolution_target_hint(&first,1),Some("improver".into()));
+        assert_eq!(system_evolution_target_hint(&first,2),None);
+        let explicit=json!({"rsiSystemEvolution":true,"rsiAutonomous":false,
+            "rsiObjective":"Improve memory","rsiSelectedDomain":"memory"});
+        assert_eq!(system_evolution_target_hint(&explicit,1),None,
+            "owner-defined objectives must outrank the default improver seed");
+        let measured=json!({"rsiSystemEvolution":true,"rsiSourceScopeExpanded":true,
+            "rsiSelectedDomain":"context",
+            "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
+                "targetDomain":"context"}});
+        assert_eq!(system_evolution_target_hint(&measured,2),Some("context".into()));
     }
 }
 
@@ -3954,8 +4237,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|g| g["campaignId"] == campaign)
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
+    if job["input"]["rsiMetaEpisode"]==true {
+        bind_inherited_target(&mut job["input"],&Value::Null);
+    }
     let objective = selection_objective(&job["input"]);
-    let paired_target=paired_descendant_target(&job["input"]);
+    // System evolution is a search mode, not a measured holdout constraint.
+    // Only a genuine paired target or live failed diagnosis may pin a domain.
+    let paired_target=paired_descendant_target(&job["input"])
+        || job["input"]["rsiDiagnostic"]["failed"].as_u64().unwrap_or(0)>0;
     let latest=history.iter().max_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let continuation = latest.filter(|_|!paired_target)
         .filter(|g|g["candidateId"].is_null() && g["newFindings"].as_u64().unwrap_or(0)>0)
@@ -4811,6 +5100,33 @@ mod tests {
     }
 
     #[test]
+    fn failed_tools_and_unfinished_plans_survive_and_reuse_the_source_hash() {
+        let (state,root)=state();std::fs::create_dir_all(root.join("src")).unwrap();
+        let source="fn reusable() {}\n";let hash=format!("{:x}",Sha256::digest(source.as_bytes()));
+        std::fs::write(root.join("src/reuse.rs"),source).unwrap();
+        state.store.put("session",&json!({"id":"before"}));
+        state.store.put("session",&json!({"id":"after"}));
+        state.store.write_message(&json!({"session_id":"before","role":"assistant","content":"",
+            "reasoning":"UNFINISHED_IMPLEMENTATION_PLAN ".repeat(10)})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"read","sessionId":"before","opSeq":1,
+            "tool":"workspace_read_range","status":"completed","arguments":{"path":"src/reuse.rs"},
+            "result":{"content":source,"sourceSha256":hash,"startLine":1,"endLine":1}}));
+        state.store.put("execution_operation",&json!({"id":"failed","sessionId":"before","opSeq":2,
+            "tool":"workspace_replace_range","status":"failed","arguments":{"path":"src/reuse.rs"},
+            "result":{"error":"STALE_SOURCE_EDIT_REJECTED"}}));
+        let input=json!({"rsiSourceDir":root,"rsiObjective":"memory reuse","rsiFocusFiles":["src/reuse.rs"],"rsiSystemEvolution":true});
+        let id=remember_research(&state,&input,&json!({"jobId":"failed-job","domain":"memory","accepted":false,"error":"tool limit"}),"before").unwrap();
+        let saved=state.store.get("experience",&id).unwrap();
+        assert_eq!(saved["evidence"]["accepted"],false);
+        assert_eq!(saved["evidence"]["failure"],"tool limit");
+        let prompt=reuse_research(&state,&input,&root,"after");
+        assert!(prompt.contains("UNFINISHED_IMPLEMENTATION_PLAN"));
+        assert!(prompt.contains("STALE_SOURCE_EDIT_REJECTED"));
+        assert!(prompt.contains(&hash),"source cache must deliver its hash for a grounded edit");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn empty_searches_and_changed_queries_do_not_manufacture_findings() {
         let (state,root)=state();
         state.store.put("execution_operation",&json!({"id":"empty","sessionId":"s","tool":"code_search","arguments":{"query":"anything"},"result":{"matchCount":0,"matches":[]},"status":"completed"}));
@@ -4987,6 +5303,21 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn downstream_episodes_share_the_campaign_budget_and_keep_their_own_cap() {
+        let (state,root)=state();let context=parent(&state);
+        context.checkpoint(json!({"input":{"limits":{"tokenBudget":2000}}})).unwrap();
+        for (id,tokens) in [("a",1100),("b",300)] {
+            state.store.put("session",&json!({"id":id,"rsiCampaignId":"campaign"}));
+            state.store.put("job",&json!({"id":id,"kind":"rsi_generation","sessionId":id,
+                "input":{"rsiCampaignId":"campaign","rsiMetaEpisode":true}}));
+            state.store.audit("model.usage",json!({"sessionId":id,"totalTokens":tokens}));
+        }
+        assert_eq!(remaining_output_tokens(&state,"a",100).unwrap(),Some(500));
+        state.store.put("session",&json!({"id":"b","rsiCampaignId":"campaign","rsiEpisodeTokenLimit":500}));
+        assert!(remaining_output_tokens(&state,"b",100).is_err());
+        let _=std::fs::remove_dir_all(root);
     }
     #[cfg(unix)]
     #[tokio::test]

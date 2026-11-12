@@ -320,7 +320,7 @@ static UPDATING: AtomicBool = AtomicBool::new(false);
 
 pub fn installation_running()->bool {UPDATING.load(Ordering::Acquire)}
 
-fn toolchain_path() -> Option<std::ffi::OsString> {
+pub(super) fn toolchain_path() -> Option<std::ffi::OsString> {
     let mut paths = vec![
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
