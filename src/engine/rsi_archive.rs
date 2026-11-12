@@ -369,10 +369,13 @@ mod tests {
     }
 
     fn insert(state: &AppState, name: &str, scores: [f64; 2]) -> Value {
+        insert_with_branch(state,name,scores,None)
+    }
+    fn insert_with_branch(state:&AppState,name:&str,scores:[f64;2],branch:Option<&str>)->Value {
         let patch = format!("diff --git a/src/engine/memory.rs b/src/engine/memory.rs\n--- a/src/engine/memory.rs\n+++ b/src/engine/memory.rs\n@@ -1 +1 @@\n-old\n+{name}\n");
         let mut candidate = rsi::propose(
             state,
-            &json!({"target":"algorithm",
+            &json!({"target":"algorithm","sourceBranch":branch,
             "baseCommit":"a".repeat(40),"patch":patch,
             "hypothesis":"A measured stepping stone for source repair.",
             "cases":plan(),"oracleVersion":"rsi-worktree-v2","generatorModel":"test"}),
@@ -424,6 +427,71 @@ mod tests {
         assert_eq!(next["adopted"], false);
         assert_eq!(next["qualityProven"], false);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_neutral_worker_is_durable_before_any_next_parent_selection() {
+        let (state,root)=state();
+        let completed=insert_with_branch(&state,"last-worker",[0.54,0.51],
+            Some("dominion-sub2"));
+        let id=completed["candidateId"].as_str().unwrap().to_string();
+        let receipt=json!({
+            "jobId":"terminal-generation-job",
+            "candidateId":id,"generatorCommit":"a".repeat(40),
+            "sourceBranch":"dominion-sub2","staticChecksPassed":true,
+            "accepted":false,"evaluation":completed["evaluation"]
+        });
+        assert!(state.store.all("rsi_archive").is_empty());
+        // No follow-up select(), next-generation job or new campaign exists.
+        let saved=record_completed(&state,&receipt,&plan(),"dominion-sub2").unwrap();
+        assert_eq!(saved["status"],"persisted");
+        assert_eq!(saved["qualityProven"],false);
+        assert_eq!(state.store.all("rsi_archive").len(),1);
+        let replay=record_completed(&state,&receipt,&plan(),"dominion-sub2").unwrap();
+        assert_eq!(replay["archiveId"],saved["archiveId"]);
+        assert_eq!(state.store.all("rsi_archive").len(),1,
+            "a restart/retry must not double-count the terminal candidate");
+        // An entirely new campaign with EMPTY history selects the preserved
+        // original measurement; no adoption or success is invented.
+        let successor=select_bound(&state,&[],&"a".repeat(40),&plan(),"dominion-sub2");
+        assert_eq!(successor["candidateId"],id);
+        assert!(validate_selection(&state,&successor,&"a".repeat(40),
+            &plan(),"dominion-sub2"));
+        assert_eq!(successor["adopted"],false);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn terminal_archive_rejects_foreign_branch_forged_pair_and_no_checks() {
+        let (state,root)=state();
+        let candidate=insert_with_branch(&state,"source-bound",[0.54,0.51],
+            Some("dominion-sub2"));
+        let mut generation=json!({
+            "jobId":"final-job","candidateId":candidate["candidateId"],
+            "generatorCommit":"a".repeat(40),"sourceBranch":"dominion-sub2",
+            "staticChecksPassed":true,"accepted":false,
+            "evaluation":candidate["evaluation"]
+        });
+        assert_eq!(record_completed(&state,&generation,&plan(),
+            "dominion-sub3").unwrap()["persisted"],false);
+        let old=state.store.get("rsi_pair",
+            &format!("rsi-pair-{}",candidate["candidateId"].as_str().unwrap())).unwrap();
+        let mut corrupted=old.clone();
+        corrupted["report"]["cases"][0]["metrics"]["quality"]["candidate"]=json!(999.0);
+        state.store.put("rsi_pair",&corrupted).unwrap();
+        assert_eq!(record_completed(&state,&generation,&plan(),
+            "dominion-sub2").unwrap()["persisted"],false);
+        assert!(state.store.all("rsi_archive").is_empty());
+        state.store.put("rsi_pair",&old).unwrap();
+        generation["staticChecksPassed"]=json!(false);
+        assert_eq!(record_completed(&state,&generation,&plan(),
+            "dominion-sub2").unwrap()["persisted"],false);
+        generation["staticChecksPassed"]=json!(true);
+        generation["accepted"]=json!(true);
+        assert_eq!(record_completed(&state,&generation,&plan(),
+            "dominion-sub2").unwrap()["persisted"],false);
+        assert!(state.store.all("rsi_archive").is_empty());
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
