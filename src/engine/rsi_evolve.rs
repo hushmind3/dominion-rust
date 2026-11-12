@@ -4381,11 +4381,17 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let paired=paired_descendant_target(input);
     let peers=crate::engine::rsi_meta_controller::peer_lineages(
         &state,campaign,input,None);
+    let interaction_graph=crate::engine::rsi_interaction::influence_graph(
+        &history,&frontier);
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
         crate::engine::rsi_system::inherited_domain(&history).as_deref());
+    // Genuine isolated cross-role effects reshape the editable meta
+    // algorithm BEFORE peer references or reciprocal curricula are ranked.
+    let holdout_meta=crate::engine::rsi_interaction::reinforce_meta_with_holdout(
+        raw_meta,&interaction_graph);
     let peer_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
-        raw_meta,&peers);
+        holdout_meta,&peers);
     let reciprocal_graph=crate::engine::rsi_symbiosis::transition_graph(&history);
     let meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
         peer_meta,&reciprocal_graph);
@@ -4405,8 +4411,6 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // Frozen holdout measurements and actual candidate paths provide a
     // complementary graph to the adopted-generation A→B→A lineage. Joint
     // edits remain confounded, never evidence of a single role's causal gain.
-    let interaction_graph=crate::engine::rsi_interaction::influence_graph(
-        &history,&frontier);
     let coupled_portfolio=if input["rsiAutonomous"]==true
         && !owner_focus && !paired && architecture_target.is_object() {
         crate::engine::rsi_interaction::coupled_portfolio(
@@ -4494,7 +4498,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
                 &state,input["rsiIndexId"].as_str().unwrap_or(""),path)
                 .as_deref()!=Some(sha){continue;}
             ranked.retain(|row|row["path"]!=path);
-            ranked.insert(insertion,json!({
+            ranked.insert(insertion.min(ranked.len()),json!({
                 "path":path,"sourceHash":sha,
                 "source":"compiled_holdout_cross_role_portfolio",
                 "role":member["role"],"domain":member["domain"],
@@ -4733,8 +4737,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let base=crate::engine::rsi_meta_controller::synthesize(
             &history,frontier,DOMAINS,
             crate::engine::rsi_system::inherited_domain(&history).as_deref());
+        let observed_holdout=crate::engine::rsi_interaction::influence_graph(
+            &history,frontier);
+        let holdout_meta=crate::engine::rsi_interaction::reinforce_meta_with_holdout(
+            base,&observed_holdout);
         let transferred=crate::engine::rsi_meta_controller::integrate_peer_evidence(
-            base,&job["input"]["rsiPeerLineages"]);
+            holdout_meta,&job["input"]["rsiPeerLineages"]);
         let reciprocal=crate::engine::rsi_symbiosis::transition_graph(&history);
         let adapted=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
             transferred,&reciprocal);
@@ -4761,8 +4769,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         crate::engine::rsi_symbiosis::validate_curriculum(
             &job["input"]["rsiSymbioticCurriculum"],
             &job["input"]["rsiArchitectureTarget"],frontier)?;
-        let observed_influence=crate::engine::rsi_interaction::influence_graph(
-            &history,frontier);
+        let observed_influence=&observed_holdout;
         let portfolio=&job["input"]["rsiCoupledPortfolio"];
         if !crate::engine::rsi_interaction::valid_graph(&observed_influence)
             || job["input"]["rsiControllerPlan"]["interactionGraph"]!=observed_influence
