@@ -392,6 +392,10 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         your current improved intelligence. Do not substitute unrelated agent \
         redesign for the requested patch. The downstream result measures \
         whether the improved generator really solves more problems.\n\
+        You may propose an optional actionProgram (ordered allowed tool calls) \
+        within rsi_system_plan to redesign your NEXT descendant's real \
+        read/search/edit sequence. An accepted source change can transfer \
+        this unproven program into the child's executable routing policy. \
         You may propose reusable executable methods with rsi_method_propose \
         and exploratory algorithm selectors with algorithm_propose. Registration \
         is not success. The independent paired evaluator alone decides \
@@ -546,10 +550,21 @@ pub(crate) fn propose(
     if paths.iter().filter_map(Value::as_str).any(|path|!assigned.contains(path)) {
         return Err("모든 targetFiles를 구성요소에 연결하세요.".into());
     }
+    let action_program=if body["actionProgram"].is_null() {Value::Null}
+        else{
+            compile_action_program(&body["actionProgram"])
+                .ok_or("개선 프로그램은 실제 소스 읽기 후 편집하는 허용된 도구 2~8개여야 합니다.")?;
+            body["actionProgram"].clone()
+        };
+    let method_hypothesis=body["methodHypothesis"].as_str().unwrap_or("");
+    if method_hypothesis.len()>1200 {
+        return Err("개선 방법의 인과 가설은 1200자 이하여야 합니다.".into());
+    }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,assignments,next,hypothesis,design,paths]).to_string().as_bytes()));
+        commit,component,components,assignments,next,hypothesis,design,paths,
+        action_program,method_hypothesis]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
@@ -557,6 +572,7 @@ pub(crate) fn propose(
         "generatorCommit":commit,"component":component,"components":components,"componentFiles":assignments,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
+        "actionProgram":action_program,"methodHypothesis":method_hypothesis,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
@@ -567,6 +583,79 @@ pub(crate) fn propose(
     }));
     Ok(json!({"proposal":proposal,
         "next":"실제 코드를 변경해야 합니다. 독립 A/B 채택 이전에는 개선 증거가 아닙니다."}))
+}
+
+/// A model-authored improvement program is translated into the same executable
+/// stages consumed by the real chat/runtime.rs tool router. It cannot bypass
+/// hash-grounded reads, turn a proposal into an accepted result, or execute
+/// unreviewed arbitrary shell code.
+pub(crate) fn compile_action_program(sequence:&Value)->Option<Value> {
+    let steps=sequence.as_array()?.iter().map(Value::as_str)
+        .collect::<Option<Vec<_>>>()?;
+    if !(2..=8).contains(&steps.len()) || steps.iter().any(|step|!matches!(*step,
+        "code_search"|"workspace_read_range"|"workspace_replace"
+        |"workspace_replace_range"|"workspace_write"|"rsi_system_plan"
+        |"rsi_method_propose")) {return None;}
+    let read=steps.iter().position(|step|*step=="workspace_read_range")?;
+    let write=steps.iter().position(|step|matches!(*step,
+        "workspace_replace"|"workspace_replace_range"|"workspace_write"))?;
+    if read>=write {return None;}
+    let mut stages=Vec::new();
+    if steps[..read].contains(&"code_search"){stages.push("discover".to_string());}
+    stages.push("ground".to_string());
+    if steps[read+1..write].contains(&"code_search"){stages.push("contrast".to_string());}
+    stages.push("edit".to_string());
+    if steps[write+1..].contains(&"workspace_read_range"){
+        stages.push("reground".to_string());
+    }
+    stages.push("verify".to_string());
+    let executable=crate::engine::rsi_edit_program::normalize(&json!(stages));
+    let revision=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([steps,executable])).ok()?));
+    Some(json!({"kind":"model_authored_executable_meta_program_v1",
+        "revision":revision,"sequence":steps,"stages":executable,
+        "qualityProven":false,"training":"verified_descendant_design_only"}))
+}
+
+/// The last *independently paired, adopted* model design that contains a
+/// well-formed new improvement method may seed the next child. The child's
+/// use of the method remains an UNMEASURED trial until later evaluation.
+pub(crate) fn inherited_program(
+    state:&crate::state::AppState,history:&[Value]
+)->Option<Value> {
+    for generation in history.iter().rev(){
+        if generation["accepted"]!=true || generation["pairedRevalidated"]!=true
+            || generation["candidateOrigin"]!="model_driven_detached_worktree"
+            || generation["evaluation"]["metrics"]["eligible"]!=true {continue;}
+        let design=&generation["systemDesign"];
+        if design["source"]!="model_authored_system_design"
+            || design["generatorCommit"]!=generation["generatorCommit"]
+            || design["generationJobId"]!=generation["jobId"] {continue;}
+        let Some(program)=compile_action_program(&design["actionProgram"]) else{continue};
+        let Some(targets)=design["targetFiles"].as_array().filter(|t|!t.is_empty()) else{continue};
+        let Some(id)=generation["candidateId"].as_str() else{continue};
+        let Some(candidate)=state.store.get("rsi_candidate",id) else{continue};
+        if candidate["status"]!="verified"
+            || candidate["baseCommit"]!=generation["generatorCommit"]
+            || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
+            || candidate["evaluation"]["metrics"]["eligible"]!=true
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {continue;}
+        let changed=candidate["paths"].as_array().cloned().unwrap_or_default();
+        if !design_implemented(design,&changed)
+            || !targets.iter().all(|file|file.as_str().is_some_and(|path|
+                generation["acceptedSourceHashes"][path].as_str()
+                    .is_some_and(|hash|hash.len()==64
+                        && hash.bytes().all(|b|b.is_ascii_hexdigit())))) {
+            continue;
+        }
+        let mut trial=program;
+        trial["inheritedFromCommit"]=generation["acceptedCommit"].clone();
+        trial["inheritedFromDesignId"]=design["id"].clone();
+        trial["inheritedFromCandidateId"]=candidate["id"].clone();
+        trial["trialStatus"]=json!("unmeasured_executable_method_transfer");
+        return Some(trial);
+    }
+    None
 }
 
 /// Reuse the model's target only when its *source change*, not its
@@ -748,6 +837,18 @@ mod tests {
         let second=blueprint(&root,"after",&[]);
         assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"]);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn model_authored_method_maps_to_actual_runtime_stages() {
+        let allowed=json!(["code_search","workspace_read_range",
+            "code_search","workspace_replace_range","workspace_read_range"]);
+        let program=compile_action_program(&allowed).unwrap();
+        assert_eq!(program["stages"],json!([
+            "discover","ground","contrast","edit","reground","verify"]));
+        assert!(compile_action_program(&json!([
+            "workspace_replace","workspace_read_range"])).is_none());
+        assert!(compile_action_program(&json!([
+            "shell_exec","workspace_read_range","workspace_write"])).is_none());
     }
     #[test]
     fn model_can_propose_design_only_in_its_own_active_system_generation() {

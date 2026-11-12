@@ -68,6 +68,11 @@ pub fn definitions() -> Vec<Value> {
             "hypothesis":text("Observed causal limitation and falsifiable prediction (20-2000 chars)"),
             "design":text("Executable architectural change and how it improves the successor (30-6000 chars)"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "actionProgram":json!({"type":"array","items":{"type":"string",
+                "enum":["code_search","workspace_read_range","workspace_replace",
+                    "workspace_replace_range","workspace_write","rsi_system_plan","rsi_method_propose"]},
+                "minItems":2,"maxItems":8,"description":"Optional NEW tool sequence for the NEXT descendant. Source range read must precede actual edit; only adopted source designs may transfer it."}),
+            "methodHypothesis":text("Optional falsifiable rationale for changing the next descendant's executable method"),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
         }), vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({

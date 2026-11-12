@@ -3289,6 +3289,7 @@ async fn run_loop(
             child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
             child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
+            child_input["rsiInheritedMetaProgram"]=plan["inheritedProgram"].clone();
             child_input["rsiControllerPlan"]=plan.clone();
             context.state.store.audit("rsi.descendant_controller_plan",json!({
                 "campaignId":context.job_id,"attempt":attempt,
@@ -3511,6 +3512,8 @@ async fn run_loop(
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
+        generation["inheritedMetaProgram"]=current["input"]["rsiInheritedMetaProgram"].clone();
+        generation["inheritedMetaProgramBound"]=current["rsiInheritedMetaProgramBound"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["comparisonProfileSha256"]=json!(
@@ -3689,6 +3692,15 @@ async fn run_loop(
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
+        // Stage receipts are written by the real model/tool router.
+        // A bound program is NOT claimed to have executed without receipts.
+        generation["inheritedMetaProgramObserved"]=json!(
+            generation["inheritedMetaProgramBound"]["source"]==
+                "compiled_successor_runtime_edit_policy"
+            && generation["programStages"].as_array().is_some_and(|steps|
+                steps.iter().any(|step|
+                    step["programRevision"]==generation["editPolicy"]["revision"]
+                    && step["phase"]=="edit")));
         if input["rsiSystemEvolution"]==true {
             let observed=crate::engine::rsi_meta_controller::feedback(
                 &generation["metaPolicy"],&generation);
@@ -4318,7 +4330,20 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let archive=crate::engine::rsi_archive::select(
         &state,&history,commit,&input["rsiFrozenCases"]);
-    let edit_policy=learned_edit_method(&state,input,&history);
+    let mut edit_policy=learned_edit_method(&state,input,&history);
+    let inherited_program=crate::engine::rsi_system::inherited_program(&state,&history);
+    if let Some(program)=inherited_program.as_ref(){
+        // The existing runtime obeys rsiEditPolicy.program as an actual
+        // per-round tool menu, so this affects execution rather than prose.
+        let source_revision=edit_policy["revision"].clone();
+        edit_policy["program"]=program["stages"].clone();
+        edit_policy["inheritedProgram"]=program.clone();
+        edit_policy["parentGenomeRevision"]=source_revision.clone();
+        edit_policy["revision"]=json!(format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&json!([
+                source_revision,program["revision"],commit
+            ])).unwrap_or_default())));
+    }
     let peers=crate::engine::rsi_meta_controller::peer_lineages(
         &state,campaign,input,architecture_target["role"].as_str());
     let comparative_mode=if peers["references"].as_array()
@@ -4341,6 +4366,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "decisionOwner":"rebuilt_descendant_binary",
         "improvementDirective":directive,
         "archiveSelection":archive,
+        "inheritedProgram":inherited_program,
         "editPolicy":edit_policy
     }));
     Ok(())
@@ -4499,6 +4525,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         learned_edit_method(&state,&job["input"],&history)
     };
     if job["input"]["rsiSystemEvolution"]==true {
+        let expected=crate::engine::rsi_system::inherited_program(&state,&history);
+        if job["input"]["rsiControllerPlan"]["inheritedProgram"]!=json!(expected)
+            || job["input"]["rsiInheritedMetaProgram"]!=json!(expected) {
+            return Err("후손 실행 개선 프로그램의 독립 채택 근거가 다릅니다.".into());
+        }
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),&campaign)?;
@@ -4522,6 +4553,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,
             "metaRevision":expected["revision"]
+        });
+    }
+    if job["input"]["rsiSystemEvolution"]==true
+        && job["input"]["rsiInheritedMetaProgram"].is_object() {
+        if descendant_method["program"]!=
+            job["input"]["rsiInheritedMetaProgram"]["stages"] {
+            return Err("계승된 실행 단계와 후손 편집 정책이 일치하지 않습니다.".into());
+        }
+        job["rsiInheritedMetaProgramBound"]=json!({
+            "source":"compiled_successor_runtime_edit_policy",
+            "generatorCommit":commit,
+            "programRevision":job["input"]["rsiInheritedMetaProgram"]["revision"],
+            "policyRevision":descendant_method["revision"],
+            "qualityProven":false
         });
     }
     descendant_method["selectedByGeneratorCommit"]=json!(commit);
@@ -4589,6 +4634,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 .map(str::to_string)).unwrap_or_default();
         let meta_instruction=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let inherited_method=if job["input"]["rsiInheritedMetaProgram"].is_object(){
+            format!("NEXT-GENERATION EXECUTABLE EDIT METHOD (inherited, still an unproven trial): {}. The runtime tool router uses this program, and observed stage receipts—not this text—establish execution.",
+                job["input"]["rsiInheritedMetaProgram"])
+        }else{String::new()};
         let peer_evidence=serde_json::to_string(&job["input"]["rsiPeerLineages"])
             .unwrap_or_default();
         let peer_context=format!("COMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}",
@@ -4600,9 +4649,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 gap["role"],gap["path"],gap["sourceSha256"],
                 gap["usageSignalIds"],gap["sourceAttempts"],gap["reason"])
         }else{String::new()};
-        format!("{}\n\n{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+        format!("{}\n\n{}\n\n{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,&owner),
-            meta_instruction,peer_context,frontier_hint,expected,owner,capsule(&observed,3500),
+            meta_instruction,inherited_method,peer_context,frontier_hint,expected,owner,capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
