@@ -1036,6 +1036,10 @@ pub(crate) fn policy_requests_source_edit(input:&Value)->bool {
         || (input["rsiSystemEvolution"]==true
             && input["rsiSuccessorStage"]["executionPolicy"]=="grounded_edit"
             && input["rsiSuccessorStage"]["path"]==input["rsiFocusFiles"][0])
+        || (input["rsiSystemEvolution"]==true
+            && !input["rsiSuccessorStage"].is_object()
+            && input["rsiMetaActionPolicy"]["executionPolicy"]=="grounded_edit"
+            && input["rsiMetaActionPolicy"]["path"]==input["rsiFocusFiles"][0])
         || pending_method_recovery_domain(input).is_some()
             && input["rsiDecisionInput"]["reuseDecision"]["repairTarget"]
                 == input["rsiFocusFiles"][0]
@@ -1074,7 +1078,17 @@ fn bind_action_to_source(
                     .as_deref()==input["rsiSuccessorStage"]["sourceSha256"].as_str())
             .map(str::to_string)
     }else{None};
-    if !learned_action && !method_repair && stage_path.is_none() {return false}
+    let meta_path=if input["rsiSystemEvolution"]==true
+        && !input["rsiSuccessorStage"].is_object()
+        && input["rsiMetaActionPolicy"]["executionPolicy"]=="grounded_edit" {
+        input["rsiMetaActionPolicy"]["path"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path)
+                && crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                    .as_deref()==input["rsiMetaActionPolicy"]["sourceSha256"].as_str())
+            .map(str::to_string)
+    }else{None};
+    if !learned_action && !method_repair && stage_path.is_none()
+        && meta_path.is_none() {return false}
     let first=input["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str)
         .find(|path|crate::engine::rsi::safe_path(path)
@@ -1096,7 +1110,8 @@ fn bind_action_to_source(
             .map(str::to_string)
     } else {None};
     let Some(target)=repair_path.clone().or(stage_path.clone())
-        .or(failed_path.clone()).or(first) else {return false};
+        .or(meta_path.clone()).or(failed_path.clone()).or(first)
+        else {return false};
     let Some(hash)=crate::engine::code_index::indexed_source_hash(state,index_id,&target)
         else {return false};
     input["rsiFocusFiles"]=json!([target]);
@@ -1107,6 +1122,8 @@ fn bind_action_to_source(
         if repair_path.is_some() {"learned_executable_method"}
         else if stage_path.as_deref()==Some(target.as_str()) {
             "inherited_descendant_execution_policy"
+        }else if meta_path.as_deref()==Some(target.as_str()){
+            "editable_meta_forecast_control"
         }else{"learned_action_policy"});
     input["rsiFocusSelection"]["executionTarget"]=json!(target);
     input["rsiFocusSelection"]["executionSourceHash"]=json!(hash);
@@ -3934,6 +3951,18 @@ async fn run_loop(
             }
             let plan:Value=serde_json::from_slice(&result.stdout)
                 .map_err(|e|format!("후손 계획 JSON 오류: {e}"))?;
+            let expected_meta=crate::engine::rsi_meta_controller::synthesize(
+                &recorded_history,
+                plan["architectureFrontier"].as_array().map(Vec::as_slice)
+                    .unwrap_or(&[]),DOMAINS,
+                crate::engine::rsi_system::inherited_domain(&recorded_history).as_deref());
+            let expected_peers=crate::engine::rsi_meta_controller::peer_lineages(
+                &context.state,&context.job_id,&child_input,
+                expected_meta["target"]["role"].as_str());
+            crate::engine::rsi_meta_controller::validate_peer_lineages(
+                &context.state,&plan["peerLineages"],
+                crate::engine::rsi_meta_controller::comparison_profile(&child_input).as_deref(),
+                &context.job_id)?;
             let domain=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
                 .ok_or("후손이 유효하지 않은 개선 분야를 계획했습니다.")?;
             let focus=plan["focusFiles"].as_array()
@@ -3952,9 +3981,15 @@ async fn run_loop(
                     crate::engine::rsi_system::architecture_frontier(
                         &context.state,&plan["systemBlueprint"],&recorded_history,
                         child_input["rsiIndexId"].as_str().unwrap_or(""),&lab))
-                || plan["architectureTarget"]!=plan["architectureFrontier"]
-                    .as_array().and_then(|rows|rows.first()).cloned()
-                    .unwrap_or(Value::Null)
+                || plan["metaPolicy"]!=expected_meta
+                || plan["metaActionPolicy"]!=expected_meta["controlPolicy"]
+                || plan["peerLineages"]!=expected_peers
+                || plan["architectureTarget"]!=if expected_meta["target"].is_object(){
+                    expected_meta["target"].clone()
+                }else{
+                    plan["architectureFrontier"].as_array()
+                        .and_then(|rows|rows.first()).cloned().unwrap_or(Value::Null)
+                }
                 || plan["successorStage"]!=
                     crate::engine::rsi_system::inherited_stage(
                         &recorded_history,
@@ -3985,6 +4020,9 @@ async fn run_loop(
             });
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+            child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
+            child_input["rsiMetaActionPolicy"]=plan["metaActionPolicy"].clone();
+            child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -4154,6 +4192,11 @@ async fn run_loop(
             .unwrap_or(Value::Null);
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
+        generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["comparisonProfileSha256"]=json!(
+            crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["systemDesign"]=action_session["rsiSystemDesign"].clone();
@@ -4450,6 +4493,10 @@ async fn run_loop(
             && crate::engine::rsi::campaign_capability_proven(
                 &context.state,&evidence_record)
             && (input["rsiSystemEvolution"]!=true || system_proven));
+        // The descendant's forecast was frozen before editing. Real assessed
+        // outcomes now update task-level error available to its successor.
+        generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+            &generation["metaPolicy"],&generation);
         // Persist the real outcome of the newly executed recovery policy.
         // A ranking score or a source write is not a validated improvement;
         // this is the observed action utility that the next built generator
@@ -5278,7 +5325,16 @@ fn compiled_system_generation_plan(
     // An uncovered module is a search opportunity, NEVER a demonstrated gain.
     let frontier=crate::engine::rsi_system::architecture_frontier(
         state,&blueprint,history,input["rsiIndexId"].as_str().unwrap_or(""),root);
-    let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
+    // This editable module runs INSIDE the newly compiled descendant.
+    // Its learned prediction dynamics select the NEXT architecture target.
+    let meta=crate::engine::rsi_meta_controller::synthesize(
+        history,&frontier,DOMAINS,inherited.as_deref());
+    let architecture_target=if meta["target"].is_object(){
+        meta["target"].clone()
+    }else{frontier.first().cloned().unwrap_or(Value::Null)};
+    let peers=crate::engine::rsi_meta_controller::peer_lineages(
+        state,input["rsiCampaignId"].as_str().unwrap_or(""),input,
+        architecture_target["role"].as_str());
     // A predecessor can AUTHOR the successor's task program. The compiled
     // descendant interprets it against its own newly built source graph and
     // silently drops stages whose path/role/hash is no longer current.
@@ -5306,7 +5362,7 @@ fn compiled_system_generation_plan(
     // domain, in which case use that domain's indexed focus instead.
     let preferred=if successor_stage["domain"]==domain {
         successor_stage["path"].as_str()
-    }else if inherited.is_none() && architecture_target["domain"]==domain {
+    }else if architecture_target["domain"]==domain {
         architecture_target["path"].as_str()
     }else{None};
     if let Some(path)=preferred {
@@ -5356,6 +5412,9 @@ fn compiled_system_generation_plan(
         "systemBlueprint":blueprint,
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "metaPolicy":meta,
+        "metaActionPolicy":meta["controlPolicy"],
+        "peerLineages":peers,
         "successorStage":successor_stage,
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
