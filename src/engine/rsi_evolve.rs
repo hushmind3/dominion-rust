@@ -3034,8 +3034,12 @@ async fn run_loop(
                     "DOMINION 실제 소스 자기개선입니다. 현재 실행 버전에서 관측한 개발 진단: {diagnosis}\n실패 원인을 소스에서 찾아 실제 코드를 수정하세요. 예문을 하드코딩하거나 평가기·테스트·진단 코드를 수정하지 마세요. 확인 평가는 별도로 동결되어 있습니다. workspace_read_range로 해당 구현과 해시를 확인한 뒤 workspace_replace_range로 근거 있는 최소 변경을 작성하세요. 빌드와 독립 비교는 실행기가 수행합니다."));
             }
         }
-        let archive = crate::engine::rsi_archive::select(
-            &context.state, &prior_history, &head, &child_input["rsiFrozenCases"]);
+        // The coordinator is not the archive-selection brain during whole-
+        // system evolution. The compiled successor chooses its own stepping
+        // stone from the same independently sealed candidate evidence.
+        let archive=if input["rsiSystemEvolution"]==true {Value::Null}
+            else {crate::engine::rsi_archive::select(
+                &context.state, &prior_history, &head, &child_input["rsiFrozenCases"])};
         child_input["rsiInheritedCandidateId"]=archive["candidateId"].clone();
         child_input["rsiArchiveSelection"]=archive;
         let objective = input["rsiObjective"].as_str().unwrap_or("");
@@ -3257,6 +3261,20 @@ async fn run_loop(
             });
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+            if !plan["archiveSelection"].is_null() {
+                let id=plan["archiveSelection"]["candidateId"].as_str()
+                    .ok_or("후손 보관소 후보 ID가 없습니다.")?;
+                let candidate=context.state.store.get("rsi_candidate",id)
+                    .ok_or("후손 보관소 후보가 현재 기록에 없습니다.")?;
+                if candidate["patchSha256"]!=plan["archiveSelection"]["patchSha256"]
+                    || candidate["baseCommit"]!=head
+                    || candidate["pairedComparisonComplete"]!=true {
+                    return Err("후손 보관소 선택의 실제 패치·출처가 맞지 않습니다.".into());
+                }
+            }
+            child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
+            child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
+            child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiControllerPlan"]=plan.clone();
             context.state.store.audit("rsi.descendant_controller_plan",json!({
                 "campaignId":context.job_id,"attempt":attempt,
@@ -3266,7 +3284,9 @@ async fn run_loop(
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
-        child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        if input["rsiSystemEvolution"]!=true {
+            child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        }
         context.state.store.audit("rsi.edit_method_selected",json!({
             "campaignId":context.job_id,"attempt":attempt,
             "generatorCommit":head,"policy":child_input["rsiEditPolicy"]
@@ -4198,8 +4218,11 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         .or_else(||if input["rsiAutonomous"]==true {
             crate::engine::rsi_system::inherited_domain(&history)
         }else{None});
+    let trial=if paired_descendant_target(input) {None} else {
+        input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
+    };
     let (domain,selection,strategy)=select_generation_strategy(
-        &state,&history,&objective,None,None,successor_hint,commit);
+        &state,&history,&objective,None,trial,successor_hint,commit);
     let mut source_input=input.clone();
     source_input["rsiTargetDomain"]=json!(domain);
     source_input["rsiSelectedDomain"]=json!(domain);
@@ -4215,13 +4238,18 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let system_blueprint=crate::engine::rsi_system::blueprint(
         Path::new(source),commit,&history);
     let directive=crate::engine::rsi_system::improvement_directive(&history);
+    let archive=crate::engine::rsi_archive::select(
+        &state,&history,commit,&input["rsiFrozenCases"]);
+    let edit_policy=learned_edit_method(&state,input,&history);
     println!("{}",json!({
         "source":"compiled_descendant_system_controller_v2",
         "generatorCommit":commit,"historyCount":history.len(),
         "domain":domain,"selection":selection,"strategy":strategy,
         "focusFiles":focus,"ranked":ranked,
         "systemBlueprint":system_blueprint,
-        "improvementDirective":directive
+        "improvementDirective":directive,
+        "archiveSelection":archive,
+        "editPolicy":edit_policy
     }));
     Ok(())
 }
