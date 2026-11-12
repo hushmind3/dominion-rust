@@ -3387,6 +3387,8 @@ async fn run_loop(
             let pair=&plan["negativeTransferPlan"]["selected"];
             if input["rsiAutonomous"]==true
                 && input["rsiFocusFiles"].as_array().is_none_or(|rows|rows.is_empty())
+                && !matches!(input["rsiFocusSelection"]["source"].as_str(),
+                    Some("owner_selected"|"user_selected"))
                 && !paired_descendant_target(&child_input)
                 && pair.is_object() {
                 let expected=[&pair["victim"],&pair["source"]];
@@ -5106,6 +5108,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["victim"].is_object()
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["source"].is_object();
+        if negative_transfer_active {
+            let pair=&job["input"]["rsiNegativeTransferPlan"]["selected"];
+            let expected=[&pair["victim"]["path"],&pair["source"]["path"]];
+            let actual=job["input"]["rsiFocusFiles"].as_array()
+                .ok_or("교차 지능 복구 후손의 실제 수정 대상이 없습니다.")?;
+            if actual.len()!=2 || actual.iter().zip(expected.iter())
+                .any(|(given,required)|given!=*required) {
+                return Err("후손의 실제 편집 파일 2개가 독립 검증된 간섭 대상과 다릅니다.".into());
+            }
+        }
         let capability_active=job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && !negative_transfer_active
