@@ -392,11 +392,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("비활성화된 모델 제공자입니다.".into());
     }
     let status = crate::engine::dev::status(&state).await;
-    if status["git"] != true || (!continuous
-        && !status["branch"].as_str().is_some_and(crate::engine::rsi_worktree::rsi_work_branch)) {
-        return error("수동 자기개선은 허용된 RSI 작업 브랜치에서만 실행합니다. 개발자 설정에서 소스 폴더를 연결하세요.".into());
+    if status["git"] != true
+        || !status["branch"].as_str().is_some_and(crate::engine::rsi_worktree::rsi_work_branch) {
+        return error("서브3 자기개선은 dominion-sub3 원본 브랜치에서만 시작합니다. 개발자 설정에서 해당 소스 폴더를 연결하세요.".into());
     }
-    if !continuous && status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
+    if status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
         return error("소스 폴더에 미저장 변경사항이 있습니다. 기존 작업이 덮어써지지 않도록 먼저 정리하세요.".into());
     }
     let source_raw = status["config"]["sourceDir"].as_str().unwrap_or("");
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn natural_language_start_queues_selected_model_on_clean_main() {
+    async fn natural_language_start_queues_model_only_on_owned_sub3_branch() {
         let root = std::env::temp_dir().join(format!("dominion-rsi-start-{}", uuid::Uuid::new_v4()));
         let checkout = root.join("checkout");
         let data = root.join("data");
@@ -664,6 +664,17 @@ mod tests {
             "kind":"openai","model":"sample-model","baseUrl":"http://127.0.0.1:1/v1"}));
         let body = json!({"providerId":"test-provider","model":"sample-model",
             "request":"100턴에서 장기기억이 사라지는 문제를 찾아 고쳐 주세요."});
+        let denied_manual = start(State(state.clone()), Json(body.clone())).await;
+        assert_eq!(denied_manual.status(), StatusCode::BAD_REQUEST,
+            "main cannot start sub3 manual RSI");
+        let denied_continuous = start(State(state.clone()), Json(json!({
+            "providerId":"test-provider","model":"sample-model","mode":"continuous",
+            "confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual"
+        }))).await;
+        assert_eq!(denied_continuous.status(), StatusCode::BAD_REQUEST,
+            "main cannot start sub3 continuous RSI");
+        assert!(state.store.all("job").is_empty(),"main must not queue any RSI job");
+        git(&checkout,&["checkout","-b","dominion-sub3"]);
         let response = start(State(state.clone()), Json(body.clone())).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let jobs = state.store.all("job");
@@ -671,7 +682,7 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
-        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "main");
+        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub3");
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
         let cases=jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap();
         assert_eq!(cases.len(),14);
@@ -693,11 +704,17 @@ mod tests {
         let refused = start(State(state.clone()), Json(body)).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert_eq!(state.store.all("job").len(), 2);
-        // A non-developer can start from an unchanged copy of their current
-        // source without committing unrelated files or switching Git branches.
+        // Even the continuous mode must honor branch ownership and a clean
+        // source, not bypass the manual RSI branch gate.
         git(&checkout, &["checkout","-b","ordinary-owner-branch"]);
         let continuous=json!({"providerId":"test-provider","model":"sample-model",
             "mode":"continuous","confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual"});
+        assert_eq!(start(State(state.clone()),Json(continuous.clone())).await.status(),
+            StatusCode::BAD_REQUEST,"foreign branch must not queue a campaign");
+        git(&checkout,&["checkout","dominion-sub3"]);
+        assert_eq!(start(State(state.clone()),Json(continuous.clone())).await.status(),
+            StatusCode::BAD_REQUEST,"uncommitted changes must not start continuous evolution");
+        std::fs::remove_file(checkout.join("uncommitted.txt")).unwrap();
         let response=start(State(state.clone()),Json(continuous.clone())).await;
         assert_eq!(response.status(),StatusCode::ACCEPTED);
         let queued=state.store.all("job");
@@ -723,7 +740,7 @@ mod tests {
         std::fs::write(checkout.join("src/engine/rsi_evolve.rs"),
             "pub fn run_loop() {\n    // TODO: reuse the index\n}\n").unwrap();
         git(&checkout, &["init", "-q"]);
-        git(&checkout, &["checkout", "-b", "dominion-sub"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub3"]);
         git(&checkout, &["add", "."]);
         git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
         let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
