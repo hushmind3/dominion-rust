@@ -310,17 +310,24 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
     let mut prior_binary=String::new();
     let mut covered=std::collections::BTreeSet::new();
     let mut independently_planned=0usize;
+    let mut proposed_model_methods=std::collections::BTreeSet::new();
+    let mut witnessed_inherited_method=false;
     for generation in rows {
-        if generation["accepted"]!=true {chain=0;prior_commit.clear();covered.clear();continue;}
+        if generation["accepted"]!=true {chain=0;prior_commit.clear();covered.clear();
+            proposed_model_methods.clear();witnessed_inherited_method=false;
+            independently_planned=0;continue;}
         let Some(candidate)=generation["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id)) else {
-            chain=0;prior_commit.clear();covered.clear();continue;
+            chain=0;prior_commit.clear();covered.clear();
+            proposed_model_methods.clear();witnessed_inherited_method=false;
+            independently_planned=0;continue;
         };
         let Some(generator)=generation["generatorCommit"].as_str() else {return false;};
         let Some(accepted)=generation["acceptedCommit"].as_str() else {return false;};
         let Some(binary)=generation["generatorBinarySha256"].as_str() else {return false;};
         if chain>0 && (generator!=prior_commit || binary==prior_binary) {
             chain=0;covered.clear();independently_planned=0;
+            proposed_model_methods.clear();witnessed_inherited_method=false;
         }
         let model=&generation["systemBlueprint"];
         let design=&generation["systemDesign"];
@@ -358,6 +365,42 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
             chain=0;prior_commit.clear();covered.clear();independently_planned=0;
             continue;
         }
+        // A new executable improvement method must be authored by an
+        // independently ADOPTED model generation, then ACTUALLY run by a
+        // later compiled descendant with witnessed verified postconditions.
+        // Merely registering a procedure or replaying an engine's fixed
+        // repair recipe cannot earn the claimed method-learning transfer.
+        for execution in generation["methodExecutions"].as_array()
+            .into_iter().flatten() {
+            let observed=execution["result"]["verified"]==true
+                && execution["result"]["followed"]==true
+                && execution["result"]["status"]=="passed"
+                && execution["operationIds"].as_array()
+                    .is_some_and(|actions|!actions.is_empty());
+            if observed {
+                if let (Some(id),Some(revision))=(
+                    execution["methodId"].as_str(),execution["revision"].as_str()) {
+                    if proposed_model_methods.contains(&(id.to_string(),revision.to_string())) {
+                        witnessed_inherited_method=true;
+                    }
+                }
+            }
+        }
+        for proposal in generation["methodProposals"].as_array()
+            .into_iter().flatten() {
+            if proposal["sourceGenerationJobId"]==generation["jobId"]
+                && proposal["synthesis"].is_null()
+                && proposal["verification"]["type"]=="procedure"
+                && proposal["verification"]["nodes"].as_array()
+                    .is_some_and(|nodes|!nodes.is_empty())
+                && proposal["revision"].as_str().is_some_and(|hash|
+                    hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())) {
+                if let (Some(id),Some(revision))=(
+                    proposal["id"].as_str(),proposal["revision"].as_str()) {
+                    proposed_model_methods.insert((id.to_string(),revision.to_string()));
+                }
+            }
+        }
         for path in changed.iter().filter_map(Value::as_str) {
             let role=match path {
                 "src/engine/algorithms.rs" | "src/engine/reasoning.rs"
@@ -385,6 +428,7 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
         // Scope is the intelligence-bearing software stack, not the UI.
         // Six physically edited roles must all be represented by adopted code.
         if chain>=3 && independently_planned>=2
+            && witnessed_inherited_method
             && ["algorithms","harness","memory","learning","tools",
                 "improvement_methods"].iter().all(|role|covered.contains(role)) {
             return true;
