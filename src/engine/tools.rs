@@ -79,6 +79,18 @@ pub fn definitions() -> Vec<Value> {
                 "fromPath":{"type":"string"},"toPath":{"type":"string"},
                 "mechanism":{"type":"string"},"observable":{"type":"string"}
             },"required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
+            "improvementPrinciples":json!({"type":"array","maxItems":8,
+                "description":"Executable, source-attributed new improvement principles that the compiled descendant will test for downstream gains and cross-domain transfer. Descriptions alone do not count as improvement.",
+                "items":{"type":"object","properties":{
+                    "id":{"type":"string"},
+                    "mechanism":{"type":"string"},
+                    "falsifier":{"type":"string"},
+                    "prediction":{"type":"string"},
+                    "methodPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "targetRoles":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},
+                    "transferDomains":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8},
+                    "composedFrom":{"type":"array","items":{"type":"string"},"maxItems":8}
+                },"required":["id","mechanism","falsifier","prediction","methodPaths","targetRoles","transferDomains"]}}),
             "experimentalPolicy":json!({"type":"object",
                 "description":"Optional model-authored successor algorithm, requiring real change to src/engine/rsi_intervention_lab.rs and independently adopted source. Mode changes experimental search; weights change actual selection.",
                 "properties":{
