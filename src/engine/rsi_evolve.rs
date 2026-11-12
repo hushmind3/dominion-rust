@@ -3086,14 +3086,34 @@ async fn run_loop(
             }
         }
         if input["rsiSystemEvolution"]==true {
-            let evidence=crate::engine::rsi_meta::development_evidence(&context.state);
-            child_input["rsiSelectedDomain"]=json!("improver");
-            child_input["rsiDecisionInput"]=json!({"basis":"owner_system_evolution_scope","targetDomain":"improver"});
-            child_input["rsiObjective"]=json!("DOMINION 자체 개선기의 알고리즘·하네스·탐색·학습을 실제 소스로 개선하여 같은 고정 모델과 예산에서 후속 코드 개선 성과를 높인다.");
-            child_input["rsiFocusFiles"]=evidence.as_ref().map(|e|e["focusFiles"].clone()).unwrap_or_else(||json!([]));
+            // A system-evolution campaign must not re-pin every generation to
+            // its original improver file. The rebuilt descendant selects
+            // subsequent targets; the coordinator only preserves measured
+            // post-adoption constraints and the owner's explicit file choice.
+            let first_system_generation=!prior_history.iter().any(|row|row["accepted"]==true);
+            let owner_focus=input["rsiFocusFiles"].as_array()
+                .is_some_and(|paths|!paths.is_empty());
+            let evidence=if first_system_generation {
+                crate::engine::rsi_meta::development_evidence(&context.state)
+            } else {None};
+            if first_system_generation {
+                child_input["rsiSelectedDomain"]=json!("improver");
+                child_input["rsiDecisionInput"]=json!({
+                    "basis":"initial_system_evolution","targetDomain":"improver"
+                });
+                child_input["rsiObjective"]=json!("DOMINION 자체 개선기의 알고리즘·하네스·탐색·학습을 실제 소스로 개선하여 같은 모델과 예산에서 후속 코드 개선 성과를 높인다.");
+            } else if expanded.is_none() && !paired_descendant_target(&child_input) {
+                // Never inherit a stale parent decision after an adoption.
+                child_input["rsiSelectedDomain"]=Value::Null;
+                child_input["rsiDecisionInput"]=Value::Null;
+            }
+            if !owner_focus {
+                child_input["rsiFocusFiles"]=json!([]);
+            }
             child_input["rsiSystemEvidence"]=json!(evidence);
             child_input["prompt"]=json!(format!(
-                "DOMINION 재귀적 시스템 자기개선 작업입니다. 고정된 API 모델을 운용하는 알고리즘, 후보 생성·선택, 실행 하네스, 문맥·기억·학습·도구 코드를 직접 수정할 수 있습니다. 전체 코드가 탐색 범위이며 이번 변경은 개선기 자신의 후속 문제 해결 성과를 높여야 합니다.\n사용자가 지정한 목표: {}\n실제 과거 실행의 개발 증거(현재 소스에서도 원인을 확인할 것): {}\n수정된 개선기를 별도 실행 파일로 빌드하고 이전 개선기와 동일 모델·예산의 후속 소스 수정 과제를 수행시켜 독립 평가합니다. 제품 버그만 직접 고치는 것으로 이 과제를 대체하지 마세요. 하드코딩·평가기 변경·무검증 성공 주장은 금지합니다. 소스를 해시와 함께 읽고 workspace_replace_range로 실제 수정하세요. 독립 평가와 재빌드는 실행기가 수행합니다.", input["rsiObjective"], child_input["rsiSystemEvidence"]));
+                "DOMINION 재귀적 시스템 자기개선 작업입니다. 선택한 API 또는 로컬 모델을 이용하여 알고리즘, 후보 생성·선택, 실행 하네스, 문맥·기억·학습·도구 코드를 직접 개선할 수 있습니다. 전체 소스가 탐색 범위이며, 검증된 후손은 다음 세대의 개선 계획도 생성해야 합니다.\n사용자가 지정한 목표: {}\n현재 세대의 개발 증거(현재 소스에서도 원인을 확인할 것): {}\n수정된 개선기를 실제 재빌드하고 이전 개선기와 동일 모델·예산의 후속 소스 수정 성과를 독립 평가합니다. 제품 버그 하나의 수정으로 이 과제를 대체하지 마세요. 평가기 변경이나 무검증 성공 주장은 허용되지 않습니다. 실제 소스 변경을 검증 가능한 근거로 남기세요.",
+                child_input["rsiObjective"],child_input["rsiSystemEvidence"]));
         }
         child_input["rsiIndexId"]=crate::engine::code_index::refresh(&context.state,&lab)?["id"].clone();
         let inherited_candidates=context.state.store.all("experience").into_iter()
@@ -3155,6 +3175,66 @@ async fn run_loop(
         } else {
             child_input["rsiAutoFocus"]=json!(child_input["rsiDiagnostic"].is_object() || input["rsiSystemEvolution"]==true);
             child_input["rsiFocusSelection"]=json!({"source":if child_input["rsiDiagnostic"].is_object(){"runtime_diagnosis"}else{"user_selected"}});
+        }
+        // The accepted *rebuilt* generator, not the original resident server,
+        // plans the next system-evolution task. The resident coordinator owns
+        // budgets, frozen evaluation and promotion; these fields are mutable
+        // runtime policy and must be allowed to evolve with source revisions.
+        if input["rsiSystemEvolution"]==true
+            && input["rsiFocusFiles"].as_array().is_none_or(|files|files.is_empty()) {
+            let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
+            std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
+            let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
+            let snapshot=json!({
+                "generatorCommit":head,"attempt":attempt,"input":child_input
+            });
+            std::fs::write(&plan_path,serde_json::to_vec(&snapshot).map_err(|e|e.to_string())?)
+                .map_err(|e|e.to_string())?;
+            let mut planner=Command::new(&binary);
+            planner.arg("--rsi-plan-generation").arg(&plan_path)
+                .current_dir(&lab)
+                .env("DOMINION_DATA",&context.state.config.data_dir)
+                .env_remove("DOMINION_DESKTOP_PARENT");
+            let output=command(context,planner,Duration::from_secs(30)).await;
+            let _=std::fs::remove_file(&plan_path);
+            let output=output?;
+            if !output.status.success() {
+                return Err(format!("재빌드된 개선기의 다음 세대 계획 실패: {}",
+                    String::from_utf8_lossy(&output.stderr)));
+            }
+            let plan:Value=serde_json::from_slice(&output.stdout)
+                .map_err(|e|format!("후손 계획 출력 형식 오류: {e}"))?;
+            if plan["generatorCommit"]!=head {return Err("후손 계획과 실행 소스 커밋이 다릅니다.".into());}
+            let domain=plan["domain"].as_str()
+                .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
+            let focus=plan["focusFiles"].as_array()
+                .ok_or("후손 계획에 소스 후보 목록이 없습니다.")?;
+            if focus.len()>8 || focus.iter().any(|file|file.as_str().is_none_or(|p|
+                !crate::engine::rsi::safe_path(p)
+                    || !lab.join(p).is_file()
+                    || crate::engine::code_index::indexed_source_hash(
+                        &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none())) {
+                return Err("후손이 허용되지 않은 소스 파일을 선택했습니다.".into());
+            }
+            child_input["rsiSelectedDomain"]=json!(domain);
+            child_input["rsiTargetDomain"]=json!(domain);
+            child_input["rsiTargetPlan"]=json!({
+                "domain":domain,"selection":plan["selection"],
+                "strategy":plan["strategy"],"generatorCommit":head
+            });
+            child_input["rsiFocusFiles"]=json!(focus);
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"rebuilt_descendant_controller",
+                "domain":domain,"candidates":plan["ranked"],
+                "sourceIndexId":child_input["rsiIndexId"],
+                "generatorCommit":head
+            });
+            context.state.store.audit("rsi.descendant_controller_plan",json!({
+                "campaignId":context.job_id,"attempt":attempt,
+                "generatorCommit":head,"domain":domain,
+                "focusFiles":focus,"selection":plan["selection"]
+            }));
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
@@ -4035,6 +4115,73 @@ mod paired_descendant_target_tests {
         let mut speculative=evidence;
         speculative["rsiDecisionInput"]["basis"]=json!("parent_next_decision");
         assert!(!paired_descendant_target(&speculative));
+    }
+}
+
+/// Ask the exact rebuilt descendant to plan its next improvement. This
+/// command is deliberately read-only and never starts a server or a model.
+fn system_evolution_target_hint(input:&Value, attempt:u64)->Option<String> {
+    if paired_descendant_target(input) {
+        input["rsiSelectedDomain"].as_str().map(str::to_string)
+    } else if attempt==1 {
+        Some("improver".into())
+    } else {None}
+}
+
+pub fn plan_generation_from_file(path:&str)->Result<(),String> {
+    let snapshot:Value=serde_json::from_slice(&std::fs::read(path).map_err(|e|e.to_string())?)
+        .map_err(|e|e.to_string())?;
+    let commit=snapshot["generatorCommit"].as_str().ok_or("계획 생성기 버전이 없습니다.")?;
+    if option_env!("DOMINION_BUILD_COMMIT")!=Some(commit) {
+        return Err("계획 생성기 바이너리와 소스 커밋이 다릅니다.".into());
+    }
+    let input=&snapshot["input"];
+    if input["rsiSystemEvolution"]!=true {
+        return Err("전체 시스템 진화 작업만 후손 계획을 호출할 수 있습니다.".into());
+    }
+    let campaign=input["rsiCampaignId"].as_str().ok_or("계획 캠페인 ID가 없습니다.")?;
+    let config=crate::config::Config::from_env();
+    let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
+    let state=AppState::new(config,store,crate::vault::Vault::open(&crate::config::Config::from_env().key_path()));
+    let mut history=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
+    history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    let objective=selection_objective(input);
+    let (domain,selection,strategy)=select_generation_strategy(
+        &state,&history,&objective,None,None,
+        system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0)),
+        commit);
+    let mut source_input=input.clone();
+    source_input["rsiTargetDomain"]=json!(domain);
+    source_input["rsiSelectedDomain"]=json!(domain);
+    let policy=strategy["id"].as_str()
+        .and_then(|id|state.store.get("algorithm",id))
+        .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
+    let ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
+    let focus=ranked.iter().filter_map(|row|row["path"].as_str())
+        .filter(|p|crate::engine::rsi::safe_path(p))
+        .take(8).collect::<Vec<_>>();
+    println!("{}",json!({
+        "generatorCommit":commit,"domain":domain,
+        "selection":selection,"strategy":strategy,
+        "focusFiles":focus,"ranked":ranked
+    }));
+    Ok(())
+}
+
+#[cfg(test)]
+mod system_evolution_handoff_tests {
+    use super::*;
+    #[test]
+    fn measured_descendant_targets_survive_but_stale_parent_hints_do_not() {
+        let first=json!({"rsiSystemEvolution":true,"rsiSelectedDomain":"memory"});
+        assert_eq!(system_evolution_target_hint(&first,1),Some("improver".into()));
+        assert_eq!(system_evolution_target_hint(&first,2),None);
+        let measured=json!({"rsiSystemEvolution":true,"rsiSourceScopeExpanded":true,
+            "rsiSelectedDomain":"context",
+            "rsiDecisionInput":{"basis":"independently_measured_post_adoption_target",
+                "targetDomain":"context"}});
+        assert_eq!(system_evolution_target_hint(&measured,2),Some("context".into()));
     }
 }
 
