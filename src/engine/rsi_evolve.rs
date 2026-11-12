@@ -3073,6 +3073,12 @@ async fn run_loop(
         }
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
+        // The original owner choice is immutable across this campaign.
+        // Future source-compiled descendants may select only from an
+        // explicitly approved pool; no model outside it can be invoked.
+        child_input["rsiModelOrigin"]=json!({
+            "providerId":input["providerId"],"model":input["model"]
+        });
         child_input["rsiSourceDir"] = json!(lab);
         child_input["rsiKnowledgeSource"]=record["sourceDir"].clone();
         child_input["rsiBaseCommit"] = json!(head);
@@ -3309,6 +3315,38 @@ async fn run_loop(
                 || plan["historyCount"].as_u64()!=Some(history.len() as u64) {
                 return Err("후손 계획과 실행 소스·세대 계보가 다릅니다.".into());
             }
+            if !crate::engine::rsi_model_lineage::valid(
+                &plan["modelEvolutionPlan"],&child_input,&head,history.len()){
+                return Err("후손 모델 선택이 원래 사용자 모델·승인된 후보·근거와 다릅니다.".into());
+            }
+            if input["rsiAllowModelEvolution"]==true {
+                // Only owner-approved, enabled and locally eligible models
+                // may be selected. This is a permission gate, not a model-
+                // authored assertion of its own superiority.
+                let original=&plan["modelEvolutionPlan"];
+                let approved=&input["rsiApprovedModelPool"];
+                if approved!=&original["approvedPool"]
+                    || original["selected"]==original["baseline"]
+                        && original["baseline"].is_null(){
+                    return Err("모델 후보의 원래 승인 내용 또는 기본 모델이 없습니다.".into());
+                }
+                let p=original["selected"]["providerId"].as_str()
+                    .ok_or("선택 모델의 제공자 없음")?;
+                let m=original["selected"]["model"].as_str()
+                    .ok_or("선택 모델의 ID 없음")?;
+                let registered=context.state.store.get("provider",p)
+                    .ok_or("승인된 모델 제공자가 현재 없습니다.")?;
+                let live_route=crate::engine::gateway::route_from_provider(
+                    &context.state,&registered,Some(m))?;
+                if registered["enabled"]==false
+                    || !crate::engine::gateway::provider_eligible(&registered)
+                    || (input["rsiLocalOnly"]==true && !live_route.local) {
+                    return Err("선택된 모델의 실제 실행 승인 상태가 다릅니다.".into());
+                }
+                child_input["providerId"]=json!(p);
+                child_input["model"]=json!(m);
+            }
+            child_input["rsiModelEvolutionPlan"]=plan["modelEvolutionPlan"].clone();
             if plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
                 || plan["systemBlueprint"]["architecture"].as_array()
@@ -3411,6 +3449,7 @@ async fn run_loop(
             child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
             child_input["rsiImprovementAlgebra"]=plan["improvementAlgebra"].clone();
             child_input["rsiMethodGeneralization"]=plan["methodGeneralization"].clone();
+            child_input["rsiModelEvolutionPlan"]=plan["modelEvolutionPlan"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
@@ -3619,7 +3658,9 @@ async fn run_loop(
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
                 target_focus_objective(&current["input"])]),
-            "generatorBinarySha256":record["generatorBinarySha256"],"generatorModel":input["model"],"generatorProviderId":input["providerId"],
+            "generatorBinarySha256":record["generatorBinarySha256"],
+            "generatorModel":current["input"]["model"],
+            "generatorProviderId":current["input"]["providerId"],
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"]});
         let generation_details = json!({
@@ -3657,6 +3698,13 @@ async fn run_loop(
         generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
         generation["improvementAlgebraPlan"]=current["input"]["rsiImprovementAlgebra"].clone();
         generation["methodGeneralization"]=current["input"]["rsiMethodGeneralization"].clone();
+        generation["modelEvolutionPlan"]=current["input"]["rsiModelEvolutionPlan"].clone();
+        generation["modelSelectionActual"]=json!({
+            "providerId":current["input"]["providerId"],
+            "model":current["input"]["model"],
+            "ownerOrigin":current["input"]["rsiModelOrigin"],
+            "generationJobId":child_id
+        });
         // Only compare holdout records from identical frozen case/profile
         // definitions and the same actual compiled generator commit.
         let frozen_profile=json!([
@@ -4450,6 +4498,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &state,&history,&frontier,&authored_algebra,commit);
     let algebra=crate::engine::rsi_method_generalization::adapt(
         authored_algebra,&method_learning);
+    let model_evolution=crate::engine::rsi_model_lineage::plan(
+        &state,&history,input,commit)?;
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
     let capability_active=science_active
         && crate::engine::rsi_method_generalization::prefer_capability_target(
@@ -4711,6 +4761,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "recursiveScientificProgram":science,
         "improvementAlgebra":algebra,
         "methodGeneralization":method_learning,
+        "modelEvolutionPlan":model_evolution,
         "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
@@ -4805,6 +4856,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
+    if job["input"]["rsiSystemEvolution"]==true {
+        let policy=crate::engine::rsi_model_lineage::plan(
+            &state,&history,&job["input"],&commit)?;
+        if job["input"]["rsiModelEvolutionPlan"]!=policy
+            || job["input"]["rsiControllerPlan"]["modelEvolutionPlan"]!=policy
+            || !crate::engine::rsi_model_lineage::valid(
+                &policy,&job["input"],&commit,history.len()) {
+            return Err("실행 모델의 선택이 원본 승인·후손 계보·독립 측정과 일치하지 않습니다.".into());
+        }
+        if policy["ownerOptIn"]==true &&
+            (job["input"]["providerId"]!=policy["selected"]["providerId"]
+                || job["input"]["model"]!=policy["selected"]["model"]) {
+            return Err("세대 API 모델을 승인된 선택에서 변경할 수 없습니다.".into());
+        }
+        job["rsiModelEvolutionPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":commit,
+            "selectionRevision":policy["revision"],
+            "providerId":job["input"]["providerId"],
+            "model":job["input"]["model"],
+            "weightTrainingClaimed":false
+        });
+    }
     let (mut domain, mut domain_selection, mut strategy)=if job["input"]["rsiSystemEvolution"]==true {
         // The real compiled successor already issued an authenticated controller plan.
         // Do not silently replace its decision with the parent-era selector.
