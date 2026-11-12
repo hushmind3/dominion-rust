@@ -5,7 +5,7 @@
 //! against the *next* observed, separately verified outcome.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap,BTreeSet};
 
 fn model_design_roles(g:&Value)->Vec<String>{
     let design=&g["systemDesign"];
@@ -74,6 +74,60 @@ fn confidence_adjustment(history:&[Value])->f64{
     (1.0-0.6*mean).clamp(0.4,1.0)
 }
 
+/// Record cross-subsystem *successor* opportunities from the actual compiled
+/// genealogy. An accepted redesign of A is followed by B only if the next
+/// executable is built from A's accepted commit. The downstream improvement
+/// must itself be independently accepted to count as a successful handoff.
+/// Temporal association is not a causal A/B claim: this graph is an editable
+/// exploration policy, while frozen evaluation alone grants quality credit.
+fn observed_interaction_graph(history:&[Value])->Value{
+    let mut links=BTreeMap::<(String,String),(u64,u64,BTreeSet<String>)>::new();
+    for parent in history.iter().filter(|row|independent_adoption(row)){
+        let Some(parent_commit)=parent["acceptedCommit"].as_str() else{continue};
+        let parent_roles=model_design_roles(parent);
+        for child in history.iter().filter(|row|
+            row["generatorCommit"].as_str()==Some(parent_commit)
+            && row["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+            && row["jobId"].as_str().is_some_and(|id|!id.is_empty())) {
+            let mut next_roles=model_design_roles(child);
+            if next_roles.is_empty(){
+                if let Some(role)=child["metaPolicy"]["target"]["role"].as_str()
+                    .filter(|r|!r.is_empty() && r.len()<=64
+                        && r.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'_' || b==b'-')) {
+                    next_roles.push(role.to_owned());
+                }
+            }
+            let successful=independent_adoption(child);
+            for from in &parent_roles{
+                for to in &next_roles{
+                    if from==to {continue;}
+                    let entry=links.entry((from.clone(),to.clone())).or_default();
+                    entry.0+=1;
+                    if successful {entry.1+=1;}
+                    if let Some(id)=child["jobId"].as_str(){
+                        entry.2.insert(id.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    let edges=links.into_iter().map(|((from,to),(trials,accepted,jobs))|json!({
+        "fromRole":from,"toRole":to,
+        "compiledSuccessorAttempts":trials,
+        "independentlyAdoptedSuccessors":accepted,
+        "successorJobIds":jobs.into_iter().take(6).collect::<Vec<_>>(),
+        "observationKind":"linked_rebuilt_binary_successor",
+        "crossRoleCausalityProven":false
+    })).collect::<Vec<_>>();
+    json!({
+        "source":"editable_cross_subsystem_successor_graph_v1",
+        "historyCount":history.len(),
+        "edges":edges,
+        "scoreMeaning":"observational_transfer_priority_not_verified_causal_effect",
+        "qualityPromotionsRemainExternal":true
+    })
+}
+
 /// Compare independent outcomes across generations, rather than choosing
 /// an arbitrary first unmodified module. Success counts only when a
 /// model-authored system design changed its declared source and the original
@@ -84,6 +138,12 @@ pub(crate) fn synthesize(
     inherited_domain:Option<&str>
 )->Value{
     let calibration=confidence_adjustment(history);
+    let graph=observed_interaction_graph(history);
+    // A recent genuine redesign is a source of new transfer hypotheses.
+    // Prefer trying other subsystems without pre-labeling that transfer useful.
+    let recent_sources=history.iter().rev().filter(|g|independent_adoption(g))
+        .take(3).flat_map(model_design_roles)
+        .collect::<BTreeSet<String>>();
     let mut ranked=Vec::<(Value,f64)>::new();
     let trials=history.len() as f64;
     for target in frontier.iter().filter(|row|
@@ -107,12 +167,24 @@ pub(crate) fn synthesize(
         let penalty=regressions as f64/(attempts.max(1) as f64);
         let stall=fruitless as f64/(attempts.max(1) as f64);
         let clade=(productivity as f64/(adopted.max(1) as f64)).min(3.0);
+        let cross_role_exploration=if !recent_sources.is_empty()
+            && !recent_sources.contains(role){0.08}else{0.0};
+        let transfer_prior=graph["edges"].as_array().into_iter().flatten()
+            .filter(|edge|edge["toRole"]==role
+                && edge["fromRole"].as_str().is_some_and(|from|
+                    recent_sources.contains(from)))
+            .map(|edge|{
+                let trials=edge["compiledSuccessorAttempts"].as_u64().unwrap_or(0) as f64;
+                let adopted=edge["independentlyAdoptedSuccessors"].as_u64().unwrap_or(0) as f64;
+                0.20*((adopted+0.5)/(trials+1.0))*((trials/(trials+2.0)).min(1.0))
+            }).fold(0.0_f64,f64::max);
         // UCB-style uncertainty, Bayesian shrinkage, and descendant
         // productivity provide a bounded, auditable choice. A failed edit is
         // evidence about execution feasibility, not proof the design is bad.
         let score=0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
+            +cross_role_exploration+transfer_prior
             -0.12*penalty-0.07*stall-0.035*cost;
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
@@ -122,6 +194,8 @@ pub(crate) fn synthesize(
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
             "productiveDescendantAdoptions":productivity,
+            "crossRoleExplorationBonus":cross_role_exploration,
+            "recordedTransferPriority":transfer_prior,
             "newComponent":target["verifiedRoleChanged"]!=true
         }),score));
     }
@@ -160,7 +234,7 @@ pub(crate) fn synthesize(
     let alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len()]);
+        inherited_domain,history.len(),graph]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -168,6 +242,8 @@ pub(crate) fn synthesize(
         "revision":revision,"historyCount":history.len(),
         "mode":mode,"target":target,"selectionEvidence":winner,
         "alternatives":alternatives,
+        "crossComponentGraph":graph,
+        "recentRedesignedRoles":recent_sources.into_iter().collect::<Vec<_>>(),
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
@@ -317,6 +393,13 @@ pub(crate) fn instruction(policy:&Value)->String {
             "verified roles={} causal hypothesis={} design={} next generation gains={}",
             g["roles"],g["hypothesis"],g["design"],g["productiveDescendants"]
         )).collect::<Vec<_>>().join("\n");
+    let transfers=policy["crossComponentGraph"]["edges"].as_array().into_iter().flatten()
+        .filter(|edge|edge["independentlyAdoptedSuccessors"].as_u64().unwrap_or(0)>0)
+        .take(4).map(|edge|format!(
+            "{} -> {}: compiledNextAttempts={} independentlyAdoptedNext={} (association only)",
+            edge["fromRole"],edge["toRole"],edge["compiledSuccessorAttempts"],
+            edge["independentlyAdoptedSuccessors"]
+        )).collect::<Vec<_>>().join("\n");
     let failures=policy["counterexamples"].as_array().into_iter().flatten()
         .take(3).map(|g|format!(
             "failed roles={} cause={} source={} observed error={}",
@@ -328,6 +411,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
+        Observed source-to-successor improvement transfers (not causal proof):\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
         Author the novel executable redesign yourself, including new modules or \
         multi-component changes. You may also edit src/engine/rsi_meta_controller.rs, \
@@ -340,7 +424,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["revision"],policy["mode"],target["role"],target["domain"],
         target["path"],target["sourceSha256"],
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
-        refs,failures
+        refs,transfers,failures
     )
 }
 
@@ -377,6 +461,37 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn adopted_improver_rewrite_links_to_independently_adopted_harness_successor(){
+        let origin="a".repeat(40);
+        let revised="b".repeat(40);
+        let next="c".repeat(40);
+        let make=|job:&str,base:&str,accepted:&str,role:&str|json!({
+            "jobId":job,"generatorCommit":base,"acceptedCommit":accepted,
+            "accepted":true,"pairedRevalidated":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":base,"generationJobId":job,
+                "component":role,"targetFiles":["src/engine/system.rs"]},
+            "acceptedSourceHashes":{"src/engine/system.rs":"f".repeat(64)}
+        });
+        let parent=make("parent",&origin,&revised,"algorithms");
+        let child=make("child",&revised,&next,"harness");
+        let graph=observed_interaction_graph(&[parent.clone(),child.clone()]);
+        let edge=graph["edges"].as_array().unwrap().iter().find(|edge|
+            edge["fromRole"]=="algorithms" && edge["toRole"]=="harness").unwrap();
+        assert_eq!(edge["compiledSuccessorAttempts"],1);
+        assert_eq!(edge["independentlyAdoptedSuccessors"],1);
+        assert_eq!(edge["crossRoleCausalityProven"],false);
+        let mut unverified=child;
+        unverified["pairedRevalidated"]=json!(false);
+        let graph=observed_interaction_graph(&[parent,unverified]);
+        let edge=&graph["edges"][0];
+        assert_eq!(edge["compiledSuccessorAttempts"],1);
+        assert_eq!(edge["independentlyAdoptedSuccessors"],0);
+    }
     #[test]
     fn comparison_prioritizes_novelty_then_updates_after_grounded_failures(){
         let target=|role:&str,path:&str|json!({"role":role,"domain":if role=="memory"{"memory"}else{"learning"},
