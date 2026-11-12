@@ -98,7 +98,8 @@ fn session_chat_calls(rows:&[Value],session:&str,route:&Value)->(u64,u64,BTreeSe
 fn verified_attempt(g:&Value)->bool{
     g["modelEcologyExecuted"]["auditComplete"]==true
         &&g["modelEcologyExecuted"]["auditWindowStartRowid"]
-            .as_i64().is_some_and(|cursor|cursor>=0)
+            .as_i64().zip(g["modelEcologyExecuted"]["auditWindowEndRowid"].as_i64())
+            .is_some_and(|(start,end)|start>=0 &&end>=start)
         &&g["modelEcologyExecuted"]["routeMatchedWorkerInput"]==true
         &&g["modelEcologyExecuted"]["sessionOwnedByGeneration"]==true
         &&g["modelEcologyExecuted"]["mixedChatModelCalls"]==0
@@ -460,8 +461,9 @@ pub(crate) fn executed(state:&AppState,job:&Value)->Value{
     // The child records this durable rowid immediately before its real
     // source-authoring turn. Reused sessions cannot import older inference.
     let cursor=job["rsiAuditStartRowid"].as_i64().filter(|v|*v>=0);
-    let audit=cursor.map(|start|
-        state.store.model_usage_for_session_since(session,start));
+    let end=job["rsiAuditEndRowid"].as_i64().filter(|v|*v>=0);
+    let audit=cursor.zip(end).map(|(start,end)|
+        state.store.model_usage_for_session_in_window(session,start,end));
     let audit_complete=audit.as_ref().is_some_and(Result::is_ok);
     let (calls,mixed,actual)=audit.as_ref().and_then(|result|result.as_ref().ok())
         .map(|rows|session_chat_calls(rows,session,route))
@@ -478,6 +480,7 @@ pub(crate) fn executed(state:&AppState,job:&Value)->Value{
         "actualModelCalls":calls,
         "mixedChatModelCalls":mixed,
         "auditWindowStartRowid":cursor,
+        "auditWindowEndRowid":end,
         "auditComplete":audit_complete,
         "observedChatActors":actual,
         "sessionOwnedByGeneration":session_owned,
@@ -543,7 +546,7 @@ mod tests{
             "generationJobId":"generation","generatorCommit":"a".repeat(40),
             "providerId":"p","model":"m","selectedBy":"policy",
             "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,
             "sessionOwnedByGeneration":true,
             "mixedChatModelCalls":1,
             "actualModelCalls":1,"actuallyUsedInGeneration":true},
@@ -623,7 +626,7 @@ mod tests{
             "selectedBy":"policy-executed",
             "sessionOwnedByGeneration":true,
             "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,"mixedChatModelCalls":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":1
         });
         let compiled=json!({"source":"running_compiled_descendant_binary"});
@@ -633,7 +636,7 @@ mod tests{
             "model":"actor-model"
         });
         let job=json!({"id":"real-child","kind":"rsi_generation",
-            "rsiAuditStartRowid":0,
+            "rsiAuditStartRowid":0,"rsiAuditEndRowid":0,
             "input":input,"rsiModelEcologyExecuted":executed,
             "rsiCompiledPlanExecuted":compiled});
         state.store.put("job",&job).unwrap();
@@ -701,7 +704,7 @@ mod tests{
                 "selectedBy":"p","providerId":"api","model":"m",
                 "sessionOwnedByGeneration":true,
                 "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,
                 "mixedChatModelCalls":0,
                 "actuallyUsedInGeneration":true,"actualModelCalls":1},
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
@@ -735,7 +738,7 @@ mod tests{
             "rsiGenerationJobId":"generation-1"})).unwrap();
         assert_eq!(session["id"],"owned-session");
         let mut job=json!({"id":"generation-1","sessionId":"owned-session",
-            "rsiAuditStartRowid":0,
+            "rsiAuditStartRowid":0,"rsiAuditEndRowid":0,
             "input":{"rsiGeneratorCommit":"a".repeat(40),
                 "providerId":"provider-a","model":"model-a",
                 "rsiModelEcologyPolicy":{"active":true,
@@ -744,6 +747,7 @@ mod tests{
         state.store.audit("model.usage",json!({
             "sessionId":"owned-session","purpose":"chat",
             "providerId":"provider-a","model":"model-a","totalTokens":81}));
+        job["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor().unwrap());
         let measured=executed(&state,&job);
         assert_eq!(measured["actualModelCalls"],1);
         assert_eq!(measured["mixedChatModelCalls"],0);
@@ -751,10 +755,12 @@ mod tests{
         state.store.audit("model.usage",json!({
             "sessionId":"owned-session","purpose":"helper",
             "providerId":"helper-provider","model":"helper","totalTokens":12}));
+        job["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor().unwrap());
         assert_eq!(executed(&state,&job)["actuallyUsedInGeneration"],true);
         state.store.audit("model.usage",json!({
             "sessionId":"owned-session","purpose":"chat",
             "providerId":"provider-b","model":"model-b","totalTokens":12}));
+        job["rsiAuditEndRowid"]=json!(state.store.audit_rowid_cursor().unwrap());
         let mixed=executed(&state,&job);
         assert_eq!(mixed["actualModelCalls"],1);
         assert_eq!(mixed["mixedChatModelCalls"],1);
@@ -783,7 +789,7 @@ mod tests{
             "generatorCommit":"a".repeat(40),
             "selectedBy":"chosen-policy",
             "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,
             "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":1},
             "jobId":"generation-1",
@@ -835,7 +841,7 @@ mod tests{
                 "selected":{"providerId":"remote","model":"model-1"}},
             "modelEcologyExecuted":{"source":"real_descendant_model_usage_v1",
                 "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,
             "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
                 "actuallyUsedInGeneration":true,"actualModelCalls":1,
                 "generationJobId":"trial-1",
@@ -888,7 +894,7 @@ mod tests{
             "generatorCommit":"a".repeat(40),
             "selectedBy":"policy-1",
             "routeMatchedWorkerInput":true,
-            "auditComplete":true,"auditWindowStartRowid":0,
+            "auditComplete":true,"auditWindowStartRowid":0,"auditWindowEndRowid":1,
             "sessionOwnedByGeneration":true,"mixedChatModelCalls":0,
             "actuallyUsedInGeneration":true,"actualModelCalls":2},
             "jobId":"adopted-agent-1",
