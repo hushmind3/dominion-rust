@@ -64,7 +64,8 @@ pub fn definitions() -> Vec<Value> {
             "components":json!({"type":"array","description":"Required for component=system: choose 2-8 distinct subsystems including optional model_architecture","items":{"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","model_architecture","frontend"]},"minItems":2,"maxItems":8}),
             "hypothesis":text("Causal limitation and falsifiable improvement prediction"),
             "design":text("Concrete architectural and code implementation changes"),
-            "targetFiles":json!({"type":"array","description":"Existing workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "targetFiles":json!({"type":"array","description":"Current or new workspace source paths; 2-24 for component=system","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "componentFiles":json!({"type":"object","description":"REQUIRED when component=system: map each selected role to one or more paths from targetFiles that actually implement that role. All declared roles need source evidence.","additionalProperties":{"type":"array","minItems":1,"items":{"type":"string"}}}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "successorStages":json!({"type":"array","description":"Optional executable next-generation improvement program of up to eight stages, bound to adopted source evidence. Each stage has role, domain, path, objective, learningPolicy (avoid_failed/retry_failed), toolPolicy (patch_only/allow_new_modules), executionPolicy (grounded_edit/explore_then_edit).",
                 "maxItems":8,"items":{"type":"object","properties":{

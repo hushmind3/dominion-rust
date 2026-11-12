@@ -306,7 +306,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         let mut known=inventory.iter().filter_map(|item|item["path"].as_str())
             .map(str::to_string).collect::<std::collections::BTreeSet<_>>();
         for (relative,roles,row) in &discovered {
-            if inventory.len()>=48{break;}
+            if inventory.len()>=24{break;}
             if roles.contains(role) && known.insert(relative.clone()){
                 inventory.push(row.clone());
             }
@@ -457,6 +457,9 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         cross-module Rust changes with workspace_replace_range/function/write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
+        For a coupled redesign list componentFiles mapping EVERY declared \
+        intelligence role to its actual targetFiles. Claims about unedited \
+        roles will not be credited as inherited architecture changes. \
         You can submit successorStages in rsi_system_plan: concrete future roles, \
         source files, objectives and learning/tool/execution policies. After \
         independent adoption your new descendant will execute that program, \
@@ -568,6 +571,36 @@ pub(crate) fn propose(
             }
         }
     }
+    // A multi-capability redesign is a source-to-role program, not a label.
+    // Each declared intelligence component must own at least one actually
+    // changed source path. Shared executable modules can contribute to more
+    // than one subsystem, but every claim must have grounded code evidence.
+    let mut component_files=serde_json::Map::new();
+    if component=="system" {
+        let declared=body["componentFiles"].as_object()
+            .ok_or("복합 설계에는 역할별 수정 파일 componentFiles가 필요합니다.")?;
+        if declared.len()!=components.len(){
+            return Err("역할별 수정 파일 구성이 선언한 지능 구성요소와 다릅니다.".into());
+        }
+        for role in &components {
+            let files=declared.get(*role).and_then(Value::as_array)
+                .filter(|files|!files.is_empty() && files.len()<=24)
+                .ok_or("복합 설계의 모든 구성요소에 실제 소스가 필요합니다.")?;
+            let mut seen=std::collections::BTreeSet::new();
+            let mut verified=Vec::new();
+            for entry in files {
+                let path=entry.as_str().filter(|p|unique.contains(*p))
+                    .ok_or("구성요소별 수정 파일은 실제 targetFiles에 있어야 합니다.")?;
+                if !seen.insert(path){
+                    return Err("구성요소별 소스 파일이 중복됐습니다.".into());
+                }
+                verified.push(path.to_string());
+            }
+            component_files.insert((*role).to_string(),json!(verified));
+        }
+    }else{
+        component_files.insert(component.to_string(),json!(paths));
+    }
     // A model can author the actual NEXT descendant's executable task
     // schedule. Merely declaring a stage does not prove improvement. The
     // rebuilt child binds each stage to current source SHA and controls the
@@ -611,13 +644,14 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,component_files,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
-        "components":components,"successorStages":successor_stages,
+        "components":components,"componentFiles":component_files,
+        "successorStages":successor_stages,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false

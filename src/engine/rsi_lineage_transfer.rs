@@ -57,9 +57,20 @@ fn reference(state:&AppState,record:&Value,index_id:&str,profile:&str)->Option<(
         }
     }
     if aligned.is_empty(){return None;}
-    let roles=if record["systemDesign"]["component"]=="system"{
-        record["systemDesign"]["components"].clone()
-    }else{json!([record["systemDesign"]["component"]])};
+    let roles=if record["systemDesign"]["component"]=="system" {
+        record["systemDesign"]["components"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str)
+            .filter(|role|record["systemDesign"]["componentFiles"][*role]
+                .as_array().is_some_and(|files|!files.is_empty() && files.iter().all(|file|
+                    file.as_str().is_some_and(|path|
+                        record["acceptedSourceHashes"][path].as_str()
+                            .is_some_and(|sha|sha.len()==64
+                                && sha.bytes().all(|b|b.is_ascii_hexdigit()))))))
+            .collect::<Vec<_>>()
+    }else{record["systemDesign"]["component"].as_str()
+        .map(|value|vec![value]).unwrap_or_default()};
+    if roles.is_empty(){return None;}
+    let roles=json!(roles);
     let gain=candidate["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0);
     let row=json!({
         "source":"independently_measured_peer_design_v1",

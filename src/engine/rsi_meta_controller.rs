@@ -18,6 +18,16 @@ fn model_design_roles(g:&Value)->Vec<String>{
     names.iter().filter_map(Value::as_str)
         .filter(|name|matches!(*name,"algorithms"|"harness"|"memory"|
             "learning"|"tools"|"improvement_methods"|"model_architecture"|"frontend"))
+        .filter(|role| {
+            let Some(files)=design["componentFiles"][*role].as_array()
+                .filter(|files|!files.is_empty()) else{return false;};
+            let paths=design["targetFiles"].as_array();
+            files.iter().all(|item|item.as_str().is_some_and(|path|
+                paths.is_some_and(|list|list.iter().any(|p|p.as_str()==Some(path)))
+                && g["acceptedSourceHashes"][path].as_str()
+                    .is_some_and(|hash|hash.len()==64
+                        && hash.bytes().all(|b|b.is_ascii_hexdigit()))))
+        })
         .map(str::to_string).collect()
 }
 fn independent_adoption(g:&Value)->bool{
