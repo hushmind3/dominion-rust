@@ -112,6 +112,19 @@ fn remember(state:&AppState,identity:&str,candidate:&Value) {
 /// live campaign and the persisted archive share the verification gate; a
 /// same-patch alias or an unverified claim cannot consume exploration credit.
 pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Value) -> Value {
+    select_scoped(state,history,base,cases,None)
+}
+/// A real descendant may inherit only experiments originating on its own
+/// source branch; even an identical base SHA does not transfer ownership.
+pub(crate) fn select_bound(
+    state:&AppState,history:&[Value],base:&str,cases:&Value,branch:&str,
+)->Value {
+    select_scoped(state,history,base,cases,Some(branch))
+}
+fn select_scoped(
+    state:&AppState,history:&[Value],base:&str,cases:&Value,
+    branch:Option<&str>,
+)->Value {
     let Ok(plan) = rsi::case_plan(cases) else {
         return Value::Null;
     };
@@ -132,6 +145,9 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         let Some(candidate) = state.store.get("rsi_candidate", id) else {
             continue;
         };
+        if branch.is_some_and(|b|candidate["sourceBranch"].as_str()!=Some(b)){
+            continue;
+        }
         if generation["evaluation"]["evidenceSha256"] != candidate["evaluation"]["evidenceSha256"] {
             continue;
         }
@@ -146,6 +162,9 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
         let Some(candidate)=record["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id)) else {continue};
+        if branch.is_some_and(|b|candidate["sourceBranch"].as_str()!=Some(b)){
+            continue;
+        }
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
         let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
         entries.push((id,candidate["patchSha256"].clone(),scores));
@@ -182,6 +201,38 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
             })
         })
         .unwrap_or(Value::Null)
+}
+
+/// Independent receipt check for an archive proposal emitted by the NEW
+/// compiled descendant. This verifies hard provenance facts but does not
+/// freeze future descendants to the old supervisor's ranking algorithm.
+pub(crate) fn validate_selection(
+    state:&AppState,choice:&Value,base:&str,cases:&Value,branch:&str
+)->bool{
+    if choice.is_null(){return true;}
+    if branch.is_empty()
+        || choice["persisted"]!=true || choice["adopted"]!=false
+        || choice["qualityProven"]!=false || choice["baseCommit"]!=base
+        || choice["policy"]!="paired-pareto-stepping-stones-v2" {
+        return false;
+    }
+    let Some(id)=choice["candidateId"].as_str() else{return false};
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    if candidate["sourceBranch"]!=branch
+        || candidate["baseCommit"]!=base
+        || candidate["patchSha256"]!=choice["patchSha256"]
+        || parent_metrics(state,&candidate,base).is_none() {return false;}
+    let Ok(plan)=rsi::case_plan(cases) else{return false};
+    let oracle=format!("{:x}",Sha256::digest(
+        include_bytes!("rsi_oracle_fixture.rs")));
+    if choice["oracleSha256"]!=oracle {return false;}
+    let identity=plan_identity(base,&plan,&oracle);
+    let record=state.store.get("rsi_archive",&format!(
+        "{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")));
+    record.as_ref().is_some_and(|row|
+        row["candidateId"]==id && row["identity"]==identity
+            && row["patchSha256"]==candidate["patchSha256"])
+        && candidate_scores(state,&candidate,base,&plan,&oracle).is_some()
 }
 
 #[cfg(test)]
