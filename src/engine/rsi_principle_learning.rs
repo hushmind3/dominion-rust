@@ -524,6 +524,7 @@ mod tests {
         let generator="a".repeat(40);
         let mut assignments=serde_json::Map::new();
         assignments.insert(target_role.into(),json!([source]));
+        let revision="d".repeat(64);
         json!({
             "id":id,"jobId":format!("job-{id}"),"candidateId":format!("candidate-{id}"),
             "generatorCommit":generator,"acceptedCommit":if accepted{json!("c".repeat(40))}else{Value::Null},
@@ -537,12 +538,12 @@ mod tests {
             "acceptedSourceHashes":Value::Object(hashes),
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
                 "generatorCommit":generator,"metaRevision":"m",
-                "openImprovementRevision":"r"},
+                "openImprovementRevision":revision},
             "metaPolicy":{"revision":"m","selectionMode":"authored_open_improvement_program",
-                "openImprovementRevision":"r",
+                "openImprovementRevision":revision.clone(),
                 "target":{"role":target_role,"path":source}},
             "openImprovementProgram":{"source":"compiled_descendant_open_improvement_program_v1",
-                "revision":"r","target":{"role":target_role,"path":source},
+                "revision":revision,"target":{"role":target_role,"path":source},
                 "node":{"mechanism":mechanism}},
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":generator,"generationJobId":format!("job-{id}"),
