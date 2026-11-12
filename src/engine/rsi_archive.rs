@@ -128,7 +128,7 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
     for generation in history {
-        if generation["accepted"] == true || generation["verification"]["checksPassed"] != true {
+        if generation["accepted"] == true || generation["candidateCapture"]["checksPassed"] != true {
             continue;
         }
         let Some(id) = generation["candidateId"].as_str() else {
@@ -245,18 +245,20 @@ mod tests {
         candidate["pairedComparisonComplete"] = json!(true);
         candidate["evaluation"]["source"] = json!("server_invoked_local_paired_git_worktrees");
         candidate["evaluation"]["evidenceSha256"] = json!("b".repeat(64));
+        let evaluation_id=candidate["evaluation"]["id"].clone();
         state.store.put("rsi_candidate", &candidate).unwrap();
         state
             .store
             .put(
                 "rsi_pair",
                 &json!({"id":format!("rsi-pair-{id}"),"candidateId":id,
+            "evaluationId":evaluation_id,
             "runner":"local_gitrepo_not_os_sandbox","report":report,
             "evidenceSha256":"b".repeat(64),"metrics":candidate["evaluation"]["metrics"],
             "verdict":candidate["evaluation"]["verdict"]}),
             )
             .unwrap();
-        json!({"candidateId":id,"accepted":false,"verification":{"checksPassed":true},
+        json!({"candidateId":id,"accepted":false,"candidateCapture":{"checksPassed":true},
             "evaluation":candidate["evaluation"]})
     }
 
