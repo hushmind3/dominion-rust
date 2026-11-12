@@ -529,6 +529,7 @@ mod tests {
             "openImprovementRevision":first_plan["revision"]
         });
         let measured=|id:&str,mechanism:&str,after:bool|{
+            let revision="d".repeat(64);
             let role=if mechanism.starts_with("stagnant"){"new_role"}
                 else{"improvement_methods"};
             let path=if role=="new_role"{"src/engine/new_role.rs"}
@@ -545,13 +546,13 @@ mod tests {
                             "holdout":true,"baselinePass":false,"candidatePass":after}]}},
                 "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
                     "generatorCommit":zero,"metaRevision":"m",
-                    "openImprovementRevision":"r"},
+                    "openImprovementRevision":revision.clone()},
                 "metaPolicy":{"revision":"m","selectionMode":"authored_open_improvement_program",
                     "target":{"path":path,"role":role},
-                    "openImprovementRevision":"r"},
+                    "openImprovementRevision":revision.clone()},
                 "openImprovementProgram":{
                     "source":"compiled_descendant_open_improvement_program_v1",
-                    "revision":"r","target":{"path":path,"role":role},
+                    "revision":revision,"target":{"path":path,"role":role},
                     "node":{"mechanism":mechanism}}
             })
         };
