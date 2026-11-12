@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -548,13 +548,22 @@ pub(crate) fn validate_plan_evidence(
         &plan["mutualCurriculum"]) {
         return Err("요인별 실험 계획의 독립 소스·계보가 일치하지 않습니다.".into());
     }
+    // Validate the model-authored graph as source-grounded *data*, while
+    // leaving its editable ranking algorithm inside the compiled successor.
+    if !crate::engine::rsi_open_program::validate(
+        &plan["openProgramPlan"],history,frontier,commit) {
+        return Err("모델 작성 열린 실험 그래프의 계보 또는 소스 근거 오류".into());
+    }
     let stage=&plan["successorStage"];
     if stage.is_object(){
+        let open_stage=stage["source"]=="model_authored_open_program_stage"
+            && plan["openProgramPlan"]["stage"]==*stage
+            && plan["openProgramPlan"]["target"]["path"]==stage["path"];
         if !bound(stage)
             || (stage["programmeStageIndex"].is_number()
                 && !crate::engine::rsi_mutual_evolution::valid_programme_lineage(
                     history,stage))
-            || !history.iter().any(|g|
+            || (!open_stage && !history.iter().any(|g|
             g["accepted"]==true && g["pairedRevalidated"]==true
             && g["systemDesign"]["id"]==stage["sourceDesignId"]
             && g["acceptedCommit"]==stage["predecessorCommit"]
@@ -563,7 +572,7 @@ pub(crate) fn validate_plan_evidence(
                     && row["domain"]==stage["domain"]
                     && row["path"]==stage["path"]))
                 || crate::engine::rsi_mutual_evolution::valid_return_lineage(
-                    history,stage))) {
+                    history,stage)))) {
             return Err("후손에게 계승된 설계 단계의 채택 계보가 다릅니다.".into());
         }
     }
