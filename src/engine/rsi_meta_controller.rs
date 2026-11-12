@@ -513,7 +513,7 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
         })).collect::<Vec<_>>();
     policy["peerMethodLearning"]=json!({
         "source":"matched_executed_peer_method_observation_v1",
-        "observations":learning,
+        "observations":learning.clone(),
         "causalSuperiorityProven":false,
         "isolationRequired":true
     });
@@ -1114,7 +1114,7 @@ mod tests{
         let controls=(0..4).map(|i|{
             let job=format!("nontransfer-{i}");
             json!({
-                "jobId":job,"generatorCommit":"d".repeat(40),
+                "jobId":job.clone(),"generatorCommit":"d".repeat(40),
                 "metaPolicyExecuted":true,
                 "comparisonProfileSha256":"f".repeat(64),
                 "metaPolicy":{"target":{"role":"learning",
