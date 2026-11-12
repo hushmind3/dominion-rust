@@ -5616,6 +5616,32 @@ mod tests {
         assert_eq!(edited["candidateCreated"],false);
     }
     #[test]
+    fn compiled_descendant_source_excerpt_is_real_indexed_rust_not_research_text() {
+        let (state,root)=state();
+        let checkout=root.join("descendant-excerpt");
+        std::fs::create_dir_all(checkout.join("src/engine")).unwrap();
+        std::fs::write(checkout.join("src/engine/memory.rs"),
+            "pub fn new_memory_policy() -> u32 {\n    19\n}\n").unwrap();
+        let index=crate::engine::code_index::refresh(&state,&checkout).unwrap();
+        let source_sha=crate::engine::code_index::indexed_source_hash(
+            &state,index["id"].as_str().unwrap(),"src/engine/memory.rs").unwrap();
+        let input=json!({
+            "rsiIndexId":index["id"],
+            "rsiFocusFiles":["src/engine/memory.rs"],
+            "rsiTargetDomain":"memory",
+            "rsiObjective":"memory improvement",
+            "rsiAutonomous":true,
+            "rsiAutoFocus":true
+        });
+        let excerpt=focus_file_context(&state,&json!({"labDir":checkout}),&input);
+        assert!(excerpt.contains("new_memory_policy"),
+            "the real descendant must see implementation bytes, not research notes");
+        assert!(excerpt.contains(&source_sha),
+            "editing requires its actual current SHA, not a coordinator guess");
+        assert!(excerpt.contains("src/engine/memory.rs"));
+        assert!(!excerpt.contains("PRIOR RESEARCH"));
+    }
+    #[test]
     fn compiled_descendant_plans_from_its_actual_whole_source_graph() {
         let (state,root)=state();
         let source=root.join("architecture");
