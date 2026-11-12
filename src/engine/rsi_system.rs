@@ -464,7 +464,7 @@ pub(crate) fn validate_plan_evidence(
             if a.is_none() || b.is_none()
                 || pair["fromRole"]==pair["toRole"]
                 || pair["fromPath"]==pair["toPath"]
-                || mutual["primary"]!=a.cloned().unwrap_or(&Value::Null)
+                || a.is_none_or(|row|&mutual["primary"]!=row)
                 || mutual["phases"].as_array().is_none_or(|p|p.len()!=3) {
                 return Err("상호 발전 계획의 2개 실제 소스·단계가 일치하지 않습니다.".into());
             }
@@ -479,10 +479,12 @@ pub(crate) fn validate_plan_evidence(
             g["accepted"]==true && g["pairedRevalidated"]==true
             && g["systemDesign"]["id"]==stage["sourceDesignId"]
             && g["acceptedCommit"]==stage["predecessorCommit"]
-            && g["systemDesign"]["successorStages"].as_array().is_some_and(|rows|
+            && (g["systemDesign"]["successorStages"].as_array().is_some_and(|rows|
                 rows.iter().any(|row|row["role"]==stage["role"]
                     && row["domain"]==stage["domain"]
-                    && row["path"]==stage["path"]))) {
+                    && row["path"]==stage["path"]))
+                || crate::engine::rsi_mutual_evolution::valid_return_lineage(
+                    history,stage))) {
             return Err("후손에게 계승된 설계 단계의 채택 계보가 다릅니다.".into());
         }
     }

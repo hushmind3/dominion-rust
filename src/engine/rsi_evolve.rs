@@ -4175,6 +4175,7 @@ async fn run_loop(
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
         generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
+        generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
@@ -5319,6 +5320,8 @@ fn compiled_system_generation_plan(
     // descendant interprets it against its own newly built source graph and
     // silently drops stages whose path/role/hash is no longer current.
     let successor_stage=crate::engine::rsi_system::inherited_stage(history,&frontier)
+        .or_else(||crate::engine::rsi_mutual_evolution::reciprocal_return(
+            history,&frontier))
         .unwrap_or(Value::Null);
     // A live, adopted predecessor's programme takes precedence. Otherwise
     // the compiled meta agent authors the next A->B->A source curriculum.
@@ -5662,9 +5665,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let target=job["input"]["rsiDescendantPlan"]["architectureTarget"].clone();
         let inherited_step=job["input"]["rsiSuccessorStage"].clone();
         let inherited_task=if let Some(objective)=inherited_step["objective"].as_str(){
-            format!("\n\nADOPTED PREDECESSOR'S NEXT-SYSTEM DESIGN STAGE (NOT a proof): role={} domain={} path={} objective={}. Re-read the actual CURRENT source and design the implementation yourself; independent evaluation decides acceptance.",
-                inherited_step["role"],inherited_step["domain"],
-                inherited_step["path"],objective)
+            format!("\n\nADOPTED PREDECESSOR'S NEXT-SYSTEM DESIGN STAGE (NOT a proof): phase={} role={} domain={} path={} objective={}. Re-read the actual CURRENT source and design the implementation yourself; independent evaluation decides acceptance.",
+                inherited_step["phase"],inherited_step["role"],
+                inherited_step["domain"],inherited_step["path"],objective)
         }else{String::new()};
         job["rsiSourceContextDelivered"]=json!(!current_source.is_empty());
         state.store.audit("rsi.compiled_descendant_source_bound",json!({

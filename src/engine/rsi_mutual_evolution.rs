@@ -275,6 +275,9 @@ pub(crate) fn reciprocal_return(history:&[Value],frontier:&[Value])->Option<Valu
             .is_some_and(|stages|stages.iter().any(|stage|
                 stage["role"]==to && stage["path"]==to_path));
         if !planned || !roles_of(child).iter().any(|r|r==to)
+            || child["successorStage"]["sourceDesignId"]!=parent["systemDesign"]["id"]
+            || child["successorStage"]["role"]!=to
+            || child["successorStage"]["path"]!=to_path
             || child["acceptedSourceHashes"][to_path].as_str()
                 .is_none_or(|h|h.len()!=64)
             || parent["acceptedSourceHashes"][path].as_str()
@@ -328,6 +331,10 @@ pub(crate) fn valid_return_lineage(history:&[Value],stage:&Value)->bool{
                         .as_str().unwrap_or("")].is_string()
                     && child["acceptedSourceHashes"][edge["toPath"]
                         .as_str().unwrap_or("")].is_string()
+                    && child["successorStage"]["sourceDesignId"]==
+                        parent["systemDesign"]["id"]
+                    && child["successorStage"]["role"]==edge["toRole"]
+                    && child["successorStage"]["path"]==edge["toPath"]
                     && roles_of(child).iter().any(|role|
                         Some(role.as_str())==edge["toRole"].as_str())
                     && parent["systemDesign"]["successorStages"].as_array()
