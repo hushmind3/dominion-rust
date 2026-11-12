@@ -4199,7 +4199,7 @@ async fn run_loop(
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
         generation["factorialCurriculum"]=current["input"]["rsiFactorialCurriculum"].clone();
-        generation["factorialExperimentExecuted"]=current["rsiFactorialExperimentExecuted"].clone();
+        generation["factorialPlanExecuted"]=current["rsiFactorialPlanExecuted"].clone();
         generation["mutualProgrammeExecuted"]=current["rsiMutualProgrammeExecuted"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["comparisonProfileSha256"]=json!(
@@ -4520,6 +4520,19 @@ async fn run_loop(
                 .as_str().unwrap_or("")].is_string()
             && generation["acceptedSourceHashes"][mutual_pair["toPath"]
                 .as_str().unwrap_or("")].is_string();
+        // The compiled plan alone is not an experiment attempt. A real,
+        // witnessed source change or a captured compared candidate is needed
+        // before its intervention may advance the next descendant's phase.
+        let factorial_source_written=generation["editActions"].as_array()
+            .is_some_and(|rows|rows.iter().any(|row|
+                row["written"]==true
+                && row["path"].as_str().is_some_and(
+                    crate::engine::rsi::safe_path)));
+        let factorial_candidate_changed=generation["factorialChangedPaths"]
+            .as_array().is_some_and(|files|!files.is_empty());
+        generation["factorialExperimentExecuted"]=json!(
+            generation["factorialPlanExecuted"]==true
+            && (factorial_source_written||factorial_candidate_changed));
         generation["mutualObservation"]=json!({
             "source":"observed_cross_intelligence_programme_v1",
             "executedCompiledCurriculum":generation["mutualProgrammeExecuted"],
@@ -5660,7 +5673,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiMetaPolicyExecuted"]=json!(true);
         job["rsiMutualProgrammeExecuted"]=json!(
             plan["mutualCurriculum"]["pair"].is_object());
-        job["rsiFactorialExperimentExecuted"]=json!(
+        job["rsiFactorialPlanExecuted"]=json!(
             plan["factorialCurriculum"]["selected"].is_object());
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
