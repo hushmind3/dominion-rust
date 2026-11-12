@@ -603,6 +603,34 @@ mod tests {
         assert_eq!(study(&[g])["principles"].as_array().unwrap().len(),0);
     }
     #[test]
+    fn two_different_mechanisms_train_a_transferable_factor_for_a_novel_third(){
+        let mut first=trial("first-key","repair memory index using task traces",
+            "src/engine/memory.rs","memory",false,true,true);
+        let mut second=trial("second-key","adapt model context based on source outcomes",
+            "src/engine/models.rs","models",false,true,true);
+        first["openImprovementProgram"]["node"]["principleKeys"]
+            =json!(["evidence_guided_context"]);
+        second["openImprovementProgram"]["node"]["principleKeys"]
+            =json!(["evidence_guided_context"]);
+        second["evaluation"]["metrics"]["measurements"][0]["domain"]
+            =json!("learning");
+        let bank=study(&[first,second]);
+        let factor=&bank["transferFeatures"][0];
+        assert_eq!(factor["independentMechanisms"],2);
+        assert_eq!(factor["transferEligible"],true);
+        assert_eq!(factor["domains"].as_array().unwrap().len(),2);
+        let novel=json!({"mechanism":"new adaptive learning algorithm combining two subsystems",
+            "principleKeys":["evidence_guided_context"]});
+        let general=estimate(&bank,&novel);
+        let no_key=estimate(&bank,&json!({"mechanism":"unseen arbitrary change"}));
+        assert_eq!(general["learnedEvidenceSource"],
+            "cross_mechanism_transferable_principle");
+        assert_eq!(general["caseQualityPosterior"].as_f64(),Some(0.75));
+        assert!(general["estimatedPriority"].as_f64().unwrap()
+            >no_key["estimatedPriority"].as_f64().unwrap());
+        assert_eq!(no_key["caseQualityPosterior"].as_f64(),Some(0.5));
+    }
+    #[test]
     fn bad_heldout_forecasts_trigger_a_source_rewrite_of_the_meta_learner(){
         let samples=(0..3).map(|i|{
             let mut g=trial(&format!("badprediction-{i}"),
