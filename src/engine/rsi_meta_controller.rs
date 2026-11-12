@@ -552,10 +552,11 @@ pub(crate) fn evolve_from_peer_methods(mut policy:Value,peers:&Value,history:&[V
             for field in ["role","domain","path","sourceSha256"] {
                 policy["controlPolicy"][field]=target[field].clone();
             }
-            policy["nextMutualRedesign"]=policy["mutualDevelopmentGraph"]["edges"]
+            let next_edge=policy["mutualDevelopmentGraph"]["edges"]
                 .as_array().into_iter().flatten()
                 .find(|edge|edge["to"]==target["role"])
                 .cloned().unwrap_or(Value::Null);
+            policy["nextMutualRedesign"]=next_edge;
             policy["mode"]=json!("repair_own_transfer_method");
             policy["metaRepairChosen"]=json!(true);
             policy["metaRepairReason"]=json!("observed_negative_transfer_against_matched_control");
