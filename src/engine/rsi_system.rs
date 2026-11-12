@@ -333,6 +333,13 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "domain":generation["domain"],
         "candidateTarget":generation["candidateTarget"],
         "accepted":generation["accepted"]==true,
+        "adapterSourceImprovementLink":generation["adaptedModelActuallyUsed"]
+            ["source"]=="running_adapted_descendant_inference_v1",
+        "adapterSha256":generation["adaptedModelActuallyUsed"]["adapterSha256"],
+        "independentModelWeightGain":generation["modelAdapterIndependentEvaluation"]
+            ["pairedModelImprovementMeasured"],
+        "adapterCandidateRejected":generation["modelAdapterIndependentEvaluation"]
+            ["status"]=="rejected",
         "verdict":generation["evaluation"]["verdict"],
         "improvedHoldouts":generation["evaluation"]["metrics"]["improvedHoldouts"],
         "metaHoldoutGains":generation["evaluation"]["metrics"]["metaHoldoutGains"],

@@ -200,6 +200,23 @@ fn paired_gate(m:&Value,case_sha:&str)->Result<bool,String>{
 #[cfg(test)]
 mod model_promotion_tests{
     use super::*;
+    #[test]
+    fn promotion_must_have_independent_evidence_and_exact_campaign(){
+        let proof=json!({"source":"independent_parent_model_adapter_pair_v1",
+            "status":"promoted","pairedModelImprovementMeasured":true,
+            "campaignId":"campaign-a","generatorCommit":"a".repeat(40),
+            "adapterSha256":"b".repeat(64),
+            "privateCasesSha256":"c".repeat(64),
+            "independentEvaluatorSha256":"d".repeat(64),
+            "adoptionScope":"isolated_descendant_inference_only",
+            "productionDeployed":false,
+            "measurements":{"source":"separate_parent_paired_lora_oracle_v1"}});
+        assert!(promotion_scope_valid(&proof,"campaign-a"));
+        assert!(!promotion_scope_valid(&proof,"campaign-b"));
+        let mut weak=proof.clone();
+        weak["pairedModelImprovementMeasured"]=json!(false);
+        assert!(!promotion_scope_valid(&weak,"campaign-a"));
+    }
     fn evidence()->Value{
         json!({
             "source":"separate_parent_paired_lora_oracle_v1",
@@ -346,16 +363,39 @@ pub(crate) async fn evaluate_candidate(
     receipt
 }
 
+fn promotion_scope_valid(receipt:&Value,campaign:&str)->bool{
+    receipt["source"]=="independent_parent_model_adapter_pair_v1"
+        && receipt["status"]=="promoted"
+        && receipt["pairedModelImprovementMeasured"]==true
+        && receipt["campaignId"]==campaign
+        && receipt["productionDeployed"]==false
+        && receipt["adoptionScope"]=="isolated_descendant_inference_only"
+        && receipt["generatorCommit"].as_str().is_some_and(|s|
+            s.len()==40 && s.bytes().all(|b|b.is_ascii_hexdigit()))
+        && receipt["adapterSha256"].as_str().is_some_and(hex)
+        && receipt["privateCasesSha256"].as_str().is_some_and(hex)
+        && receipt["independentEvaluatorSha256"].as_str().is_some_and(hex)
+        && receipt["measurements"]["source"]=="separate_parent_paired_lora_oracle_v1"
+}
 /// Only verified local weights from this exact RSI campaign are passed to
 /// the next source-compiled descendant. Never auto-deploy to a live user.
 pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
     let id=format!("campaign-selected-adapter-{campaign_id}");
     let Some(receipt)=state.store.get("rsi_promoted_adapter",&id)
         else{return Value::Null};
-    if receipt["status"]!="promoted"
-        ||receipt["pairedModelImprovementMeasured"]!=true
-        ||receipt["campaignId"]!=campaign_id
-        ||receipt["productionDeployed"]!=false{return Value::Null;}
+    if !promotion_scope_valid(&receipt,campaign_id){return Value::Null;}
+    // An adapter that improves token-level tests but repeatedly fails to
+    // produce accepted source improvements should not monopolize all future
+    // RSI generations. Revert to the prior provider after multiple measured
+    // negative outcomes; this is conservative rollback, NOT causal blame.
+    let observations=state.store.all("rsi_generation").into_iter()
+        .filter(|g|g["campaignId"]==campaign_id
+            && g["adaptedModelActuallyUsed"]["promotionId"]==receipt["id"]
+            && g["pairedMeasured"]==true).collect::<Vec<_>>();
+    if observations.len()>=3 && observations.iter().all(|g|
+        g["accepted"]!=true || g["pairedRevalidated"]!=true){
+        return Value::Null;
+    }
     let Some(location)=receipt["candidateDirectory"].as_str()
         else{return Value::Null};
     let Some(expected)=receipt["adapterSha256"].as_str().filter(|s|hex(s))

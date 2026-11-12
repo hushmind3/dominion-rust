@@ -367,12 +367,14 @@ pub(crate) fn instruction(meta:&Value)->String {
     let learning=&meta["principleLearning"];
     let archive=learning["learnedPrinciples"].as_array().into_iter().flatten()
         .take(5).map(|entry|format!(
-            "principle={} inventedAt={} mechanism={} measured={} adopted={} transfers={} regressions={}",
+            "principle={} inventedAt={} mechanism={} measured={} adopted={} transfers={} regressions={} modelEvaluations={} modelGains={}",
             entry["id"],entry["birthCommit"],entry["spec"]["mechanism"],
             entry["descendantEvidence"]["measuredTrials"],
             entry["descendantEvidence"]["measuredAdoptions"],
             entry["descendantEvidence"]["observedTransferAdoptions"],
-            entry["descendantEvidence"]["measuredRegressions"]
+            entry["descendantEvidence"]["measuredRegressions"],
+            entry["descendantEvidence"]["measuredModelAdaptationTrials"],
+            entry["descendantEvidence"]["independentModelImprovements"]
         )).collect::<Vec<_>>().join("\n");
     let chosen=&learning["selectedEvidence"];
     format!("[LEARNED IMPROVEMENT PRINCIPLE LAB] Source-grounded principles and later independent observations:\n{archive}\n        Chosen experiment: id={} target role={} source={} falsifier={}.\n        Synthesis evidence: {}. Form new mechanisms from contrasting successes and failures.        When evidence justifies it, call rsi_system_plan with improvementPrinciples         (id, mechanism, falsifier, prediction, methodPaths, targetRoles, transferDomains, composedFrom)         and edit the REAL implementation source. Changing a Rust program, not a prose recipe,         is required. Prior accepted source is NOT evidence that a later transfer succeeds.         Model weights, memory, retrieval, learning and tools are first-class redesign         targets; a new training operator must also modify executable model and         training-harness code. The evaluator and private held-out tasks stay frozen.",
@@ -482,6 +484,7 @@ mod tests{
     fn independently_evaluated_lora_informs_principle_without_source_credit(){
         let original=born("p_a",&"b".repeat(40));
         let mut descendant=child(&"b".repeat(40),false);
+        descendant["jobId"]=json!("model-only-child");
         descendant["pairedMeasured"]=json!(false);
         descendant["candidateId"]=Value::Null;
         descendant["modelAdapterIndependentEvaluation"]=json!({
