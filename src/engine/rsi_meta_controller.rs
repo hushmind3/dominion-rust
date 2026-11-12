@@ -189,7 +189,7 @@ pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     map.remove("revision");
     let expected=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&body).unwrap_or_default()));
-    policy["revision"]==expected
+    policy["revision"].as_str()==Some(expected.as_str())
         && policy["source"]=="compiled_self_modifying_meta_controller_v2"
         && policy["historyCount"].as_u64()==Some(history_count as u64)
         && policy["revision"].as_str().is_some_and(|sha|
