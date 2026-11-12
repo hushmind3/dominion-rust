@@ -150,3 +150,152 @@ mod tests{
         assert!(!safe_filename("../approved.json"));
     }
 }
+
+
+// The parent coordinator calls this after a descendant has finished running.
+// It is deliberately separate from the editable generation's source oracle.
+// Private evaluation cases never enter the prompt or generation JSON.
+pub(crate) async fn evaluate_candidate(
+    state:&AppState,campaign_id:&str,generation:&Value,coordinator_source:&Path
+)->Value{
+    let candidate=&generation["modelAdapterCandidate"];
+    if candidate["adapterCreated"]!=true || candidate["trainingMode"]!="train"
+        || candidate["source"]!="owner_approved_local_lora_candidate_v1"
+        || candidate["generationJobId"]!=generation["jobId"]
+        || candidate["generatorCommit"]!=generation["generatorCommit"]{
+        return Value::Null;
+    }
+    let report=async {
+        let base=fs::canonicalize(candidate["baseModel"].as_str()
+            .ok_or("기본 모델이 없습니다.")?).map_err(|e|e.to_string())?;
+        let model_root=fs::canonicalize(state.config.data_dir.join("models"))
+            .map_err(|e|e.to_string())?;
+        if !inside(&base,&model_root)||!base.is_dir(){return Err("기본 모델 경로가 바뀌었습니다.".into());}
+        let adapter=fs::canonicalize(candidate["candidateDirectory"].as_str()
+            .ok_or("후보 어댑터가 없습니다.")?).map_err(|e|e.to_string())?;
+        let adapter_root=fs::canonicalize(state.config.data_dir.join("rsi-adapter-candidates"))
+            .map_err(|e|e.to_string())?;
+        if !inside(&adapter,&adapter_root)||!adapter.is_dir(){return Err("후보 디렉터리 무효".into());}
+        let expected=candidate["adapterSha256"].as_str().filter(|s|hex(s))
+            .ok_or("후보 해시 없음")?;
+        if sha_file(&adapter.join("adapter_model.safetensors"))?!=expected{
+            return Err("평가 전 후보 모델 가중치 불일치".into());
+        }
+        let private_root=fs::canonicalize(state.config.data_dir.join("rsi-adapter-eval-private"))
+            .map_err(|e|format!("독립 평가 자료가 준비되지 않았습니다: {e}"))?;
+        let manifest:Value=serde_json::from_slice(&fs::read(private_root.join("manifest.json"))
+            .map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        if manifest["independentEvaluationApproved"]!=true{
+            return Err("독립 평가 승인 없음".into());
+        }
+        let dataset=fs::canonicalize(private_root.join("cases.jsonl"))
+            .map_err(|e|e.to_string())?;
+        if !inside(&dataset,&private_root)||!dataset.is_file(){
+            return Err("독립 평가 자료 경로 오류".into());
+        }
+        let case_sha=manifest["casesSha256"].as_str().filter(|s|hex(s))
+            .ok_or("독립 평가 사례 해시 없음")?;
+        if sha_file(&dataset)?!=case_sha || case_sha==candidate["trainingDataSha256"]{
+            return Err("평가 사례 해시 불일치 또는 학습 자료 재사용".into());
+        }
+        let trusted=fs::canonicalize(coordinator_source.join("scripts/sub4_adapter_eval.py"))
+            .map_err(|e|format!("분리된 상위 실행기에 평가기가 없습니다: {e}"))?;
+        let trusted_root=fs::canonicalize(coordinator_source)
+            .map_err(|e|e.to_string())?;
+        if !inside(&trusted,&trusted_root)||!trusted.is_file(){
+            return Err("후보가 평가기 경로를 바꾸었습니다.".into());
+        }
+        let script_sha=sha_file(&trusted)?;
+        let result=tokio::time::timeout(Duration::from_secs(900),Command::new("python3")
+            .arg(&trusted).arg("--base").arg(&base)
+            .arg("--adapter").arg(&adapter).arg("--cases").arg(&dataset)
+            .arg("--case-sha").arg(case_sha)
+            .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1")
+            .output()).await.map_err(|_|"독립 모델 평가 시간이 초과되었습니다.".to_string())?
+            .map_err(|e|e.to_string())?;
+        if !result.status.success(){
+            return Err(String::from_utf8_lossy(&result.stderr)
+                .chars().take(500).collect::<String>());
+        }
+        let stdout=String::from_utf8_lossy(&result.stdout);
+        let metrics=stdout.lines().rev().find_map(|line|line.strip_prefix(
+            "DOMINION_ADAPTER_EVAL=").and_then(|s|serde_json::from_str::<Value>(s).ok()))
+            .ok_or("평가기가 쌍 비교 영수증을 반환하지 않았습니다.")?;
+        if metrics["source"]!="separate_parent_paired_lora_oracle_v1"
+            || metrics["caseSha256"]!=case_sha
+            || metrics["measuredExamples"].as_u64().unwrap_or(0)<8
+            || metrics["distinctDomains"].as_u64().unwrap_or(0)<2
+            || metrics["privateExamplesReturned"]!=false{
+            return Err("독립 쌍 비교 증거가 부족합니다.".into());
+        }
+        let base_loss=metrics["baselineMeanLoss"].as_f64()
+            .filter(|v|v.is_finite()&&*v>=0.0&&*v<100.0).ok_or("기준 손실 오류")?;
+        let candidate_loss=metrics["candidateMeanLoss"].as_f64()
+            .filter(|v|v.is_finite()&&*v>=0.0&&*v<100.0).ok_or("후보 손실 오류")?;
+        let n=metrics["measuredExamples"].as_u64().unwrap_or(0);
+        let improved=metrics["individuallyImproved"].as_u64().unwrap_or(0);
+        let domains=metrics["domains"].as_object().ok_or("분야별 쌍 비교 누락")?;
+        let enough=domains.len()>=2 && domains.values().all(|v|{
+            let a=v["candidateMeanLoss"].as_f64();
+            let b=v["baselineMeanLoss"].as_f64();
+            v["examples"].as_u64().unwrap_or(0)>0
+                && a.is_some_and(|x|x.is_finite()&&x>=0.0)
+                && b.is_some_and(|x|x.is_finite()&&x>=0.0)
+                && a.unwrap_or(f64::MAX)<=b.unwrap_or(f64::NEG_INFINITY)+0.02
+        });
+        let promoted=base_loss-candidate_loss>=0.02
+            && improved.saturating_mul(3)>=n.saturating_mul(2)
+            && enough;
+        Ok::<Value,String>(json!({
+            "source":"independent_parent_model_adapter_pair_v1",
+            "campaignId":campaign_id,"generationJobId":generation["jobId"],
+            "candidateId":candidate["id"],"generatorCommit":generation["generatorCommit"],
+            "baseModel":base,"candidateDirectory":adapter,"adapterSha256":expected,
+            "privateCasesSha256":case_sha,"independentEvaluatorSha256":script_sha,
+            "measurements":metrics,
+            "pairedModelImprovementMeasured":promoted,
+            "status":if promoted{"promoted"}else{"rejected"},
+            "adoptionScope":"isolated_descendant_inference_only",
+            "productionDeployed":false
+        }))
+    }.await;
+    let receipt=match report {
+        Ok(row)=>row,
+        Err(error)=>json!({"source":"independent_parent_model_adapter_pair_v1",
+            "campaignId":campaign_id,"generationJobId":generation["jobId"],
+            "status":"inconclusive","error":error,
+            "pairedModelImprovementMeasured":false,"productionDeployed":false})
+    };
+    state.store.audit("rsi.adapter_independent_comparison",receipt.clone());
+    let _=state.store.put("rsi_adapter_evaluation",&receipt);
+    if receipt["status"]=="promoted" {
+        let mut selected=receipt.clone();
+        selected["id"]=json!(format!("campaign-selected-adapter-{campaign_id}"));
+        if state.store.put("rsi_promoted_adapter",&selected).is_none(){
+            return json!({"status":"inconclusive","error":"어댑터 채택 영수증 저장 실패"});
+        }
+    }
+    receipt
+}
+
+/// Only verified local weights from this exact RSI campaign are passed to
+/// the next source-compiled descendant. Never auto-deploy to a live user.
+pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
+    let id=format!("campaign-selected-adapter-{campaign_id}");
+    let Some(receipt)=state.store.get("rsi_promoted_adapter",&id)
+        else{return Value::Null};
+    if receipt["status"]!="promoted"
+        ||receipt["pairedModelImprovementMeasured"]!=true
+        ||receipt["campaignId"]!=campaign_id
+        ||receipt["productionDeployed"]!=false{return Value::Null;}
+    let Some(location)=receipt["candidateDirectory"].as_str()
+        else{return Value::Null};
+    let Some(expected)=receipt["adapterSha256"].as_str().filter(|s|hex(s))
+        else{return Value::Null};
+    let root=match fs::canonicalize(state.config.data_dir.join("rsi-adapter-candidates")){
+        Ok(x)=>x,Err(_)=>return Value::Null};
+    let path=match fs::canonicalize(location){Ok(x)=>x,Err(_)=>return Value::Null};
+    if !inside(&path,&root)||sha_file(&path.join("adapter_model.safetensors"))
+        .ok().as_deref()!=Some(expected){return Value::Null;}
+    receipt
+}
