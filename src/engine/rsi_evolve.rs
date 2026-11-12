@@ -4722,6 +4722,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiAdapterInferenceExecuted"]=server.evidence.clone();
         state.store.put("job",&job).ok_or("채택 모델 추론 경로 저장 실패")?;
     }
+    // Record the audit cursor just before the real child tool-using model
+    // turn. A reused session or thousands of unrelated audit events may
+    // neither add credit nor hide earlier competing generation calls.
+    job["rsiAuditStartRowid"]=json!(state.store.audit_rowid_cursor()
+        .map_err(|e|format!("후손 모델 감사 시작점 조회 실패: {e}"))?);
+    state.store.put("job",&job).ok_or("후손 모델 감사 시작점 보존 실패")?;
     let result = jobs::run_prompt(&context, &job).await;
     // Count actual provider-specific inference calls made by this
     // descendant, not the model's declaration or the plan's intent.
@@ -4739,19 +4745,38 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     if let Some(server)=&model_inference {
         let mut finished=state.store.get("job",job_id)
             .ok_or("후손 모델 추론 증거를 기록할 작업이 없습니다.")?;
-        let session=finished["sessionId"].as_str();
-        let calls=state.store.recent_audit(500).into_iter().filter(|event|
-            event["event"]=="model.usage"
-                && event["detail"]["providerId"]==server.provider_id
-                && event["detail"]["sessionId"].as_str()==session
-                && event["detail"]["totalTokens"].as_u64().unwrap_or(0)>0)
-            .count();
+        let session=finished["sessionId"].as_str().unwrap_or("");
+        let cursor=finished["rsiAuditStartRowid"].as_i64().filter(|v|*v>=0)
+            .ok_or("후손 모델 추론의 감사 시작점 없음")?;
+        let audit=state.store.model_usage_for_session_since(session,cursor);
+        let complete=audit.is_ok();
+        let events=audit.unwrap_or_default();
+        let owned=!session.is_empty() &&state.store.get("session",session)
+            .is_some_and(|row|row["rsiRun"]==true
+                &&row["rsiGenerationJobId"]==job_id);
+        let calls=events.iter().filter(|event|{
+            event["detail"]["purpose"]=="chat"
+                &&event["detail"]["providerId"]==server.provider_id
+                &&event["detail"]["model"]=="dominion-promoted-lora"
+                &&event["detail"]["totalTokens"].as_u64().unwrap_or(0)>0
+        }).count();
+        let mixed=events.iter().filter(|event|{
+            event["detail"]["purpose"]=="chat"
+                &&event["detail"]["totalTokens"].as_u64().unwrap_or(0)>0
+                &&(event["detail"]["providerId"]!=server.provider_id
+                    ||event["detail"]["model"]!="dominion-promoted-lora")
+        }).count();
+        let exclusively_used=complete &&owned &&calls>0 &&mixed==0;
         let mut evidence=server.evidence.clone();
-        evidence["source"]=json!(if calls>0{
+        evidence["source"]=json!(if exclusively_used{
             "running_adapted_descendant_inference_v1"
-        }else{"promoted_adapter_ready_without_model_call"});
+        }else{"promoted_adapter_ready_without_exclusive_model_evidence"});
         evidence["actualModelCalls"]=json!(calls);
-        evidence["actuallyUsedInGeneration"]=json!(calls>0);
+        evidence["mixedChatModelCalls"]=json!(mixed);
+        evidence["sessionOwnedByGeneration"]=json!(owned);
+        evidence["auditWindowStartRowid"]=json!(cursor);
+        evidence["auditComplete"]=json!(complete);
+        evidence["actuallyUsedInGeneration"]=json!(exclusively_used);
         finished["rsiAdapterInferenceExecuted"]=evidence;
         state.store.put("job",&finished)
             .ok_or("실제 모델 제공자 사용 영수증 저장 실패")?;
