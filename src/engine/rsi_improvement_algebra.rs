@@ -218,12 +218,19 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
     candidates.sort_by(|(ascore,a),(bscore,b)|bscore.cmp(ascore)
         .then_with(||a["ruleId"].as_str().cmp(&b["ruleId"].as_str()))
         .then_with(||a["target"]["path"].as_str().cmp(&b["target"]["path"].as_str())));
-    let selected=candidates.first().map(|(_,v)|v.clone()).unwrap_or(Value::Null);
+    // Preserve all source-grounded choices for later independent outcome
+    // learning. A policy can now change its ranking based on measured
+    // descendant improvements, not just a proposed graph topology.
+    let ranked=candidates.into_iter().take(32).map(|(score,mut row)|{
+        row["selectionPriority"]=json!(score);
+        row
+    }).collect::<Vec<_>>();
+    let selected=ranked.first().cloned().unwrap_or(Value::Null);
     let mut result=json!({
         "source":"compiled_model_authored_improvement_algebra_v1",
         "generatorCommit":commit,"historyCount":history.len(),
         "operators":rules,"interactionEdges":edges,
-        "selected":selected,
+        "selected":selected,"rankedCandidates":ranked,
         "cycle":{"startingRole":best_origin,
             "edges":best_cycle,"causalityProven":false},
         "candidateCount":candidates.len(),
@@ -257,6 +264,16 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,
     };
     if !plan["operators"].as_array().is_some_and(|xs|xs.len()<=128
         && xs.iter().all(rule_valid)) {return false}
+    if !plan["rankedCandidates"].as_array().is_some_and(|rows|
+        rows.len()<=32 && rows.iter().all(|item|
+            item["selectionPriority"].as_i64().is_some()
+            && item["qualityProven"]==false
+            && plan["operators"].as_array().is_some_and(|ops|
+                ops.iter().any(|r|r==&item["rule"]))
+            && frontier.iter().any(|f|f==&item["target"])
+            && frontier.iter().any(|f|f==&item["productTarget"]))) {
+        return false;
+    }
     let selected=&plan["selected"];
     selected.is_null() || (selected["qualityProven"]==false
         && plan["operators"].as_array().is_some_and(|xs|
