@@ -1325,7 +1325,7 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     }
     for node in verification["nodes"].as_array().unwrap() {
         let tool = node["tool"].as_str().unwrap_or("");
-        if !tools::rsi_allowed(tool) || matches!(tool, "rsi_method_propose" | "algorithm_propose") {
+        if !tools::rsi_allowed(tool) || matches!(tool, "rsi_method_propose" | "algorithm_propose" | "rsi_system_plan") {
             return Err(format!("학습 절차에서 실행할 수 없는 도구: {tool}"));
         }
     }
@@ -3432,7 +3432,7 @@ async fn run_loop(
         }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
+            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan"]);
 
         // After a measured native adoption, the descendant must be offered
         // the next domain rather than re-solving a saturated original target.
@@ -3827,6 +3827,8 @@ async fn run_loop(
         // native provenance as first-class generation evidence.
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
+        generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
+            .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["candidateOrigin"]=current["result"]["rsi"]["candidateOrigin"].clone();
         generation["nativeMutation"]=current["result"]["rsi"]["nativeMutation"].clone();
         let capture = &current["result"]["rsi"];
@@ -4790,16 +4792,22 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     let scoped_input=native_plan_source_input(&job["input"],campaign);
     let source_input=&scoped_input;
     let objective=selection_objective(source_input);
-    let selected_domain=campaign["planSelectedDomain"].as_str()
-        .filter(|domain|DOMAINS.contains(domain))
-        .map(str::to_string);
+    // The accepted model's next target is executable descendant policy,
+    // never a substitute for the frozen source evaluation.
+    let inherited=if source_input["rsiSystemEvolution"]==true
+        && source_input["selectionPolicy"]=="automatic"{
+        crate::engine::rsi_system::inherited_domain(&history)
+    }else{None};
+    let selected_domain=inherited.clone().or_else(||campaign["planSelectedDomain"].as_str()
+        .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
     let trial_id=campaign["planTrialAlgorithmId"].as_str()
         .filter(|id|!id.is_empty()).map(str::to_string);
     let action_history=improvement_history(state,source_input,&history,campaign_id);
+    let trial=if inherited.is_some(){None}else{trial_id};
     let (domain,selection,strategy)=select_generation_strategy(
-        state,if trial_id.is_some(){&history}else{&action_history},&objective,
-        research_continuation(&action_history),trial_id,
-        selected_domain,binary_commit);
+        state,if trial.is_some(){&history}else{&action_history},&objective,
+        if inherited.is_some(){None}else{research_continuation(&action_history)},
+        trial,selected_domain,binary_commit);
     let mut focus_input=source_input.clone();
     focus_input["rsiTargetDomain"]=json!(domain);
     focus_input["rsiIndexId"]=campaign["planIndexId"].clone();
@@ -4977,15 +4985,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
     let action_history=improvement_history(&state,&job["input"],&history,campaign);
-    let continuation = research_continuation(&action_history);
-    let trial_id = job["input"]["rsiTrialAlgorithmId"]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let selected_domain = job["input"]["rsiSelectedDomain"]
-        .as_str()
-        .filter(|domain| DOMAINS.contains(domain))
-        .map(str::to_string);
+    let inherited=if job["input"]["rsiSystemEvolution"]==true
+        && job["input"]["selectionPolicy"]=="automatic"{
+        crate::engine::rsi_system::inherited_domain(&history)
+    }else{None};
+    let continuation=if inherited.is_some(){None}else{research_continuation(&action_history)};
+    let trial_id=if inherited.is_some(){None}else{
+        job["input"]["rsiTrialAlgorithmId"].as_str()
+            .filter(|value|!value.is_empty()).map(str::to_string)
+    };
+    let selected_domain=inherited.or_else(||job["input"]["rsiSelectedDomain"]
+        .as_str().filter(|domain|DOMAINS.contains(domain))
+        .map(str::to_string));
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state,
