@@ -1,0 +1,76 @@
+name: Sub2 native recursive improvement proof
+
+# Ported from Sub3's independently judged native 3-generation experiment.
+# This run NEVER invokes an LLM: a missing source mutation fails instead.
+# Adoption requires actual source edits, compiled descendants and frozen
+# paired A/B measurement receipts; only the server may grant proof.
+on:
+  workflow_dispatch:
+  push:
+    branches: [dominion-sub2]
+    paths:
+      - '.github/workflows/sub2-native-proof.yml'
+      - 'scripts/sub2-native-proof.mjs'
+
+concurrency:
+  group: sub2-native-proof-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  real-native-proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      DOMINION_PORT: '44327'
+      DOMINION_JOB_WORKERS: '1'
+      DOMINION_LIVE_BASE: 'http://127.0.0.1:44327'
+      DOMINION_LIVE_TIMEOUT_MS: '3240000'
+      DOMINION_SOURCE_WORKSPACE: ${{ github.workspace }}
+      DOMINION_EXPERIMENT_SCHEDULER: '0'
+      DOMINION_BACKUP_INTERVAL_SECS: '0'
+      DOMINION_RSI_REAL_MODEL: '0'
+    steps:
+      - name: Checkout exact detached Sub2 source and history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate actual proof source and frozen evaluator gates
+        run: |
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          node --check scripts/sub2-native-proof.mjs
+          cargo test --release --locked --bin dominion-rust three_accepted_patches_do_not_prove_recursive_growth_without_meta_transfer -- --nocapture
+          cargo test --release --locked --bin dominion-rust rsi_mutation::tests -- --nocapture
+          cargo build --release --locked --bin dominion-rust
+      - name: Boot isolated native DOMINION without an LLM server
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/dominion-native/data/rsi-build" "${RUNNER_TEMP}/dominion-native/workspace"
+          echo "DOMINION_DATA=${RUNNER_TEMP}/dominion-native/data" >> "${GITHUB_ENV}"
+          echo "DOMINION_WORKSPACE=${RUNNER_TEMP}/dominion-native/workspace" >> "${GITHUB_ENV}"
+          echo "DOMINION_LIVE_REPORT=${RUNNER_TEMP}/dominion-native/native-proof.json" >> "${GITHUB_ENV}"
+          ln -s "${GITHUB_WORKSPACE}/target" "${RUNNER_TEMP}/dominion-native/data/rsi-build/generator"
+          DOMINION_DATA="${RUNNER_TEMP}/dominion-native/data" DOMINION_WORKSPACE="${RUNNER_TEMP}/dominion-native/workspace" nohup ./target/release/dominion-rust > "${RUNNER_TEMP}/dominion-native/engine.log" 2>&1 &
+      - name: Run real three-generation native improvement and independent frozen A/B
+        run: node scripts/sub2-native-proof.mjs
+      - name: Publish exact candidate patches, plans, and raw paired evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub2-native-recursive-proof-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/dominion-native/native-proof.json
+            ${{ runner.temp }}/dominion-native/engine.log
+            ${{ runner.temp }}/dominion-native/data/rsi-paired/**/candidate.patch
+            ${{ runner.temp }}/dominion-native/data/rsi-paired/**/plan.json
+            ${{ runner.temp }}/dominion-native/data/rsi-paired/**/report.json
+            ${{ runner.temp }}/dominion-native/data/rsi-paired/**/report.json.evidence.txt
