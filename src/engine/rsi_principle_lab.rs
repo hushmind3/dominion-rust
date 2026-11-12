@@ -47,7 +47,7 @@ fn role_adopted(g: &Value, role: &str) -> bool {
     if !adopted(g) { return false; }
     let files = paths_for_role(&g["systemDesign"], role);
     !files.is_empty() && files.iter().all(|path|
-        g["acceptedSourceHashes"][path].as_str().is_some_and(|sha|
+        g["acceptedSourceHashes"][path.as_str()].as_str().is_some_and(|sha|
             sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())))
 }
 fn task_measurement(g: &Value) -> (u64, u64, u64) {
@@ -114,9 +114,9 @@ pub(crate) fn validate_authored(
     if task_path == method_path
         || !target_files.iter().any(|v| v.as_str() == Some(task_path))
         || !target_files.iter().any(|v| v.as_str() == Some(method_path))
-        || !assignments[role].as_array().is_some_and(|files|
+        || !assignments.get(role).and_then(Value::as_array).is_some_and(|files|
             files.iter().any(|v| v.as_str() == Some(task_path)))
-        || !assignments["improvement_methods"].as_array().is_some_and(|files|
+        || !assignments.get("improvement_methods").and_then(Value::as_array).is_some_and(|files|
             files.iter().any(|v| v.as_str() == Some(method_path))) {
         return Err("원리 학습은 서로 다른 지능 소스와 개선기 소스를 같은 실제 결합 설계에서 수정해야 합니다.".into());
     }
