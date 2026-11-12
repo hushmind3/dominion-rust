@@ -40,7 +40,6 @@ pub mod rsi_recursive_laboratory;
 pub mod rsi_principle_learner;
 pub mod rsi_model_learning;
 pub mod rsi_model_weights;
-pub mod rsi_weight_productivity;
 pub mod rsi_archive;
 pub mod rsi_edit_program;
 pub mod rsi_rule_induction;
