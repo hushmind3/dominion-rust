@@ -10641,13 +10641,14 @@ mod sub2_inherited_main_capabilities_tests {
     use super::*;
     #[test]
     fn an_unevaluated_or_model_claimed_rule_cannot_earn_quality_credit() {
-        let fake=json!({"accepted":true,"pairedRevalidated":true,
+        let fake=json!({"jobId":"worker-1","accepted":true,"pairedRevalidated":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "evidenceVerified":true,
             "evaluation":{"metrics":{"eligible":true}},
             "editPolicy":{"revision":"r1","rules":[{"id":"learnt-guard"}]},
             "acceptedSourceHashes":{"src/engine/memory.rs":"a".repeat(64)},
             "ruleExecutions":[{"ruleId":"learnt-guard",
+                "generationJobId":"worker-1",
                 "policyRevision":"r1","runId":"run1","opSeqBefore":1,
                 "allow":["workspace_replace"]}],
             "toolTimeline":[]});
