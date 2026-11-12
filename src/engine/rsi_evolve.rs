@@ -5738,10 +5738,14 @@ fn inherited_edit_policy(
     rows.sort_by(|a,b|a["createdAt"].as_str()
         .cmp(&b["createdAt"].as_str())
         .then_with(||a["jobId"].as_str().cmp(&b["jobId"].as_str())));
-    if rows.len()>128 {
-        rows=rows.split_off(rows.len()-128);
-    }
-    let generated=crate::engine::rsi_edit_genome::evolve(&rows,sub2_edit_policy_reward);
+    // Local rule mutation is bounded to recent executions. Confirmed
+    // productivity evidence is a DIFFERENT, durable learning horizon:
+    // truncating it to 128 rows can erase both arms of earlier independently
+    // matched source trials after many campaigns.
+    let recent=if rows.len()>128{
+        &rows[rows.len()-128..]
+    }else{rows.as_slice()};
+    let generated=crate::engine::rsi_edit_genome::evolve(recent,sub2_edit_policy_reward);
     // Prefer a policy only after it produced more independently adopted
     // FIRST rebuilt successors than a control in >=2 matched source contexts.
     // This decision is compiled into the current child's executable policy,
