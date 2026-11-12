@@ -542,6 +542,34 @@ fn owned_source_origin(recorded:Option<&str>, actual:&str)->bool {
 mod branch_ownership_tests {
     use super::owned_source_origin;
     #[test]
+    fn a_main_checkout_cannot_masquerade_as_the_campaigns_internal_lab() {
+        use crate::{config::Config,db::Store,state::AppState,vault::Vault};
+        use serde_json::json;
+        let root=std::env::temp_dir().join(format!("rsi-sub3-lab-boundary-{}",uuid::Uuid::new_v4()));
+        let source=root.join("checkout");
+        let lab=root.join("rsi-labs").join("lab-test");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&lab).unwrap();
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let make_campaign=|lab_dir:&std::path::Path|json!({
+            "id":"test-campaign","labDir":lab_dir,"sourceDir":source,
+            "sourceBranch":"dominion-sub3","headCommit":"a".repeat(40),
+            "status":"running","nativeApproved":true
+        });
+        let input=json!({"rsiCampaignId":"test-campaign","rsiSourceBranch":"dominion-sub3"});
+        state.store.put("rsi_campaign",&make_campaign(&source)).unwrap();
+        assert!(!super::campaign_source(&state,&input,&source,&"a".repeat(40)));
+        state.store.put("rsi_campaign",&make_campaign(&lab)).unwrap();
+        assert!(super::campaign_source(&state,&input,&lab,&"a".repeat(40)));
+        assert!(!super::campaign_source(&state,
+            &json!({"rsiCampaignId":"test-campaign","rsiSourceBranch":"main"}),
+            &lab,&"a".repeat(40)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn a_source_commit_never_substitutes_for_owned_branch_provenance() {
         assert!(owned_source_origin(Some("dominion-sub3"),"dominion-sub3"));
         for foreign in ["main","master","dominion-sub","dominion-sub1",
@@ -559,10 +587,17 @@ pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &st
     let Some(id) = input["rsiCampaignId"].as_str() else {
         return false;
     };
+    // A detached worker's exception must identify a real, private lab under
+    // this installation's data directory. No recorded campaign may relabel
+    // the main checkout as its lab merely to bypass the owned branch gate.
+    let Some(lab_root)=std::fs::canonicalize(state.config.data_dir.join("rsi-labs")).ok()
+        else{return false};
+    if source.parent()!=Some(lab_root.as_path()) {return false;}
     state.store.get("rsi_campaign", id).is_some_and(|record| {
         record["labDir"]
             .as_str()
             .is_some_and(|p| Path::new(p) == source)
+            && record["sourceDir"].as_str().is_some_and(|p|Path::new(p)!=source)
             && owned_source_origin(record["sourceBranch"].as_str(),
                 input["rsiSourceBranch"].as_str().unwrap_or(""))
             && record["headCommit"] == base
