@@ -372,7 +372,15 @@ pub(crate) fn instruction(learning:&Value)->String {
         .take(4).map(|row|format!("method={} cross-domain-gains={} regressions={} profiles={}",
             row["ruleId"],row["crossCapabilityGains"],row["crossCapabilityRegressions"],
             row["frozenProfileDigests"])).collect::<Vec<_>>().join("; ");
+    let gaps=learning["capabilityGaps"].as_array()
+        .into_iter().flatten()
+        .filter(|row|row["independentHoldoutRegressions"].as_u64().unwrap_or(0)>0)
+        .take(4).map(|row|format!("role={} frozenRegressions={} gains={} source={}",
+            row["role"],row["independentHoldoutRegressions"],
+            row["independentHoldoutGains"],row["target"]["path"]))
+        .collect::<Vec<_>>().join("; ");
     format!("SOURCE-REPLAYED METHOD GENERALIZATION: {}. \
+        Independently measured capability deficits: {}. \
         Successful source adoption alone does not mean the improvement method \
         became better. Improve actual MODEL decision code, MEMORY, LEARNING, \
         TOOLS and other agent roles on independent frozen tasks; use the current \
@@ -380,7 +388,9 @@ pub(crate) fn instruction(learning:&Value)->String {
         observed limitations and evaluate transfer in the next compiled child. \
         Only independent paired receipt replay can teach this method learner.",
         if productive.is_empty(){"no measured cross-capability transfer yet".to_owned()}
-            else{productive})
+            else{productive},
+        if gaps.is_empty(){"no independently replayed capability gap".to_owned()}
+            else{gaps})
 }
 #[cfg(test)]
 mod tests {
