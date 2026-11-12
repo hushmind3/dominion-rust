@@ -195,6 +195,34 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         .unwrap_or(Value::Null)
 }
 
+/// Verify a persisted archive inheritance without trusting the compiled
+/// descendant's JSON summary. The source- and oracle-bound candidate receipt
+/// must still replay, and the claimed archive pointer must exist.
+pub(crate) fn valid_selection(
+    state:&AppState, selection:&Value, base:&str, cases:&Value,
+)->bool {
+    if selection.is_null(){return true;}
+    let Ok(plan)=rsi::case_plan(cases) else{return false};
+    let oracle=format!("{:x}",Sha256::digest(include_bytes!("rsi_oracle_fixture.rs")));
+    let identity=plan_identity(base,&plan,&oracle);
+    let (Some(id),Some(patch))=(selection["candidateId"].as_str(),
+        selection["patchSha256"].as_str()) else{return false};
+    if selection["policy"]!="paired-pareto-stepping-stones-v2"
+        || selection["baseCommit"]!=base
+        || selection["oracleSha256"]!=oracle
+        || selection["persisted"]!=true
+        || selection["adopted"]!=false
+        || selection["qualityProven"]!=false {return false;}
+    let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+    let record_id=format!("{identity}:{patch}");
+    let Some(record)=state.store.get("rsi_archive",&record_id) else{return false};
+    record["identity"]==identity
+        && record["candidateId"]==id
+        && record["patchSha256"]==patch
+        && candidate["patchSha256"]==patch
+        && candidate_scores(state,&candidate,base,&plan,&oracle).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +371,24 @@ mod tests {
         assert_ne!(next["candidateId"],first["candidateId"]);
         assert_eq!(next["descendantAttempts"],0);
         assert_eq!(next["frontierSize"],2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inherited_archive_selection_requires_replayed_candidate_and_exact_oracle() {
+        let (state,root)=state();
+        let generation=insert(&state,"sealed-child",[0.54,0.51]);
+        let selection=select(&state,&[generation],&"a".repeat(40),&plan());
+        assert!(valid_selection(&state,&selection,&"a".repeat(40),&plan()));
+        let mut wrong_base=selection.clone();
+        wrong_base["baseCommit"]=json!("b".repeat(40));
+        assert!(!valid_selection(&state,&wrong_base,&"a".repeat(40),&plan()));
+        let mut wrong_oracle=selection.clone();
+        wrong_oracle["oracleSha256"]=json!("0".repeat(64));
+        assert!(!valid_selection(&state,&wrong_oracle,&"a".repeat(40),&plan()));
+        let mut wrong_patch=selection.clone();
+        wrong_patch["patchSha256"]=json!("0".repeat(64));
+        assert!(!valid_selection(&state,&wrong_patch,&"a".repeat(40),&plan()));
         let _=std::fs::remove_dir_all(root);
     }
 
