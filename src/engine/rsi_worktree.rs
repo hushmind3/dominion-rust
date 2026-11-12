@@ -10,21 +10,16 @@ use tokio::process::Command;
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
 
-/// The canonical main checkout and owned RSI work checkouts may evolve.
-/// Application still requires exact recorded branch and commit provenance.
+/// Sub3 owns only its dedicated source branch. Main and legacy/sibling refs
+/// are read-only to this participant's ordinary RSI execution and adoption.
 pub(crate) fn rsi_work_branch(branch: &str) -> bool {
-    matches!(branch, "main" | "dominion-sub" | "dominion-sub3")
+    branch == "dominion-sub3"
 }
 
-/// Legacy experiments did not record a source branch. They may only be
-/// applied to the original legacy work branch. Current campaigns must match
-/// the exact branch they were evaluated on, including when the checkout's
-/// source path is identical.
+/// The originating job/campaign must attest the exact owned branch. Legacy
+/// experiments with no source branch cannot cross this ownership boundary.
 fn owns_application_branch(current: &str, recorded: Option<&str>) -> bool {
-    rsi_work_branch(current) && match recorded.filter(|v| !v.is_empty()) {
-        Some(branch) => branch == current,
-        None => current == "dominion-sub",
-    }
+    rsi_work_branch(current) && recorded == Some(current)
 }
 
 /// launchd starts the engine with a minimal PATH that often omits
@@ -760,9 +755,6 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
-    if status["branch"]=="main" && !verified {
-        return Err("메인에는 독립 비교에서 검증된 후보만 반영합니다.".into());
-    }
     let recorded_branch=state.store.get("job",&job_id)
         .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string));
     if !status["branch"].as_str().is_some_and(|branch|
@@ -1196,18 +1188,17 @@ mod tests {
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
         assert!(rsi_work_branch("dominion-sub3"));
-        assert!(rsi_work_branch("dominion-sub"));
         assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
         assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
         assert!(!owns_application_branch("dominion-sub3",None));
         assert!(!owns_application_branch("dominion-sub3",Some("")));
-        assert!(owns_application_branch("dominion-sub",None));
-        assert!(owns_application_branch("main",Some("main")));
-        assert!(!owns_application_branch("main",None));
-        assert!(!owns_application_branch("main",Some("dominion-sub3")));
         assert!(!owns_application_branch("dominion-sub3",Some("main")));
-        for forbidden in ["dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
-            assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
+        for forbidden in ["main","master","dominion-sub","dominion-champion",
+            "dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other",
+            "dominion-sub3/other","DOMINION-SUB3"] {
+            assert!(!rsi_work_branch(forbidden), "서브3 이외 브랜치에 적용하면 안 됩니다: {forbidden}");
+            assert!(!owns_application_branch(forbidden,Some(forbidden)));
+            assert!(!owns_application_branch(forbidden,Some("dominion-sub3")));
         }
     }
 
@@ -1253,6 +1244,9 @@ mod tests {
         git_local(&source,&["checkout","-b","dominion-sub2"]);
         assert!(prepare(&context,&job["input"]).await.is_err(),
             "same-commit sibling work branches must not inherit a queued source job");
+        git_local(&source,&["checkout","-b","main"]);
+        assert!(prepare(&context,&job["input"]).await.is_err(),
+            "same-commit main branch must not inherit a queued sub3 job");
         git_local(&source,&["checkout","dominion-sub3"]);
         let worktree=prepare(&context,&job["input"]).await.unwrap();
         assert_ne!(worktree.path,source);
@@ -1286,6 +1280,10 @@ mod tests {
         compared["status"]=json!("inconclusive");
         compared["evaluation"]=json!({"metrics":{"regressions":0}});
         state.store.put("rsi_candidate",&compared);
+        git_local(&source,&["checkout","main"]);
+        assert!(apply_to_sub(&state,candidate_id,&request).await.is_err(),
+            "a main checkout at the exact same SHA must never receive sub3's patch");
+        git_local(&source,&["checkout","dominion-sub3"]);
         let applied=apply_to_sub(&state,candidate_id,&request).await.unwrap();
         assert_eq!(applied["status"],"applied_to_sub");
         assert_eq!(std::fs::read_to_string(source.join("web/src/pages/Demo.tsx")).unwrap(),"export const version = 2\n");
