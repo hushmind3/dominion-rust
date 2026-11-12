@@ -284,6 +284,7 @@ pub fn observe_owner_message(
         "sourceMessageId": message_id.clone(),
         "createdAt": message["created_at"].as_str().unwrap_or("").to_string(),
         "status": "active",
+        "verifiedLocalOwner": true,
     }));
     if facts.len() > MAX_ENTRIES {
         let drop = facts.len() - MAX_ENTRIES;
@@ -335,7 +336,9 @@ fn context_block_at(state:&AppState,room_id:&str,query:&str,visible:Option<&Hash
             || visible.is_some_and(|ids|fact["status"]=="superseded"
                 && fact["supersededBy"].as_str().is_some_and(|id|!ids.contains(id))))
         .filter(|(_, fact)| {
-            !fact["sourceMessageId"]
+            // Ingestion already authenticated local owner records. Legacy
+            // entries without the flag still revalidate against the source.
+            fact["verifiedLocalOwner"]==true || !fact["sourceMessageId"]
                 .as_str()
                 .and_then(|id| state.store.message(id))
                 .is_some_and(|source| source["metadata"]["origin"].is_object())
