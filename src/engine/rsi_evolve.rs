@@ -4471,9 +4471,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let successor_hint=if paired || owner_focus {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
     }else{
-        successor_stage["domain"].as_str().map(str::to_string)
-            .or_else(||science_active.then(||
-                architecture_target["domain"].as_str()).flatten().map(str::to_string))
+        (if science_active && science["phase"]!="discover_new_mechanism" {
+            architecture_target["domain"].as_str()
+        }else{None}).map(str::to_string)
+            .or_else(||successor_stage["domain"].as_str().map(str::to_string))
             .or(frontier_hint).or(inherited.clone())
             .or_else(||system_evolution_target_hint(
                 input,snapshot["attempt"].as_u64().unwrap_or(0)))
@@ -4989,10 +4990,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiInteractionGraph"]).unwrap_or_default();
         let combined_sources=serde_json::to_string(
             &job["input"]["rsiCoupledPortfolio"]).unwrap_or_default();
-        let scientific_instruction=crate::engine::rsi_recursive_scientist::instruction(
-            &job["input"]["rsiRecursiveScientificProgram"]);
-        let factorial_instruction=crate::engine::rsi_factorial::instruction(
-            &job["input"]["rsiFactorialExperiment"]);
+        let science_enabled=job["input"]["rsiAutonomous"]==true
+            && job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
+            && !paired_descendant_target(&job["input"]);
+        let scientific_instruction=if science_enabled {
+            crate::engine::rsi_recursive_scientist::instruction(
+                &job["input"]["rsiRecursiveScientificProgram"])
+        }else{String::new()};
+        let factorial_instruction=if science_enabled {
+            crate::engine::rsi_factorial::instruction(
+                &job["input"]["rsiFactorialExperiment"])
+        }else{String::new()};
         let peer_context=format!(
             "RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
             scientific_instruction,factorial_instruction,
