@@ -221,6 +221,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
     // Preserve all source-grounded choices for later independent outcome
     // learning. A policy can now change its ranking based on measured
     // descendant improvements, not just a proposed graph topology.
+    let total_candidates=candidates.len();
     let ranked=candidates.into_iter().take(32).map(|(score,mut row)|{
         row["selectionPriority"]=json!(score);
         row
@@ -233,7 +234,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
         "selected":selected,"rankedCandidates":ranked,
         "cycle":{"startingRole":best_origin,
             "edges":best_cycle,"causalityProven":false},
-        "candidateCount":candidates.len(),
+        "candidateCount":total_candidates,
         "selectionPolicy":"editable_source_compositional_rule_search",
         "latestIndependentlyChangedRoles":latest_changed,
         "acceptedRevisionPremiseMemory":accumulated_roles,
