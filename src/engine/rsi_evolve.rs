@@ -3377,6 +3377,13 @@ async fn run_loop(
                 &plan["symbioticCurriculum"],&plan["architectureTarget"],
                 plan["architectureFrontier"].as_array()
                     .ok_or("후손 상호개선 계획의 소스 그래프가 없습니다.")?)?;
+            if !crate::engine::rsi_negative_transfer::valid(
+                &plan["negativeTransferPlan"],
+                plan["architectureFrontier"].as_array()
+                    .ok_or("후손 능력 간 간섭의 실제 소스 근거 없음")?,
+                &head,history.len()) {
+                return Err("동결 평가 결과에서 발견된 능력 간 간섭·수정 소스 근거가 유효하지 않습니다.".into());
+            }
             if !crate::engine::rsi_interaction::valid_graph(
                 &plan["interactionGraph"])
                 || (plan["coupledPortfolio"].is_object()
@@ -3456,6 +3463,7 @@ async fn run_loop(
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             child_input["rsiInteractionGraph"]=plan["interactionGraph"].clone();
+            child_input["rsiNegativeTransferPlan"]=plan["negativeTransferPlan"].clone();
             child_input["rsiCoupledPortfolio"]=plan["coupledPortfolio"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
@@ -3720,6 +3728,7 @@ async fn run_loop(
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
         generation["interactionGraph"]=current["input"]["rsiInteractionGraph"].clone();
+        generation["negativeTransferPlan"]=current["input"]["rsiNegativeTransferPlan"].clone();
         generation["coupledPortfolio"]=current["input"]["rsiCoupledPortfolio"].clone();
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
@@ -5073,18 +5082,23 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner_focus=matches!(
             job["input"]["rsiFocusSelection"]["source"].as_str(),
             Some("owner_selected"|"user_selected"));
+        let negative_transfer_active=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"])
+            && job["input"]["rsiNegativeTransferPlan"]["selected"]["victim"].is_object()
+            && job["input"]["rsiNegativeTransferPlan"]["selected"]["source"].is_object();
         let capability_active=job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
+            && !negative_transfer_active
             && crate::engine::rsi_method_generalization::prefer_capability_target(
                 &job["input"]["rsiImprovementAlgebra"],
                 &job["input"]["rsiMethodGeneralization"]);
         let algebra_active=job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
-            && !capability_active
+            && !negative_transfer_active && !capability_active
             && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
         let suggested=if job["input"]["rsiAutonomous"]==true && !owner_focus
             && !paired_descendant_target(&job["input"])
-            && !algebra_active && !capability_active {
+            && !negative_transfer_active && !algebra_active && !capability_active {
             crate::engine::rsi_system::inherited_stage(&state,&history,frontier)
         }else{Value::Null};
         let expected=crate::engine::rsi_meta_controller::apply_successor_stage(
@@ -5103,6 +5117,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         crate::engine::rsi_symbiosis::validate_curriculum(
             &job["input"]["rsiSymbioticCurriculum"],
             &job["input"]["rsiArchitectureTarget"],frontier)?;
+        let negative_transfer_expected=crate::engine::rsi_negative_transfer::plan(
+            &state,&history,frontier,&commit);
+        if job["input"]["rsiNegativeTransferPlan"]!=negative_transfer_expected
+            || job["input"]["rsiControllerPlan"]["negativeTransferPlan"]
+                !=negative_transfer_expected
+            || !crate::engine::rsi_negative_transfer::valid(
+                &negative_transfer_expected,frontier,&commit,history.len()) {
+            return Err("실행 후손의 교차 능력 손상 기록이 독립 재검증 결과와 다릅니다.".into());
+        }
         let observed_influence=observed_holdout;
         let portfolio=&job["input"]["rsiCoupledPortfolio"];
         let factor_expected=crate::engine::rsi_factorial::design(
