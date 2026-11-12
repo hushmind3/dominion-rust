@@ -16,7 +16,16 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
-/// Inventory every compilable agent/frontend source under the selected
+// Unit tests are checked by Cargo, but are not executable intelligence
+// methods in a release descendant and must not pollute its editable frontier.
+fn runtime_source_file(path:&str)->bool{
+    let file=path.rsplit('/').next().unwrap_or(path);
+    !file.ends_with("_tests.rs")
+        && !file.ends_with("_fixture.rs")
+        && !path.split('/').any(|part|matches!(part,"tests"|"fixtures"))
+}
+
+/// Inventory every executable agent/frontend source under the selected
 /// experimental revision, not merely a hand-picked optimization fixture.
 /// An inventory hash changes when ANY generation changes the executable
 /// system's source graph; the prompt can remain short without losing lineage.
@@ -38,7 +47,8 @@ fn source_inventory(root:&Path)->Vec<Value> {
             if !path.is_file(){continue;}
             let Some(relative)=path.strip_prefix(&root).ok()
                 .and_then(|p|p.to_str()) else{continue};
-            if !crate::engine::rsi::safe_path(relative){continue;}
+            if !crate::engine::rsi::safe_path(relative)
+                || !runtime_source_file(relative){continue;}
             if !matches!(path.extension().and_then(|e|e.to_str()),
                 Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py")){continue;}
             let Ok(bytes)=fs::read(&path) else{continue};
@@ -1290,6 +1300,26 @@ mod tests {
             assert_eq!(generation["metaLearning"],Value::Null);
         }
         let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn descendant_source_inventory_excludes_test_only_artifacts() {
+        for artifact in [
+            "src/engine/rsi_evolve_tests.rs",
+            "src/engine/rsi_oracle_fixture.rs",
+            "src/engine/tests/worker.rs",
+            "src/engine/fixtures/mock.rs",
+        ] {
+            assert!(!runtime_source_file(artifact), "{artifact} is not a release capability");
+        }
+        for runtime in [
+            "src/engine/rsi_evolve.rs",
+            "src/engine/rsi_meta_controller.rs",
+            "src/engine/rsi_system.rs",
+            "src/engine/learning.rs",
+            "web/src/App.tsx",
+        ] {
+            assert!(runtime_source_file(runtime), "{runtime} is executable intelligence");
+        }
     }
     #[test]
     fn system_instruction_renders_json_shapes_as_literals() {
