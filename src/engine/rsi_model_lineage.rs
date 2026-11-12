@@ -127,7 +127,7 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
     // Declared objective cannot win a comparison. Only a replayed candidate
     // from an actual compiled worker with the exact same source/profile counts.
     let mut results=BTreeMap::<String,(usize,usize,usize,usize,u64)>::new();
-    let mut historic_trials=BTreeMap::<String,usize>::new();
+    let mut historic_results=BTreeMap::<String,(usize,usize,usize,usize,u64)>::new();
     let mut used=BTreeSet::<String>::new();
     for g in history {
         let Some(p)=g["generatorProviderId"].as_str()else{continue};
@@ -143,10 +143,28 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
         let Some(id)=g["candidateId"].as_str()else{continue};
         if !used.insert(id.to_owned()){continue;}
         let key=route_key(p,m);
-        *historic_trials.entry(key.clone()).or_default()+=1;
+        let historic=historic_results.entry(key.clone()).or_default();
+        historic.0+=1;
+        if metrics["eligible"]==true && metrics["verdict"]=="improved"
+            && g["accepted"]==true && g["pairedRevalidated"]==true {
+            historic.1+=1;
+        }
+        for case in metrics["measurements"].as_array().into_iter().flatten(){
+            if case["holdout"]!=true {continue;}
+            if case["baselinePass"]==false && case["candidatePass"]==true {
+                historic.2+=1;
+            }else if case["baselinePass"]==true && case["candidatePass"]==false {
+                historic.3+=1;
+            }
+            for observation in case["metrics"].as_array().into_iter().flatten(){
+                if observation["improved"]==true {historic.2+=1;}
+                if observation["regressed"]==true {historic.3+=1;}
+            }
+        }
+        historic.4+=g["tokens"].as_u64().unwrap_or(0);
         // A changed generator is NOT the same experiment. Historical results
-        // may guide exploration, but cannot claim that one API model beat
-        // another on identical source.
+        // are a weaker prequential model-choice prediction, not proof of an
+        // identical-code model head-to-head.
         if generation_commit!=commit {continue;}
         let entry=results.entry(key).or_default();
         entry.0+=1;
@@ -175,7 +193,8 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
         let p=row["providerId"].as_str().unwrap_or("");
         let m=row["model"].as_str().unwrap_or("");
         let key=route_key(p,m);
-        let historical=historic_trials.get(&key).copied().unwrap_or(0);
+        let (historical,historical_wins,historical_gains,historical_regressions,_)
+            =historic_results.get(&key).copied().unwrap_or_default();
         let (trials,wins,gains,losses,tokens)=results
             .get(&key).copied().unwrap_or_default();
         let predictive=(wins as f64+1.0)/(trials as f64+2.0);
@@ -183,6 +202,12 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
         evidence.push(json!({"providerId":p,"model":m,
             "replayedSameSourceTrials":trials,
             "historicalReplayedTrialsForExplorationOnly":historical,
+            "historicalPrequentialAdoptions":historical_wins,
+            "historicalHoldoutGains":historical_gains,
+            "historicalHoldoutRegressions":historical_regressions,
+            "historicalPredictiveImprovement":
+                (historical_wins as f64+1.0)/(historical as f64+2.0),
+            "historicalEvidenceIsMatchedModelComparison":false,
             "independentlyAdopted":wins,
             "frozenHoldoutGains":gains,"frozenHoldoutRegressions":losses,
             "observedTokens":tokens,
@@ -220,6 +245,28 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
                     selected=json!({"providerId":underexplored["providerId"],
                         "model":underexplored["model"]});
                     basis="owner_approved_cross_generation_exploration_not_quality_proof";
+                }else if historical_base>=2 {
+                    // On a changing generator, this is a regularized
+                    // prequential forecast of which model writes better
+                    // *descendants*, not a paired API-model benchmark.
+                    let previous=evidence.iter().find(|row|
+                        row["providerId"]==baseline["providerId"]
+                        && row["model"]==baseline["model"]);
+                    let prior_score=previous.and_then(|row|
+                        row["historicalPredictiveImprovement"].as_f64())
+                        .unwrap_or(0.5);
+                    let prediction=underexplored["historicalPredictiveImprovement"]
+                        .as_f64().unwrap_or(0.5);
+                    if underexplored["historicalReplayedTrialsForExplorationOnly"]
+                        .as_u64().unwrap_or(0)>=2
+                        && underexplored["historicalPrequentialAdoptions"]
+                            .as_u64().unwrap_or(0)>=2
+                        && underexplored["historicalHoldoutRegressions"]==0
+                        && prediction>prior_score+0.15 {
+                        selected=json!({"providerId":underexplored["providerId"],
+                            "model":underexplored["model"]});
+                        basis="prequential_model_route_forecast_not_direct_superiority";
+                    }
                 }
             }
         }
