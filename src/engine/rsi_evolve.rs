@@ -3531,7 +3531,7 @@ async fn run_loop(
         }
         // Run a genuine model-scaffold research competition for the source
         // generator (including owner-configured API routes), independently
-        // of LoRA weight promotion. Every trial is still evaluated against
+        // of any external model-specific intervention. Every trial uses
         // the SAME frozen source-paired oracle and attributed to its real model.
         let generator_competition=
             crate::engine::rsi_model_learning::live_generator_competition(
