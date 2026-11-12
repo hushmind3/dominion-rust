@@ -404,6 +404,27 @@ mod tests {
         assert_eq!(locked["selectedProviderId"],"api");
         let _=std::fs::remove_dir_all(root);
     }
+    #[tokio::test]
+    async fn offline_local_model_cannot_displace_actual_api_generator(){
+        let (state,root)=test_state();
+        state.store.put("provider",&json!({
+            "id":"api","model":"cloud","enabled":true,
+            "baseUrl":"https://example.test/v1"}));
+        state.store.put("provider",&json!({
+            "id":"offline","model":"unused","enabled":true,
+            "baseUrl":"http://127.0.0.1:9/v1","local":true}));
+        state.save_secret("provider:api","configured-token");
+        let commit="d".repeat(40);
+        let input=json!({"providerId":"api","model":"cloud",
+            "rsiGeneratorCommit":commit});
+        let planned=live_generator_competition(
+            &state,&[],&input,&commit,2,true).await;
+        assert_eq!(planned["selectedProviderId"],"api");
+        assert_eq!(planned["decision"],
+            "unavailable_local_challenger_keep_incumbent");
+        assert!(competition_matches(&planned,&input));
+        let _=std::fs::remove_dir_all(root);
+    }
     fn sample(job:&str,base:&str,domain:&str,provider:&str,good:bool)->Value{
         json!({"jobId":job,"generatorCommit":base,
             "generatorProviderId":provider,"generatorModel":"model",
