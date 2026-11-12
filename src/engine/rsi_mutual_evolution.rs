@@ -12,6 +12,8 @@ struct EdgeEvidence {
     coupled_adoptions:u64,
     direct_successor_attempts:u64,
     direct_successor_adoptions:u64,
+    return_stage_attempts:u64,
+    return_stage_adoptions:u64,
 }
 
 fn roles_of(g:&Value)->Vec<String>{
@@ -85,12 +87,34 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
         let Some(accepted_commit)=g["acceptedCommit"].as_str() else{continue};
         for later in &recent{
             if later["generatorCommit"].as_str()!=Some(accepted_commit){continue;}
+            // A compiled, source-focused successor may fail BEFORE it authors
+            // another model design. Count that as an ATTEMPT, not as a gain.
+            let mut attempted=roles_of(later).into_iter()
+                .collect::<BTreeSet<_>>();
+            let chosen=&later["successorStage"];
+            let grounded=later["metaPolicyExecuted"]==true
+                && chosen["predecessorCommit"]==g["acceptedCommit"]
+                && chosen["sourceDesignId"]==g["systemDesign"]["id"]
+                && chosen["path"].as_str().is_some_and(|path|
+                    later["focusFiles"].as_array().is_some_and(|files|
+                        files.iter().any(|file|file.as_str()==Some(path))));
+            if grounded{
+                if let Some(role)=chosen["role"].as_str(){
+                    attempted.insert(role.to_string());
+                }
+            }
             for from in &attributed{
-                for to in roles_of(later) {
-                    if *from==to || !roles.contains(from)||!roles.contains(&to){continue;}
-                    let edge=evidence.entry((from.clone(),to)).or_default();
+                for to in &attempted {
+                    if *from==*to || !roles.contains(from)||!roles.contains(to){continue;}
+                    let edge=evidence.entry((from.clone(),to.clone())).or_default();
                     edge.direct_successor_attempts+=1;
-                    if accepted(later){edge.direct_successor_adoptions+=1;}
+                    let adopted=accepted(later)
+                        && roles_of(later).iter().any(|role|role==to);
+                    if adopted{edge.direct_successor_adoptions+=1;}
+                    if grounded && chosen["phase"]=="return_improvement_to_primary" {
+                        edge.return_stage_attempts+=1;
+                        if adopted{edge.return_stage_adoptions+=1;}
+                    }
                 }
             }
         }
@@ -111,6 +135,7 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
             let score=45*i64::from(origin>0)
                 +35*i64::from(destination==0)
                 +25*(count.direct_successor_adoptions.min(3) as i64)
+                +30*(count.return_stage_adoptions.min(3) as i64)
                 +12*(count.authored_stages.min(3) as i64)
                 +8*(count.coupled_adoptions.min(3) as i64)
                 -8*(failed_followups.min(4) as i64)
@@ -127,6 +152,8 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
                 "coupledAdoptions":count.coupled_adoptions,
                 "observedDirectSuccessorAttempts":count.direct_successor_attempts,
                 "observedDirectSuccessorAdoptions":count.direct_successor_adoptions,
+                "observedReturnStageAttempts":count.return_stage_attempts,
+                "observedReturnStageAdoptions":count.return_stage_adoptions,
                 "priority":score,
                 "causalAttributionProven":false,
                 "qualityProvenForThisDesign":false
@@ -174,6 +201,8 @@ pub(crate) fn curriculum(frontier:&[Value],meta:&Value,allowed:&[&str])->Value{
             let known=forward.and_then(|e|e["observedDirectSuccessorAdoptions"].as_u64())
                 .unwrap_or(0).min(4)
                 +backward.and_then(|e|e["observedDirectSuccessorAdoptions"].as_u64())
+                    .unwrap_or(0).min(4)
+                +backward.and_then(|e|e["observedReturnStageAdoptions"].as_u64())
                     .unwrap_or(0).min(4);
             let attempts=forward.and_then(|e|e["observedDirectSuccessorAttempts"].as_u64())
                 .unwrap_or(0)

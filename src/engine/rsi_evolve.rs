@@ -4474,6 +4474,37 @@ async fn run_loop(
             && crate::engine::rsi::campaign_capability_proven(
                 &context.state,&evidence_record)
             && (input["rsiSystemEvolution"]!=true || system_proven));
+        // Distinguish an actual independently adopted pair of source edits
+        // from an A->B improvement HYPOTHESIS and from a verified B->A return.
+        // This observation is persisted before the next compiled descendant
+        // reads history and updates the cross-capability policy.
+        let mutual_pair=&generation["mutualCurriculum"]["pair"];
+        let source_pair_adopted=mutual_pair.is_object()
+            && generation["accepted"]==true
+            && generation["pairedRevalidated"]==true
+            && generation["systemDesign"]["interactionEdges"].as_array()
+                .is_some_and(|edges|edges.iter().any(|edge|
+                    edge["fromRole"]==mutual_pair["fromRole"]
+                    && edge["toRole"]==mutual_pair["toRole"]
+                    && edge["fromPath"]==mutual_pair["fromPath"]
+                    && edge["toPath"]==mutual_pair["toPath"]))
+            && generation["acceptedSourceHashes"][mutual_pair["fromPath"]
+                .as_str().unwrap_or("")].is_string()
+            && generation["acceptedSourceHashes"][mutual_pair["toPath"]
+                .as_str().unwrap_or("")].is_string();
+        generation["mutualObservation"]=json!({
+            "source":"observed_cross_intelligence_programme_v1",
+            "executedCompiledCurriculum":generation["mutualProgrammeExecuted"],
+            "programmeRevision":generation["mutualCurriculum"]["revision"],
+            "sourcePairIndependentlyAdopted":source_pair_adopted,
+            "returnStageAttempted":
+                generation["successorStage"]["phase"]=="return_improvement_to_primary",
+            "returnStageIndependentlyAdopted":
+                generation["successorStage"]["phase"]=="return_improvement_to_primary"
+                    && generation["accepted"]==true
+                    && generation["pairedRevalidated"]==true,
+            "causalTransferProven":false
+        });
         // The descendant's forecast was frozen before editing. Real assessed
         // outcomes now update task-level error available to its successor.
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
