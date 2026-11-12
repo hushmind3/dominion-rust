@@ -46,22 +46,74 @@ fn condition(g: &Value) -> &'static str {
         "rejected"
     } else { "no_candidate" }
 }
-fn guard(when: &str, previous: &Value) -> bool {
-    match when {
-        "always" => true,
-        "adopted" => previous["accepted"] == true,
-        "not_adopted" => previous["accepted"] != true,
-        "improved" => condition(previous) == "improved",
-        "regressed" => condition(previous) == "regressed",
-        "rejected" => condition(previous) == "rejected",
-        "no_candidate" => condition(previous) == "no_candidate",
-        "neutral" => condition(previous) == "adopted",
-        _ => false,
-    }
-}
 fn known_guard(s: &str) -> bool {
     matches!(s, "always"|"adopted"|"not_adopted"|"improved"
         |"regressed"|"rejected"|"no_candidate"|"neutral")
+}
+fn valid_guard(when: &Value, depth: usize) -> bool {
+    if depth > 8 {return false;}
+    if let Some(name)=when.as_str() {return known_guard(name);}
+    let Some(map)=when.as_object() else{return false};
+    if map.len()!=1 && !(map.len()==3
+        && map.contains_key("metric") && map.contains_key("op")
+        && map.contains_key("value")) {return false;}
+    if let Some(all)=map.get("all").and_then(Value::as_array) {
+        return !all.is_empty() && all.len()<=16
+            && all.iter().all(|sub|valid_guard(sub,depth+1));
+    }
+    if let Some(any)=map.get("any").and_then(Value::as_array) {
+        return !any.is_empty() && any.len()<=16
+            && any.iter().all(|sub|valid_guard(sub,depth+1));
+    }
+    if let Some(not)=map.get("not") {
+        return valid_guard(not,depth+1);
+    }
+    let Some(metric)=when["metric"].as_str() else{return false};
+    let Some(op)=when["op"].as_str() else{return false};
+    metric.len()<=80 && !metric.is_empty()
+        && metric.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'_')
+        && matches!(op,">"|">="|"<"|"<="|"=="|"!=")
+        && when["value"].as_f64().is_some_and(|v|v.is_finite())
+}
+fn guard(when: &Value, previous: &Value) -> bool {
+    if let Some(s)=when.as_str() {
+        return match s {
+            "always"=>true,
+            "adopted"=>previous["accepted"]==true,
+            "not_adopted"=>previous["accepted"]!=true,
+            "improved"=>condition(previous)=="improved",
+            "regressed"=>condition(previous)=="regressed",
+            "rejected"=>condition(previous)=="rejected",
+            "no_candidate"=>condition(previous)=="no_candidate",
+            "neutral"=>condition(previous)=="adopted",
+            _=>false
+        };
+    }
+    if let Some(all)=when["all"].as_array() {
+        return all.iter().all(|sub|guard(sub,previous));
+    }
+    if let Some(any)=when["any"].as_array() {
+        return any.iter().any(|sub|guard(sub,previous));
+    }
+    if let Some(not)=when.get("not") {
+        return !guard(not,previous);
+    }
+    // Numeric predicates can refer only to aggregate metrics supplied by
+    // independent evaluation. Raw holdout rows, IDs or answers are not
+    // traversable by this interpreter.
+    let Some(name)=when["metric"].as_str() else{return false};
+    let Some(actual)=previous["evaluation"]["metrics"][name].as_f64()
+        else{return false};
+    let Some(expected)=when["value"].as_f64() else{return false};
+    match when["op"].as_str() {
+        Some(">")=>actual>expected,
+        Some(">=")=>actual>=expected,
+        Some("<")=>actual<expected,
+        Some("<=")=>actual<=expected,
+        Some("==")=>(actual-expected).abs()<f64::EPSILON,
+        Some("!=")=>(actual-expected).abs()>=f64::EPSILON,
+        _=>false
+    }
 }
 fn node<'a>(program: &'a Value, id: &str) -> Option<&'a Value> {
     program["nodes"].as_array()?.iter().find(|n| n["id"] == id)
@@ -93,11 +145,12 @@ fn authored_valid(program: &Value) -> bool {
     }
     let mut seen=BTreeSet::new();
     for edge in edges {
-        let (Some(from),Some(to),Some(when))=(
-            edge["from"].as_str(),edge["to"].as_str(),edge["when"].as_str())
+        let (Some(from),Some(to))=(
+            edge["from"].as_str(),edge["to"].as_str())
         else{return false};
-        if !ids.contains(from) || !ids.contains(to) || !known_guard(when)
-            || !seen.insert((from.to_owned(),to.to_owned(),when.to_owned())) {
+        let when=&edge["when"];
+        if !ids.contains(from) || !ids.contains(to) || !valid_guard(when,0)
+            || !seen.insert((from.to_owned(),to.to_owned(),hash(when))) {
             return false;
         }
     }
@@ -206,8 +259,7 @@ pub(crate) fn synthesize(history: &[Value], frontier: &[Value], commit: &str)
     }
     if let Some(g)=previous {
         for edge in program["edges"].as_array().into_iter().flatten() {
-            if edge["from"]==previous_id &&
-                edge["when"].as_str().is_some_and(|when|guard(when,g)) {
+            if edge["from"]==previous_id && guard(&edge["when"],g) {
                 if let Some(n)=node(program,edge["to"].as_str().unwrap_or("")) {
                     enqueue(&mut candidates,history,program,frontier,n,0.12);
                 }
@@ -342,6 +394,21 @@ mod tests {
         let g=json!({"accepted":false,"systemDesign":{"openProgram":{
             "source":"model_authored_open_experiment_graph_v1"}}});
         assert!(synthesize(&[g],&[],"abc").is_null());
+    }
+    #[test]
+    fn model_authored_numeric_guards_use_only_aggregate_metrics() {
+        let expression=json!({"all":[
+            {"metric":"improvedHoldouts","op":">=","value":2},
+            {"not":"regressed"}
+        ]});
+        assert!(valid_guard(&expression,0));
+        let observed=json!({"evaluation":{"metrics":{
+            "improvedHoldouts":3,"regressions":0}},"accepted":true,
+            "pairedRevalidated":true});
+        assert!(guard(&expression,&observed));
+        let no_eval=json!({"evaluation":{"metrics":{
+            "measurements":[{"id":"hidden","candidatePass":true}]}}});
+        assert!(!guard(&expression,&no_eval));
     }
     #[test]
     fn graph_revisions_bind_to_content() {
