@@ -99,9 +99,9 @@ fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
 /// unavailable call instead of using the already indexed source snapshot.
 fn rsi_edit_checkpoint_guidance(read_available: bool) -> &'static str {
     if read_available {
-        "실제 소스 근거가 있습니다. 필요하면 제공된 workspace_read_range로 현재 줄과 sourceSha256를 확인한 다음 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 실행하세요. 소스 변경 여부는 파일 검증으로만 판정합니다. 네이티브 호출이 불가능하면 같은 인자의 JSON 객체 하나만 출력하세요."
+        "실제 소스 근거가 있습니다. 새 지능 구조를 rsi_system_plan에 기록하세요. Rust 함수 전체는 workspace_replace_function(path,functionName,newText,expectedSha256)으로, 작은 범위는 workspace_replace(startLine,endLine,newText,expectedSha256)로 수정하세요. 제공된 sourceSha256를 사용하세요. 설명만으로 개선은 증명되지 않습니다."
     } else {
-        "이 라운드에는 workspace_read_range가 제공되지 않습니다. 이미 전달된 색인 소스 발췌의 정확한 원문 줄 번호와 sourceSha256를 expectedSha256로 사용해 제공된 workspace_replace(path,startLine,endLine,newText,expectedSha256)를 지금 실행하세요. 범위는 최대 120줄이며 기존 코드를 최소한으로 수정하세요. 네이티브 호출이 불가능하면 동일한 인자의 JSON 객체 하나만 출력하세요. 설명만 남겨서는 소스가 수정되지 않습니다."
+        "이번 라운드는 코드 재검색이 아닌 구현 단계입니다. 새 설계는 rsi_system_plan으로 등록하고, 이미 제공된 소스 SHA를 사용해 workspace_replace 또는 workspace_replace_function을 실행하세요. 새 파일은 workspace_write로 생성하세요. 컴파일 및 독립 A/B 검증은 실행기가 담당합니다."
     }
 }
 
@@ -1343,7 +1343,8 @@ async fn run_turn_body(
             // A generic RSI research session may inspect source merely as
             // evidence; only an actual, focused generation gets edit-only
             // tools and native tool_choice=required.
-            let focused_generation = session["rsiExplicitFocus"] == true
+            let focused_generation = (session["rsiExplicitFocus"] == true
+                || session["rsiSystemEvolution"] == true)
                 && session["rsiGenerationJobId"].is_string();
             let checkpoint = if focused_generation && rsi_force_edit_stage && !has_write {
                 Some(true)
@@ -1653,7 +1654,8 @@ async fn run_turn_body(
             // Preserve the exact observation and allow ONE more model action
             // with the edit-only menu; no fabricated edit or synthetic gain.
             // Generic RSI research never enters this branch.
-            let focused_generation = session["rsiExplicitFocus"] == true
+            let focused_generation = (session["rsiExplicitFocus"] == true
+                || session["rsiSystemEvolution"] == true)
                 && session["rsiGenerationJobId"].is_string();
             let relevant_operations = state.store.all("execution_operation").into_iter()
                 .filter(|operation| operation["runId"].as_str() == Some(execution_id)
