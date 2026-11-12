@@ -1,6 +1,6 @@
-name: Sub1 three-generation actual quality improvement campaign
+name: Sub1 multi-generation verified recursive quality improvement proof
 
-# Execute up to three real descendant generations and measure compiled, frozen holdout improvement and actual parent adoption.
+# Execute real model generations with enough independent revision slots for a measured plateau, three verified adoptions, and method transfer.
 # This run measures independently replayed plateau-source inheritance, not an authored fixture.
 # This explicit integrated proof exercises SHA-verified native function edits,
 # same-session syntax and sibling-scope recovery, and three-arm learned editing.
@@ -24,18 +24,18 @@ concurrency:
 jobs:
   single-generation:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 85
     env:
       DOMINION_PORT: '43173'
       DOMINION_JOB_WORKERS: '1'
       DOMINION_EXPERIMENT_SCHEDULER: '0'
-      SUB1_LIVE_MAX_ATTEMPTS: '3'
+      SUB1_LIVE_MAX_ATTEMPTS: '5'
       # Verified model failure spent 83,383 input tokens in generation one.
       # The current Rust coordinator reserves actual tokens for descendants.
-      SUB1_LIVE_TOKEN_BUDGET: '90000'
-      SUB1_LIVE_TIME_BUDGET: '3000'
-      SUB1_LIVE_DEADLINE_MS: '3300000'
-      SUB1_LIVE_REPORT: benchmark/sub1-three-generation-result.json
+      SUB1_LIVE_TOKEN_BUDGET: '240000'
+      SUB1_LIVE_TIME_BUDGET: '3600'
+      SUB1_LIVE_DEADLINE_MS: '3900000'
+      SUB1_LIVE_REPORT: benchmark/sub1-recursive-quality-result.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,7 +124,7 @@ jobs:
         with:
           name: sub1-real-three-generation-quality-proof
           path: |
-            benchmark/sub1-three-generation-result.json
+            benchmark/sub1-recursive-quality-result.json
             benchmark/sub1-proxy-tool-choice.jsonl
             ${{ runner.temp }}/sub1-engine.log
             ${{ runner.temp }}/sub1-proxy.log
