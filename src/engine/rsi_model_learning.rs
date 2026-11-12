@@ -24,6 +24,9 @@ fn eligible(g:&Value)->bool{
         && g["selfControllerVerified"]==true
         && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && g["candidateOrigin"]=="model_driven_detached_worktree"
+        && g["changedSourcePaths"].as_array().is_some_and(|paths|
+            !paths.is_empty()&&paths.iter().all(|p|
+                p.as_str().is_some_and(crate::engine::rsi::safe_path)))
         && g["generatorCommit"].as_str().is_some_and(|v|
             v.len()==40 && v.bytes().all(|b|b.is_ascii_hexdigit()))
         && g["comparisonProfileSha256"].as_str().is_some_and(|v|
@@ -145,6 +148,7 @@ mod tests {
         json!({"jobId":job,"generatorCommit":base,
             "generatorProviderId":provider,"generatorModel":"model",
             "domain":domain,"comparisonProfileSha256":"f".repeat(64),
+            "changedSourcePaths":["src/engine/router.rs"],
             "pairedRevalidated":true,"selfControllerVerified":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "candidateId":job,"accepted":good,
@@ -172,6 +176,20 @@ mod tests {
         not_measured[0]["pairedRevalidated"]=json!(false);
         let untrusted=learn(&not_measured);
         assert!(compared_preference(&untrusted,&strong,&weak).is_none());
+    }
+    #[test]
+    fn fabricated_no_edit_candidate_does_not_train_model_routing(){
+        let a="a".repeat(40);let b="b".repeat(40);
+        let mut fabricated=sample("a1",&a,"memory","strong",true);
+        fabricated["changedSourcePaths"]=json!([]);
+        let model=learn(&[
+            fabricated,sample("b1",&a,"memory","weak",false),
+            sample("a2",&b,"tools","strong",true),
+            sample("b2",&b,"tools","weak",false)
+        ]);
+        let strong=json!({"id":"strong","model":"model"});
+        let weak=json!({"id":"weak","model":"model"});
+        assert!(compared_preference(&model,&strong,&weak).is_none());
     }
     #[test]
     fn no_model_comparison_without_same_frozen_baseline(){
