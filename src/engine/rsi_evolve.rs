@@ -5624,7 +5624,10 @@ fn reconcile_descendant_target(
 /// adopted post-change source ledger. A neutral paired trial is a small
 /// feasibility observation, never a claimed capability gain.
 fn sub2_edit_policy_reward(g:&Value)->f64 {
-    if g["candidateOrigin"]!="model_driven_detached_worktree"
+    // Never promote a source-edit controller on a request's claimed model
+    // identity. The full, untruncated actual session audit must match.
+    if g["modelAttributionConsistent"]!=true
+        || g["candidateOrigin"]!="model_driven_detached_worktree"
         || g["editPolicy"].is_null(){return 0.0;}
     // Merely carrying an inherited policy in a plan is not execution.
     // Match its revision to a real program-stage or rule-fire receipt
@@ -10742,6 +10745,7 @@ mod sub2_inherited_main_capabilities_tests {
     #[test]
     fn an_unevaluated_or_model_claimed_rule_cannot_earn_quality_credit() {
         let fake=json!({"jobId":"worker-1","accepted":true,"pairedRevalidated":true,
+            "modelAttributionConsistent":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "evidenceVerified":true,
             "evaluation":{"metrics":{"eligible":true}},
@@ -10766,11 +10770,15 @@ mod sub2_inherited_main_capabilities_tests {
         let mut real=no_receipt;
         real["toolTimeline"][0]["toolReceipt"]["verified"]=json!(true);
         assert_eq!(sub2_edit_policy_reward(&real),1.0);
+        real["modelAttributionConsistent"]=json!(false);
+        assert_eq!(sub2_edit_policy_reward(&real),0.0,
+            "mixed-model sessions cannot promote an edit rule");
     }
     #[test]
     fn rewritten_edit_program_needs_a_later_verified_adopted_source_write() {
         let mut g=json!({
             "jobId":"worker-program","accepted":true,
+            "modelAttributionConsistent":true,
             "pairedRevalidated":true,"evidenceVerified":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "evaluation":{"metrics":{"eligible":true}},
