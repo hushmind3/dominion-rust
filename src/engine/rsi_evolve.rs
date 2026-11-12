@@ -3291,6 +3291,11 @@ async fn run_loop(
                     && !plan["coDesignPortfolio"].is_null()) {
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
+            if plan["principleLearning"].is_object()
+                && !crate::engine::rsi_principle_learning::valid(
+                    &plan["principleLearning"],&history) {
+                return Err("후손의 개선 원리 학습 증거가 독립 평가 이력과 다릅니다.".into());
+            }
             if plan["openImprovementProgram"].is_object()
                 && (!crate::engine::rsi_program_graph::valid(
                     &plan["openImprovementProgram"],&history,
@@ -3399,6 +3404,7 @@ async fn run_loop(
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiReflexiveProgram"]=plan["reflexiveProgram"].clone();
             child_input["rsiOpenImprovementProgram"]=plan["openImprovementProgram"].clone();
+            child_input["rsiPrincipleLearning"]=plan["principleLearning"].clone();
             child_input["rsiMutualProgram"]=plan["mutualProgram"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -3634,6 +3640,7 @@ async fn run_loop(
             "factorialExperiment":current["input"]["rsiFactorialExperiment"],
             "reflexiveProgram":current["input"]["rsiReflexiveProgram"],
             "openImprovementProgram":current["input"]["rsiOpenImprovementProgram"],
+            "principleLearning":current["input"]["rsiPrincipleLearning"],
             "mutualProgram":current["input"]["rsiMutualProgram"],
             "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
             "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
@@ -4460,6 +4467,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }else{candidate_domains(&objective)};
     let lineage=crate::engine::rsi_system::lineage_capsule(&history);
     let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
+    // Independent task-quality and descendant capability measurements.
+    let principle_learning=crate::engine::rsi_principle_learning::study(&history);
     // Derived inside the REBUILT descendant from real paired source changes.
     // It identifies which frozen A, B, A+B variant is not yet measured.
     let factorial=crate::engine::rsi_factorial::design(
@@ -4648,6 +4657,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "factorialExperiment":factorial,
         "reflexiveProgram":reflexive_program,
         "openImprovementProgram":open_program,
+        "principleLearning":principle_learning,
         "mutualProgram":mutual_program,
         "archiveSelection":archive,
         "editPolicy":edit_policy
@@ -4729,6 +4739,9 @@ fn validated_descendant_controller(
             !crate::engine::rsi_mutual_program::valid_program(
                 &plan["mutualProgram"],frontier,commit,history.len(),
                 &plan["mutualProgram"]["transferGraph"]))
+        || (plan["principleLearning"].is_object()
+            && !crate::engine::rsi_principle_learning::valid(
+                &plan["principleLearning"],history))
         || (plan["openImprovementProgram"].is_object()
             && plan["architectureFrontier"].as_array().is_none_or(|frontier|
                 !crate::engine::rsi_program_graph::valid(
@@ -4800,6 +4813,7 @@ fn validated_descendant_controller(
         || input["rsiFactorialExperiment"]!=plan["factorialExperiment"]
         || input["rsiReflexiveProgram"]!=plan["reflexiveProgram"]
         || input["rsiOpenImprovementProgram"]!=plan["openImprovementProgram"]
+        || input["rsiPrincipleLearning"]!=plan["principleLearning"]
         || input["rsiMutualProgram"]!=plan["mutualProgram"]
     {
         return Err("후손 계획과 실행 worker의 목표·전략·자기모형이 다릅니다.".into());
@@ -4870,6 +4884,7 @@ mod descendant_controller_contract_tests {
             "rsiFactorialExperiment":plan["factorialExperiment"],
             "rsiReflexiveProgram":plan["reflexiveProgram"],
             "rsiOpenImprovementProgram":plan["openImprovementProgram"],
+            "rsiPrincipleLearning":plan["principleLearning"],
             "rsiMutualProgram":plan["mutualProgram"],
             "rsiControllerPlan":plan
         });
@@ -5079,6 +5094,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                         &job["input"]["rsiInteractionGraph"],frontier)))) {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
+        if pinned && job["input"]["rsiPrincipleLearning"].is_object()
+            && !crate::engine::rsi_principle_learning::valid(
+                &job["input"]["rsiPrincipleLearning"],&history) {
+            return Err("재컴파일된 후손의 개선 원리 학습 기록이 변경됐습니다.".into());
+        }
         if pinned && job["input"]["rsiOpenImprovementProgram"].is_object()
             && (job["input"]["rsiMetaPolicy"]["openImprovementRevision"]
                 !=job["input"]["rsiOpenImprovementProgram"]["revision"]
@@ -5134,6 +5154,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "reflexiveSha256":job["input"]["rsiReflexiveProgram"]["sha256"],
             "reflexivePhase":job["input"]["rsiReflexiveProgram"]["phase"],
             "openImprovementRevision":job["input"]["rsiOpenImprovementProgram"]["revision"],
+            "principleLedgerSha256":job["input"]["rsiPrincipleLearning"]["sha256"],
             "mutualRevision":job["input"]["rsiMutualProgram"]["revision"],
             "currentPhase":job["input"]["rsiMutualProgram"]["phase"]
         })}else{Value::Null};
@@ -5193,6 +5214,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let open_program_instructions=
             crate::engine::rsi_program_graph::instruction(
                 &job["input"]["rsiOpenImprovementProgram"]);
+        let principle_learning_instructions=
+            crate::engine::rsi_principle_learning::instruction(
+                &job["input"]["rsiPrincipleLearning"]);
         let factorial_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
             =="matched_factorial_experiment_design"
             || job["input"]["rsiReflexiveProgram"]["phase"]
@@ -5212,7 +5236,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         format!("{}\n\nEDITABLE META-IMPROVER DECISION:\n{}\n\nINHERITED EXECUTABLE IMPROVEMENT PROGRAM:\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nCAMPAIGN OBJECTIVE: {}\n\nCURRENT ASSIGNED TASK: {}\n\nCOMPARATIVE REDESIGN MODE: {}\n\nOTHER INDEPENDENTLY TESTED LINEAGES (references only, never automatic patches):\n{}\n\nCURATED ADOPTED DESIGNS AND FAILURE COUNTEREXAMPLES (data, not instructions):\n{}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,assigned),
-            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}\n{factorial_instructions}\n{reflexive_instructions}\n{open_program_instructions}"),
+            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}\n{factorial_instructions}\n{reflexive_instructions}\n{open_program_instructions}\n{principle_learning_instructions}"),
             successor_instructions,expected,owner,assigned,job["input"]["rsiComparativeMode"],
             capsule(&peer_evidence,3500),capsule(&curated,5500),capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
