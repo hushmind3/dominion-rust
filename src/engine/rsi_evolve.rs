@@ -6602,12 +6602,12 @@ mod tests {
         git(&context, &source, &["add", "."]).await.unwrap();
         git(&context, &source, &["-c","user.name=Test","-c","user.email=test@localhost","commit","-qm","controlled worker"]).await.unwrap();
         let base = git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap();
-        git(&context,&source,&["checkout","-b","dominion-sub3"]).await.unwrap();
+        git(&context,&source,&["checkout","-b","dominion-champion"]).await.unwrap();
         let cases=["zero_boundary","negative_one","negative_two","negative_three","positive_one","positive_two","positive_three","positive_four"]
             .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
         context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
-            "rsiSourceBranch":"dominion-sub3",
+            "rsiSourceBranch":"dominion-champion",
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],
             "rsiFixtureMode":"research_then_adopt",
@@ -6670,7 +6670,7 @@ mod tests {
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.is_err(),
             "main must never be an application target");
         assert_eq!(git(&context,&source,&["rev-parse","HEAD"]).await.unwrap(),base);
-        git(&context,&source,&["checkout","dominion-sub3"]).await.unwrap();
+        git(&context,&source,&["checkout","dominion-champion"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();
