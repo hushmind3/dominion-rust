@@ -4446,10 +4446,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }
         return Err(error);
     }
-    // The coordinator that queued this child may be the OLD generator. A
-    // recompiled descendant must actually use its own revised policy
-    // synthesis, not inherit an obsolete parent-selected edit method.
-    let mut descendant_method=learned_edit_method(&state,&job["input"],&history);
+    // A system-evolution planner runs IN the exact rebuilt successor.
+    // Its source-scoped edit policy is an executable descendant decision,
+    // not a suggestion for the old coordinator to replace at runtime.
+    let mut descendant_method=if job["input"]["rsiSystemEvolution"]==true {
+        let plan=&job["input"]["rsiControllerPlan"];
+        if plan["generatorCommit"]!=commit
+            || !plan["editPolicy"].is_object()
+            || job["input"]["rsiEditPolicy"]!=plan["editPolicy"] {
+            return Err("후손의 실행 방법과 컴파일된 계획의 계보가 다릅니다.".into());
+        }
+        plan["editPolicy"].clone()
+    }else{
+        learned_edit_method(&state,&job["input"],&history)
+    };
     descendant_method["selectedByGeneratorCommit"]=json!(commit);
     job["input"]["rsiEditPolicy"]=descendant_method.clone();
     job["rsiEditPolicyDecision"]=json!({

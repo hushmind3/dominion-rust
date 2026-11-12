@@ -230,6 +230,8 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         components.push(json!({"role":role,"domain":domain,"representativeSources":inventory}));
     }
     for generation in history.iter().filter(|generation|generation["accepted"]==true
+        && generation["pairedRevalidated"]==true
+        && generation["candidateOrigin"]=="model_driven_detached_worktree"
         && generation["evaluation"]["metrics"]["eligible"]==true) {
         let design=&generation["systemDesign"];
         for role in design_roles(design) {
@@ -238,7 +240,11 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
                 if design_roles(design).len()==1 {design["targetFiles"].as_array()}else{None});
             let sources=paths.into_iter().flatten().filter_map(|path| {
                 let path=path.as_str().filter(|path|crate::engine::rsi::safe_path(path))?;
-                let bytes=fs::read(root.join(path)).ok()?;let sha=format!("{:x}",Sha256::digest(&bytes));
+                let base=fs::canonicalize(root).ok()?;
+                let target=fs::canonicalize(base.join(path)).ok()?;
+                if !target.starts_with(&base)||!target.is_file(){return None;}
+                let bytes=fs::read(target).ok()?;
+                let sha=format!("{:x}",Sha256::digest(&bytes));
                 if generation["acceptedSourceHashes"][path]!=sha {return None;}
                 Some(json!({"path":path,"sha256":sha,"bytes":bytes.len()}))
             }).collect::<Vec<_>>();
