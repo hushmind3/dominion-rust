@@ -1129,9 +1129,26 @@ pub(crate) fn propose(
         }
         let parents=principle["composedFrom"].as_array().cloned()
             .unwrap_or_default();
+        let mut seen_parents=BTreeSet::<String>::new();
         if parents.len()>6 || parents.iter().any(|item|item.as_str()
-            .is_none_or(|name|name.is_empty()||name.len()>80)){
-            return Err("새 원리의 구성 요소는 이름 있는 원리 6개 이하여야 합니다.".into());
+            .is_none_or(|name|name.is_empty()||name.len()>80))
+            || parents.iter().filter_map(Value::as_str)
+                .any(|parent|!seen_parents.insert(parent.to_string())||parent==name){
+            return Err("새 원리는 중복되지 않은 실제 선행 원리만 합성해야 합니다.".into());
+        }
+        if !parents.is_empty(){
+            let history=state.store.all("rsi_generation");
+            let observed=history.iter().filter(|past|
+                accepted_model_design(past).is_some()
+                    && past["changedSourcePaths"].as_array().is_some())
+                .flat_map(|past|past["systemDesign"]["improvementPrinciples"]
+                    .as_array().cloned().unwrap_or_default())
+                .filter_map(|row|row["name"].as_str().map(str::to_string))
+                .collect::<BTreeSet<_>>();
+            if parents.iter().filter_map(Value::as_str).any(|parent|
+                !observed.contains(parent)){
+                return Err("합성하려는 선행 원리는 독립 채택된 실제 소스 계보에 있어야 합니다.".into());
+            }
         }
     }
     let next_files=body["nextTargetFiles"].as_array()
