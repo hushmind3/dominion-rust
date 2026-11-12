@@ -5088,7 +5088,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let meta_instructions=if job["input"]["rsiMetaPolicy"].is_object() {
             crate::engine::rsi_meta_controller::instruction(&job["input"]["rsiMetaPolicy"])
         }else{String::new()};
-        let coupled_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
+        let coupled_instructions=if job["input"]["rsiReflexiveProgram"].is_object() {
+            "REFLEXIVE SOURCE INTERVENTION: focus on the one attested role/path.              Read other subsystems as context only. Build a model-authored source              redesign of the selected component, not an unrelated joint patch.              The next recompiled descendant will be assigned the complementary              subsystem only after independent source adoption.".to_string()
+        }else if job["input"]["rsiMetaPolicy"]["selectionMode"]
             =="matched_factorial_experiment_design"
             && job["input"]["rsiFactorialExperiment"]["selected"]["isolatedEditRequired"]==true {
             "ISOLATED INTERVENTION: all other subsystem files are read-only context. This experiment changes ONLY the designated source role; cross-system redesign follows after a separately measured isolated variant.".to_string()
