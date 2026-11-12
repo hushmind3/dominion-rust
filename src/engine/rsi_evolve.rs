@@ -5548,7 +5548,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "rankingAuthority":"compiled_descendant_not_resident_supervisor"
         }));
         (domain.to_string(),selection,strategy)
-    } else {        (domain.to_string(),selection,strategy)
     } else {
         select_generation_strategy(&state, &history, &objective,
             if repair_domain.is_some(){None}else{continuation},selected_trial,
