@@ -85,7 +85,10 @@ pub fn definitions() -> Vec<Value> {
                             "id":{"type":"string"},"role":{"type":"string"},
                             "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
                             "path":{"type":"string"},"objective":{"type":"string"},
-                            "mechanism":{"type":"string"}
+                            "mechanism":{"type":"string"},
+                            "principleKeys":{"type":"array","maxItems":8,
+                                "description":"Optional model-invented transferable mechanism factors reused across different programs; only independently measured task behavior earns them empirical credit.",
+                                "items":{"type":"string"},"uniqueItems":true}
                         },"required":["id","role","domain","path","objective","mechanism"],
                         "additionalProperties":false}},
                     "edges":{"type":"array","maxItems":64,
