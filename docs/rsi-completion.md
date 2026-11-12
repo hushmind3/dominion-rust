@@ -3,6 +3,16 @@
 이 문서는 "재귀적 자기개선이 완성됐다"를 판정하는 기준과, 그 기준에 대한 현재 측정값을 기록한다.
 주장은 저장된 캠페인 기록으로만 뒷받침한다.
 
+## 2026-11-12 챔피온 자체 검증 43134812885 — 한정된 RSI 완주
+
+- [챔피온 GitHub Actions](https://github.com/hushmind3/dominion-rust/actions/runs/43134812885)은 **챔피온 소스 `c3e0e014`에서 시작**한 독립 실험입니다. 과거 결함 복원 없이 실행했습니다.
+- **연속 3세대 독립 채택**, `maxAcceptedStreak=3`, `capabilityDemonstrated=true`, `actualCompletion=true`, `stopReason=capability_demonstrated`; 각 세대 회귀 0건, 모델 호출/토큰 0.
+- 채택 계보: `c3e0e014 → 87dc8e2e → d3bb211b → d6d8e768`; 기억 → 개선기 → 기억 분야의 실제 네이티브 소스 변경 및 독립 paired holdout 개선.
+- 세대별 개선 실측(원본 → 후보): 장기 기억 회상 **272.066 → 113.185ms**, 개선기 탐색 **149.462 → 17.947ms**, 후손 기억 회상 **130.879 → 89.075ms**.
+- [동일 소스 CI](https://github.com/hushmind3/dominion-rust/actions/runs/43134813025): Rust 테스트 **830개 통과·0개 실패**.
+- [챔피온 원본 캠페인 영수증](../benchmark/champion-native-rsi-completion-2026-11-12.json)을 저장했습니다. 이 3개 채택 커밋은 해당 GitHub Actions의 **격리 실험 계보**입니다. 이후 브랜치에 병합된 서브3의 별도 검증 계보와 커밋 SHA를 혼동하지 않습니다.
+- 입증 범위는 **미리 구현된 네이티브 변형 연산자에 의한 한정된 재귀적 자기개선**입니다. 모델이 패치를 생성하거나 새로운 변형 연산자를 발명한 증거가 아니며 `accelerationProven=false`입니다.
+
 ## 2026-11-12 현재 Sub3 측정
 
 캠페인 `6ad36711-7016-4ede-8ad2-0e875899cf68`이 **3세대 연속 독립 채택**으로 완료됐다.
