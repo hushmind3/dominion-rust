@@ -37,6 +37,21 @@ fn roles(v:&Value)->Option<Vec<String>> {
     }
     Some(set.into_iter().collect())
 }
+/// The candidate ID is commit-specific evidence. The METHOD FAMILY is a
+/// separately replayable semantic lineage: it survives an accepted rewrite
+/// of the same method path, named operator and role transformation. Changing
+/// the actual mechanism still requires independent downstream evaluation.
+pub(crate) fn method_family_id(rule:&Value)->Option<String> {
+    let name=rule["name"].as_str().filter(|s|!s.is_empty()&&s.len()<=64)?;
+    let method_role=rule["methodRole"].as_str()
+        .filter(|s|crate::engine::rsi_open_topology::valid_role(s))?;
+    let path=rule["methodPath"].as_str()
+        .or_else(||rule["method"]["path"].as_str())
+        .filter(|s|crate::engine::rsi::safe_path(s))?;
+    let premises=roles(&rule["premises"])?;
+    let products=roles(&rule["products"])?;
+    Some(digest(&json!([name,method_role,path,premises,products])))
+}
 fn witnesses(g:&Value,rule:&Value)->bool {
     if !adopted(g){return false}
     let Some(path)=rule["methodPath"].as_str()
@@ -95,6 +110,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
                 rule["methodRole"].as_str(),rule["methodPath"].as_str(),
                 roles(&rule["premises"]),roles(&rule["products"]))else{continue};
             let Some(method)=path_source(frontier,method_role,path)else{continue};
+            let Some(method_family)=method_family_id(rule)else{continue};
             if premises.iter().any(|r|source(frontier,r).is_none())
                 || products.iter().any(|r|source(frontier,r).is_none()){
                 continue;
@@ -104,7 +120,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
                 rule["methodRole"],rule["methodPath"]]);
             let key=digest(&witness);
             let rule_record=json!({
-                "id":key,
+                "id":key,"methodFamilyId":method_family,
                 "name":rule["name"],"premises":premises,"products":products,
                 "methodRole":method_role,"method":method,
                 "mechanism":rule["hypothesis"],
@@ -257,6 +273,8 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,
         || plan["qualityProven"]!=false {return false}
     let rule_valid=|rule:&Value|{
         rule["id"].as_str().is_some_and(|s|hash_ok(s,64))
+            && method_family_id(rule).as_deref()==
+                rule["methodFamilyId"].as_str()
             && frontier.iter().any(|f|f==&rule["method"])
             && roles(&rule["premises"]).is_some()
             && roles(&rule["products"]).is_some()
@@ -346,6 +364,30 @@ mod tests{
         assert_eq!(plan["rankedCandidates"].as_array().unwrap().len(),3);
         assert_eq!(plan["cycle"]["edges"].as_array().unwrap().len(),3);
         assert!(valid(&plan,&frontier,&c,hist.len()));
+    }
+    #[test]
+    fn rewritten_method_versions_share_a_family_but_not_an_evidence_id(){
+        let method="src/engine/rsi_improvement_algebra.rs";
+        let frontier=vec![row("scientific_method",method),
+            row("memory","src/engine/memory.rs"),
+            row("tools","src/engine/tools.rs")];
+        let first=birth(&"a".repeat(40),&"b".repeat(40),"one",
+            "repair_tools_from_memory",method,"scientific_method",
+            "memory","tools");
+        let second=birth(&"b".repeat(40),&"c".repeat(40),"two",
+            "repair_tools_from_memory",method,"scientific_method",
+            "memory","tools");
+        let compiled=compile(&[first,second],&frontier,&"c".repeat(40));
+        let rules=compiled["operators"].as_array().unwrap();
+        assert_eq!(rules.len(),2);
+        assert_ne!(rules[0]["id"],rules[1]["id"],
+            "each adopted source revision has its own evidence identity");
+        assert_eq!(rules[0]["methodFamilyId"],rules[1]["methodFamilyId"],
+            "successor revisions of the same intelligence improvement principle retain lineage");
+        let mut renamed=rules[0].clone();
+        renamed["name"]=json!("different_principle");
+        assert_ne!(method_family_id(&renamed),method_family_id(&rules[0]));
+        assert!(valid(&compiled,&frontier,&"c".repeat(40),2));
     }
     #[test]
     fn adopted_role_change_activates_composable_rule_without_fixed_phase_names(){
