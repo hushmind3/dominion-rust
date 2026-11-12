@@ -7,6 +7,7 @@ import {execFileSync} from 'node:child_process';
 const mode=process.argv[2];
 const upstream='https://text.pollinations.ai/openai';
 const localModel=process.env.SUB4_MODEL_KIND==='ollama';
+const systemGoal=process.env.SUB4_SYSTEM_GOAL==='1';
 const selectedModel=localModel?(process.env.SUB4_MODEL_NAME||'qwen3:4b-instruct'):'openai-fast';
 const ollamaOrigin=process.env.SUB4_OLLAMA_URL||'http://127.0.0.1:11434';
 const port=Number(process.env.DOMINION_PORT||43179);
@@ -15,6 +16,7 @@ const reportPath=process.env.SUB4_LIVE_REPORT||'benchmark/sub4-live-rsi-result.j
 const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 let receipt={schema:'sub4.real-model.rsi.v1',branch:'dominion-sub4',
   sourceCommit:commit,model:selectedModel,providerKind:localModel?'ollama':'openai',
+  systemGoal,modelPreflight:null,wholeSystemEvidence:null,
   modelContextTokens:localModel?16384:null,
   status:'initializing',
   actualModelCalls:0,sourceWriteCalls:0,modelMethodCalls:0,
@@ -51,6 +53,15 @@ function summarize(g) {
     metrics.eligible===true && Number(metrics.improvedHoldouts||0)>0 &&
     Number(metrics.regressions||0)===0;
   return {attempt:g.attempt,jobId:g.jobId,
+    generatorCommit:g.generatorCommit||null,acceptedCommit:g.acceptedCommit||null,
+    generatorBinarySha256:g.generatorBinarySha256||null,
+    systemDesign:g.systemDesign||null,
+    systemBlueprintVerified:g.systemBlueprintVerified===true,
+    descendantPlan:g.descendantPlan||null,
+    compiledPlanExecuted:g.compiledPlanExecuted||null,
+    acceptedSourceHashes:g.acceptedSourceHashes||{},
+    candidateOrigin:g.candidateOrigin||null,
+    evidenceVerified:g.evidenceVerified===true,
     tokenUsage:g.tokenUsage,actualModelCalls:Number(g.tokenUsage?.calls||0),
     toolsUsed:ops,sourceWriteCalls:ops.filter(o=>['workspace_replace','workspace_replace_range','workspace_write'].includes(o.tool)).reduce((n,o)=>n+Number(o.actualWrites||0),0),
     modelMethodCalls:count('rsi_method_propose'),
@@ -117,24 +128,50 @@ if(mode==='probe'){
       try{await get('/api/health');healthy=true;break}catch{await sleep(1200)}
     }
     if(!healthy)throw Error('native DOMINION engine did not start');
+    const nativeProof=process.env.SUB4_NATIVE_INDUCTION==='1';
+    let toolMode='native';
+    if(systemGoal && localModel && !nativeProof) {
+      const tags=await fetch(ollamaOrigin+'/api/tags',{signal:AbortSignal.timeout(20000)})
+        .then(async res=>{if(!res.ok)throw Error('Ollama model tags unavailable');return res.json()});
+      const installed=(tags.models||[]).find(item=>item.name===selectedModel||item.model===selectedModel);
+      if(!installed)throw Error('Real coding model not installed: '+selectedModel);
+      const response=await post(ollamaOrigin+'/api/chat',{
+        model:selectedModel,stream:false,think:false,
+        options:{temperature:0,num_ctx:16384,num_predict:96},
+        messages:[{role:'user',content:'Use the code_search tool to find the Rust symbol named memory_retrieve.'}],
+        tools:[{type:'function',function:{name:'code_search',description:'Find Rust symbols',
+          parameters:{type:'object',properties:{query:{type:'string'}},required:['query']}}}]
+      },180000);
+      const calls=response?.message?.tool_calls||[];
+      toolMode=calls.some(call=>call?.function?.name==='code_search')?'native':'compat';
+      const resident=await fetch(ollamaOrigin+'/api/ps').then(res=>res.json());
+      const effective=(resident.models||[]).find(item=>item.name===selectedModel||item.model===selectedModel)?.context_length??null;
+      receipt.modelPreflight={digest:installed.digest||null,toolMode,
+        actualNativeToolCalls:calls.length,effectiveContextTokens:effective,
+        totalDurationNs:response?.total_duration??null};
+      persist();
+      if(typeof effective==='number' && effective<8192)
+        throw Error('Actual Ollama context <8192 tokens; tool-based source editing not viable');
+    }
     const provider=await post(host+'/api/providers',{
       id:'sub4-live-model',name:localModel?'Sub4 real local model':'Sub4 real public model',
       kind:localModel?'ollama':'openai',
-      enabled:true,toolMode:'native',
+      enabled:true,toolMode,
       ...(localModel?{contextTokens:16384,maxOutputTokens:1536}:{}),
       baseUrl:localModel?ollamaOrigin:'http://127.0.0.1:5667/v1',model:selectedModel
     });
     receipt.providerId=provider.id||'sub4-live-model';
     await post(host+'/api/dev/config',{sourceDir:process.env.DOMINION_SOURCE_WORKSPACE});
-    const nativeProof=process.env.SUB4_NATIVE_INDUCTION==='1';
     const goal=nativeProof
       ? 'Evolve DOMINION source with independently measured native transformations, beginning with memory, then improving the improver and transferring the rebuilt descendant to a distinct capability. The native editor must change actual Rust source, be compiled, pass a frozen paired A/B, and be adopted. Only measured gains choose the next domain. If native induction has no applicable safe transformation, fall back to actual model-authored edits.'
+      : systemGoal
+      ? 'Redesign the COMPLETE DOMINION intelligence system recursively. The compiled descendant must inspect its own executable algorithm, harness, memory, learning, tools and improvement-method modules. Use the independently observed failures and current indexed Rust sourceSha256 to submit a causal architecture via rsi_system_plan (use component=system with multiple components when appropriate); make real code edits using workspace_replace_range or workspace_replace with exact source preconditions, and create new modules with workspace_write when necessary. Invent and execute reusable improvement methods through rsi_method_propose. The frozen paired evaluator alone selects source adoptions. The rebuilt successor must plan AND implement the next revision from its own architecture frontier, inherit measured design and learning evidence, and improve a different intelligence subsystem where possible. No text-only design or native preprogrammed mutation earns success.'
       : 'Autonomously improve DOMINION source code and its own improvement strategy through consecutive native generations. Begin with a measurable planning defect in src/engine/decompose.rs: "설정을 읽고 결과를 저장한 다음 검증해" must produce three ordered actions while words like 사고 and 최고 remain intact. After the first independently accepted gain, inherit the rebuilt engine and search other existing algorithm, memory, context, tool or improvement domains for the next measurable quality gain. Observe real source via workspace_read_range, author the smallest compilable Rust patch via workspace_replace_range and the witnessed SHA, preserve unrelated behavior, and let the native paired evaluator adopt only measured gains. If a patch fails compiler validation, inherit that exact changed source and repair the diagnosed line rather than restarting the research.';
     const started=await post(host+'/api/rsi/start',{
       confirmation:'START_RSI_EVOLUTION',mode:'continuous',
       providerId:receipt.providerId,model:selectedModel,
       selectionPolicy:'automatic',autonomous:true,request:goal,
-      focusFiles:nativeProof?[]:['src/engine/decompose.rs'],
+      focusFiles:nativeProof||systemGoal?[]:['src/engine/decompose.rs'],
       expandFocusAfterAdoption:true,
       nativeInduction:nativeProof,stopAfterProof:nativeProof,
       maxAttempts:6,tokenBudget:260000,
@@ -179,12 +216,40 @@ if(mode==='probe'){
     receipt.modelMethodCalls=receipt.generations.reduce((n,g)=>n+g.modelMethodCalls,0);
     receipt.acceptedGenerations=receipt.generations.filter(g=>g.accepted).length;
     receipt.measuredImprovement=receipt.generations.some(g=>g.measuredGain);
+    if(systemGoal){
+      const verified=receipt.generations.filter(g=>g.accepted && g.holdoutEligible &&
+        g.systemDesign?.source==='model_authored_system_design' &&
+        g.compiledPlanExecuted?.source==='running_compiled_descendant_binary' &&
+        g.descendantPlan?.source==='compiled_descendant_system_plan_v1' &&
+        Object.keys(g.acceptedSourceHashes||{}).length>0);
+      const covered=new Set();
+      for(const g of verified){
+        const design=g.systemDesign;
+        const paths=design?.targetFiles||[];
+        if(!paths.length||!paths.every(p=>typeof g.acceptedSourceHashes[p]==='string'))continue;
+        for(const role of (design?.component==='system'?design.components||[]:[design?.component])){
+          if(role)covered.add(role);
+        }
+      }
+      const successors=receipt.generations.filter((g,index)=>index>0 &&
+        g.compiledPlanExecuted?.source==='running_compiled_descendant_binary' &&
+        receipt.generations.slice(0,index).some(prev=>prev.accepted &&
+          prev.acceptedCommit===g.generatorCommit));
+      const core=['algorithms','harness','memory','learning','tools','improvement_methods'];
+      receipt.wholeSystemEvidence={verifiedModelDesignedGenerations:verified.length,
+        verifiedCoreComponents:core.filter(role=>covered.has(role)),
+        rebuiltSuccessorsWithExecutedPlans:successors.length,
+        completed:verified.length>=3 && successors.length>=2 &&
+          core.every(role=>covered.has(role))};
+    }
     receipt.transferEvidence=receipt.generations.flatMap(g=>g.methodExecutions)
       .filter(r=>r.crossDomain===true);
     receipt.repairModes=history.flatMap(g=>(g.sourceIntegrity?.repairTrail||[])
       .map(attempt=>({generation:g.attempt,mode:attempt.mode||null,
         candidateId:attempt.candidateId||null,reason:attempt.reason||null,
         diffBytes:attempt.diffBytes??null})));
+    if(systemGoal)receipt.completionProof.complete=receipt.completionProof.complete &&
+      receipt.wholeSystemEvidence?.completed===true;
     receipt.status=last.status;
     receipt.reason=last.evolution?.stopReason||last.result?.evolution?.stopReason||null;
     if(!terminal.has(last.status))receipt.errors.push('campaign deadline without terminal result');
