@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/workflows/champion-system-evolution-proof.yml'
       - 'scripts/champion-system-evolution-proof.mjs'
+      - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi_system.rs'
+      - 'src/engine/rsi_meta.rs'
+      - 'src/engine/rsi_mutation.rs'
+      - 'src/engine/rsi_archive.rs'
   workflow_dispatch:
 
 permissions:
