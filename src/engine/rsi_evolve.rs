@@ -4191,9 +4191,11 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let initial_symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&inherited_meta,&permitted);
     let profile=crate::engine::rsi_lineage_transfer::profile(&peer_input);
+    let inherited_experiment_method=
+        crate::engine::rsi_intervention_lab::inherited_method(&history);
     let factorial=crate::engine::rsi_intervention_lab::design(
         &history,&frontier,&inherited_meta,&initial_symbiosis,
-        &permitted,revision,profile.as_deref());
+        &permitted,revision,profile.as_deref(),&inherited_experiment_method);
     let factorial_active=auto && stage.is_null() && factorial["selected"].is_object();
     let meta=if factorial_active {
         crate::engine::rsi_intervention_lab::steer(inherited_meta,&factorial)

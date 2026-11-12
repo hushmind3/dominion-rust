@@ -506,6 +506,10 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         source files, objectives and learning/tool/execution policies. After \
         independent adoption your new descendant will execute that program, \
         not merely display it in a report. \
+        You may rewrite src/engine/rsi_intervention_lab.rs and propose \
+        experimentalPolicy (mode, explorationWeight, interactionWeight,maxPairs). \
+        Only a new independently adopted experiment-planner source revision \
+        may pass its model-authored policy to the next compiled child. \
         The meta-improver in src/engine/rsi_meta_controller.rs is ALSO YOUR EDITABLE CODE, \
         not a fixed external planner. You can redesign how experiments are generated, \
         compared, forecast, selected and inherited across generations. \
@@ -784,10 +788,36 @@ pub(crate) fn propose(
                 "executionPolicy":execution,"qualityProven":false}));
         }
     }
+    // A source-modifying descendant may invent and pass on a NEW
+    // experimental search policy, but it cannot claim improved performance
+    // until the planner module source is independently measured and adopted.
+    let experiment_policy=if body["experimentalPolicy"].is_object(){
+        if !components.contains(&"improvement_methods")
+            || !unique.contains("src/engine/rsi_intervention_lab.rs"){
+            return Err("실험 정책을 계승하려면 실제 개선기 소스를 수정해야 합니다.".into());
+        }
+        let policy=&body["experimentalPolicy"];
+        let mode=policy["mode"].as_str().filter(|mode|matches!(*mode,
+            "coverage_first"|"synergy_search"|"counterexample_repair"))
+            .ok_or("후손 실험 선택 알고리즘이 올바르지 않습니다.")?;
+        let explore=policy["explorationWeight"].as_f64()
+            .filter(|v|v.is_finite()&&*v>=0.0&&*v<=3.0)
+            .ok_or("실험 탐색 가중치가 올바르지 않습니다.")?;
+        let interaction=policy["interactionWeight"].as_f64()
+            .filter(|v|v.is_finite()&&*v>=0.0&&*v<=3.0)
+            .ok_or("상호작용 학습 가중치가 올바르지 않습니다.")?;
+        let max_pairs=policy["maxPairs"].as_u64()
+            .filter(|v|(2..=40).contains(v))
+            .ok_or("실험 비교 후보 수가 올바르지 않습니다.")?;
+        json!({"source":"model_authored_causal_experiment_policy_v1",
+            "mode":mode,"explorationWeight":explore,
+            "interactionWeight":interaction,"maxPairs":max_pairs,
+            "trialQualityProven":false})
+    }else{Value::Null};
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,new_components,component_files,interaction_edges,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
+        commit,component,components,new_components,component_files,interaction_edges,experiment_policy,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
@@ -796,6 +826,7 @@ pub(crate) fn propose(
         "components":components,"newComponents":new_components,
         "componentFiles":component_files,
         "interactionEdges":interaction_edges,
+        "experimentalPolicy":experiment_policy,
         "successorStages":successor_stages,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,

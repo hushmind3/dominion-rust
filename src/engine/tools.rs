@@ -79,6 +79,14 @@ pub fn definitions() -> Vec<Value> {
                 "fromPath":{"type":"string"},"toPath":{"type":"string"},
                 "mechanism":{"type":"string"},"observable":{"type":"string"}
             },"required":["fromRole","toRole","fromPath","toPath","mechanism","observable"]}}),
+            "experimentalPolicy":json!({"type":"object",
+                "description":"Optional model-authored successor algorithm, requiring real change to src/engine/rsi_intervention_lab.rs and independently adopted source. Mode changes experimental search; weights change actual selection.",
+                "properties":{
+                    "mode":{"type":"string","enum":["coverage_first","synergy_search","counterexample_repair"]},
+                    "explorationWeight":{"type":"number","minimum":0,"maximum":3},
+                    "interactionWeight":{"type":"number","minimum":0,"maximum":3},
+                    "maxPairs":{"type":"integer","minimum":2,"maximum":40}
+                },"required":["mode","explorationWeight","interactionWeight","maxPairs"]}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "successorStages":json!({"type":"array","description":"Optional executable next-generation improvement program of up to eight stages, bound to adopted source evidence. Each stage has role, domain, path, objective, learningPolicy (avoid_failed/retry_failed), toolPolicy (patch_only/allow_new_modules), executionPolicy (grounded_edit/explore_then_edit).",
                 "maxItems":8,"items":{"type":"object","properties":{

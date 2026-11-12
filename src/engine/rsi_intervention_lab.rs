@@ -19,6 +19,38 @@ fn grounded(row:&Value)->bool{
         && row["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
         && row["sourceSha256"].as_str().is_some_and(hash_valid)
 }
+/// A source-level redesign of the experimental METHOD may pass on an
+/// executable learning policy. Merely writing JSON is not enough: the actual
+/// experiment planner module has to be in the separately adopted patch.
+pub(crate) fn inherited_method(history:&[Value])->Value{
+    for row in history.iter().rev(){
+        let path="src/engine/rsi_intervention_lab.rs";
+        if row["accepted"]!=true || row["pairedRevalidated"]!=true
+            || row["candidateOrigin"]!="model_driven_detached_worktree"
+            || row["evaluation"]["metrics"]["eligible"]!=true
+            || row["systemDesign"]["source"]!="model_authored_system_design"
+            || row["systemDesign"]["generatorCommit"]!=row["generatorCommit"]
+            || row["systemDesign"]["generationJobId"]!=row["jobId"]
+            || row["acceptedSourceHashes"][path].as_str().is_none_or(|h|hash_valid(h)){
+            continue;
+        }
+        let mapped=row["systemDesign"]["componentFiles"]["improvement_methods"]
+            .as_array().is_some_and(|files|files.iter().any(|f|f==path));
+        if !mapped{continue;}
+        let mut method=row["systemDesign"]["experimentalPolicy"].clone();
+        // A newer source edit explicitly supersedes prior experimental
+        // algorithms. Omitting policy means resetting to the code default.
+        if !method.is_object(){return Value::Null;}
+        if method["source"]!="model_authored_causal_experiment_policy_v1"{
+            return Value::Null;
+        }
+        method["independentlyAdoptedMethodCommit"]=row["acceptedCommit"].clone();
+        method["sourceModule"]=json!(path);
+        method["trialQualityProven"]=json!(false);
+        return method;
+    }
+    Value::Null
+}
 fn count_variant(g:&Value,a:&str,b:&str)->Option<usize>{
     if g["factorialMeasured"]!=true
         || g["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
@@ -124,7 +156,8 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
 /// counterfactuals have information value, not fake reward. The compiled
 /// descendant controls this design and can rewrite this file next generation.
 pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
-    symbiosis:&Value,allowed:&[&str],commit:&str,profile:Option<&str>)->Value{
+    symbiosis:&Value,allowed:&[&str],commit:&str,profile:Option<&str>,
+    inherited_method:&Value)->Value{
     let profile=profile.filter(|p|hash_valid(p)).unwrap_or("");
     // No frozen profile means no independently comparable intervention.
     if profile.is_empty(){return Value::Null;}
@@ -149,7 +182,14 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
         }
     }
     let mut ranked=Vec::<(f64,Value)>::new();
-    for (a,b) in pairs.into_iter().take(40){
+    let mode=inherited_method["mode"].as_str().unwrap_or("coverage_first");
+    let exploration=inherited_method["explorationWeight"].as_f64()
+        .filter(|v|v.is_finite()&&*v>=0.0&&*v<=3.0).unwrap_or(1.0);
+    let interaction_priority=inherited_method["interactionWeight"].as_f64()
+        .filter(|v|v.is_finite()&&*v>=0.0&&*v<=3.0).unwrap_or(1.0);
+    let max_pairs=inherited_method["maxPairs"].as_u64()
+        .filter(|v|(2..=40).contains(v)).unwrap_or(40) as usize;
+    for (a,b) in pairs.into_iter().take(max_pairs){
         let roles=(a["role"].as_str().unwrap_or(""),
             b["role"].as_str().unwrap_or(""));
         let evidence=observation(history,roles.0,roles.1,commit,profile);
@@ -183,9 +223,14 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
         let coverage=evidence["completeFrozenCaseBlocks"].as_u64().unwrap_or(0);
         let confidence=coverage as f64/(coverage as f64+4.0);
         let synergy=confidence*interaction.abs().min(1.0);
-        let score=0.7*informative+0.45*balanced
+        let score=0.7*informative+0.45*balanced*exploration
             +0.20*(coverage.min(8) as f64/8.0)
-            +0.35*synergy
+            +0.35*synergy*interaction_priority
+            +if mode=="counterexample_repair" && interaction<0.0 {
+                0.24
+            }else if mode=="synergy_search" && interaction>0.0{
+                0.24
+            }else{0.0}
             +if roles.0=="improvement_methods"||roles.1=="improvement_methods"{
                 0.15
             }else{0.0};
@@ -210,6 +255,7 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
         "generatorCommit":commit,"comparisonProfileSha256":profile,
         "historyCount":history.len(),
         "selected":selected,
+        "inheritedExperimentalMethod":inherited_method,
         "pairAlternatives":ranked.into_iter().take(6)
             .map(|(_,v)|v).collect::<Vec<_>>(),
         "independentEvaluatorOnly":true,
@@ -346,7 +392,7 @@ mod tests{
             "path":"src/engine/rsi_meta_controller.rs","sourceSha256":"b".repeat(64)});
         let x=design(&[],&[a.clone(),b.clone()],&json!({"target":a}),
             &Value::Null,&["learning","improver"],&"f".repeat(40),
-            Some(&"1".repeat(64)));
+            Some(&"1".repeat(64)),&Value::Null);
         assert_eq!(x["selected"]["phase"],"isolate_a");
         assert_eq!(x["selected"]["b"]["role"],"improvement_methods");
         assert_eq!(compliance(&x,&[json!("src/engine/world.rs")])["eligibleForFactorial"],true);
@@ -361,7 +407,7 @@ mod tests{
             "path":"src/engine/tools.rs","sourceSha256":"b".repeat(64)});
         let commit="f".repeat(40);let profile="1".repeat(64);
         let plan=design(&[],&[a.clone(),b.clone()],&json!({"target":a.clone()}),
-            &Value::Null,&["improver","tools"],&commit,Some(&profile));
+            &Value::Null,&["improver","tools"],&commit,Some(&profile),&Value::Null);
         assert!(validate(&plan,&[a.clone(),b.clone()],&commit,0,Some(&profile)).is_ok());
         let mut corrupted=plan.clone();
         corrupted["selected"]["a"]["sourceSha256"]=json!("c".repeat(64));
