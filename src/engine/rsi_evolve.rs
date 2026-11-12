@@ -3629,7 +3629,11 @@ async fn run_loop(
             "toolsUsed":tools_used,"builtInToolsUsed":capabilities_used,
             "inheritedImplementations":current["input"]["rsiInheritedImplementations"],
             "systemEvolution":input["rsiSystemEvolution"],
-            "evaluationProfileSha256":input["rsiEvaluationProfile"]["sha256"],
+            // A missing explicit profile still runs the DEFAULT frozen
+            // evaluator. Record the actual frozen profile digest, not a
+            // null user-input field, or measured learning silently vanishes.
+            "evaluationProfileSha256":
+                crate::engine::rsi_profile::from_input(input)?["sha256"],
             "architectureTarget":current["input"]["rsiArchitectureTarget"],
             "systemBlueprint":current["input"]["rsiSystemBlueprint"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
