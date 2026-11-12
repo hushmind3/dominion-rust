@@ -206,7 +206,15 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
             || g["openProgramPlan"]["nodeId"]!=n["id"]
             || !executed(g,&program["revision"]) { continue; }
         trials+=1.0;
-        if actual_source_role(g) { successes+=1.0; }
+        // A graph cannot earn improvement credit from an unrelated
+        // independently adopted patch: its selected source must be in the
+        // actual accepted candidate's source-hash ledger.
+        let target_path=n["path"].as_str().unwrap_or("");
+        if actual_source_role(g)
+            && g["acceptedSourceHashes"][target_path].as_str().is_some_and(|h|
+                h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit())) {
+            successes+=1.0;
+        }
         if g["pairedRevalidated"]==true {
             gains+=g["evaluation"]["metrics"]["improvedHoldouts"]
                 .as_u64().unwrap_or(0).min(10) as f64;
