@@ -2962,6 +2962,23 @@ fn transfer_verified_mutation_operator(mut program:Value,rows:&[Value])->Value {
 /// patch. Concrete edit receipts are training examples; independent paired
 /// evidence, when present, outweighs mere file writes. The result controls
 /// the next generation's native tool ordering and retry selection.
+fn verified_genome_reward(g:&Value)->f64{
+    if g["candidateOrigin"]=="native_inductive_source_mutation"{
+        return 0.0;
+    }
+    if g["accepted"]==true && g["evidenceVerified"]==true
+        &&g["pairedRevalidated"]==true
+        &&g["evaluation"]["metrics"]["eligible"]==true {
+        return 1.0;
+    }
+    if g["candidateId"].is_string()
+        &&g["pairedRevalidated"]==true
+        &&g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"{
+        return 0.10;
+    }
+    0.0
+}
+
 fn learn_execution_method(state:&AppState, input:&Value, history:&[Value]) -> Value {
     #[derive(Default)]
     struct Arm { attempts:u64, writes:u64, candidates:u64, accepted:u64, rejected:u64, tokens:u64 }
@@ -3659,6 +3676,13 @@ async fn run_loop(
             record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]));
         child_input["rsiExecutionMethod"]=learned_method.clone();
         context.state.store.put("rsi_execution_method",&learned_method);
+        // Inherit the MAIN compositional controller, including source-grounding
+        // stages and rules derived from actually measured child edits.
+        // Program generation itself earns no score; independent paired
+        // descendants must execute a rule before it can accumulate payoff.
+        let edit_policy=crate::engine::rsi_edit_genome::evolve(
+            &action_history,verified_genome_reward);
+        child_input["rsiEditPolicy"]=edit_policy;
 
         child_input["rsiImprovementDirective"]=if native_planning {
             record["nextGenerationPlan"]["improvementDirective"].clone()
@@ -3958,6 +3982,18 @@ async fn run_loop(
             "accepted":false,"createdAt":chrono::Utc::now().to_rfc3339()});
         // Keep serde_json's macro recursion bounded while preserving
         // native provenance as first-class generation evidence.
+        generation["editPolicy"]=current["input"]["rsiEditPolicy"].clone();
+        let mut timeline=session.map(|id|context.state.store.all("execution_operation")
+            .into_iter().filter(|op|op["sessionId"]==id)
+            .collect::<Vec<_>>()).unwrap_or_default();
+        timeline.sort_by_key(|op|op["opSeq"].as_u64().unwrap_or(u64::MAX));
+        generation["toolTimeline"]=json!(timeline);
+        generation["ruleExecutions"]=session.map(|id|context.state.store.all("rsi_rule_execution")
+            .into_iter().filter(|row|row["sessionId"]==id)
+            .collect::<Vec<_>>()).map(|mut rows|{
+                rows.sort_by_key(|row|row["toolCalls"].as_u64().unwrap_or(u64::MAX));
+                json!(rows)
+            }).unwrap_or_else(||json!([]));
         generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
         generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
@@ -4199,6 +4235,10 @@ async fn run_loop(
             .unwrap_or(0)
             .max(verified_streak);
         record["maxVerifiedStreak"] = json!(verified_max);
+        generation["evidenceVerified"]=json!(
+            generation["accepted"]==true
+            &&generation["pairedRevalidated"]==true
+            &&generation_is_verified(&generation));
         let mut history_now = record["history"].as_array().cloned().unwrap_or_default();
         history_now.push(generation.clone());
         let proven_history=revalidated_history(&context.state,&history_now);
