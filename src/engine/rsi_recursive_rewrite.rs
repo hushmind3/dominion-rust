@@ -117,7 +117,8 @@ pub(crate) fn extend_frontier(blueprint:&Value,frontier:&mut Vec<Value>){
         .find(|role|role["role"]=="improvement_methods") else{return};
     let candidates=["src/engine/rsi_recursive_rewrite.rs",
         "src/engine/rsi_principle_learning.rs",
-        "src/engine/rsi_meta_controller.rs"];
+        "src/engine/rsi_meta_controller.rs",
+        "src/engine/rsi_prequential.rs"];
     for name in candidates {
         if frontier.len()>=32{break;}
         if frontier.iter().any(|r|r["path"]==name){continue;}

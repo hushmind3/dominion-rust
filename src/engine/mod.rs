@@ -34,6 +34,7 @@ pub mod rsi_metrics;
 pub mod rsi_evolve;
 pub mod rsi_system;
 pub mod rsi_meta_controller;
+pub mod rsi_prequential;
 pub mod rsi_recursive_rewrite;
 pub mod rsi_principle_learning;
 pub mod rsi_model_weights;

@@ -92,7 +92,10 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
 }
 fn confidence_adjustment(history:&[Value])->f64{
     let errors=history.iter().filter_map(|row|
-        row["metaLearning"]["brierError"].as_f64()
+        (row["metaLearning"]["source"]=="source_bound_prequential_feedback_v1"
+            && row["metaLearning"]["nextPolicyCanTrainFromObservation"]==true
+            && row["pairedMeasured"]==true)
+            .then(||row["metaLearning"]["brierError"].as_f64()).flatten()
             .filter(|value|value.is_finite() && *value>=0.0 && *value<=1.0))
         .rev().take(12).collect::<Vec<_>>();
     if errors.is_empty(){return 1.0;}
@@ -130,8 +133,14 @@ pub(crate) fn synthesize(
         let productivity=relevant.iter()
             .map(|g|next_generation_productivity(history,g)).sum::<usize>();
         // A co-edited success is not one full independent success per role.
-        let probability=(adoption_mass+1.0)/(attempts as f64+2.0);
-        let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
+        let raw_probability=(adoption_mass+1.0)/(attempts as f64+2.0);
+        let prequential=crate::engine::rsi_prequential::calibrate(
+            history,role,target["path"].as_str().unwrap_or(""),
+            target["sourceSha256"].as_str().unwrap_or(""),raw_probability);
+        let probability=prequential["probability"].as_f64()
+            .unwrap_or(raw_probability);
+        let epistemic=prequential["uncertainty"].as_f64()
+            .unwrap_or(0.25);
         let coverage=if target["verifiedRoleImproved"]==true{0.0}else{0.22};
         let inherited_bonus=if inherited_domain==target["domain"].as_str(){0.12}else{0.0};
         let size=target["sourceBytes"].as_u64().unwrap_or(0) as f64;
@@ -152,6 +161,8 @@ pub(crate) fn synthesize(
             "sourceSha256":target["sourceSha256"],
             "score":score,"predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,"attempts":attempts,
+            "uncalibratedAdoptionProbability":raw_probability,
+            "prequentialEvidence":prequential,
             "verifiedModelAdoptions":adopted,
             "attributedAdoptionMass":adoption_mass,
             "causalCredit":causal_credit,
@@ -316,6 +327,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         "[EDITABLE META-IMPROVER revision={}]\n\
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
+        Source-bound prediction history={}. Cross-revision outcomes are discounted.\n\
         Compare MULTIPLE independent earlier experiments, not one trajectory. \
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
@@ -330,6 +342,7 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["revision"],policy["mode"],target["role"],target["domain"],
         target["path"],target["sourceSha256"],
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
+        policy["selectionEvidence"]["prequentialEvidence"],
         refs,failures
     )
 }
@@ -337,31 +350,17 @@ pub(crate) fn instruction(policy:&Value)->String {
 /// New prediction errors are durable observations available to later compiled
 /// meta-controllers. No model statement can turn a prediction into evidence.
 pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
-    if policy["source"]!="compiled_editable_meta_controller_v1" {
-        return Value::Null;
-    }
-    let probability=policy["forecast"]["acceptanceProbability"]
-        .as_f64().filter(|p|p.is_finite()&&*p>=0.0&&*p<=1.0);
-    let assessed=generation["evaluation"]["verdict"].as_str().is_some()
-        && generation["evaluation"]["metrics"]["eligible"].is_boolean();
-    let observed=if assessed{Some(independent_adoption(generation))}else{None};
-    let brier=match(probability,observed){
-        (Some(p),Some(success))=>Some((p-if success{1.0}else{0.0}).powi(2)),
-        _=>None
-    };
-    json!({
-        "policyRevision":policy["revision"],
-        "targetRole":policy["target"]["role"],
-        "predictedProbability":probability,
-        "independentlyMeasured":observed.is_some(),
-        "actualModelAuthoredAdoption":observed,
-        "brierError":brier,
-        "failureKind":if independent_adoption(generation){"adopted"}
-            else{failure_kind(generation)},
-        "attemptedSourceChange":generation["candidateId"].is_string(),
-        "nextPolicyCanTrainFromObservation":observed.is_some(),
-        "qualityProven":observed==Some(true)
-    })
+    let role=policy["target"]["role"].as_str().unwrap_or("");
+    let path=policy["target"]["path"].as_str().unwrap_or("");
+    let changed=generation["changedSourcePaths"].as_array().is_some_and(
+        |rows|rows.iter().any(|item|item.as_str()==Some(path)));
+    let selected_role=model_design_roles(generation).iter().any(|name|name==role);
+    let source_verified=generation["acceptedSourceHashes"][path].as_str()
+        .is_some_and(|hash|hash.len()==64
+            && hash.bytes().all(|b|b.is_ascii_hexdigit()));
+    let selected_adopted=independent_adoption(generation)
+        && changed&&selected_role&&source_verified;
+    crate::engine::rsi_prequential::feedback(policy,generation,selected_adopted)
 }
 
 #[cfg(test)]
