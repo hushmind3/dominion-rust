@@ -71,20 +71,64 @@ fn dominates(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> boo
             .any(|(key, value)| right.get(key).is_some_and(|other| value > other))
 }
 
-/// Only this campaign's completed, independently evaluated candidates enter
-/// the archive. Same-patch aliases and unverified descendant claims cannot
-/// consume exploration credit. Different plans/oracles never compete.
+fn plan_identity(base:&str, plan:&[Value], oracle:&str) -> String {
+    let plan=serde_json::to_string(plan).unwrap_or_default();
+    format!("{:x}", Sha256::digest(format!("{base}\n{oracle}\n{plan}").as_bytes()))
+}
+
+/// Candidate-only checks shared by the live history and the persisted archive.
+/// A stored entry is never trusted; its paired receipt is replayed again.
+fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],oracle:&str)
+    -> Option<(String,BTreeMap<String,f64>)> {
+    let id=candidate["id"].as_str()?.to_string();
+    if candidate["cases"] != json!(plan) || candidate["oracleVersion"] != "rsi-worktree-v2" {
+        return None;
+    }
+    let metrics=parent_metrics(state,candidate,base)?;
+    let pair=state.store.get("rsi_pair", &format!("rsi-pair-{id}"))?;
+    let hash=pair["report"]["oracleSha256"].as_str()
+        .filter(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit()))?;
+    if hash != oracle {return None;}
+    (candidate["evaluation"]["evidenceSha256"] == pair["evidenceSha256"])
+        .then_some(())?;
+    Some((id.clone(),fitness(&metrics)?))
+}
+
+/// Every verified stepping stone is persisted under the exact evaluation
+/// identity (base commit + case plan + oracle). Later campaigns can therefore
+/// continue the same archive instead of rebuilding it from nothing.
+/// The selection also recovers sealed candidates from earlier persisted
+/// generations when a process stopped before its next archive-selection step.
+fn remember(state:&AppState,identity:&str,candidate:&Value) {
+    let _=state.store.put("rsi_archive",&json!({
+        "id":format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")),
+        "identity":identity,
+        "candidateId":candidate["id"],
+        "patchSha256":candidate["patchSha256"],
+        "caseCount":candidate["cases"].as_array().map(Vec::len),
+        "createdAt":chrono::Utc::now().to_rfc3339(),
+    }));
+}
+
+/// Only completed, independently evaluated candidates enter the archive. The
+/// live campaign and the persisted archive share the verification gate; a
+/// same-patch alias or an unverified claim cannot consume exploration credit.
 pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Value) -> Value {
     let Ok(plan) = rsi::case_plan(cases) else {
         return Value::Null;
     };
-    let mut seen = BTreeSet::new();
-    let mut entries = Vec::new();
     let oracle = format!(
         "{:x}",
         Sha256::digest(include_bytes!("rsi_oracle_fixture.rs"))
     );
-    for generation in history {
+    let identity=plan_identity(base,&plan,&oracle);
+    let mut seen = BTreeSet::new();
+    let mut entries = Vec::new();
+    // Persisted generations are a recovery journal: a prior campaign may
+    // stop after evaluation and before its next call to archive::select.
+    // Deduplicate by patch digest across the caller's live history and DB.
+    let prior_generations = state.store.all("rsi_generation");
+    for generation in history.iter().chain(prior_generations.iter()) {
         if generation["accepted"] == true || generation["verification"]["checksPassed"] != true {
             continue;
         }
@@ -94,51 +138,44 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         let Some(candidate) = state.store.get("rsi_candidate", id) else {
             continue;
         };
-        if candidate["cases"] != json!(plan) || candidate["oracleVersion"] != "rsi-worktree-v2" {
-            continue;
-        }
-        let Some(metrics) = parent_metrics(state, &candidate, base) else {
-            continue;
-        };
         if generation["evaluation"]["evidenceSha256"] != candidate["evaluation"]["evidenceSha256"] {
             continue;
         }
-        // The oracle's content hash is part of the comparison identity, not
-        // just its human-readable version. Disjoint evaluators cannot mix.
-        let Some(pair) = state.store.get("rsi_pair", &format!("rsi-pair-{id}")) else {
+        let Some((id,scores)) = candidate_scores(state,&candidate,base,&plan,&oracle) else {
             continue;
         };
-        let Some(hash) = pair["report"]["oracleSha256"]
-            .as_str()
-            .filter(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        else {
-            continue;
-        };
-        if hash != oracle {
-            continue;
-        }
-        let Some(scores) = fitness(&metrics) else {
-            continue;
-        };
-        if !seen.insert(candidate["patchSha256"].to_string()) {
-            continue;
-        }
-        entries.push((id.to_string(), candidate["patchSha256"].clone(), scores));
+        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        remember(state,&identity,&candidate);
+        entries.push((id, candidate["patchSha256"].clone(), scores));
+    }
+    for record in state.store.all("rsi_archive") {
+        if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
+        let Some(candidate)=record["candidateId"].as_str()
+            .and_then(|id|state.store.get("rsi_candidate",id)) else {continue};
+        // The archive pointer is not a trusted authority. Reject a stale
+        // or rewritten pointer before it can shadow a legitimate entry.
+        let expected_id=format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or(""));
+        if record["id"]!=expected_id
+            || record["patchSha256"]!=candidate["patchSha256"] {continue;}
+        let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
+        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        entries.push((id,candidate["patchSha256"].clone(),scores));
     }
     let frontier = entries
         .iter()
         .filter(|entry| !entries.iter().any(|other| dominates(&other.2, &entry.2)))
         .collect::<Vec<_>>();
     // DGM's offspring penalty explores alternative stepping stones instead
-    // of endlessly repairing the last neutral patch. Deterministic ties make
-    // resumed selection reproducible. All actual child attempts count once.
+    // of endlessly repairing the last neutral patch. Child attempts are
+    // counted across every campaign so a restarted archive keeps its credit.
     let children = |id: &str| {
-        history
-            .iter()
-            .filter(|generation| generation["inheritedCandidateId"].as_str() == Some(id))
-            .filter_map(|generation| generation["jobId"].as_str())
-            .collect::<BTreeSet<_>>()
-            .len()
+        let mut jobs=BTreeSet::new();
+        for generation in history.iter().chain(prior_generations.iter()) {
+            if generation["inheritedCandidateId"].as_str()==Some(id) {
+                if let Some(job)=generation["jobId"].as_str() {jobs.insert(job.to_string());}
+            }
+        }
+        jobs.len()
     };
     let selected = frontier.iter().min_by(|left, right| {
         children(&left.0)
@@ -149,10 +186,10 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         .map(|entry| {
             json!({
                 "candidateId":entry.0,"patchSha256":entry.1,
-                "policy":"paired-pareto-stepping-stones-v1","baseCommit":base,
+                "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
                 "descendantAttempts":children(&entry.0),
-                "adopted":false,"qualityProven":false,
+                "persisted":true,"adopted":false,"qualityProven":false,
             })
         })
         .unwrap_or(Value::Null)
@@ -245,6 +282,99 @@ mod tests {
         assert_ne!(next["candidateId"], selected["candidateId"]);
         assert_eq!(next["adopted"], false);
         assert_eq!(next["qualityProven"], false);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn archived_stepping_stone_survives_into_a_later_campaign() {
+        let (state, root) = state();
+        let generation = insert(&state, "persisted", [0.54, 0.51]);
+        let first = select(&state, &[generation.clone()], &"a".repeat(40), &plan());
+        assert_eq!(first["archiveSize"], 1);
+        // A restarted campaign starts with no history: the persisted entry
+        // under the same base, plan and oracle must still be selectable.
+        let resumed = select(&state, &[], &"a".repeat(40), &plan());
+        assert_eq!(resumed["candidateId"], first["candidateId"]);
+        assert_eq!(resumed["persisted"], true);
+        // A different evaluation identity must never reuse that entry.
+        assert!(select(&state, &[], &"c".repeat(40), &plan()).is_null());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recovers_previously_measured_candidate_after_campaign_restart_without_archive_snapshot() {
+        let (state,root)=state();
+        let previous=insert(&state,"crashed-before-archive-selection",[0.54,0.51]);
+        let generation=json!({"id":"previous-campaign-1","campaignId":"previous",
+            "candidateId":previous["candidateId"],"accepted":false,
+            "verification":{"checksPassed":true},"evaluation":previous["evaluation"]});
+        state.store.put("rsi_generation",&generation).unwrap();
+        // No earlier select(): only the verified generation and its raw pair
+        // receipt survived the process restart.
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),
+            workspace:root.clone()};
+        let reopened=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let selection=select(&reopened,&[],&"a".repeat(40),&plan());
+        assert_eq!(selection["candidateId"],previous["candidateId"]);
+        assert_eq!(selection["persisted"],true);
+        assert!(reopened.store.all("rsi_archive").iter().any(|entry|
+            entry["candidateId"]==previous["candidateId"]));
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_campaign_child_count_survives_restart_and_changes_selection() {
+        let (state,root)=state();
+        let left=insert(&state,"persist-left",[0.54,0.51]);
+        let right=insert(&state,"persist-right",[0.51,0.54]);
+        let first=select(&state,&[left,right],&"a".repeat(40),&plan());
+        state.store.put("rsi_generation",&json!({
+            "id":"prior-child-1","campaignId":"older-campaign",
+            "jobId":"prior-child-worker","inheritedCandidateId":first["candidateId"]
+        })).unwrap();
+        drop(state);
+        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),
+            workspace:root.clone()};
+        let reopened=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let next=select(&reopened,&[],&"a".repeat(40),&plan());
+        assert_ne!(next["candidateId"],first["candidateId"]);
+        assert_eq!(next["descendantAttempts"],0);
+        assert_eq!(next["frontierSize"],2);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_rewritten_archive_pointer_on_restore() {
+        let (state,root)=state();
+        let candidate=insert(&state,"archive-pointer",[0.54,0.51]);
+        let previous=select(&state,&[candidate],&"a".repeat(40),&plan());
+        let mut records=state.store.all("rsi_archive");
+        let mut record=records.remove(0);
+        record["patchSha256"]=json!("not-the-original-patch");
+        state.store.put("rsi_archive",&record).unwrap();
+        assert!(select(&state,&[],&"a".repeat(40),&plan()).is_null());
+        assert_eq!(previous["persisted"],true);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn persisted_archive_entry_is_reverified_not_trusted() {
+        let (state, root) = state();
+        let generation = insert(&state, "reverify", [0.52, 0.51]);
+        let selected = select(&state, &[generation.clone()], &"a".repeat(40), &plan());
+        let id = selected["candidateId"].as_str().unwrap().to_string();
+        let key = format!("rsi-pair-{id}");
+        let receipt = state.store.get("rsi_pair", &key).unwrap();
+        let mut forged = receipt.clone();
+        forged["report"]["cases"][0]["metrics"]["quality"]["candidate"] = json!(5.0);
+        state.store.put("rsi_pair", &forged).unwrap();
+        assert!(select(&state, &[], &"a".repeat(40), &plan()).is_null(),
+            "a tampered receipt must invalidate the persisted entry");
+        state.store.put("rsi_pair", &receipt).unwrap();
+        assert!(select(&state, &[], &"a".repeat(40), &plan()).is_object());
         let _ = std::fs::remove_dir_all(root);
     }
 
