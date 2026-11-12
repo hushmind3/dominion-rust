@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 const SOURCE_TOOLS: &[&str] = &[
     "code_search", "workspace_read_range", "workspace_replace_range",
-    "workspace_replace", "workspace_write",
+    "workspace_replace", "workspace_replace_function", "workspace_write",
 ];
 const EDIT_TOOLS: &[&str] = &[
     "workspace_replace_range", "workspace_replace", "workspace_write",
