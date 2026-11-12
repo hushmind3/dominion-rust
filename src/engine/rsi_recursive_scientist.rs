@@ -45,7 +45,7 @@ fn adopted_descendant_edit<'a>(history:&'a [Value],
     for _ in 0..history.len() {
         if !visited.insert(next.clone()){return None;}
         let child=history.iter().find(|g|
-            g["generatorCommit"].as_str()==Some(&next)
+            g["generatorCommit"].as_str()==Some(next.as_str())
             && adopted(g))?;
         if altered(child,role){return Some(child);}
         next=child["acceptedCommit"].as_str()?.to_owned();
