@@ -393,7 +393,7 @@ pub(crate) fn system_capability_proven(state:&crate::state::AppState, history:&V
                                         apps.iter().any(|episode|
                                             episode["jobId"]==generation["jobId"]
                                             && episode["methodWroteAcceptedCandidate"]==true
-                                            && episode["verificationVerdict"]=="passed")))) {
+                                            && episode["verificationVerdict"]=="passed"))))) {
                         witnessed_inherited_method=true;
                     }
                 }
