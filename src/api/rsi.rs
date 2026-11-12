@@ -370,6 +370,8 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             && body["selectionPolicy"]=="automatic",
         "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
             && body["selectionPolicy"]=="automatic",
+        "rsiSystemEvolution": continuous && body["systemEvolution"]==true
+            && body["selectionPolicy"]=="automatic",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
