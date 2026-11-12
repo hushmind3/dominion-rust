@@ -4875,7 +4875,13 @@ mod native_plan_transfer_regression {
     use super::*;
     #[test]
     fn system_descendant_filters_non_source_and_stale_indexed_paths_before_planning() {
-        let (state,root)=state();
+        let root=std::env::temp_dir().join(format!(
+            "sub1-verified-descendant-focus-{}",uuid::Uuid::new_v4()));
+        let config=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
         std::fs::create_dir_all(root.join("src/engine")).unwrap();
         std::fs::create_dir_all(root.join(".github/workflows")).unwrap();
         std::fs::write(root.join("src/engine/memory.rs"),
