@@ -4232,9 +4232,21 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // must NOT inherit file-write restrictions from an unused experiment.
     // Null means no actual factorial intervention was scheduled.
     let factorial=if factorial_active{proposed_factorial}else{Value::Null};
-    let meta=if factorial_active {
+    let mut meta=if factorial_active {
         crate::engine::rsi_intervention_lab::steer(inherited_meta,&factorial)
     }else{inherited_meta};
+    // An independent factorial trial can legitimately displace a planned
+    // invention-to-meta action. Do not record an action as EXECUTED when
+    // the concrete source target was changed by that other scheduler.
+    if meta["recursiveProgram"]["active"]==true
+        && meta["target"]!=meta["recursiveProgram"]["selectedMethodOrCapability"] {
+        let prior=meta["revision"].clone();
+        meta["recursiveProgram"]["active"]=json!(false);
+        meta["recursiveProgram"]["deferredBy"]=json!("source_matched_factorial_trial");
+        meta["revision"]=json!(format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&json!([prior,meta["recursiveProgram"],meta["target"]]))
+                .unwrap_or_default())));
+    }
     let architecture_target=meta["target"].clone();
     // The same compiled child can rewrite its coupling search algorithm.
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(

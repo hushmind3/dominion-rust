@@ -350,6 +350,35 @@ mod tests{
         assert!(state[0]["lastMetaMethodCommit"].is_null());
     }
     #[test]
+    fn method_source_receipt_must_be_actual_and_independently_accepted(){
+        let mut history=vec![born()];
+        let mut fake=generation(&"b".repeat(40),&"e".repeat(40),
+            "improvement_methods","src/engine/rsi_recursive_rewrite.rs");
+        fake["acceptedSourceHashes"]["src/engine/rsi_recursive_rewrite.rs"]=
+            Value::Null;
+        history.push(fake);
+        assert_eq!(ledger(&history)[0]["phase"],"rewrite_meta_method");
+    }
+    #[test]
+    fn editable_meta_source_is_discoverable_even_with_a_different_default(){
+        let b=json!({"architecture":[{"role":"improvement_methods",
+            "representativeSources":[{
+                "path":"src/engine/rsi_recursive_rewrite.rs",
+                "sha256":"a".repeat(64),"bytes":1024},{
+                "path":"src/engine/rsi_meta_controller.rs",
+                "sha256":"b".repeat(64),"bytes":2048}]}]});
+        let mut frontier=vec![json!({
+            "role":"improvement_methods","domain":"improver",
+            "path":"src/engine/rsi_archive.rs",
+            "sourceSha256":"c".repeat(64)})];
+        extend_frontier(&b,&mut frontier);
+        assert_eq!(frontier.len(),3);
+        assert!(frontier.iter().any(|v|
+            v["path"]=="src/engine/rsi_recursive_rewrite.rs"));
+        assert!(frontier.iter().all(|v|
+            v["role"]=="improvement_methods"));
+    }
+    #[test]
     fn explicit_owner_or_inherited_stage_cannot_be_overridden(){
         let frontier=frontier();let history=vec![born()];
         let owned=reconfigure(&history,&frontier,meta(&frontier),
