@@ -3575,6 +3575,11 @@ async fn run_loop(
                         f.contains(&meta["target"])) {
                 return Err("후손의 수정 가능한 메타 개선기 정책이 유효하지 않습니다.".into());
             }
+            let factorial=&record["nextGenerationPlan"]["factorialExperiment"];
+            if agenda["factorialExperiment"].is_object()
+                && agenda["factorialExperiment"]!=*factorial {
+                return Err("후손의 실제 실험 단계가 세대 계획과 다릅니다.".into());
+            }
             let peers=&record["nextGenerationPlan"]["peerLineages"];
             let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
             crate::engine::rsi_meta_controller::validate_peer_lineages(
@@ -3582,6 +3587,7 @@ async fn run_loop(
             child_input["rsiSystemBlueprint"]=model.clone();
             child_input["rsiSystemAgenda"]=agenda.clone();
             child_input["rsiMetaPolicy"]=meta.clone();
+            child_input["rsiFactorialExperiment"]=factorial.clone();
             child_input["rsiPeerLineages"]=peers.clone();
             child_input["rsiMetaMethodHypothesis"]=
                 record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
@@ -3917,6 +3923,10 @@ async fn run_loop(
                         .store
                         .get("rsi_candidate", id)
                         .ok_or("후보 소실")?;
+                    // Real candidate diff paths are required to distinguish
+                    // isolated A/B experiments from joint or confounded edits.
+                    // Preserve them for both rejected and adopted source trials.
+                    generation["changedSourcePaths"]=candidate["paths"].clone();
                     let evidence_valid=crate::engine::rsi::verify_paired_receipt(
                         &context.state,&candidate).is_ok();
                     generation["pairedRevalidated"]=json!(evidence_valid);
@@ -4909,6 +4919,17 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         crate::engine::rsi_meta_controller::attach_reciprocal_focus(
             &mut agenda,&meta_policy);
     }
+    // Same-baseline factorial design is produced by the RUNNING descendant,
+    // not by a parent template. It changes executable source focus.
+    let factorial=if system_mode {
+        crate::engine::rsi_causal_ecology::design(
+            &history,agenda["frontier"].as_array().map(Vec::as_slice)
+                .unwrap_or(&[]),
+            &meta_policy["reciprocalExperiment"],binary_commit)
+    }else{Value::Null};
+    if automatic && agenda["inheritedStage"].is_null(){
+        crate::engine::rsi_causal_ecology::apply(&mut agenda,&factorial);
+    }
     let mut peer_input=source_input.clone();
     peer_input["rsiIndexId"]=campaign["planIndexId"].clone();
     let peers=if system_mode {
@@ -4933,6 +4954,10 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
     let selected=if automatic && agenda["inheritedStage"].is_object() {
         // Model-authored successor stage can override a generic inherited
         // domain when the current source and observed failures support it.
+        self_domain.or(inherited).or(explicit)
+    }else if automatic && agenda["factorialExperiment"].is_object() {
+        // The factorial phase is an actual intervention, not an inherited
+        // unrelated domain preference; the runtime must execute its choice.
         self_domain.or(inherited).or(explicit)
     }else{inherited.or(self_domain).or(explicit)};
     let trial_id=campaign["planTrialAlgorithmId"].as_str()
@@ -4980,7 +5005,8 @@ fn native_generation_plan(state:&AppState, campaign:&Value, job:&Value, binary_c
         "targetPlan":target_plan,
         "improvementDirective":generation_improvement_directive(source_input,&action_history),
         "systemBlueprint":model,"systemAgenda":agenda,
-        "metaPolicy":meta_policy,"peerLineages":peers,
+        "metaPolicy":meta_policy,"factorialExperiment":factorial,
+        "peerLineages":peers,
         "metaMethodHypothesis":method_hypothesis,
         "crossLineageHypothesis":hybrid,
         "rankedFiles":ranked
@@ -5248,6 +5274,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         if job["input"]["rsiMetaPolicy"]!=expected_meta {
             return Err("실제 후손의 메타 학습 정책과 상속된 계획이 다릅니다.".into());
         }
+        let expected_factorial=crate::engine::rsi_causal_ecology::design(
+            &history,job["input"]["rsiSystemAgenda"]["frontier"]
+                .as_array().map(Vec::as_slice).unwrap_or(&[]),
+            &expected_meta["reciprocalExperiment"],&commit);
+        if job["input"]["rsiFactorialExperiment"]!=expected_factorial
+            || job["input"]["rsiSystemAgenda"]["factorialExperiment"].is_object()
+                && job["input"]["rsiSystemAgenda"]["factorialExperiment"]!=expected_factorial {
+            return Err("새 컴파일된 후손의 동결 실험 요인 설계가 다릅니다.".into());
+        }
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
@@ -5285,6 +5320,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiSystemAgenda"]);
         let meta=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let causal=crate::engine::rsi_causal_ecology::instruction(
+            &job["input"]["rsiFactorialExperiment"]);
         let hypothesis=&job["input"]["rsiMetaMethodHypothesis"];
         let hybrid=&job["input"]["rsiCrossLineageHypothesis"];
         let cross_lineage=job["input"]["rsiPeerLineages"]["references"].as_array()
@@ -5296,7 +5333,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
