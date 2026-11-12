@@ -743,7 +743,43 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             ).await;
             no_edit_retry_attempts=1;
         }
-        for revision in 0..MAX_REPAIRS {
+        // Borrow Sub3's bounded rustc-guided source repair: a rejected
+        // model edit gets machine-applicable compiler suggestions before
+        // spending another model turn. All amended bytes are re-captured
+        // and independently evaluated; an unsuccessful repair rolls back.
+        let mut compiler_repairs=Vec::<Value>::new();
+        for revision in 0..=MAX_REPAIRS {
+            let compiler_failed=finished.as_ref().ok().is_some_and(|prior|
+                prior["reason"]=="build_or_typecheck_failed"
+                && prior["rsi"]["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)>0
+                && prior["rsi"]["candidateOrigin"]!="native_inductive_source_mutation");
+            if compiler_failed {
+                match crate::engine::rsi_compiler_repair::recover(worktree).await {
+                    Ok(Some(receipt)) => {
+                        // The original candidate hash is stale after any
+                        // compiler amendment; always capture the FULL diff.
+                        match crate::engine::rsi_worktree::finish(
+                            context,job,worktree,Ok(None),&session_id
+                        ).await {
+                            Ok(rechecked) => {
+                                context.state.store.audit("rsi.compiler_repair_verified",
+                                    json!({"jobId":context.job_id,"receipt":receipt,
+                                        "candidateId":rechecked["rsi"]["candidateId"]}));
+                                compiler_repairs.push(receipt);
+                                finished=Ok(rechecked);
+                            }
+                            Err(error) => context.state.store.audit(
+                                "rsi.compiler_repair_capture_failed",
+                                json!({"jobId":context.job_id,"error":error})),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => context.state.store.audit(
+                        "rsi.compiler_repair_unavailable",
+                        json!({"jobId":context.job_id,"error":error})),
+                }
+            }
+            if revision==MAX_REPAIRS {break;}
             let Some(feedback)=finished.as_ref().ok()
                 .and_then(crate::engine::rsi_worktree::repair_feedback) else {break;};
             // Cancellation or process restart is never a reason to replay a write.
@@ -797,6 +833,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut output=finished?;
         output["noEditRetryAttempts"]=json!(no_edit_retry_attempts);
         output["repairAttempts"]=json!(attempts.len());
+        output["compilerRepairReceipts"]=json!(compiler_repairs);
         output["previousAttempts"]=json!(attempts);
         output
     } else {
