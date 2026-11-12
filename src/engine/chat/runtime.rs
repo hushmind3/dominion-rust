@@ -173,9 +173,11 @@ fn rsi_complete_system_bundle(session:&Value,operations:&[Value])->bool {
 /// three initial focus excerpts. It is eligible ONLY with an independently
 /// witnessed write and an explicit model-authored design path.
 fn rsi_verified_bundle_write(session:&Value,args:&Value,op:&Value)->bool {
-    // A caller's explicit single-file constraint always wins over a
-    // model-authored multi-file redesign proposal.
-    if session["rsiExplicitFocus"]==true{return false;}
+    // An OWNER-selected single-file boundary always wins. The engine's
+    // inherited/learned source-edit checkpoint is not an owner constraint:
+    // it must not prevent a model-authored coupled redesign from finishing.
+    if session["rsiExplicitFocus"]==true
+        && session["rsiPolicyFocus"]!=true {return false;}
     let Some(targets)=session["rsiSystemDesign"]["targetFiles"].as_array()
         .filter(|files|files.len()>1) else{return false;};
     let Some(path)=args["path"].as_str()
@@ -1427,10 +1429,25 @@ async fn run_turn_body(
                     // next to replace made small models select destructive
                     // full-file output and spend the generation without a
                     // valid diff. Retain create-file support elsewhere.
-                    if focused_generation && session["rsiFocusFiles"].as_array()
-                        .is_some_and(|files|files.iter().any(|file|
-                            file.as_str().is_some_and(|path|
-                                state.config.workspace.join(path).is_file()))) {
+                    // Re-read the LIVE design after rsi_system_plan has
+                    // persisted it. The captured start-of-turn session does
+                    // not contain a plan authored midway through this turn.
+                    // An existing focus file must not hide workspace_write
+                    // when the actual coupled design requires a NEW module.
+                    let current_design=state.store.get("session",session_id)
+                        .unwrap_or_else(||session.clone());
+                    let coupled_creation=current_design["rsiSystemEvolution"]==true
+                        && current_design["rsiSystemDesign"]["targetFiles"].as_array()
+                            .is_some_and(|files|files.len()>1
+                                && files.iter().any(|file|
+                                    file.as_str().is_some_and(|path|
+                                        crate::engine::rsi::safe_path(path)
+                                        && !state.config.workspace.join(path).exists())));
+                    if focused_generation && !coupled_creation
+                        && session["rsiFocusFiles"].as_array()
+                            .is_some_and(|files|files.iter().any(|file|
+                                file.as_str().is_some_and(|path|
+                                    state.config.workspace.join(path).is_file()))) {
                         round_tools.retain(|definition|
                             tool_name(definition)!="workspace_write");
                     }
