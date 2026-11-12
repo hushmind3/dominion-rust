@@ -5681,7 +5681,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             genome["rules"].as_array().map(Vec::len).unwrap_or(0),
             archive["candidateId"],job["input"]["rsiArchiveRestored"])
     }else{String::new()};
-    let system_prompt=format!("{system_prompt}{edit_inheritance}");
+    let adapter_instruction=if job["input"]["rsiAllowLocalAdapterTraining"]==true {
+        "\n[OPTIONAL LOCAL MODEL WEIGHT EVOLUTION]\n\
+         A previously owner-approved training-only JSON manifest may be used\n\
+         with rsi_train_local_adapter(mode=check then train). You must identify\n\
+         its approved manifestName; do not invent or read private test cases.\n\
+         Training is only a candidate; the separate parent evaluator tests\n\
+         heldout performance and alone may promote weights for a later child.\n\
+         Continue improving the actual agent's source and meta-improver.\n"
+    }else{""};
+    let system_prompt=format!("{system_prompt}{edit_inheritance}{adapter_instruction}");
     let (prompt,fit)=fit_worker_generation_context(
         &system_prompt,
         &domain,&capability,&history,&directive,available)?;
