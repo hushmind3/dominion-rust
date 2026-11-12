@@ -414,6 +414,7 @@ pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
 /// A path string or prompt directive is never counted as model usage.
 pub(crate) struct AdaptedInference{
     pub provider_id:String,
+    pub endpoint:String,
     pub evidence:Value,
     process:tokio::process::Child,
 }
@@ -488,14 +489,9 @@ pub(crate) async fn launch(
     if !ready{return Err("LoRA 추론 서비스 준비 시간 제한".into());}
     let provider_id=format!("rsi-adapter-{}",job["id"].as_str()
         .ok_or("후손 ID 없음")?);
-    state.store.put("provider",&json!({
-        "id":provider_id,"name":"RSI independently promoted PEFT",
-        "baseUrl":endpoint,"kind":"openai","toolMode":"compat",
-        "reasoningProtocol":"chat_template","local":true,
-        "enabled":true,"model":"dominion-promoted-lora",
-        "capabilities":{"text":true,"contextTokens":8192,
-            "maxOutputTokens":2048}
-    })).ok_or("후손에 로컬 추론 제공자 등록 실패")?;
+    // Never register this service globally: its sole owner is the active
+    // source-editing descendant session, not provider discovery or other
+    // user chats. Its loopback endpoint is passed only to that child job.
     let evidence=json!({
         "source":"running_adapted_descendant_inference_v1",
         "promotionId":promoted["id"],
@@ -504,11 +500,5 @@ pub(crate) async fn launch(
         "modelWeightsVerifiedAtLaunch":true,
         "actualServerReady":true,"qualityProvenByThisCall":false
     });
-    Ok(Some(AdaptedInference{provider_id,evidence,process}))
-}
-pub(crate) fn disable_inference(state:&AppState,id:&str){
-    if let Some(mut provider)=state.store.get("provider",id){
-        provider["enabled"]=json!(false);
-        let _=state.store.put("provider",&provider);
-    }
+    Ok(Some(AdaptedInference{provider_id,endpoint,evidence,process}))
 }

@@ -4642,10 +4642,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // The sidecar is limited to this detached generation and removed after
     // the model's full source-editing turn (including its tool calls).
     let model_inference=crate::engine::rsi_model_weights::launch(&state,&job).await?;
-    let model_provider=model_inference.as_ref().map(|server|server.provider_id.clone());
     if let Some(server)=&model_inference {
-        job["input"]["providerId"]=json!(server.provider_id);
-        job["input"]["model"]=json!("dominion-promoted-lora");
+        job["input"]["rsiAdapterRoute"]=json!({
+            "source":"isolated_promoted_peft_inference_route_v1",
+            "providerId":server.provider_id,
+            "baseUrl":server.endpoint,
+            "model":"dominion-promoted-lora",
+            "adapterSha256":server.evidence["adapterSha256"]
+        });
         job["rsiAdapterInferenceExecuted"]=server.evidence.clone();
         state.store.put("job",&job).ok_or("채택 모델 추론 경로 저장 실패")?;
     }
@@ -4673,11 +4677,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         state.store.put("job",&finished)
             .ok_or("실제 모델 제공자 사용 영수증 저장 실패")?;
     }
-    // Unload the model, regardless of model or tool execution outcome.
+    // The inference sidecar is scoped by the Rust Child process Drop guard;
+    // its route was never registered in the application's global providers.
     drop(model_inference);
-    if let Some(id)=model_provider {
-        crate::engine::rsi_model_weights::disable_inference(&state,&id);
-    }
     match result {
         Ok(value) => {
             context.checkpoint(json!({"status":"completed","result":value}))?;
