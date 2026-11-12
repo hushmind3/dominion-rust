@@ -26,6 +26,7 @@ const receipt = {
   preflight: null, providerId: null, campaignId: null, status: "initializing",
   completedAt: null, history: [], firstMeasuredImprovement: false,
   descendantInheritedImprovement: false, capabilityDemonstrated: false,
+  systemCapabilityDemonstrated: false,
   acceptedGenerations: 0, error: null
 };
 
@@ -190,6 +191,7 @@ async function main() {
       receipt.tokens = campaign.tokens ?? null;
       receipt.history = (campaign.history || []).map(observedGeneration);
       receipt.capabilityDemonstrated = campaign.capabilityDemonstrated === true;
+      receipt.systemCapabilityDemonstrated = campaign.systemCapabilityDemonstrated === true;
       receipt.error = campaign.error || null;
       persist();
       if (terminal.has(receipt.status)) break;
@@ -215,7 +217,11 @@ async function main() {
     acceptedGenerations: receipt.acceptedGenerations,
     firstMeasuredImprovement: receipt.firstMeasuredImprovement,
     descendantInheritedImprovement: receipt.descendantInheritedImprovement,
-    capabilityDemonstrated: receipt.capabilityDemonstrated, error: receipt.error,
+    capabilityDemonstrated: receipt.capabilityDemonstrated,
+    systemCapabilityDemonstrated: receipt.systemCapabilityDemonstrated,
+    modelAuthoredDesigns:receipt.history.filter(g=>g.systemDesign?.source==="model_authored_system_design").length,
+    descendantPlans:receipt.history.filter(g=>g.descendantPlan?.source==="compiled_descendant_system_controller_v3").length,
+    error: receipt.error,
     // Keep real failure evidence visible even when artifact download is
     // unavailable: the tool names, exact edited bytes, independent metric
     // verdict and error are read from durable campaign records, never guessed.
@@ -247,8 +253,11 @@ async function main() {
   // genuine improver gain and measured generalization to a new domain.
   if (!receipt.firstMeasuredImprovement
       || !receipt.descendantInheritedImprovement
-      || !receipt.capabilityDemonstrated) {
-    throw new Error("Full autonomous RSI NOT demonstrated: 3 adopted generations, meta-method improvement and new-domain transfer are required; evidence saved");
+      || !receipt.capabilityDemonstrated
+      || !receipt.systemCapabilityDemonstrated
+      || receipt.history.filter(g=>g.systemDesign?.source==="model_authored_system_design").length<3
+      || receipt.history.filter(g=>g.pairedRevalidated && g.accepted).length<3) {
+    throw new Error("Whole-system RSI NOT demonstrated: independently accepted model-authored descendant designs must redesign all six intelligence components and plan their own successors; raw evidence saved");
   }
 }
 try { await main(); }
