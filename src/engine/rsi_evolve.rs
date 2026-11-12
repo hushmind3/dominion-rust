@@ -4276,6 +4276,102 @@ mod system_evolution_handoff_tests {
     }
 }
 
+/// The production coordinator may pass an approved controller receipt, but
+/// MUST NOT recompute and replace the compiled descendant's design. Verify the
+/// exact generation and immutable source identity before any paid operation.
+fn validated_descendant_controller(
+    input:&Value,history:&[Value],commit:&str,
+)->Result<Option<(String,&'static str,Value)>,String>{
+    if input["rsiSystemEvolution"]!=true {return Ok(None);}
+    let plan=&input["rsiControllerPlan"];
+    if plan["source"]!="compiled_descendant_system_controller_v2"
+        || plan["generatorCommit"]!=commit
+        || plan["historyCount"].as_u64()!=Some(history.len() as u64)
+        || plan["systemBlueprint"]["generatorCommit"]!=commit
+        || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
+        || plan["systemBlueprint"]["source"]!="compiled_descendant_system_blueprint_v1"
+        || !plan["improvementDirective"].is_object()
+        || !plan["editPolicy"].is_object()
+    {
+        return Err("후손 제어기의 출처·실행 이력·방법이 일치하지 않습니다.".into());
+    }
+    let domain=plan["domain"].as_str()
+        .filter(|d|DOMAINS.contains(d))
+        .ok_or("후손 제어기가 유효하지 않은 분야를 지정했습니다.")?;
+    let selection=match plan["selection"].as_str() {
+        Some("algorithm_active")=>"algorithm_active",
+        Some("algorithm_trial")=>"algorithm_trial",
+        Some("research_continuation")=>"research_continuation",
+        _=>return Err("후손 제어기의 탐색 방법이 유효하지 않습니다.".into())
+    };
+    if input["rsiSelectedDomain"]!=domain
+        || input["rsiTargetDomain"]!=domain
+        || input["rsiTargetPlan"]["domain"]!=domain
+        || input["rsiTargetPlan"]["generatorCommit"]!=commit
+        || input["rsiTargetPlan"]["selection"]!=plan["selection"]
+        || input["rsiTargetPlan"]["strategy"]!=plan["strategy"]
+        || input["rsiEditPolicy"]!=plan["editPolicy"]
+        || input["rsiSystemBlueprint"]!=plan["systemBlueprint"]
+        || input["rsiImprovementDirective"]!=plan["improvementDirective"]
+    {
+        return Err("후손 계획과 실행 worker의 목표·전략·자기모형이 다릅니다.".into());
+    }
+    if input["rsiFocusSelection"]["source"]!="owner_selected"
+        && input["rsiFocusFiles"]!=plan["focusFiles"] {
+        return Err("후손이 선택한 소스가 worker 실행 전에 변경됐습니다.".into());
+    }
+    if paired_descendant_target(input) && input["rsiDecisionInput"]["targetDomain"]!=domain {
+        return Err("검증된 세대 간 목표를 후손 제어기가 무시했습니다.".into());
+    }
+    Ok(Some((domain.to_string(),selection,plan["strategy"].clone())))
+}
+
+#[cfg(test)]
+mod descendant_controller_contract_tests {
+    use super::*;
+    #[test]
+    fn successor_plan_is_authoritative_and_rejects_parent_override() {
+        let commit="a".repeat(40);
+        let plan=json!({
+            "source":"compiled_descendant_system_controller_v2",
+            "generatorCommit":commit,"historyCount":1,"domain":"learning",
+            "selection":"algorithm_active",
+            "strategy":{"id":"descendant-search","revision":"r2"},
+            "focusFiles":["src/engine/learning.rs"],
+            "systemBlueprint":{"source":"compiled_descendant_system_blueprint_v1",
+                "generatorCommit":commit,"historyCount":1},
+            "improvementDirective":{"mode":"change_approach"},
+            "editPolicy":{"revision":"descendant-method-r2"}
+        });
+        let input=json!({
+            "rsiSystemEvolution":true,"rsiGeneratorCommit":commit,
+            "rsiSelectedDomain":"learning","rsiTargetDomain":"learning",
+            "rsiTargetPlan":{"domain":"learning","selection":"algorithm_active",
+                "strategy":plan["strategy"],"generatorCommit":commit},
+            "rsiFocusFiles":plan["focusFiles"],
+            "rsiFocusSelection":{"source":"rebuilt_descendant_controller"},
+            "rsiEditPolicy":plan["editPolicy"],
+            "rsiSystemBlueprint":plan["systemBlueprint"],
+            "rsiImprovementDirective":plan["improvementDirective"],
+            "rsiControllerPlan":plan
+        });
+        let history=vec![json!({"attempt":1})];
+        let validated=validated_descendant_controller(&input,&history,&commit)
+            .unwrap().unwrap();
+        assert_eq!(validated.0,"learning");
+        assert_eq!(validated.2["id"],"descendant-search");
+        let mut hijacked=input.clone();
+        hijacked["rsiSelectedDomain"]=json!("improver");
+        assert!(validated_descendant_controller(&hijacked,&history,&commit).is_err());
+        let mut stale=input.clone();
+        stale["rsiControllerPlan"]["generatorCommit"]=json!("old");
+        assert!(validated_descendant_controller(&stale,&history,&commit).is_err());
+        let mut wrong_method=input;
+        wrong_method["rsiEditPolicy"]["revision"]=json!("parent");
+        assert!(validated_descendant_controller(&wrong_method,&history,&commit).is_err());
+    }
+}
+
 /// Executes only one durable generation, without starting a server, scheduler,
 /// migrations or recovering another process's jobs in the shared ledger.
 pub async fn worker(job_id: &str) -> Result<(), String> {
@@ -4334,13 +4430,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let (mut domain, mut domain_selection, mut strategy)=select_generation_strategy(
-        &state,&history,&objective,continuation.clone(),trial_id.clone(),
-        selected_domain.clone(),&commit);
+    let delegated=validated_descendant_controller(&job["input"],&history,&commit)?;
+    let (mut domain, mut domain_selection, mut strategy)=if let Some(plan)=delegated {
+        plan
+    }else{
+        select_generation_strategy(
+            &state,&history,&objective,continuation.clone(),trial_id.clone(),
+            selected_domain.clone(),&commit)
+    };
     // An adopted binary can revise its own targeting logic. Keep the original
     // parent decision unless the recompiled generator reaches a different
     // conclusion on the same durable history and objective.
-    if job["input"]["rsiSourceAdvanced"]==true
+    if job["input"]["rsiSystemEvolution"]!=true
+        && job["input"]["rsiSourceAdvanced"]==true
         && job["input"]["rsiAutoFocus"]==true && continuation.is_none()
         && selected_domain.is_some() && !paired_target {
         let fresh=select_generation_strategy(&state,&history,&objective,
@@ -4356,6 +4458,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "targetDomain":domain,"source":"frozen_paired_post_adoption"
         }));
     }
+    if job["input"]["rsiSystemEvolution"]!=true {
     if let Err(error)=reconcile_descendant_target(&state,&mut job,&history,
         &domain,domain_selection,&strategy,&commit) {
         if error.starts_with("rsi_token_budget:") {
@@ -4366,10 +4469,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }
         return Err(error);
     }
+    }
     // The coordinator that queued this child may be the OLD generator. A
     // recompiled descendant must actually use its own revised policy
     // synthesis, not inherit an obsolete parent-selected edit method.
-    let mut descendant_method=learned_edit_method(&state,&job["input"],&history);
+    let mut descendant_method=if job["input"]["rsiSystemEvolution"]==true {
+        job["input"]["rsiControllerPlan"]["editPolicy"].clone()
+    }else{learned_edit_method(&state,&job["input"],&history)};
     descendant_method["selectedByGeneratorCommit"]=json!(commit);
     job["input"]["rsiEditPolicy"]=descendant_method.clone();
     job["rsiEditPolicyDecision"]=json!({
