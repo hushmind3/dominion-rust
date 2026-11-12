@@ -4306,6 +4306,12 @@ async fn run_loop(
         }
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
+            // Capture newly authored method PROGRAMS separately from execution
+            // receipts. A later child can only claim inherited method learning
+            // when the exact earlier method revision actually executed with
+            // verified postconditions on source that was independently adopted.
+            generation["methodProposals"]=context.state.store.get("session",session)
+                .map(|row|row["rsiMethodProposals"].clone()).unwrap_or(Value::Null);
         }
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
