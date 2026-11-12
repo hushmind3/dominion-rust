@@ -7,6 +7,7 @@ on:
       - '.github/workflows/sub1-native-proof.yml'
       - 'scripts/sub1-native-proof.mjs'
       - 'src/engine/rsi_mutation.rs'
+      - 'src/engine/rsi_bayesian_accumulator.rs'
       - 'src/engine/rsi_evolve.rs'
       - 'src/engine/rsi_worktree.rs'
       - 'src/engine/jobs.rs'

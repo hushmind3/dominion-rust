@@ -8,6 +8,9 @@ use std::{fs, path::Path};
 #[cfg(test)]
 #[path = "rsi_domain_accumulator.rs"]
 mod accumulator;
+#[cfg(test)]
+#[path = "rsi_bayesian_accumulator.rs"]
+mod bayesian;
 
 fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
@@ -188,6 +191,29 @@ fn stream_verified_policy_statistics(source: &str) -> Option<String> {
     result.push_str(&source[block_end..]);
     result= result.replacen(UNRESOLVED, "let unresolved = if last_row",1);
     (result!=source).then_some(result)
+}
+
+/// A stronger native meta-improvement: scan the history only once for all
+/// candidate domains and compute the original Bayesian failure-cluster score
+/// without rebuilding six temporary feature maps. Non-default expression and
+/// counterexample selectors retain the existing interpreter unchanged.
+fn fuse_bayesian_domain_statistics(source: &str) -> Option<String> {
+    const ENTRY: &str = "pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {";
+    if source.matches(ENTRY).count()!=1
+        || source.contains("fn fast_sub1_bayesian_domain(")
+        || !source.contains("let posterior=(get(\"accepted\")+0.5)/(tries+2.0);")
+        || !source.contains("let useful=get(\"usefulGenerations\")/(tries+1.0);")
+        || !source.contains("let penalty=get(\"barrenRate\")*cost/(1.0+cost);")
+        || !source.contains("Some(3.0*posterior/(1.0+cost)+0.25*useful")
+        || !source.contains("let mut best=(f64::NEG_INFINITY,eligible_domains(objective)[0]);")
+        || !source.contains("let useful=rows.iter().filter(|row|row[\"accepted\"]==true ||")
+        || !source.contains("row[\"candidateId\"].is_string() || row[\"newFindings\"]")
+    {return None;}
+    let dispatcher=format!("{ENTRY}\n    let policy=algorithm[\"implementation\"].as_str()\n        .or_else(||algorithm[\"variant\"].as_str()).unwrap_or(\"failure-clusters\");\n    if !matches!(policy,\"expression\"|\"counterexample-first\") {{\n        return fast_sub1_bayesian_domain(history,&eligible_domains(objective),\n            |domain|objective_matches(domain,objective));\n    }}");
+    let mut changed=source.replacen(ENTRY,&dispatcher,1);
+    changed.push('\n');
+    changed.push_str(include_str!("rsi_bayesian_accumulator.rs"));
+    Some(changed)
 }
 
 fn stream_search_policy_statistics(source: &str) -> Option<String> {
@@ -422,9 +448,10 @@ pub(crate) fn induce(
 /// source-derived alternatives. No model invocation or acceptance is implied.
 fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<(&'static str,String)> {
     type Operator = (&'static str, fn(&str)->Option<String>);
-    let operators: [Operator;7] = [
+    let operators: [Operator;8] = [
         ("streamed_verified_domain_selector_v3",stream_verified_domain_selection),
         ("streamed_verified_improver_statistics_v2",stream_verified_policy_statistics),
+        ("fused_bayesian_domain_statistics_v1",fuse_bayesian_domain_statistics),
         ("streamed_improver_policy_statistics_v1",stream_search_policy_statistics),
         ("verified_owner_provenance_cache_v1",materialize_verified_owner_provenance),
         ("loop_invariant_term_hoist_v1",hoist_invariant_query_terms),
@@ -438,6 +465,31 @@ fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fused_bayesian_selector_preserves_default_failure_cluster_policy() {
+        use crate::engine::rsi_evolve;
+        let original=include_str!("rsi_evolve.rs");
+        let source=fuse_bayesian_domain_statistics(original)
+            .unwrap_or_else(||original.to_string());
+        assert!(source.contains("return fast_sub1_bayesian_domain(history"));
+        assert!(source.contains("expression\"|\"counterexample-first"));
+        assert!(fuse_bayesian_domain_statistics(&source).is_none());
+        let mut history=Vec::<Value>::new();
+        for n in 0..160usize {
+            if n>0 {
+                history.push(json!({"domain":rsi_evolve::DOMAINS[n%6],
+                    "accepted":n%5==0,"candidateId":if n%7==0 {json!("candidate")}else{Value::Null},
+                    "newFindings":n%9,"tokens":(n*1297)%19000,
+                    "evaluation":{"verdict":if n%11==0 {"regressed"}else{"inconclusive"}}}));
+            }
+            let expected=rsi_evolve::select_domain(
+                &json!({"implementation":"failure-clusters"}),&history,"");
+            let actual=bayesian::fast_sub1_bayesian_domain(
+                &history,rsi_evolve::DOMAINS,|_|false);
+            assert_eq!(expected,actual,"history length {n}");
+        }
+    }
 
     #[test]
     fn cross_branch_induction_matches_real_sub1_source_shapes() {
