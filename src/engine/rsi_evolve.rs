@@ -3236,6 +3236,9 @@ async fn run_loop(
             crate::engine::rsi_system::validate_plan_evidence(
                 &context.state,&lab,&head,
                 child_input["rsiIndexId"].as_str().unwrap_or(""),&plan)?;
+            let profile=crate::engine::rsi_meta_controller::comparison_profile(&child_input);
+            crate::engine::rsi_meta_controller::validate_peer_lineages(
+                &context.state,&plan["peerLineages"],profile.as_deref(),&context.job_id)?;
             let domain=plan["domain"].as_str()
                 .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
             let focus=plan["focusFiles"].as_array()
@@ -3269,6 +3272,8 @@ async fn run_loop(
             child_input["rsiArchitectureFrontier"]=plan["architectureFrontier"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
+            child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
+            child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -3506,6 +3511,10 @@ async fn run_loop(
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
+        generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
+        generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
+        generation["comparisonProfileSha256"]=json!(
+            crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["improvementDirective"]=current["input"]["rsiImprovementDirective"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["improvementDirectiveVerified"]=current["rsiImprovementDirectiveVerified"].clone();
@@ -4310,6 +4319,13 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let archive=crate::engine::rsi_archive::select(
         &state,&history,commit,&input["rsiFrozenCases"]);
     let edit_policy=learned_edit_method(&state,input,&history);
+    let peers=crate::engine::rsi_meta_controller::peer_lineages(
+        &state,campaign,input,architecture_target["role"].as_str());
+    let comparative_mode=if peers["references"].as_array()
+        .is_some_and(|rows|!rows.is_empty()) {"cross_lineage_hybrid_design"}
+        else if meta_policy["counterexamples"].as_array()
+            .is_some_and(|rows|rows.len()>=2) {"multi_trajectory_design"}
+        else {"local_source_redesign"};
     println!("{}",json!({
         "source":"compiled_descendant_system_controller_v2",
         "generatorCommit":commit,"historyCount":history.len(),
@@ -4320,6 +4336,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
         "metaPolicy":meta_policy,
+        "peerLineages":peers,
+        "comparativeMode":comparative_mode,
         "decisionOwner":"rebuilt_descendant_binary",
         "improvementDirective":directive,
         "archiveSelection":archive,
@@ -4481,6 +4499,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         learned_edit_method(&state,&job["input"],&history)
     };
     if job["input"]["rsiSystemEvolution"]==true {
+        let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
+        crate::engine::rsi_meta_controller::validate_peer_lineages(
+            &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),&campaign)?;
         let frontier=job["input"]["rsiArchitectureFrontier"].as_array()
             .ok_or("후손 메타 학습을 재구성할 구조 탐색 근거 없음")?;
         let expected=crate::engine::rsi_meta_controller::synthesize(
@@ -4568,6 +4589,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 .map(str::to_string)).unwrap_or_default();
         let meta_instruction=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let peer_evidence=serde_json::to_string(&job["input"]["rsiPeerLineages"])
+            .unwrap_or_default();
+        let peer_context=format!("COMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}",
+            job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
             && job["input"]["rsiArchitectureTarget"].is_object() {
             let gap=&job["input"]["rsiArchitectureTarget"];
@@ -4575,9 +4600,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 gap["role"],gap["path"],gap["sourceSha256"],
                 gap["usageSignalIds"],gap["sourceAttempts"],gap["reason"])
         }else{String::new()};
-        format!("{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
+        format!("{}\n\n{}\n\n{}\n\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nOWNER OBJECTIVE: {}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,&owner),
-            meta_instruction,frontier_hint,expected,owner,capsule(&observed,3500),
+            meta_instruction,peer_context,frontier_hint,expected,owner,capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(

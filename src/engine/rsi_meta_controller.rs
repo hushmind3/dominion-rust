@@ -179,6 +179,134 @@ pub(crate) fn synthesize(
     })
 }
 
+/// A frozen-case digest distinguishes compatible comparisons from coincidental
+/// success labels. An absent suite never admits peers into the archive.
+pub(crate) fn comparison_profile(input:&Value)->Option<String>{
+    let cases=input["rsiFrozenCases"].as_array().filter(|cases|!cases.is_empty())?;
+    Some(format!("{:x}",Sha256::digest(serde_json::to_vec(cases).ok()?)))
+}
+
+/// MGM-style other-lineage references: the built successor may inspect
+/// independently paired designs from other campaigns sharing the same frozen
+/// suite. No foreign patch is imported or credited to this descendant.
+pub(crate) fn peer_lineages(
+    state:&crate::state::AppState,campaign:&str,input:&Value,
+    preferred_role:Option<&str>,
+)->Value {
+    let profile=comparison_profile(input);
+    let mut ranked=Vec::<(i64,Value)>::new();
+    let mut patches=BTreeSet::new();
+    if let Some(sha)=profile.as_deref(){
+        for generation in state.store.all("rsi_generation").into_iter().take(256) {
+            if generation["campaignId"].as_str()==Some(campaign)
+                || generation["comparisonProfileSha256"].as_str()!=Some(sha)
+                || !independent_adoption(&generation) {continue;}
+            let Some(candidate)=generation["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id)) else{continue};
+            if candidate["status"]!="verified"
+                || candidate["evaluation"]["metrics"]["eligible"]!=true
+                || candidate["baseCommit"]!=generation["generatorCommit"]
+                || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
+                || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {continue;}
+            let Some(patch)=candidate["patchSha256"].as_str() else{continue};
+            if !patches.insert(patch.to_string()){continue;}
+            let mut aligned=Vec::new();let mut same=0usize;
+            for file in generation["systemDesign"]["targetFiles"].as_array()
+                .into_iter().flatten().filter_map(Value::as_str).take(24) {
+                if !crate::engine::rsi::safe_path(file){continue;}
+                if let Some(current)=crate::engine::code_index::indexed_source_hash(
+                    state,input["rsiIndexId"].as_str().unwrap_or(""),file) {
+                    same+=usize::from(
+                        generation["acceptedSourceHashes"][file].as_str()==Some(current.as_str()));
+                    aligned.push(file.to_owned());
+                }
+            }
+            if aligned.is_empty(){continue;}
+            let roles=model_design_roles(&generation);
+            let match_role=preferred_role.is_some_and(|role|roles.iter().any(|r|r==role));
+            let gain=candidate["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0);
+            let score=i64::from(match_role)*1000+gain.min(20) as i64*30
+                +same.min(8) as i64*3;
+            ranked.push((score,json!({
+                "source":"paired_cross_campaign_design_reference_v1",
+                "campaignId":generation["campaignId"],
+                "generationId":generation["id"],
+                "candidateId":candidate["id"],
+                "patchSha256":patch,
+                "generatorCommit":generation["generatorCommit"],
+                "acceptedCommit":generation["acceptedCommit"],
+                "comparisonProfileSha256":sha,
+                "roles":roles,"alignedSourceFiles":aligned,
+                "identicalSourceFiles":same,
+                "nextDomain":generation["systemDesign"]["nextDomain"],
+                "hypothesis":generation["systemDesign"]["hypothesis"].as_str()
+                    .unwrap_or("").chars().take(400).collect::<String>(),
+                "designSummary":generation["systemDesign"]["design"].as_str()
+                    .unwrap_or("").chars().take(600).collect::<String>(),
+                "automaticPatchReuse":false,
+                "qualityProvenForThisDescendant":false
+            })));
+        }
+    }
+    ranked.sort_by(|a,b|b.0.cmp(&a.0).then_with(||
+        a.1["candidateId"].as_str().cmp(&b.1["candidateId"].as_str())));
+    json!({
+        "source":"paired_cross_campaign_reference_archive_v1",
+        "comparisonProfileSha256":profile,
+        "references":ranked.into_iter().take(4).map(|(_,row)|row).collect::<Vec<_>>(),
+        "automaticPatchReuse":false
+    })
+}
+
+/// Verify the peer's raw paired receipt and unchanged source identity;
+/// reference text can advise an experiment, never waive independent testing.
+pub(crate) fn validate_peer_lineages(
+    state:&crate::state::AppState,peers:&Value,
+    profile:Option<&str>,campaign:&str,
+)->Result<(),String>{
+    if peers["source"]!="paired_cross_campaign_reference_archive_v1"
+        || peers["comparisonProfileSha256"].as_str()!=profile
+        || peers["automaticPatchReuse"]!=false {
+        return Err("교차 계보 비교의 평가 조건 또는 출처가 다릅니다.".into());
+    }
+    let rows=peers["references"].as_array().filter(|rows|rows.len()<=4)
+        .ok_or("교차 계보 참고 수가 범위를 벗어났습니다.")?;
+    let mut seen=BTreeSet::new();
+    for row in rows {
+        let id=row["candidateId"].as_str()
+            .ok_or("교차 계보 후보 ID가 없습니다.")?;
+        if !seen.insert(id)
+            || row["source"]!="paired_cross_campaign_design_reference_v1"
+            || row["comparisonProfileSha256"].as_str()!=profile
+            || row["automaticPatchReuse"]!=false
+            || row["campaignId"].as_str()==Some(campaign) {
+            return Err("중복 또는 자기 계보 참고가 포함됐습니다.".into());
+        }
+        let generation_id=row["generationId"].as_str()
+            .ok_or("교차 계보 기록 ID가 없습니다.")?;
+        let generation=state.store.get("rsi_generation",generation_id)
+            .ok_or("교차 계보 원본 세대가 없습니다.")?;
+        if generation["campaignId"]!=row["campaignId"]
+            || generation["candidateId"]!=id
+            || generation["comparisonProfileSha256"].as_str()!=profile
+            || generation["acceptedCommit"]!=row["acceptedCommit"]
+            || !independent_adoption(&generation) {
+            return Err("교차 계보 세대의 원본 검증 기록이 다릅니다.".into());
+        }
+        let candidate=state.store.get("rsi_candidate",id)
+            .ok_or("교차 계보 원본 후보가 없습니다.")?;
+        if candidate["status"]!="verified"
+            || candidate["evaluation"]["metrics"]["eligible"]!=true
+            || candidate["patchSha256"]!=row["patchSha256"]
+            || candidate["baseCommit"]!=row["generatorCommit"]
+            || candidate["experimentAdoption"]["commit"]!=row["acceptedCommit"]
+            || !crate::engine::rsi::verified_pair_receipt(state,&candidate){
+            return Err("교차 계보 후보의 독립 평가 영수증이 다릅니다.".into());
+        }
+    }
+    Ok(())
+}
+
 /// The model—not this controller—authors the actual design, programs and
 /// reusable procedures. Comparative observations are bounded and source
 /// grounded; they carry no adoption rights.
