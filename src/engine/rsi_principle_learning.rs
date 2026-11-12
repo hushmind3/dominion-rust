@@ -247,6 +247,18 @@ struct Aggregate {
     generation_ids:BTreeSet<String>,
     next_roles:BTreeSet<String>,
     roles:BTreeSet<String>,
+    transferable_keys:BTreeSet<String>,
+}
+#[derive(Default)]
+struct Transfer {
+    mechanisms:BTreeSet<String>,
+    domains:BTreeSet<String>,
+    cases:u64,
+    gains:u64,
+    regressions:u64,
+    successor_cases:u64,
+    successor_gains:u64,
+    successor_regressions:u64,
 }
 /// The descendant's learned table is deterministic given its durable record.
 /// Cases are deduplicated per independent candidate and frozen profile.
@@ -268,6 +280,15 @@ pub(crate) fn study(history:&[Value])->Value {
         let group=groups.entry(mechanism).or_default();
         group.attempts+=1;
         group.roles.insert(role.clone());
+        if g["openImprovementProgram"]["node"]["mechanism"]==mechanism.as_str() {
+            for factor in g["openImprovementProgram"]["node"]["principleKeys"]
+                .as_array().into_iter().flatten().filter_map(Value::as_str) {
+                if (3..=48).contains(&factor.len())
+                    && factor.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'_') {
+                    group.transferable_keys.insert(factor.to_owned());
+                }
+            }
+        }
         if let Some(id)=g["id"].as_str(){group.generation_ids.insert(id.to_string());}
         let adopted=accepted_measured(g);
         if adopted{group.independently_adopted+=1;}
@@ -326,14 +347,57 @@ pub(crate) fn study(history:&[Value])->Value {
             "domains":g.domains.into_iter().collect::<Vec<_>>(),
             "changedRoles":g.roles.into_iter().collect::<Vec<_>>(),
             "descendantRoles":g.next_roles.into_iter().collect::<Vec<_>>(),
+            "principleKeys":g.transferable_keys.into_iter().collect::<Vec<_>>(),
             "generationIds":g.generation_ids.into_iter().take(12).collect::<Vec<_>>(),
             "causalAttributionProven":false
+        })
+    }).collect::<Vec<_>>();
+    // Independent, model-invented abstraction keys can identify shared
+    // mechanisms even when programs use entirely different descriptions
+    // and target subsystems. The keys carry observed task rewards, never
+    // declarative credit merely for being present in an untested program.
+    let mut factors=BTreeMap::<String,Transfer>::new();
+    for row in &rows {
+        for key in row["principleKeys"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str) {
+            let f=factors.entry(key.to_string()).or_default();
+            if let Some(mechanism)=row["mechanism"].as_str(){
+                f.mechanisms.insert(mechanism.to_owned());
+            }
+            for domain in row["domains"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str) {
+                f.domains.insert(domain.to_owned());
+            }
+            f.cases+=row["measuredCases"].as_u64().unwrap_or(0);
+            f.gains+=row["improvedCases"].as_u64().unwrap_or(0);
+            f.regressions+=row["regressedCases"].as_u64().unwrap_or(0);
+            f.successor_cases+=row["nextGenerationCases"].as_u64().unwrap_or(0);
+            f.successor_gains+=row["nextGenerationImprovements"].as_u64().unwrap_or(0);
+            f.successor_regressions+=row["nextGenerationRegressions"].as_u64().unwrap_or(0);
+        }
+    }
+    let features=factors.into_iter().map(|(name,f)|{
+        let support=f.mechanisms.len();
+        json!({
+            "key":name,"independentMechanisms":support,
+            "measuredCases":f.cases,"improvedCases":f.gains,
+            "regressedCases":f.regressions,
+            "nextGenerationCases":f.successor_cases,
+            "nextGenerationImprovements":f.successor_gains,
+            "nextGenerationRegressions":f.successor_regressions,
+            "posteriorCaseGain":(f.gains as f64+1.0)/(f.cases as f64+2.0),
+            "posteriorDescendantGain":(f.successor_gains as f64+1.0)
+                /(f.successor_cases as f64+2.0),
+            "domains":f.domains.into_iter().collect::<Vec<_>>(),
+            "transferEligible":support>=2 && f.cases>=2,
+            "causalFeatureProven":false
         })
     }).collect::<Vec<_>>();
     let mut ledger=json!({
         "source":"independently_measured_improvement_principle_learner_v1",
         "historyCount":history.len(),
         "principles":rows,
+        "transferFeatures":features,
         "effectSource":"frozen_holdout_case_level_and_rebuilt_descendant",
         "sourceAdoptionIsNotTaskGain":true,
         "crossRoleEffectIsObservational":true,
