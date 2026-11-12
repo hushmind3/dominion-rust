@@ -1,5 +1,5 @@
-//! Native fused Bayesian domain statistics used in an independently built
-//! descendant only after a real source patch and frozen paired evaluation.
+// Native fused Bayesian domain statistics used in an independently built
+// descendant only after a real source patch and frozen paired evaluation.
 #[derive(Clone, Copy, Default)]
 struct DomainStats {
     attempts: u64,
