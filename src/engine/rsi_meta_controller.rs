@@ -421,6 +421,65 @@ pub(crate) fn next_method_hypothesis(policy:&Value,history:&[Value])->Value{
     })
 }
 
+
+/// Mendelian recombination at the *hypothesis level*: no foreign code or
+/// patches are copied. A current compiled successor fuses distinct verified
+/// causal mechanisms into one falsifiable cross-component design contract.
+/// Parent and worker can recompute the same contract from the checked peers.
+pub(crate) fn compositional_hypothesis(peers:&Value,policy:&Value)->Value{
+    let rows=peers["references"].as_array().cloned().unwrap_or_default();
+    let primary=policy["target"]["role"].as_str().unwrap_or("");
+    let mut ranked=rows.into_iter().filter(|row|
+        row["source"]=="paired_cross_campaign_design_reference_v1"
+            && row["automaticPatchReuse"]==false
+            && row["identicalSourceFiles"].as_u64().unwrap_or(0)>0)
+        .collect::<Vec<_>>();
+    ranked.sort_by(|a,b|{
+        let matches=|row:&Value|row["roles"].as_array().is_some_and(|roles|
+            roles.iter().any(|v|v.as_str()==Some(primary)));
+        matches(b).cmp(&matches(a))
+            .then(b["identicalSourceFiles"].as_u64()
+                .cmp(&a["identicalSourceFiles"].as_u64()))
+            .then(a["candidateId"].as_str().cmp(&b["candidateId"].as_str()))
+    });
+    let Some(anchor)=ranked.first() else{return Value::Null};
+    let anchor_roles=anchor["roles"].as_array().cloned().unwrap_or_default();
+    let complementary=ranked.iter().skip(1).find(|other|
+        other["patchSha256"]!=anchor["patchSha256"]
+            && other["roles"].as_array().is_some_and(|other_roles|
+                other_roles.iter().any(|role|!anchor_roles.contains(role))));
+    let Some(second)=complementary else{return Value::Null};
+    let mut roles=BTreeSet::new();
+    for row in [anchor,second]{
+        for role in row["roles"].as_array().into_iter().flatten()
+            .filter_map(Value::as_str){
+            roles.insert(role.to_string());
+        }
+    }
+    let mut target_sources=BTreeSet::new();
+    for row in [anchor,second] {
+        for path in row["alignedSourceFiles"].as_array().into_iter()
+            .flatten().filter_map(Value::as_str) {
+            target_sources.insert(path.to_string());
+        }
+    }
+    let design=json!({
+        "source":"compiled_comparative_meta_design_hypothesis_v1",
+        "parentMetaRevision":policy["revision"],
+        "peerCandidateIds":[anchor["candidateId"],second["candidateId"]],
+        "peerPatchHashes":[anchor["patchSha256"],second["patchSha256"]],
+        "roles":roles.into_iter().collect::<Vec<_>>(),
+        "sourceAnchors":target_sources.into_iter().take(8).collect::<Vec<_>>(),
+        "competingHypotheses":[anchor["hypothesis"],second["hypothesis"]],
+        "inheritedMethods":[anchor["designSummary"],second["designSummary"]],
+        "causalQuestion":"Can a newly authored task+meta architecture combine the two independently useful mechanisms without their original failure modes?",
+        "requiredNewWork":["inspect_exact_current_source","design_new_coupled_mechanism",
+            "edit_actual_agent_and_meta_controller","evaluate_independently"],
+        "automaticPatchReuse":false,"qualityProvenForThisDescendant":false
+    });
+    design
+}
+
 /// The model—not this controller—authors the actual design, programs and
 /// reusable procedures. Comparative observations are bounded and source
 /// grounded; they carry no adoption rights.
