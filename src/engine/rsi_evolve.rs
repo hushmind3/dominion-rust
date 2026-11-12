@@ -3195,6 +3195,8 @@ async fn run_loop(
         // budgets, frozen evaluation and promotion; these fields are mutable
         // runtime policy and must be allowed to evolve with source revisions.
         if input["rsiSystemEvolution"]==true {
+            record["phase"]=json!("planning_next_generator");
+            save(context,record)?;
             let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
             std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
             let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
