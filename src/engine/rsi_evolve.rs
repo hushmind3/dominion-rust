@@ -4556,6 +4556,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &state,campaign,input,None);
     let interaction_graph=crate::engine::rsi_interaction::influence_graph(
         &history,&frontier);
+    let negative_transfer=crate::engine::rsi_negative_transfer::plan(
+        &state,&history,&frontier,commit);
     let authored_algebra=crate::engine::rsi_improvement_algebra::compile(
         &history,&frontier,commit);
     let method_learning=crate::engine::rsi_method_generalization::learn(
@@ -4565,11 +4567,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let model_evolution=crate::engine::rsi_model_lineage::plan(
         &state,&history,input,commit)?;
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    let capability_active=science_active
+    let negative_transfer_active=science_active
+        && negative_transfer["selected"]["victim"].is_object()
+        && negative_transfer["selected"]["source"].is_object();
+    let capability_active=science_active && !negative_transfer_active
         && crate::engine::rsi_method_generalization::prefer_capability_target(
             &algebra,&method_learning);
-    let algebra_active=science_active && !capability_active
-        && algebra["selected"]["target"].is_object();
+    let algebra_active=science_active && !negative_transfer_active
+        && !capability_active && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
         crate::engine::rsi_system::inherited_domain(&history).as_deref());
@@ -4583,7 +4588,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
         peer_meta,&reciprocal_graph);
     let suggested_stage=if input["rsiAutonomous"]==true && !owner_focus
-        && !paired && !algebra_active && !capability_active {
+        && !paired && !negative_transfer_active
+        && !algebra_active && !capability_active {
         crate::engine::rsi_system::inherited_stage(&state,&history,&frontier)
     }else{Value::Null};
     let meta_policy=crate::engine::rsi_meta_controller::apply_successor_stage(
@@ -4614,7 +4620,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&factorial,&coupled_portfolio,commit);
     // Independently adopted model-authored improvement operators can compose
     // across any number of roles; no fixed scientist stage is needed.
-    if algebra_active {
+    if negative_transfer_active {
+        architecture_target=negative_transfer["selected"]["victim"].clone();
+    }else if algebra_active {
         architecture_target=algebra["selected"]["target"].clone();
     }else if capability_active {
         architecture_target=method_learning["suggestedCapabilityTarget"].clone();
@@ -4636,8 +4644,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let successor_hint=if paired || owner_focus {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
     }else{
-        (if algebra_active || capability_active || (science_active
-            && science["phase"]!="discover_new_mechanism") {
+        (if negative_transfer_active || algebra_active || capability_active
+            || (science_active && science["phase"]!="discover_new_mechanism") {
             architecture_target["domain"].as_str()
         }else{None}).map(str::to_string)
             .or_else(||successor_stage["domain"].as_str().map(str::to_string))
@@ -4646,7 +4654,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
                 input,snapshot["attempt"].as_u64().unwrap_or(0)))
     };
     let objective=selection_objective(input);
-    let trial=if paired || algebra_active || capability_active || (science_active
+    let trial=if paired || negative_transfer_active || algebra_active
+        || capability_active || (science_active
         && science["phase"]!="discover_new_mechanism") {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
     };
@@ -4762,7 +4771,31 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }));
         }
     }
-    let focus=if algebra_active || capability_active
+    // Repeated source-isolated holdout regressions demand a real TWO-file
+    // experiment in the next compiled descendant, not another planner note.
+    // Source SHA and index identity are checked again before each source edit.
+    if negative_transfer_active && architecture_target["domain"]==domain {
+        for (position,key) in [(0usize,"victim"),(1usize,"source")] {
+            let row=&negative_transfer["selected"][key];
+            let (Some(path),Some(sha))=(
+                row["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p)),
+                row["sourceSha256"].as_str())else{continue};
+            if !source_root.join(path).is_file()
+                || crate::engine::code_index::indexed_source_hash(
+                    &state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                    .as_deref()!=Some(sha){continue;}
+            ranked.retain(|entry|entry["path"]!=path);
+            ranked.insert(position.min(ranked.len()),json!({
+                "path":path,"sourceHash":sha,"role":row["role"],
+                "domain":row["domain"],"sourceIndexId":input["rsiIndexId"],
+                "source":"compiled_independent_negative_transfer_pair"
+            }));
+        }
+    }
+    let focus=if negative_transfer_active {
+        ranked.iter().take(2).filter_map(|row|row["path"].as_str())
+            .collect::<Vec<_>>()
+    }else if algebra_active || capability_active
         || (science_active && matches!(science["phase"].as_str(),
         Some("isolate_left"|"isolate_right"))) {
         ranked.iter().take(1).filter_map(|row|row["path"].as_str())
@@ -4820,6 +4853,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "metaPolicy":meta_policy,
         "symbioticCurriculum":symbiosis,
         "interactionGraph":interaction_graph,
+        "negativeTransferPlan":negative_transfer,
         "coupledPortfolio":coupled_portfolio,
         "factorialExperiment":factorial,
         "recursiveScientificProgram":science,
