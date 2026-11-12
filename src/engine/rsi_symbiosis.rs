@@ -51,7 +51,7 @@ fn attempted_role(row:&Value)->Option<&str>{
 /// attempted to improve a different component after its adopted ancestor.
 /// Report attempted/adopted transitions as observations, never as causality.
 pub(crate) fn transition_graph(history:&[Value])->Value{
-    let mut counts=BTreeMap::<(String,String),(u64,u64,u64)>::new();
+    let mut counts=BTreeMap::<(String,String),(u64,u64,u64,u64,u64)>::new();
     for parent in history.iter().filter(|row|valid_adoption(row)){
         let Some(commit)=parent["acceptedCommit"].as_str() else{continue};
         for descendant in history.iter().filter(|row|
@@ -65,12 +65,29 @@ pub(crate) fn transition_graph(history:&[Value])->Value{
                 entry.0+=1;
                 if successful{entry.1+=1;}
                 if descendant["candidateId"].is_string(){entry.2+=1;}
+                // A successful whole-system design may propose an A->B
+                // mechanism. Check the declared source edits and *actual*
+                // next-generation behavior separately. These are predictive
+                // observations, not an intervention-controlled causal test.
+                let declared=parent["systemDesign"]["interactionEdges"]
+                    .as_array().is_some_and(|edges|edges.iter().any(|edge|
+                        edge["fromRole"]==from && edge["toRole"]==to
+                        && edge["fromPath"].as_str().is_some_and(|p|
+                            parent["acceptedSourceHashes"][p].is_string())
+                        && edge["toPath"].as_str().is_some_and(|p|
+                            parent["acceptedSourceHashes"][p].is_string())));
+                if declared {
+                    entry.3+=1;
+                    if successful{entry.4+=1;}
+                }
             }
         }
     }
-    let edges=counts.iter().map(|((from,to),(attempts,adopted,edited))|
+    let edges=counts.iter().map(|((from,to),(attempts,adopted,edited,predicted,realized))|
         json!({"from":from,"to":to,"attempts":attempts,
             "nextGenerationAdoptions":adopted,"codeEditAttempts":edited,
+            "sourceBackedMechanismTrials":predicted,
+            "predictedNextGenerationAdoptions":realized,
             "observationalOnly":true,
             "posterior":(*adopted as f64+1.0)/(*attempts as f64+2.0)})
     ).collect::<Vec<_>>();
@@ -144,12 +161,17 @@ fn score_partner(primary:&Value,other:&Value,graph:&Value)->Option<(f64,Value)>{
     let r=backward.and_then(|row|row["posterior"].as_f64()).unwrap_or(0.5);
     let observed=forward.and_then(|row|row["attempts"].as_u64()).unwrap_or(0)
         +backward.and_then(|row|row["attempts"].as_u64()).unwrap_or(0);
+    let planned=forward.and_then(|row|row["sourceBackedMechanismTrials"].as_u64())
+        .unwrap_or(0);
+    let realized=forward.and_then(|row|row["predictedNextGenerationAdoptions"].as_u64())
+        .unwrap_or(0);
+    let predictive=(realized as f64+1.0)/(planned as f64+2.0);
     // Proven gains may increase *exploration* priority, never create a
     // new success label for a pair that was not itself independently tested.
     let shared=if b=="improvement_methods"||a=="improvement_methods"{0.26}else{0.06};
     let unexplored=if other["verifiedRoleImproved"]!=true{0.17}else{0.0};
     let novelty=0.11/(1.0+observed as f64);
-    let score=0.35*f+0.35*r+shared+unexplored+novelty;
+    let score=0.30*f+0.30*r+0.16*predictive+shared+unexplored+novelty;
     Some((score,json!({"source":"compiled_symbiotic_pair_candidate_v1",
         "fromRole":a,"toRole":b,"fromPath":primary["path"],
         "toPath":other["path"],"fromSha256":primary["sourceSha256"],
@@ -157,6 +179,9 @@ fn score_partner(primary:&Value,other:&Value,graph:&Value)->Option<(f64,Value)>{
         "bidirectionalOpportunity":true,"selectionScore":score,
         "forwardObservedPosterior":f,"reverseObservedPosterior":r,
         "recordedTransitionAttempts":observed,
+        "explicitMechanismTrials":planned,
+        "observedDownstreamAdoptions":realized,
+        "mechanismPredictionPosterior":predictive,
         "causalEffectProven":false})))
 }
 
