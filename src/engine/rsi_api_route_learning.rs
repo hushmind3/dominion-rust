@@ -66,6 +66,8 @@ fn attested(g:&Value)->bool {
         && g["generatorModel"]==g["requestedModel"]
         && name(&g["requestedProviderId"]).is_some()
         && name(&g["requestedModel"]).is_some()
+        && g["apiRouteSessionId"].as_str().is_some_and(|s|!s.is_empty())
+        && g["jobId"].as_str().is_some_and(|s|!s.is_empty())
         && g["apiRouteUsage"]["matchedExactProviderModelSession"]==true
         && g["apiRouteUsage"]["calls"].as_u64().unwrap_or(0)>0
         && g["apiRouteUsage"]["totalTokens"].as_u64().unwrap_or(0)>0
@@ -79,6 +81,46 @@ fn measured(g:&Value)->bool {
         && g["candidateId"].as_str().is_some_and(|s|!s.is_empty())
         && g["evaluationProfileSha256"].as_str().is_some_and(|s|
             s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit()))
+}
+/// Replay original worker identity, provider/model audit and candidate-scoped
+/// frozen paired receipt before an editable descendant rewards API work.
+/// Generation text alone is never authoritative.
+pub(crate) fn verify_replay(state:&AppState,history:&[Value])->bool {
+    for g in history.iter().filter(|g|attested(g)) {
+        let (Some(job_id),Some(session),Some(provider),Some(model))=(
+            g["jobId"].as_str(),g["apiRouteSessionId"].as_str(),
+            g["requestedProviderId"].as_str(),g["requestedModel"].as_str())
+            else{return false};
+        let Some(job)=state.store.get("job",job_id) else{return false};
+        if job["sessionId"]!=session
+            || job["input"]["providerId"]!=provider
+            || job["input"]["model"]!=model
+            || job["input"]["rsiAdaptiveApiRouting"]!=true
+            || job["input"]["rsiApiRoutePolicy"]["chosen"]["providerId"]!=provider
+            || job["input"]["rsiApiRoutePolicy"]["chosen"]["model"]!=model
+            || state.store.api_route_usage(session,provider,model)!=g["apiRouteUsage"] {
+            return false;
+        }
+        if !measured(g){continue;}
+        let Some(id)=g["candidateId"].as_str() else{return false};
+        let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
+        let Some(metrics)=crate::engine::rsi::replayed_pair_metrics(state,&candidate)
+            else{return false};
+        if candidate["id"]!=id
+            || candidate["baseCommit"]!=g["generatorCommit"]
+            || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+            || candidate["evaluation"]["metrics"]!=metrics
+            || g["evaluation"]["metrics"]!=metrics {return false;}
+        if g["accepted"]==true
+            && (g["pairedRevalidated"]!=true
+                || !crate::engine::rsi::verified_pair_receipt(state,&candidate)
+                || candidate["status"]!="verified"
+                || candidate["experimentAdoption"]["commit"]!=g["acceptedCommit"]
+                || candidate["experimentAdoption"]["generatorCommit"]!=g["generatorCommit"]) {
+            return false;
+        }
+    }
+    true
 }
 fn outcome(case:&Value)->Option<i8>{
     if case["holdout"]!=true{return None;}
@@ -104,11 +146,75 @@ fn outcome(case:&Value)->Option<i8>{
 struct Evidence {
     trials:u64,holdouts:u64,gains:u64,regressions:u64,neutral:u64,
     adopted:u64,tokens:u64,domains:BTreeSet<String>,
-    cases:BTreeSet<String>,bad_predictions:Vec<f64>,
+    cases:BTreeSet<String>,sessions:BTreeSet<String>,bad_predictions:Vec<f64>,
 }
 fn key(route:&Value)->Option<String>{
     let (id,model)=pair(route)?;
     Some(format!("{id}\u{001f}{model}"))
+}
+/// Same compiled source + sealed evaluator + holdout case + baseline only.
+/// Different model-authored edits remain confounded, so these are observational
+/// matched comparisons, never intrinsic model-causality claims.
+fn matched_source_cases(history:&[Value],routes:&Value)->Value {
+    type CaseKey=(String,String,String,String,bool);
+    type Observations=BTreeMap<String,Vec<(String,i8)>>;
+    let approved=routes.as_array().cloned().unwrap_or_default();
+    let owner=approved.first().and_then(key).unwrap_or_default();
+    let route_keys=approved.iter().filter_map(key).collect::<BTreeSet<_>>();
+    let mut cases=BTreeMap::<CaseKey,Observations>::new();
+    let mut seen=BTreeSet::<(String,String,String,String)>::new();
+    for g in history.iter().filter(|g|measured(g)) {
+        let run=json!({"providerId":g["requestedProviderId"],"model":g["requestedModel"]});
+        let Some(route)=key(&run) else{continue};
+        if !route_keys.contains(&route){continue;}
+        let (Some(commit),Some(profile),Some(candidate))=(
+            g["generatorCommit"].as_str().filter(|s|s.len()==40
+                && s.bytes().all(|b|b.is_ascii_hexdigit())),
+            g["evaluationProfileSha256"].as_str(),
+            g["candidateId"].as_str()) else{continue};
+        for m in g["evaluation"]["metrics"]["measurements"].as_array()
+            .into_iter().flatten() {
+            let (Some(id),Some(domain),Some(baseline),Some(delta))=(
+                m["id"].as_str().filter(|s|!s.is_empty()),
+                m["domain"].as_str().filter(|s|!s.is_empty()),
+                m["baselinePass"].as_bool(),outcome(m)) else{continue};
+            if !seen.insert((profile.to_owned(),candidate.to_owned(),
+                domain.to_owned(),id.to_owned())){continue;}
+            cases.entry((commit.to_owned(),profile.to_owned(),
+                domain.to_owned(),id.to_owned(),baseline)).or_default()
+                .entry(route.clone()).or_default().push((candidate.to_owned(),delta));
+        }
+    }
+    let mut result=Vec::new();
+    for route in approved.iter().skip(1) {
+        let Some(route_id)=key(route) else{continue};
+        let mut deltas=Vec::<f64>::new();
+        let mut owner_trials=BTreeSet::new();
+        let mut route_trials=BTreeSet::new();
+        let mut domains=BTreeSet::new();
+        for ((_,_,domain,_,_),observed) in &cases {
+            let (Some(left),Some(right))=
+                (observed.get(&owner),observed.get(&route_id)) else{continue};
+            let avg=|rows:&Vec<(String,i8)>|rows.iter()
+                .map(|(_,v)|*v as f64).sum::<f64>()/rows.len() as f64;
+            deltas.push(avg(right)-avg(left));
+            domains.insert(domain.clone());
+            owner_trials.extend(left.iter().map(|(id,_)|id.clone()));
+            route_trials.extend(right.iter().map(|(id,_)|id.clone()));
+        }
+        result.push(json!({
+            "providerId":route["providerId"],"model":route["model"],
+            "matchedFrozenSourceCases":deltas.len(),
+            "independentOwnerCandidates":owner_trials.len(),
+            "independentRouteCandidates":route_trials.len(),
+            "matchedDomains":domains.into_iter().collect::<Vec<_>>(),
+            "meanRelativeHoldoutDelta":if deltas.is_empty(){Value::Null}
+                else{json!(deltas.iter().sum::<f64>()/deltas.len() as f64)},
+            "evidenceClass":"same_source_frozen_case_observational_not_causal_AB",
+            "modelQualityCausalityProven":false
+        }));
+    }
+    json!(result)
 }
 /// Evaluation provenance is verified by the resident coordinator before
 /// this descendant sees history. Evidence is grouped by frozen profile,
@@ -124,6 +230,8 @@ pub(crate) fn learn(history:&[Value],routes:&Value)->Value{
         let Some(k)=key(&run) else{continue};
         let Some(row)=data.get_mut(&k) else{continue};
         if !attested(g){continue;}
+        let session=g["apiRouteSessionId"].as_str().unwrap_or("");
+        if !row.sessions.insert(session.to_owned()){continue;}
         row.trials+=1;
         row.tokens+=g["apiRouteUsage"]["totalTokens"].as_u64().unwrap_or(0);
         if !measured(g){continue;}
@@ -180,6 +288,7 @@ pub(crate) fn learn(history:&[Value],routes:&Value)->Value{
     let mut result=json!({
         "source":"compiled_descendant_authorized_api_execution_learning_v1",
         "routes":rows,"observations":history.len(),
+        "matchedSourceCaseContrasts":matched_source_cases(history,routes),
         "weightsWereTrained":false,"modelQualityCausalityProven":false,
         "evidence":"real_provider_session_usage_plus_independent_source_task_holdouts",
         "editableAlgorithmSource":"src/engine/rsi_api_route_learning.rs"
@@ -217,12 +326,27 @@ pub(crate) fn decide(history:&[Value],routes:&Value,origin:&Value,
     // A controlled exploration trial becomes eligible only after at least
     // two independently measured baseline tasks. No random API spending:
     // all routes were registered and explicitly authorized by the owner.
-    let trial=if baseline_samples>=2 {
+    let contrasts=ledger["matchedSourceCaseContrasts"].as_array()
+        .cloned().unwrap_or_default();
+    let mature=|r:&Value|r["matchedFrozenSourceCases"].as_u64().unwrap_or(0)>=2
+        && r["independentOwnerCandidates"].as_u64().unwrap_or(0)>=2
+        && r["independentRouteCandidates"].as_u64().unwrap_or(0)>=2;
+    let mut favorable=contrasts.iter().filter(|r|mature(r))
+        .filter(|r|r["meanRelativeHoldoutDelta"].as_f64().unwrap_or(0.0)>0.0)
+        .collect::<Vec<_>>();
+    favorable.sort_by(|a,b|b["meanRelativeHoldoutDelta"].as_f64()
+        .unwrap_or(0.0).total_cmp(&a["meanRelativeHoldoutDelta"].as_f64().unwrap_or(0.0)));
+    let matched_best=favorable.first().and_then(|r|choices.iter().find(|c|
+        c["providerId"]==r["providerId"]&&c["model"]==r["model"]));
+    let trial=if baseline_samples>=2 && matched_best.is_none(){
         choices.iter().find(|r|r["independentlyMeasuredCases"]==0)
     }else{None};
-    let choice=trial.or_else(||choices.iter().find(|r|
-        r["independentlyMeasuredCases"].as_u64().unwrap_or(0)>0))
-        .unwrap_or(base);
+    let disfavored=|r:&Value|contrasts.iter().any(|c|
+        mature(c)&&c["providerId"]==r["providerId"]&&c["model"]==r["model"]
+            && c["meanRelativeHoldoutDelta"].as_f64().unwrap_or(0.0)<0.0);
+    let choice=matched_best.or(trial).or_else(||choices.iter().find(|r|
+        r["independentlyMeasuredCases"].as_u64().unwrap_or(0)>0
+            && !disfavored(r))).unwrap_or(base);
     let mut result=json!({
         "source":"source_editable_descendant_api_route_policy_v1",
         "generatorCommit":commit,"authorizedRoutes":routes,
@@ -231,7 +355,11 @@ pub(crate) fn decide(history:&[Value],routes:&Value,origin:&Value,
         "forecastCaseGain":choice["posteriorCaseGain"],
         "ledgerSha256":ledger["sha256"],
         "observedTaskCases":choice["independentlyMeasuredCases"],
-        "explanation":if trial.is_some(){"owner_approved_bounded_exploration_trial"}
+        "matchedEvidence":contrasts.iter().find(|r|
+            r["providerId"]==choice["providerId"]&&r["model"]==choice["model"])
+            .cloned().unwrap_or(Value::Null),
+        "explanation":if matched_best.is_some(){"matched_source_case_observational_advantage"}
+            else if trial.is_some(){"owner_approved_bounded_exploration_trial"}
             else if baseline_samples>0{"observed_source_task_quality_not_causal_model_AB"}
             else{"owner_selected_model_until_measured_api_route_evidence"},
         "modelWeightsChanged":false
@@ -279,6 +407,9 @@ mod tests {
             "apiRouteUsage":{"matchedExactProviderModelSession":true,
                 "calls":1,"totalTokens":450},
             "tokenUsage":{"calls":1,"totalTokens":450},
+            "generatorCommit":"a".repeat(40),
+            "jobId":format!("worker-{id}"),
+            "apiRouteSessionId":format!("session-{id}"),
             "evaluationProfileSha256":"e".repeat(64),
             "pairedMeasured":true,"pairedRevalidated":true,"accepted":true,
             "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
@@ -350,6 +481,44 @@ mod tests {
         fake[1]["apiRouteExecutionVerified"]=json!(false);
         let p=decide(&fake,&routes(),&baseline,&"a".repeat(40));
         assert_eq!(p["chosen"]["model"],"api-a");
+    }
+
+    #[test]
+    fn same_source_holdouts_influence_route_without_model_causal_claim() {
+        let owner=json!({"providerId":"deepseek","model":"api-a"});
+        let mut a=episode("a1","api-a",false,false);
+        let mut b=episode("b1","api-b",false,true);
+        let mut c=episode("a2","api-a",false,false);
+        let mut d=episode("b2","api-b",false,true);
+        a["evaluation"]["metrics"]["measurements"][0]["id"]=json!("case-1");
+        b["evaluation"]["metrics"]["measurements"][0]["id"]=json!("case-1");
+        c["evaluation"]["metrics"]["measurements"][0]["id"]=json!("case-2");
+        d["evaluation"]["metrics"]["measurements"][0]["id"]=json!("case-2");
+        let history=vec![a,b,c,d];
+        let result=decide(&history,&routes(),&owner,&"a".repeat(40));
+        assert_eq!(result["chosen"]["model"],"api-b");
+        assert_eq!(result["explanation"],"matched_source_case_observational_advantage");
+        assert_eq!(result["matchedEvidence"]["matchedFrozenSourceCases"],2);
+        assert_eq!(result["matchedEvidence"]["modelQualityCausalityProven"],false);
+        assert!(valid(&result,&history,&routes(),&owner,&"a".repeat(40)));
+    }
+    #[test]
+    fn source_mismatch_and_duplicated_session_never_create_extra_comparisons() {
+        let mut a=episode("a","api-a",false,false);
+        let mut b=episode("b","api-b",false,true);
+        b["generatorCommit"]=json!("b".repeat(40));
+        assert_eq!(learn(&[a.clone(),b],&routes())
+            ["matchedSourceCaseContrasts"][0]["matchedFrozenSourceCases"],0);
+        a["id"]=json!("duplicate-summary");
+        let result=learn(&[a.clone(),a],&routes());
+        assert_eq!(result["routes"][0]["verifiedApiWorkerCalls"],1);
+        assert_eq!(result["routes"][0]["independentlyMeasuredCases"],1);
+    }
+    #[test]
+    fn unauditable_session_cannot_earn_api_route_rewards() {
+        let mut fake=episode("fake","api-b",false,true);
+        fake["apiRouteSessionId"]=Value::Null;
+        assert_eq!(learn(&[fake],&routes())["routes"][1]["independentlyMeasuredCases"],0);
     }
     #[test]
     fn no_positive_reward_from_model_prose_or_native_mutation(){
