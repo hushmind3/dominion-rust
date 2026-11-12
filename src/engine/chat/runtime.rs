@@ -1557,8 +1557,13 @@ async fn run_turn_body(
                     }
                     let preferred=session["rsiEditPolicy"]["preferredTool"]
                         .as_str().unwrap_or("workspace_replace");
+                    // The inherited main genome's range editor maps to
+                    // Sub2's actual source-hash-aware function editor.
+                    let executable=if preferred=="workspace_replace_range" {
+                        "workspace_replace_function"
+                    }else{preferred};
                     round_tools.sort_by_key(|definition|
-                        tool_name(definition)!=preferred);
+                        tool_name(definition)!=executable);
                 }
                 if edit_only && !rsi_edit_only_announced {
                     messages.push(json!({"role":"system",
