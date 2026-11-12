@@ -3309,6 +3309,15 @@ async fn run_loop(
                 &plan["symbioticCurriculum"],&plan["architectureTarget"],
                 plan["architectureFrontier"].as_array()
                     .ok_or("후손 상호개선 계획의 소스 그래프가 없습니다.")?)?;
+            if !crate::engine::rsi_interaction::valid_graph(
+                &plan["interactionGraph"])
+                || (plan["coupledPortfolio"].is_object()
+                    && !crate::engine::rsi_interaction::valid_portfolio(
+                        &plan["coupledPortfolio"],&plan["interactionGraph"],
+                        plan["architectureFrontier"].as_array()
+                            .ok_or("후손 상호능력 구성의 소스 그래프가 없습니다.")?)) {
+                return Err("후손의 교차 능력 평가 근거 또는 소스 결합 계획이 변경됐습니다.".into());
+            }
             if plan["successorStage"].is_object()
                 && (plan["successorStage"]["source"]!=
                     "rebound_verified_model_successor_program_v1"
@@ -3354,6 +3363,8 @@ async fn run_loop(
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
+            child_input["rsiInteractionGraph"]=plan["interactionGraph"].clone();
+            child_input["rsiCoupledPortfolio"]=plan["coupledPortfolio"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
@@ -3594,6 +3605,8 @@ async fn run_loop(
         generation["architectureTarget"]=current["input"]["rsiArchitectureTarget"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
+        generation["interactionGraph"]=current["input"]["rsiInteractionGraph"].clone();
+        generation["coupledPortfolio"]=current["input"]["rsiCoupledPortfolio"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["successorStageExecuted"]=current["rsiSuccessorStageExecuted"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
@@ -3669,6 +3682,13 @@ async fn run_loop(
             record["phase"] = json!("measuring");
             save(context, record)?;
             generation["candidateId"] = json!(id);
+            // Record the candidate's REAL changed paths, including rejected
+            // comparisons; a declared design goal cannot masquerade as an
+            // observed component intervention in later descendants.
+            generation["changedSourcePaths"] = context.state.store
+                .get("rsi_candidate", id)
+                .map(|candidate| candidate["paths"].clone())
+                .unwrap_or(Value::Null);
             let compared = rsi_worktree::compare_at(
                 context,
                 id,
@@ -4382,6 +4402,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         && !owner_focus && !paired && meta_policy["target"].is_object() {
         meta_policy["target"].clone()
     }else{frontier.first().cloned().unwrap_or(Value::Null)};
+    // Frozen holdout measurements and actual candidate paths provide a
+    // complementary graph to the adopted-generation A→B→A lineage. Joint
+    // edits remain confounded, never evidence of a single role's causal gain.
+    let interaction_graph=crate::engine::rsi_interaction::influence_graph(
+        &history,&frontier);
+    let coupled_portfolio=if input["rsiAutonomous"]==true
+        && !owner_focus && !paired && architecture_target.is_object() {
+        crate::engine::rsi_interaction::coupled_portfolio(
+            &architecture_target,&frontier,&interaction_graph,DOMAINS)
+    }else{Value::Null};
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
         &history,&frontier,&json!({"target":architecture_target}),DOMAINS);
     let inherited=if input["rsiAutonomous"]==true {
@@ -4448,6 +4478,31 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }));
         }
     }
+    // The descendant can explore cross-DOMAIN causal hypotheses instead
+    // of only selecting two files under the same domain heuristic. Each
+    // candidate remains source-indexed and the owner-selected focus wins.
+    if coupled_portfolio.is_object()
+        && architecture_target["domain"]==domain && !owner_focus && !paired {
+        let mut insertion=1usize;
+        for member in coupled_portfolio["focus"].as_array()
+            .into_iter().flatten().skip(1).take(2) {
+            let Some(path)=member["path"].as_str().filter(|p|
+                crate::engine::rsi::safe_path(p) && source_root.join(p).is_file())
+                else{continue};
+            let Some(sha)=member["sourceSha256"].as_str() else{continue};
+            if crate::engine::code_index::indexed_source_hash(
+                &state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                .as_deref()!=Some(sha){continue;}
+            ranked.retain(|row|row["path"]!=path);
+            ranked.insert(insertion,json!({
+                "path":path,"sourceHash":sha,
+                "source":"compiled_holdout_cross_role_portfolio",
+                "role":member["role"],"domain":member["domain"],
+                "sourceIndexId":input["rsiIndexId"]
+            }));
+            insertion+=1;
+        }
+    }
     let focus=ranked.iter().filter_map(|row|row["path"].as_str())
         .filter(|p|crate::engine::rsi::safe_path(p))
         .take(8).collect::<Vec<_>>();
@@ -4498,6 +4553,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "architectureTarget":architecture_target,
         "metaPolicy":meta_policy,
         "symbioticCurriculum":symbiosis,
+        "interactionGraph":interaction_graph,
+        "coupledPortfolio":coupled_portfolio,
         "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
@@ -4704,6 +4761,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         crate::engine::rsi_symbiosis::validate_curriculum(
             &job["input"]["rsiSymbioticCurriculum"],
             &job["input"]["rsiArchitectureTarget"],frontier)?;
+        let observed_influence=crate::engine::rsi_interaction::influence_graph(
+            &history,frontier);
+        let portfolio=&job["input"]["rsiCoupledPortfolio"];
+        if !crate::engine::rsi_interaction::valid_graph(&observed_influence)
+            || job["input"]["rsiControllerPlan"]["interactionGraph"]!=observed_influence
+            || job["input"]["rsiInteractionGraph"]!=observed_influence
+            || job["input"]["rsiControllerPlan"]["coupledPortfolio"]!=*portfolio
+            || (portfolio.is_object()
+                && !crate::engine::rsi_interaction::valid_portfolio(
+                    portfolio,&observed_influence,frontier)) {
+            return Err("실행 후손의 영역별 실제 변경·독립 평가 학습 기록이 불일치합니다.".into());
+        }
         if expected_stage.is_object(){
             job["rsiSuccessorStageExecuted"]=json!({
                 "source":"running_compiled_descendant_binary",
@@ -4820,8 +4889,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         let peer_evidence=serde_json::to_string(&job["input"]["rsiPeerLineages"])
             .unwrap_or_default();
-        let peer_context=format!("COMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}",
-            job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000));
+        let independent_effects=serde_json::to_string(
+            &job["input"]["rsiInteractionGraph"]).unwrap_or_default();
+        let combined_sources=serde_json::to_string(
+            &job["input"]["rsiCoupledPortfolio"]).unwrap_or_default();
+        let peer_context=format!(
+            "COMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
+            job["input"]["rsiComparativeMode"],capsule(&peer_evidence,3000),
+            capsule(&independent_effects,2400),capsule(&combined_sources,1600));
         let frontier_hint=if job["input"]["rsiFocusSelection"]["source"]=="rebuilt_descendant_controller"
             && job["input"]["rsiArchitectureTarget"].is_object() {
             let gap=&job["input"]["rsiArchitectureTarget"];
