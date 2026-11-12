@@ -585,6 +585,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             // budget and preferred source-edit operator for this generation.
             session["rsiEditPolicy"]=input["rsiEditPolicy"].clone();
             session["rsiSuccessorStage"]=input["rsiSuccessorStage"].clone();
+            session["rsiFactorialExperiment"]=input["rsiFactorialExperiment"].clone();
             session["rsiAutoFocus"]=input["rsiAutoFocus"].clone();
             // The task classifier uses the owner's actual target, not the
             // generic RSI prompt or a guessed source file.

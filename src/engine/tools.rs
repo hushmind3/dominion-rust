@@ -139,6 +139,23 @@ pub fn rsi_allowed(name:&str)->bool{
     matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
 
+/// Enforce the live intervention's precommitted source scope before a single
+/// workspace byte is changed. The model can inspect any source, yet a
+/// factorial isolation arm cannot silently become a coupled code edit.
+fn factorial_workspace_allowed(plan:&Value,path:&str)->bool{
+    if plan["source"]!="compiled_open_topology_counterfactual_lab_v1"
+        || !plan["selected"].is_object(){return true;}
+    let row=&plan["selected"];
+    let a=row["a"]["path"].as_str();
+    let b=row["b"]["path"].as_str();
+    match row["phase"].as_str(){
+        Some("isolate_a")=>a==Some(path),
+        Some("isolate_b")=>b==Some(path),
+        Some("test_joint")=>a==Some(path)||b==Some(path),
+        _=>false
+    }
+}
+
 pub async fn execute(
     ctx: &ToolContext<'_>,
     name: &str,
@@ -161,6 +178,12 @@ pub async fn execute(
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
             return Err("자기개선은 허용된 소스코드 경로만 수정할 수 있습니다.".into());
+        }
+        let plan=ctx.store.get("session",ctx.session_id)
+            .map(|session|session["rsiFactorialExperiment"].clone())
+            .unwrap_or(Value::Null);
+        if !factorial_workspace_allowed(&plan,path){
+            return Err("독립 요인 실험의 실제 파일 수정 범위를 벗어났습니다. 관찰용 동반 파일은 읽기만 허용됩니다.".into());
         }
     }
     match name {

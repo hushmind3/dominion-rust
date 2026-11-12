@@ -330,6 +330,21 @@ mod tests{
             json!("src/engine/rsi_meta_controller.rs")])["eligibleForFactorial"],false);
     }
     #[test]
+    fn factorial_sha_attestation_requires_exact_source_and_profile(){
+        let a=json!({"role":"algorithms","domain":"improver",
+            "path":"src/engine/algorithms.rs","sourceSha256":"a".repeat(64)});
+        let b=json!({"role":"tools","domain":"tools",
+            "path":"src/engine/tools.rs","sourceSha256":"b".repeat(64)});
+        let commit="f".repeat(40);let profile="1".repeat(64);
+        let plan=design(&[],&[a.clone(),b.clone()],&json!({"target":a.clone()}),
+            &Value::Null,&["improver","tools"],&commit,Some(&profile));
+        assert!(validate(&plan,&[a.clone(),b.clone()],&commit,0,Some(&profile)).is_ok());
+        let mut corrupted=plan.clone();
+        corrupted["selected"]["a"]["sourceSha256"]=json!("c".repeat(64));
+        assert!(validate(&corrupted,&[a,b],&commit,0,Some(&profile)).is_err());
+        assert!(validate(&plan,&[],&commit,0,Some(&profile)).is_err());
+    }
+    #[test]
     fn matched_evaluation_cannot_mix_different_generator_commits(){
         let a="algorithms";let b="tools";let profile="a".repeat(64);
         let row=json!({"id":"trial-1","candidateId":"c1","generatorCommit":"b".repeat(40),
