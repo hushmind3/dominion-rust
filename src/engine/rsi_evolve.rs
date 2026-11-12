@@ -4556,6 +4556,31 @@ async fn run_loop(
         generation["factorialExperimentExecuted"]=json!(
             generation["factorialPlanExecuted"]==true
             && (factorial_source_written||factorial_candidate_changed));
+        // A planned scientific stage never advances an inherited lineage.
+        // Witness its actual edited target in a VERIFIED, independently
+        // adopted candidate (not a model claim or an unadopted source diff).
+        let scientific_target=generation["recursiveDiscovery"]["target"]["path"].as_str();
+        let scientific_edit_accepted=generation["recursiveSciencePlanExecuted"]==true
+            && generation["metaPolicyExecuted"]==true
+            && generation["accepted"]==true
+            && generation["pairedRevalidated"]==true
+            && scientific_target.is_some_and(|path|
+                crate::engine::rsi::safe_path(path)
+                && generation["acceptedSourceHashes"][path].as_str()
+                    .is_some_and(|sha|sha.len()==64
+                        && sha.bytes().all(|b|b.is_ascii_hexdigit()))
+                && generation["factorialChangedPaths"].as_array()
+                    .is_some_and(|files|files.iter().any(|file|
+                        file.as_str()==Some(path))));
+        generation["recursiveScienceExecuted"]=json!(scientific_edit_accepted);
+        generation["recursiveScienceObservation"]=json!({
+            "source":"paired_adopted_recursive_science_source_receipt_v1",
+            "planRevision":generation["recursiveDiscovery"]["revision"],
+            "phase":generation["recursiveDiscovery"]["phase"],
+            "sourceTarget":generation["recursiveDiscovery"]["target"]["path"],
+            "actualSourceChangeIndependentlyAdopted":scientific_edit_accepted,
+            "causalCapabilityGainProven":false
+        });
         generation["mutualObservation"]=json!({
             "source":"observed_cross_intelligence_programme_v1",
             "executedCompiledCurriculum":generation["mutualProgrammeExecuted"],
