@@ -88,6 +88,15 @@ pub(crate) fn synthesize(
         let file_wins=history.iter().filter(|g|independent_outcome(g)==Some(true)
             && g["focusFiles"].as_array().is_some_and(|files|files.iter()
                 .any(|file|file.as_str()==Some(path)))).count();
+        let measured_token_costs=relevant.iter().filter_map(|generation|
+            generation["tokenUsage"]["totalTokens"].as_u64()
+                .or_else(||generation["tokenUsage"]["tokens"].as_u64())
+                .or_else(||generation["tokens"].as_u64()))
+            .filter(|tokens|*tokens>0).collect::<Vec<_>>();
+        let average_tokens=if measured_token_costs.is_empty(){None}else{
+            Some(measured_token_costs.iter().map(|v|*v as f64).sum::<f64>()
+                /measured_token_costs.len() as f64)
+        };
         let n=observed.len();
         let regressions=relevant.iter().filter(|g|
             g["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0)>0).count();
@@ -107,6 +116,8 @@ pub(crate) fn synthesize(
         let file_stall=(file_attempts.saturating_sub(file_wins)) as f64
             /(file_attempts.max(1) as f64);
         let program_bonus=if target["inheritedProgramStage"]==true{0.31}else{0.0};
+        let token_cost_penalty=average_tokens.map(|tokens|
+            (tokens/80_000.0).min(1.0)).unwrap_or(0.0);
         // Give the descendant's own editable meta-program a fair place in
         // the portfolio without declaring it automatically better.
         let metacognition=if path=="src/engine/rsi_meta_controller.rs"{0.08}else{0.0};
@@ -116,7 +127,8 @@ pub(crate) fn synthesize(
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
             +inherited+program_bonus+metacognition
-            -0.11*regressions-0.06*noise_penalty-0.09*file_stall-0.035*cost;
+            -0.11*regressions-0.06*noise_penalty-0.09*file_stall
+            -0.035*cost-0.08*token_cost_penalty;
         roles.insert(role.to_string());
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
@@ -126,6 +138,8 @@ pub(crate) fn synthesize(
             "incompleteTrials":incomplete,"productiveOffspring":offspring,
             "regressionFrequency":regressions,"sourceCost":cost,
             "fileAttempts":file_attempts,"fileVerifiedAdoptions":file_wins,
+            "measuredMeanTokens":average_tokens,
+            "tokenCostPenalizedOnlyWhenObserved":average_tokens.is_some(),
             "inheritedProgramStage":target["inheritedProgramStage"]==true,
             "novelComponent":novelty>0.0
         }),score));
