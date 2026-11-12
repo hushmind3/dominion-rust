@@ -491,6 +491,9 @@ mod tests {
                 "sourceSha256":"a".repeat(64),"sourceAttempts":0}),
             json!({"role":"memory","domain":"memory","path":"src/engine/memory.rs",
                 "sourceSha256":"b".repeat(64),"sourceAttempts":0}),
+            json!({"role":"improvement_methods","domain":"improver",
+                "path":"src/engine/rsi_factorial.rs",
+                "sourceSha256":"f".repeat(64),"sourceAttempts":0}),
         ]
     }
     fn accepted(id:&str,commit:&str,generator:&str,role:&str,path:&str,
