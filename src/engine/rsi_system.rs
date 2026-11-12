@@ -10,7 +10,7 @@ use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 pub(crate) fn intelligence_editable_path(path:&str)->bool{
     let extension=Path::new(path).extension().and_then(|ext|ext.to_str());
     crate::engine::rsi::safe_path(path)
-        && matches!(extension,Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"))
+        && matches!(extension,Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"|"py"))
         && !crate::engine::rsi::hidden_rsi_oracle_path(path)
         && !matches!(path,
             "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
@@ -24,7 +24,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -83,7 +84,7 @@ fn valid_role(role:&str)->bool{
 }
 fn role_domain(role:&str)->&'static str{
     match role {
-        "memory"=>"memory","learning"=>"learning","tools"=>"tools",
+        "memory"=>"memory","learning"|"models"=>"learning","tools"=>"tools",
         "harness"|"context"=>"context","frontend"|"ui"=>"ui",
         _=>"improver"
     }
@@ -208,6 +209,13 @@ fn source_role(path:&str)->&'static str{
     let lower=path.to_ascii_lowercase();
     if lower.starts_with("web/src/") || lower.starts_with("src-tauri/src/"){
         return "frontend";
+    }
+    let name=lower.rsplit('/').next().unwrap_or(&lower);
+    if name.starts_with("model_") || name.starts_with("training")
+        || name.starts_with("trainable") || matches!(name,
+            "models.rs"|"cli_model.rs"|"router.rs"|"llm.rs"|"gateway.rs"
+            |"codex_oauth.rs"|"model_architecture.py"){
+        return "models";
     }
     if lower.starts_with("src/engine/rsi_")
         || lower.contains("/self_improv") || lower.contains("/evolution"){
