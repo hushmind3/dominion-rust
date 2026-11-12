@@ -5022,11 +5022,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiReflexiveProgram"].is_object()
-            && job["input"]["rsiControllerPlan"]["architectureFrontier"]
-                .as_array().is_none_or(|frontier|
-                    !crate::engine::rsi_reflexive::valid(
-                        &job["input"]["rsiReflexiveProgram"],
-                        &history,frontier,&commit)) {
+            && (job["input"]["rsiMetaPolicy"]["reflexiveProgramSha256"]
+                !=job["input"]["rsiReflexiveProgram"]["sha256"]
+                || job["input"]["rsiMetaPolicy"]["target"]
+                    !=job["input"]["rsiReflexiveProgram"]["target"]
+                || job["input"]["rsiControllerPlan"]["architectureFrontier"]
+                    .as_array().is_none_or(|frontier|
+                        !crate::engine::rsi_reflexive::valid(
+                            &job["input"]["rsiReflexiveProgram"],
+                            &history,frontier,&commit))) {
             return Err("실제 후손 작업기의 재귀 계승 증거가 변경됐습니다.".into());
         }
         if pinned && job["input"]["rsiFactorialExperiment"].is_object()
