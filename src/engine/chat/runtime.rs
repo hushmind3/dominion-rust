@@ -81,11 +81,11 @@ fn rsi_checkpoint_stage(
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
 fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
     if edit_only {
-        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range");
+        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_system_plan" | "rsi_method_propose");
     }
     matches!(
         name,
-        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_method_propose" | "algorithm_propose"
+        "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_system_plan" | "rsi_method_propose" | "algorithm_propose"
     )
 }
 
@@ -1398,7 +1398,7 @@ async fn run_turn_body(
                 if edit_retry_override {
                     round_tools=tool_definitions.iter()
                         .filter(|definition|matches!(tool_name(definition),
-                            "workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                            "workspace_replace"|"workspace_replace_range"|"workspace_write"|"rsi_system_plan"|"rsi_method_propose"))
                         .cloned().collect();
                     state.store.audit("rsi.focused_edit_retry_unblocked",serde_json::json!({
                         "executionId":execution_id,"sessionId":session_id,
@@ -1683,7 +1683,7 @@ async fn run_turn_body(
                         "sourceInPrompt":session["rsiFocusContextReady"] == true
                     }));
                     messages.push(json!({"role":"user",
-                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 이전 workspace_read_range 결과의 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고 바꿀 코드만 newText에 넣으세요. 이전에 받은 정확한 oldText가 있다면 workspace_replace도 가능합니다. 새 파일에만 workspace_write를 사용하세요. 수정 불가능하다면 이유를 보고하세요."
+                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 현재 소스의 sourceSha256와 줄 범위가 제공되었다면 추가 읽기 없이 rsi_system_plan으로 설계한 뒤 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)로 코드를 실제 변경하세요. 새 파일은 workspace_write로 생성합니다. 이미 제안한 설계가 있다면 반복 등록하지 마세요. 수정 불가능할 때만 근거를 보고하세요."
                     }));
                     continue;
                 }
@@ -6596,10 +6596,10 @@ mod harness_tool_selection_tests {
         // If a targeted model stops after one successful source read, the
         // runtime requests a single edit-only continuation instead of
         // silently ending the generation as research-only.
-        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_system_plan", "rsi_method_propose", "algorithm_propose"] {
             assert!(rsi_checkpoint_tool(name, false), "{name} must stay available at the general checkpoint");
         }
-        for name in ["workspace_replace", "workspace_replace_range", "workspace_write"] {
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "rsi_system_plan", "rsi_method_propose"] {
             assert!(rsi_checkpoint_tool(name, true), "{name} must remain in the edit stage");
         }
         for name in ["code_search", "shell_exec", "file_write", "web_search", "workspace_read_range", "algorithm_propose"] {
