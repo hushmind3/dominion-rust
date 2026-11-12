@@ -5642,6 +5642,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
+    // Source-edit procedures are inherited code-level intelligence. The
+    // worker receives the actual learned stage program and its measured
+    // source provenance, not a claim that method evolution succeeded.
+    let genome=&job["input"]["rsiEditPolicy"];
+    let archive=&job["input"]["rsiArchiveSelection"];
+    let edit_inheritance=if genome["program"].is_array(){
+        format!("\n[INHERITED EXECUTABLE IMPROVEMENT METHOD]\n            Program={} revision={} mutation={} independentRuleCount={}.             The live tool runtime enforces these stages against actual             source reads and tool receipts; verified gains or regressions             alone train the next program. The cross-campaign Pareto archive             selected={} restored={}. A neutral archived patch is only a             stepping stone; source adoption and better DOMINION behavior             still require the same independent paired evaluator.\n",
+            genome["program"],genome["revision"],genome["mutation"],
+            genome["rules"].as_array().map(Vec::len).unwrap_or(0),
+            archive["candidateId"],job["input"]["rsiArchiveRestored"])
+    }else{String::new()};
+    let system_prompt=format!("{system_prompt}{edit_inheritance}");
     let (prompt,fit)=fit_worker_generation_context(
         &system_prompt,
         &domain,&capability,&history,&directive,available)?;
