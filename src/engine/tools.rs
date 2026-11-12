@@ -96,6 +96,23 @@ pub fn definitions() -> Vec<Value> {
             "hypothesis":text("Falsifiable causal limitation; at least 20 characters"),
             "design":text("Executable architecture, interface contracts, memory/learning/tool changes and failure handling; at least 30 characters"),
             "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}),
+            "improvementPrinciple": json!({"type":"object",
+                "description":"Model-authored source-bound learning principle: change both one task-intelligence component AND the editable method that discovers its improvements, with independent next-generation predictions",
+                "properties": {
+                    "name":{"type":"string"},
+                    "taskRole":{"type":"string","enum":["models","learning","memory","tools","harness","algorithms"]},
+                    "taskFile":{"type":"string"},
+                    "methodFile":{"type":"string"},
+                    "failureMode":{"type":"string"},
+                    "mechanism":{"type":"string"},
+                    "counterfactual":{"type":"string"},
+                    "transferPrediction":{"type":"string"},
+                    "learningSignal":{"type":"string"}
+                },
+                "required":["name","taskRole","taskFile","methodFile",
+                    "failureMode","mechanism","counterfactual",
+                    "transferPrediction","learningSignal"],
+                "additionalProperties":false}),
             "expectedOutcomes":json!({"type":"object",
                 "description":"Probability estimates before code modification; independently calibrated after evaluation.",
                 "properties":{
