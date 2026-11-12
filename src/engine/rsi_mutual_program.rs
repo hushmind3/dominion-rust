@@ -11,7 +11,7 @@ use std::collections::{BTreeMap,BTreeSet};
 fn sha(value:&Value)->String {
     format!("{:x}",Sha256::digest(serde_json::to_vec(value).unwrap_or_default()))
 }
-fn adopted_source(g:&Value)->bool {
+pub(crate) fn adopted_source(g:&Value)->bool {
     g["accepted"]==true && g["pairedRevalidated"]==true
         && g["candidateId"].as_str().is_some()
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
