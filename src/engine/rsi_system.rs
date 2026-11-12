@@ -842,7 +842,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         must include role, domain, purpose, sourcePaths AND changed \
         integrationPaths that actually call or register that code. Propose \
         interactionEdges with fromRole, toRole, fromPath, toPath, mechanism \
-        and observable for verifiable mutual improvement. These inventions \
+        and observable for verifiable mutual improvement. INVENT new \
+        improvementPrinciples (name, methodRole, methodSourcePaths, \
+        improvesRoles, mechanism, falsifiableOutcome, composedFrom). A \
+        principle's quality is learned from what the next COMPILED agent \
+        actually improves on paired holdouts, not just from source adoption. \
+        These inventions \
         become inheritable roles only after independent source adoption. \
         The accepted source will be compiled as your successor, which must \
         design and execute the subsequent change.\n\
@@ -1079,6 +1084,56 @@ pub(crate) fn propose(
             }
         }
     }
+    // General improvement principles are invented by the MODEL and backed
+    // by editable source, not a closed list of operator types or role pairs.
+    // Descendants learn their value only from later source-changing children.
+    let principles=body["improvementPrinciples"].as_array()
+        .cloned().unwrap_or_default();
+    if principles.len()>12{
+        return Err("한 세대의 새 개선 원리는 최대 12개입니다.".into());
+    }
+    let mut principle_names=BTreeSet::new();
+    for principle in &principles{
+        let name=principle["name"].as_str().filter(|name|
+            !name.is_empty()&&name.len()<=80
+            && name.bytes().all(|b|b.is_ascii_alphanumeric()
+                ||b==b'_'||b==b'-'))
+            .ok_or("개선 원리 이름 형식 오류")?;
+        if !principle_names.insert(name.to_string()){
+            return Err("새 개선 원리의 이름이 중복됐습니다.".into());
+        }
+        let method_role=principle["methodRole"].as_str()
+            .filter(|role|roles.iter().any(|entry|entry==role))
+            .ok_or("개선 원리를 실제 수정하는 구성요소가 누락됐습니다.")?;
+        let paths=principle["methodSourcePaths"].as_array()
+            .filter(|paths|!paths.is_empty()&&paths.len()<=8)
+            .ok_or("개선 원리의 실제 구현 소스가 필요합니다.")?;
+        if paths.iter().any(|file|file.as_str().is_none_or(|path|
+            !target_set.contains(path)
+                || !component_files[method_role].as_array()
+                    .is_some_and(|rows|rows.iter().any(|p|p==path)))){
+            return Err("개선 원리는 이번 후보가 실제로 수정하는 소스를 가리켜야 합니다.".into());
+        }
+        let targets=principle["improvesRoles"].as_array()
+            .filter(|targets|!targets.is_empty()&&targets.len()<=12)
+            .ok_or("새 개선 원리가 발전시킬 지능 역할이 필요합니다.")?;
+        if targets.iter().any(|target|target.as_str()
+            .is_none_or(|role|!valid_role(role)||role=="system")){
+            return Err("개선 원리의 대상 지능 이름이 유효하지 않습니다.".into());
+        }
+        if !principle["mechanism"].as_str().is_some_and(|v|
+            v.trim().len()>=25&&v.len()<=1600)
+            || !principle["falsifiableOutcome"].as_str().is_some_and(|v|
+                v.trim().len()>=20&&v.len()<=1000)){
+            return Err("새 개선 원리에는 실행 원리와 반증 가능한 다음 세대 결과가 필요합니다.".into());
+        }
+        let parents=principle["composedFrom"].as_array().cloned()
+            .unwrap_or_default();
+        if parents.len()>6 || parents.iter().any(|item|item.as_str()
+            .is_none_or(|name|name.is_empty()||name.len()>80)){
+            return Err("새 원리의 구성 요소는 이름 있는 원리 6개 이하여야 합니다.".into());
+        }
+    }
     let next_files=body["nextTargetFiles"].as_array()
         .cloned().unwrap_or_default();
     if next_files.len()>3 || next_files.iter().any(|file|file.as_str()
@@ -1127,7 +1182,7 @@ pub(crate) fn propose(
     let revision=format!("{:x}",Sha256::digest(json!([
         generator,component,&roles,domain,hypothesis,design,targets,
         &component_files,&body["actionProgram"],&stages,&next_files,method_hypothesis,
-        &births,&edges
+        &births,&edges,&principles
     ]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),
@@ -1141,6 +1196,7 @@ pub(crate) fn propose(
         "actionProgram":body["actionProgram"],
         "successorStages":stages,
         "newComponents":births,"interactionEdges":edges,
+        "improvementPrinciples":principles,
         "observedSources":observed,
         "qualityProven":false,"adopted":false
     });
