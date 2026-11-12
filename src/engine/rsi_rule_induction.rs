@@ -33,7 +33,7 @@ fn read_snapshot(ops:&[Value], stop:usize, run:&str)->Option<Snapshot> {
         if op["runId"].as_str()!=Some(run) {continue;}
         calls+=1;
         if matches!(op["tool"].as_str(),
-            Some("workspace_replace_range"|"workspace_replace"|"workspace_write")) {
+            Some("workspace_replace_range"|"workspace_replace"|"workspace_replace_function"|"workspace_write")) {
             attempted_edit=true;
         }
         if op["status"]!="completed" {continue;}
@@ -64,7 +64,7 @@ fn accepted_edit(row:&Value, ops:&[Value])->Option<(String,Snapshot)> {
     let adopted=row["acceptedSourceHashes"].as_object()?;
     for (index,op) in ops.iter().enumerate() {
         let name=op["tool"].as_str()?;
-        if !matches!(name,"workspace_replace_range"|"workspace_replace") ||
+        if !matches!(name,"workspace_replace_range"|"workspace_replace"|"workspace_replace_function") ||
             op["status"]!="completed" || op["result"]["written"]!=true
             || op["toolReceipt"]["verified"]!=true {continue;}
         let Some(path)=op["path"].as_str() else {continue;};
@@ -94,7 +94,7 @@ fn negative_snapshot(row:&Value,ops:&[Value])->Option<Snapshot> {
     // source edit, not the subsequent tool calls produced by a failed patch.
     for (index,op) in ops.iter().enumerate(){
         if !matches!(op["tool"].as_str(),
-            Some("workspace_replace_range"|"workspace_replace"))
+            Some("workspace_replace_range"|"workspace_replace"|"workspace_replace_function"))
             || op["status"]!="completed" || op["result"]["written"]!=true
             || op["toolReceipt"]["verified"]!=true {continue;}
         let Some(path)=op["path"].as_str() else {continue;};
@@ -183,7 +183,7 @@ fn induce_cohort(history:&[&Value])->Vec<Value> {
     }
     if successes.len()<2 || negatives.len()<2 {return Vec::new();}
     let mut result=Vec::new();
-    for tool in ["workspace_replace_range","workspace_replace"] {
+    for tool in ["workspace_replace_range","workspace_replace","workspace_replace_function"] {
         let positive=successes.iter().filter(|(name,_)|name==tool)
             .map(|(_,s)|*s).collect::<Vec<_>>();
         if positive.len()<2 {continue;}
