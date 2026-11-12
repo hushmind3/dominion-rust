@@ -8,6 +8,7 @@
 use crate::engine::{rsi,rsi_mutual_program};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
+use std::collections::BTreeSet;
 
 fn digest(v:&Value)->String {
     format!("{:x}",Sha256::digest(serde_json::to_vec(v).unwrap_or_default()))
@@ -58,7 +59,19 @@ fn stage_executed(g:&Value)->bool {
     let mut unsigned=program.clone();
     let Some(body)=unsigned.as_object_mut() else{return false};
     body.remove("sha256");
-    program["sha256"].as_str()==Some(digest(&unsigned).as_str())
+    let revised_method_executed=program["phase"]!="execute_revised_experiment"
+        || (g["factorialExperiment"]["source"]
+                =="compiled_factorial_ablation_curriculum_v1"
+            && program["experimentPlanSha256"]==g["factorialExperiment"]["sha256"]
+            && g["compiledPlanExecuted"]["factorialSha256"]
+                ==g["factorialExperiment"]["sha256"]
+            && g["factorialExperiment"]["selected"]["target"]==program["target"]
+            && matches!(g["factorialExperiment"]["selected"]["phase"].as_str(),
+                Some("isolate_left"|"isolate_right"))
+            && g["metaPolicy"]["revisedExperimentPlanSha256"]
+                ==program["experimentPlanSha256"]);
+    revised_method_executed
+        && program["sha256"].as_str()==Some(digest(&unsigned).as_str())
         && applied_meta(g)
         && g["metaPolicy"]["selectionMode"]=="recompiled_reflexive_method_evolution"
         && g["metaPolicy"]["reflexiveProgramSha256"]==program["sha256"]
@@ -383,6 +396,71 @@ pub(crate) fn completed(history:&[Value])->Value {
     });
     out["sha256"]=json!(digest(&out));
     out
+}
+/// Five-stage proof: a verified meta->capability->meta loop must
+/// independently rewrite the experiment METHOD, then the next compiled
+/// descendant must USE the revised experiment to generate a verified
+/// source patch on its chosen isolated capability target.
+pub(crate) fn completed_method_cycles(history:&[Value])->Value {
+    let prior=completed(history);
+    let mut cycles=Vec::new();
+    let mut seen=BTreeSet::new();
+    for outcome in history.iter().filter(|g|
+        g["reflexiveProgram"]["phase"]=="execute_revised_experiment"
+            && rsi_mutual_program::adopted_source(g) && stage_executed(g)) {
+        let Some(outcome_id)=outcome["id"].as_str() else{continue};
+        let Some(path)=outcome["reflexiveProgram"]["target"]["path"].as_str() else{continue};
+        if !actual_source(outcome,path)
+            || outcome["reflexiveProgram"]["target"]["role"]=="improvement_methods" {
+            continue;
+        }
+        let Some(method)=history.iter().find(|g|
+            rsi_mutual_program::adopted_source(g) && stage_executed(g)
+                && g["acceptedCommit"]==outcome["generatorCommit"]
+                && g["reflexiveProgram"]["phase"]=="redesign_experiment"
+                && g["reflexiveProgram"]["rootGenerationId"]
+                    ==outcome["reflexiveProgram"]["rootGenerationId"]
+                && g["reflexiveProgram"]["target"]["path"]
+                    =="src/engine/rsi_factorial.rs"
+                && actual_source(g,"src/engine/rsi_factorial.rs"))
+            else{continue};
+        let Some(returned)=history.iter().find(|g|
+            rsi_mutual_program::adopted_source(g) && stage_executed(g)
+                && g["acceptedCommit"]==method["generatorCommit"]
+                && g["reflexiveProgram"]["phase"]=="return"
+                && g["reflexiveProgram"]["rootGenerationId"]
+                    ==outcome["reflexiveProgram"]["rootGenerationId"])
+            else{continue};
+        let Some(triple)=prior["loops"].as_array().into_iter().flatten()
+            .find(|proof|proof["returnGenerationId"]==returned["id"])
+            else{continue};
+        if !seen.insert(outcome_id.to_string()){continue;}
+        cycles.push(json!({
+            "seedGenerationId":triple["seedGenerationId"],
+            "capabilityGenerationId":triple["transferGenerationId"],
+            "metaReturnGenerationId":returned["id"],
+            "methodRedesignGenerationId":method["id"],
+            "methodExecutionGenerationId":outcome["id"],
+            "originMetaCommit":triple["metaOriginCommit"],
+            "capabilityCommit":triple["capabilityImprovedCommit"],
+            "returnedMetaCommit":returned["acceptedCommit"],
+            "experimentMethodCommit":method["acceptedCommit"],
+            "experimentOutcomeCommit":outcome["acceptedCommit"],
+            "revisedExperimentPlanSha256":
+                outcome["reflexiveProgram"]["experimentPlanSha256"],
+            "executedMethodTarget":outcome["reflexiveProgram"]["target"],
+            "fiveIndependentSourceAdoptions":true,
+            "recompiledMethodApplied":true,
+            "causalPerformanceAdvantageProven":false
+        }));
+    }
+    let mut result=json!({
+        "source":"independently_witnessed_experiment_method_evolution_v1",
+        "completedMethodCycles":cycles.len(),"cycles":cycles,
+        "claim":"source_adopted_meta_capability_meta_method_experiment_execution"
+    });
+    result["sha256"]=json!(digest(&result));
+    result
 }
 pub(crate) fn instruction(plan:&Value)->String {
     let target=&plan["target"];
