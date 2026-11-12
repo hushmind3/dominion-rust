@@ -198,6 +198,10 @@ pub(crate) fn apply(agenda:&mut Value,ledger:&Value){
     }
     agenda["target"]=ledger["target"].clone();
     agenda["focus"]=ledger["focus"].clone();
+    // These proposals remain visible in their frozen input records, but
+    // cannot simultaneously claim that a DIFFERENT source was executed.
+    agenda["principleCurriculum"]=Value::Null;
+    agenda["factorialExperiment"]=Value::Null;
     agenda["wholeDominionGrowth"]=ledger.clone();
 }
 pub(crate) fn instruction(p:&Value)->String{
