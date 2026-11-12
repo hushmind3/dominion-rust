@@ -1038,11 +1038,11 @@ impl Store {
     /// observability at 500 and must never be used as attribution evidence.
     /// This query is complete over the durable audit table, and errors fail
     /// closed instead of silently removing earlier competing model calls.
-    pub fn model_usage_for_session_since(
-        &self, session_id: &str, after_rowid: i64,
+    pub fn model_usage_for_session_in_window(
+        &self, session_id: &str, after_rowid: i64, through_rowid: i64,
     ) -> Result<Vec<Value>, String> {
-        if session_id.is_empty() || after_rowid < 0 {
-            return Err("model usage session or start audit cursor invalid".into());
+        if session_id.is_empty() || after_rowid < 0 || through_rowid < after_rowid {
+            return Err("model usage session or audit window invalid".into());
         }
         let conn = self.conn.lock().map_err(|e|e.to_string())?;
         let mut stmt = conn.prepare(
@@ -1050,9 +1050,10 @@ impl Store {
              WHERE event='model.usage'
                AND json_extract(detail,'$.sessionId')=?1
                AND rowid>?2
+               AND rowid<=?3
              ORDER BY rowid ASC"
         ).map_err(|e|e.to_string())?;
-        let rows = stmt.query_map(params![session_id,after_rowid], |row| {
+        let rows = stmt.query_map(params![session_id,after_rowid,through_rowid], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
@@ -1074,6 +1075,15 @@ impl Store {
             }));
         }
         Ok(out)
+    }
+
+    /// Convenience query for live observability; historical evidence must
+    /// use a persisted finite end cursor via model_usage_for_session_in_window.
+    pub fn model_usage_for_session_since(
+        &self, session_id: &str, after_rowid: i64,
+    ) -> Result<Vec<Value>, String> {
+        let end=self.audit_rowid_cursor()?;
+        self.model_usage_for_session_in_window(session_id,after_rowid,end)
     }
 
     /// A monotonic SQLite audit cursor bounds the generation's real model
@@ -1260,6 +1270,13 @@ mod tests {
         assert_eq!(calls[1]["detail"]["providerId"],"competing");
         assert_eq!(calls[0]["detail"]["totalTokens"],17);
         assert_eq!(calls[1]["detail"]["totalTokens"],13);
+        let first_rowid=calls[0]["rowid"].as_i64().unwrap();
+        let bounded=store.model_usage_for_session_in_window(
+            "generation-session",cursor,first_rowid).unwrap();
+        assert_eq!(bounded.len(),1);
+        assert_eq!(bounded[0]["detail"]["providerId"],"selected");
+        assert!(store.model_usage_for_session_in_window(
+            "generation-session",first_rowid,cursor).is_err());
         assert!(calls[0]["rowid"].as_i64().unwrap()<calls[1]["rowid"].as_i64().unwrap());
         assert_eq!(store.model_usage_for_session_since("generation-session",0).unwrap().len(),3);
         assert_eq!(store.model_usage_for_session_since("another-session",cursor).unwrap().len(),1);
