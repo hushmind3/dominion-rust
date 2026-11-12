@@ -3096,7 +3096,7 @@ async fn run_loop(
             let evidence=if first_system_generation {
                 crate::engine::rsi_meta::development_evidence(&context.state)
             } else {None};
-            if first_system_generation {
+            if first_system_generation && !owner_focus && input["rsiAutonomous"]==true {
                 child_input["rsiSelectedDomain"]=json!("improver");
                 child_input["rsiDecisionInput"]=json!({
                     "basis":"initial_system_evolution","targetDomain":"improver"
@@ -3156,7 +3156,16 @@ async fn run_loop(
             "domain":target_domain,"selection":target_selection,
             "strategy":target_strategy,"generatorCommit":head
         });
-        if child_input["rsiFocusFiles"]
+        if input["rsiSystemEvolution"]==true
+            && input["rsiFocusFiles"].as_array().is_none_or(|files|files.is_empty()) {
+            // Only the rebuilt descendant ranks system-evolution files.
+            // The old resident coordinator must not pre-commit a stale guess.
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiAutoFocus"]=json!(true);
+            child_input["rsiFocusSelection"]=json!({
+                "source":"pending_rebuilt_descendant_controller"
+            });
+        } else if child_input["rsiFocusFiles"]
             .as_array().is_none_or(|files|files.is_empty()) {
             let policy=target_strategy["id"].as_str()
                 .and_then(|id|context.state.store.get("algorithm",id))
@@ -4142,7 +4151,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let campaign=input["rsiCampaignId"].as_str().ok_or("계획 캠페인 ID가 없습니다.")?;
     let config=crate::config::Config::from_env();
     let store=crate::db::Store::open(&config.db_path()).map_err(|e|e.to_string())?;
-    let state=AppState::new(config,store,crate::vault::Vault::open(&crate::config::Config::from_env().key_path()));
+    let vault=crate::vault::Vault::open(&config.key_path());
+    let state=AppState::new(config,store,vault);
     let mut history=state.store.all("rsi_generation").into_iter()
         .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
     history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
