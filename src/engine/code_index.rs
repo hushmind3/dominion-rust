@@ -51,6 +51,7 @@ fn is_source(path: &Path) -> bool {
                 | "mjs"
                 | "cjs"
                 | "css"
+                | "py"
                 | "html"
                 | "json"
                 | "toml"
@@ -152,6 +153,20 @@ fn rust_symbol(line: &str) -> Option<(&'static str, String)> {
             if !name.is_empty() {
                 return Some((kind, name));
             }
+        }
+    }
+    None
+}
+
+/// Discover editable Python architecture/training modules with the same
+/// actual source SHA binding as Rust and TypeScript. Symbol evidence does not
+/// execute or trust generated Python; the model must still edit real bytes.
+fn python_symbol(line:&str)->Option<(&'static str,String)>{
+    let stripped=line.strip_prefix("async ").unwrap_or(line);
+    for (prefix,kind) in [("def ","fn"),("class ","class")] {
+        if let Some(value)=stripped.strip_prefix(prefix){
+            let name=symbol_name(value);
+            if !name.is_empty(){return Some((kind,name));}
         }
     }
     None
@@ -331,6 +346,8 @@ fn parse_file(rel: &str, content: &str) -> Value {
             rust_symbol(trimmed)
         } else if matches!(language.as_str(), "ts" | "tsx" | "js" | "jsx") {
             script_symbol(trimmed)
+        } else if language=="py" {
+            python_symbol(trimmed)
         } else {
             None
         };
