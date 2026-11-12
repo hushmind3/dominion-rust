@@ -615,6 +615,14 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Both the module code and actual runtime wiring must change and be \
         independently adopted before the new role enters future search. \
         A rebuilt descendant may then improve this newly invented module. \
+        Better: author an openProgram containing ANY named improvement \
+        nodes, novel role sources, testable mechanisms, entry and outcome \
+        edges; the accepted compiled descendant executes this editable \
+        graph, and a newer model-authored graph may replace its entire \
+        strategy. Include src/engine/rsi_program_graph.rs as an editable \
+        target when improvement-program synthesis itself is the limitation. \
+        Feedback branches may revisit earlier roles or synthesize new ones; \
+        no prescribed A->B->A topology limits the descendant. \
         Submit successorStages in rsi_system_plan to program how the NEXT \
         compiled agent chooses its domain, source target, learning policy, \
         and source tool policy. Each stage needs role, domain, path, objective; \
@@ -1012,6 +1020,7 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let interaction=crate::engine::rsi_interaction::influence_graph(history,&[]);
     let reciprocal=crate::engine::rsi_mutual_program::completed_cycles(history);
     let reflexive=crate::engine::rsi_reflexive::completed(history);
+    let open_programs=crate::engine::rsi_program_graph::handoff(history);
     let experiment_methods=crate::engine::rsi_reflexive::completed_method_cycles(history);
     let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
     let edges=interaction["edges"].as_array().cloned().unwrap_or_default();
@@ -1042,6 +1051,11 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "completedExperimentMethodCycles":experiment_methods["completedMethodCycles"],
         "experimentMethodLineageSha256":experiment_methods["sha256"],
         "verifiedMethodRedesignAndExecution":experiment_methods["cycles"],
+        "openImprovementAdoptedSteps":open_programs["independentlyAdoptedProgramSteps"],
+        "openImprovementExecutedRewrites":open_programs["executedProgramRewrites"],
+        "openImprovementLineageSha256":open_programs["sha256"],
+        "openImprovementSourceEvidence":open_programs["steps"],
+        "openImprovementProgramRewrites":open_programs["rewrites"],
         "crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
         "demonstrated":chain>=3 && handoffs>=2 && missing.is_empty() && method_transfer && meta_gain,
         "coverageMeaning":"independently adopted source roles; performance is measured separately by downstream tasks"})
