@@ -4723,6 +4723,27 @@ async fn run_loop(
             && generation["candidateOrigin"]=="model_driven_detached_worktree"
             && generation["acceptedSourceHashes"].as_object()
                 .is_some_and(|m|!m.is_empty()));
+        // Inspect the exact code bytes AFTER actual program/rule execution;
+        // editing the method generator is merely a proposal until a separate
+        // adopted source improvement is independently recorded.
+        let method_reward=sub2_edit_policy_reward(&generation);
+        generation["editMethodExecutionProof"]=json!({
+            "source":"ordered_tool_stage_to_adopted_source_receipt_v1",
+            "revision":generation["editPolicy"]["revision"],
+            "parentRevision":generation["editPolicy"]["parentRevision"],
+            "rewriteProgram":generation["editPolicy"]["rewriteProgram"],
+            "executedStages":generation["programStages"].as_array()
+                .map(Vec::len).unwrap_or(0),
+            "firedRules":generation["ruleExecutions"].as_array()
+                .map(Vec::len).unwrap_or(0),
+            "matchedAdoptedSourceWrite":method_reward>=1.0,
+            "qualityEvidence":if method_reward>=1.0 {
+                "independently_adopted_source_with_prior_executed_policy"
+            }else{"not_proven"},
+            "causalPolicySuperiorityProven":false,
+            "independentlyMeasuredAdoption":generation["accepted"]==true
+                && generation["pairedRevalidated"]==true
+        });
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],&generation);
         // The immediate quality receipt and the future descendant's
@@ -5571,14 +5592,45 @@ fn sub2_edit_policy_reward(g:&Value)->f64 {
     if accepted {
         let Some(rules)=g["editPolicy"]["rules"].as_array()
             else{return 0.0};
-        if rules.is_empty(){return 1.0;}
         let Some(timeline)=g["toolTimeline"].as_array()
             else{return 0.0};
+        let adopted_after=|op:&Value,run:&str,before:u64|{
+            let expected=op["path"].as_str().and_then(|path|
+                g["acceptedSourceHashes"].get(path))
+                .and_then(Value::as_str);
+            op["runId"].as_str()==Some(run)
+                && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_replace"|"workspace_replace_range"
+                        |"workspace_replace_function"|"workspace_write"))
+                && op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true
+                && expected.is_some_and(|sha|sha.len()==64
+                    && op["result"]["postSha256"].as_str()==Some(sha))
+        };
+        if rules.is_empty() {
+            // A source improvement can be attributed to the inherited edit
+            // PROGRAM only if its edit phase preceded the actual accepted
+            // source bytes. A discovery or grounding stage alone is not
+            // proof that a rewritten procedure changed the implementation.
+            let witnessed=g["programStages"].as_array().is_some_and(|events|
+                events.iter().any(|event|{
+                    let Some(run)=event["runId"].as_str() else{return false};
+                    let Some(before)=event["opSeqBefore"].as_u64() else{return false};
+                    event["generationJobId"]==g["jobId"]
+                        && event["policyRevision"]==g["editPolicy"]["revision"]
+                        && event["phase"]=="edit"
+                        && timeline.iter().any(|op|adopted_after(op,run,before))
+                }));
+            return if witnessed {1.0}else{0.0};
+        }
         let proved=g["ruleExecutions"].as_array().is_some_and(|events|
             events.iter().any(|event|{
                 let Some(run)=event["runId"].as_str() else{return false};
                 let Some(before)=event["opSeqBefore"].as_u64() else{return false};
-                let matched_rule=event["policyRevision"]==g["editPolicy"]["revision"]
+                let matched_rule=event["generationJobId"]==g["jobId"]
+                    && event["policyRevision"]==g["editPolicy"]["revision"]
                     && rules.iter().any(|r|r["id"]==event["ruleId"]);
                 let acted=timeline.iter().any(|op|
                     op["runId"]==run
@@ -5586,16 +5638,7 @@ fn sub2_edit_policy_reward(g:&Value)->f64 {
                     && op["status"]=="completed"
                     && event["allow"].as_array().is_some_and(|tools|
                         tools.iter().any(|name|name==&op["tool"])));
-                let adopted=timeline.iter().any(|op|
-                    op["runId"]==run
-                    && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
-                    && op["status"]=="completed"
-                    && op["result"]["written"]==true
-                    && op["toolReceipt"]["verified"]==true
-                    && op["path"].as_str().and_then(|path|
-                        g["acceptedSourceHashes"][path].as_str()
-                            .map(|sha|op["result"]["postSha256"]==sha))
-                        ==Some(true));
+                let adopted=timeline.iter().any(|op|adopted_after(op,run,before));
                 matched_rule && acted && adopted
             }));
         return if proved {1.0}else{0.0};
@@ -10660,6 +10703,36 @@ mod sub2_inherited_main_capabilities_tests {
         let mut real=no_receipt;
         real["toolTimeline"][0]["toolReceipt"]["verified"]=json!(true);
         assert_eq!(sub2_edit_policy_reward(&real),1.0);
+    }
+    #[test]
+    fn rewritten_edit_program_needs_a_later_verified_adopted_source_write() {
+        let mut g=json!({
+            "jobId":"worker-program","accepted":true,
+            "pairedRevalidated":true,"evidenceVerified":true,
+            "candidateOrigin":"model_driven_detached_worktree",
+            "evaluation":{"metrics":{"eligible":true}},
+            "editPolicy":{"revision":"rewritten-v2",
+                "parentRevision":"original-v1","rules":[]},
+            "acceptedSourceHashes":{"src/engine/learning.rs":"a".repeat(64)},
+            "programStages":[{"runId":"session-1","generationJobId":"worker-program",
+                "policyRevision":"rewritten-v2","phase":"ground","opSeqBefore":1}],
+            "toolTimeline":[{"runId":"session-1","opSeq":4,
+                "tool":"workspace_replace_function","status":"completed",
+                "path":"src/engine/learning.rs",
+                "result":{"written":true,"postSha256":"a".repeat(64)},
+                "toolReceipt":{"verified":true}}]
+        });
+        assert_eq!(sub2_edit_policy_reward(&g),0.0,
+            "source success cannot be credited to a ground-only policy");
+        g["programStages"][0]["phase"]=json!("edit");
+        assert_eq!(sub2_edit_policy_reward(&g),1.0);
+        g["programStages"][0]["opSeqBefore"]=json!(4);
+        assert_eq!(sub2_edit_policy_reward(&g),0.0,
+            "an edit-stage claim after the actual write cannot steal credit");
+        g["programStages"][0]["opSeqBefore"]=json!(1);
+        g["toolTimeline"][0]["toolReceipt"]["verified"]=json!(false);
+        assert_eq!(sub2_edit_policy_reward(&g),0.0,
+            "a tool result without independently verified source receipt is not proof");
     }
     #[test]
     fn neutral_source_patch_is_not_edit_program_quality_proof() {
