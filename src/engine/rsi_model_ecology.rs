@@ -205,7 +205,7 @@ pub(crate) fn choose(
             pool.push(endpoint_value(&key));continue;
         }
         let Some(provider)=state.store.get("provider",&key.0)else{continue};
-        if provider["enabled"]==false || provider["model"].as_str()!=Some(&key.1){
+        if provider["enabled"]==false || provider["model"].as_str()!=Some(key.1.as_str()){
             continue;
         }
         pool.push(endpoint_value(&key));
