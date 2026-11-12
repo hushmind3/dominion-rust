@@ -990,9 +990,13 @@ pub fn bounded_focus_context(
     }
     let content = String::from_utf8(bytes).ok()?;
     let size = content.chars().count();
+    // The source excerpt is a model-editing contract, not a research summary.
+    // Expose the exact checked file revision so range/function edits are bound
+    // to source bytes and do not force the model to rediscover this file.
+    let source_sha=indexed["hash"].as_str()?;
     if size <= WHOLE_FILE_CHARS {
         return Some(format!(
-            "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\n원문의 정확한 oldText로 workspace_replace를 사용하세요.\n~~~\n{content}\n~~~\n"
+            "\n### 대상 파일 전체: {path} ({size}자, 소스 해시 검증)\nsourceSha256: {source_sha}\n원문의 정확한 oldText로 workspace_replace를 쓰거나 실제 줄 번호와 expectedSha256={source_sha}로 120줄 이하의 범위를 수정하세요. Rust 함수 전체를 작성했다면 workspace_replace_function을 선택하세요.\n~~~\n{content}\n~~~\n"
         ));
     }
     let lines = content.lines().collect::<Vec<_>>();
@@ -1017,7 +1021,7 @@ pub fn bounded_focus_context(
     let terms=focus_terms(objective,domain);
     let ranked=rank_focus_spans(symbols,tests,&lines,&terms);
     let mut result = format!(
-        "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\n전체 파일이 아닙니다. 정확히 일치하는 코드만 수정하고 누락된 부분은 workspace_read_range로 확인하세요.\n"
+        "\n### 대상 파일 발췌: {path} (전체 {size}자, 소스 해시 검증)\nsourceSha256: {source_sha}\n아래 줄 번호는 실제 소스 파일의 줄입니다. workspace_replace(startLine,endLine,newText,expectedSha256={source_sha})로 최대 120줄의 정확한 범위를 수정하세요. 이 발췌에 없는 영역만 workspace_read_range로 확인하세요.\n"
     );
     let mut included = 0usize;
     for (_, line, symbol_end, name) in ranked {
@@ -1047,6 +1051,28 @@ mod tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
 
+
+    #[test]
+    fn model_receives_real_current_rust_bytes_sha_and_absolute_source_lines() {
+        let (state,root)=temp_state();
+        let source=root.join("source");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        let file=source.join("src/core.rs");
+        std::fs::write(&file,"pub fn actual_policy() -> u32 {\n    7\n}\n").unwrap();
+        let meta=refresh(&state,&source).unwrap();
+        let hash=indexed_source_hash(&state,meta["id"].as_str().unwrap(),"src/core.rs").unwrap();
+        let excerpt=bounded_focus_context(&state,&source,
+            meta["id"].as_str().unwrap(),"src/core.rs","actual_policy","improver").unwrap();
+        assert!(excerpt.contains("pub fn actual_policy()"),"{excerpt}");
+        assert!(excerpt.contains(&format!("sourceSha256: {hash}")),"{excerpt}");
+        assert!(excerpt.contains("expectedSha256="),"{excerpt}");
+        // A stale index can never authorize edits to a new source revision.
+        std::fs::write(&file,"pub fn actual_policy() -> u32 {\n    8\n}\n").unwrap();
+        let stale=bounded_focus_context(&state,&source,
+            meta["id"].as_str().unwrap(),"src/core.rs","actual_policy","improver").unwrap();
+        assert!(!stale.contains(&hash),"no stale source hash should appear in a model edit contract");
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn lexical_terms_split_camel_case_identifiers() {
