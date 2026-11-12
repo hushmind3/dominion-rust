@@ -4207,10 +4207,16 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         ["candidateCount"].as_u64().unwrap_or(0);
     let method_promoted=inherited_experiment_method["source"]
         =="model_authored_causal_experiment_policy_v1";
+    // Unknown contribution in a jointly adopted redesign is a reason to
+    // isolate components on the next frozen profile, not to award every role
+    // the full success or continue exploiting an ambiguous result.
+    let isolation_debt=inherited_meta["selectionEvidence"]["causalCredit"]
+        ["requiresIsolation"]==true;
     let factorial_active=auto && stage.is_null()
         && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
         && proposed_factorial["selected"].is_object()
-        && (measured_siblings>0 || history.len()%3==1 || method_promoted);
+        && (measured_siblings>0 || history.len()%3==1
+            || method_promoted || isolation_debt);
     // An explicit owner objective or a previously adopted successor program
     // must NOT inherit file-write restrictions from an unused experiment.
     // Null means no actual factorial intervention was scheduled.

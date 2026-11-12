@@ -118,13 +118,19 @@ pub(crate) fn synthesize(
         let relevant=history.iter().filter(|g|role_touched(g,role)).collect::<Vec<_>>();
         let attempts=relevant.len();
         let adopted=relevant.iter().filter(|g|independent_adoption(g)).count();
+        let causal_credit=crate::engine::rsi_credit_assignment::credit(history,role);
+        let adoption_mass=causal_credit["attributedAdoptionMass"].as_f64()
+            .unwrap_or(0.0).min(adopted as f64);
+        let ambiguous_share=causal_credit["ambiguousShare"].as_f64()
+            .unwrap_or(0.0).clamp(0.0,1.0);
         let regressions=relevant.iter().filter(|g|
             g["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0)>0).count();
         let fruitless=relevant.iter().filter(|g|
             g["candidateId"].is_null() && g["accepted"]!=true).count();
         let productivity=relevant.iter()
             .map(|g|next_generation_productivity(history,g)).sum::<usize>();
-        let probability=(adopted as f64+1.0)/(attempts as f64+2.0);
+        // A co-edited success is not one full independent success per role.
+        let probability=(adoption_mass+1.0)/(attempts as f64+2.0);
         let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
         let coverage=if target["verifiedRoleImproved"]==true{0.0}else{0.22};
         let inherited_bonus=if inherited_domain==target["domain"].as_str(){0.12}else{0.0};
@@ -139,13 +145,17 @@ pub(crate) fn synthesize(
         let score=0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
+            +0.11*ambiguous_share // information value of a future isolation
             -0.12*penalty-0.07*stall-0.035*cost;
         ranked.push((json!({
             "target":target,"role":role,"domain":target["domain"],
             "sourceSha256":target["sourceSha256"],
             "score":score,"predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,"attempts":attempts,
-            "verifiedModelAdoptions":adopted,"regressions":regressions,
+            "verifiedModelAdoptions":adopted,
+            "attributedAdoptionMass":adoption_mass,
+            "causalCredit":causal_credit,
+            "regressions":regressions,
             "editsWithoutCandidate":fruitless,
             "productiveDescendantAdoptions":productivity,
             "newComponent":target["verifiedRoleImproved"]!=true
