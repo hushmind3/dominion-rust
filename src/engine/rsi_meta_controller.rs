@@ -354,6 +354,12 @@ pub(crate) fn integrate_peer_evidence(mut policy:Value,peers:&Value)->Value{
 /// source-grounded task the compiled child tries. The frozen supervisor
 /// checks re-bound path/hash and cannot choose the new ranking policy.
 pub(crate) fn apply_successor_stage(mut policy:Value,stage:&Value)->Value{
+    // Repeated independently measured forecast failure is a concrete
+    // self-repair obligation, not a model-authored stage that can silently
+    // defer its own prediction-rule redesign.
+    if policy["predictionRuleRepair"]["repairRuleSourceSelected"]==true {
+        return policy;
+    }
     if stage["source"]!="rebound_verified_model_successor_program_v1"{return policy;}
     let winner=policy["alternatives"].as_array().into_iter().flatten()
         .find(|row|row["target"]["role"]==stage["role"]

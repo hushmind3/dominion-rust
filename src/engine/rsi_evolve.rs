@@ -4608,13 +4608,13 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let model_evolution=crate::engine::rsi_model_lineage::plan(
         &state,&history,input,commit)?;
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    let negative_transfer_active=science_active
+    let mut negative_transfer_active=science_active
         && negative_transfer["selected"]["victim"].is_object()
         && negative_transfer["selected"]["source"].is_object();
-    let capability_active=science_active && !negative_transfer_active
+    let mut capability_active=science_active && !negative_transfer_active
         && crate::engine::rsi_method_generalization::prefer_capability_target(
             &algebra,&method_learning);
-    let algebra_active=science_active && !negative_transfer_active
+    let mut algebra_active=science_active && !negative_transfer_active
         && !capability_active && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
@@ -4639,6 +4639,17 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         && meta_policy["successorStage"]==suggested_stage {
         suggested_stage
     }else{Value::Null};
+    // On sustained verified prediction drift, the compiled child must
+    // actually try revising its prediction implementation before unrelated
+    // exploratory curricula overwrite the chosen source.
+    let predictor_repair_active=science_active
+        && meta_policy["predictionRuleRepair"]["repairRuleSourceSelected"]==true
+        && meta_policy["target"]["path"]=="src/engine/rsi_prequential.rs";
+    if predictor_repair_active {
+        negative_transfer_active=false;
+        capability_active=false;
+        algebra_active=false;
+    }
     let mut architecture_target=if input["rsiAutonomous"]==true
         && !owner_focus && !paired && meta_policy["target"].is_object() {
         meta_policy["target"].clone()
@@ -4661,13 +4672,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&factorial,&coupled_portfolio,commit);
     // Independently adopted model-authored improvement operators can compose
     // across any number of roles; no fixed scientist stage is needed.
-    if negative_transfer_active {
+    if predictor_repair_active {
+        architecture_target=meta_policy["target"].clone();
+    }else if negative_transfer_active {
         architecture_target=negative_transfer["selected"]["victim"].clone();
     }else if algebra_active {
         architecture_target=algebra["selected"]["target"].clone();
     }else if capability_active {
         architecture_target=method_learning["suggestedCapabilityTarget"].clone();
-    }else if science_active && science["phase"]!="discover_new_mechanism" {
+    }else if science_active && !predictor_repair_active
+        && science["phase"]!="discover_new_mechanism" {
         if let Some(first)=science["focus"].as_array().and_then(|f|f.first()){
             architecture_target=first.clone();
         }
@@ -4803,7 +4817,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // The generated experiment is an actual editing decision, not just
     // appended prompt text. Isolated experiments MUST focus only one role;
     // accepted-source recursive stages take priority over older guesses.
-    if science_active && !algebra_active && !capability_active
+    if science_active && !predictor_repair_active
+        && !algebra_active && !capability_active
         && science["phase"]!="discover_new_mechanism" {
         let members=science["focus"].as_array().cloned().unwrap_or_default();
         for member in members.into_iter().rev(){
@@ -4848,7 +4863,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         ranked.iter().take(2).filter_map(|row|row["path"].as_str())
             .collect::<Vec<_>>()
     }else if algebra_active || capability_active
-        || (science_active && matches!(science["phase"].as_str(),
+        || (science_active && !predictor_repair_active
+            && matches!(science["phase"].as_str(),
         Some("isolate_left"|"isolate_right"))) {
         ranked.iter().take(1).filter_map(|row|row["path"].as_str())
             .collect::<Vec<_>>()
@@ -5136,7 +5152,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner_focus=matches!(
             job["input"]["rsiFocusSelection"]["source"].as_str(),
             Some("owner_selected"|"user_selected"));
-        let negative_transfer_active=job["input"]["rsiAutonomous"]==true
+        let predictor_repair_active=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"])
+            && job["input"]["rsiMetaPolicy"]["predictionRuleRepair"]["repairRuleSourceSelected"]==true
+            && job["input"]["rsiMetaPolicy"]["target"]["path"]=="src/engine/rsi_prequential.rs";
+        let negative_transfer_active=!predictor_repair_active
+            && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["victim"].is_object()
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["source"].is_object();
@@ -5150,13 +5171,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 return Err("후손의 실제 편집 파일 2개가 독립 검증된 간섭 대상과 다릅니다.".into());
             }
         }
-        let capability_active=job["input"]["rsiAutonomous"]==true
+        let capability_active=!predictor_repair_active
+            && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && !negative_transfer_active
             && crate::engine::rsi_method_generalization::prefer_capability_target(
                 &job["input"]["rsiImprovementAlgebra"],
                 &job["input"]["rsiMethodGeneralization"]);
-        let algebra_active=job["input"]["rsiAutonomous"]==true
+        let algebra_active=!predictor_repair_active
+            && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && !negative_transfer_active && !capability_active
             && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
