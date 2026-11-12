@@ -35,6 +35,7 @@ pub mod rsi_evolve;
 pub mod rsi_system;
 pub mod rsi_meta_controller;
 pub mod rsi_mutual_evolution;
+pub mod rsi_causal_curriculum;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod rsi_compiler_repair;
