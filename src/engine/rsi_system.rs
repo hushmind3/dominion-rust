@@ -21,7 +21,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 /// system's source graph; the prompt can remain short without losing lineage.
 fn source_inventory(root:&Path)->Vec<Value> {
     let Ok(root)=fs::canonicalize(root) else {return Vec::new()};
-    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let mut pending=vec![root.join("src"),root.join("web").join("src"),root.join("src-tauri").join("src")];
     let mut rows=Vec::new();
     while let Some(directory)=pending.pop() {
         let Ok(entries)=fs::read_dir(&directory) else {continue};
@@ -37,7 +37,7 @@ fn source_inventory(root:&Path)->Vec<Value> {
             let relative=relative.to_string_lossy().replace('\\',"/");
             if !crate::engine::rsi::safe_path(&relative){continue;}
             let allowed=matches!(file.extension().and_then(|e|e.to_str()),
-                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"py"));
             if !allowed {continue;}
             let Ok(bytes)=fs::read(&file) else {continue};
             if bytes.len()>2_000_000 {continue;}
@@ -58,6 +58,140 @@ pub(crate) fn source_facts(root:&Path)->Value {
     let files=source_inventory(root);
     json!({"fileCount":files.len(),"sha256":format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()))})
+}
+
+/// Bootstrap source ownership from the actual module tree, not from a fixed
+/// three-file whitelist. This heuristic itself lives in the descendant's
+/// recompilable source and can be redesigned by future generations.
+fn source_role(path:&str)->&'static str {
+    if path.starts_with("web/src/") || path.starts_with("src-tauri/src/") {
+        return "frontend";
+    }
+    let name=path.rsplit('/').next().unwrap_or(path);
+    if name.starts_with("rsi_") || matches!(name,"rsi.rs"|"algorithms.rs"|"algorithm_eval.rs"|"policy_patch.rs") {
+        return "improvement_methods";
+    }
+    if path.contains("/chat/") || matches!(name,"chat.rs"|"jobs.rs"|"decompose.rs"|"gateway.rs") {
+        return "harness";
+    }
+    if name.starts_with("memory") || name.starts_with("room_") {
+        return "memory";
+    }
+    if name.starts_with("learning") || name.starts_with("experience")
+        || name.starts_with("procedure") || name.starts_with("agent_growth") {
+        return "learning";
+    }
+    if name.starts_with("tools") || name.starts_with("browser") || name.starts_with("mcp") {
+        return "tools";
+    }
+    "algorithms"
+}
+
+/// A recorded design is inheritable only when the source patch was accepted
+/// and every declared design file has a corresponding adopted source digest.
+/// This is inheritance evidence, NOT a substitute for the independent paired
+/// source-verification receipt used by the supervisor for promotion.
+fn adopted_design(generation:&Value)->Option<&Value> {
+    let design=&generation["systemDesign"];
+    if generation["accepted"]!=true
+        || generation["evaluation"]["metrics"]["eligible"]!=true
+        || generation["acceptedCommit"].as_str().is_none_or(str::is_empty)
+        || generation["candidateId"].as_str().is_none_or(str::is_empty)
+        || design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=generation["generatorCommit"]
+        || design["generationJobId"]!=generation["jobId"] {
+        return None;
+    }
+    let files=design["targetFiles"].as_array().filter(|files|!files.is_empty())?;
+    if !files.iter().all(|item|item.as_str().is_some_and(|path|
+        crate::engine::rsi::safe_path(path)
+        && generation["acceptedSourceHashes"][path].as_str().is_some_and(|hash|
+            hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())))) {
+        return None;
+    }
+    Some(design)
+}
+
+fn latest_adopted_design(history:&[Value])->Option<&Value> {
+    history.iter().rev().find_map(adopted_design)
+}
+
+/// GEPA-Curator-style experience selection and MGM-style comparative ancestry.
+/// Keep multiple adopted designs and distinct actionable failures, not the
+/// immediately previous run alone. Fixed-size, content-addressed receipts keep
+/// this reusable without replaying an entire paid context on every iteration.
+pub(crate) fn lineage_capsule(history:&[Value])->Value {
+    let mut successes=Vec::new();
+    let mut failures=Vec::new();
+    let mut unique_failures=BTreeSet::new();
+    for generation in history.iter().rev() {
+        if let Some(design)=adopted_design(generation) {
+            if successes.len()<8 {
+                successes.push(json!({
+                    "designId":design["id"],"generationId":generation["id"],
+                    "generatorCommit":generation["generatorCommit"],
+                    "acceptedCommit":generation["acceptedCommit"],
+                    "components":design["components"].as_array()
+                        .map(|items|items.iter().take(12).cloned().collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    "componentFiles":design["componentFiles"],
+                    "changedFiles":design["targetFiles"].as_array()
+                        .map(|items|items.iter().take(12).cloned().collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    "nextDomain":design["nextDomain"],
+                    "hypothesis":design["hypothesis"].as_str().unwrap_or("")
+                        .chars().take(360).collect::<String>(),
+                    "implementation":design["design"].as_str().unwrap_or("")
+                        .chars().take(640).collect::<String>(),
+                    "metaHoldoutGains":generation["evaluation"]["metrics"]["metaHoldoutGains"],
+                    "source":"recorded_adoption_with_source_digests"
+                }));
+            }
+        } else if generation["accepted"]!=true && failures.len()<6 {
+            let source=if generation["verification"]["checksPassed"]==false {
+                "reproducible_verifier_failure"
+            }else if generation["candidateId"].is_string() && generation["evaluation"]["verdict"].is_string() {
+                "independently_measured_candidate_failure"
+            }else if generation["error"].as_str().is_some_and(|err|!err.is_empty()) {
+                "unverified_execution_failure"
+            }else{
+                "incomplete_exploration"
+            };
+            let error=generation["error"].as_str().unwrap_or("")
+                .chars().take(420).collect::<String>();
+            let key=(generation["generatorCommit"].as_str().unwrap_or("").to_owned(),
+                generation["candidateId"].as_str().unwrap_or("").to_owned(),
+                error.clone());
+            if unique_failures.insert(key) {
+                failures.push(json!({
+                    "generationId":generation["id"],"generatorCommit":generation["generatorCommit"],
+                    "candidateId":generation["candidateId"],
+                    "focusFiles":generation["focusFiles"].as_array()
+                        .map(|items|items.iter().take(4).cloned().collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    "kind":source,"verdict":generation["evaluation"]["verdict"],
+                    "error":error,"newFindings":generation["newFindings"],
+                    "researchArtifactHashes":generation["knowledgeArtifactHashes"].as_array()
+                        .map(|items|items.iter().take(4).cloned().collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    "qualityProven":false
+                }));
+            }
+        }
+        if successes.len()>=8 && failures.len()>=6 {break;}
+    }
+    let accepted_head=successes.first().map(|item|item["acceptedCommit"].clone())
+        .unwrap_or(Value::Null);
+    let core=json!({
+        "source":"descendant_curated_lineage_v1","historyCount":history.len(),
+        "latestAcceptedCommit":accepted_head,
+        "acceptedDesigns":successes,"failureCounterexamples":failures,
+        "adoptionEvidence":"recorded_only_supervisor_replays_independent_pairs"
+    });
+    let sha=format!("{:x}",Sha256::digest(serde_json::to_vec(&core).unwrap_or_default()));
+    let mut capsule=core;
+    capsule["sha256"]=json!(sha);
+    capsule
 }
 
 fn valid_role(name:&str)->bool {
@@ -213,6 +347,7 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
 /// measured generator revision; no holdout content is read here.
 pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     let canonical_root=fs::canonicalize(root).ok();
+    let all_files=source_inventory(root);
     let mut components=Vec::new();
     for (role,paths) in COMPONENTS {
         let mut inventory=Vec::new();
@@ -225,9 +360,22 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
                 "bytes":contents.len()}));
         }
+        // Candidate selection is source-graph aware: newly created files may
+        // enter any subsystem without first being added to this static table.
+        // Bound the transmitted representatives, not the source fingerprint.
+        let total_sources=all_files.iter().filter(|entry|
+            entry["path"].as_str().is_some_and(|path|source_role(path)==*role)).count();
+        for entry in all_files.iter().filter(|entry|
+            entry["path"].as_str().is_some_and(|path|source_role(path)==*role)) {
+            if inventory.len()>=16 {break;}
+            if !inventory.iter().any(|item|item["path"]==entry["path"]) {
+                inventory.push(entry.clone());
+            }
+        }
         let row=json!({"role":role,"representativeSources":inventory});
         let domain=role_domain(&row).to_string();
-        components.push(json!({"role":role,"domain":domain,"representativeSources":inventory}));
+        components.push(json!({"role":role,"domain":domain,"representativeSources":inventory,
+            "discoveredSourceCount":total_sources}));
     }
     for generation in history.iter().filter(|generation|generation["accepted"]==true
         && generation["evaluation"]["metrics"]["eligible"]==true) {
@@ -259,7 +407,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "regressions":generation["evaluation"]["metrics"]["regressions"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
-    let files=source_inventory(root);
+    let files=all_files;
     let fingerprint=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&files).unwrap_or_default()));
     let total=files.len();
@@ -276,7 +424,9 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "sourceInventoryTruncated":total>64,
         "sourceTreeSha256":fingerprint,
         "historyCount":history.len(),
-        "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
+        "inheritedDesign":latest_adopted_design(history).cloned().unwrap_or(Value::Null),
+        "inheritedDesignLineage":lineage_capsule(history)["acceptedDesigns"].clone(),
+        "lineageSha256":lineage_capsule(history)["sha256"].clone(),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
         "designOwnership":"compiled_descendant_source_editing_runtime",
@@ -506,22 +656,10 @@ pub(crate) fn propose(
 /// Reuse the model's target only when its *source change*, not its
 /// explanation, was independently evaluated and adopted.
 pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
-    let previous=history.last()?;
-    let design=&previous["systemDesign"];
-    if previous["accepted"]!=true
-        || previous["evaluation"]["metrics"]["eligible"]!=true
-        || !previous["acceptedCommit"].is_string()
-        || design["source"]!="model_authored_system_design"
-        || design["generatorCommit"]!=previous["generatorCommit"]
-        || design["generationJobId"]!=previous["jobId"]
-    {return None;}
-    // A good score for an unrelated patch cannot establish that the
-    // model's proposed system design was actually implemented.
-    let paths=design["targetFiles"].as_array()?;
-    if paths.is_empty() || !paths.iter().all(|path|path.as_str().is_some_and(|path|
-        previous["acceptedSourceHashes"][path].as_str().is_some_and(|hash|hash.len()==64 && hash.bytes().all(|byte|byte.is_ascii_hexdigit())))){
-        return None;
-    }
+    // A failed or research-only generation must not erase a previously
+    // adopted executable design. Source-genuine designs remain inherited
+    // across later attempts until another accepted design supersedes them.
+    let design=latest_adopted_design(history)?;
     let domain=design["nextDomain"].as_str()?;
     crate::engine::rsi_evolve::DOMAINS.contains(&domain)
         .then(||domain.to_string())
