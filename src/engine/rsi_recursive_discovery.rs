@@ -163,7 +163,7 @@ fn unfinished(history:&[Value],frontier:&[Value],topology:&Value)->Option<Value>
 /// Unrelated generations may occur BETWEEN accepted stages.
 pub(crate) fn completed_cycles(history:&[Value])->Value {
     let mut cycles=Vec::new();
-    let mut origins=BTreeSet::<String>::new();
+    let mut origins=BTreeSet::<(String,String)>::new();
     for birth in history.iter().filter(|g|adopted(g)){
         for module in birth["systemDesign"]["moduleIntroductions"]
             .as_array().into_iter().flatten(){
@@ -176,7 +176,7 @@ pub(crate) fn completed_cycles(history:&[Value])->Value {
             if !birth["acceptedSourceHashes"][path].is_string()
                 || !birth["acceptedSourceHashes"][origin].is_string(){continue;}
             let Some(head)=birth["acceptedCommit"].as_str()else{continue};
-            if !origins.insert(head.to_string()){continue;}
+            if !origins.insert((head.to_string(),role.to_string())){continue;}
             let Some(grown)=adopted_step(history,head,role,path,
                 "develop_invented_capability")else{continue};
             let Some(next)=grown["acceptedCommit"].as_str()else{continue};

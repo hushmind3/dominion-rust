@@ -22,7 +22,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 /// system's source graph; the prompt can remain short without losing lineage.
 fn source_inventory(root:&Path)->Vec<Value> {
     let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
-    let mut pending=vec![root.join("src-tauri").join("src"),
+    let mut pending=vec![root.join("scripts"),
+        root.join("src-tauri").join("src"),
         root.join("web").join("src"),root.join("src")];
     let mut rows=Vec::new();
     while let Some(dir)=pending.pop(){
