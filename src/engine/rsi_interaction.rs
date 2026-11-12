@@ -10,7 +10,7 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
 
-fn actual_roles(g:&Value,frontier:&[Value])->Vec<String>{
+pub(crate) fn actual_roles(g:&Value,frontier:&[Value])->Vec<String>{
     // Measure the modules that REALLY changed, not the roles written in a
     // proposed design or a broad requested focus list. This distinction is
     // essential for both negative trials and multi-module interventions.
