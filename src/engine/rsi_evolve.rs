@@ -3726,6 +3726,14 @@ async fn run_loop(
             current["input"]["model"].as_str().unwrap_or("")))
             .unwrap_or(Value::Null);
         generation["apiRouteUsage"]=api_route_usage.clone();
+        // A session using any additional model is not clean evidence of
+        // the selected coder route's contribution to source-task quality.
+        let audited_routes=session.and_then(|id|
+            context.state.store.session_model_routes(id).ok()).unwrap_or_default();
+        generation["apiRouteSessionExclusive"]=json!(
+            audited_routes.len()==1 && audited_routes[0]["providerId"]
+                ==current["input"]["providerId"]
+                && audited_routes[0]["model"]==current["input"]["model"]);
         // Bind usage evidence to the original worker session so the next
         // compiled descendant can replay it from the protected audit log.
         generation["apiRouteSessionId"]=json!(session);
