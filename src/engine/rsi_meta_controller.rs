@@ -272,6 +272,42 @@ pub(crate) fn steer_reciprocal(mut policy:Value,program:&Value)->Value {
         serde_json::to_vec(&unsigned).unwrap_or_default())));
     policy
 }
+/// The descendant can prioritize a missing frozen A-only/B-only/AB
+/// intervention rather than replaying a confounded success story. This
+/// switches the next *source-edit target*, not the independent evaluation.
+pub(crate) fn steer_factorial(mut policy:Value,experiment:&Value)->Value {
+    let variant=&experiment["selected"];
+    if !matches!(variant["phase"].as_str(),
+        Some("isolate_left"|"isolate_right"|"test_joint_interaction")) {
+        return policy;
+    }
+    let target=&variant["target"];
+    let Some(path)=target["path"].as_str() else{return policy};
+    if !crate::engine::rsi::safe_path(path){return policy;}
+    let matching=policy["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==*target).cloned();
+    let mut prediction=matching.unwrap_or_else(||json!({
+        "target":target,"predictedAcceptance":0.5,
+        "uncertainty":0.5,"observedTrials":0,
+        "source":"unmeasured_factorial_experiment_prior"
+    }));
+    prediction["target"]=target.clone();
+    policy["target"]=target.clone();
+    policy["prediction"]=prediction.clone();
+    policy["forecast"]["probability"]=prediction["predictedAcceptance"].clone();
+    policy["forecast"]["uncertainty"]=prediction["uncertainty"].clone();
+    policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
+    policy["selectionMode"]=json!("matched_factorial_experiment_design");
+    policy["factorialExperimentSha256"]=experiment["sha256"].clone();
+    policy["factorialPhase"]=variant["phase"].clone();
+    // A signed descendant decision is passed unchanged to the resident
+    // supervisor; the supervisor does not recompute its target ranking.
+    let mut unsigned=policy.clone();
+    if let Some(body)=unsigned.as_object_mut(){body.remove("revision");}
+    policy["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&unsigned).unwrap_or_default())));
+    policy
+}
 pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
     // The parent may enforce a content hash, but never re-run or override
     // the descendant's compiled search ranking. Hash binds the exact
