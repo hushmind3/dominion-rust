@@ -4132,7 +4132,12 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         &history,&frontier,&permitted,inherited.as_deref());
     let transferred_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
         raw_meta,&peers);
-    let stage=crate::engine::rsi_system::inherited_stage(&history,&frontier);
+    let proposed_stage=crate::engine::rsi_system::inherited_stage(&history,&frontier);
+    // Owner-constrained goals cannot be hijacked by older optional stages.
+    let stage=if proposed_stage["domain"].as_str()
+        .is_some_and(|domain|permitted.contains(&domain)){
+        proposed_stage
+    }else{Value::Null};
     let meta=crate::engine::rsi_meta_controller::apply_successor_stage(transferred_meta,&stage);
     let architecture_target=meta["target"].clone();
     let auto=parent["input"]["selectionPolicy"]=="automatic";

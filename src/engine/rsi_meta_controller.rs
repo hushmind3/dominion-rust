@@ -181,7 +181,9 @@ pub(crate) fn synthesize(
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
         else{"open_ended_mechanism_discovery"};
-    let alternatives=ranked.iter().take(6)
+    // Keep all eight intelligence roles available to inherited source
+    // programs; a six-item truncation can hide a legitimate later stage.
+    let alternatives=ranked.iter().take(16)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
         inherited_domain,history.len()]);
