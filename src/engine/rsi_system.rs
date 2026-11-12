@@ -403,15 +403,44 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
 /// next accepted revision; the supervising process merely authenticates facts.
 pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
     history:&[Value],index_id:&str,root:&Path)->Value{
-    let frontier=architecture_frontier(state,model,history,index_id,root);
+    let mut frontier=architecture_frontier(state,model,history,index_id,root);
     let archive=research_archive(state,model,index_id,history);
     let inherited=history.iter().rev().find_map(accepted_model_design);
-    let inherited_targets=inherited.and_then(|design|
-        design["nextTargetFiles"].as_array()).into_iter().flatten()
-        .take(3).filter_map(Value::as_str)
-        .filter_map(|path|{
-            frontier.iter().find(|item|item["path"]==path).cloned()
-        }).collect::<Vec<_>>();
+    let files=source_inventory(root);
+    // A successful previous agent may point to any actual source module,
+    // including one it just created. Do not require that source to be the
+    // human ancestor's first ranked representative.
+    let mut inherited_targets=Vec::<Value>::new();
+    if let Some(design)=inherited {
+        for path in design["nextTargetFiles"].as_array().into_iter()
+            .flatten().take(3).filter_map(Value::as_str){
+            let existing=frontier.iter().find(|item|item["path"]==path).cloned();
+            let proposed=existing.or_else(||{
+                let file=files.iter().find(|row|row["path"]==path)?;
+                if !source_entry_valid(state,root,index_id,file,"sha256"){return None;}
+                let role=design["componentFiles"].as_object().and_then(|roles|
+                    roles.iter().find(|(_,paths)|paths.as_array()
+                        .is_some_and(|entries|entries.iter().any(|v|v==path))))
+                    .map(|(role,_)|role.as_str()).unwrap_or_else(||source_role(path));
+                let role=if valid_role(role){role}else{source_role(path)};
+                Some(json!({
+                    "role":role,"domain":design["nextDomain"],
+                    "path":path,"sourceSha256":file["sha256"],
+                    "sourceBytes":file["bytes"],
+                    "attempts":0,"verifiedRedesigns":0,
+                    "taskFailureSignalIds":[],"latestFailure":null,
+                    "reason":"adopted_ancestor_next_system_design",
+                    "qualityProven":false
+                }))
+            });
+            if let Some(target)=proposed {
+                if !frontier.contains(&target){frontier.push(target.clone());}
+                if !inherited_targets.contains(&target){
+                    inherited_targets.push(target);
+                }
+            }
+        }
+    }
     let selected=inherited_targets.first().cloned().or_else(||frontier.first().cloned());
     let focus=if !inherited_targets.is_empty() {
         inherited_targets
