@@ -116,6 +116,25 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
         .map(str::to_owned).collect::<BTreeSet<_>>();
     let pending=unfinished_discovery(history,frontier);
     let experiment=&factorial["selected"];
+    // This is an evolvable improvement-method learner, not a fixed
+    // completion counter. Only actual candidates from rebuilt binaries
+    // count as experimental trials; self-reported gains are excluded.
+    let method_evidence=["isolate_left","isolate_right",
+        "test_joint_interaction","discover_new_mechanism",
+        "develop_invented_intelligence","return_and_redesign_origin",
+        "rewrite_discovery_algorithm"].iter().map(|method|{
+        let trials=history.iter().filter(|g|
+            g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+            && g["recursiveScientificProgram"]["source"]==
+                "compiled_recursive_scientific_discovery_v1"
+            && g["recursiveScientificProgram"]["phase"]==*method
+            && g["candidateId"].as_str().is_some()).collect::<Vec<_>>();
+        let wins=trials.iter().filter(|g|adopted(g)).count();
+        json!({"method":method,"observedCandidateTrials":trials.len(),
+            "independentlyAdopted":wins,
+            "posterior":(wins as f64+1.0)/(trials.len() as f64+2.0),
+            "selfReportedSuccessExcluded":true})
+    }).collect::<Vec<_>>();
     let mut phase="discover_new_mechanism".to_string();
     let mut focus=Vec::<Value>::new();
     let mut proposed=Value::Null;
@@ -160,9 +179,23 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
             _=>"discover_new_mechanism",
         }.into();
         if phase!="discover_new_mechanism" {
-            focus.push(experiment["target"].clone());
-            if phase=="test_joint_interaction"{
-                focus.push(experiment["companion"].clone());
+            let path=experiment["target"]["path"].as_str().unwrap_or("");
+            // Three real failed attempts at the same intervention trigger a
+            // new mechanistic experiment rather than endless replays.
+            let stalled=history.iter().rev().take(16).filter(|g|
+                g["compiledPlanExecuted"]["source"]==
+                    "running_compiled_descendant_binary"
+                && g["recursiveScientificProgram"]["phase"]==phase
+                && g["recursiveScientificProgram"]["focus"][0]["path"]==path
+                && g["candidateId"].is_string()
+                && !adopted(g)).count();
+            if stalled>=3 {
+                phase="discover_new_mechanism".into();
+            }else{
+                focus.push(experiment["target"].clone());
+                if phase=="test_joint_interaction"{
+                    focus.push(experiment["companion"].clone());
+                }
             }
         }
     }
@@ -209,6 +242,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],factorial:&Value,
         "phase":phase,"focus":focus,"invention":proposed,
         "recursiveAncestry":ancestry,
         "experimentDiagnosis":learned_gap,
+        "scientificMethodLearning":method_evidence,
         "factorialEvidenceSha256":factorial["sha256"],
         "portfolioEvidenceSha256":portfolio["sha256"],
         "experimentalPolicyIsEditableSource":"src/engine/rsi_recursive_scientist.rs",
