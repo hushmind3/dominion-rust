@@ -125,13 +125,13 @@ fn compare_by(
             for (right,ro) in alternatives.iter().skip(i+1){
                 if lo.accepted_commit==ro.accepted_commit
                     || lo.child==ro.child || lo.parent==ro.parent {continue;}
-                let stats=trials.entry(((*left).clone(),(*right).clone()))
+                let stats=trials.entry((left.to_string(),right.to_string()))
                     .or_insert((0,0,0,Vec::new()));
                 if lo.child_adopted && !ro.child_adopted {stats.0+=1;}
                 else if ro.child_adopted && !lo.child_adopted {stats.1+=1;}
                 else{stats.2+=1;}
                 stats.3.push(json!({
-                    "sourceScopeSha256":crate::engine::memory::stable_id(&[key]),
+                    "sourceScopeSha256":crate::engine::memory::stable_id(&[key.as_str()]),
                     "leftParentJobId":lo.parent,"rightParentJobId":ro.parent,
                     "leftSuccessorJobId":lo.child,"rightSuccessorJobId":ro.child,
                     "leftRebuiltSuccessorAdopted":lo.child_adopted,
