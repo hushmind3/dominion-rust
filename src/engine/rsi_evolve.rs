@@ -5557,12 +5557,26 @@ fn reconcile_descendant_target(
 fn sub2_edit_policy_reward(g:&Value)->f64 {
     if g["candidateOrigin"]!="model_driven_detached_worktree"
         || g["editPolicy"].is_null(){return 0.0;}
+    // Merely carrying an inherited policy in a plan is not execution.
+    // Match its revision to a real program-stage or rule-fire receipt
+    // from the same worker before assigning credit for source quality.
+    let executable=g["programStages"].as_array().is_some_and(|rows|
+        rows.iter().any(|row|
+            row["policyRevision"]==g["editPolicy"]["revision"]
+            && row["generationJobId"]==g["jobId"]
+            && row["runId"].is_string()))
+        || g["ruleExecutions"].as_array().is_some_and(|rows|
+            rows.iter().any(|row|
+                row["policyRevision"]==g["editPolicy"]["revision"]
+                && row["generationJobId"]==g["jobId"]
+                && row["runId"].is_string()));
+    if !executable{return 0.0;}
     let accepted=g["accepted"]==true && g["pairedRevalidated"]==true
         && g["evaluation"]["metrics"]["eligible"]==true
         && g["evidenceVerified"]==true;
     if accepted {
         let Some(rules)=g["editPolicy"]["rules"].as_array()
-            else{return 1.0};
+            else{return 0.0};
         if rules.is_empty(){return 1.0;}
         let Some(timeline)=g["toolTimeline"].as_array()
             else{return 0.0};
