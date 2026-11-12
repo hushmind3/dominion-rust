@@ -1,7 +1,5 @@
 //! Native fused Bayesian domain statistics used in an independently built
 //! descendant only after a real source patch and frozen paired evaluation.
-use serde_json::Value;
-
 #[derive(Clone, Copy, Default)]
 struct DomainStats {
     attempts: u64,
@@ -14,7 +12,7 @@ struct DomainStats {
 /// including unseen-domain exploration, explicit objective and strict ties.
 /// Memory and improver history are inspected together in one traversal.
 pub(super) fn fast_sub1_bayesian_domain(
-    history: &[Value],
+    history: &[serde_json::Value],
     candidates: &[&str],
     objective_matches: impl Fn(&str)->bool,
 ) -> String {
