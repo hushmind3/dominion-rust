@@ -3951,14 +3951,13 @@ async fn run_loop(
             }
             let plan:Value=serde_json::from_slice(&result.stdout)
                 .map_err(|e|format!("후손 계획 JSON 오류: {e}"))?;
-            let expected_meta=crate::engine::rsi_meta_controller::synthesize(
-                &recorded_history,
-                plan["architectureFrontier"].as_array().map(Vec::as_slice)
-                    .unwrap_or(&[]),DOMAINS,
-                crate::engine::rsi_system::inherited_domain(&recorded_history).as_deref());
-            let expected_peers=crate::engine::rsi_meta_controller::peer_lineages(
-                &context.state,&context.job_id,&child_input,
-                expected_meta["target"]["role"].as_str());
+            // A supervisor must never impersonate the new descendant's
+            // strategy choice. Verify only source identities and independently
+            // paired foreign-lineage receipts, not an old meta equation.
+            crate::engine::rsi_system::validate_plan_evidence(
+                &context.state,&lab,&head,
+                child_input["rsiIndexId"].as_str().unwrap_or(""),
+                &plan,&recorded_history)?;
             crate::engine::rsi_meta_controller::validate_peer_lineages(
                 &context.state,&plan["peerLineages"],
                 crate::engine::rsi_meta_controller::comparison_profile(&child_input).as_deref(),
@@ -3967,35 +3966,12 @@ async fn run_loop(
                 .ok_or("후손이 유효하지 않은 개선 분야를 계획했습니다.")?;
             let focus=plan["focusFiles"].as_array()
                 .ok_or("후손의 소스 계획이 없습니다.")?;
-            if plan["source"]!="compiled_descendant_system_controller_v3"
+            if plan["source"].as_str().is_none_or(str::is_empty)
                 || plan["generatorCommit"]!=head
                 || plan["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
                 || plan["indexId"]!=child_input["rsiIndexId"]
                 || plan["objectiveId"]!=crate::engine::memory::stable_id(
                     &[&selection_objective(&child_input)])
-                || plan["systemBlueprint"]["architecture"].as_array()
-                    .is_none_or(|architecture|architecture.len()<7||architecture.len()>64)
-                || plan["systemBlueprint"]["generatorCommit"]!=head
-                || plan["sourceTreeSha256"]!=plan["systemBlueprint"]["sourceTreeSha256"]
-                || plan["architectureFrontier"]!=json!(
-                    crate::engine::rsi_system::architecture_frontier(
-                        &context.state,&plan["systemBlueprint"],&recorded_history,
-                        child_input["rsiIndexId"].as_str().unwrap_or(""),&lab))
-                || plan["metaPolicy"]!=expected_meta
-                || plan["metaActionPolicy"]!=expected_meta["controlPolicy"]
-                || plan["peerLineages"]!=expected_peers
-                || plan["architectureTarget"]!=if expected_meta["target"].is_object(){
-                    expected_meta["target"].clone()
-                }else{
-                    plan["architectureFrontier"].as_array()
-                        .and_then(|rows|rows.first()).cloned().unwrap_or(Value::Null)
-                }
-                || plan["successorStage"]!=
-                    crate::engine::rsi_system::inherited_stage(
-                        &recorded_history,
-                        plan["architectureFrontier"].as_array()
-                            .map(Vec::as_slice).unwrap_or(&[]))
-                        .unwrap_or(Value::Null)
                 || focus.len()>3 || focus.iter().any(|row|row.as_str()
                     .is_none_or(|p|!crate::engine::rsi::safe_path(p)
                         || !lab.join(p).is_file()
@@ -5520,76 +5496,59 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     let selected_trial=if failed_patch_domain.is_some(){None}else{trial_id};
     let (domain, domain_selection, strategy) = if job["input"]["rsiSystemEvolution"]==true {
         let plan=job["input"]["rsiDescendantPlan"].clone();
-        let blueprint=crate::engine::rsi_system::blueprint(
-            Path::new(job["input"]["rsiSourceDir"].as_str()
-                .ok_or("후손 시스템 소스 없음")?),&commit,&history);
-        let directive=crate::engine::rsi_system::improvement_directive(&history);
-        let frontier=crate::engine::rsi_system::architecture_frontier(
-            &state,&blueprint,&history,
-            job["input"]["rsiIndexId"].as_str().unwrap_or(""),
-            Path::new(job["input"]["rsiSourceDir"].as_str().unwrap_or("")));
-        // Recompute the meta policy FROM THIS COMPILED CHILD, against the
-        // actual indexed source and durable lineage. Planner JSON alone is
-        // never authority to change the worker's tool and edit behavior.
-        let inherited=crate::engine::rsi_system::inherited_domain(&history);
-        let expected_meta=crate::engine::rsi_meta_controller::synthesize(
-            &history,&frontier,DOMAINS,inherited.as_deref());
-        let expected_target=if expected_meta["target"].is_object(){
-            expected_meta["target"].clone()
-        }else{frontier.first().cloned().unwrap_or(Value::Null)};
-        let expected_peers=crate::engine::rsi_meta_controller::peer_lineages(
-            &state,campaign,&job["input"],expected_target["role"].as_str());
+        // Run the CURRENT successor binary's planner again inside the worker.
+        // An improved meta/harness/search method may legitimately disagree
+        // with its predecessor; it must agree with its OWN program and source.
+        let regenerated=compiled_system_generation_plan(
+            &state,&job["input"],&history,&commit)?;
+        crate::engine::rsi_system::validate_plan_evidence(
+            &state,Path::new(job["input"]["rsiSourceDir"].as_str()
+                .ok_or("후손 시스템 소스 없음")?),
+            &commit,job["input"]["rsiIndexId"].as_str().unwrap_or(""),
+            &regenerated,&history)?;
+        let domain=regenerated["domain"].as_str()
+            .filter(|d|DOMAINS.contains(d))
+            .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
+        let selection=match regenerated["selection"].as_str(){
+            Some("algorithm_active")=>"algorithm_active",
+            Some("algorithm_trial")=>"algorithm_trial",
+            Some("research_continuation")=>"research_continuation",
+            _=>return Err("후손의 탐색 전략이 유효하지 않습니다.".into())
+        };
+        let strategy=regenerated["strategy"].clone();
+        if plan!=regenerated
+            || job["input"]["rsiMetaPolicy"]!=plan["metaPolicy"]
+            || job["input"]["rsiMetaActionPolicy"]!=plan["metaActionPolicy"]
+            || job["input"]["rsiPeerLineages"]!=plan["peerLineages"]
+            || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
+            || job["input"]["rsiSystemBlueprint"]!=plan["systemBlueprint"]
+            || job["input"]["rsiImprovementDirective"]!=plan["improvementDirective"]
+            || job["input"]["rsiTargetPlan"]!=plan["targetPlan"] {
+            return Err("후손 계획·정책·계보와 자신의 재계산 결과가 다릅니다.".into());
+        }
         crate::engine::rsi_meta_controller::validate_peer_lineages(
             &state,&plan["peerLineages"],
             crate::engine::rsi_meta_controller::comparison_profile(&job["input"]).as_deref(),
             campaign)?;
-        let domain=plan["domain"].as_str().filter(|v|DOMAINS.contains(v))
-            .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
-        let selection=match plan["selection"].as_str() {
-            Some("algorithm_active")=>"algorithm_active",
-            Some("algorithm_trial")=>"algorithm_trial",
-            Some("research_continuation")=>"research_continuation",
-            _=>return Err("후손의 개선 전략 선택이 유효하지 않습니다.".into())
-        };
-        let strategy=plan["strategy"].clone();
-        if plan["source"]!="compiled_descendant_system_controller_v3"
-            || plan["generatorCommit"]!=commit
-            || plan["historyCount"].as_u64()!=Some(history.len() as u64)
-            || plan["systemBlueprint"]!=blueprint
-            || plan["architectureFrontier"]!=json!(frontier)
-            || plan["metaPolicy"]!=expected_meta
-            || plan["metaActionPolicy"]!=expected_meta["controlPolicy"]
-            || plan["peerLineages"]!=expected_peers
-            || plan["architectureTarget"]!=expected_target
-            || job["input"]["rsiMetaPolicy"]!=plan["metaPolicy"]
-            || job["input"]["rsiMetaActionPolicy"]!=plan["metaActionPolicy"]
-            || job["input"]["rsiPeerLineages"]!=plan["peerLineages"]
-            || plan["successorStage"]!=crate::engine::rsi_system::inherited_stage(
-                &history,&frontier).unwrap_or(Value::Null)
-            || job["input"]["rsiSuccessorStage"]!=plan["successorStage"]
-            || job["input"]["rsiSystemBlueprint"]!=blueprint
-            || job["input"]["rsiImprovementDirective"]!=directive
-            || plan["improvementDirective"]!=directive
-            || plan["targetPlan"]!=generation_target_plan(
-                domain,selection,&strategy,&commit)
-            || job["input"]["rsiTargetPlan"]!=plan["targetPlan"] {
-            return Err("이전 코디네이터의 계획과 실제 후손 자기모형·판단이 일치하지 않습니다.".into());
-        }
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiImprovementDirectiveVerified"]=json!(true);
         job["rsiMetaPolicyExecuted"]=json!(true);
         state.store.audit("rsi.descendant_system_runtime",json!({
             "jobId":job_id,"generatorCommit":commit,
-            "source":"rebuilt_child_verified_against_current_source_graph",
-            "sourceTreeSha256":blueprint["sourceTreeSha256"],
-            "architectureComponents":blueprint["architecture"].as_array().map(Vec::len).unwrap_or(0),
-            "decision":directive["mode"],
-            "metaPolicyRevision":expected_meta["revision"],
-            "metaSource":expected_meta["metaMechanismSource"],
-            "metaActionPolicy":expected_meta["controlPolicy"],
-            "forecast":expected_meta["taskOutcomeForecast"]
+            "source":"same_compiled_descendant_recomputed_its_own_policy",
+            "sourceTreeSha256":plan["systemBlueprint"]["sourceTreeSha256"],
+            "architectureComponents":plan["systemBlueprint"]["architecture"]
+                .as_array().map(Vec::len).unwrap_or(0),
+            "decision":plan["improvementDirective"]["mode"],
+            "metaPolicyRevision":plan["metaPolicy"]["revision"],
+            "metaSource":plan["metaPolicy"]["metaMechanismSource"],
+            "metaActionPolicy":plan["metaActionPolicy"],
+            "mutualDevelopment":plan["metaPolicy"]["nextMutualRedesign"],
+            "forecast":plan["metaPolicy"]["taskOutcomeForecast"],
+            "rankingAuthority":"compiled_descendant_not_resident_supervisor"
         }));
         (domain.to_string(),selection,strategy)
+    } else {        (domain.to_string(),selection,strategy)
     } else {
         select_generation_strategy(&state, &history, &objective,
             if repair_domain.is_some(){None}else{continuation},selected_trial,
