@@ -271,6 +271,14 @@ pub fn is_rsi_work_branch(branch:&str)->bool {
         && suffix.bytes().all(|ch|ch.is_ascii_digit())
 }
 
+/// A patch is applicable only to the EXACT branch that produced and
+/// independently evaluated it. Main-origin research may inform another
+/// branch but its exact tested patch cannot be transplanted as verified.
+fn owns_application_branch(current:&str,recorded:Option<&str>)->bool {
+    is_rsi_work_branch(current)
+        && recorded.is_some_and(|source|source==current)
+}
+
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
         && (line.contains("src/engine/rsi.rs ")
@@ -782,8 +790,8 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     }
     let status=crate::engine::dev::status(state).await;
     let work_branch=status["branch"].as_str().unwrap_or("");
-    if status["git"]!=true || !is_rsi_work_branch(work_branch)
-        || candidate["sourceBranch"].as_str().is_some_and(|branch|is_rsi_work_branch(branch) && branch!=work_branch)
+    if status["git"]!=true
+        || !owns_application_branch(work_branch,candidate["sourceBranch"].as_str())
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
         return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
     }
@@ -847,11 +855,11 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     if configured.as_ref()!=Some(&source) || status["git"]!=true {
         return Err("연결된 Git 소스와 작업 브랜치가 일치하지 않습니다.".into());
     }
-    // Research from main may be explicitly published to a sub branch.
-    // An existing sub campaign cannot be transferred to a competing sub branch.
-    if campaign["sourceBranch"].as_str().is_some_and(|branch|
-        is_rsi_work_branch(branch) && branch!=work_branch) {
-        return Err("다른 작업 브랜치의 개선 계보를 이 브랜치에 적용할 수 없습니다.".into());
+    // Keep the exact branch identity from the original experiment.
+    // Neither a missing branch nor a main-origin campaign authorizes
+    // transferring an evaluated patch into a different sub branch.
+    if !owns_application_branch(work_branch,campaign["sourceBranch"].as_str()) {
+        return Err("캠페인 원본 브랜치와 적용 브랜치가 정확히 같아야 합니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -928,9 +936,8 @@ pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
         return Err("비교 실험은 허용된 dominion-sub 작업 브랜치에서 시작하세요.".into());
     }
     let candidate=context.state.store.get("rsi_candidate",id).ok_or("비교할 후보 기록이 없습니다.")?;
-    if candidate["sourceBranch"].as_str().is_some_and(|branch|
-        is_rsi_work_branch(branch) && branch!=work_branch) {
-        return Err("다른 작업 브랜치의 후보는 여기서 평가할 수 없습니다.".into());
+    if !owns_application_branch(work_branch,candidate["sourceBranch"].as_str()) {
+        return Err("실험 후보와 현재 소스 브랜치의 계보가 일치하지 않습니다.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -1146,6 +1153,16 @@ mod tests {
         assert!(!is_rsi_work_branch("dominion-champion"));
         assert!(!is_rsi_work_branch("main"));
         assert!(!is_rsi_work_branch("dominion-sub02"));
+    }
+
+    #[test]
+    fn exact_branch_ownership_blocks_cross_branch_promotion() {
+        assert!(owns_application_branch("dominion-sub2",Some("dominion-sub2")));
+        assert!(!owns_application_branch("dominion-sub2",Some("main")));
+        assert!(!owns_application_branch("dominion-sub2",Some("dominion-sub1")));
+        assert!(!owns_application_branch("dominion-sub2",None));
+        assert!(!owns_application_branch("dominion-sub2",Some("")));
+        assert!(!owns_application_branch("main",Some("main")));
     }
 
     #[test]
