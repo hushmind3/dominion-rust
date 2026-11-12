@@ -75,7 +75,13 @@ fn independent_task_receipt(state:&AppState,g:&Value,profile:&str,head:&str)
         || g["compiledPlanExecuted"]["source"]!="running_compiled_descendant_binary"
         || g["compiledPlanExecuted"]["generatorCommit"]!=head
         || g["candidateOrigin"]!="model_driven_detached_worktree"
-        || g["pairedMeasured"]!=true {return None;}
+        || g["pairedMeasured"]!=true
+        || g["modelSelectionActual"]["providerId"]!=g["generatorProviderId"]
+        || g["modelSelectionActual"]["model"]!=g["generatorModel"]
+        || g["modelEvolutionPlanExecuted"]["source"]!=
+            "running_compiled_descendant_binary"
+        || g["modelEvolutionPlanExecuted"]["selectionRevision"]!=
+            g["modelEvolutionPlan"]["revision"] {return None;}
     let id=g["candidateId"].as_str()?;
     let candidate=state.store.get("rsi_candidate",id)?;
     let replay=rsi::replayed_pair_metrics(state,&candidate)?;
@@ -121,6 +127,7 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
     // Declared objective cannot win a comparison. Only a replayed candidate
     // from an actual compiled worker with the exact same source/profile counts.
     let mut results=BTreeMap::<String,(usize,usize,usize,usize,u64)>::new();
+    let mut historic_trials=BTreeMap::<String,usize>::new();
     let mut used=BTreeSet::<String>::new();
     for g in history {
         let Some(p)=g["generatorProviderId"].as_str()else{continue};
@@ -129,11 +136,18 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
             continue;
         }
         let Some(profile_name)=profile.as_str()else{continue};
-        let Some(metrics)=independent_task_receipt(state,g,profile_name,commit)
-            else{continue};
+        let Some(generation_commit)=g["generatorCommit"].as_str()
+            .filter(|s|sha(s,40))else{continue};
+        let Some(metrics)=independent_task_receipt(
+            state,g,profile_name,generation_commit)else{continue};
         let Some(id)=g["candidateId"].as_str()else{continue};
         if !used.insert(id.to_owned()){continue;}
         let key=route_key(p,m);
+        *historic_trials.entry(key.clone()).or_default()+=1;
+        // A changed generator is NOT the same experiment. Historical results
+        // may guide exploration, but cannot claim that one API model beat
+        // another on identical source.
+        if generation_commit!=commit {continue;}
         let entry=results.entry(key).or_default();
         entry.0+=1;
         // Only actual held-out task outcomes are a competence signal.
@@ -160,12 +174,16 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
     for row in &pool {
         let p=row["providerId"].as_str().unwrap_or("");
         let m=row["model"].as_str().unwrap_or("");
+        let key=route_key(p,m);
+        let historical=historic_trials.get(&key).copied().unwrap_or(0);
         let (trials,wins,gains,losses,tokens)=results
-            .get(&route_key(p,m)).copied().unwrap_or_default();
+            .get(&key).copied().unwrap_or_default();
         let predictive=(wins as f64+1.0)/(trials as f64+2.0);
         let reward=(gains as f64-2.0*losses as f64)/(gains+losses+8) as f64;
         evidence.push(json!({"providerId":p,"model":m,
-            "replayedSameSourceTrials":trials,"independentlyAdopted":wins,
+            "replayedSameSourceTrials":trials,
+            "historicalReplayedTrialsForExplorationOnly":historical,
+            "independentlyAdopted":wins,
             "frozenHoldoutGains":gains,"frozenHoldoutRegressions":losses,
             "observedTokens":tokens,
             "predictiveImprovement":predictive,
@@ -182,7 +200,30 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
     // subsequent attempts may spend on an alternative APPROVED model.
     let mut selected=body["baseline"].clone();
     let mut basis="owner_selected_baseline";
-    if baseline_trials>0 {
+    if baseline_trials==0 {
+        // Model choices survive code adoption even though each new source
+        // commit resets direct comparison. Prior commits teach WHICH
+        // approved model should be tried next, not which was superior.
+        let historical_base=evidence.iter().find(|row|
+            row["providerId"]==baseline["providerId"]
+            && row["model"]==baseline["model"])
+            .and_then(|row|row["historicalReplayedTrialsForExplorationOnly"].as_u64())
+            .unwrap_or(0);
+        if historical_base>0 {
+            if let Some(underexplored)=evidence.iter()
+                .filter(|row|row["providerId"]!=baseline["providerId"]
+                    || row["model"]!=baseline["model"])
+                .min_by_key(|row|row["historicalReplayedTrialsForExplorationOnly"]
+                    .as_u64().unwrap_or(0)) {
+                if underexplored["historicalReplayedTrialsForExplorationOnly"]
+                    .as_u64().unwrap_or(0)<historical_base {
+                    selected=json!({"providerId":underexplored["providerId"],
+                        "model":underexplored["model"]});
+                    basis="owner_approved_cross_generation_exploration_not_quality_proof";
+                }
+            }
+        }
+    }else {
         if let Some(untried)=evidence.iter().find(|row|
             row["replayedSameSourceTrials"]==0
             && (row["providerId"]!=baseline["providerId"]
@@ -219,8 +260,11 @@ pub(crate) fn plan(state:&AppState,history:&[Value],input:&Value,commit:&str)
     }
     body["selected"]=selected;
     body["evidence"]=json!(evidence);
-    body["matchedBaselineModelComparisons"]=json!(evidence.iter().filter(|row|
-        row["replayedSameSourceTrials"].as_u64().unwrap_or(0)>0).count());
+    let observed_on_same_source=evidence.iter().filter(|row|
+        row["replayedSameSourceTrials"].as_u64().unwrap_or(0)>0).count();
+    body["observedModelsOnCurrentSource"]=json!(observed_on_same_source);
+    body["matchedBaselineModelComparisons"]=json!(
+        observed_on_same_source.saturating_sub(1));
     body["selectionBasis"]=json!(basis);
     // A winner here means "best observed generator of independently
     // evaluated code patches", NOT a newly trained API model or proof
