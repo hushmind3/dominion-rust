@@ -8,7 +8,9 @@ use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 /// Independent baseline, metric and adoption logic is not intelligence
 /// subject to self-modification; all other agent system source is editable.
 pub(crate) fn intelligence_editable_path(path:&str)->bool{
+    let extension=Path::new(path).extension().and_then(|ext|ext.to_str());
     crate::engine::rsi::safe_path(path)
+        && matches!(extension,Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"))
         && !crate::engine::rsi::hidden_rsi_oracle_path(path)
         && !matches!(path,
             "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
@@ -40,7 +42,11 @@ fn source_inventory(root:&Path)->Vec<Value>{
         let Ok(directory)=fs::canonicalize(directory) else{continue};
         if !directory.starts_with(&root)||!visited.insert(directory.clone()){continue;}
         let Ok(entries)=fs::read_dir(&directory) else{continue};
-        for entry in entries.flatten(){
+        // Readdir ordering is unspecified. The same source commit must
+        // generate the same whole-system identity even after a restart.
+        let mut entries=entries.flatten().collect::<Vec<_>>();
+        entries.sort_by_key(|entry|entry.file_name());
+        for entry in entries {
             let Ok(path)=fs::canonicalize(entry.path()) else{continue};
             if !path.starts_with(&root){continue;}
             if path.is_dir(){pending.push(path);continue;}
@@ -356,8 +362,9 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
         let representatives=component["representativeSources"].as_array()
             .cloned().unwrap_or_default();
         let mut all=representatives.clone();
-        let mut names=representatives.iter().filter_map(|entry|entry["path"]
+        let representative_names=representatives.iter().filter_map(|entry|entry["path"]
             .as_str()).map(str::to_string).collect::<BTreeSet<_>>();
+        let mut names=representative_names.clone();
         for file in &full_source {
             let Some(path)=file["path"].as_str() else{continue};
             if source_role(path)==role && names.insert(path.to_string()){
@@ -371,8 +378,8 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
             let path_b=b["path"].as_str().unwrap_or("");
             let ca=attempted.get(path_a).copied().unwrap_or(0);
             let cb=attempted.get(path_b).copied().unwrap_or(0);
-            let preferred_a=!names.contains(path_a);
-            let preferred_b=!names.contains(path_b);
+            let preferred_a=!representative_names.contains(path_a);
+            let preferred_b=!representative_names.contains(path_b);
             ca.cmp(&cb)
                 .then(preferred_a.cmp(&preferred_b))
                 .then(a["bytes"].as_u64().cmp(&b["bytes"].as_u64()))
