@@ -6,7 +6,7 @@
 //! can accept a candidate or reveal hidden evaluator cases.
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 const TASK_ROLES: &[&str] = &["models", "learning", "memory", "tools",
     "harness", "algorithms"];
@@ -147,12 +147,16 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
                 }
             }
         }
-        if !adopted(g) { continue; }
-        for role in TASK_ROLES {
-            if role_adopted(g, role) {
-                *accepted_roles.entry((*role).to_string()).or_default() += 1;
+        if adopted(g) {
+            for role in TASK_ROLES {
+                if role_adopted(g, role) {
+                    *accepted_roles.entry((*role).to_string()).or_default() += 1;
+                }
             }
         }
+        // Failed AND successful source-authored hypotheses enter the
+        // empirical archive. Ignoring rejected theories would manufacture
+        // a perfect prior and teach nothing about discovery failure.
         if let Some(p) = principle(g) {
             family.entry(p["name"].as_str().unwrap_or("").to_owned())
                 .or_default().push(g);
@@ -164,16 +168,28 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
         let mut task_losses = 0;
         let mut holdout_cases = 0;
         let mut descendants = 0;
+        let mut accepted_pairs = 0;
         let mut productive = 0;
         let mut cross_domain = 0;
         let mut consecutive = 0;
         let mut forecaster_error = 0.0f64;
+        let mut forecast_count = 0u64;
         for g in &sources {
+            // Only individually measured, paired results can supply a task
+            // outcome. An unverified proposal has no observed task score.
+            if g["pairedRevalidated"] != true
+                || g["evaluation"]["metrics"]["eligible"] != true {
+                continue;
+            }
             let (w, l, c) = task_measurement(g);
             task_wins += w;
             task_losses += l;
             holdout_cases += c;
-            if let Some(child) = immediate_child(history, g) {
+            if adopted(g) {
+                accepted_pairs += 1;
+            }
+            if adopted(g) {
+                if let Some(child) = immediate_child(history, g) {
                 descendants += 1;
                 if adopted(child) {
                     productive += 1;
@@ -186,9 +202,12 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
                         consecutive += 1;
                     }
                 }
+                }
             }
             if let Some(predicted) = g["systemDesign"]["expectedOutcomes"]["adoption"].as_f64() {
-                forecaster_error += (predicted - 1.0).powi(2);
+                let actual = if adopted(g) { 1.0 } else { 0.0 };
+                forecaster_error += (predicted - actual).powi(2);
+                forecast_count += 1;
             }
         }
         let assessed = sources.len();
@@ -200,7 +219,8 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
             "name": name, "taskRole": p["taskRole"],
             "mechanism": p["mechanism"], "counterfactual": p["counterfactual"],
             "learningSignal": p["learningSignal"],
-            "independentlyAdoptedSourcePairs": assessed,
+            "observedModelAuthoredTrials": assessed,
+            "independentlyAdoptedSourcePairs": accepted_pairs,
             "holdoutCaseCount": holdout_cases,
             "aggregateHoldoutWins": task_wins,
             "aggregateHoldoutRegressions": task_losses,
@@ -210,7 +230,8 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
             "samePrincipleDescendantAdoptions": consecutive,
             "posteriorTaskWinRate": task_rate,
             "posteriorNextGenerationProductivity": next_rate,
-            "meanAdoptionForecastBrier": forecaster_error / assessed as f64,
+            "meanAdoptionForecastBrier": if forecast_count == 0 { Value::Null }
+                else { json!(forecaster_error / forecast_count as f64) },
             "transferNotYetDemonstrated": descendants == 0 || productive == 0,
             "performanceClaim": false
         }));
@@ -260,11 +281,20 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
         .or_else(|| frontier.iter().find(|f|
             f["role"] == "improvement_methods"))
         .cloned().unwrap_or(Value::Null);
-    let observed = principles.iter().any(|p|
-        p["holdoutCaseCount"].as_u64().unwrap_or(0) > 0
-        && p["observedImmediateDescendants"].as_u64().unwrap_or(0) > 0);
-    let mode = if observed {
-        "model_new_general_principle_from_task_and_descendant_errors"
+    let measured = principles.iter().any(|p|
+        p["holdoutCaseCount"].as_u64().unwrap_or(0) > 0);
+    let fertile = principles.iter().any(|p|
+        p["subsequentAcceptedDescendants"].as_u64().unwrap_or(0) > 0);
+    let disproved = principles.iter().any(|p|
+        p["aggregateHoldoutRegressions"].as_u64().unwrap_or(0)
+            > p["aggregateHoldoutWins"].as_u64().unwrap_or(0)
+        && p["holdoutCaseCount"].as_u64().unwrap_or(0) > 0);
+    let mode = if disproved {
+        "replace_failed_task_learning_principle_with_new_mechanism"
+    } else if measured && !fertile {
+        "rewrite_the_improvement_law_from_task_to_descendant_transfer_failure"
+    } else if measured {
+        "generalize_a_successful_principle_across_new_intelligence_roles"
     } else {
         "invent_and_test_coupled_task_meta_learning_principle"
     };
