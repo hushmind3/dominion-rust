@@ -146,6 +146,14 @@ fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Option<String>{
     Some(relative)
 }
 
+/// An LLM's non-empty but shortened SHA is not a usable source revision.
+/// The detached worker may bind the full SHA only from a successful native
+/// workspace_read_range receipt on the *same session and exact path*.
+fn rsi_source_sha_valid(sha:Option<&str>)->bool {
+    sha.is_some_and(|value|value.len()==64
+        && value.bytes().all(|byte|byte.is_ascii_hexdigit()))
+}
+
 /// Bind a model-proposed line edit to the latest *actual* native source
 /// observation. The model still authors path/range/newText. A 4B model need
 /// not transcribe 64 hex characters from a prior tool response: DOMINION can
@@ -5005,7 +5013,7 @@ async fn dispatch_tool_call(
     }
     if session["rsiRun"]==true && matches!(call.name.as_str(),
         "workspace_replace_range"|"workspace_replace_function")
-        && arguments["expectedSha256"].as_str().is_none_or(str::is_empty) {
+        && !rsi_source_sha_valid(arguments["expectedSha256"].as_str()) {
         if let Some(path)=arguments["path"].as_str().map(str::to_string) {
             let operations=state.store.all("execution_operation");
             if let Some((source_op,hash))=
@@ -6910,6 +6918,26 @@ mod harness_tool_selection_tests {
         let mut corrected=invalid;
         corrected["result"]["syntaxValid"]=json!(true);
         assert!(rsi_confirmed_source_write(&[corrected],"execution"));
+    }
+
+    #[test]
+    fn short_or_malformed_model_sha_must_bind_only_to_a_real_read() {
+        assert!(!rsi_source_sha_valid(None));
+        assert!(!rsi_source_sha_valid(Some("")));
+        assert!(!rsi_source_sha_valid(Some("b4a48b5d76e4d13a585778d1f0b66a71")),
+            "The actual free model sent 32 hex digits, which used to bypass the binder");
+        assert!(!rsi_source_sha_valid(Some(&"z".repeat(64))));
+        assert!(rsi_source_sha_valid(Some(&"a".repeat(64))));
+        let operations=vec![json!({"id":"native-read","sessionId":"real-session",
+            "status":"completed","tool":"workspace_read_range",
+            "finishedAt":"2026-11-12T00:00:03Z",
+            "result":{"path":"src/engine/decompose.rs","sourceSha256":"f".repeat(64)}})];
+        assert_eq!(rsi_observed_source_hash(&operations,"real-session",
+            "src/engine/decompose.rs").unwrap().1,"f".repeat(64));
+        assert!(rsi_observed_source_hash(&operations,"other-session",
+            "src/engine/decompose.rs").is_none());
+        assert!(rsi_observed_source_hash(&operations,"real-session",
+            "src/engine/other.rs").is_none());
     }
 
     #[test]
