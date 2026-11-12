@@ -4521,6 +4521,19 @@ async fn run_loop(
                 mutation["operator"].as_str().unwrap_or("unknown")));
             generation["generatorProviderId"]=json!("dominion-native");
         }
+        // Credit model-authored descendants only to the actual, complete
+        // audited model identity for THIS session. No globally truncated
+        // "recent audit" scan and no trust in the requested provider name.
+        let model_audit=session.map(|id|
+            context.state.store.session_model_attribution(id))
+            .unwrap_or(Value::Null);
+        let model_consistent=model_audit["verifiedHomogeneous"]==true
+            && model_audit["providerId"]==generation["generatorProviderId"]
+            && model_audit["model"]==generation["generatorModel"]
+            && model_audit["calls"]==generation["tokenUsage"]["calls"]
+            && generation["nativeMutation"].is_null();
+        generation["modelAttribution"]=model_audit;
+        generation["modelAttributionConsistent"]=json!(model_consistent);
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
                 record["waitingMs"]
