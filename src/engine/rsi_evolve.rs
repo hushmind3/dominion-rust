@@ -4338,30 +4338,48 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let frontier=crate::engine::rsi_system::architecture_frontier(
         &state,&system_blueprint,&history,
         input["rsiIndexId"].as_str().unwrap_or(""),source_root);
-    let meta_policy=crate::engine::rsi_meta_controller::synthesize(
-        &history,&frontier,DOMAINS,
-        crate::engine::rsi_system::inherited_domain(&history).as_deref());
     let owner_focus=matches!(
         input["rsiFocusSelection"]["source"].as_str(),
         Some("owner_selected"|"user_selected"));
+    let paired=paired_descendant_target(input);
+    let peers=crate::engine::rsi_meta_controller::peer_lineages(
+        &state,campaign,input,None);
+    let raw_meta=crate::engine::rsi_meta_controller::synthesize(
+        &history,&frontier,DOMAINS,
+        crate::engine::rsi_system::inherited_domain(&history).as_deref());
+    let peer_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
+        raw_meta,&peers);
+    let reciprocal_graph=crate::engine::rsi_symbiosis::transition_graph(&history);
+    let meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
+        peer_meta,&reciprocal_graph);
+    let suggested_stage=if input["rsiAutonomous"]==true && !owner_focus && !paired {
+        crate::engine::rsi_system::inherited_stage(&state,&history,&frontier)
+    }else{Value::Null};
+    let meta_policy=crate::engine::rsi_meta_controller::apply_successor_stage(
+        meta,&suggested_stage);
+    let successor_stage=if suggested_stage.is_object()
+        && meta_policy["successorStage"]==suggested_stage {
+        suggested_stage
+    }else{Value::Null};
     let architecture_target=if input["rsiAutonomous"]==true
-        && !owner_focus && !paired_descendant_target(input)
-        && meta_policy["target"].is_object() {
+        && !owner_focus && !paired && meta_policy["target"].is_object() {
         meta_policy["target"].clone()
     }else{frontier.first().cloned().unwrap_or(Value::Null)};
-    let paired=paired_descendant_target(input);
+    let symbiosis=crate::engine::rsi_symbiosis::curriculum(
+        &history,&frontier,&json!({"target":architecture_target}),DOMAINS);
     let inherited=if input["rsiAutonomous"]==true {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
     let frontier_hint=if input["rsiAutonomous"]==true && !paired && !owner_focus
-        && inherited.is_none() {
+ {
         architecture_target["domain"].as_str().filter(|domain|DOMAINS.contains(domain))
             .map(str::to_string)
     }else{None};
     let successor_hint=if paired || owner_focus {
         input["rsiSelectedDomain"].as_str().map(str::to_string)
     }else{
-        inherited.clone().or(frontier_hint)
+        successor_stage["domain"].as_str().map(str::to_string)
+            .or(frontier_hint).or(inherited.clone())
             .or_else(||system_evolution_target_hint(
                 input,snapshot["attempt"].as_u64().unwrap_or(0)))
     };
@@ -4380,7 +4398,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let mut ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
     // A source-bound architecture gap is a descendant-selected candidate,
     // never an independently proven gain.
-    if input["rsiAutonomous"]==true && !owner_focus && !paired && inherited.is_none()
+    if input["rsiAutonomous"]==true && !owner_focus && !paired
         && architecture_target["domain"]==domain {
         if let Some(path)=architecture_target["path"].as_str() {
             if crate::engine::rsi::safe_path(path) && source_root.join(path).is_file() {
@@ -4394,6 +4412,25 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }
         }
     }
+    // The compiled descendant may propose improving TWO separate intelligence
+    // subsystems, not merely report an A→B edge after the fact. Current SHA
+    // identity is verified by the existing source index and frozen validator.
+    if input["rsiAutonomous"]==true && !owner_focus && !paired
+        && successor_stage.is_null() && architecture_target["domain"]==domain
+        && symbiosis["complement"]["fromPath"]==architecture_target["path"] {
+        let partner=&symbiosis["complement"];
+        if let Some(path)=partner["toPath"].as_str()
+            .filter(|path|crate::engine::rsi::safe_path(path)
+                && source_root.join(path).is_file()) {
+            ranked.retain(|row|row["path"]!=path);
+            ranked.insert(1,json!({
+                "path":path,"sourceHash":partner["toSha256"],
+                "source":"compiled_reciprocal_intelligence_curriculum",
+                "role":partner["toRole"],"domain":domain,
+                "sourceIndexId":input["rsiIndexId"]
+            }));
+        }
+    }
     let focus=ranked.iter().filter_map(|row|row["path"].as_str())
         .filter(|p|crate::engine::rsi::safe_path(p))
         .take(8).collect::<Vec<_>>();
@@ -4401,6 +4438,20 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let archive=crate::engine::rsi_archive::select(
         &state,&history,commit,&input["rsiFrozenCases"]);
     let mut edit_policy=learned_edit_method(&state,input,&history);
+    if successor_stage["source"]=="rebound_verified_model_successor_program_v1" {
+        let previous=edit_policy["revision"].clone();
+        if successor_stage["executionPolicy"]=="grounded_edit" {
+            edit_policy["checkpointAfter"]=json!(2);
+            edit_policy["preferredTool"]=json!("workspace_replace_range");
+        }else{
+            edit_policy["checkpointAfter"]=json!(4);
+        }
+        edit_policy["selectedBySuccessorStage"]=successor_stage["stageIndex"].clone();
+        edit_policy["successorDesignId"]=successor_stage["designId"].clone();
+        edit_policy["revision"]=json!(format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&json!([previous,successor_stage,commit]))
+                .unwrap_or_default())));
+    }
     let inherited_program=crate::engine::rsi_system::inherited_program(&state,&history);
     if let Some(program)=inherited_program.as_ref(){
         // The existing runtime obeys rsiEditPolicy.program as an actual
@@ -4414,8 +4465,6 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
                 source_revision,program["revision"],commit
             ])).unwrap_or_default())));
     }
-    let peers=crate::engine::rsi_meta_controller::peer_lineages(
-        &state,campaign,input,architecture_target["role"].as_str());
     let comparative_mode=if peers["references"].as_array()
         .is_some_and(|rows|!rows.is_empty()) {"cross_lineage_hybrid_design"}
         else if meta_policy["counterexamples"].as_array()
@@ -4431,6 +4480,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
         "metaPolicy":meta_policy,
+        "symbioticCurriculum":symbiosis,
+        "successorStage":successor_stage,
         "peerLineages":peers,
         "comparativeMode":comparative_mode,
         "decisionOwner":"rebuilt_descendant_binary",
