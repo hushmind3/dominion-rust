@@ -25,7 +25,12 @@ let receipt={schema:'sub4.real-model.rsi.v1',branch:'dominion-sub4',
   completionProof:{capabilityDemonstrated:false,maxAcceptedStreak:0,
     acceptedSourceGenerations:0,rebuiltDescendantGenerations:0,
     productionChanged:false,complete:false},
-  generations:[],errors:[]};
+  predictionRepairProof:{scheduledAttempts:0,compiledPlanExecutions:0,
+    actualScopedEdits:0,originalPairedMeasurements:0,
+    independentlyAdoptedPredictorEdits:0,rebuiltSuccessorExecutions:0,
+    acceptedCrossDomainSuccessors:0,modelWrittenRepairAdopted:false,
+    postRepairLearningExecuted:false,causalMetaAdvantageProven:false,
+    complete:false},generations:[],errors:[]};
 function persist() {
   fs.mkdirSync(reportPath.slice(0,reportPath.lastIndexOf('/'))||'.',{recursive:true});
   fs.writeFileSync(reportPath,JSON.stringify({...receipt,recordedAt:new Date().toISOString()},null,2)+'\n');
@@ -51,6 +56,7 @@ function summarize(g) {
   const count=name=>ops.filter(o=>o.tool===name).reduce((v,o)=>v+Number(o.calls||0),0);
   const metrics=g.evaluation?.metrics||{};
   const paired=g.accepted===true && !!g.acceptedCommit &&
+    g.pairedMeasured===true && g.pairedRevalidated===true &&
     metrics.eligible===true && Number(metrics.improvedHoldouts||0)>0 &&
     Number(metrics.regressions||0)===0;
   return {attempt:g.attempt,jobId:g.jobId,
@@ -61,6 +67,9 @@ function summarize(g) {
     descendantPlan:g.descendantPlan||null,
     compiledPlanExecuted:g.compiledPlanExecuted||null,
     acceptedSourceHashes:g.acceptedSourceHashes||{},
+    pairedMeasured:g.pairedMeasured===true,
+    pairedRevalidated:g.pairedRevalidated===true,
+    predictionRepairEvidence:g.predictionRepairEvidence||null,
     candidateOrigin:g.candidateOrigin||null,
     evidenceVerified:g.evidenceVerified===true,
     tokenUsage:g.tokenUsage,actualModelCalls:Number(g.tokenUsage?.calls||0),
@@ -246,8 +255,47 @@ if(mode==='probe'){
     receipt.modelMethodCalls=receipt.generations.reduce((n,g)=>n+g.modelMethodCalls,0);
     receipt.acceptedGenerations=receipt.generations.filter(g=>g.accepted).length;
     receipt.measuredImprovement=receipt.generations.some(g=>g.measuredGain);
+    // Source-bound self-repair has a stronger burden than being selected in
+    // an internal plan: the evaluated candidate must edit that exact source,
+    // survive original paired replay, and compile into a later descendant.
+    const repairs=receipt.generations.filter(g=>
+      g.predictionRepairEvidence?.planned===true);
+    const scoped=repairs.filter(g=>
+      g.predictionRepairEvidence?.evaluatedCandidateEditedSource===true &&
+      g.candidateOrigin==='model_driven_detached_worktree' &&
+      g.sourceWriteCalls>0);
+    const measuredRepairs=scoped.filter(g=>
+      g.pairedMeasured && g.predictionRepairEvidence?.originalPairedReceiptReplayed===true);
+    const adoptedRepairs=measuredRepairs.filter(g=>
+      g.accepted && g.pairedRevalidated &&
+      g.predictionRepairEvidence?.sourceIndependentlyAdopted===true);
+    const descendantRuns=receipt.generations.filter(g=>
+      adoptedRepairs.some(parent=>g.generatorCommit===parent.acceptedCommit &&
+        g.compiledPlanExecuted?.source==='running_compiled_descendant_binary'));
+    const acceptedTransfers=descendantRuns.filter(g=>
+      g.accepted && g.pairedMeasured && g.pairedRevalidated &&
+      g.candidateOrigin==='model_driven_detached_worktree' &&
+      g.predictionRepairEvidence?.sourceIndependentlyAdopted!==true &&
+      g.focusFiles?.some(path=>path!=='src/engine/rsi_prequential.rs'));
+    receipt.predictionRepairProof={
+      scheduledAttempts:repairs.length,
+      compiledPlanExecutions:repairs.filter(g=>
+        g.predictionRepairEvidence?.compiledPlanExecuted===true).length,
+      actualScopedEdits:scoped.length,
+      originalPairedMeasurements:measuredRepairs.length,
+      independentlyAdoptedPredictorEdits:adoptedRepairs.length,
+      rebuiltSuccessorExecutions:descendantRuns.length,
+      acceptedCrossDomainSuccessors:acceptedTransfers.length,
+      modelWrittenRepairAdopted:adoptedRepairs.length>0,
+      postRepairLearningExecuted:acceptedTransfers.length>0,
+      // Two source adoptions do not alone establish a causal advantage
+      // over an independently matched no-repair alternative.
+      causalMetaAdvantageProven:false,
+      complete:adoptedRepairs.length>0 && acceptedTransfers.length>0
+    };
     if(systemGoal){
       const verified=receipt.generations.filter(g=>g.accepted && g.holdoutEligible &&
+        g.pairedMeasured && g.pairedRevalidated &&
         g.systemDesign?.source==='model_authored_system_design' &&
         g.compiledPlanExecuted?.source==='running_compiled_descendant_binary' &&
         g.descendantPlan?.source==='compiled_descendant_system_plan_v1' &&
@@ -289,6 +337,7 @@ if(mode==='probe'){
       proposedMethods:receipt.modelMethodCalls,accepted:receipt.acceptedGenerations,
       improved:receipt.measuredImprovement,reason:receipt.reason,
       completionProof:receipt.completionProof,repairModes:receipt.repairModes,
+      predictionRepairProof:receipt.predictionRepairProof,
       generations:receipt.generations.map(g=>({attempt:g.attempt,writes:g.sourceWriteCalls,
         tools:g.toolsUsed,accepted:g.accepted,sourceIntegrity:g.sourceIntegrity,
         evolutionaryAction:g.evolutionaryAction,
@@ -300,6 +349,10 @@ if(mode==='probe'){
     // A green workflow must never stand in for completed self-improvement.
     if(process.env.SUB4_EXPECT_COMPLETION==='1' && !receipt.completionProof.complete){
       console.error('SUB4_RSI_COMPLETION_NOT_PROVEN');
+      process.exitCode=1;
+    }
+    if(process.env.SUB4_EXPECT_SELF_REPAIR==='1' && !receipt.predictionRepairProof.complete){
+      console.error('SUB4_PREQUENTIAL_SOURCE_REWRITE_NOT_PROVEN');
       process.exitCode=1;
     }
   }catch(error){

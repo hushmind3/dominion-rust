@@ -157,7 +157,7 @@ pub(crate) fn arbitrate_repair(
         target["path"]==path && target["role"]=="improvement_methods"
         && target["domain"]=="improver" && hex(&target["sourceSha256"],64)
         && meta["alternatives"].as_array().is_some_and(|alternatives|
-            alternatives.iter().any(|entry|entry["target"]==**target)));
+            alternatives.iter().any(|entry|entry.get("target")==Some(*target))));
     if !allowed_now || selected.is_none(){
         meta["predictionRuleRepair"]["active"]=json!(false);
         meta["predictionRuleRepair"]["deferredBy"]=json!(
@@ -166,7 +166,7 @@ pub(crate) fn arbitrate_repair(
             else{"owner_domain_or_source_not_available"});
         return meta;
     }
-    let target=selected.expect("checked").clone();
+    let target=(*selected.expect("checked")).clone();
     let winner=meta["alternatives"].as_array().into_iter().flatten()
         .find(|entry|entry["target"]==target).cloned()
         .expect("frontier selection already required matching alternative");

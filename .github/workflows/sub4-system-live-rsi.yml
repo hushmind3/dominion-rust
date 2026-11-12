@@ -9,11 +9,13 @@ on:
         type: boolean
         required: false
         default: false
-  push:
-    branches: [dominion-sub4]
-    paths:
-      - .github/workflows/sub4-system-live-rsi.yml
-      - scripts/sub4-live-rsi.mjs
+      require_prequential_repair:
+        description: "Require a model-written prediction-method edit, independent adoption and a successor transfer"
+        type: boolean
+        required: false
+        default: false
+  # Explicit dispatch only: source pushes must not automatically start
+  # long-running model downloads or paid inference campaigns.
 
 permissions:
   contents: read
@@ -34,6 +36,7 @@ jobs:
       SUB4_SYSTEM_GOAL: '1'
       SUB4_NATIVE_INDUCTION: '0'
       SUB4_EXPECT_COMPLETION: '1'
+      SUB4_EXPECT_SELF_REPAIR: ${{ inputs.require_prequential_repair && '1' || '0' }}
       SUB4_CAMPAIGN_SECONDS: '3300'
       SUB4_RUN_DEADLINE_MS: '3700000'
       SUB4_OLLAMA_URL: http://127.0.0.1:11434
@@ -63,6 +66,9 @@ jobs:
           cargo test --release --locked --bin dominion-rust compiled_descendant_plan_cannot_be_overruled_by_parent_policy -- --nocapture
           cargo test --release --locked --bin dominion-rust bounded_focus_prefers_relevant_spans_without_full_file_retransmission -- --nocapture
           cargo test --release --locked --bin dominion-rust rejected_or_research_only_generations_do_not_erase_verified_design -- --nocapture
+          cargo test --release --locked --bin dominion-rust repeated_measured_forecast_errors_rewrite_prediction_method_then_cool_down -- --nocapture
+          cargo test --release --locked --bin dominion-rust compiled_arbiter_preserves_repair_and_does_not_forge_execution -- --nocapture
+          cargo test --release --locked --bin dominion-rust prequential_history_replays_rejected_receipts_instead_of_trusting_flags -- --nocapture
           cargo build --release --locked --bin dominion-rust
       - name: Install an actual coding model with 16k context
         if: env.SUB4_MODEL_KIND == 'ollama'
@@ -119,6 +125,10 @@ jobs:
             'Accepted generations: '+result.acceptedGenerations,
             'Core systems with verified adopted code: '+(result.wholeSystemEvidence?.verifiedCoreComponents||[]).join(', '),
             'Rebuilt successors planning actual edits: '+(result.wholeSystemEvidence?.rebuiltSuccessorsWithExecutedPlans??0),
+            'Model-edited, independently adopted predictor sources: '+(result.predictionRepairProof?.independentlyAdoptedPredictorEdits??0),
+            'Rebuilt successors after predictor edits: '+(result.predictionRepairProof?.rebuiltSuccessorExecutions??0),
+            'Accepted subsequent improvements: '+(result.predictionRepairProof?.acceptedCrossDomainSuccessors??0),
+            'Source repair and transfer observed: '+result.predictionRepairProof?.complete,
             'Completion proven: '+result.completionProof?.complete];
           console.log(lines.join('\n'));
           if(process.env.GITHUB_STEP_SUMMARY)appendFileSync(process.env.GITHUB_STEP_SUMMARY,lines.join('\n')+'\n');
