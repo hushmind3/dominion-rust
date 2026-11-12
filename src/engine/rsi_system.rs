@@ -586,7 +586,7 @@ pub(crate) fn propose(
             let role=proposal["role"].as_str()
                 .filter(|r|crate::engine::rsi_open_topology::valid_role(r)
                     && assignments.contains_key(*r)
-                    && !COMPONENTS.iter().any(|(original,_)|*original==r))
+                    && !COMPONENTS.iter().any(|(original,_)|*original==*r))
                 .ok_or("새 지능 구성요소가 유효한 신규 역할이 아닙니다.")?;
             if !seen.insert(role){return Err("중복 신규 지능 역할입니다.".into());}
             let domain=proposal["domain"].as_str()
