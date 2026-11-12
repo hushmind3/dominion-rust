@@ -97,6 +97,10 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
     }
     let average=(!matched.is_empty()).then(||mean(&matched.iter()
         .filter_map(|r|r["interaction"].as_f64()).collect::<Vec<_>>()));
+    let a_effect=(!matched.is_empty()).then(||mean(&matched.iter()
+        .filter_map(|r|r["aOnlyDelta"].as_f64()).collect::<Vec<_>>()));
+    let b_effect=(!matched.is_empty()).then(||mean(&matched.iter()
+        .filter_map(|r|r["bOnlyDelta"].as_f64()).collect::<Vec<_>>()));
     let rows=matched.len();
     let mut evidence=json!({
         "source":"independent_matched_frozen_case_factorial_evidence_v1",
@@ -105,6 +109,9 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
         "observedArms":{"aOnly":counts[0],"bOnly":counts[1],"joint":counts[2]},
         "completeFrozenCaseBlocks":rows,
         "meanInteractionContrast":average,
+        "meanAOnlyEffect":a_effect,"meanBOnlyEffect":b_effect,
+        "interactionStandardErrorBound":if rows==0{Value::Null}
+            else{json!(2.0/(rows as f64).sqrt())},
         "contrasts":matched.into_iter().take(16).collect::<Vec<_>>(),
         "observationalOnly":true,"causalityProven":false,
         "candidateCount":counts.iter().sum::<usize>()
@@ -154,17 +161,31 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
         // Joint code changes are attempted only after both isolated edits
         // have actual independently measured baselines.
         let missing=trial.iter().position(|n|*n==0);
+        let measured_cases=evidence["completeFrozenCaseBlocks"].as_u64()
+            .unwrap_or(0);
+        let interaction=evidence["meanInteractionContrast"].as_f64().unwrap_or(0.0);
+        let a_gain=evidence["meanAOnlyEffect"].as_f64().unwrap_or(0.0);
+        let b_gain=evidence["meanBOnlyEffect"].as_f64().unwrap_or(0.0);
+        let trustworthy=measured_cases>=3 && trial.iter().all(|n|*n>0);
         let arm=missing.unwrap_or_else(||{
-            trial.iter().enumerate().min_by_key(|(_,v)|*v)
-                .map(|(i,_)|i).unwrap_or(0)
+            if trustworthy {
+                if interaction>0.15 {2}
+                else if a_gain>=b_gain {0} else{1}
+            }else{
+                trial.iter().enumerate().min_by_key(|(_,v)|*v)
+                    .map(|(i,_)|i).unwrap_or(0)
+            }
         });
         let phase=["isolate_a","isolate_b","test_joint"][arm];
         let target=if arm==1{b.clone()}else{a.clone()};
         let informative=trial.iter().filter(|n|**n>0).count() as f64;
         let balanced=1.0/(1.0+trial[arm] as f64);
         let coverage=evidence["completeFrozenCaseBlocks"].as_u64().unwrap_or(0);
+        let confidence=coverage as f64/(coverage as f64+4.0);
+        let synergy=confidence*interaction.abs().min(1.0);
         let score=0.7*informative+0.45*balanced
             +0.20*(coverage.min(8) as f64/8.0)
+            +0.35*synergy
             +if roles.0=="improvement_methods"||roles.1=="improvement_methods"{
                 0.15
             }else{0.0};
@@ -175,6 +196,8 @@ pub(crate) fn design(history:&[Value],frontier:&[Value],meta:&Value,
                 else if arm==0{json!([roles.0])}else{json!([roles.1])},
             "evidence":evidence,
             "expectedInformationGainPriority":score,
+            "observedInteractionWeight":confidence,
+            "hypothesis":"joint_delta_minus_isolated_effects",
             "qualityProven":false,"causalityProven":false
         })));
     }
@@ -206,8 +229,9 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
     let mut clean=plan.clone();
     let map=clean.as_object_mut().ok_or("요인별 실험 계획의 형식 오류")?;
     map.remove("sha256");
+    let checksum=digest(&clean);
     if plan["source"]!="compiled_open_topology_counterfactual_lab_v1"
-        || plan["sha256"]!=digest(&clean)
+        || plan["sha256"].as_str()!=Some(checksum.as_str())
         || plan["generatorCommit"]!=commit
         || plan["historyCount"].as_u64()!=Some(history_count as u64)
         || plan["comparisonProfileSha256"]!=profile.unwrap_or("")
