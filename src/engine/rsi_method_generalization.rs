@@ -85,6 +85,70 @@ fn case_effect(m:&Value)->Option<i8>{
     }
     if loss {Some(-1)} else if gain {Some(1)} else {Some(0)}
 }
+/// Cross-capability failures are active source development opportunities, not
+/// a reason to improve only the RSI planner. In particular models, memory,
+/// learning and tools use the SAME frozen feedback as any future invented role.
+/// The role set is taken from the current source-grounded architecture.
+fn capability_pressure(state:&AppState,history:&[Value],frontier:&[Value])
+    ->Vec<Value> {
+    let mut stats=BTreeMap::<String,(u64,u64,u64,
+        BTreeSet<String>,BTreeSet<String>)>::new();
+    let known=frontier.iter().filter_map(|row|row["role"].as_str())
+        .collect::<BTreeSet<_>>();
+    let mut counted=BTreeSet::new();
+    for g in history {
+        let Some(id)=g["candidateId"].as_str()else{continue};
+        let Some(profile)=g["evaluationProfileSha256"].as_str()
+            .filter(|s|hash_ok(s,64))else{continue};
+        let Some(head)=g["generatorCommit"].as_str()
+            .filter(|s|hash_ok(s,40))else{continue};
+        let Some(candidate)=state.store.get("rsi_candidate",id)else{continue};
+        if candidate["baseCommit"]!=head
+            || candidate["evaluation"]["source"]!=
+                "server_invoked_local_paired_git_worktrees"
+            || candidate["paths"]!=g["changedSourcePaths"] {continue}
+        let Some(metrics)=rsi::replayed_pair_metrics(state,&candidate)
+            else{continue};
+        if metrics!=g["evaluation"]["metrics"]{continue}
+        for m in metrics["measurements"].as_array().into_iter().flatten(){
+            if m["holdout"]!=true{continue}
+            let (Some(domain),Some(case),Some(effect))=(
+                m["domain"].as_str(),m["id"].as_str(),case_effect(m))
+            else{continue};
+            let role=observed_domain(domain);
+            if !known.contains(role){continue}
+            let key=(id.to_owned(),profile.to_owned(),
+                case.to_owned(),role.to_owned());
+            if !counted.insert(key){continue}
+            let s=stats.entry(role.to_owned()).or_default();
+            if effect>0{s.0+=1;}else if effect<0{s.1+=1;}else{s.2+=1;}
+            s.3.insert(profile.to_owned());
+            s.4.insert(id.to_owned());
+        }
+    }
+    let mut rows=Vec::new();
+    for (role,(gains,regressions,neutral,profiles,ids)) in stats{
+        let Some(target)=frontier.iter().find(|source|
+            source["role"]==role
+            && source["sourceSha256"].as_str().is_some_and(|s|hash_ok(s,64)))
+            else{continue};
+        let pressure=(regressions as i64)*8-(gains as i64)*3;
+        rows.push(json!({
+            "role":role,"target":target,
+            "independentHoldoutGains":gains,
+            "independentHoldoutRegressions":regressions,
+            "independentHoldoutNeutral":neutral,
+            "replayedCandidateCount":ids.len(),
+            "frozenProfiles":profiles.len(),
+            "priority":pressure,
+            "source":"frozen_evaluation_capability_gap_not_model_claim",
+            "qualityProven":false
+        }));
+    }
+    rows.sort_by(|a,b|b["priority"].as_i64().cmp(&a["priority"].as_i64())
+        .then_with(||a["role"].as_str().cmp(&b["role"].as_str())));
+    rows
+}
 /// The learner aggregates only independently replayed evaluations actually
 /// produced by a running compiled descendant selecting a specific operator.
 /// Observations may be useful for search WITHOUT being identified causal
@@ -212,10 +276,19 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
         }));
     }
     rows.sort_by(|a,b|a["ruleId"].as_str().cmp(&b["ruleId"].as_str()));
+    let capability_gaps=capability_pressure(state,history,frontier);
+    // An uncovered model/memory/tool failure can drive the NEXT source edit
+    // even if nobody has yet authored a successful meta improvement rule.
+    let capability_target=capability_gaps.iter()
+        .find(|gap|gap["independentHoldoutRegressions"]
+            .as_u64().unwrap_or(0)>0 && gap["priority"].as_i64().unwrap_or(0)>0)
+        .map(|gap|gap["target"].clone()).unwrap_or(Value::Null);
     let mut result=json!({
         "source":"compiled_replayed_downstream_method_learning_v1",
         "generatorCommit":commit,"historyCount":history.len(),
         "operatorLearning":rows,
+        "capabilityGaps":capability_gaps,
+        "suggestedCapabilityTarget":capability_target,
         "evidenceRequirement":"replayed_frozen_paired_receipt_plus_actual_compiled_source_target",
         "methodSuccessNotInferredFromSourceAdoption":true,
         "causalityProven":false,"qualityProven":false
