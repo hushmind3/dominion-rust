@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: sub1-native-proof-${{ github.sha }}
@@ -22,8 +22,9 @@ concurrency:
 
 jobs:
   native-lineage:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[rsi-lineage]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 115
+    timeout-minutes: 150
     env:
       DOMINION_PORT: '43173'
       DOMINION_JOB_WORKERS: '1'
@@ -43,6 +44,7 @@ jobs:
       - name: Build original current Sub1 binary
         run: |
           node --check scripts/sub1-native-proof.mjs
+          node --check scripts/sub1-promote-lineage.mjs
           npm ci --prefix web
           npm run build --prefix web
           cargo build --release --locked --bin dominion-rust
@@ -64,6 +66,14 @@ jobs:
           done
           curl -fsS "http://127.0.0.1:$DOMINION_PORT/api/health"
           node scripts/sub1-native-proof.mjs
+      - name: Gate and persist independently adopted 3-generation lineage
+        if: success()
+        shell: bash
+        env:
+          SUB1_SOURCE_WORKTREE: ${{ runner.temp }}/sub1-native-source
+        run: |
+          set -euo pipefail
+          node scripts/sub1-promote-lineage.mjs
       - name: Upload real source and independent holdout evidence
         if: always()
         uses: actions/upload-artifact@v4
