@@ -240,7 +240,12 @@ pub(crate) fn valid(policy:&Value,original:&Value,commit:&str,
         || policy["externalApiModelWeightsChanged"]!=false
         || policy["independentModelSuperiorityProven"]!=false
         || policy["qualityProven"]!=false {return false;}
-    let Some((p,m))=base_route(original)else{return false};
+    let Some((p,m))=base_route(original)else{
+        return original["rsiAllowModelEvolution"]!=true
+            && policy["ownerOptIn"]==false
+            && policy["baseline"].is_null()
+            && policy["selected"].is_null();
+    };
     if policy["baseline"]["providerId"]!=p
         ||policy["baseline"]["model"]!=m{return false;}
     if original["rsiAllowModelEvolution"]!=true{
