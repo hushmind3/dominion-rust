@@ -3255,6 +3255,22 @@ fn generator_target_dir(data_dir:&Path, campaign_id:&str) -> PathBuf {
     data_dir.join("rsi-build").join("generator").join(format!("campaign-{safe_id}"))
 }
 
+/// Choose a verified next domain from accepted native source mutations.
+/// The choice is an execution target, never a substitute for paired quality.
+fn native_descendant_target(input:&Value,history:&[Value])->Option<&'static str> {
+    if input["rsiNativeInduction"]!=true || input["rsiExpandAfterGain"]!=true {
+        return None;
+    }
+    let accepted=history.iter().filter(|row|row["accepted"]==true
+        && row["candidateOrigin"]=="native_inductive_source_mutation"
+        && row["evaluation"]["metrics"]["eligible"]==true)
+        .collect::<Vec<_>>();
+    if accepted.is_empty() {return None;}
+    let meta_gain=accepted.iter().any(|row|row["candidateTarget"]=="improver"
+        && row["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0);
+    Some(if meta_gain {"memory"} else {"improver"})
+}
+
 async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -3396,6 +3412,22 @@ async fn run_loop(
         child_input["rsiAvailableTools"] =
             json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_replace_function", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose"]);
 
+        // After a measured native adoption, the descendant must be offered
+        // the next domain rather than re-solving a saturated original target.
+        // The new generator still independently plans, compiles and evaluates.
+        if let Some(domain)=native_descendant_target(input,
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])) {
+            child_input["rsiObjective"]=json!(domain);
+            child_input["rsiAutonomous"]=json!(true);
+            child_input["rsiFocusFiles"]=json!([]);
+            child_input["rsiSelectedDomain"]=json!(domain);
+            child_input["rsiDecisionInput"]=json!({
+                "basis":"independently_adopted_native_descendant",
+                "domain":domain,"parentCommit":head
+            });
+            child_input["prompt"]=json!(format!(
+                "Improve the DOMINION {domain} subsystem, preserving all prior accepted source revisions. Implement and evaluate a new measurable optimization against the frozen paired holdout."));
+        }
         let recorded_history=record["history"].as_array().cloned().unwrap_or_default();
         let action_history=improvement_history(
             &context.state,&child_input,&recorded_history,&context.job_id);
@@ -3729,6 +3761,8 @@ async fn run_loop(
             "domainSelection":current["rsiDomainSelection"],"searchStrategy":current["rsiSearchStrategy"],
             "decisionInput":current["rsiDecisionInput"],"selectedDomainInput":current["input"]["rsiSelectedDomain"],
             "nativePlan":current["input"]["rsiNativePlan"],
+            "candidateOrigin":current["result"]["rsi"]["candidateOrigin"],
+            "nativeMutation":current["result"]["rsi"]["nativeMutation"],
             "improvementDirective":current["input"]["rsiImprovementDirective"],
             "researchDelivered":current["rsiResearchDelivered"],"workerMarker":current["result"]["rsi"]["fixturePhase"],
             "boundaryResult":current["rsiBoundaryResult"],
@@ -4035,6 +4069,11 @@ async fn run_loop(
         });
         elapsed(record, started);
         save(context, record)?;
+        if record["capabilityDemonstrated"]==true
+            && record["metaTransferProven"]==true
+            && input["rsiStopAfterProof"]==true {
+            return Ok("capability_demonstrated".into());
+        }
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
             if target_plan_mismatch(error) {
@@ -4200,15 +4239,16 @@ pub fn meta_transfer_proven(history: &[Value]) -> bool {
 pub fn capability_demonstrated(history: &[Value]) -> bool {
     history.windows(3).any(|chain| {
         let [parent,child,grandchild]=chain else {return false;};
-        if !chain.iter().all(|generation|generation_is_verified(generation))
-            || parent["candidateTarget"]!="improver"
-            || parent["domain"]==child["domain"]
-            || child["nativePlan"]["source"]!="compiled_generator_plan_v1"
-            || grandchild["nativePlan"]["source"]!="compiled_generator_plan_v1"
-            || child["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)==0
-            || grandchild["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0)==0 {
+        if !chain.iter().all(|generation|generation_is_verified(generation)) {
             return false;
         }
+        let improver_at=chain.iter().position(|row|
+            row["candidateTarget"]=="improver");
+        let transfer_at=match improver_at {
+            Some(0) if parent["domain"]!=child["domain"] => 1,
+            Some(1) if child["domain"]!=grandchild["domain"] => 2,
+            _=>return false
+        };
         let valid_commit=|value:&Value|value.as_str().is_some_and(|sha|
             sha.len()==40 && sha.bytes().all(|byte|byte.is_ascii_hexdigit()));
         if !chain.iter().all(|generation|valid_commit(&generation["acceptedCommit"])
@@ -4219,10 +4259,19 @@ pub fn capability_demonstrated(history: &[Value]) -> bool {
             || child["acceptedCommit"]==grandchild["acceptedCommit"] {
             return false;
         }
-        let measured_child_gain=child["evaluation"]["metrics"]["holdoutEvidence"]
-            .as_array().is_some_and(|rows|rows.iter().any(|row|
-                row["domain"]==child["domain"] && row["improved"]==true));
-        measured_child_gain
+        // Native source induction is a separate generator, not a model edit.
+        // Every descendant must have executed its compiled plan OR an
+        // authenticated native operator whose source has been paired.
+        let planned=|row:&Value| row["nativePlan"]["source"]=="compiled_generator_plan_v1"
+            || (row["candidateOrigin"]=="native_inductive_source_mutation"
+                && row["nativeMutation"]["origin"]=="native_inductive_source_mutation");
+        if !planned(child) || !planned(grandchild) {return false;}
+        let measured=|row:&Value|row["evaluation"]["metrics"]["holdoutEvidence"]
+            .as_array().is_some_and(|rows|rows.iter().any(|case|
+                case["domain"]==row["domain"] && case["improved"]==true));
+        measured(chain[transfer_at]) && measured(grandchild)
+            && chain.iter().any(|row|row["evaluation"]["metrics"]["improvedHoldouts"]
+                .as_u64().unwrap_or(0)>0)
     })
 }
 

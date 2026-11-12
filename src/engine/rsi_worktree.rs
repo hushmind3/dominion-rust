@@ -302,6 +302,8 @@ fn classify(patch:&str)->&'static str {
         && (line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
+            || line.contains("src/engine/rsi_mutation.rs ")
+            || line.contains("src/engine/rsi_domain_accumulator.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
             || line.contains("src/api/rsi.rs "))) {
         "improver"
@@ -387,6 +389,21 @@ pub async fn finish(
     let mut capture_error=String::new();
     let mut checks=Vec::<Value>::new();
     let mut unsafe_audit=Value::Null;
+    // Native provenance must bind the exact worker, source, campaign and
+    // final bytes. A model write is never inferred from native induction.
+    let native_receipt=context.state.store.get("rsi_mutation",&context.job_id)
+        .filter(|receipt|input["rsiNativeInduction"]==true
+            && receipt["origin"]=="native_inductive_source_mutation"
+            && receipt["campaignId"]==input["rsiCampaignId"]
+            && receipt["sourceDir"].as_str()==Some(worktree.source.to_string_lossy().as_ref())
+            && receipt["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
+            && receipt["path"].as_str().is_some_and(|p|
+                patch.contains(&format!("diff --git a/{p} b/{p}"))));
+    let native_origin=native_receipt.as_ref().is_some_and(|receipt|{
+        let Some(path)=receipt["path"].as_str() else {return false;};
+        std::fs::read(worktree.path.join(path)).ok().is_some_and(|bytes|
+            format!("{:x}",Sha256::digest(&bytes))==receipt["afterSha256"])
+    });
     let unchanged_inherited=input["rsiRepairCandidateId"].as_str()
         .and_then(|id|context.state.store.get("rsi_candidate",id))
         .is_some_and(|inherited|inherited["patchSha256"].as_str()==Some(patch_sha.as_str()));
@@ -408,13 +425,20 @@ pub async fn finish(
             "target":classify(&patch),"baseCommit":worktree.base,
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
-            "generatorModel":input["model"],"generatorEffort":input["reasoningEffort"],
+            "generatorModel":if native_origin {json!(format!("dominion-native:{}",
+                native_receipt.as_ref().and_then(|row|row["operator"].as_str()).unwrap_or("unknown")))}else{input["model"].clone()},
+            "generatorEffort":if native_origin {Value::Null}else{input["reasoningEffort"].clone()},
             "generatorSourceCommit":worktree.base
         });
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
-                candidate["origin"]="model_driven_detached_worktree".into();
+                candidate["origin"]=json!(if native_origin {
+                    "native_inductive_source_mutation"
+                }else{"model_driven_detached_worktree"});
+                if native_origin {
+                    candidate["nativeMutation"]=json!(native_receipt);
+                }
                 candidate["pairedComparisonComplete"]=json!(false);
                 candidate["reviewRequired"]=json!(true);
                 candidate["experimentCampaignId"]=input["rsiCampaignId"].clone();
@@ -446,6 +470,8 @@ pub async fn finish(
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
         "baseCommit":worktree.base,"candidateId":candidate_id,
+        "candidateOrigin":if native_origin {"native_inductive_source_mutation"}else{"model_driven_detached_worktree"},
+        "nativeMutation":native_receipt,
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "checks":checks,"checksPassed":all_checks_pass,
         "unsafeAudit":unsafe_audit,
@@ -928,6 +954,28 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
         "createdAt":chrono::Utc::now().to_rfc3339()
     });
     state.store.put("rsi_pair",&receipt);
+    // Close the native operator trial only after independent paired A/B.
+    // A failed source/operator pair is remembered; a verified success can be
+    // inherited by the newly compiled descendant.
+    if candidate["origin"]=="native_inductive_source_mutation" {
+        if let Some(mut native)=candidate["rsiJobId"].as_str()
+            .and_then(|job|state.store.get("rsi_mutation",job))
+            .filter(|row|row["origin"]==candidate["origin"]
+                && row["afterSha256"]==candidate["nativeMutation"]["afterSha256"]) {
+            native["candidateId"]=json!(id);
+            native["evaluation"]=json!({
+                "verdict":verdict,"metrics":metrics,
+                "evidenceSha256":evidence_sha,
+                "source":"server_invoked_local_paired_git_worktrees",
+                "qualityProven":metrics["eligible"]==true && verdict=="improved"
+            });
+            native["qualityGain"]=json!(if verdict=="improved"{
+                metrics["metricGains"].as_u64().unwrap_or(0)
+                    +metrics["gains"].as_u64().unwrap_or(0)
+            }else{0});
+            state.store.put("rsi_mutation",&native);
+        }
+    }
     let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
     if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
         origin["paired"]=json!({"verdict":verdict,"metrics":metrics,

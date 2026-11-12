@@ -371,6 +371,12 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
+        "rsiNativeInduction": continuous && body["nativeInduction"]==true
+            && body["selectionPolicy"]=="automatic",
+        "rsiExpandAfterGain": continuous && body["expandAfterGain"]==true
+            && body["selectionPolicy"]=="automatic",
+        "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
+            && body["selectionPolicy"]=="automatic",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],

@@ -557,6 +557,16 @@ fn rsi_no_edit_retry_needed(input:&Value, outcome:&Result<Value,String>)->bool {
         && input["toolsExecutionEnabled"]!=false
 }
 
+/// Opt-in source-driven induction runs inside a clean detached worktree.
+/// Explicit owner edits and inherited compiler failures remain model-driven.
+fn rsi_native_preflight(input:&Value, restored:bool)->bool {
+    input["rsiNativeInduction"]==true
+        && input["rsiAutoFocus"]==true
+        && !restored
+        && !input["rsiRepairCandidateId"].is_string()
+        && !input["rsiInheritedCandidateId"].is_string()
+}
+
 pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Value, String> {
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
     let prompt = input
@@ -681,7 +691,28 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
-    let mut message = run_quiet(&scoped_state, &request).await;
+    // Source-driven induction is an independently identified generator,
+    // not a synthetic model tool call. Its real patch follows the SAME
+    // verifier, paired frozen holdout and descendant adoption pipeline.
+    let native_preflight=if rsi_native_preflight(&input,restored.is_some()) {
+        if let Some(worktree)=&rsi_workspace {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,&worktree.source,&worktree.path
+            ) {
+                Ok(receipt)=>receipt,
+                Err(error)=>{
+                    context.state.store.audit("rsi.native_induction_error",
+                        json!({"jobId":context.job_id,"error":error}));
+                    None
+                }
+            }
+        }else{None}
+    }else{None};
+    let mut message=if native_preflight.is_some() {
+        Ok(None)
+    }else{
+        run_quiet(&scoped_state,&request).await
+    };
     let result = if let Some(worktree)=&rsi_workspace {
         // Spend one focused compiler repair here, then hand the failed
         // *real source diff* to a rebuilt descendant. Spending the entire
