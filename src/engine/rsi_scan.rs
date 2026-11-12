@@ -224,7 +224,7 @@ pub fn report(state: &AppState) -> Value {
         .filter(|job| {
             matches!(
                 job["status"].as_str(),
-                Some("failed" | "needs_review" | "cancelled")
+                Some("failed" | "needs_review")
             )
         })
         .filter(|job| !matches!(job["kind"].as_str(), Some("rsi_evolve" | "rsi_generation")))
@@ -319,4 +319,24 @@ pub fn report(state: &AppState) -> Value {
         "checked": checks.len(),
         "generatedAt": chrono::Utc::now().to_rfc3339(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn an_operator_stop_is_preserved_but_does_not_recommend_a_code_repair() {
+        let root=std::env::temp_dir().join(format!("rsi-signal-{}",uuid::Uuid::new_v4()));
+        let config=crate::config::Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),crate::db::Store::open(&config.db_path()).unwrap(),crate::vault::Vault::open(&config.key_path()));
+        state.store.put("job",&json!({"id":"operator-stop","kind":"resume","status":"cancelled","error":"Stopped by user"}));
+        assert!(report(&state)["signals"].as_array().unwrap().is_empty());
+        state.store.put("job",&json!({"id":"real-failure","kind":"workflow","status":"failed","error":"Actual workflow invariant failed"}));
+        let result=report(&state);
+        let signal=result["signals"].as_array().unwrap().iter().find(|signal|signal["kind"]=="failed_jobs").unwrap();
+        assert_eq!(signal["evidence"].as_array().unwrap().len(),1);
+        assert_eq!(signal["evidence"][0]["jobId"],"real-failure");
+        assert!(state.store.get("job","operator-stop").is_some());
+        drop(state);std::fs::remove_dir_all(root).unwrap();
+    }
 }
