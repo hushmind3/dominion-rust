@@ -74,6 +74,7 @@ pub(crate) fn synthesize(
     let accepted_lineages=lineage["acceptedDesigns"].as_array()
         .map(Vec::len).unwrap_or(0);
     let peer_count=peers["references"].as_array().map(Vec::len).unwrap_or(0);
+    let transfer=crate::engine::rsi_mutual_program::transfer_graph(history);
     let mut ranked=Vec::<(Value,f64)>::new();
     let mut roles=BTreeSet::new();
     let total_trials=history.iter().filter(|g|independent_outcome(g).is_some()).count();
@@ -136,6 +137,28 @@ pub(crate) fn synthesize(
             if strength<0.0{cross_regression=cross_regression.max(-strength);}
         }
         let interaction_bonus=0.22*cross_gain-0.27*cross_regression;
+        // This is a different timescale from within-generation A/B gains:
+        // reward a source role only when a genuinely rebuilt successor
+        // improves ANOTHER role with an independently adopted patch.
+        let links=transfer["edges"].as_array();
+        let outgoing=links.into_iter().flatten().filter(|row|
+            row["fromRole"]==role).collect::<Vec<_>>();
+        let productive=outgoing.iter().map(|row|
+            row["nextGenerationAdoptions"].as_u64().unwrap_or(0)).sum::<u64>();
+        let measured=outgoing.iter().map(|row|
+            row["independentlyMeasured"].as_u64().unwrap_or(0)).sum::<u64>();
+        let reciprocal=outgoing.iter().map(|row|{
+            let Some(other)=row["toRole"].as_str() else{return 0};
+            let backward=links.into_iter().flatten().find(|reverse|
+                reverse["fromRole"]==other && reverse["toRole"]==role)
+                .and_then(|reverse|reverse["nextGenerationAdoptions"].as_u64())
+                .unwrap_or(0);
+            backward.min(row["nextGenerationAdoptions"].as_u64().unwrap_or(0))
+        }).sum::<u64>();
+        let generational_bonus=if measured>0 {
+            0.22*(productive as f64/(measured as f64+2.0))
+                +0.20*(reciprocal.min(3) as f64/3.0)
+        }else{0.0};
         let token_cost_penalty=average_tokens.map(|tokens|
             (tokens/80_000.0).min(1.0)).unwrap_or(0.0);
         // Give the descendant's own editable meta-program a fair place in
@@ -147,6 +170,7 @@ pub(crate) fn synthesize(
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
             +inherited+program_bonus+metacognition+interaction_bonus
+            +generational_bonus
             -0.11*regressions-0.06*noise_penalty-0.09*file_stall
             -0.035*cost-0.08*token_cost_penalty;
         roles.insert(role.to_string());
@@ -163,6 +187,9 @@ pub(crate) fn synthesize(
             "inheritedProgramStage":target["inheritedProgramStage"]==true,
             "crossSubsystemObservedGain":cross_gain,
             "crossSubsystemObservedRegression":cross_regression,
+            "offspringCrossRoleAdoptions":productive,
+            "offspringReciprocalImprovementObservations":reciprocal,
+            "crossGenerationReward":generational_bonus,
             "novelComponent":novelty>0.0
         }),score));
     }
@@ -207,6 +234,7 @@ pub(crate) fn synthesize(
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
         "interactionGraphSha256":interaction["sha256"],
+        "intergenerationalGraphSha256":transfer["sha256"],
         "crossSubsystemImprovementEnabled":true,
         "lineageDesigns":accepted_lineages,
         "inheritedImprovementProgramApplied":selected["inheritedProgramStage"]==true,
