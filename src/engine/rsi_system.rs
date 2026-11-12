@@ -73,7 +73,7 @@ fn architecture_role_domain(role:&str)->Option<&'static str>{
 /// successor while preserving their original hashes and real index location.
 pub(crate) fn architecture_frontier(
     state:&crate::state::AppState,
-    blueprint:&Value,history:&[Value],index_id:&str,
+    blueprint:&Value,history:&[Value],index_id:&str,root:&Path,
 )->Vec<Value>{
     use std::collections::{BTreeMap,BTreeSet};
     let mut verified_roles=BTreeSet::<String>::new();
@@ -120,6 +120,12 @@ pub(crate) fn architecture_frontier(
                 if crate::engine::code_index::indexed_source_hash(state,index_id,path)
                     .as_deref()!=Some(hash) {return None;}
                 let bytes=item["bytes"].as_u64()?;
+                // The code-index DB is an observation from before the child
+                // may have changed source. Re-read the ACTUAL checked-out
+                // file so an old index cannot authorise stale descendant edits.
+                let real=fs::read(root.join(path)).ok()?;
+                if real.len() as u64!=bytes
+                    || format!("{:x}",Sha256::digest(&real))!=hash {return None;}
                 Some((path,hash,bytes))
             }).collect::<Vec<_>>();
         // Prioritize new systems, cheap-to-inspect source and actual failures.
@@ -597,7 +603,7 @@ mod tests {
         let index=crate::engine::code_index::refresh(&state,&root).unwrap();
         let model=blueprint(&root,"a".repeat(40).as_str(),&[]);
         let baseline=architecture_frontier(&state,&model,&[],
-            index["id"].as_str().unwrap());
+            index["id"].as_str().unwrap(),&root);
         assert!(baseline.iter().any(|row|row["role"]=="memory"));
         assert!(baseline.iter().all(|row|row["qualityProven"]==false));
         let forged=json!({"accepted":true,"pairedRevalidated":true,
@@ -605,12 +611,12 @@ mod tests {
             "acceptedCommit":"b".repeat(40),
             "acceptedSourceHashes":{"src/engine/memory.rs":
                 model["architecture"][2]["representativeSources"][0]["sha256"]}});
-        let explored=architecture_frontier(&state,&model,&[forged],index["id"].as_str().unwrap());
+        let explored=architecture_frontier(&state,&model,&[forged],index["id"].as_str().unwrap(),&root);
         assert_eq!(explored,baseline,
             "a claimed adoption cannot remove an unmodified system component");
         fs::write(root.join("src/engine/memory.rs"),
             "pub fn memory() -> usize { 4 }").unwrap();
-        let stale=architecture_frontier(&state,&model,&[],index["id"].as_str().unwrap());
+        let stale=architecture_frontier(&state,&model,&[],index["id"].as_str().unwrap(),&root);
         assert!(stale.iter().all(|row|row["role"]!="memory"),
             "a changed source without a fresh index must not inherit its old SHA");
         let _=fs::remove_dir_all(root);
