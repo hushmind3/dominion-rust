@@ -128,6 +128,15 @@ pub(crate) fn archive(history:&[Value])->Vec<Value>{
         for spec in g["systemDesign"]["improvementPrinciples"].as_array().into_iter().flatten(){
             if !authorship(g,spec){continue;}
             let Some(id)=spec["id"].as_str() else{continue};
+            // A composite mechanism must cite genuinely adopted precursor
+            // methods in this compiled lineage, not arbitrary invented IDs.
+            if let Some(parents)=spec["composedFrom"].as_array(){
+                let mut distinct=BTreeSet::<String>::new();
+                if parents.iter().any(|parent|parent.as_str().is_none_or(|p|
+                    !distinct.insert(p.to_string())||!found.contains_key(p))){
+                    continue;
+                }
+            }
             // Same ID in a newly adopted program intentionally supersedes
             // earlier text; concrete evidence is pinned to its new commit.
             let birth=g["acceptedCommit"].as_str().unwrap_or("");
@@ -264,6 +273,15 @@ pub(crate) fn recompose(
                 row["principleLearningScore"]=chosen["priority"].clone();
             }
         }
+        // The ranking change must actually select the chosen experiment;
+        // otherwise a recorded "active principle trial" would receive
+        // outcomes from an unrelated target and corrupt meta-learning.
+        let other_max=alternatives.iter().filter(|r|r["target"]!=selected)
+            .filter_map(|r|r["score"].as_f64())
+            .fold(0.0f64,f64::max);
+        if let Some(row)=alternatives.iter_mut().find(|r|r["target"]==selected){
+            row["score"]=json!(other_max+chosen["priority"].as_f64().unwrap_or(0.0)+1.0);
+        }
         alternatives.sort_by(|a,b|b["score"].as_f64().unwrap_or(0.0)
             .total_cmp(&a["score"].as_f64().unwrap_or(0.0)));
         if let Some(winner)=alternatives.first(){
@@ -334,7 +352,7 @@ mod tests{
             "generatorCommit":"a".repeat(40),
             "acceptedCommit":birth,"jobId":"birth-worker",
             "changedSourcePaths":[path],
-            "acceptedSourceHashes":{path:"c".repeat(64)},
+            "acceptedSourceHashes":{"src/engine/rsi_principle_learning.rs":"c".repeat(64)},
             "domain":"improver",
             "systemDesign":{"source":"model_authored_system_design",
                 "generatorCommit":"a".repeat(40),
