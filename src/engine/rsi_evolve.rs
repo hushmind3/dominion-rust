@@ -3998,6 +3998,9 @@ async fn run_loop(
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
         if generation["systemEvolution"]==true {
+            generation["metaCodeChanged"]=
+                json!(crate::engine::rsi_meta_controller::meta_source_changed(
+                    &generation));
             generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
                 &generation["metaPolicy"],&generation);
         }

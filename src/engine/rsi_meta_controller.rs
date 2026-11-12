@@ -34,6 +34,18 @@ fn independent_adoption(g:&Value)->bool{
                     g["acceptedSourceHashes"][p].as_str().is_some_and(|sha|
                         sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
+
+/// Direct evidence that the accepted child rewrote the implementation of
+/// improvement itself, not just a task module or a claimed meta design.
+pub(crate) fn meta_source_changed(g:&Value)->bool{
+    if !independent_adoption(g){return false;}
+    let Some(files)=g["acceptedSourceHashes"].as_object() else{return false};
+    files.keys().any(|path|matches!(path.as_str(),
+        "src/engine/rsi_meta_controller.rs"|"src/engine/rsi_system.rs"
+        |"src/engine/rsi_evolve.rs"|"src/engine/rsi_mutation.rs"
+        |"src/engine/procedure.rs"|"src/engine/learning.rs"))
+}
+
 fn role_touched(g:&Value,role:&str)->bool{
     model_design_roles(g).iter().any(|name|name==role)
         || g["selfControllerVerified"]==true
@@ -148,6 +160,10 @@ pub(crate) fn synthesize(
             g["candidateId"].is_null() && g["accepted"]!=true).count();
         let productivity=relevant.iter()
             .map(|g|next_generation_productivity(history,g)).sum::<usize>();
+        let meta_rewrites=relevant.iter().filter(|g|meta_source_changed(g)).count();
+        let productive_meta_rewrites=relevant.iter().filter(|g|
+            meta_source_changed(g) && next_generation_productivity(history,g)>0)
+            .count();
         let failure_posterior=failure_distribution(&relevant);
         let probability=(adopted as f64+1.0)/(attempts as f64+2.0);
         let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
@@ -167,6 +183,7 @@ pub(crate) fn synthesize(
         let score=0.55*probability+0.48*epistemic*calibration
             +0.14*((trials+2.0).ln()/(attempts as f64+1.0)).sqrt()
             +coverage+inherited_bonus+0.14*clade
+            +0.08*(productive_meta_rewrites as f64).min(3.0)
             -0.12*penalty-0.07*stall-0.035*cost
             -0.09*compiler_risk-0.06*regression_risk-0.06*edit_risk;
         ranked.push((json!({
@@ -179,6 +196,8 @@ pub(crate) fn synthesize(
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
             "productiveDescendantAdoptions":productivity,
+            "verifiedMetaSourceRewrites":meta_rewrites,
+            "productiveMetaSourceRewrites":productive_meta_rewrites,
             "newComponent":target["verifiedRedesigns"].as_u64().unwrap_or(0)==0
         }),score));
     }
@@ -569,6 +588,7 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
             else{failure_kind(generation)},
         "attemptedSourceChange":generation["candidateId"].is_string(),
         "nextPolicyCanTrainFromObservation":observed.is_some(),
+        "verifiedMetaImplementationChanged":meta_source_changed(generation),
         "qualityProven":observed==Some(true)
     })
 }
