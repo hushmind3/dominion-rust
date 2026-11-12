@@ -536,32 +536,6 @@ pub(crate) fn system_agenda(state:&crate::state::AppState,model:&Value,
     let archive=research_archive(state,model,index_id,history);
     let inherited=history.iter().rev().find_map(accepted_model_design);
     let files=source_inventory(root);
-    // When the actual adapter has participated in generating source edits,
-    // its training/evaluation and route-selection methods must remain
-    // discoverable in the live compiled agent, even if generic diversity
-    // sampling otherwise pushes them outside the 64-source frontier.
-    // Every injected path still passes the immutable source/hash validator.
-    if history.iter().any(|g|
-        g["adaptedModelActuallyUsed"]["actuallyUsedInGeneration"]==true) {
-        for path in ["src/engine/rsi_model_weights.rs",
-            "src/engine/rsi_model_learning.rs"] {
-            if frontier.iter().any(|row|row["path"]==path){continue;}
-            let Some(source)=files.iter().find(|row|row["path"]==path)else{continue};
-            if !source_entry_valid(state,root,index_id,source,"sha256"){continue;}
-            let role=source_role(path);
-            if frontier.len()>=64 {frontier.pop();}
-            frontier.push(json!({
-                "role":role,"domain":role_domain(role),"path":path,
-                "sourceSha256":source["sha256"],"sourceBytes":source["bytes"],
-                "candidateRankWithinRole":0,
-                "methodSource":true,
-                "attempts":0,"verifiedRedesigns":0,
-                "latestFailure":null,"taskFailureSignalIds":[],
-                "reason":"actual_model_weight_source_productivity_learning",
-                "qualityProven":false
-            }));
-        }
-    }
     // A successful previous agent may point to any actual source module,
     // including one it just created. Do not require that source to be the
     // human ancestor's first ranked representative.
