@@ -369,6 +369,10 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         "rsiSystemEvolution": continuous && body["nativeInduction"] != true
             && body["evolutionTarget"] != "product",
+        // Explicit owner opt-in; never inferred from model-authored design.
+        // Data must additionally be staged in the separately approved
+        // training area and independently hashed before any weight update.
+        "rsiAllowLocalAdapterTraining": continuous && body["allowLocalAdapterTraining"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
         "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
