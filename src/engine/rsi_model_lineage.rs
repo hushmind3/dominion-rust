@@ -84,6 +84,10 @@ fn independent_task_receipt(state:&AppState,g:&Value,profile:&str,head:&str)
             "running_compiled_descendant_binary"
         || g["modelEvolutionPlanExecuted"]["selectionRevision"]!=
             g["modelEvolutionPlan"]["revision"] {return None;}
+    // Re-read the original model.usage rows, worker session and registered
+    // model source edit. A generation's self-reported provider/model string
+    // is never sufficient to train an alternative model selection policy.
+    if !rsi::model_route_audited(state,g){return None;}
     let id=g["candidateId"].as_str()?;
     let candidate=state.store.get("rsi_candidate",id)?;
     let replay=rsi::replayed_pair_metrics(state,&candidate)?;
