@@ -3449,6 +3449,11 @@ async fn run_loop(
                 child_input["model"]=plan["apiRoutePolicy"]["chosen"]["model"].clone();
             }
             child_input["rsiMutualProgram"]=plan["mutualProgram"].clone();
+            if !crate::engine::rsi_archive::valid_selection(
+                &context.state,&plan["archiveSelection"],&head,
+                &child_input["rsiFrozenCases"]) {
+                return Err("후손 아카이브 후보의 영구 영수증·평가 원본 검증 실패".into());
+            }
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
                     .ok_or("후손 보관소 후보 ID가 없습니다.")?;
@@ -5229,6 +5234,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 || job["input"]["providerId"]
                     !=job["input"]["rsiApiRoutePolicy"]["chosen"]["providerId"]) {
             return Err("실행 후손의 API 모델 선택이 학습 계보와 다릅니다.".into());
+        }
+        if pinned
+            && (job["input"]["rsiArchiveSelection"]
+                !=job["input"]["rsiControllerPlan"]["archiveSelection"]
+                || job["input"]["rsiInheritedCandidateId"]
+                    !=job["input"]["rsiArchiveSelection"]["candidateId"]
+                || !crate::engine::rsi_archive::valid_selection(
+                    &state,&job["input"]["rsiArchiveSelection"],&commit,
+                    &job["input"]["rsiFrozenCases"])) {
+            return Err("실행 후손의 계승 아카이브 후보가 동결 평가 증거와 다릅니다.".into());
         }
         if pinned && job["input"]["rsiPrincipleLearning"].is_object()
             && (!crate::engine::rsi_principle_learning::valid(
