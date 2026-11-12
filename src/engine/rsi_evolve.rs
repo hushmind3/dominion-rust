@@ -4610,10 +4610,15 @@ mod descendant_controller_contract_tests {
         let commit="a".repeat(40);
         let lineage=json!({"source":"descendant_curated_lineage_v1",
             "historyCount":1,"sha256":"f".repeat(64)});
+        let history=vec![json!({"attempt":1})];
+        let frontier=vec![json!({"role":"learning","domain":"learning",
+            "path":"src/engine/learning.rs","sourceBytes":100,
+            "sourceSha256":"d".repeat(64)})];
+        let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
         let meta=crate::engine::rsi_meta_controller::synthesize(
-            &[json!({"attempt":1})],&[json!({"role":"learning","domain":"learning",
-                "path":"src/engine/learning.rs","sourceBytes":100})],
-            &["learning"],None,&json!({}),&json!({}));
+            &history,&frontier,&["learning"],None,&json!({}),&json!({}),&influence);
+        let co_design=crate::engine::rsi_interaction::coupled_portfolio(
+            &meta["target"],&frontier,&influence,&["learning"]);
         let plan=json!({
             "source":"compiled_descendant_system_controller_v2",
             "generatorCommit":commit,"historyCount":1,"domain":"learning",
@@ -4627,6 +4632,8 @@ mod descendant_controller_contract_tests {
                 "profileSha256":"f".repeat(64),"references":[],"automaticPatchReuse":false},
             "comparativeMode":"local_source_redesign",
             "metaPolicy":meta,"successorStage":null,
+            "architectureTarget":meta["target"],"architectureFrontier":frontier,
+            "interactionGraph":influence,"coDesignPortfolio":co_design,
             "improvementDirective":{"mode":"change_approach"},
             "editPolicy":{"revision":"descendant-method-r2"}
         });
@@ -4645,9 +4652,10 @@ mod descendant_controller_contract_tests {
             "rsiComparativeMode":plan["comparativeMode"],
             "rsiMetaPolicy":plan["metaPolicy"],
             "rsiSuccessorStage":plan["successorStage"],
+            "rsiInteractionGraph":plan["interactionGraph"],
+            "rsiCoDesignPortfolio":plan["coDesignPortfolio"],
             "rsiControllerPlan":plan
         });
-        let history=vec![json!({"attempt":1})];
         let validated=validated_descendant_controller(&input,&history,&commit)
             .unwrap().unwrap();
         assert_eq!(validated.0,"learning");
@@ -4673,6 +4681,10 @@ mod descendant_controller_contract_tests {
         lost_lineage["rsiLineageCapsule"]["sha256"]=json!("a".repeat(64));
         assert!(validated_descendant_controller(&lost_lineage,&history,&commit).is_err(),
             "the resident coordinator cannot exchange the descendant's inherited experience");
+        let mut swapped_bundle=input.clone();
+        swapped_bundle["rsiCoDesignPortfolio"]["focus"][0]["sourceSha256"]=json!("wrong");
+        assert!(validated_descendant_controller(&swapped_bundle,&history,&commit).is_err(),
+            "the parent cannot swap a coupled redesign's original source");
         let mut wrong_method=input;
         wrong_method["rsiEditPolicy"]["revision"]=json!("parent");
         assert!(validated_descendant_controller(&wrong_method,&history,&commit).is_err());
