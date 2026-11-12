@@ -55,20 +55,91 @@ fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
     !has_write && tool_calls >= 6
 }
 
-/// A restricted RSI round must stay restricted on following rounds. Otherwise
-/// the search tools silently reappear after the first corrective instruction,
-/// and the same source is read repeatedly rather than turned into a change.
-fn rsi_checkpoint_applies(tool_calls:u64,has_write:bool,previously_entered:bool)->bool {
-    !has_write && (previously_entered || rsi_should_checkpoint(tool_calls,has_write))
+/// A concrete source-edit goal cannot spend every model round re-reading its
+/// evidence. An edit-only stage is reached only after real source material was
+/// delivered in the prompt or returned by a successful read tool. Unfocused
+/// autonomous research retains its more permissive decision checkpoint.
+fn rsi_checkpoint_stage_with_method(
+    tool_calls:u64, read_calls:u64, has_write:bool,
+    focus_available:bool, source_in_prompt:bool, policy:&Value,
+)->Option<bool>{
+    if has_write {return None;}
+    let threshold=policy["checkpointAfter"].as_u64().unwrap_or(3).clamp(2,5);
+    if focus_available && (source_in_prompt || read_calls>0)
+        && tool_calls>=threshold {return Some(true);}
+    rsi_should_checkpoint(tool_calls,has_write).then_some(false)
+}
+fn rsi_checkpoint_stage(
+    tool_calls: u64, read_calls: u64, has_write: bool,
+    explicit_focus: bool, source_in_prompt: bool,
+) -> Option<bool> {
+    rsi_checkpoint_stage_with_method(tool_calls,read_calls,has_write,
+        explicit_focus,source_in_prompt,&Value::Null)
 }
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
-fn rsi_checkpoint_tool(name: &str) -> bool {
+fn rsi_checkpoint_tool(name: &str, edit_only: bool) -> bool {
+    if edit_only {
+        return matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range");
+    }
     matches!(
         name,
         "workspace_read_range" | "workspace_write" | "workspace_replace" | "workspace_replace_range" | "rsi_method_propose" | "algorithm_propose"
     )
+}
+
+/// Learned search/contrast stages must not deadlock a grounded RSI worker.
+/// Real anonymous models sometimes choose an edit before the controller's
+/// search-only substage advances. If a CURRENT source read succeeded and no
+/// re-ground is required, offer both existing-file edits as bounded fallback.
+/// Hash/oldText preconditions and detached worktree verification still apply.
+fn rsi_offer_grounded_edit_fallback(
+    menu:&mut Vec<Value>, catalog:&[Value],
+    focused:bool, has_current_read:bool, must_reground:bool, verified_write:bool,
+)->bool {
+    if !focused || !has_current_read || must_reground || verified_write {
+        return false;
+    }
+    let mut changed=false;
+    for definition in catalog {
+        let name=tool_name(definition);
+        if matches!(name,"workspace_replace_range"|"workspace_replace")
+            && !rsi_tool_advertised(name,menu) {
+            menu.push(definition.clone());
+            changed=true;
+        }
+    }
+    changed
+}
+
+/// Execute the verifier-selected compiler repair as an actual tool menu
+/// transition. Every retry re-observes the failed source in this run before
+/// an edit is offered. A failed edit invalidates that observation again.
+fn rsi_compiler_repair_route(
+    session:&Value, operations:&[Value], verified_write:bool
+)->Option<crate::engine::rsi_edit_program::Route>{
+    let target=session["rsiRepairPath"].as_str().filter(|p|!p.is_empty())?;
+    if verified_write {return None;}
+    let mut grounded=false;
+    for op in operations {
+        if op["tool"]=="workspace_read_range"
+            && op["status"]=="completed"
+            && op["arguments"]["path"].as_str()==Some(target)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|digest|
+                digest.len()==64 && digest.bytes().all(|byte|byte.is_ascii_hexdigit())) {
+            grounded=true;
+        }
+        if matches!(op["tool"].as_str(),
+            Some("workspace_replace_range"|"workspace_replace"|"workspace_write"))
+            && (op["status"]!="completed" || op["result"]["written"]!=true
+                || op["toolReceipt"]["verified"]!=true) {
+            grounded=false;
+        }
+    }
+    Some(crate::engine::rsi_edit_program::Route{
+        phase:if grounded {"edit"} else {"reground"}
+    })
 }
 
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
@@ -77,606 +148,107 @@ fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
     !is_room && !rsi_run
 }
 
-/// Recover an exact, currently advertised RSI tool when a compatible model
-/// accidentally appends its channel delimiter to a native function name.
-/// Never normalize an unadvertised tool: the edit-stage menu is an authority
-/// boundary, not merely a model hint.
-fn rsi_canonical_tool_name<'a>(name: &'a str, round_tools: &[Value]) -> Option<&'a str> {
-    let advertised = |candidate: &str| {
-        round_tools.iter().any(|definition| tool_name(definition) == candidate)
-    };
-    if advertised(name) {
-        return Some(name);
-    }
-    for suffix in ["<|channel|>commentary", "<|channel|>analysis"] {
-        if let Some(base) = name.strip_suffix(suffix) {
-            if advertised(base) {
-                return Some(base);
-            }
+/// Small OpenAI-compatible models sometimes send a structured tool action as
+/// plain assistant text even after advertising native functions. Only recover
+/// such replies inside the focused RSI edit stage, where the available menu
+/// has already been reduced to source-editing tools. Ordinary native model
+/// answers remain untouched.
+fn rsi_textual_edit_fallback(rsi_run: bool, explicit_focus: bool, edit_stage: bool) -> bool {
+    rsi_run && explicit_focus && edit_stage
+}
+
+/// OpenAI-compatible models sometimes return a tool which was advertised in
+/// an earlier round rather than this round. The RSI decision checkpoint must
+/// be enforced by the executor, not solely by a provider's tool_choice hint.
+fn rsi_tool_advertised(name: &str, round_tools: &[Value]) -> bool {
+    round_tools.iter().any(|definition| tool_name(definition) == name)
+}
+
+/// Some compatible model gateways leak a channel delimiter INTO the name of
+/// an otherwise valid native tool. Recover only an EXACT advertised tool with
+/// a known trailing protocol delimiter. Never introduce a tool that the RSI
+/// stage did not advertise: discovery restrictions remain enforceable.
+fn rsi_canonical_tool_name<'a>(name:&'a str, round_tools:&[Value])->Option<&'a str>{
+    if rsi_tool_advertised(name,round_tools) {return Some(name);}
+    for suffix in ["<|channel|>commentary","<|channel|>analysis"] {
+        if let Some(base)=name.strip_suffix(suffix) {
+            if rsi_tool_advertised(base,round_tools) {return Some(base);}
         }
     }
     None
 }
 
-/// Only a real source observation without any attempted change/proposal
-/// warrants asking the RSI model once more to turn research into action.
-/// Research-only RSI chats must be free to finish after reading. The
-/// corrective source edit continuation belongs only to a real native
-/// generation with a concrete indexed file, not to all rsiRun sessions.
-fn rsi_generation_has_action_target(session:&Value)->bool {
-    session["rsiRun"]==true && session["rsiCampaignId"].is_string()
-        && session["rsiGenerationJobId"].is_string()
-        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
+/// "completed" is not synonymous with a source change: an unchanged
+/// replacement can legitimately return success. Only a verified readback of
+/// written bytes may advance the RSI source-edit checkpoint.
+fn rsi_verified_write_operation(operation: &Value) -> bool {
+    operation["status"] == "completed"
+        && matches!(operation["tool"].as_str(),
+            Some("workspace_write" | "workspace_replace" | "workspace_replace_range"))
+        && operation["result"]["written"] == true
+        && operation["toolReceipt"]["verified"] == true
 }
 
-/// A single, observed read-only completion gets a source-edit action round.
-/// Switch a genuine generation from repeated exploration to one concrete
-/// edit decision as soon as it has studied its chosen file. The model still
-/// authors all changed lines; the evaluator decides whether they improve it.
-/// Hand a model-authored patch to frozen worktree evaluation without another
-/// expensive LLM round. Only the exact selected source and independently
-/// verified post-write bytes qualify; neither a tool call nor an unchanged
-/// write is improvement evidence.
-/// Recover only the observed file digest from THIS execution when a small
-/// model omitted it in a focused range edit. The model must still supply the
-/// actual replacement and a range fully covered by its earlier source read.
-fn ground_observed_range_edit(mut args:Value, observations:&[Value])->Value {
-    let line=|value:&Value|value.as_u64()
-        .or_else(||value.as_str().and_then(|s|s.parse::<u64>().ok()));
-    for key in ["startLine","endLine"] {
-        if let Some(number)=line(&args[key]).filter(|n|*n>0) {
-            args[key]=json!(number);
-        }
-    }
-    if args["expectedSha256"].as_str().is_some_and(|s|!s.is_empty()) {return args;}
-    let (Some(path),Some(start),Some(end))=(
-        args["path"].as_str(),line(&args["startLine"]),line(&args["endLine"])) else {
-        return args;
-    };
-    if start==0 || end<start || end.saturating_sub(start)>=120 {return args;}
-    // A failed syntax edit changes the file's digest. Earlier reads cannot
-    // grant authority for the new version, even when they cover these lines.
-    // The operation store is not guaranteed to return reads in opSeq order.
-    let latest=observations.iter().filter(|op|
-        op["status"]=="completed" && op["tool"]=="workspace_read_range"
-            && op["arguments"]["path"].as_str()==Some(path))
-        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0));
-    let digest=latest.and_then(|op|{
-        if line(&op["result"]["startLine"]).is_none_or(|first|first>start)
-            || line(&op["result"]["endLine"]).is_none_or(|last|last<end) {
-            return None;
-        }
-        op["result"]["sourceSha256"].as_str().filter(|sha|
-            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-    });
-    if let Some(digest)=digest {
-        args["expectedSha256"]=json!(digest);
-    }
-    args
-}
-
-/// Accept a small model's complete JSON range edit as a NATIVE tool call
-/// only after the same run actually observed the target source lines. This
-/// is an adapter, not an automatic patch generator or a bypass of approvals.
-/// Build one bounded edit turn from the actual versioned source observation.
-/// The local model authors replacement bytes; native tools still execute and
-/// independently verify every effect before the campaign can adopt it.
-fn rsi_compact_local_edit_context(
-    session:&Value,operations:&[Value],execution_id:&str,preferred_tool:&str
-)->Option<Vec<Value>>{
-    if !rsi_generation_has_action_target(session){return None;}
-    let path=session["rsiFocusFile"].as_str()?;
-    let read=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["tool"]=="workspace_read_range"
-            && op["status"]=="completed"
-            && op["arguments"]["path"].as_str()==Some(path)
-            && op["result"]["sourceSha256"].as_str().is_some_and(|hash|
-                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())))
-        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0))?;
-    let source=read["result"]["content"].as_str()?;
-    if source.trim().is_empty(){return None;}
-    let hash=read["result"]["sourceSha256"].as_str()?;
-    let start=read["result"]["startLine"].as_u64().unwrap_or(1);
-    let end=read["result"]["endLine"].as_u64().unwrap_or(start+100);
-    // The read tool returns "   45 actual code" to anchor range edits.
-    // For exact-text compiler repair that prefix is NOT part of the file.
-    // Strip it by verified read line position before asking the model for
-    // oldText, otherwise even a correct replacement cannot match the source.
-    let editable_excerpt=if preferred_tool=="workspace_replace" {
-        source.lines().enumerate().map(|(index,line)|{
-            let numbered=format!("{:>5} ",start.saturating_add(index as u64));
-            line.strip_prefix(&numbered).unwrap_or(line)
-        }).collect::<Vec<_>>().join("\n")
-    }else{source.to_string()};
-    let objective=session["rsiObjective"].as_str()
-        .filter(|goal|!goal.trim().is_empty()).unwrap_or("DOMINION의 개선 능력 강화");
-    // Compact local model turns intentionally omit earlier chat history.
-    // Reintroduce independently witnessed rustc errors for a repair operation,
-    // rather than instructing the model to rewrite the original feature.
-    let compiler_errors=session["rsiRepairDiagnostics"].as_array().into_iter().flatten()
-        .take(3).filter_map(|item|{
-            let detail=item["error"].as_str()?;
-            if detail.trim().is_empty(){return None;}
-            Some(format!("{}: {}",
-                item["label"].as_str().unwrap_or("cargo check"),
-                detail.chars().take(1100).collect::<String>()))
-        }).collect::<Vec<_>>();
-    let repair_task=if compiler_errors.is_empty(){String::new()} else{
-        format!("\n[실제 컴파일 실패 패치의 필수 교정]\n이전 모델 편집이 빌드에 실패했습니다. 복원된 소스에서 아래 오류를 만드는 코드만 최소한으로 고치세요. 이전의 개선 의도는 유지하고 검사를 삭제하지 마세요. 수정 결과는 독립 빌드와 A/B로 평가합니다.\n{}\n",
-            compiler_errors.join("\n"))
-    };
-    let edit_contract=if preferred_tool=="workspace_replace" {
-        "workspace_replace(path,oldText,newText,expectedSha256)를 호출하세요. oldText는 실제 관측한 원문과 정확히 일치해야 합니다."
-    } else {
-        "workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 정확한 줄 번호와 SHA-256이 필요합니다."
-    };
-    let instruction=format!(
-        "목표: {}\n개선 분야: {}\n편집 대상: {}\n실제 관측 범위: {}..{}\n실제 SHA-256: {}\n{}\n현재 파일 내용(원문 번호 포함):\n{}\n\n위에서 읽은 범위 안에서 실제로 개선할 코드를 모델이 결정해 작성하세요. {} 변경할 근거가 없다면 가짜 수정은 하지 마세요. 다른 파일을 수정하지 마세요.",
-        objective.chars().take(1200).collect::<String>(),
-        session["rsiDomain"].as_str().unwrap_or(""),
-        path,start,end,hash,repair_task,editable_excerpt.chars().take(9500).collect::<String>(),edit_contract);
-    Some(vec![
-        json!({"role":"system","content":
-            "DOMINION 독립 개선기. 파일 쓰기는 제공된 native tool 호출로만 수행한다. 소스 해시·줄 번호를 검증하고 독립 품질 평가는 다른 엔진이 수행한다. JSON 또는 실제 도구 호출 이외의 긴 분석은 출력하지 않는다."}),
-        json!({"role":"user","content":instruction}),
-    ])
-}
-
-fn rsi_grounded_json_edit(
-    content:&str,session:&Value,operations:&[Value],execution_id:&str,
-    offered:&[Value],
-)->Option<Value> {
-    if !rsi_generation_has_action_target(session)
-        || offered.len()!=1 || tool_name(&offered[0])!="workspace_replace_range" {
-        return None;
-    }
-    let candidate=content.trim();
-    let body=if let Some(fenced)=candidate.strip_prefix("```json") {
-        fenced.trim().strip_suffix("```")?.trim()
-    } else if let Some(fenced)=candidate.strip_prefix("```") {
-        fenced.trim().strip_suffix("```")?.trim()
-    } else {candidate};
-    let mut parsed=serde_json::from_str::<Value>(body).ok()?;
-    // Some models return a full tool-call wrapper. Never accept a different
-    // tool name or a free-form text command as an executable edit.
-    if parsed["tool"].is_string() || parsed["arguments"].is_object() {
-        if parsed["tool"]!="workspace_replace_range" {return None;}
-        parsed=parsed["arguments"].clone();
-    }
-    let path=parsed["path"].as_str()?.to_string();
-    if parsed["path"]!=session["rsiFocusFile"]
-        || !crate::engine::rsi::safe_path(&path) {return None;}
-    let count=|v:&Value|v.as_u64()
-        .or_else(||v.as_str().and_then(|s|s.parse::<u64>().ok()));
-    let (start,end)=(count(&parsed["startLine"])?,count(&parsed["endLine"])?);
-    if start==0 || end<start || end-start>=120 {return None;}
-    let text=parsed["newText"].as_str()?;
-    if text.len()>20_000 {return None;}
-    let relevant=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["status"]=="completed"
-            && op["tool"]=="workspace_read_range"
-            && op["arguments"]["path"]==parsed["path"])
-        .collect::<Vec<_>>();
-    // Do not fall back to an old read after an unsuccessful syntax patch.
-    // A fresh error-focused observation supersedes earlier source snapshots.
-    let read=relevant.into_iter().max_by_key(|op|
-        op["opSeq"].as_u64().unwrap_or(0))?;
-    if !count(&read["result"]["startLine"]).is_some_and(|n|n<=start)
-        || !count(&read["result"]["endLine"]).is_some_and(|n|n>=end) {
-        return None;
-    }
-    let digest=read["result"]["sourceSha256"].as_str()?;
-    if digest.len()!=64 || !digest.bytes().all(|b|b.is_ascii_hexdigit()){
-        return None;
-    }
-    if parsed["expectedSha256"].as_str().is_some_and(|sha|sha!=digest) {
-        return None;
-    }
-    parsed["startLine"]=json!(start);
-    parsed["endLine"]=json!(end);
-    parsed["expectedSha256"]=json!(digest);
-    // The native workspace_replace_range handler still determines whether
-    // this text actually edits the frozen source, and evaluates its receipt.
-    Some(json!({"path":path,"startLine":start,"endLine":end,
-        "newText":parsed["newText"],"expectedSha256":digest}))
-}
-
-/// Small models sometimes emit an exact-text patch as plain JSON. Accept it
-/// only if the old text is an unambiguous line in the current witnessed read;
-/// otherwise use the normal model tool-call path and its native validation.
-fn rsi_grounded_json_exact_edit(
-    content:&str,session:&Value,operations:&[Value],execution_id:&str,
-    offered:&[Value]
-)->Option<Value> {
-    if !rsi_generation_has_action_target(session)
-        || offered.len()!=1 || tool_name(&offered[0])!="workspace_replace" {
-        return None;
-    }
-    let candidate=content.trim();
-    let body=if let Some(fenced)=candidate.strip_prefix("```json") {
-        fenced.trim().strip_suffix("```")?.trim()
-    } else if let Some(fenced)=candidate.strip_prefix("```") {
-        fenced.trim().strip_suffix("```")?.trim()
-    } else {candidate};
-    let mut parsed=serde_json::from_str::<Value>(body).ok()?;
-    if parsed["tool"].is_string() || parsed["arguments"].is_object() {
-        if parsed["tool"]!="workspace_replace" {return None;}
-        parsed=parsed["arguments"].clone();
-    }
-    let path=parsed["path"].as_str()?;
-    if parsed["path"]!=session["rsiFocusFile"]
-        || !crate::engine::rsi::safe_path(path) {return None;}
-    let old=parsed["oldText"].as_str()?;
-    let new=parsed["newText"].as_str()?;
-    if old.trim().is_empty() || new.len()>20_000
-        || old.len()>4_000 || old.contains('\n') {return None;}
-    let read=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["tool"]=="workspace_read_range"
-            && op["status"]=="completed"
-            && op["arguments"]["path"].as_str()==Some(path)
-            && op["result"]["sourceSha256"].as_str().is_some_and(|h|
-                h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit())))
-        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0))?;
-    let observed=read["result"]["content"].as_str()?;
-    if observed.matches(old).count()!=1 {return None;}
-    let hash=read["result"]["sourceSha256"].as_str()?;
-    if parsed["expectedSha256"].as_str().is_some_and(|h|h!=hash){return None;}
-    Some(json!({"path":path,"oldText":old,"newText":new,
-        "expectedSha256":hash}))
-}
-
-/// A same-turn compiler repair must see real, versioned post-edit bytes.
-fn rsi_syntax_repair_prompt(path:&str,observation:&Value,diagnostics:&str)->Option<String>{
-    // workspace_read_range records the resolved workspace path in its
-    // result, while the tool arguments and RSI focus use a relative path.
-    // Match complete path components, not a raw string suffix.
-    let observed_path=observation["path"].as_str()?;
-    if observed_path!=path && !std::path::Path::new(observed_path)
-        .ends_with(std::path::Path::new(path)) {return None;}
-    let hash=observation["sourceSha256"].as_str()?;
-    if hash.len()!=64 || !hash.bytes().all(|b|b.is_ascii_hexdigit()){
-        return None;
-    }
-    let excerpt=observation["content"].as_str()?;
-    if excerpt.trim().is_empty(){return None;}
-    let start=observation["startLine"].as_u64()?;
-    let end=observation["endLine"].as_u64()?;
-    if start==0 || end<start {return None;}
-    Some(format!(
-        "The previous Rust edit failed syntax parsing. Fix the ACTUAL changed source below with one minimal workspace_replace call. Preserve the intended optimization. Do not edit tests or claim adoption.\nPath: {path}\nCurrent sourceSha256: {hash}\nObserved lines: {start}..{end}\nParser diagnostic:\n{}\nActual post-edit source (line-numbered):\n{}",
-        diagnostics.chars().take(1600).collect::<String>(),
-        excerpt.chars().take(9000).collect::<String>()))
-}
-
-fn rsi_patch_ready_for_evaluation(
-    session: &Value, tool: &str, args: &Value, result: &Value, receipt: &Value,
+/// A focused single-target RSI run should hand a real, hash-receipted edit
+/// straight to the independent worktree verifier. The verifier, not the model's
+/// closing prose, decides whether the resulting patch compiles or improves.
+/// This avoids paying another full model context after source modification.
+fn rsi_patch_ready_for_verification(
+    session: &Value, tool: &str, args: &Value, result: &Value, ok: bool,
 ) -> bool {
-    if !rsi_generation_has_action_target(session)
-        || !matches!(tool, "workspace_replace" | "workspace_replace_range")
-        || args["path"] != session["rsiFocusFile"]
-        || result["written"] != true
-        || result["syntaxValid"] == false
-        || receipt["status"] != "completed"
-        || receipt["toolReceipt"]["verified"] != true {
-        return false;
-    }
-    let Some(digest)=result["postSha256"].as_str() else { return false };
-    digest.len()==64
-        && digest.bytes().all(|b|b.is_ascii_hexdigit())
-        && receipt["observedVersion"].as_str() == Some(format!("sha256:{digest}").as_str())
+    let compiler_repair_target = session["rsiRepairPath"].as_str()
+        .filter(|path|args["path"].as_str()==Some(*path));
+    ok && session["rsiRun"] == true
+        && (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true
+            || compiler_repair_target.is_some())
+        && (session["rsiCampaignId"].is_string() || compiler_repair_target.is_some())
+        && (compiler_repair_target.is_some() || session["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.len() == 1 && files[0].as_str() == args["path"].as_str()))
+        && matches!(tool, "workspace_replace_range" | "workspace_replace")
+        && result["written"] == true
+        && result["postSha256"].as_str().is_some_and(|sha|
+            sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Native source-improvement work may need more time than an interactive
-/// conversation, while the supervising worker still enforces its own budget.
-fn source_generation_turn_limit(session:&Value)->Duration {
-    if rsi_generation_has_action_target(session) {
-        Duration::from_secs(840)
-    } else {
-        MAX_ELAPSED
-    }
-}
-fn turn_limit_error(limit:Duration)->String {
-    if limit==MAX_ELAPSED {
-        "실행 시간 제한(10분)을 초과했습니다.".into()
-    } else {
-        format!("자기개선 세대 실행 시간 제한({}초)을 초과했습니다.",limit.as_secs())
-    }
-}
-
-/// Only real descendant generations with an indexed source target may
-/// bootstrap source inspection. A first model response without tool calls is
-/// otherwise a common cause of RSI ending with no file modification.
-fn rsi_bootstrap_read_due(session:&Value, offered:&[Value], round:usize)->bool {
-    round==0 && rsi_generation_has_action_target(session)
-        && offered.iter().any(|tool|tool_name(tool)=="workspace_read_range")
-}
-
-fn rsi_focused_edit_due(
-    session: &Value, operations: &[Value], execution_id: &str,
-    tool_calls: u64, already_issued: bool,
-) -> bool {
-    if already_issued || tool_calls==0 || !rsi_generation_has_action_target(session)
-        || !rsi_read_only_completion(operations,execution_id) {
-        return false;
-    }
-    let Some(path)=session["rsiFocusFile"].as_str() else { return false };
-    operations.iter().any(|op|{
-        if op["runId"].as_str()!=Some(execution_id)
-            || op["status"]!="completed"
-            || op["tool"]!="workspace_read_range"
-            || op["arguments"]["path"].as_str()!=Some(path) {
-            return false;
-        }
-        // When the first read includes a versioned excerpt, act on it NOW.
-        // Legacy unversioned reads still require a second tool observation.
-        let versioned=op["result"]["sourceSha256"].as_str().is_some_and(|sha|
-            sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()));
-        versioned || tool_calls>=2
-    })
-}
-
-/// A condition/action program is created from actual source-work episodes by
-/// DOMINION's decision GRAMMAR. Its suffix predicate is executable, and its
-/// outcome can modify the grammar used to create the next descendant's rules.
-fn rsi_conditional_rule_next_tool(
-    session:&Value,operations:&[Value],execution_id:&str,offered:&[Value],
-)->Option<(String,String)>{
-    if !rsi_generation_has_action_target(session)
-        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
-        return None;
-    }
-    let domain=session["rsiDomain"].as_str()?;
-    let focus=session["rsiFocusFile"].as_str()?;
-    let rules=session["rsiInducedMethodPolicy"]["decisionNodes"].as_array()?;
-    let mut events=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["opSeq"].as_u64().is_some()
-            && matches!(op["status"].as_str(),Some("completed"|"failed"))
-            && (op["tool"]=="code_search" ||
-                op["arguments"]["path"].as_str()==Some(focus)))
-        .collect::<Vec<_>>();
-    events.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64()));
-    let after_failed=events.iter().rev().find(|op|
-        op["status"]=="failed"
-            && matches!(op["tool"].as_str(),
-                Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
-        .and_then(|op|op["opSeq"].as_u64()).unwrap_or(0);
-    let fresh_read=events.iter().any(|op|
-        op["tool"]=="workspace_read_range" && op["status"]=="completed"
-            && op["opSeq"].as_u64().is_some_and(|n|n>after_failed)
-            && op["result"]["sourceSha256"].as_str().is_some_and(|hash|
-                hash.len()==64 && hash.bytes().all(|b|b.is_ascii_hexdigit())));
-    let mut choices=Vec::<(i64,usize,String,String)>::new();
-    for rule in rules {
-        if rule["domain"].as_str()!=Some(domain)
-            || rule["status"]!="candidate_requires_descendant_execution" {continue;}
-        let Some(next)=rule["nextTool"].as_str() else{continue};
-        if !offered.iter().any(|tool|tool_name(tool)==next){continue;}
-        if matches!(next,"workspace_replace"|"workspace_replace_range"|"workspace_write")
-            && !fresh_read {continue;}
-        let Some(suffix)=rule["guard"]["suffix"].as_array() else{continue};
-        if suffix.is_empty() || suffix.len()>3 || suffix.len()>events.len(){continue;}
-        if !suffix.iter().zip(events[events.len()-suffix.len()..].iter())
-            .all(|(condition,op)| condition["tool"]==op["tool"]
-                && condition["status"]==op["status"]) {continue;}
-        let score=rule["score"].as_i64().unwrap_or(0);
-        if score<=0 {continue;}
-        let Some(id)=rule["id"].as_str() else{continue};
-        choices.push((score,suffix.len(),next.into(),id.into()));
-    }
-    choices.sort_by(|a,b|b.0.cmp(&a.0).then(b.1.cmp(&a.1))
-        .then(a.3.cmp(&b.3)));
-    choices.into_iter().next().map(|(_,_,tool,id)|(tool,id))
-}
-
-/// Run a source-work program COMPOSED from independently observed method
-/// edges. These are not model claims or canned edits: only witnessed native
-/// operations advance a program's cursor, and the source hash must be read
-/// before an edit tool can be prioritized.
-fn rsi_composed_program_next_tool(
-    session:&Value,operations:&[Value],execution_id:&str,offered:&[Value],
-)->Option<(String,String)> {
-    if !rsi_generation_has_action_target(session)
-        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
-        return None;
-    }
-    let domain=session["rsiDomain"].as_str()?;
-    let focus=session["rsiFocusFile"].as_str()?;
-    let programs=session["rsiInducedMethodPolicy"]["executionPrograms"].as_array()?;
-    // A failed edit (or an unversioned follow-up read) invalidates the old
-    // source snapshot. Never replay a previously matched program prefix as
-    // if the failed edit did not happen.
-    let barrier=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["arguments"]["path"].as_str()==Some(focus)
-            && (op["status"]=="failed"
-                && matches!(op["tool"].as_str(),
-                    Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
-                || op["status"]=="completed" && op["tool"]=="workspace_read_range"
-                    && !op["result"]["sourceSha256"].as_str()
-                        .is_some_and(|sha|sha.len()==64
-                            && sha.bytes().all(|b|b.is_ascii_hexdigit()))))
-        .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0);
-    let mut witnessed=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-            && op["status"]=="completed"
-            && op["opSeq"].as_u64().is_some_and(|seq|seq>barrier)
-            && (op["tool"]=="code_search" ||
-                op["arguments"]["path"].as_str()==Some(focus)))
-        .filter(|op|match op["tool"].as_str().unwrap_or("") {
-            "code_search" => op["result"]["matchCount"].as_u64().unwrap_or(0)>0,
-            "workspace_read_range" => op["result"]["sourceSha256"].as_str()
-                .is_some_and(|sha|sha.len()==64
-                    && sha.bytes().all(|byte|byte.is_ascii_hexdigit())),
-            "workspace_replace"|"workspace_replace_range"|"workspace_write" =>
-                op["result"]["written"]==true && op["toolReceipt"]["verified"]==true,
-            _=>false,
-        }).collect::<Vec<_>>();
-    witnessed.sort_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
-        .then(a["id"].as_str().cmp(&b["id"].as_str())));
-    let completed=witnessed.iter().filter_map(|op|op["tool"].as_str())
-        .collect::<Vec<_>>();
-    let read_for_focus=witnessed.iter().any(|op|
-        op["tool"]=="workspace_read_range" &&
-        op["arguments"]["path"].as_str()==Some(focus));
-    let mut ranked=Vec::<(i64,usize,String,String)>::new();
-    for program in programs {
-        if program["domain"].as_str()!=Some(domain)
-            || program["status"]!="candidate_requires_descendant_execution" {
-            continue;
-        }
-        let Some(steps)=program["steps"].as_array() else{continue};
-        if !(2..=5).contains(&steps.len()) {continue;}
-        let Some(id)=program["id"].as_str() else{continue};
-        let mut progress=0usize;
-        // A valid prefix must be the most recent witnessed sequence, not an
-        // arbitrary occurrence earlier in the turn or in another execution.
-        for length in (1..steps.len()).rev() {
-            if completed.len()>=length
-                && steps[..length].iter().zip(
-                    completed[completed.len()-length..].iter())
-                    .all(|(step,tool)|step.as_str()==Some(*tool)) {
-                progress=length;
-                break;
+/// A small model may omit the hash or encode line numbers as strings. Recover
+/// only information already observed by a successful range read in THIS run,
+/// for the same file and covering the requested edit. Never infer newText,
+/// overwrite a valid supplied digest, or bypass the final file hash check.
+/// A malformed "hash" from a small model is not a usable source-version proof:
+/// replace only that malformed value with the exact matching observed digest.
+fn rsi_ground_range_edit_args(mut args: Value, completed: &[Value]) -> Value {
+    for field in ["startLine", "endLine"] {
+        if let Some(raw) = args[field].as_str().map(str::to_string) {
+            if !raw.is_empty() && raw.len() <= 12 && raw.bytes().all(|b| b.is_ascii_digit()) {
+                if let Ok(number) = raw.parse::<u64>() {
+                    args[field] = json!(number);
+                }
             }
         }
-        if progress==0 {continue;}
-        let Some(next)=steps[progress].as_str() else{continue};
-        if !offered.iter().any(|tool|tool_name(tool)==next){continue;}
-        if matches!(next,"workspace_replace"|"workspace_replace_range"|"workspace_write")
-            && !read_for_focus {continue;}
-        let score=program["score"].as_i64().unwrap_or(0);
-        if score<=0 {continue;}
-        ranked.push((score,progress,next.to_string(),id.to_string()));
     }
-    ranked.sort_by(|a,b|b.0.cmp(&a.0).then(b.1.cmp(&a.1))
-        .then(a.3.cmp(&b.3)));
-    ranked.into_iter().next().map(|(_,_,tool,id)|(tool,id))
-}
-
-/// Act on DOMINION's own learnt, revisioned transition weights. The code
-/// selects the likely next *tool*, never invents source bytes or skips frozen
-/// evaluation. This is a real change in the subsequent model's tool menu,
-/// not merely an additional memory paragraph.
-fn rsi_induced_next_tool(
-    session:&Value, operations:&[Value], execution_id:&str, offered:&[Value],
-)->Option<String> {
-    if !rsi_generation_has_action_target(session)
-        || session["rsiInducedMethodPolicy"]["kind"]!="harness.method-transitions" {
-        return None;
+    if args["expectedSha256"].as_str().is_some_and(|s|
+        s.len()==64 && s.bytes().all(|byte|byte.is_ascii_hexdigit())) {
+        return args;
     }
-    if let Some((tool,_))=rsi_conditional_rule_next_tool(
-        session,operations,execution_id,offered) {
-        return Some(tool);
+    let Some(path) = args["path"].as_str() else {return args;};
+    let Some(start) = args["startLine"].as_u64() else {return args;};
+    let Some(end) = args["endLine"].as_u64() else {return args;};
+    if start == 0 || end < start || args["newText"].as_str().is_none() {
+        return args;
     }
-    if let Some((tool,_))=rsi_composed_program_next_tool(
-        session,operations,execution_id,offered) {
-        return Some(tool);
+    let matching = completed.iter()
+        .filter(|op| op["status"] == "completed"
+            && op["tool"] == "workspace_read_range"
+            && op["arguments"]["path"].as_str() == Some(path)
+            && op["result"]["startLine"].as_u64().is_some_and(|from| from <= start)
+            && op["result"]["endLine"].as_u64().is_some_and(|to| end <= to)
+            && op["result"]["sourceSha256"].as_str().is_some_and(|sha|
+                sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())))
+        .max_by_key(|op| op["opSeq"].as_u64().unwrap_or(0));
+    if let Some(read) = matching {
+        args["expectedSha256"] = read["result"]["sourceSha256"].clone();
     }
-    let focus=session["rsiFocusFile"].as_str()?;
-    let last=operations.iter().filter(|op|
-        op["runId"].as_str()==Some(execution_id)
-        && op["status"]=="completed"
-        && matches!(op["tool"].as_str(),Some("code_search"|"workspace_read_range"|
-            "workspace_replace"|"workspace_replace_range"|"workspace_write"))
-        && (op["tool"]=="code_search"
-            || op["arguments"]["path"].as_str()==Some(focus)))
-        .max_by(|a,b|a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
-            .then(a["id"].as_str().cmp(&b["id"].as_str())))?;
-    let from=last["tool"].as_str()?;
-    let has_observed_focus=operations.iter().any(|op|
-        op["runId"].as_str()==Some(execution_id)
-        && op["tool"]=="workspace_read_range" && op["status"]=="completed"
-        && op["arguments"]["path"].as_str()==Some(focus)
-        && op["result"]["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64));
-    let mut ranked=session["rsiInducedMethodPolicy"]["transitions"].as_array()?
-        .iter().filter_map(|row|{
-            if row["from"].as_str()!=Some(from){return None;}
-            let to=row["to"].as_str()?;
-            if matches!(to,"workspace_replace"|"workspace_replace_range"|"workspace_write")
-                && !has_observed_focus{return None;}
-            if !offered.iter().any(|tool|tool_name(tool)==to){return None;}
-            let domain=session["rsiDomain"].as_str().unwrap_or("");
-            let local=&row["byDomain"][domain];
-            let local_evidence=local.is_object();
-            let evidence=if local_evidence{local}else{row};
-            let yes=evidence["positive"].as_u64().unwrap_or(0) as i64;
-            let no=evidence["negative"].as_u64().unwrap_or(0) as i64;
-            // An unsuccessful transfer affects this domain, not every
-            // previously working domain. Untried domains only inherit a
-            // transition after it has twice succeeded elsewhere; the
-            // inherited suggestion is still an experiment.
-            let contradicted_elsewhere=row["byDomain"].as_object().is_some_and(|domains|
-                domains.values().any(|outcome|
-                    outcome["negative"].as_u64().unwrap_or(0)>0
-                    && outcome["negative"].as_u64().unwrap_or(0)
-                        >=outcome["positive"].as_u64().unwrap_or(0)));
-            let transferable=local_evidence || (yes>=2 && !contradicted_elsewhere);
-            let kernel=&session["rsiInducedMethodPolicy"]["scoringKernel"]["rule"];
-            let score=crate::engine::rsi_evolve::method_rule_score(
-                yes.max(0) as u64,no.max(0) as u64,kernel);
-            (transferable && yes>no).then_some((score,to.to_string()))
-        }).collect::<Vec<_>>();
-    ranked.sort_by(|a,b|b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    if let Some((_,tool))=ranked.into_iter().next(){return Some(tool);}
-    // No transition has positive support in this domain. A real frozen
-    // regression may still teach DOMINION to avoid a repeatedly failing edit
-    // primitive, even before the first success has been observed.
-    if from!="workspace_read_range" || !has_observed_focus {return None;}
-    let choices=["workspace_replace_range","workspace_replace"];
-    if !choices.iter().all(|name|offered.iter().any(|tool|tool_name(tool)==*name)){
-        return None;
-    }
-    let loss=|to:&str|{
-        let domain=session["rsiDomain"].as_str().unwrap_or("");
-        let Some(row)=session["rsiInducedMethodPolicy"]["transitions"]
-            .as_array().and_then(|rows|rows.iter().find(|row|
-                row["from"].as_str()==Some(from) && row["to"].as_str()==Some(to)))
-            else{return 0i64};
-        let evidence=if row["byDomain"][domain].is_object() {
-            &row["byDomain"][domain]
-        }else{row};
-        (evidence["negative"].as_u64().unwrap_or(0) as i64
-            - evidence["positive"].as_u64().unwrap_or(0) as i64).max(0)
-    };
-    let range_loss=loss("workspace_replace_range");
-    let exact_loss=loss("workspace_replace");
-    if range_loss>0 && exact_loss<range_loss {
-        Some("workspace_replace".into())
-    }else if exact_loss>0 && range_loss<exact_loss {
-        Some("workspace_replace_range".into())
-    }else{
-        None
-    }
-}
-
-fn rsi_final_edit_tools(available:&[Value],learned_preference:Option<&str>)->Vec<Value> {
-    // An independently witnessed method can change the edit mechanism used
-    // by the next generation. With no learnt evidence, compact range editing
-    // remains the baseline. This changes the actual offered native tool.
-    learned_preference.filter(|name|matches!(*name,"workspace_replace_range"|"workspace_replace"))
-        .and_then(|name|available.iter().find(|tool|tool_name(tool)==name))
-        .or_else(||available.iter().find(|tool|tool_name(tool)=="workspace_replace_range"))
-        .or_else(||available.iter().find(|tool|tool_name(tool)=="workspace_replace"))
-        .into_iter().cloned().collect()
-}
-
-fn rsi_read_only_completion(operations: &[Value], execution_id: &str) -> bool {
-    let mut read = false;
-    for op in operations {
-        if op["runId"].as_str() != Some(execution_id) { continue; }
-        match op["tool"].as_str() {
-            Some("workspace_read_range" | "workspace_read")
-                if op["status"] == "completed" => read = true,
-            Some("workspace_replace" | "workspace_replace_range" | "workspace_write" |
-                "rsi_method_propose" | "algorithm_propose") => return false,
-            _ => {}
-        }
-    }
-    read
+    args
 }
 
 pub async fn run_turn(
@@ -895,10 +467,9 @@ async fn run_turn_with_policy(
             state.store.put("execution", &execution);
         }
     }
-    let turn_limit=source_generation_turn_limit(&session);
     let result = tokio::select! {
-        result = tokio::time::timeout(turn_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
-            result.unwrap_or_else(|_| Err(turn_limit_error(turn_limit))),
+        result = tokio::time::timeout(MAX_ELAPSED, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
+            result.unwrap_or_else(|_| Err("실행 시간 제한(10분)을 초과했습니다.".into())),
         // A closed SSE client must not destroy work already in flight. The turn
         // keeps running in its spawned task; only an explicit cancel or the
         // elapsed budget stops it. Results stay durable for later reads.
@@ -966,7 +537,7 @@ async fn run_turn_body(
     source_message_id: Option<&str>,
 ) -> Result<Option<Value>, String> {
     let turn_started = std::time::Instant::now();
-    let mut session = state
+    let session = state
         .store
         .get("session", session_id)
         .ok_or("Session not found")?;
@@ -1138,9 +709,14 @@ async fn run_turn_body(
         .and_then(|algorithm| algorithm["parameters"]["maxRounds"].as_u64())
         .unwrap_or(MAX_ROUNDS as u64)
         .clamp(2, 24) as usize;
-    if session["rsiRun"] == true {
-        // RSI generations mix reading, checkpointing and editing. Eight rounds
-        // is enough to abort a real attempt before the edit lands.
+    if session["rsiRepairPath"].is_string() && session["rsiRun"] == true {
+        // A compiler-directed repair is not a second open-ended generation.
+        // The exact file/line is already supplied by the independent verifier:
+        // allow a short fresh-read/edit/re-read/edit sequence, then return to
+        // verification instead of spending the entire next generation budget.
+        max_rounds = 6;
+    } else if session["rsiRun"] == true {
+        // Unfocused source discovery still needs the regular edit budget.
         max_rounds = max_rounds.max(16);
     }
     let max_tools = budget_algorithm
@@ -1198,7 +774,7 @@ async fn run_turn_body(
     } else {
         None
     };
-    let (prompt_context, history_messages) = if let Some(compiled) = compiled {
+    let (prompt_context, mut history_messages) = if let Some(compiled) = compiled {
         let delivered_memories = compiled.system.items.iter()
             .filter(|item| item["kind"] == "memory")
             .filter_map(|item| item["id"].as_str().and_then(|id| state.store.get("memory", id)))
@@ -1228,6 +804,15 @@ async fn run_turn_body(
         )?;
         (prompt_context, history_messages)
     };
+    if session["rsiRun"] == true && session["rsiRepairPath"].is_string() {
+        // Prior model transcripts contain failed tool calls and large read
+        // outputs. They do not describe the CURRENT broken source version.
+        // Replaying them in each repair round multiplies token cost and
+        // encourages the model to resend stale hashes/oldText. Preserve the
+        // append-only record in the store, but give the repair turn only the
+        // independently extracted compiler diagnostic and a fresh source read.
+        history_messages.clear();
+    }
     let mut messages = vec![json!({"role":"system","content":prompt_context.prompt,"_dominion_source":reply_to,
         "_dominion_dependencies":super::continuity::dependencies(state,&prompt_context.items)})];
     if is_room {
@@ -1328,11 +913,11 @@ async fn run_turn_body(
     // Deterministic decomposition runs before any model call. It gives the
     // turn an engine-owned ordered sub-goal list and an independently graded
     // signal that does not depend on whole-task success.
-    let decomposition_algorithm = crate::engine::algorithms::choose_for_agent(
+    let decomposition_algorithm = crate::engine::algorithms::choose_decomposition_for_agent(
         state,
-        "task.decomposition",
         request.agent_id.as_deref(),
         Some(execution_id),
+        task_input(&session,&request.input),
     )
     .unwrap_or(Value::Null);
     let decomposition =
@@ -1556,13 +1141,13 @@ async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let turn_limit=source_generation_turn_limit(&session);
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, turn_limit);
+    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, MAX_ELAPSED);
     let mut rsi_decision_checkpoint = false;
-    let mut rsi_final_edit_retry = false;
-    let mut rsi_edit_action_pending = false;
-    let mut rsi_patch_written = false;
-    let mut rsi_syntax_repair_issued = false;
+    let mut rsi_edit_only_announced = false;
+    let mut rsi_edit_retry = false;
+    let mut rsi_edit_stage_requested = false;
+    let mut rsi_last_program_phase = String::new();
+    let mut rsi_last_rule_id = String::new();
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1588,70 +1173,6 @@ async fn run_turn_body(
     };
     messages.extend(harness_messages);
 
-    // Bootstrapping an RSI generation must not depend on a 4B model
-    // voluntarily choosing to inspect the file. The NATIVE Rust harness
-    // performs a real, budgeted source observation through the same gateway;
-    // it never fabricates the source, a patch, or a quality result.
-    let mut rsi_bootstrap_observed=false;
-    if request.tools_enabled && request.tools_execution_enabled
-        && rsi_generation_has_action_target(&session)
-        && tool_definitions.iter().any(|def|tool_name(def)=="workspace_read_range")
-    {
-        if let Some(path)=session["rsiFocusFile"].as_str() {
-            let earlier=state.store.all("execution_operation").into_iter().any(|op|
-                op["runId"]==execution_id && op["tool"]=="workspace_read_range"
-                    && op["status"]=="completed" && op["arguments"]["path"]==path
-                    && op["result"]["sourceSha256"].as_str().is_some_and(|sha|sha.len()==64));
-            if !earlier && budget.can_execute_tool() {
-                // A verified compiler error takes precedence over the old
-                // code index. The repair worker must read the failing line,
-                // not the beginning of an unrelated function.
-                let start=session["rsiRepairFocusStartLine"].as_u64()
-                    .or_else(||crate::engine::code_index::bootstrap_source_start(
-                        state,
-                        session["rsiIndexId"].as_str().unwrap_or(""),
-                        path,
-                        session["rsiObjective"].as_str().unwrap_or(""),
-                        session["rsiDomain"].as_str().unwrap_or(""),
-                    )).or_else(||session["rsiFocusStartLine"].as_u64())
-                    .unwrap_or(1).max(1);
-                let end=start.saturating_add(95);
-                let args=json!({"path":path,"startLine":start,"endLine":end});
-                if !budget.charge_tool() {
-                    return Err("RSI source bootstrap tool budget exhausted".into());
-                }
-                op_seq+=1;
-                let call=ToolCall{id:format!("rsi-observe-{}",uuid::Uuid::new_v4()),
-                    name:"workspace_read_range".into(),arguments:args.to_string()};
-                let (observation,ok,_)=dispatch_tool_call(
-                    state,tx,&session,request,session_id,execution_id,&call,
-                    args,metrics,op_seq,0,0,false,"rsi_native_bootstrap",
-                    None,None,None,
-                ).await?;
-                rsi_bootstrap_observed=ok
-                    && observation["sourceSha256"].as_str().is_some_and(|sha|
-                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-                    && observation["path"].is_string();
-                if rsi_bootstrap_observed {
-                    messages.push(json!({"role":"system","content":format!(
-                        "DOMINION이 실제 선택 파일 {}의 현재 소스를 도구로 읽었습니다. 다음 코드와 sourceSha256이 검증 가능한 출발점입니다.\n{}\n이제 읽은 구간에 근거한 구체적인 개선을 모델이 작성하세요. workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 추측으로 파일을 변경하지 마세요.",
-                        path,observation.to_string().chars().take(11_000).collect::<String>())}));
-                } else {
-                    messages.push(json!({"role":"system","content":format!(
-                        "선택 소스 {path}의 자동 읽기가 성공하지 못했습니다. 기존 읽기·탐색 도구를 사용해 현재 소스와 해시를 직접 확인하세요.")}));
-                }
-                if let Some(mut record)=state.store.get("execution",execution_id) {
-                    record["rsiNativeBootstrap"]=json!({"path":path,
-                        "readSucceeded":rsi_bootstrap_observed,
-                        "operationId":format!("{execution_id}:0:0:{}",call.id),
-                        "sourceSha256":observation["sourceSha256"],
-                        "mode":"harness_observation_not_synthetic_patch"});
-                    state.store.put("execution",&record);
-                }
-            } else {rsi_bootstrap_observed=earlier;}
-        }
-    }
-
     for round in 0..max_rounds {
         if finished { break; }
         if !budget.charge_round() {
@@ -1659,14 +1180,14 @@ async fn run_turn_body(
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
-            return Err(turn_limit_error(turn_limit));
+            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
         }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
         }
-        if started_at.elapsed() > turn_limit {
-            return Err(turn_limit_error(turn_limit));
+        if started_at.elapsed() > MAX_ELAPSED {
+            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
@@ -1748,137 +1269,207 @@ async fn run_turn_body(
                 .unwrap_or(60_000);
             round_tools = trim_tool_definitions(round_tools, budget);
         }
-        if !force_final && request.tools_enabled && request.tools_execution_enabled
-            && !rsi_bootstrap_observed
-            && rsi_bootstrap_read_due(&session,&tool_definitions,round) {
-            // A broad schema budget can truncate the read tool before a
-            // local model sees it. Select it from the original authorized
-            // catalog, then send ONLY this small schema on the first round.
-            // The real tool still uses the normal approval/evidence path.
-            round_tools=tool_definitions.iter().filter(|definition|
-                tool_name(definition)=="workspace_read_range")
-                .take(1).cloned().collect();
-            messages.push(json!({"role":"system","content":format!(
-                "자기개선 시작: 먼저 workspace_read_range를 호출해 {}의 개선할 소스 구간을 읽으세요. 이 실행에서 실제 sourceSha256과 줄 번호를 확보한 뒤 수정을 작성하세요. 이미 주어진 파일 이외의 경로는 사용하지 마세요.",
-                session["rsiFocusFile"].as_str().unwrap_or(""))}));
-            if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiBootstrapRead"]=json!({"target":session["rsiFocusFile"],
-                    "mode":"required_witnessed_source_read","round":round});
-                state.store.put("execution",&record);
-            }
-        }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let has_write = state.store.all("execution_operation").iter().any(|operation| {
-                operation["runId"].as_str() == Some(execution_id)
-                    && operation["status"].as_str() == Some("completed")
-                    && operation["result"]["written"] == true
-                    && matches!(
-                        operation["tool"].as_str(),
-                        Some("workspace_write" | "workspace_replace" | "workspace_replace_range")
-                    )
-            });
-            if rsi_checkpoint_applies(tool_calls,has_write,rsi_decision_checkpoint) {
-                round_tools.retain(|definition| rsi_checkpoint_tool(tool_name(definition)));
-                if !rsi_decision_checkpoint {
-                    messages.push(json!({
-                        "role":"system",
-                        "content":"추가 탐색을 중단하세요. 지금까지의 근거로 코드 변경이나 재사용 가능한 실행 방법을 제안할 수 있습니다. 근거가 없으면 변경 없이 최종 보고하세요. code_search는 중단하고, 빠진 정확한 구간을 확인할 때만 workspace_read_range를 사용하세요."
+            let mut all_operations = state.store.all("execution_operation").into_iter()
+                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
+                .collect::<Vec<_>>();
+            // The generic store returns most-recently-updated first. A
+            // program must consume operations in true execution order:
+            // failed edit -> fresh read means recovery, not another failure.
+            all_operations.sort_by_key(|operation|
+                operation["opSeq"].as_u64().unwrap_or(u64::MAX));
+            let completed = all_operations.iter().filter(|operation|
+                operation["status"] == "completed").cloned().collect::<Vec<_>>();
+            let has_write = completed.iter().any(rsi_verified_write_operation);
+            let read_calls = completed.iter().filter(|operation| matches!(
+                operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read"))).count() as u64;
+            let grounded = session["rsiFocusContextReady"] == true || read_calls > 0;
+            let focused=session["rsiExplicitFocus"]==true || session["rsiAutoFocus"]==true
+                || session["rsiFocusFiles"].as_array().is_some_and(|files| !files.is_empty());
+            let program_stage = rsi_compiler_repair_route(
+                &session, &all_operations, has_write,
+            ).or_else(||crate::engine::rsi_edit_program::route(
+                &session["rsiEditPolicy"], &all_operations, tool_calls,
+                focused, session["rsiFocusContextReady"] == true,
+            ));
+            // Newly required source-hash observation takes priority over
+            // any synthesized search/edit policy. Otherwise a learned rule
+            // can indefinitely suppress the only recovery tool.
+            let must_ground=program_stage.is_some_and(|decision|
+                matches!(decision.phase,"focus_ground"|"reground"));
+            // Compiler repair is driven by actual verifier evidence, so a
+            // previously induced search-only rule cannot shadow its edit phase.
+            let rule_decision = if must_ground || session["rsiRepairPath"].is_string() {None} else {
+                crate::engine::rsi_decision_rules::choose(
+                    &session["rsiEditPolicy"], &all_operations, tool_calls,
+                    focused, session["rsiFocusContextReady"] == true,
+                )
+            };
+            if let Some(rule)=rule_decision.as_ref() {
+                if rsi_last_rule_id != rule.id {
+                    let receipt=json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id,&rule.id,&tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "ruleId":rule.id,"toolCalls":tool_calls,
+                        // opSeq and toolCalls are different counters when the
+                        // native harness runs deterministic steps. Persist
+                        // the actual last observed operation to attribute
+                        // only later verified source edits to this rule.
+                        "opSeqBefore":all_operations.iter()
+                            .filter_map(|op|op["opSeq"].as_u64()).max().unwrap_or(0),
+                        "allow":rule.allow,
+                        "recordedAt":chrono::Utc::now().to_rfc3339(),
+                    });
+                    state.store.put("rsi_rule_execution",&receipt);
+                    state.store.audit("rsi.synthesized_rule_fired",receipt.clone());
+                    messages.push(json!({"role":"system","content":format!(
+                        "DOMINION이 실제 실행 경험으로 합성한 판단 조건이 충족되었습니다 (규칙 {}). 이번 단계에서는 다음 도구만 사용하세요: {}. 작업 결과를 관찰하면 실행 정책을 다시 평가합니다.",
+                        &rule.id[..rule.id.len().min(10)],rule.allow.join(", "))
                     }));
-                    rsi_decision_checkpoint = true;
+                    rsi_last_rule_id=rule.id.clone();
+                }
+            } else {
+                rsi_last_rule_id.clear();
+            }
+            if let Some(decision) = program_stage {
+                if rsi_last_program_phase != decision.phase {
+                    state.store.audit("rsi.program_stage_executed", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "programRevision":session["rsiEditPolicy"]["revision"],
+                        "phase":decision.phase,"toolCalls":tool_calls,
+                        "observedOperations":all_operations.len(),
+                    }));
+                    if decision.phase == "reground" {
+                        messages.push(json!({"role":"system","content":
+                            "이전 편집 실행이 실패했습니다. 소스 버전이 변경됐을 수 있습니다. workspace_read_range로 현재 범위와 해시를 다시 관찰한 뒤 정확한 버전에서 재편집하세요."}));
+                    } else if decision.phase == "contrast" {
+                        messages.push(json!({"role":"system","content":
+                            "독립 평가에서 개선이 없었던 이전 방법과 다른 가설을 확인하세요. 대안 탐색에 code_search를 사용할 수 있습니다. 이미 현재 소스 원문과 해시를 읽어 수정 근거가 있다면 검색 반복 없이 workspace_replace_range 또는 workspace_replace로 새 구현을 작성하세요."}));
+                    }
+                    let stage_receipt = json!({
+                        "id":crate::engine::memory::stable_id(&[
+                            execution_id, decision.phase, &tool_calls.to_string()
+                        ]),
+                        "sessionId":session_id,"runId":execution_id,
+                        "generationJobId":session["rsiGenerationJobId"],
+                        "campaignId":session["rsiCampaignId"],
+                        "policyRevision":session["rsiEditPolicy"]["revision"],
+                        "phase":decision.phase,"toolCalls":tool_calls,
+                        "observedOperations":all_operations.len(),
+                        "recordedAt":chrono::Utc::now().to_rfc3339(),
+                    });
+                    state.store.put("rsi_program_phase",&stage_receipt);
+                    rsi_last_program_phase=decision.phase.to_string();
                 }
             }
-        }
-        if !force_final && request.tools_execution_enabled
-            && !rsi_edit_action_pending
-            && rsi_focused_edit_due(
-                &session,&state.store.all("execution_operation"),execution_id,
-                metrics.lock().unwrap().tool_calls as u64,rsi_final_edit_retry)
-        {
-            rsi_final_edit_retry=true;
-            rsi_edit_action_pending=true;
-            messages.push(json!({"role":"system","content":
-                "선택된 소스 파일의 관련 구간을 이미 읽었습니다. 더 검색하지 말고 workspace_replace_range를 사용해 확인된 줄 번호, sourceSha256, 수정할 newText만 제출하세요. 코드 개선 근거가 없으면 근거 없는 변경을 주장하지 마세요."}));
-            if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiActionRetry"]=json!({"reason":"focused_source_observed",
-                    "issued":true,"priorToolCalls":metrics.lock().unwrap().tool_calls});
-                state.store.put("execution",&record);
-            }
-        }
-        if rsi_edit_action_pending && rsi_generation_has_action_target(&session) {
-            // The previous real source read is already in the model context.
-            // On ONE additional model call, offer the exact replacement schema
-            // instead of another broad research menu. Provider native mode
-            // requires an action; the model still authors oldText/newText.
-            let learned=rsi_induced_next_tool(&session,
-                &state.store.all("execution_operation"),execution_id,&tool_definitions);
-            // Real failed range edits repeatedly appended at the end of a
-            // 96-line observation, producing uncompilable patches. A witnessed
-            // compiler failure changes the *executed edit operator*: use a
-            // small exact-text replacement against the observed file version,
-            // not another unrestricted range replacement at an arbitrary line.
-            let compiler_repair=session["rsiRepairDiagnostics"].as_array()
-                .is_some_and(|items|items.iter().any(|item|
-                    item["error"].as_str().is_some_and(|error|!error.trim().is_empty())));
-            let requested=if compiler_repair
-                && tool_definitions.iter().any(|tool|tool_name(tool)=="workspace_replace") {
-                Some("workspace_replace")
-            } else {learned.as_deref()};
-            round_tools=rsi_final_edit_tools(&tool_definitions,requested);
-            if let Some(mut record)=state.store.get("execution",execution_id) {
-                record["rsiActionRetry"]["toolChoice"]=json!(
-                    round_tools.first().map(tool_name).unwrap_or("unavailable"));
-                record["rsiActionRetry"]["selectionBasis"]=json!(
-                    if compiler_repair {"witnessed_compiler_failure_exact_edit"}
-                    else {"learned_method_or_baseline"});
-                state.store.put("execution",&record);
-            }
-        }
-        if let Some(next)=rsi_induced_next_tool(&session,
-            &state.store.all("execution_operation"),execution_id,&round_tools) {
-            let ops=state.store.all("execution_operation");
-            let conditional=rsi_conditional_rule_next_tool(
-                &session,&ops,execution_id,&round_tools)
-                .and_then(|(preferred,id)|(preferred==next).then_some(id));
-            let composed=if conditional.is_none(){
-                rsi_composed_program_next_tool(&session,&ops,execution_id,&round_tools)
-                    .and_then(|(preferred,id)|(preferred==next).then_some(id))
-            } else {None};
-            round_tools.sort_by_key(|definition|tool_name(definition)!=next);
-            if let Some(mut record)=state.store.get("execution",execution_id) {
-                let decision=json!({
-                    "policyId":session["rsiInducedMethodPolicy"]["id"],
-                    "revision":session["rsiInducedMethodPolicy"]["revision"],
-                    "preferredTool":next,"executionProgramId":composed,
-                    "decisionRuleId":conditional,"mode":"empirical_tool_priority",
-                    "afterOpSeq":op_seq,"modelRound":round,
-                    "domain":session["rsiDomain"],
-                    "focusPath":session["rsiFocusFile"],
-                    "scoringKernel":session["rsiInducedMethodPolicy"]["scoringKernel"],
-                    "claim":"experiment_not_verified_capability_gain"
-                });
-                record["rsiInducedMethodDecision"]=decision.clone();
-                if !record["rsiInducedMethodChoices"].is_array() {
-                    record["rsiInducedMethodChoices"]=json!([]);
+            // An observed read followed by a textual non-edit must be
+            // eligible for a concrete editing retry. Learned search/contrast
+            // stages previously shadowed this flag and made the offered tool
+            // set read-only even while the system demanded a patch.
+            let failed_edit_since_read = all_operations.iter().rev()
+                .take_while(|op|op["tool"]!="workspace_read_range")
+                .any(|op|matches!(op["tool"].as_str(),
+                    Some("workspace_replace_range"|"workspace_replace"))
+                    && (op["status"]!="completed" || op["result"]["written"]==false));
+            // A compiler-directed retry needs a fresh read of its exact
+            // failing file. An older "try editing now" hint must not remove
+            // workspace_read_range from the only repair tool menu.
+            let edit_retry_override=session["rsiRepairPath"].as_str().is_none()
+                && rsi_edit_stage_requested && grounded && !has_write
+                && !failed_edit_since_read;
+            let stage = if edit_retry_override {Some(true)} else {
+                rule_decision.as_ref().map(|decision|decision.edit_only())
+                    .or_else(||program_stage.map(|decision|decision.edit_only()))
+                    .or_else(||rsi_checkpoint_stage_with_method(
+                        tool_calls, read_calls, has_write,
+                        focused, session["rsiFocusContextReady"] == true,
+                        &session["rsiEditPolicy"],
+                    ))
+            };
+            if let Some(edit_only) = stage {
+                // Reapply the restriction on EVERY following model round.
+                // The old one-shot guard reopened code_search and all read
+                // tools after the first checkpoint, allowing read-only loops.
+                if edit_retry_override {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|matches!(tool_name(definition),
+                            "workspace_replace"|"workspace_replace_range"|"workspace_write"))
+                        .cloned().collect();
+                    state.store.audit("rsi.focused_edit_retry_unblocked",serde_json::json!({
+                        "executionId":execution_id,"sessionId":session_id,
+                        "toolCalls":tool_calls,"policyRevision":session["rsiEditPolicy"]["revision"]
+                    }));
+                } else if let Some(rule)=rule_decision.as_ref() {
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|rule.allows(tool_name(definition)))
+                        .cloned().collect();
+                } else if let Some(decision)=program_stage {
+                    // Restore the selected phase's tiny tool menu from the
+                    // original catalog. A context-size trim of the general
+                    // menu must never delete the only hash re-read tool.
+                    round_tools=tool_definitions.iter()
+                        .filter(|definition|decision.allows(tool_name(definition)))
+                        .cloned().collect();
+                } else {
+                    round_tools.retain(|definition|
+                        rsi_checkpoint_tool(tool_name(definition), edit_only));
                 }
-                let choices=record["rsiInducedMethodChoices"].as_array_mut().unwrap();
-                if !choices.iter().any(|row|row["afterOpSeq"]==decision["afterOpSeq"]
-                    && row["preferredTool"]==decision["preferredTool"]) {
-                    choices.push(decision);
+                // The learned algorithm changes the executable edit menu's
+                // order after a real source observation, independently of
+                // the model's preference or prose. Both grounded edit tools
+                // remain available as recovery options.
+                let preferred=session["rsiEditPolicy"]["preferredTool"].as_str()
+                    .filter(|tool| matches!(*tool,"workspace_replace_range"|"workspace_replace"));
+                if edit_only {
+                    if let Some(preferred)=preferred {
+                        round_tools.sort_by_key(|definition|tool_name(definition)!=preferred);
+                    }
                 }
-                state.store.put("execution",&record);
+                if edit_only && !rsi_edit_only_announced {
+                    messages.push(json!({"role":"system",
+                        "content":format!("DOMINION 개선 방법 선택: {:?} (정책 revision={}). 소스 근거 확인 단계는 종료되었습니다. 가능한 편집 연산 중 {}를 먼저 시도하세요. 해당 방식이 실제 관찰된 근거에 맞지 않으면 다른 편집 도구를 사용하세요. workspace_read_range의 startLine/endLine/sourceSha256을 이용한 범위 편집 또는 정확한 oldText 치환으로 소스를 수정하세요. 새 파일에만 workspace_write를 사용합니다. 조회 도구는 더 제공되지 않습니다. 실제 변경 전에는 테스트·완료를 주장하지 마세요.",
+                            session["rsiEditPolicy"]["method"].as_str().unwrap_or("balanced"),
+                            session["rsiEditPolicy"]["revision"].as_str().unwrap_or("default"),
+                            preferred.unwrap_or("workspace_replace_range"))
+                    }));
+                    rsi_edit_only_announced = true;
+                } else if !rsi_decision_checkpoint && program_stage.is_none() && rule_decision.is_none() {
+                    messages.push(json!({"role":"system",
+                        "content":"탐색 예산을 소진했습니다. code_search는 종료하고, 정확히 부족한 범위만 workspace_read_range로 보충하세요. 확보된 근거로 코드 편집이나 실행 가능한 방법을 시도한 뒤 실제 결과를 보고하세요. 근거가 없다면 그 이유를 보고하세요."
+                    }));
+                }
+                if !rsi_decision_checkpoint {
+                    state.store.audit("rsi.action_checkpoint", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "toolCalls":tool_calls,"readCalls":read_calls,
+                        "editOnly":edit_only,"editPolicy":session["rsiEditPolicy"]
+                    }));
+                }
+                rsi_decision_checkpoint = true;
+            }
+            // A learned contrast/search-only menu formerly rejected native
+            // writes forever: rejected calls are soft errors and do not
+            // advance the executed-tool counter used by the stage scheduler.
+            // One successful live read is sufficient to OFFER both editors;
+            // their preconditions still decide whether any patch is written.
+            if rsi_offer_grounded_edit_fallback(
+                &mut round_tools,&tool_definitions,focused,read_calls>0,
+                must_ground,has_write,
+            ) {
+                state.store.audit("rsi.grounded_edit_menu_recovered",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "toolCalls":tool_calls,"readCalls":read_calls,
+                    "programPhase":program_stage.map(|phase|phase.phase),
+                    "policyRevision":session["rsiEditPolicy"]["revision"]
+                }));
             }
         }
-        let wire_messages=if provider.local && rsi_edit_action_pending
-            && rsi_generation_has_action_target(&session)
-            && round_tools.len()==1
-            && matches!(tool_name(&round_tools[0]),
-                "workspace_replace_range"|"workspace_replace") {
-            rsi_compact_local_edit_context(&session,
-                &state.store.all("execution_operation"),execution_id,
-                tool_name(&round_tools[0]))
-                .unwrap_or_else(||messages.clone())
-        } else {messages.clone()};
+        let wire_messages = messages.clone();
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
         if session["rsiRun"]==true && !session["rsiCampaignId"].is_string() {
@@ -1898,23 +1489,11 @@ async fn run_turn_body(
         )?{
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
-        if provider.local && rsi_edit_action_pending
-            && rsi_generation_has_action_target(&session)
-            && round_tools.len()==1
-            && matches!(tool_name(&round_tools[0]),
-                "workspace_replace_range"|"workspace_replace") {
-            provider.max_output_tokens=Some(
-                provider.max_output_tokens.unwrap_or(8192).min(1200));
-        }
         {
             let mut counters = metrics.lock().unwrap();
             counters.model_calls += 1;
             counters.iterations = round as u32 + 1;
         }
-        let rsi_edit_response_expected=rsi_generation_has_action_target(&session)
-            && round_tools.len()==1
-            && matches!(tool_name(&round_tools[0]),
-                "workspace_replace_range"|"workspace_replace");
         let completion_result = stream_completion(
             state,
             &client,
@@ -1927,9 +1506,6 @@ async fn run_turn_body(
             allow_provider_fallback,
         )
         .await;
-        // Never force all later rounds to edit: the bounded action choice is
-        // consumed whether the provider complied or returned a real failure.
-        rsi_edit_action_pending=false;
         {
             let mut counters = metrics.lock().unwrap();
             counters.model_elapsed_ms += model_started.elapsed().as_millis() as u64;
@@ -2046,7 +1622,10 @@ async fn run_turn_body(
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call)
+            && (provider.tool_mode != "native" || has_dsml_call
+                || rsi_textual_edit_fallback(session["rsiRun"] == true,
+                    session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true,
+                    rsi_edit_only_announced))
             && !force_final
         {
             let known = round_tools
@@ -2077,50 +1656,37 @@ async fn run_turn_body(
             }
         }
 
-        if completion.tool_calls.is_empty() && rsi_edit_response_expected
-            && request.tools_enabled && request.tools_execution_enabled && !force_final {
-            let ops=state.store.all("execution_operation");
-            if let Some(arguments)=rsi_grounded_json_edit(
-                &completion.content,&session,&ops,execution_id,&round_tools)
-                .or_else(||rsi_grounded_json_exact_edit(
-                    &completion.content,&session,&ops,execution_id,&round_tools)) {
-                completion.tool_calls.push(ToolCall {
-                    id:uuid::Uuid::new_v4().to_string(),
-                    name:tool_name(&round_tools[0]).into(),
-                    arguments:arguments.to_string(),
-                });
-                if let Some(mut execution)=state.store.get("execution",execution_id) {
-                    execution["rsiStructuredEditAdaptation"]=json!({
-                        "origin":"model_authored_grounded_json",
-                        "tool":tool_name(&round_tools[0]),
-                        "sourceReadRequired":true,"round":round});
-                    state.store.put("execution",&execution);
-                }
-            }
-        }
         if completion.tool_calls.is_empty() {
-            // Actual live models have ended after reading source without
-            // calling any edit tool. Keep the existing source in context and
-            // offer one further choice, not a synthetic/automatic mutation.
-            if rsi_generation_has_action_target(&session) && request.tools_execution_enabled
-                && !force_final && !rsi_final_edit_retry && round + 1 < max_rounds
-                && round_tools.iter().any(|tool| matches!(tool_name(tool),"workspace_replace" | "workspace_replace_range"))
-                && rsi_read_only_completion(&state.store.all("execution_operation"), execution_id)
-            {
-                rsi_final_edit_retry = true;
-                rsi_edit_action_pending = true;
-                if !completion.content.trim().is_empty() {
-                    messages.push(json!({"role":"assistant","content":
-                        completion.content.chars().take(1200).collect::<String>()}));
+            // A focused RSI job is not finished by another explanation of
+            // its code. Give the model one bounded corrective opportunity to
+            // issue a real source edit; never fabricate a patch or verdict.
+            if (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true
+                    || session["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty()))
+                && !rsi_edit_retry && round + 1 < max_rounds {
+                let completed = state.store.all("execution_operation").into_iter()
+                    .filter(|operation| operation["runId"].as_str() == Some(execution_id)
+                        && operation["status"].as_str() == Some("completed"))
+                    .collect::<Vec<_>>();
+                let has_write = completed.iter().any(rsi_verified_write_operation);
+                let has_read = completed.iter().any(|operation| matches!(
+                    operation["tool"].as_str(), Some("workspace_read_range" | "workspace_read")));
+                // The model may try to finish after its FIRST read, before the
+                // ordinary three-tool threshold. In that case, run one real
+                // edit-focused continuation rather than counting more research
+                // as successful implementation.
+                if !has_write && (has_read || session["rsiFocusContextReady"] == true) {
+                    rsi_edit_retry = true;
+                    rsi_edit_stage_requested = true;
+                    state.store.audit("rsi.edit_retry", json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"sourceRead":has_read,
+                        "sourceInPrompt":session["rsiFocusContextReady"] == true
+                    }));
+                    messages.push(json!({"role":"user",
+                        "content":"명시된 코드 수정은 아직 수행되지 않았습니다. 이전 workspace_read_range 결과의 startLine/endLine/sourceSha256으로 workspace_replace_range를 호출하고 바꿀 코드만 newText에 넣으세요. 이전에 받은 정확한 oldText가 있다면 workspace_replace도 가능합니다. 새 파일에만 workspace_write를 사용하세요. 수정 불가능하다면 이유를 보고하세요."
+                    }));
+                    continue;
                 }
-                messages.push(json!({"role":"system","content":
-                    "실제 소스를 읽은 근거가 있으므로 확인한 줄 번호와 sourceSha256으로 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 호출하세요. 원본 코드를 oldText로 다시 복사하지 않아도 됩니다. 수정 근거가 없다면 파일을 고쳤다고 주장하지 말고 이유를 최종 보고에 남기세요. 이미 읽은 코드를 검색만 반복하지 마세요."}));
-                if let Some(mut record)=state.store.get("execution",execution_id) {
-                    record["rsiActionRetry"]=json!({"reason":"read_only_completion",
-                        "issued":true,"priorRound":round});
-                    state.store.put("execution",&record);
-                }
-                continue;
             }
             {
                 let mut operations = state
@@ -2318,21 +1884,15 @@ async fn run_turn_body(
 
         let mut seen_ids = std::collections::HashSet::new();
         for call in completion.tool_calls.iter_mut() {
-            if session["rsiRun"] == true {
-                if let Some(canonical) =
-                    rsi_canonical_tool_name(&call.name, &round_tools).map(str::to_string)
-                {
-                    if canonical != call.name {
-                        state.store.audit(
-                            "rsi.tool_name_protocol_recovered",
-                            json!({
-                                "sessionId": session_id,
-                                "executionId": execution_id,
-                                "original": call.name,
-                                "canonical": canonical
-                            }),
-                        );
-                        call.name = canonical;
+            if session["rsiRun"]==true {
+                if let Some(canonical)=rsi_canonical_tool_name(&call.name,&round_tools)
+                    .map(str::to_string) {
+                    if canonical!=call.name {
+                        state.store.audit("rsi.tool_name_protocol_recovered",json!({
+                            "sessionId":session_id,"executionId":execution_id,
+                            "original":call.name,"canonical":canonical
+                        }));
+                        call.name=canonical;
                     }
                 }
             }
@@ -2494,6 +2054,7 @@ async fn run_turn_body(
         }
         let mut ordering_used = false;
         let mut ordering_ok = true;
+        let mut rsi_patch_written = false;
         for (call_index, call) in round_calls.iter().enumerate() {
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
@@ -2507,6 +2068,21 @@ async fn run_turn_body(
                 || state.cancellation_generation(session_id) != generation
             {
                 return Err("실행이 중단되었습니다.".into());
+            }
+            if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
+                let error = format!(
+                    "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 편집 도구 중 하나를 사용하세요.",
+                    call.name
+                );
+                record_soft_tool_error(
+                    state, tx, session_id, request, execution_id, &call.name, &call.id,
+                    &error, metrics,
+                );
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content":json!({"error":error,"unadvertisedRsiTool":true}).to_string()
+                }));
+                continue;
             }
             let mut arguments = match serde_json::from_str::<Value>(&call.arguments) {
                 Ok(value) if value.is_object() => value,
@@ -2536,10 +2112,8 @@ async fn run_turn_body(
                         && operation["status"].as_str() == Some("completed")
                 })
                 .collect::<Vec<_>>();
-            if call.name=="workspace_replace_range"
-                && rsi_generation_has_action_target(&session)
-                && arguments["path"]==session["rsiFocusFile"] {
-                arguments=ground_observed_range_edit(arguments,&completed_operations);
+            if session["rsiRun"] == true && call.name == "workspace_replace_range" {
+                arguments = rsi_ground_range_edit_args(arguments, &completed_operations);
             }
             let procedure_violation = strategy_candidates.iter().find_map(|strategy| {
                 if !crate::engine::procedure::applies(
@@ -2734,19 +2308,17 @@ async fn run_turn_body(
             if !ok {
                 ordering_ok = false;
             }
-            // A source mutation is evaluated by the frozen worktree harness,
-            // rather than requiring the 4B model to restate its patch in prose.
-            if ok && rsi_patch_ready_for_evaluation(
-                &session, &call.name, &arguments, &result,
-                &state.store.get("execution_operation",
+            if rsi_patch_ready_for_verification(&session, &call.name, &arguments, &result, ok)
+                && state.store.get("execution_operation",
                     &format!("{execution_id}:{round}:{call_index}:{}", call.id))
-                    .unwrap_or(Value::Null),
-            ) {
+                    .is_some_and(|operation| operation["toolReceipt"]["verified"] == true)
+            {
                 rsi_patch_written = true;
-                state.store.audit("rsi.patch_submitted_for_evaluation", json!({
-                    "sessionId":session_id,"executionId":execution_id,
-                    "tool":call.name,"path":arguments["path"],
-                    "postSha256":result["postSha256"]
+                state.store.audit("rsi.patch_submitted_for_verification", json!({
+                    "sessionId": session_id, "executionId": execution_id,
+                    "tool": call.name, "callId": call.id,
+                    "path": arguments["path"],
+                    "postSha256": result["postSha256"],
                 }));
             }
             crate::engine::algorithms::mark_signal(
@@ -2838,67 +2410,6 @@ async fn run_turn_body(
             messages.push(json!({
                 "role":"tool","tool_call_id":call.id,"content":tool_content,
             }));
-            // A model-authored source write is not a finished improvement
-            // when the independent Rust parser reports invalid syntax.
-            // Reobserve the ACTUAL modified file with its new SHA, feed the
-            // failure back, and permit one focused, same-turn correction.
-            // This avoids a whole cargo check + new generation merely to
-            // discover the first broken token in a 4B model's edit.
-            if result["syntaxValid"]==false
-                && rsi_generation_has_action_target(&session)
-                && !rsi_syntax_repair_issued
-                && round+1<max_rounds {
-                let diagnostics=result["syntaxCheck"]["diagnostic"].as_str()
-                    .unwrap_or("Rust syntax validation failed.")
-                    .chars().take(1600).collect::<String>();
-                let path=session["rsiFocusFile"].as_str().unwrap_or("").to_string();
-                if !path.is_empty() && budget.can_execute_tool() {
-                    let line=result["syntaxCheck"]["line"].as_u64()
-                        .or_else(||arguments["startLine"].as_u64())
-                        .unwrap_or(1);
-                    let begin=line.saturating_sub(20).max(1);
-                    let probe=json!({"path":path,"startLine":begin,
-                        "endLine":begin.saturating_add(63)});
-                    if budget.charge_tool() {
-                        op_seq+=1;
-                        let source_call=ToolCall{
-                            id:format!("rsi-parse-reobserve-{}",uuid::Uuid::new_v4()),
-                            name:"workspace_read_range".to_string(),
-                            arguments:probe.to_string(),
-                        };
-                        let (observation,read_ok,_)=dispatch_tool_call(
-                            state,tx,&session,request,session_id,execution_id,
-                            &source_call,probe,metrics,op_seq,round,call_index,
-                            false,"rsi_parse_feedback",None,None,None,
-                        ).await?;
-                        if let Some(repair_prompt)=read_ok
-                            .then(||rsi_syntax_repair_prompt(&path,&observation,&diagnostics))
-                            .flatten() {
-                            rsi_syntax_repair_issued=true;
-                            session["rsiRepairDiagnostics"]=json!([{
-                                "label":"rustfmt observed source syntax",
-                                "error":diagnostics,
-                            }]);
-                            session["rsiRepairFocusStartLine"]=json!(begin);
-                            state.store.put("session",&session);
-                            rsi_edit_action_pending=true;
-                            // The re-observation happens outside the model's
-                            // tool-call transcript. Explicitly supply the new
-                            // bytes and hash; a generic 'read succeeded' notice
-                            // leaves cloud models repairing the OLD source.
-                            messages.push(json!({"role":"system","content":repair_prompt}));
-                            if let Some(mut execution)=state.store.get("execution",execution_id){
-                                execution["rsiParseRepair"]=json!({
-                                    "line":line,"observed":true,"status":"retry_model_edit",
-                                    "firstEditTool":call.name,
-                                    "sourceSha256":observation["sourceSha256"],
-                                });
-                                state.store.put("execution",&execution);
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         if ordering_used {
@@ -2907,7 +2418,9 @@ async fn run_turn_body(
             );
         }
         if rsi_patch_written {
-            final_content = "수정한 소스가 실제 기록됐습니다. 독립 빌드와 holdout 비교는 자기개선 실행 엔진이 판정합니다.".into();
+            // An observed edit is a candidate, not a proven improvement.
+            // rsi_worktree::finish captures the diff and runs the verifier.
+            final_content = "실제 소스 변경을 기록했습니다. 독립 빌드와 성능 비교는 실행 엔진이 수행합니다.".into();
             finished = true;
             break;
         }
@@ -3616,7 +3129,7 @@ fn select_room_tools(
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
                 "기록", "남겨", "write", "save", "edit", "delete", "create",
             ],
-            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range", "workspace_write", "file_write"],
+            &["workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "file_write"],
         ),
         (
             &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
@@ -3685,7 +3198,7 @@ fn select_room_tools(
             .filter(|definition| {
                 matches!(
                     tool_name(definition),
-                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace" | "workspace_replace_range" | "workspace_write" | "shell_exec" | "web_search"
+                    "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_replace_range" | "workspace_replace" | "workspace_write" | "shell_exec" | "web_search"
                 )
             })
             .collect();
@@ -3707,7 +3220,7 @@ fn select_tool_definitions(
         return definitions;
     }
     let default_core = [
-        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range", "workspace_write", "shell_exec",
+        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
         "task_status", "task_result",
     ];
@@ -7029,487 +6542,41 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
-    fn induced_temporal_rule_changes_descendant_action_after_failed_edit() {
-        let policy=json!({"kind":"harness.method-transitions",
-            "decisionNodes":[{"id":"recovered-guard","domain":"tools","score":9,
-                "status":"candidate_requires_descendant_execution",
-                "guard":{"suffix":[
-                    {"tool":"workspace_replace_range","status":"failed"},
-                    {"tool":"workspace_read_range","status":"completed"}]},
-                "nextTool":"workspace_replace"}],
-            "transitions":[]});
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"child","rsiDomain":"tools",
-            "rsiFocusFile":"src/engine/tools.rs",
-            "rsiInducedMethodPolicy":policy});
-        let failed=json!({"runId":"r","opSeq":1,"tool":"workspace_replace_range",
-            "status":"failed","arguments":{"path":"src/engine/tools.rs"}});
-        let read=json!({"runId":"r","opSeq":2,"tool":"workspace_read_range",
-            "status":"completed","arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let offered=vec![json!({"type":"function",
-            "function":{"name":"workspace_replace"}})];
-        assert_eq!(rsi_conditional_rule_next_tool(&session,&[failed.clone(),read.clone()],
-            "r",&offered),Some(("workspace_replace".into(),"recovered-guard".into())));
-        assert_eq!(rsi_induced_next_tool(&session,&[failed.clone(),read.clone()],
-            "r",&offered),Some("workspace_replace".into()));
-        let mut old=read.clone();
-        old["result"]["sourceSha256"]=json!("invalid");
-        assert!(rsi_conditional_rule_next_tool(&session,&[failed.clone(),old],
-            "r",&offered).is_none());
-        assert!(rsi_conditional_rule_next_tool(&session,&[failed,read],
-            "another-run",&offered).is_none());
-    }
-
-    #[test]
-    fn shortened_success_method_drives_next_real_descendant_edit_tool() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
-            "rsiGenerationJobId":"g","rsiDomain":"memory",
-            "rsiFocusFile":"src/engine/memory.rs",
-            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
-                "executionPrograms":[{"id":"short","domain":"memory","score":6,
-                    "steps":["workspace_read_range","workspace_replace"],
-                    "status":"candidate_requires_descendant_execution"}],
-                "transitions":[{"from":"workspace_read_range",
-                    "to":"workspace_replace_range","positive":5,"negative":0}]}});
-        let read=json!({"id":"read","runId":"real-run","opSeq":1,
-            "status":"completed","tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let offered=vec![
-            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace"}})];
-        assert_eq!(rsi_composed_program_next_tool(&session,&[read.clone()],
-            "real-run",&offered),Some(("workspace_replace".into(),"short".into())));
-        assert_eq!(rsi_induced_next_tool(&session,&[read],"real-run",&offered),
-            Some("workspace_replace".into()),
-            "descendant runtime must run the shortened learned edit method");
-    }
-
-    #[test]
-    fn descendant_executes_a_composed_method_program_step_by_step() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"generation","rsiDomain":"tools",
-            "rsiFocusFile":"src/engine/tools.rs",
-            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
-                "executionPrograms":[{
-                    "id":"generated-program","domain":"tools","score":5,
-                    "steps":["code_search","workspace_read_range","workspace_replace"],
-                    "status":"candidate_requires_descendant_execution"}],
-                "transitions":[{"from":"workspace_read_range",
-                    "to":"workspace_replace_range","positive":10,"negative":0}]}});
-        let search=json!({"id":"search","runId":"run","opSeq":1,
-            "tool":"code_search","status":"completed",
-            "result":{"matchCount":3}});
-        let read=json!({"id":"read","runId":"run","opSeq":2,
-            "tool":"workspace_read_range","status":"completed",
-            "arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let menu=vec![
-            json!({"type":"function","function":{"name":"workspace_read_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace"}})];
-        assert_eq!(rsi_composed_program_next_tool(&session,&[search.clone()],
-            "run",&menu),Some(("workspace_read_range".into(),
-            "generated-program".into())));
-        assert_eq!(rsi_induced_next_tool(&session,&[search.clone(),read.clone()],
-            "run",&menu),Some("workspace_replace".into()),
-            "a newly composed program beats the old single-transition scorer");
-        let mut invalid=read.clone();
-        invalid["result"]["sourceSha256"]=json!("no-source-proof");
-        assert!(rsi_composed_program_next_tool(&session,&[search.clone(),invalid],
-            "run",&menu).is_none(),"an unverified source read cannot advance a program");
-        assert!(rsi_composed_program_next_tool(&session,&[search.clone(),read.clone()],
-            "different-run",&menu).is_none(),
-            "a prior generation cannot be mistaken for this one's execution");
-        let failed=json!({"id":"failed-edit","runId":"run","opSeq":3,
-            "tool":"workspace_replace","status":"failed",
-            "arguments":{"path":"src/engine/tools.rs"}});
-        assert!(rsi_composed_program_next_tool(&session,
-            &[search.clone(),read.clone(),failed],"run",&menu).is_none(),
-            "a failed edit must invalidate the old program prefix");
-        let invalid_read=json!({"id":"stale-read","runId":"run","opSeq":3,
-            "tool":"workspace_read_range","status":"completed",
-            "arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"invalid"}});
-        assert!(rsi_composed_program_next_tool(&session,
-            &[search,read,invalid_read],"run",&menu).is_none(),
-            "an unversioned later read must invalidate the earlier source snapshot");
-        let wrong=menu[..1].to_vec();
-        assert!(rsi_composed_program_next_tool(&session,&[], "run",&wrong).is_none());
-    }
-
-    #[test]
-    fn rejected_range_edit_triggers_a_new_edit_method_before_any_success() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
-            "rsiGenerationJobId":"g","rsiDomain":"tools",
-            "rsiFocusFile":"src/engine/tools.rs",
-            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
-                "transitions":[{"from":"workspace_read_range","to":"workspace_replace_range",
-                    "positive":0,"negative":2,
-                    "byDomain":{"tools":{"positive":0,"negative":2}}}]}});
-        let read=json!({"id":"read","runId":"r","opSeq":1,"status":"completed",
-            "tool":"workspace_read_range","arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let offered=vec![
-            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace"}})
+    fn grounded_neutral_descendant_can_edit_despite_search_only_controller(){
+        let catalog=vec![
+            json!({"function":{"name":"code_search"}}),
+            json!({"function":{"name":"workspace_read_range"}}),
+            json!({"function":{"name":"workspace_replace_range"}}),
+            json!({"function":{"name":"workspace_replace"}}),
         ];
-        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"r",&offered),
-            Some("workspace_replace".into()),
-            "a measured range-edit failure should produce a different next trial");
-        assert_eq!(rsi_induced_next_tool(&session,&[read],"r",&offered[..1]),None,
-            "the algorithm cannot choose an edit mechanism unavailable to the model");
+        let mut contrast=catalog[..2].to_vec();
+        assert!(rsi_offer_grounded_edit_fallback(
+            &mut contrast,&catalog,true,true,false,false));
+        assert!(rsi_tool_advertised("workspace_replace_range",&contrast));
+        assert!(rsi_tool_advertised("workspace_replace",&contrast));
+        assert_eq!(contrast.len(),4);
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut contrast,&catalog,true,true,false,false));
+        let mut reground=catalog[..2].to_vec();
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut reground,&catalog,true,true,true,false));
+        assert!(!rsi_tool_advertised("workspace_replace_range",&reground));
+        assert!(!rsi_offer_grounded_edit_fallback(
+            &mut reground,&catalog,true,false,false,false));
     }
 
     #[test]
-    fn failed_transfer_revises_only_the_target_domain_method_choice() {
-        let base=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"generation","rsiFocusFile":"src/engine/memory.rs",
-            "rsiDomain":"tools",
-            "rsiInducedMethodPolicy":{"kind":"harness.method-transitions",
-                "transitions":[{"from":"workspace_read_range",
-                    "to":"workspace_replace_range","positive":4,"negative":2,
-                    "byDomain":{"memory":{"positive":4,"negative":0},
-                        "tools":{"positive":0,"negative":2}}}]}});
-        let read=json!({"id":"read","runId":"exec","opSeq":1,"status":"completed",
-            "tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let offered=vec![json!({"type":"function","function":{"name":"workspace_replace_range"}})];
-        assert_eq!(rsi_induced_next_tool(&base,&[read.clone()],"exec",&offered),None,
-            "failed cross-domain transfer must suspend this local action");
-        let mut original=base.clone();
-        original["rsiDomain"]=json!("memory");
-        assert_eq!(rsi_induced_next_tool(&original,&[read.clone()],"exec",&offered),
-            Some("workspace_replace_range".to_string()),
-            "successful source-domain method stays usable");
-        let mut unseen=base.clone();
-        unseen["rsiDomain"]=json!("ui");
-        assert_eq!(rsi_induced_next_tool(&unseen,&[read],"exec",&offered),
-            None,"a failed global trace is not a transferable success");
-    }
-
-    #[test]
-    fn learned_method_transition_changes_next_tools_and_failure_revises_it() {
-        let policy=json!({"kind":"harness.method-transitions","revision":"r2",
-            "transitions":[
-                {"from":"workspace_read_range","to":"workspace_replace_range",
-                    "positive":4,"negative":1},
-                {"from":"workspace_read_range","to":"code_search",
-                    "positive":1,"negative":2}
-            ]});
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/memory.rs",
-            "rsiInducedMethodPolicy":policy});
-        let read=json!({"id":"read","runId":"run","opSeq":2,"status":"completed",
-            "tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"sourceSha256":"a".repeat(64)}});
-        let menu=vec![
-            json!({"type":"function","function":{"name":"code_search"}}),
-            json!({"type":"function","function":{"name":"workspace_replace_range"}})];
-        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"run",&menu),
-            Some("workspace_replace_range".to_string()));
-        let mut revised=session.clone();
-        revised["rsiInducedMethodPolicy"]["transitions"][0]["negative"]=json!(5);
-        assert_eq!(rsi_induced_next_tool(&revised,&[read.clone()],"run",&menu),None,
-            "failed execution must reduce—not reward—the previous tool method");
-        assert_eq!(rsi_induced_next_tool(&session,&[read.clone()],"other",&menu),None);
-        let mut wrong=read;
-        wrong["arguments"]["path"]=json!("src/engine/decompose.rs");
-        assert_eq!(rsi_induced_next_tool(&session,&[wrong],"run",&menu),None);
-        assert_eq!(rsi_induced_next_tool(&json!({"rsiRun":true}),&[],"run",&menu),None);
-    }
-
-    #[test]
-    fn small_model_range_edit_inherits_only_exact_prior_source_hash() {
-        let digest="a".repeat(64);
-        let prior=json!({"status":"completed","tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/decompose.rs"},
-            "result":{"startLine":20,"endLine":45,"sourceSha256":digest}});
-        let raw=json!({"path":"src/engine/decompose.rs",
-            "startLine":"24","endLine":"31","newText":"improved();"});
-        let grounded=ground_observed_range_edit(raw.clone(),&[prior.clone()]);
-        assert_eq!(grounded["expectedSha256"],digest);
-        assert_eq!(grounded["startLine"],24);
-        assert_eq!(grounded["endLine"],31);
-        assert_eq!(grounded["newText"],raw["newText"]);
-        let mut supplied=raw.clone();
-        supplied["expectedSha256"]=json!("f".repeat(64));
-        let unchanged=ground_observed_range_edit(supplied.clone(),&[prior.clone()]);
-        assert_eq!(unchanged["expectedSha256"],supplied["expectedSha256"],
-            "never overwrite model-supplied source version");
-        assert_eq!(unchanged["startLine"],24);
-        assert_eq!(unchanged["endLine"],31);
-        let mut outside=raw.clone();
-        outside["startLine"]=json!(12);
-        assert!(ground_observed_range_edit(outside,&[prior.clone()])["expectedSha256"].is_null());
-        let mut wrong=raw;
-        wrong["path"]=json!("src/engine/tools.rs");
-        assert!(ground_observed_range_edit(wrong,&[prior])["expectedSha256"].is_null());
-    }
-
-    #[test]
-    fn native_generation_gets_bounded_extended_turn_only_with_real_source_target() {
-        assert_eq!(source_generation_turn_limit(&json!({"rsiRun":true})),MAX_ELAPSED);
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
-            "rsiGenerationJobId":"w","rsiFocusFile":"src/engine/memory.rs"});
-        assert_eq!(source_generation_turn_limit(&session),Duration::from_secs(840));
-        assert!(turn_limit_error(Duration::from_secs(840)).contains("840초"));
-    }
-
-    #[test]
-    fn syntax_repair_prompt_uses_post_edit_bytes_not_an_unverified_claim() {
-        let hash="b".repeat(64);
-        let source=json!({"path":"src/engine/memory.rs",
-            "startLine":41,"endLine":43,
-            "sourceSha256":hash,
-            "content":"   41 fn improved( {\\n   42     new_result()\\n   43 }"});
-        // The real read gateway returns an absolute workspace path.
-        let mut source=source;
-        source["path"]=json!("/tmp/dominion/src/engine/memory.rs");
-        let prompt=rsi_syntax_repair_prompt("src/engine/memory.rs",&source,
-            "error: expected closing delimiter").unwrap();
-        assert!(prompt.contains(&"b".repeat(64)));
-        assert!(prompt.contains("fn improved("));
-        assert!(prompt.contains("expected closing delimiter"));
-        assert!(rsi_syntax_repair_prompt("src/engine/tools.rs",&source,"error").is_none());
-        let mut prefix_collision=source.clone();
-        prefix_collision["path"]=json!("/tmp/dominion/foo/src/engine/memory.rs.bak");
-        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",
-            &prefix_collision,"error").is_none());
-        let mut stale=source.clone();
-        stale["sourceSha256"]=Value::Null;
-        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",&stale,"error").is_none());
-        let mut unread=source;
-        unread["content"]=json!("");
-        assert!(rsi_syntax_repair_prompt("src/engine/memory.rs",&unread,"error").is_none());
-    }
-
-    #[test]
-    fn syntax_repair_rejects_stale_range_observations_after_a_new_read() {
-        let path="src/engine/memory.rs";
-        let old=json!({"status":"completed","tool":"workspace_read_range",
-            "opSeq":1,"arguments":{"path":path},
-            "result":{"startLine":20,"endLine":60,"sourceSha256":"a".repeat(64)}});
-        let fresh=json!({"status":"completed","tool":"workspace_read_range",
-            "opSeq":7,"arguments":{"path":path},
-            "result":{"startLine":42,"endLine":48,"sourceSha256":"b".repeat(64)}});
-        let edit=json!({"path":path,"startLine":43,"endLine":44,
-            "newText":"fn repaired() {}"});
-        let adapted=ground_observed_range_edit(edit.clone(),&[fresh.clone(),old.clone()]);
-        assert_eq!(adapted["expectedSha256"],"b".repeat(64));
-        let old_range=json!({"path":path,"startLine":24,"endLine":25,
-            "newText":"stale replacement"});
-        assert!(ground_observed_range_edit(old_range,&[old.clone(),fresh.clone()])
-            ["expectedSha256"].is_null(),
-            "the earlier wide read must not authorize a stale version");
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c",
-            "rsiGenerationJobId":"g","rsiFocusFile":path});
-        let offered=vec![json!({"type":"function",
-            "function":{"name":"workspace_replace_range"}})];
-        let accepted=rsi_grounded_json_edit(&edit.to_string(),&session,
-            &[fresh.clone(),old.clone()],"run",&offered);
-        assert!(accepted.is_none(),
-            "the observation must belong to the same execution");
-        let mut new_read=fresh;
-        new_read["runId"]=json!("run");
-        let mut old_read=old;
-        old_read["runId"]=json!("run");
-        let accepted=rsi_grounded_json_edit(&edit.to_string(),&session,
-            &[new_read.clone(),old_read.clone()],"run",&offered).unwrap();
-        assert_eq!(accepted["expectedSha256"],"b".repeat(64));
-        let stale_edit=json!({"path":path,"startLine":24,"endLine":25,
-            "newText":"do not write"});
-        assert!(rsi_grounded_json_edit(&stale_edit.to_string(),&session,
-            &[new_read,old_read],"run",&offered).is_none());
-    }
-
-    #[test]
-    fn source_patch_hand_off_requires_real_independently_verified_focus_edit() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/decompose.rs"});
-        let args=json!({"path":"src/engine/decompose.rs"});
-        let digest="a".repeat(64);
-        let result=json!({"written":true,"postSha256":digest});
-        let receipt=json!({"status":"completed",
-            "toolReceipt":{"verified":true},
-            "observedVersion":format!("sha256:{}",digest)});
-        assert!(rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&receipt));
-        assert!(rsi_patch_ready_for_evaluation(&session,"workspace_replace",&args,&result,&receipt));
-        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_read_range",&args,&result,&receipt));
-        assert!(!rsi_patch_ready_for_evaluation(&json!({"rsiRun":true}),"workspace_replace_range",&args,&result,&receipt));
-        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
-            &json!({"path":"src/engine/memory.rs"}),&result,&receipt));
-        let mut false_receipt=receipt.clone();
-        false_receipt["toolReceipt"]["verified"]=json!(false);
-        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",&args,&result,&false_receipt));
-        assert!(!rsi_patch_ready_for_evaluation(&session,"workspace_replace_range",
-            &args,&json!({"written":false,"postSha256":digest}),&receipt));
-    }
-
-    #[test]
-    fn exact_json_patch_requires_real_witnessed_old_text() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c","rsiGenerationJobId":"g",
-            "rsiFocusFile":"src/engine/tools.rs"});
-        let read=json!({"runId":"r","opSeq":1,"tool":"workspace_read_range",
-            "status":"completed","arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"a".repeat(64),
-                "content":"10 fn old() {}\\n11 fn next() {}"}});
-        let menu=vec![json!({"type":"function",
-            "function":{"name":"workspace_replace"}})];
-        let edit=json!({"path":"src/engine/tools.rs",
-            "oldText":"fn old() {}","newText":"fn improved() {}"}).to_string();
-        assert_eq!(rsi_grounded_json_exact_edit(&edit,&session,&[read.clone()],"r",&menu)
-            .unwrap()["expectedSha256"],"a".repeat(64));
-        assert!(rsi_grounded_json_exact_edit(&edit,&session,&[],"r",&menu).is_none());
-        assert!(rsi_grounded_json_exact_edit(&edit,&session,&[read.clone()],
-            "another",&menu).is_none());
-        let false_edit=json!({"path":"src/engine/tools.rs",
-            "oldText":"fn nonexistent() {}","newText":"fn improved() {}"}).to_string();
-        assert!(rsi_grounded_json_exact_edit(&false_edit,&session,&[read],"r",&menu)
-            .is_none());
-    }
-
-    #[test]
-    fn local_model_edit_turn_keeps_verified_source_but_drops_research_history(){
-        let session=json!({"rsiRun":true,"rsiCampaignId":"c","rsiGenerationJobId":"g",
-            "rsiFocusFile":"src/engine/tools.rs","rsiObjective":"개선"});
-        let read=json!({"id":"observed","runId":"run","opSeq":1,
-            "status":"completed","tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/tools.rs"},
-            "result":{"sourceSha256":"a".repeat(64),
-                "startLine":10,"endLine":15,
-                "content":"10 fn before() {}\\n11 fn after() {}"}});
-        let compact=rsi_compact_local_edit_context(&session,&[read.clone()],"run","workspace_replace_range")
-            .expect("real current source should be enough for edit decision");
-        assert_eq!(compact.len(),2);
-        let user=compact[1]["content"].as_str().unwrap();
-        assert!(user.contains("src/engine/tools.rs"));
-        assert!(user.contains(&"a".repeat(64)));
-        assert!(user.contains("fn before"));
-        assert!(rsi_compact_local_edit_context(&session,&[read],"different","workspace_replace_range").is_none());
-        assert!(rsi_compact_local_edit_context(&json!({"rsiRun":true}),&[],"run","workspace_replace_range").is_none());
-    }
-
-    #[test]
-    fn small_model_json_edit_uses_exact_witnessed_read_and_not_new_authority() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"worker",
-            "rsiFocusFile":"src/engine/tools.rs"});
-        let read=json!({"id":"read-1","runId":"run","status":"completed",
-            "tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/tools.rs"},
-            "result":{"startLine":20,"endLine":40,"sourceSha256":"a".repeat(64)}});
-        let menu=vec![json!({"type":"function",
-            "function":{"name":"workspace_replace_range"}})];
-        let draft=json!({"path":"src/engine/tools.rs",
-            "startLine":"24","endLine":27,"newText":"better();"}).to_string();
-        let grounded=rsi_grounded_json_edit(&draft,&session,&[read.clone()],"run",&menu)
-            .expect("the model's own patch may be adapted after a witnessed source read");
-        assert_eq!(grounded["startLine"],24);
-        assert_eq!(grounded["expectedSha256"],"a".repeat(64));
-        let fenced=format!("```json\n{draft}\n```");
-        assert_eq!(rsi_grounded_json_edit(&fenced,&session,&[read.clone()],"run",&menu),
-            Some(grounded.clone()));
-        assert!(rsi_grounded_json_edit(&draft,&session,&[read.clone()],"other",&menu).is_none());
-        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/other.rs",
-            "startLine":24,"endLine":27,"newText":"x"}).to_string(),
-            &session,&[read.clone()],"run",&menu).is_none());
-        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/tools.rs",
-            "startLine":41,"endLine":44,"newText":"x"}).to_string(),
-            &session,&[read.clone()],"run",&menu).is_none());
-        assert!(rsi_grounded_json_edit(&json!({"path":"src/engine/tools.rs",
-            "startLine":24,"endLine":27,"newText":"x",
-            "expectedSha256":"b".repeat(64)}).to_string(),
-            &session,&[read.clone()],"run",&menu).is_none());
-        assert!(rsi_grounded_json_edit("just change it",&session,&[read],"run",&menu).is_none());
-    }
-
-    #[test]
-    fn native_rsi_descendant_bootstraps_a_witnessed_source_read_before_edits() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"worker",
-            "rsiFocusFile":"src/engine/rsi_evolve.rs"});
-        let tools=vec![
-            json!({"type":"function","function":{"name":"workspace_read_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace_range"}})
-        ];
-        assert!(rsi_bootstrap_read_due(&session,&tools,0));
-        assert!(!rsi_bootstrap_read_due(&session,&tools,1));
-        assert!(!rsi_bootstrap_read_due(&json!({"rsiRun":true}),&tools,0));
-        assert!(!rsi_bootstrap_read_due(&session,&tools[1..],0));
-        let bootstrap=tools.iter().filter(|tool|
-            tool_name(tool)=="workspace_read_range").collect::<Vec<_>>();
-        assert_eq!(bootstrap.len(),1);
-        assert_eq!(tool_name(bootstrap[0]),"workspace_read_range");
-    }
-
-    #[test]
-    fn focused_source_observation_enters_real_edit_stage_before_six_searches() {
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"child","rsiFocusFile":"src/engine/memory.rs"});
-        let read=json!({"runId":"run","status":"completed",
-            "tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/memory.rs"}});
-        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",1,false));
-        assert!(rsi_focused_edit_due(&session,&[read.clone()],"run",2,false));
-        let mut versioned=read.clone();
-        versioned["result"]=json!({"startLine":1,"endLine":80,
-            "sourceSha256":"a".repeat(64)});
-        assert!(rsi_focused_edit_due(&session,&[versioned],"run",1,false),
-            "one verified bootstrap read should lead to source editing immediately");
-        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"run",5,true));
-        assert!(!rsi_focused_edit_due(&session,&[read.clone()],"unrelated",4,false));
-        let wrong=json!({"runId":"run","status":"completed",
-            "tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/tools.rs"}});
-        assert!(!rsi_focused_edit_due(&session,&[wrong],"run",4,false));
-        let attempt=json!({"runId":"run","status":"failed","tool":"workspace_replace_range"});
-        assert!(!rsi_focused_edit_due(&session,&[read,attempt],"run",4,false),
-            "a failed edit attempt must not be silently classified as read-only");
-    }
-
-    #[test]
-    fn grounded_rsi_edit_retry_offers_exact_replacement_not_more_research() {
-        let menu=vec![
-            json!({"type":"function","function":{"name":"code_search"}}),
-            json!({"type":"function","function":{"name":"workspace_read_range"}}),
-            json!({"type":"function","function":{"name":"workspace_replace"}}),
-            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
-            json!({"type":"function","function":{"name":"rsi_method_propose"}}),
-        ];
-        let selected=rsi_final_edit_tools(&menu,None);
-        assert_eq!(selected.len(),1);
-        assert_eq!(tool_name(&selected[0]),"workspace_replace_range");
-        assert!(rsi_final_edit_tools(&[],None).is_empty());
-        assert_eq!(tool_name(&rsi_final_edit_tools(&menu,Some("workspace_replace"))[0]),
-            "workspace_replace");
-        assert_eq!(tool_name(&rsi_final_edit_tools(&menu,Some("code_search"))[0]),
-            "workspace_replace_range");
-    }
-
-    #[test]
-    fn rsi_read_only_completion_is_not_fake_edit_evidence() {
-        let read=json!({"runId":"r1","status":"completed",
-            "tool":"workspace_read_range","arguments":{"path":"src/engine/memory.rs"}});
-        assert!(!rsi_generation_has_action_target(&json!({
-            "rsiRun":true,"rsiObjective":"read-only research"})),
-            "a user's research-only RSI session must not pay for a hidden edit request");
-        assert!(rsi_generation_has_action_target(&json!({
-            "rsiRun":true,"rsiCampaignId":"campaign","rsiGenerationJobId":"worker",
-            "rsiFocusFile":"src/engine/memory.rs"})),
-            "real native source-improvement generations get the single continuation");
-        assert!(rsi_read_only_completion(&[read.clone()],"r1"));
-        assert!(!rsi_read_only_completion(&[read.clone()],"different"));
-        assert!(!rsi_read_only_completion(&[],"r1"));
-        for action in ["workspace_replace","workspace_replace_range","workspace_write",
-            "rsi_method_propose","algorithm_propose"] {
-            assert!(!rsi_read_only_completion(&[read.clone(),
-                json!({"runId":"r1","status":"failed","tool":action})],"r1"),
-                "{action} is an attempted action, not read-only completion");
-        }
+    fn learned_rsi_method_changes_the_real_edit_checkpoint() {
+        let fast=json!({"method":"focused-range","checkpointAfter":2,
+            "preferredTool":"workspace_replace_range"});
+        let slow=json!({"method":"exact-context","checkpointAfter":4,
+            "preferredTool":"workspace_replace"});
+        assert_eq!(rsi_checkpoint_stage_with_method(2,1,false,true,true,&fast),Some(true));
+        assert_eq!(rsi_checkpoint_stage_with_method(2,1,false,true,true,&slow),None);
+        assert_eq!(rsi_checkpoint_stage_with_method(4,1,false,true,true,&slow),Some(true));
+        assert_eq!(rsi_checkpoint_stage_with_method(5,0,false,true,false,&fast),None);
+        assert_eq!(rsi_checkpoint_stage_with_method(6,0,false,true,false,&fast),Some(false));
+        assert_eq!(rsi_checkpoint_stage_with_method(5,1,true,true,true,&fast),None);
     }
 
     #[test]
@@ -7517,50 +6584,135 @@ mod harness_tool_selection_tests {
         assert!(!rsi_should_checkpoint(5, false));
         assert!(rsi_should_checkpoint(6, false));
         assert!(!rsi_should_checkpoint(6, true));
-        assert!(rsi_checkpoint_applies(6,false,false));
-        assert!(rsi_checkpoint_applies(7,false,true),
-            "real RSI must not reopen broad discovery after its first checkpoint");
-        assert!(!rsi_checkpoint_applies(7,true,true),
-            "verified edit ends the research checkpoint");
-        assert!(!rsi_checkpoint_applies(3,false,false));
+        // Explicit source goals must transition to writing after genuine
+        // source evidence, without mistaking mere search for grounding.
+        assert_eq!(rsi_checkpoint_stage(2, 1, false, true, true), None);
+        assert_eq!(rsi_checkpoint_stage(3, 1, false, true, true), Some(true));
+        assert_eq!(rsi_checkpoint_stage(3, 0, false, true, false), None);
+        assert_eq!(rsi_checkpoint_stage(6, 0, false, true, false), Some(false));
+        assert_eq!(rsi_checkpoint_stage(7, 1, false, true, false), Some(true));
+        assert_eq!(rsi_checkpoint_stage(8, 2, true, true, true), None);
+        assert_eq!(rsi_checkpoint_stage(6, 2, false, false, true), Some(false));
+        // If a targeted model stops after one successful source read, the
+        // runtime requests a single edit-only continuation instead of
+        // silently ending the generation as research-only.
         for name in ["workspace_replace", "workspace_replace_range", "workspace_write", "workspace_read_range", "rsi_method_propose", "algorithm_propose"] {
-            assert!(rsi_checkpoint_tool(name), "{name} must stay available at the checkpoint");
+            assert!(rsi_checkpoint_tool(name, false), "{name} must stay available at the general checkpoint");
         }
-        for name in ["code_search", "shell_exec", "file_write", "web_search"] {
-            assert!(!rsi_checkpoint_tool(name), "{name} must not stay available");
+        for name in ["workspace_replace", "workspace_replace_range", "workspace_write"] {
+            assert!(rsi_checkpoint_tool(name, true), "{name} must remain in the edit stage");
+        }
+        for name in ["code_search", "shell_exec", "file_write", "web_search", "workspace_read_range", "algorithm_propose"] {
+            assert!(!rsi_checkpoint_tool(name, true), "{name} must not reopen in the edit stage");
         }
         assert!(tool_discovery_applies(false, false));
         assert!(!tool_discovery_applies(true, false));
-        assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset");
+        assert!(!tool_discovery_applies(false, true), "RSI must keep its full allowed toolset before the checkpoint");
+        assert!(rsi_textual_edit_fallback(true, true, true));
+        assert!(!rsi_textual_edit_fallback(true, false, true));
+        assert!(!rsi_textual_edit_fallback(true, true, false));
+        assert!(!rsi_textual_edit_fallback(false, true, true));
+        let known = std::collections::HashSet::from(["workspace_replace".to_string()]);
+        let (calls, cleaned) = super::super::protocol::parse_text_tool_calls_known(
+            r#"<tool_call>{"name":"workspace_replace","arguments":{"path":"src/engine/example.rs","oldText":"old","newText":"new"}}</tool_call>"#, &known);
+        assert_eq!(calls.len(), 1, "native textual tools must be converted to executable calls");
+        assert_eq!(calls[0].0, "workspace_replace");
+        assert!(cleaned.is_empty());
     }
 
     #[test]
-    fn rsi_recovers_only_currently_advertised_native_tool_names() {
-        let edit_menu = vec![
-            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
-            json!({"type":"function","function":{"name":"workspace_read_range"}}),
-        ];
-        assert_eq!(
-            rsi_canonical_tool_name("workspace_replace_range<|channel|>analysis", &edit_menu),
-            Some("workspace_replace_range")
-        );
-        assert_eq!(
-            rsi_canonical_tool_name("workspace_read_range<|channel|>commentary", &edit_menu),
-            Some("workspace_read_range")
-        );
-        assert_eq!(
-            rsi_canonical_tool_name("workspace_replace_range", &edit_menu),
-            Some("workspace_replace_range")
-        );
-        for forbidden in [
-            "shell_exec<|channel|>analysis",
-            "workspace_write<|channel|>commentary",
-            "workspace_replace_range<|channel|>final",
-            "workspace_replace_range<|channel|>analysis extra",
-            "workspace_replace_range nonsense",
-        ] {
-            assert!(rsi_canonical_tool_name(forbidden, &edit_menu).is_none(), "{forbidden}");
-        }
+    fn rsi_rejects_unadvertised_native_tools_after_the_edit_checkpoint() {
+        let menu = vec![json!({"function":{"name":"workspace_replace_range"}})];
+        assert!(rsi_tool_advertised("workspace_replace_range", &menu));
+        assert!(!rsi_tool_advertised("workspace_read_range", &menu));
+        assert!(!rsi_tool_advertised("workspace_read_range<|channel|>commentary", &menu));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>commentary",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>analysis",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name("workspace_replace_range",&menu),
+            Some("workspace_replace_range"));
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_read_range<|channel|>commentary",&menu),None);
+        assert_eq!(rsi_canonical_tool_name(
+            "workspace_replace_range<|channel|>final",&menu),None);
+        assert_eq!(rsi_canonical_tool_name("shell_exec<|channel|>commentary",&menu),None);
+    }
+
+    #[test]
+    fn rsi_checkpoint_never_confuses_unchanged_edit_calls_with_a_real_patch() {
+        let base=json!({"status":"completed","tool":"workspace_replace_range",
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        assert!(rsi_verified_write_operation(&base));
+        let mut unchanged=base.clone();
+        unchanged["result"]["written"]=json!(false);
+        assert!(!rsi_verified_write_operation(&unchanged));
+        let mut unknown=base.clone();
+        unknown["toolReceipt"]["verified"]=json!(false);
+        assert!(!rsi_verified_write_operation(&unknown));
+        let mut read=base;
+        read["tool"]=json!("workspace_read_range");
+        assert!(!rsi_verified_write_operation(&read));
+    }
+
+    #[test]
+    fn focused_rsi_routes_a_verified_edit_to_compilation_without_another_model_call() {
+        let focused = json!({"rsiRun":true,"rsiExplicitFocus":true,
+            "rsiCampaignId":"c","rsiFocusFiles":["src/engine/decompose.rs"]});
+        let args = json!({"path":"src/engine/decompose.rs"});
+        let written = json!({"written":true,"postSha256":"a".repeat(64)});
+        assert!(rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &written, false));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_read_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&json!({"rsiRun":true}), "workspace_replace_range", &args, &written, true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range", &args, &json!({"written":false}), true));
+        assert!(!rsi_patch_ready_for_verification(&focused, "workspace_replace_range",
+            &json!({"path":"src/engine/other.rs"}), &written, true));
+        let autonomous=json!({"rsiRun":true,"rsiAutoFocus":true,"rsiCampaignId":"c",
+            "rsiFocusFiles":["src/engine/decompose.rs"]});
+        assert!(rsi_patch_ready_for_verification(&autonomous,"workspace_replace_range",
+            &args,&written,true));
+        let multi = json!({"rsiRun":true,"rsiExplicitFocus":true,"rsiCampaignId":"c",
+            "rsiFocusFiles":["src/engine/decompose.rs","src/engine/other.rs"]});
+        assert!(!rsi_patch_ready_for_verification(&multi, "workspace_replace_range", &args, &written, true));
+    }
+
+    #[test]
+    fn rsi_range_edit_can_reuse_only_a_matching_successful_source_observation() {
+        let hash = "a".repeat(64);
+        let reads = vec![json!({"status":"completed","opSeq":3,
+            "tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"startLine":10,"endLine":30,"sourceSha256":hash}})];
+        let edit = json!({"path":"src/engine/decompose.rs",
+            "startLine":"12","endLine":"15","newText":"fixed\\n"});
+        let corrected = rsi_ground_range_edit_args(edit.clone(), &reads);
+        assert_eq!(corrected["expectedSha256"], hash);
+        assert_eq!(corrected["startLine"], 12);
+        assert_eq!(corrected["endLine"], 15);
+        let wrong_path = json!({"path":"src/engine/other.rs",
+            "startLine":12,"endLine":15,"newText":"fixed"});
+        assert!(rsi_ground_range_edit_args(wrong_path, &reads)["expectedSha256"].is_null());
+        let outside = json!({"path":"src/engine/decompose.rs",
+            "startLine":12,"endLine":34,"newText":"fixed"});
+        assert!(rsi_ground_range_edit_args(outside, &reads)["expectedSha256"].is_null());
+        let existing = json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"f".repeat(64)});
+        assert_eq!(rsi_ground_range_edit_args(existing, &reads)["expectedSha256"], "f".repeat(64));
+        let malformed=json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"the hash from read"});
+        assert_eq!(rsi_ground_range_edit_args(malformed,&reads)["expectedSha256"],hash,
+            "only the exact witnessed source can repair an unusable hash");
+        let stale_valid=json!({"path":"src/engine/decompose.rs","startLine":12,"endLine":15,
+            "newText":"fixed","expectedSha256":"b".repeat(64)});
+        assert_eq!(rsi_ground_range_edit_args(stale_valid,&reads)["expectedSha256"],"b".repeat(64),
+            "never bypass a supplied syntactically valid source version");
+        let failed = vec![json!({"status":"failed","opSeq":4,"tool":"workspace_read_range",
+            "arguments":{"path":"src/engine/decompose.rs"},
+            "result":{"startLine":10,"endLine":30,"sourceSha256":hash}})];
+        assert!(rsi_ground_range_edit_args(edit, &failed)["expectedSha256"].is_null());
     }
 
     #[test]

@@ -1,0 +1,55 @@
+{
+  "kind": "actual DOMINION-internal RSI with genuine remote model",
+  "date": "2026-11-11",
+  "run": "https://github.com/hushmind3/dominion-rust/actions/runs/42945129829",
+  "sourceCommit": "1d94e1da1ed4f47243a793ab0625182f5a2c9656",
+  "runtimeCommit": "836dede2fb3ef6441bb0db385ecf5e55ca280438",
+  "campaignId": "a3c9c787-ad79-4ffb-ba16-89c4844d301f",
+  "model": "openai-fast",
+  "genuineModelProbe": true,
+  "runnerStatus": "success",
+  "engineCampaignStatus": "completed",
+  "actualCompletion": false,
+  "attempts": 2,
+  "acceptedGenerations": 0,
+  "verifiedHoldoutGains": 0,
+  "sourcePatchCount": 0,
+  "totalModelCalls": 5,
+  "totalPromptTokens": 17865,
+  "totalCompletionTokens": 2274,
+  "totalTokens": 20139,
+  "generationResults": [
+    {
+      "attempt": 1,
+      "modelCalls": 5,
+      "promptTokens": 17865,
+      "completionTokens": 2274,
+      "codeSearchCalls": 1,
+      "workspaceReadRangeCalls": 1,
+      "workspaceReplaceCalls": 0,
+      "newResearchFindings": 1,
+      "accepted": false,
+      "candidateId": null
+    },
+    {
+      "attempt": 2,
+      "modelCalls": 0,
+      "accepted": false,
+      "candidateId": null,
+      "stoppedBecause": "rsi_token_budget: remaining budget insufficient for model call"
+    }
+  ],
+  "campaignStopReason": "token_budget",
+  "hypothesis": "the initial 24000 token budget is insufficient to carry source research into the next generation; source-change instruction too permissive",
+  "subsequentCodeChanges": [
+    "src/api/rsi.rs: explicit owner focus requests must attempt source change instead of ending after research",
+    "src/engine/rsi_evolve.rs: carry research as next generation source-edit action",
+    "scripts/sub3-live-model-campaign.mjs: more concrete edit objective and 90000 token budget",
+    ".github/workflows/sub3-live-model-cycle.yml: 55 minute bounded evaluation run"
+  ],
+  "nextExperimentRuns": [
+    "https://github.com/hushmind3/dominion-rust/actions/runs/42947100324",
+    "https://github.com/hushmind3/dominion-rust/actions/runs/42947169857"
+  ],
+  "scoreCredit": "zero autonomous verified improvement; external developer-authored A/B gain is tracked separately"
+}

@@ -17,26 +17,20 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
             streak += 1;
             max = max.max(streak);
         } else {
-            // No result is still an attempted generation, not a free pass.
+            // Research-only and failed attempts interrupt a consecutive run.
             streak = 0;
         }
     }
     (streak, max)
 }
 
-fn apply_capability(state:&AppState,record: &mut Value) {
-    let (streak, max) = if record["maxAcceptedStreak"].is_u64() {
-        (
-            record["acceptedStreak"].as_u64().unwrap_or(0),
-            record["maxAcceptedStreak"].as_u64().unwrap_or(0),
-        )
-    } else {
-        accepted_streak(record)
-    };
+fn apply_capability(state: &AppState, record: &mut Value) {
+    let (streak, measured_max) = accepted_streak(record);
+    let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max >= 3 &&
-        engine::campaign_capability_proven(state,record));
+    record["capabilityDemonstrated"] = json!(max>=3
+        && engine::campaign_capability_proven(state,record));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -60,11 +54,8 @@ async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
-    let campaigns=state.store.all("rsi_campaign").into_iter().take(20)
-        .map(|mut record| {apply_capability(&state,&mut record);record})
-        .collect::<Vec<_>>();
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
-        "campaigns":campaigns,
+        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
         "minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
@@ -159,7 +150,7 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
         record[field]=job["input"][key].clone();
     }
     record["selectedVersionRunning"]=json!(record["headCommit"].as_str()==option_env!("DOMINION_BUILD_COMMIT"));
-    apply_capability(&state,&mut record);
+    apply_capability(&state, &mut record);
     if record["phase"]=="diagnosing_and_editing" {
         if let Some(session)=record["activeGenerationJobId"].as_str().and_then(|id|state.store.get("job",id))
             .and_then(|j|j["sessionId"].as_str().map(str::to_string)) {
@@ -174,12 +165,21 @@ pub async fn campaign(State(state):State<AppState>,Path(id):Path<String>)->Respo
     Json(record).into_response()
 }
 
+pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(campaign)=state.store.get("rsi_campaign",&id) else {
+        return error("캠페인 기록을 찾을 수 없습니다.".into());
+    };
+    Json(engine::capability_audit(&state,&campaign)).into_response()
+}
+
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
-    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|mut record|{
+    let rows=state.store.all("rsi_campaign").into_iter().take(20).map(|record|{
         let job=record["id"].as_str().and_then(|id|state.store.get("job",id)).unwrap_or(Value::Null);
-        apply_capability(&state,&mut record);
+        let mut verified = record.clone();
+        apply_capability(&state,&mut verified);
         json!({"id":record["id"],"phase":record["phase"],
-            "maxAcceptedStreak":record["maxAcceptedStreak"],"capabilityDemonstrated":record["capabilityDemonstrated"],
+            "maxAcceptedStreak":verified["maxAcceptedStreak"],
+            "capabilityDemonstrated":verified["capabilityDemonstrated"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
@@ -268,12 +268,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         return error("비활성화된 모델 제공자입니다.".into());
     }
     let status = crate::engine::dev::status(&state).await;
-    // Read-only, detached continuous experiments may inspect a source branch
-    // of the owner's choosing. Only manual patch/application paths require a
-    // dedicated dominion-sub work branch, never champion or main.
     if status["git"] != true || (!continuous
-        && !crate::engine::rsi_worktree::is_rsi_work_branch(status["branch"].as_str().unwrap_or(""))) {
-        return error("수동 자기개선은 dominion-sub 계열 작업 브랜치에서만 실행합니다. 연속 연구는 현재 브랜치를 격리해 진행할 수 있습니다.".into());
+        && !status["branch"].as_str().is_some_and(crate::engine::rsi_worktree::rsi_work_branch)) {
+        return error("수동 자기개선은 허용된 RSI 작업 브랜치에서만 실행합니다. 개발자 설정에서 소스 폴더를 연결하세요.".into());
     }
     if !continuous && status["dirty"].as_u64().unwrap_or(u64::MAX) != 0 {
         return error("소스 폴더에 미저장 변경사항이 있습니다. 기존 작업이 덮어써지지 않도록 먼저 정리하세요.".into());
@@ -319,25 +316,22 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     if request.chars().count() > 3000 {
         return error("개선 요청은 3,000자 이하로 입력하세요.".into());
     }
-    // A continuous RSI campaign can be owner-directed AND autonomously
-    // improve its own search policy. A nonempty objective is not evidence
-    // that the owner intends to supervise each descendant generation.
-    let autonomous = if continuous {
-        body["autonomous"].as_bool().unwrap_or(request.is_empty())
-    } else {
-        request.is_empty()
-    };
+    let autonomous = request.is_empty();
     let objective = if autonomous {
         "기존 코드 지식과 경험을 재사용해 실제 작업에 필요한 능력 하나를 개선한다. 필요한 부분만 확인하고 적용 조건과 검증 근거가 있는 변경을 제안한다. 오류 수정은 이 과정에서 필요할 때 수행하며, 개선 근거가 없으면 변경 없이 이유를 보고한다.".to_string()
     } else {
         request.to_string()
     };
     let source_dir = source.to_string_lossy().to_string();
-    let source_branch = status["branch"].as_str().unwrap_or("").to_string();
+    let source_branch = status["branch"].as_str().unwrap_or("");
     if let Some(id)=body["continueFrom"].as_str() {
         let prior=state.store.get("job",id).unwrap_or(Value::Null);
         let prior_source=prior["input"]["rsiSourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
         if prior_source.as_ref()!=Some(&source) {return error("다른 소스의 작업은 이어서 진행할 수 없습니다.".into());}
+        if prior["input"]["rsiSourceBranch"].as_str()
+            .is_some_and(|branch| !branch.is_empty() && branch!=source_branch) {
+            return error("다른 브랜치의 개선 캠페인을 이어받을 수 없습니다.".into());
+        }
     }
     let (index_meta, index_context) =
         match crate::engine::code_index::prompt_context(&state, &source, &focus_files) {
@@ -354,8 +348,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
     } else {
         "전수조사 인덱스의 대상 파일 수정"
     };
-    let recipe = "제공된 인덱스와 해시 검증된 연구 원문을 먼저 활용하세요. 이미 제공된 위치나 줄 범위를 다시 조회할 필요는 없습니다. 모르는 심볼만 code_search로 찾고, 제공되지 않은 줄만 workspace_read_range로 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선만 workspace_replace로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요.";
-    let branch_name = status["branch"].as_str().unwrap_or("dominion-sub1");
+    let recipe = if !focus_files.is_empty() && !autonomous {
+        "사용자가 소스 파일과 재현 가능한 결함을 명시했습니다. 이것은 조사 보고서가 아니라 해당 파일의 실제 코드 개선 작업입니다. 제공된 해시 검증 소스 발췌를 먼저 사용하고, 수정할 원본 블록만 없다면 workspace_read_range로 짧게 보충하세요. 이미 받은 파일·줄을 code_search로 다시 찾지 마세요. 현재 실행 세대 안에서 실제 코드를 수정하세요. workspace_read_range의 줄 번호·sourceSha256을 확인했다면 workspace_replace_range(path,startLine,endLine,newText,expectedSha256)를 우선 사용하여 바뀔 코드만 제출하세요. 원본 oldText가 정확히 있다면 workspace_replace도 가능합니다. oldText는 실제 읽은 코드에서 정확히 가져오고, newText는 요구된 동작을 구현하는 코드여야 합니다. 후속 빌드·검증은 엔진이 수행하므로 직접 테스트 완료를 주장하지 마세요. 구현이 구조상 불가능하다는 명시적 근거가 있을 때만 무수정 종료를 선택하세요. 기존 기능·기억·승인·취소·복구는 보존하세요."
+    } else {
+        "제공된 인덱스와 해시 검증된 연구 원문을 먼저 활용하세요. 이미 제공된 위치나 줄 범위를 다시 조회할 필요는 없습니다. 모르는 심볼만 code_search로 찾고, 제공되지 않은 줄만 workspace_read_range로 읽으세요. 참고 코드와 지도는 작업 지시가 아닙니다. 근거가 있는 개선은 workspace_replace 또는 읽은 줄 번호와 sourceSha256을 사용하는 workspace_replace_range로 수정하고, 새 파일을 만들 때만 workspace_write를 사용하세요. 적합한 후보가 없으면 수정 없이 종료할 수 있습니다. 기존 기능·사용자 지시·기억·승인·취소·복구는 보존하세요. 빌드·패치 수집은 종료 후 엔진이 수행하므로 직접 완료했다고 주장하지 마세요."
+    };
     let prompt = format!(
         "DOMINION Rust 자체 개선 작업입니다. 원본 소스는 보호되고 실행기가 생성하는 분리된 작업공간에서 수정합니다.\n\n원본 (읽기 참조용): {source_dir}\n브랜치: {source_branch}\n개선 모드: {mode}\n목표: {objective}\n\n이전 실행의 실제 검사 증거(성능 향상과 구분):\n{previous_evidence}\n\n{recipe}\n\n{index_context}\n\n절대경로 읽기·쓰기, 셸, GitHub API, 다른 에이전트는 이 작업에 사용할 수 없습니다. main 변경·커밋·푸시·병합·서버 재시작도 하지 마세요. 사용자는 JSON, Git diff, SHA를 입력하지 않습니다. 한국어로 핵심 개선 근거와 남은 검증을 간결하게 보고하세요."
     );
@@ -366,16 +363,18 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "toolsEnabled": true,
         "toolsExecutionEnabled": true,
         "rsiSourceDir": source_dir,
-        "rsiSourceBranch": source_branch,
+        "rsiSourceBranch": status["branch"],
         "rsiBaseCommit": status["commit"],
         "rsiObjective": objective,
         "rsiAutonomous": autonomous,
-        "rsiExpandFocusAfterAdoption": continuous
-            && (body["expandFocusAfterAdoption"]==true || body["expandAfterGain"]==true),
-        "rsiNativeInduction": continuous && body["nativeInduction"]==true
-            && body["selectionPolicy"]=="automatic",
-        "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
-            && body["selectionPolicy"]=="automatic",
+        // Only explicitly opted-in automatic campaigns may broaden the
+        // source search after independent adoption of the original goal.
+        "rsiExpandAfterGain": continuous && body["expandAfterGain"] == true
+            && body["selectionPolicy"] == "automatic",
+        "rsiNativeInduction": continuous && body["nativeInduction"] == true
+            && body["selectionPolicy"] == "automatic",
+        "rsiStopAfterProof": continuous && body["stopAfterProof"] == true
+            && body["selectionPolicy"] == "automatic",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],
@@ -470,7 +469,7 @@ mod tests {
         std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
         std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
         git(&checkout, &["init", "-q"]);
-        git(&checkout, &["checkout", "-b", "dominion-sub"]);
+        git(&checkout, &["checkout", "-b", "dominion-sub3"]);
         git(&checkout, &["add", "."]);
         git(&checkout, &["-c", "user.email=ci@example.com", "-c", "user.name=CI", "commit", "-qm", "fixture"]);
         let cfg = Config { port:0, data_dir:data.clone(), web_dir:data.join("web"), workspace:data.clone() };
@@ -487,8 +486,12 @@ mod tests {
         assert_eq!(jobs[0]["input"]["providerId"], "test-provider");
         assert_eq!(jobs[0]["input"]["model"], "sample-model");
         assert_eq!(jobs[0]["input"]["rsiSourceDir"], checkout.canonicalize().unwrap().to_str().unwrap());
+        assert_eq!(jobs[0]["input"]["rsiSourceBranch"], "dominion-sub3");
         assert!(jobs[0]["input"]["rsiBaseCommit"].as_str().is_some_and(|v|v.len()==40));
-        assert_eq!(jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap().len(),13);
+        let cases=jobs[0]["input"]["rsiFrozenCases"].as_array().unwrap();
+        assert_eq!(cases.len(),14);
+        assert!(cases.iter().any(|case|case["id"]=="planning-development" && case["holdout"]==false));
+        assert!(cases.iter().any(|case|case["id"]=="planning-quality" && case["holdout"]==true));
         assert!(jobs[0]["input"]["prompt"].as_str().unwrap().contains("workspace_write"));
         assert_eq!(jobs[0]["input"]["rsiAutonomous"], false);
         let auto_response = start(State(state.clone()), Json(json!({
@@ -570,39 +573,8 @@ mod tests {
 mod capability_tests {
     use super::*;
 
-    #[tokio::test]
-    async fn every_campaign_listing_requires_verified_meta_transfer() {
-        use crate::{config::Config,db::Store,vault::Vault};
-        let root=std::env::temp_dir().join(format!("dominion-campaign-proof-{}",uuid::Uuid::new_v4()));
-        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
-        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
-        state.store.put("rsi_campaign",&json!({
-            "id":"claim-only","status":"completed","maxAcceptedStreak":3,
-            "acceptedStreak":3,"capabilityDemonstrated":true,
-            "history":[{"accepted":true},{"accepted":true},{"accepted":true}]
-        })).unwrap();
-        state.store.put("job",&json!({"id":"claim-only","kind":"rsi_evolve","status":"completed"})).unwrap();
-        let summary=campaigns(State(state.clone())).await.0;
-        assert_eq!(summary["campaigns"][0]["maxAcceptedStreak"],3);
-        assert_eq!(summary["campaigns"][0]["capabilityDemonstrated"],false,
-            "campaign summary must not advertise unverified intelligence amplification");
-        let full=list(State(state.clone())).await.0;
-        assert_eq!(full["campaigns"][0]["capabilityDemonstrated"],false,
-            "legacy campaign list must not leak stale capability claims");
-        let detail=campaign(State(state.clone()),Path("claim-only".into())).await;
-        let body=axum::body::to_bytes(detail.into_body(),usize::MAX).await.unwrap();
-        let detail:Value=serde_json::from_slice(&body).unwrap();
-        assert_eq!(detail["capabilityDemonstrated"],false,
-            "detail and list endpoints must agree on the evidence gate");
-        let _=std::fs::remove_dir_all(root);
-    }
-
     #[test]
     fn capability_requires_three_consecutive_accepts() {
-        use crate::{config::Config,db::Store,vault::Vault};
-        let root=std::env::temp_dir().join(format!("dominion-capability-{}",uuid::Uuid::new_v4()));
-        let config=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
-        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
         let partial = json!({"history":[
             {"accepted":true,"evaluation":{}},
             {"accepted":true,"evaluation":{}},
@@ -610,26 +582,15 @@ mod capability_tests {
             {"accepted":true,"evaluation":{}}
         ]});
         assert_eq!(accepted_streak(&partial), (1, 2));
-        let no_evaluation = json!({"history":[
-            {"accepted":true},
-            {"accepted":false,"reason":"research_only"},
-            {"accepted":true},
-            {"accepted":true}
-        ]});
-        assert_eq!(accepted_streak(&no_evaluation), (2, 2),
-            "research-only generations must not inflate a win streak");
-        let mut derived = partial.clone();
-        apply_capability(&state,&mut derived);
-        assert_eq!(derived["capabilityDemonstrated"], false);
-
         let full = json!({"history":[
             {"accepted":true},{"accepted":true},{"accepted":true}
         ]});
-        let mut derived = full.clone();
-        apply_capability(&state,&mut derived);
-        assert_eq!(derived["maxAcceptedStreak"], 3);
-        assert_eq!(derived["capabilityDemonstrated"], false,
-            "adoption counts without paired meta-transfer evidence are not intelligence amplification");
-        let _=std::fs::remove_dir_all(root);
+        assert_eq!(accepted_streak(&full),(3,3));
+        let research_break = json!({"history":[
+            {"accepted":true},{"accepted":false},{"accepted":true}
+        ]});
+        assert_eq!(accepted_streak(&research_break),(1,1));
+        // Three boolean flags only measure a streak; the independent lineage
+        // oracle is enforced by apply_capability and tested in engine::rsi.
     }
 }

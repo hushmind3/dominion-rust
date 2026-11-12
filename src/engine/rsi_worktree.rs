@@ -10,6 +10,23 @@ use tokio::process::Command;
 const GIT_LIMIT: Duration = Duration::from_secs(30);
 const CHECK_LIMIT: Duration = Duration::from_secs(360);
 
+/// A branch must be an explicitly owned RSI work checkout, never main or a
+/// sibling competitor's source. Preserve the legacy dominion-sub checkout.
+pub(crate) fn rsi_work_branch(branch: &str) -> bool {
+    matches!(branch, "dominion-sub" | "dominion-sub3")
+}
+
+/// Legacy experiments did not record a source branch. They may only be
+/// applied to the original legacy work branch. Current campaigns must match
+/// the exact branch they were evaluated on, including when the checkout's
+/// source path is identical.
+fn owns_application_branch(current: &str, recorded: Option<&str>) -> bool {
+    rsi_work_branch(current) && match recorded.filter(|v| !v.is_empty()) {
+        Some(branch) => branch == current,
+        None => current == "dominion-sub",
+    }
+}
+
 /// launchd starts the engine with a minimal PATH that often omits
 /// `~/.cargo/bin` and Homebrew. Resolve the tool explicitly so RSI can build
 /// even when the service environment is narrower than the user's shell.
@@ -97,6 +114,7 @@ pub fn metric_cases()->Vec<Value>{
     [
         ("memory-quality","memory","memory_ranking",false),
         ("long-recall-quality","memory","long_owner_recall",true),
+        ("planning-development","planning","planning_development_quality",false),
         ("planning-quality","planning","planning_quality",true),
         ("search-quality","improver","improvement_search",true),
         ("group-chat-input-cost","context","group_chat_context_efficiency",true),
@@ -179,115 +197,39 @@ async fn git(dir:&Path, args:&[&str])->Result<String,String>{
 fn valid_sha(value:&str)->bool {
     value.len()==40 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
-/// Repair resumes the *same failed draft* inside a new detached worktree.
-///// Never copy a failed edit to the live source, and never treat it as accepted.
-async fn restore_failed_draft(
-    context:&JobContext,input:&Value,worktree:&Path,base:&str
-)->Result<(),String>{
-    let plan=&input["rsiSourceIntegrityRepair"];
-    if !plan.is_object(){return Ok(());}
-    let candidate_id=plan["candidateId"].as_str().ok_or("수리 대상 후보 ID 없음")?;
-    let source_job=plan["sourceGenerationJobId"].as_str()
-        .ok_or("수리 원본 실행 ID 없음")?;
-    let candidate=context.state.store.get("rsi_candidate",candidate_id)
-        .ok_or("수리 원본 패치가 저장되지 않았습니다.")?;
-    let original=context.state.store.get("rsi_run",&format!("rsi-run-{source_job}"))
-        .ok_or("이전 세대의 소스 검증 기록이 없습니다.")?;
-    let patch=candidate["patch"].as_str()
-        .filter(|patch|!patch.is_empty() && patch.len()<MAX_CAPTURE_BYTES)
-        .ok_or("유효한 수리 원본 패치가 없습니다.")?;
-    if plan["generatorCommit"]!=base
-        || candidate["baseCommit"]!=base
-        || candidate["rsiJobId"]!=source_job
-        || candidate["origin"]!="model_driven_detached_worktree"
-        || original["jobId"]!=source_job
-        || original["candidateId"]!=candidate_id
-        || original["diffSha256"]!=candidate["patchSha256"]
-        || original["checksPassed"]==true
-        || original["sourceClean"]!=true
-        || original["checks"].as_array().is_none_or(|checks|
-            !checks.iter().any(|check|check["passed"]!=true))
-        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
-    {
-        return Err("원본 실패 패치의 출처·검증·커밋이 일치하지 않습니다.".into());
-    }
-    let file=std::env::temp_dir()
-        .join(format!("dominion-repair-{}.patch",uuid::Uuid::new_v4()));
-    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
-    let patch_path=file.to_str().ok_or("수리 패치 경로 인코딩 오류")?;
-    let applied=async {
-        git(worktree,&["apply","--check",patch_path]).await?;
-        git(worktree,&["apply",patch_path]).await?;
-        Ok::<(),String>(())
-    }.await;
-    let _=std::fs::remove_file(&file);
-    applied?;
-    context.checkpoint(json!({"rsiRepairDraftRestored":true,
-        "rsiRepairSourceJobId":source_job,"rsiRepairCandidateId":candidate_id,
-        "rsiRepairPatchSha256":candidate["patchSha256"]}))?;
-    Ok(())
-}
-
-/// Continue a genuinely evaluated, compiler-passing but quality-neutral
-/// implementation in a fresh detached worktree. This is NOT adoption: the
-/// child must make a new witnessed edit and beat the original frozen baseline.
-async fn restore_neutral_candidate(
-    context:&JobContext,worktree:&Path,base:&str,id:&str
+/// Preload an independently measured, rejected patch into the next
+/// generation's disposable checkout. This patch does NOT update the accepted
+/// source revision: its child must change actual code and beat the ORIGINAL
+/// baseline in the frozen A/B test before any adoption is possible.
+async fn inherit_neutral_patch(
+    context:&JobContext, path:&Path, base:&str, id:&str,
 )->Result<(),String>{
     let candidate=context.state.store.get("rsi_candidate",id)
-        .ok_or("후손에게 계승할 중립 후보가 없습니다.")?;
-    let source_job=candidate["rsiJobId"].as_str().ok_or("중립 후보 작업 ID 없음")?;
-    let prior=context.state.store.get("rsi_run",&format!("rsi-run-{source_job}"))
-        .ok_or("중립 후보 원본 실행 증거가 없습니다.")?;
-    let patch=candidate["patch"].as_str()
-        .filter(|text|!text.is_empty()&&text.len()<MAX_CAPTURE_BYTES)
-        .ok_or("중립 후보 패치가 없습니다.")?;
-    if candidate["baseCommit"]!=base
-        || candidate["origin"]!="model_driven_detached_worktree"
-        || candidate["pairedComparisonComplete"]!=true
-        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-        || candidate["evaluation"]["metrics"]["metricGains"].as_u64()!=Some(0)
-        || candidate["evaluation"]["metrics"]["regressions"].as_u64()!=Some(0)
-        || prior["checksPassed"]!=true || prior["candidateId"]!=id
-        || prior["sourceClean"]!=true
-        || prior["diffSha256"]!=candidate["patchSha256"]
-        || digest(patch)!=candidate["patchSha256"].as_str().unwrap_or("")
-        || candidate["paths"].as_array().is_none_or(|paths|
-            paths.is_empty()||paths.iter().any(|p|
-                !p.as_str().is_some_and(rsi::safe_path)))
-    {
-        return Err("컴파일·독립 평가·패치 원본이 일치하는 중립 후보만 이어받습니다.".into());
+        .ok_or("계승할 실제 개선 후보를 찾을 수 없습니다.")?;
+    let patch=candidate["patch"].as_str().ok_or("계승 후보의 소스 패치 없음")?;
+    if crate::engine::rsi_archive::parent_metrics(&context.state, &candidate, base).is_none() {
+        return Err("독립 검증되지 않았거나 다른 기준 커밋의 패치는 계승하지 않습니다.".into());
     }
-    let file=std::env::temp_dir()
-        .join(format!("dominion-neutral-{}.patch",uuid::Uuid::new_v4()));
-    std::fs::write(&file,patch).map_err(|e|e.to_string())?;
-    let name=file.to_str().ok_or("중립 패치 경로 인코딩 오류")?;
-    let apply=async {
-        git(worktree,&["apply","--check",name]).await?;
-        git(worktree,&["apply",name]).await?;
-        if git(worktree,&["status","--porcelain"]).await?.is_empty(){
-            return Err("중립 패치가 실제 소스 차이를 남기지 않았습니다.".into());
+    let temporary=std::env::temp_dir().join(format!(
+        "dominion-rsi-neutral-{}.patch",uuid::Uuid::new_v4()));
+    std::fs::write(&temporary,patch).map_err(|e|e.to_string())?;
+    let name=temporary.to_str().ok_or("계승 패치 경로 오류")?;
+    let applied=async {
+        git(path,&["apply","--check",name]).await?;
+        git(path,&["apply",name]).await?;
+        if git(path,&["status","--porcelain","--untracked-files=normal"]).await?.is_empty(){
+            return Err("계승 패치가 실제 소스 차이를 남기지 않았습니다.".into());
         }
         Ok::<(),String>(())
     }.await;
-    let _=std::fs::remove_file(&file);
-    apply?;
-    context.checkpoint(json!({"rsiNeutralDraftRestored":true,
-        "rsiNeutralCandidateId":id,"rsiNeutralBaseCommit":base,
-        "rsiNeutralPatchSha256":candidate["patchSha256"]}))?;
-    context.state.store.audit("rsi.neutral_draft_inherited",
-        json!({"jobId":context.job_id,"candidateId":id,
-            "baseCommit":base,"patchSha256":candidate["patchSha256"]}));
+    let _=std::fs::remove_file(&temporary);
+    applied?;
+    context.state.store.audit("rsi.neutral_patch_inherited",json!({
+        "generationJobId":context.job_id,"candidateId":id,
+        "baseCommit":base,"patchSha256":candidate["patchSha256"],
+        "sourceDir":path.to_string_lossy(),
+    }));
     Ok(())
-}
-
-/// Only disposable RSI work branches are eligible for source application.
-/// The champion and main refs are intentionally never mutation targets.
-pub fn is_rsi_work_branch(branch:&str)->bool {
-    if branch=="dominion-sub" {return true;}
-    let Some(suffix)=branch.strip_prefix("dominion-sub") else{return false;};
-    !suffix.is_empty() && suffix.len()<=2 && !suffix.starts_with('0')
-        && suffix.bytes().all(|ch|ch.is_ascii_digit())
 }
 
 pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
@@ -300,10 +242,13 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     let campaign=crate::engine::rsi_evolve::campaign_source(&context.state,input,&source,base);
     if !campaign {
-        let actual=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
-        let expected=input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub");
-        if !is_rsi_work_branch(expected) || actual.trim()!=expected {
-            return Err("원본 RSI 작업 브랜치가 시작 시점과 다릅니다.".into());
+        let actual_branch=git(&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
+        if !rsi_work_branch(actual_branch.trim()) {
+            return Err("원본 소스가 허용된 RSI 작업 브랜치가 아닙니다.".into());
+        }
+        if input["rsiSourceBranch"].as_str()
+            .is_some_and(|recorded| !recorded.is_empty() && recorded!=actual_branch.trim()) {
+            return Err("작업 대기 중 소스 브랜치가 바뀌었습니다. 새 브랜치에서 다시 시작하세요.".into());
         }
     }
     if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base {
@@ -316,23 +261,11 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     let name=path.to_str().ok_or("분리 작업공간 경로를 읽을 수 없습니다.")?;
     // Detached Git worktree, not a new branch; the running server checkout stays pristine.
     git(&source,&["worktree","add","--detach",name,base]).await?;
-    // The prior generation's source is otherwise destroyed at cleanup. A
-    // repair must start with its actual failed patch, not a clean baseline
-    // accompanied only by compiler diagnostics.
-    if let Some(id)=input["rsiInheritedNeutralCandidateId"].as_str()
-        .filter(|id|!id.is_empty()) {
-        if input["rsiSourceIntegrityRepair"].is_object(){
+    if let Some(id)=input["rsiInheritedCandidateId"].as_str().filter(|id|!id.is_empty()) {
+        if let Err(error)=inherit_neutral_patch(context,&path,base,id).await {
             let _=git(&source,&["worktree","remove","--force",name]).await;
-            return Err("컴파일 실패 교정과 중립 후보 계승을 동시에 적용할 수 없습니다.".into());
+            return Err(error);
         }
-        if let Err(error)=restore_neutral_candidate(context,&path,base,id).await {
-            let _=git(&source,&["worktree","remove","--force",name]).await;
-            return Err(format!("차세대 중립 후보 계승 실패: {error}"));
-        }
-    }
-    if let Err(error)=restore_failed_draft(context,input,&path,base).await {
-        let _=git(&source,&["worktree","remove","--force",name]).await;
-        return Err(format!("차세대 실패 패치 복구 실패: {error}"));
     }
     if let Err(error)=context.checkpoint(json!({
         "rsiWorkspace":name,"rsiBaseCommit":base,
@@ -348,6 +281,9 @@ fn classify(patch:&str)->&'static str {
         && (line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
+            || line.contains("src/engine/rsi_archive.rs ")
+            || line.contains("src/engine/rsi_mutation.rs ")
+            || line.contains("src/engine/rsi_domain_accumulator.rs ")
             || line.contains("src/engine/rsi_metrics.rs ")
             || line.contains("src/engine/algorithms.rs ")
             || line.contains("src/engine/algorithm_eval.rs ")
@@ -361,14 +297,68 @@ fn classify(patch:&str)->&'static str {
         "algorithm"
     } else {"harness"}
 }
+/// Link edit proposals to their actual executable receipts. Merely seeing
+/// workspace_replace_range in a model response is not evidence that the
+/// isolated source changed. This observation is persisted with each RSI run.
+fn edit_outcomes(state:&crate::state::AppState, session_id:&str)->Value {
+    let mut attempts=0u64;
+    let mut verified_writes=0u64;
+    let mut failures=Vec::<String>::new();
+    let mut operations=state.store.all("execution_operation");
+    operations.sort_by(|a,b| a["startedAt"].as_str().cmp(&b["startedAt"].as_str()));
+    for operation in operations {
+        if operation["sessionId"].as_str()!=Some(session_id)
+            || operation["origin"].as_str()!=Some("model")
+            || !matches!(operation["tool"].as_str(),
+                Some("workspace_write"|"workspace_replace"|"workspace_replace_range")) {
+            continue;
+        }
+        attempts+=1;
+        if operation["status"]=="completed" && operation["result"]["written"]==true
+            && operation["toolReceipt"]["verified"]==true {
+            verified_writes+=1;
+        } else {
+            let reason=operation["result"]["error"].as_str()
+                .or_else(||operation["error"].as_str())
+                .unwrap_or(if operation["result"]["unchanged"]==true {
+                    "source was not changed"
+                }else{"the edit was not verified"});
+            failures.push(format!("{}: {}",operation["tool"].as_str().unwrap_or("edit"),
+                reason.chars().take(300).collect::<String>()));
+        }
+    }
+    json!({"attempts":attempts,"verifiedWrites":verified_writes,
+        "recentFailures":failures.into_iter().rev().take(3).collect::<Vec<_>>()})
+}
+
+/// Preserve the first actionable compiler diagnostic, not only the end of
+/// cargo's stderr (which often contains warnings and "could not compile").
+/// Losing the real file:line:error makes every model repair a blind rewrite.
+fn focused_verifier_stderr(stderr:&str)->String {
+    let lines=stderr.lines().collect::<Vec<_>>();
+    let error_at=lines.iter().position(|line|{
+        let trimmed=line.trim_start();
+        trimmed.starts_with("error[") || trimmed.starts_with("error:")
+            || trimmed.contains("error[E0")
+    });
+    if let Some(at)=error_at {
+        let first=lines[at.saturating_sub(1)..(at+24).min(lines.len())].join("\n");
+        return first.chars().take(3200).collect();
+    }
+    stderr.chars().rev().take(2600).collect::<String>()
+        .chars().rev().collect()
+}
 fn check_result(label:&str, result:Result<std::process::Output,String>)->Value {
     match result {
-        Ok(output)=>json!({
-            "label":label,"ran":true,"passed":output.status.success(),
-            "exitCode":output.status.code(),
-            "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
-            "stderr":String::from_utf8_lossy(&output.stderr).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>()
-        }),
+        Ok(output)=>{
+            let stderr=String::from_utf8_lossy(&output.stderr);
+            json!({
+                "label":label,"ran":true,"passed":output.status.success(),
+                "exitCode":output.status.code(),
+                "stdout":String::from_utf8_lossy(&output.stdout).chars().rev().take(2600).collect::<String>().chars().rev().collect::<String>(),
+                "stderr":focused_verifier_stderr(&stderr)
+            })
+        }
         Err(error)=>json!({"label":label,"ran":false,"passed":false,"error":error}),
     }
 }
@@ -378,20 +368,8 @@ async fn validate(worktree:&Worktree,patch:&str)->Vec<Value> {
     let web_change=patch.lines().any(|line|line.starts_with("diff --git a/web/"));
     if rust_change {
         let mut command=Command::new(cargo_executable());
-        command.current_dir(&worktree.path)
-            .args(["check","--release","--bin","dominion-rust"]);
-        // Each generation uses a separate detached worktree. Without the
-        // coordinator's shared target dir every validation cold-compiles
-        // dependencies, exhausting the budget before it can examine the
-        // model-authored patch. Reuse build artifacts, NEVER source bytes.
-        if let Some(dir)=std::env::var_os("DOMINION_RSI_BUILD_TARGET_DIR") {
-            let target=PathBuf::from(dir);
-            if target.is_absolute() && target.is_dir(){
-                command.env("CARGO_TARGET_DIR",&target);
-            }
-        }
-        checks.push(check_result("cargo check --release --bin dominion-rust",
-            run(command,CHECK_LIMIT).await));
+        command.current_dir(&worktree.path).args(["check","--all-targets"]);
+        checks.push(check_result("cargo check --all-targets",run(command,CHECK_LIMIT).await));
     }
     if web_change {
         let installed=worktree.source.join("web/node_modules");
@@ -431,50 +409,45 @@ pub async fn finish(
     let patch=String::from_utf8_lossy(&raw.stdout).to_string();
     let patch_size=patch.len();
     let patch_sha=digest(&patch);
-    // Bind native edits to an immutable job/source/path and exact mutated
-    // bytes. A stale or forged receipt cannot relabel a model-authored diff.
+    let mut candidate_id=Value::Null;
+    let mut capture_error=String::new();
+    let mut checks=Vec::<Value>::new();
+    let mut unsafe_audit=Value::Null;
+    // Compute the actual model-write proof BEFORE registration. Otherwise a
+    // worker that makes NO change to an inherited neutral patch re-registers
+    // the same candidate and overwrites its independent paired evaluation.
+    let edit_evidence=edit_outcomes(&context.state,session_id);
+    // A native induction is a separate accountable code generator. Its
+    // receipt must match this job, source and patch bytes; never credit the
+    // model merely because the resulting code compiles.
     let native_receipt=context.state.store.get("rsi_mutation",&context.job_id)
         .filter(|receipt|input["rsiNativeInduction"]==true
             && receipt["origin"]=="native_inductive_source_mutation"
             && receipt["campaignId"]==input["rsiCampaignId"]
             && receipt["sourceDir"].as_str()==Some(worktree.source.to_string_lossy().as_ref())
             && receipt["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
-            && receipt["path"].as_str().is_some_and(|path|
-                patch.contains(&format!("diff --git a/{path} b/{path}")))
-            && receipt["path"].as_str().is_some_and(|path|
-                std::fs::read(worktree.path.join(path)).ok().is_some_and(|bytes|
-                    format!("{:x}",Sha256::digest(&bytes))==receipt["afterSha256"])));
-    let native_origin=native_receipt.is_some();
-    let mut candidate_id=Value::Null;
-    let mut capture_error=String::new();
-    let mut checks=Vec::<Value>::new();
-    let mut unsafe_audit=Value::Null;
-    // A descendant repair starts from the parent's failed patch. Its diff
-    // against HEAD is therefore nonempty even when the model did nothing.
-    // Re-proposing that inherited patch would falsely look like progress.
-    let inherited_unchanged=input["rsiSourceIntegrityRepair"]["candidateId"]
-        .as_str()
+            && receipt["path"].as_str().is_some_and(|p|
+                patch.contains(&format!("diff --git a/{p} b/{p}"))));
+    let mutation_after_matches=native_receipt.as_ref().is_some_and(|receipt|{
+        let Some(path)=receipt["path"].as_str() else {return false;};
+        std::fs::read(worktree.path.join(path)).ok().is_some_and(|bytes|
+            format!("{:x}",Sha256::digest(&bytes))==receipt["afterSha256"])
+    });
+    let prior_native=context.state.store.get("rsi_run",
+            &format!("rsi-run-{}",context.job_id))
+        .is_some_and(|row|row["candidateOrigin"]
+            .as_str().is_some_and(|origin|
+                origin.starts_with("native_inductive_source_mutation")));
+    let native_origin=mutation_after_matches || (native_receipt.is_some() && prior_native);
+    let inherited_patch_changed=input["rsiInheritedCandidateId"].as_str()
         .and_then(|id|context.state.store.get("rsi_candidate",id))
-        .is_some_and(|previous|
-            previous["patchSha256"].as_str()==Some(patch_sha.as_str()));
-    let neutral_id=input["rsiInheritedNeutralCandidateId"].as_str()
-        .filter(|id|!id.is_empty());
-    let neutral_changed=neutral_id.and_then(|id|
-        context.state.store.get("rsi_candidate",id))
-        .is_some_and(|prior|prior["patchSha256"].as_str()!=Some(patch_sha.as_str()));
-    let fresh_verified_write=context.state.store.all("execution_operation")
-        .into_iter().any(|op|op["sessionId"].as_str()==Some(session_id)
-            && op["status"]=="completed"
-            && matches!(op["tool"].as_str(),
-                Some("workspace_replace"|"workspace_replace_range"|"workspace_write"))
-            && op["result"]["written"]==true
-            && op["toolReceipt"]["verified"]==true);
+        .is_some_and(|ancestor|ancestor["patchSha256"]!=patch_sha
+            && edit_evidence["verifiedWrites"].as_u64().unwrap_or(0)>0);
     if patch.trim().is_empty(){
         capture_error="모델이 실제 소스 파일을 변경하지 않았습니다.".into();
-    } else if inherited_unchanged {
-        capture_error="후손이 상속받은 실패 패치를 수정하지 않았습니다.".into();
-    } else if neutral_id.is_some() && (!neutral_changed || !fresh_verified_write) {
-        capture_error="후손이 중립 후보를 이어받았으나 검증된 새 소스 수정이 없습니다.".into();
+    } else if input["rsiInheritedCandidateId"].is_string()
+        && !inherited_patch_changed {
+        capture_error="계승된 실패 패치에 새로 검증된 소스 수정이 없습니다. 이전 평가 후보는 그대로 보존합니다.".into();
     } else if patch_size>=MAX_CAPTURE_BYTES {
         capture_error="코드 변경량이 79KB를 초과해 증거를 안전하게 수집하지 않았습니다.".into();
     } else {
@@ -485,19 +458,16 @@ pub async fn finish(
         // NOT a claim that baseline/candidate paired tests have been run.
         let proposal=json!({
             "target":classify(&patch),"baseCommit":worktree.base,
-            "sourceBranch":input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"),
             "patch":patch,"hypothesis":hypothesis,
             "cases":input["rsiFrozenCases"],"oracleVersion":"rsi-worktree-v2",
             "generatorModel":if native_origin {json!(format!("dominion-native:{}",
-                native_receipt.as_ref().and_then(|row|row["operator"].as_str()).unwrap_or("unknown")))
-            }else{input["model"].clone()},
+                native_receipt.as_ref().and_then(|row|row["operator"].as_str()).unwrap_or("unknown")))}else{input["model"].clone()},
             "generatorEffort":if native_origin {Value::Null}else{input["reasoningEffort"].clone()},
             "generatorSourceCommit":worktree.base
         });
         match rsi::propose(&context.state,&proposal) {
             Ok(mut candidate)=>{
                 candidate["rsiJobId"]=json!(context.job_id);
-                candidate["sourceBranch"]=json!(input["rsiSourceBranch"].as_str().unwrap_or("dominion-sub"));
                 candidate["origin"]=json!(if native_origin {
                     "native_inductive_source_mutation"
                 }else{"model_driven_detached_worktree"});
@@ -533,17 +503,17 @@ pub async fn finish(
         "id":format!("rsi-run-{}",context.job_id),
         "jobId":context.job_id,"sessionId":session_id,
         "baseCommit":worktree.base,"candidateId":candidate_id,
-        "inheritedNeutralCandidateId":input["rsiInheritedNeutralCandidateId"],
-        "inheritedNeutralPatchChanged":neutral_id.is_some()
-            && neutral_changed && fresh_verified_write,
         "sourceClean":source_clean,"diffSha256":patch_sha,"diffBytes":patch_size,
         "checks":checks,"checksPassed":all_checks_pass,
         "unsafeAudit":unsafe_audit,
         "pairedComparisonComplete":false,"autoMerged":false,"autoDeployed":false,
         "modelError":model_error,"captureError":capture_error,
-        "candidateOrigin":if native_origin {"native_inductive_source_mutation"}
-            else {"model_driven_detached_worktree"},
+        "candidateOrigin":if native_origin{"native_inductive_source_mutation"}
+            else{"model_driven_detached_worktree"},
         "nativeMutation":native_receipt,
+        "editEvidence":edit_evidence,
+        "inheritedCandidateId":input["rsiInheritedCandidateId"],
+        "inheritedPatchChanged":inherited_patch_changed,
         "modelMessageId":model_result.ok().flatten().and_then(|m|m["id"].as_str().map(str::to_string)),
         "createdAt":chrono::Utc::now().to_rfc3339(),
     });
@@ -619,150 +589,60 @@ fn run_status(
     model_error:&str,capture_error:&str,
 )->(&'static str,&'static str){
     if !source_clean {return ("needs_review","original_source_changed");}
-    if !model_error.is_empty(){return ("needs_review","model_error");}
     if !capture_error.is_empty()||!has_candidate {
         return ("needs_review","no_valid_candidate");
     }
+    // The model can exhaust its output budget AFTER a real source write.
+    // Preserve the actual compiler outcome instead of misclassifying a
+    // noncompiling patch as merely a model error. This distinction is what
+    // drives the next generation's source-repair method.
     if audit_failed{return ("needs_review","unsafe_safety_failed");}
     if !checks_passed{return ("needs_review","build_or_typecheck_failed");}
+    // A real patch that passed an independent compiler verification can be
+    // compared even if the provider failed during its final prose turn.
+    // A user-initiated cancellation remains a hard stop.
+    if model_error.contains("중단") || model_error.contains("cancelled")
+        || model_error.contains("canceled") {
+        return ("needs_review","model_error");
+    }
     ("completed","candidate_compiles_not_performance_verified")
 }
 
-/// Return a bounded, evidence-grounded continuation when a genuine model
-/// generation reached no source candidate. This repairs an observed failed
-/// edit or converts a verified read-only turn into ONE executable edit try.
-/// The model still authors the change. This is not an automatic patch or an
-/// independent A/B quality verdict.
-pub fn grounded_edit_feedback(
-    state: &crate::state::AppState,
-    result: &Value,
-    session: &Value,
-    operations: &[Value],
-) -> Option<(String, &'static str)> {
-    if result["status"] != "needs_review"
-        || result["reason"] != "no_valid_candidate"
-        || result["rsi"]["sourceClean"] != true
-        || result["rsi"]["diffBytes"].as_u64() != Some(0)
-        || !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
-        || session["rsiRun"] != true
-        || !session["rsiCampaignId"].is_string()
-    {
-        return None;
-    }
-    let session_id = session["id"].as_str()?;
-    let focus = session["rsiFocusFile"].as_str().filter(|path| rsi::safe_path(path))?;
-    let own: Vec<&Value> = operations
-        .iter()
-        .filter(|op| op["sessionId"].as_str() == Some(session_id))
-        .collect();
-    // A successful mutation with a zero final diff may have been reverted.
-    // Its outcome is not a safe "read-only" continuation.
-    if own.iter().any(|op| {
-        op["result"]["written"] == true
-            && matches!(
-                op["tool"].as_str(),
-                Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
-            )
-    }) {
-        return None;
-    }
-    let is_edit = |op: &Value| {
-        matches!(
-            op["tool"].as_str(),
-            Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
-        )
-    };
-    let failed = own.iter().rev().copied().find(|op| {
-        is_edit(op)
-            && op["arguments"]["path"].as_str() == Some(focus)
-            && matches!(op["status"].as_str(), Some("completed" | "failed"))
-            && (op["status"] == "failed"
-                || op["result"]["staleVersion"] == true
-                || op["result"]["preflightBlocked"] == true
-                || op["result"]["unchanged"] == true
-                || op["result"]["error"].is_string())
-    });
-    if let Some(op) = failed {
-        let error = op["result"]["error"]
-            .as_str()
-            .unwrap_or("The previous edit did not write source.");
-        let guidance = if op["tool"] == "workspace_write" {
-            "workspace_write는 새 파일 전용입니다. 기존 파일의 관찰된 줄만 workspace_replace_range로 변경하세요."
-        } else {
-            "현재 파일을 workspace_read_range로 다시 읽고 그 sourceSha256와 정확한 줄 범위로 workspace_replace_range를 실행하세요."
-        };
-        return Some((
-            format!(
-                "실제 편집 연산이 실패한 채 후보 0건으로 끝났습니다. 대상: {focus}. \
-                 실패 영수증: {}. {guidance} 근거 없는 코드는 작성하지 마세요. \
-                 동일 격리 작업공간에서 이 시도는 1번만 재실행됩니다.",
-                error.chars().take(480).collect::<String>()
-            ),
-            "observed_tool_repair",
-        ));
-    }
-    if own.iter().any(|op| is_edit(op)) {
-        // No trustworthy error receipt: do not guess why a write failed.
-        return None;
-    }
-    let read = own.iter().rev().copied().find(|op| {
-        op["tool"] == "workspace_read_range"
-            && op["status"] == "completed"
-            && op["arguments"]["path"].as_str() == Some(focus)
-            && op["result"]["error"].is_null()
-            && op["result"]["sourceSha256"]
-                .as_str()
-                .is_some_and(|sha| sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
-    });
-    let indexed = session["rsiIndexId"]
-        .as_str()
-        .and_then(|index| crate::engine::code_index::indexed_source_hash(state, index, focus))
-        .is_some();
-    if read.is_none() && !indexed {
-        return None;
-    }
-    let observed = read
-        .and_then(|op| op["result"]["sourceSha256"].as_str().map(|sha| (op, sha)))
-        .map(|(op, sha)| {
-            let excerpt = op["result"]["content"]
-                .as_str()
-                .or_else(|| op["result"]["text"].as_str())
-                .unwrap_or("");
-            format!(
-                "\n실제 읽기 영수증 SHA-256: {sha}\n원문 발췌:\n{}\n",
-                excerpt.chars().take(1800).collect::<String>()
-            )
-        })
-        .unwrap_or_else(|| "색인에 소스 해시가 존재합니다. 수정 전에 해당 파일을 정확히 읽으세요.".into());
-    Some((
-        format!(
-            "검증된 소스를 조회했지만 실제 수정은 0건입니다. 이번에는 조사 반복보다 \
-             {focus}의 목표 관련 120줄 이내 수정 여부를 먼저 결정하세요. \
-             바꿀 근거가 있으면 workspace_replace_range(startLine,endLine,newText,expectedSha256)를 실제 호출하고 \
-             파일을 변경하지 못하면 명확한 이유를 답하세요. 이 재시도 자체는 성능 향상이 아닙니다.{observed}"
-        ),
-        "source_edit_bootstrap",
-    ))
-}
-
-/// Resolve a compiler diagnostic to the source range the next worker
-/// actually needs to READ. Source repair previously observed the beginning of
-/// the indexed function even when rustc reported a distant broken test line.
-/// Accept only a location in the already selected, safe source file.
-pub fn repair_focus_start(checks:&Value,focus:&str)->Option<u64>{
-    if !rsi::safe_path(focus) {return None;}
-    for check in checks.as_array()? {
+/// Extract the FIRST actual compiler location from the failed verifier.
+/// The next model turn must read this precise file/line in the same detached
+/// worktree, not spend another generation searching the entire repository.
+pub fn repair_target(result:&Value)->Option<(String,u64)> {
+    if result["reason"]!="build_or_typecheck_failed" {return None;}
+    for check in result["rsi"]["checks"].as_array()? {
         if check["passed"]==true {continue;}
-        let diagnostic=check["stderr"].as_str()
+        // Native validation stores focused cargo output in "detail".
+        // Looking only for stderr/error discards the actual file:line
+        // diagnostic and turns repair into another blind model attempt.
+        let diagnostic=check["detail"].as_str()
+            .or_else(||check["stderr"].as_str())
             .or_else(||check["error"].as_str()).unwrap_or("");
-        for (position,_) in diagnostic.match_indices(focus) {
-            let remainder=&diagnostic[position+focus.len()..];
-            let Some(location)=remainder.strip_prefix(':') else{continue};
-            let digits=location.bytes().take_while(u8::is_ascii_digit).count();
-            if digits==0 || location.as_bytes().get(digits)!=Some(&b':'){continue;}
-            if let Ok(line)=location[..digits].parse::<u64>() {
-                if line>0 {return Some(line.saturating_sub(36).max(1));}
+        for text in diagnostic.lines() {
+            // cargo often emits ANSI-colored diagnostics even when its
+            // stderr is captured: "\\x1b[94m--> \\x1b[0msrc/file.rs:75:13".
+            // Remove CSI escapes before parsing the real compiler location.
+            let mut plain=String::new();
+            let mut chars=text.chars().peekable();
+            while let Some(ch)=chars.next() {
+                if ch=='\u{1b}' && chars.peek()==Some(&'[') {
+                    chars.next();
+                    for code in chars.by_ref() {
+                        if ('@'..='~').contains(&code) {break;}
+                    }
+                } else {plain.push(ch);}
             }
+            let Some(location)=plain.trim().strip_prefix("-->") else {continue;};
+            let mut fields=location.trim().rsplitn(3, ':');
+            let _column=fields.next();
+            let Some(line)=fields.next().and_then(|s|s.parse::<u64>().ok()) else {continue;};
+            let Some(path)=fields.next() else {continue;};
+            if line==0 || line>100_000 || !path.ends_with(".rs")
+                || !crate::engine::rsi::safe_path(path) {continue;}
+            return Some((path.to_string(),line));
         }
     }
     None
@@ -772,25 +652,53 @@ pub fn repair_focus_start(checks:&Value,focus:&str)->Option<u64>{
 /// calls for provider errors, missing diffs or checkout integrity failures.
 pub fn repair_feedback(result:&Value)->Option<String>{
     if result["status"]!="needs_review"
-        ||!matches!(result["reason"].as_str(),
+        || result["rsi"]["sourceClean"]!=true {
+        return None;
+    }
+    // A model/provider error that occurred AFTER a verified source edit
+    // must not suppress the independently observed compiler diagnostics.
+    // Only retry such errors when the verifier actually found a broken patch.
+    if !result["rsi"]["modelError"].as_str().unwrap_or("").is_empty()
+        && result["reason"]!="build_or_typecheck_failed" {
+        return None;
+    }
+    // A model tried to edit, yet left zero source bytes changed. Give it a
+    // bounded, evidence-driven correction rather than abandoning the whole
+    // generation as research-only. Never retry an ordinary no-edit answer.
+    if result["reason"]=="no_valid_candidate"
+        && result["rsi"]["captureError"]=="모델이 실제 소스 파일을 변경하지 않았습니다."
+        && result["rsi"]["editEvidence"]["attempts"].as_u64().unwrap_or(0)>0 {
+        let problems=result["rsi"]["editEvidence"]["recentFailures"].as_array()
+            .into_iter().flatten().filter_map(Value::as_str)
+            .take(3).collect::<Vec<_>>().join("; ");
+        return Some(format!(
+            "이전 편집은 실제 Git 변경을 남기지 못했습니다. 편집 도구 호출은 완료된 코드 수정이 아닙니다. 최신 workspace_read_range의 sourceSha256과 줄 범위를 확인하고 원본과 다른 새 구현을 workspace_replace_range로 작성하세요. 앞서 나온 오류: {}. 성공했다고 설명만 하지 말고 파일 변경을 실행하세요.",
+            if problems.is_empty() {"실제 변경 없음"}else{&problems}
+        ));
+    }
+    if !matches!(result["reason"].as_str(),
             Some("build_or_typecheck_failed"|"unsafe_safety_failed"))
-        ||result["rsi"]["sourceClean"]!=true
-        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty()
-        ||!result["rsi"]["modelError"].as_str().unwrap_or("").is_empty(){
+        ||!result["rsi"]["captureError"].as_str().unwrap_or("").is_empty(){
         return None;
     }
     let checks=result["rsi"]["checks"].as_array()?;
     let failures=checks.iter().filter(|check|check["passed"]!=true)
         .map(|check|{
             let label=check["label"].as_str().unwrap_or("verification");
-            let detail=check["stderr"].as_str().or_else(||check["error"].as_str())
+            let detail=check["detail"].as_str()
+                .or_else(||check["stderr"].as_str())
+                .or_else(||check["error"].as_str())
                 .unwrap_or("The verifier reported failure without further detail.");
             format!("{label}: {}",detail.chars().take(1100).collect::<String>())
         }).collect::<Vec<_>>();
     if failures.is_empty(){return None;}
+    let target=repair_target(result).map(|(path,line)|format!(
+        "우선 고칠 오류 위치: {path}:{line}. workspace_read_range를 path={path}, startLine={}, endLine={}로 호출해 현재 원문과 sourceSha256을 확보한 뒤, 그 파일의 실제 오류를 workspace_replace_range로 수정하세요. 다른 파일 탐색으로 돌아가지 마세요.\n\n",
+        line.saturating_sub(12).max(1),line.saturating_add(12)
+    )).unwrap_or_default();
     Some(format!(
-        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}",
-        failures.join("\n\n")
+        "이전 소스 변경 후 별도의 컴파일/타입 검사에서 오류가 발견됐습니다. 기존 변경을 읽고 실제 오류를 고쳐 다시 저장하세요. 검사 자체를 삭제하거나 우회하지 마세요. 수정 전과 무관한 파일은 건드리지 마세요. 테스트는 엔진이 다시 실행합니다.\n\n{}{}",
+        target,failures.join("\n\n")
     ))
 }
 /// Apply a model-generated patch only after explicit owner review. A successful
@@ -832,11 +740,15 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
         return Err("패치 해시가 저장된 값과 다릅니다.".into());
     }
     let status=crate::engine::dev::status(state).await;
-    let source_branch=candidate["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
-    if !is_rsi_work_branch(&source_branch)
-        || status["git"]!=true || status["branch"].as_str()!=Some(source_branch.as_str())
+    if status["git"]!=true || !status["branch"].as_str().is_some_and(rsi_work_branch)
         || status["dirty"]!=0 || status["commit"]!=candidate["baseCommit"] {
-        return Err("원본 작업 브랜치가 후보 생성 브랜치와 다르거나 수정 중이므로 적용하지 않았습니다.".into());
+        return Err("원본 작업 브랜치가 기준과 다르거나 수정 중이므로 적용하지 않았습니다.".into());
+    }
+    let recorded_branch=state.store.get("job",&job_id)
+        .and_then(|job|job["input"]["rsiSourceBranch"].as_str().map(str::to_string));
+    if !status["branch"].as_str().is_some_and(|branch|
+        owns_application_branch(branch,recorded_branch.as_deref())) {
+        return Err("후보를 생성한 소스 브랜치와 현재 적용 브랜치가 다릅니다.".into());
     }
     let remote=status["remote"].as_str().unwrap_or("");
     if !remote.is_empty() && !remote.contains("hushmind3/dominion-rust") {
@@ -865,7 +777,7 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
     candidate["status"]=json!("applied_to_sub");
     candidate["manualApplication"]=json!({
         "mode":if verified{"explicit_verified_paired_application"}else{"explicit_trial_without_paired_proof"},
-        "appliedAt":now,"sourceCommit":status["commit"],"branch":source_branch,
+        "appliedAt":now,"sourceCommit":status["commit"],
         "requiresRebuild":true,"requiresCommit":true,"autoDeployed":false
     });
     evidence["manuallyApplied"]=json!(true);
@@ -881,13 +793,6 @@ pub async fn apply_to_sub(state:&crate::state::AppState,id:&str,body:&Value)->Re
 /// Publish the selected experimental lineage to the test branch. The main
 /// branch is never a target. Every commit is checked against its measured
 /// patch using a private Git index before the source checkout can move.
-/// Work branches are the per-session `dominion-sub*` branches plus the
-/// integration branch. Other branches, including production refs, are never
-/// valid RSI sources or application targets.
-pub(crate) fn is_work_branch(name: &str) -> bool {
-    name == "dominion-champion" || name.starts_with("dominion-sub")
-}
-
 pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expected:&str)->Result<Value,String>{
     if !state.begin_session("rsi-source-application") {return Err("검증된 버전을 적용 중입니다.".into());}
     let _guard=state.session_guard("rsi-source-application");
@@ -899,10 +804,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     let source=std::fs::canonicalize(campaign["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     let status=crate::engine::dev::status(state).await;
     let configured=status["config"]["sourceDir"].as_str().and_then(|s|std::fs::canonicalize(s).ok());
-    let source_branch=campaign["sourceBranch"].as_str().unwrap_or("dominion-sub").to_string();
-    if !is_rsi_work_branch(&source_branch) || configured.as_ref()!=Some(&source)
-        || status["branch"]!=source_branch {
-        return Err("dominion-sub 계열의 해당 캠페인 원본 브랜치에만 적용할 수 있습니다.".into());
+    let work_branch=status["branch"].as_str()
+        .filter(|branch|rsi_work_branch(branch))
+        .ok_or("허용된 RSI 작업 브랜치에서만 적용합니다.")?;
+    if configured.as_ref()!=Some(&source)
+        || !owns_application_branch(work_branch,campaign["sourceBranch"].as_str()) {
+        return Err("캠페인 원본 브랜치와 연결된 작업 브랜치가 다릅니다.".into());
     }
     if !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("미저장 코드를 보존했습니다. 현재 소스를 정리한 뒤 반영하세요.".into());
@@ -954,12 +861,12 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
     }
     if commits.is_empty() {return Err("적용할 검증 변경이 없습니다.".into());}
     if git(&source,&["rev-parse","HEAD"]).await?!=base
-        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!=format!("refs/heads/{source_branch}")
+        || git(&source,&["symbolic-ref","--quiet","HEAD"]).await?!=format!("refs/heads/{work_branch}")
         || !git(&source,&["status","--porcelain","--untracked-files=no"]).await?.is_empty() {
         return Err("적용 직전에 작업 브랜치나 소스가 바뀌었습니다.".into());
     }
     git(&source,&["-c","core.hooksPath=","merge","--ff-only","--no-edit",expected]).await?;
-    let application=json!({"commit":expected,"branch":source_branch,"sourceDir":source,
+    let application=json!({"commit":expected,"branch":work_branch,"sourceDir":source,
         "requiresRebuild":true,"productionDeployed":false,"appliedAt":chrono::Utc::now().to_rfc3339()});
     campaign["application"]=application.clone();
     state.store.put("rsi_campaign",&campaign).ok_or("소스 반영 후 기록 저장 실패")?;
@@ -971,21 +878,11 @@ pub async fn apply_campaign_to_sub(state:&crate::state::AppState,id:&str,expecte
 /// Execute the existing paired-runner against the frozen baseline and the
 /// exact model patch. Tests run on the operator's host: Git worktrees provide
 /// source isolation, NOT an OS security sandbox. Never call this from a model.
-fn paired_compare_source_matches(status: &Value, candidate: &Value) -> bool {
-    let branch = status["branch"].as_str().unwrap_or("");
-    let candidate_branch = candidate["sourceBranch"].as_str().unwrap_or("dominion-sub");
-    status["git"] == true
-        && is_rsi_work_branch(branch)
-        && branch == candidate_branch
-}
-
 pub async fn compare(context:&JobContext, job:&Value)->Result<Value,String>{
     let id=job["input"]["candidateId"].as_str().ok_or("비교할 후보가 없습니다.")?;
-    let candidate=context.state.store.get("rsi_candidate",id)
-        .ok_or("비교할 후보 기록이 없습니다.")?;
     let status=crate::engine::dev::status(&context.state).await;
-    if !paired_compare_source_matches(&status,&candidate) {
-        return Err("독립 비교는 후보를 생성한 동일한 dominion-sub 계열 작업 브랜치에서만 시작하세요.".into());
+    if status["git"]!=true || !status["branch"].as_str().is_some_and(rsi_work_branch) {
+        return Err("비교 실험은 허용된 RSI 작업 브랜치에서 시작하세요.".into());
     }
     let source=std::fs::canonicalize(status["config"]["sourceDir"].as_str().ok_or("소스 경로 없음")?).map_err(|e|e.to_string())?;
     compare_at(context,id,&source,&source).await
@@ -1085,22 +982,37 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     state.store.put("rsi_candidate",&updated)
         .ok_or("A/B 평가 후보 갱신에 실패했습니다.")?;
     state.store.put("rsi_evaluation",&updated["evaluation"]);
-    // Each frozen evaluation has its own permanent receipt. A campaign may
-    // compare multiple revisions, and retrying inconclusive candidates must
-    // never destroy earlier evidence.
-    let evaluation_id=updated["evaluation"]["id"].as_str()
-        .ok_or("독립 A/B 평가 식별자가 없습니다.")?;
     let receipt=json!({
-        "id":format!("rsi-pair-{evaluation_id}"),
-        "evaluationId":evaluation_id,
+        "id":format!("rsi-pair-{id}"),
         "candidateId":id,"jobId":context.job_id,
         "report":report,"verdict":verdict,"metrics":metrics,
         "evidenceSha256":evidence_sha,
         "runner":"local_gitrepo_not_os_sandbox",
         "createdAt":chrono::Utc::now().to_rfc3339()
     });
-    state.store.put("rsi_pair",&receipt)
-        .ok_or("독립 비교 증거를 영구 저장하지 못했습니다.")?;
+    state.store.put("rsi_pair",&receipt);
+    // Close the native operator's trial with the ACTUAL independent paired
+    // result. Rejected unchanged-source/operator combinations then cease to
+    // loop, while successful transformations become descendant lessons.
+    if candidate["origin"]=="native_inductive_source_mutation" {
+        if let Some(mut native)=candidate["rsiJobId"].as_str()
+            .and_then(|job|state.store.get("rsi_mutation",job))
+            .filter(|row|row["origin"]==candidate["origin"]
+                && row["afterSha256"]==candidate["nativeMutation"]["afterSha256"]) {
+            native["candidateId"]=json!(id);
+            native["evaluation"]=json!({
+                "verdict":verdict,"metrics":metrics,
+                "evidenceSha256":evidence_sha,
+                "source":"server_invoked_local_paired_git_worktrees",
+                "qualityProven":metrics["eligible"]==true && verdict=="improved"
+            });
+            native["qualityGain"]=json!(if verdict=="improved"{
+                metrics["metricGains"].as_u64().unwrap_or(0)
+                    +metrics["gains"].as_u64().unwrap_or(0)
+            }else{0});
+            state.store.put("rsi_mutation",&native);
+        }
+    }
     let origin_id=format!("rsi-run-{}",candidate["rsiJobId"].as_str().unwrap_or(""));
     if let Some(mut origin)=state.store.get("rsi_run",&origin_id) {
         origin["paired"]=json!({"verdict":verdict,"metrics":metrics,
@@ -1116,6 +1028,12 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     Ok(json!({
         "candidateId":id,"candidateStatus":updated["status"],
         "verdict":verdict,"metrics":metrics,
+        // Descendant rule induction and matched policy tournaments consume
+        // the generation-level comparison receipt. Without this verified
+        // origin they silently discard every neutral/rejected counterexample,
+        // even though the candidate ledger was independently evaluated.
+        "source":updated["evaluation"]["source"],
+        "evaluationId":updated["evaluation"]["id"],
         "evidenceSha256":evidence_sha,
         "pairedCases":report["cases"].as_array().map(Vec::len).unwrap_or(0),
         "performanceImprovementClaimed":metrics["metricGains"].as_u64().unwrap_or(0)>0,
@@ -1146,44 +1064,6 @@ mod tests {
         );
     }
     #[test]
-    fn no_candidate_feedback_requires_real_same_session_source_evidence() {
-        use crate::{config::Config, db::Store, state::AppState, vault::Vault};
-        let root=std::env::temp_dir().join(format!("rsi-grounded-edit-{}",uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
-        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
-        let session=json!({"id":"s1","rsiRun":true,"rsiCampaignId":"c1",
-            "rsiFocusFile":"src/engine/memory.rs"});
-        let result=json!({"status":"needs_review","reason":"no_valid_candidate",
-            "rsi":{"sourceClean":true,"diffBytes":0,"modelError":""}});
-        let read=json!({"sessionId":"s1","status":"completed","tool":"workspace_read_range",
-            "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"sourceSha256":"a".repeat(64),"content":"fn retrieve() {}"}});
-        let (prompt,mode)=grounded_edit_feedback(&state,&result,&session,&[read.clone()]).unwrap();
-        assert_eq!(mode,"source_edit_bootstrap");
-        assert!(prompt.contains("workspace_replace_range"));
-        assert!(prompt.contains("fn retrieve()"));
-        let mut foreign=read.clone();
-        foreign["sessionId"]=json!("other-session");
-        assert!(grounded_edit_feedback(&state,&result,&session,&[foreign]).is_none());
-        let mut failed=json!({"sessionId":"s1","status":"failed","tool":"workspace_replace_range",
-            "arguments":{"path":"src/engine/memory.rs"},
-            "result":{"error":"stale source hash","staleVersion":true}});
-        let (_,mode)=grounded_edit_feedback(&state,&result,&session,&[read.clone(),failed.clone()]).unwrap();
-        assert_eq!(mode,"observed_tool_repair");
-        failed["arguments"]["path"]=json!("src/engine/tools.rs");
-        assert!(grounded_edit_feedback(&state,&result,&session,&[failed]).is_none());
-        let mut reverted=read.clone();
-        reverted["tool"]=json!("workspace_replace_range");
-        reverted["result"]["written"]=json!(true);
-        assert!(grounded_edit_feedback(&state,&result,&session,&[read,reverted]).is_none());
-        let mut disconnected=result.clone();
-        disconnected["rsi"]["modelError"]=json!("connection reset");
-        assert!(grounded_edit_feedback(&state,&disconnected,&session,&[]).is_none());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn later_generations_see_prior_compile_failures_without_fabricated_gains(){
         use crate::{config::Config,db::Store,state::AppState,vault::Vault};
         let root=std::env::temp_dir().join(format!("rsi-feedback-{}",uuid::Uuid::new_v4()));
@@ -1203,51 +1083,25 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn paired_comparison_requires_the_candidates_original_experimental_branch() {
-        for branch in ["dominion-sub", "dominion-sub2", "dominion-sub3", "dominion-sub4"] {
-            assert!(paired_compare_source_matches(
-                &json!({"git":true,"branch":branch}),
-                &json!({"sourceBranch":branch})
-            ), "{branch} must be allowed to run paired comparison");
-        }
-        assert!(!paired_compare_source_matches(
-            &json!({"git":true,"branch":"dominion-sub4"}),
-            &json!({"sourceBranch":"dominion-sub3"})
-        ), "sibling candidates cannot be judged on the wrong branch");
-        for branch in ["main", "champion", "dominion-champion", "dominion-sub4-extra"] {
-            assert!(!paired_compare_source_matches(
-                &json!({"git":true,"branch":branch}),
-                &json!({"sourceBranch":branch})
-            ), "{branch} is not an experimental branch");
-        }
-        assert!(!paired_compare_source_matches(
-            &json!({"git":false,"branch":"dominion-sub4"}),
-            &json!({"sourceBranch":"dominion-sub4"})
-        ));
-    }
-    #[test]
-    fn source_application_is_limited_to_explicit_rsi_work_branches() {
-        for branch in ["dominion-sub","dominion-sub2","dominion-sub3","dominion-sub4","dominion-sub10"] {
-            assert!(is_rsi_work_branch(branch), "{branch} should be a safe experimental branch");
-        }
-        for branch in ["main","dominion-champion","dominion-sub0","dominion-sub04",
-            "dominion-subx","dominion-sub4-extra","dominion-sub100","dominion-sub/4",""] {
-            assert!(!is_rsi_work_branch(branch), "{branch} must not be an RSI publishing target");
-        }
-    }
-
-    #[test]
     fn classification_covers_the_improver_harness_and_algorithm(){
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/api/rsi.rs b/src/api/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
-        for path in ["src/engine/algorithms.rs","src/engine/algorithm_eval.rs",
-            "src/engine/policy_patch.rs"] {
-            assert_eq!(classify(&format!("diff --git a/{path} b/{path}\n")),
-                "improver","{path} must be eligible for meta evaluation");
-        }
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\n"),"improver",
+            "a change to how algorithm candidates are selected must be measured as meta improvement");
+        assert_eq!(classify("diff --git a/src/engine/algorithm_eval.rs b/src/engine/algorithm_eval.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
+    }
+    #[test]
+    fn verifier_preserves_first_compiler_error_before_long_warning_tail(){
+        let source=format!("warning: setup\\nerror[E0308]: mismatched types\\n --> src/engine/decompose.rs:42:10\\n  |\\n42 | wrong\\n  | expected usize\\n{}",
+            "warning: unrelated diagnostics\\n".repeat(250));
+        let focused=focused_verifier_stderr(&source.replace("\\n","\n"));
+        assert!(focused.contains("error[E0308]"));
+        assert!(focused.contains("src/engine/decompose.rs:42:10"));
+        assert!(focused.starts_with("warning: setup"));
+        assert!(!focused.contains("unrelated diagnostics\\n".repeat(220).as_str()));
     }
     #[test]
     fn failing_verification_never_completes_and_only_valid_failures_retry(){
@@ -1255,7 +1109,8 @@ mod tests {
         assert_eq!(run_status(true,false,true,true,"",""),("needs_review","unsafe_safety_failed"));
         assert_eq!(run_status(true,true,false,true,"",""),("completed","candidate_compiles_not_performance_verified"));
         assert_eq!(run_status(true,true,false,false,"","").0,"needs_review");
-        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"needs_review");
+        assert_eq!(run_status(true,true,false,true,"provider timeout","").0,"completed");
+        assert_eq!(run_status(true,true,false,true,"cancelled by user","").0,"needs_review");
         assert_eq!(run_status(false,true,false,true,"","invalid diff").0,"needs_review");
         let failing=json!({"status":"needs_review","reason":"build_or_typecheck_failed",
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
@@ -1265,14 +1120,45 @@ mod tests {
             "rsi":{"sourceClean":true,"captureError":"","modelError":"",
                 "checks":[{"label":"unsafe_safety","passed":false,"error":"unsafe 블록에 SAFETY 근거가 없습니다."}]}});
         assert!(repair_feedback(&unsafe_failure).unwrap().contains("SAFETY"));
-        let mut no_retry=failing;
-        no_retry["rsi"]["modelError"]=json!("provider unavailable");
-        assert!(repair_feedback(&no_retry).is_none());
+        let mut after_edit_error=failing;
+        after_edit_error["rsi"]["modelError"]=json!("provider unavailable");
+        // An independently failed compilation takes precedence over a
+        // provider error that happened after an actual source edit.
+        assert!(repair_feedback(&after_edit_error).unwrap().contains("error[E0308]"));
     }
+    #[test]
+    fn failed_real_edit_attempt_receives_grounded_same_generation_repair() {
+        let evidence=json!({"status":"needs_review","reason":"no_valid_candidate",
+            "rsi":{"sourceClean":true,"modelError":"",
+                "captureError":"모델이 실제 소스 파일을 변경하지 않았습니다.",
+                "editEvidence":{"attempts":2,"verifiedWrites":0,
+                    "recentFailures":["workspace_replace_range: source was not changed"]}}});
+        let feedback=repair_feedback(&evidence).unwrap();
+        assert!(feedback.contains("workspace_replace_range"));
+        assert!(feedback.contains("source was not changed"));
+        let mut none=evidence.clone();
+        none["rsi"]["editEvidence"]["attempts"]=json!(0);
+        assert!(repair_feedback(&none).is_none());
+        let mut timeout=evidence;
+        timeout["rsi"]["modelError"]=json!("rsi_token_budget: exhausted");
+        assert!(repair_feedback(&timeout).is_none());
+    }
+
     #[test]
     fn requires_complete_sha(){
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
+        assert!(rsi_work_branch("dominion-sub3"));
+        assert!(rsi_work_branch("dominion-sub"));
+        assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
+        assert!(!owns_application_branch("dominion-sub3",None));
+        assert!(!owns_application_branch("dominion-sub3",Some("")));
+        assert!(owns_application_branch("dominion-sub",None));
+        assert!(!owns_application_branch("main",Some("main")));
+        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
+            assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
+        }
     }
 
     #[cfg(unix)]
@@ -1295,7 +1181,7 @@ mod tests {
         std::fs::write(source.join("src/engine/rsi.rs"),"// source\n").unwrap();
         std::fs::write(source.join("web/src/pages/Demo.tsx"),"export const version = 1\n").unwrap();
         git_local(&source,&["init","-q"]);
-        git_local(&source,&["checkout","-b","dominion-sub"]);
+        git_local(&source,&["checkout","-b","dominion-sub3"]);
         git_local(&source,&["add","."]);
         git_local(&source,&["-c","user.email=ci@example.com","-c","user.name=CI","commit","-qm","base"]);
         let base=git_local(&source,&["rev-parse","HEAD"]);
@@ -1304,6 +1190,7 @@ mod tests {
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source.to_str().unwrap()}));
         let input=json!({
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
+            "rsiSourceBranch":"dominion-sub3",
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
             "model":"test-model",
             "rsiFrozenCases":[
@@ -1313,6 +1200,10 @@ mod tests {
         });
         let job=state.store.put("job",&json!({"kind":"prompt","status":"running","input":input})).unwrap();
         let context=JobContext::new(state.clone(),job["id"].as_str().unwrap().to_string());
+        git_local(&source,&["checkout","-b","dominion-sub2"]);
+        assert!(prepare(&context,&job["input"]).await.is_err(),
+            "same-commit sibling work branches must not inherit a queued source job");
+        git_local(&source,&["checkout","dominion-sub3"]);
         let worktree=prepare(&context,&job["input"]).await.unwrap();
         assert_ne!(worktree.path,source);
         assert_eq!(git_local(&source,&["rev-parse","HEAD"]),base);

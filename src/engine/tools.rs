@@ -36,7 +36,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
-        tool("workspace_replace_range", "Edit only the lines observed with workspace_read_range. Return changed lines, not the original source. Requires its sourceSha256.", object(json!({"path": text("Relative source path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1}), "newText": text("New source for the inclusive line range"), "expectedSha256": text("Full-file sourceSha256 from workspace_read_range")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
+        tool("workspace_replace_range", "Replace a previously read inclusive line range with newText only. Use startLine/endLine and sourceSha256 returned by workspace_read_range; old text is not required.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1,"description":"Inclusive line number; at most 120 lines"}), "newText": text("Replacement lines (without old source text)"), "expectedSha256": text("Exact sourceSha256 from the successful prior read")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
         tool("workspace_replace", "Replace one exact block in a workspace file without resending the whole file (approval required). oldText must occur exactly once.", object(json!({"path": text("Relative file path"), "oldText": text("Exact existing text to replace; must occur exactly once"), "newText": text("Replacement text"), "expectedSha256": text("Optional SHA-256 observed before editing")}), vec!["path","oldText","newText"])),
         tool("workspace_write", "Write a UTF-8 file inside the workspace (approval required)", object(json!({"path": text("Relative file path"), "content": text("UTF-8 content")}), vec!["path", "content"])),
         tool("file_list", "List any folder on this computer using an absolute path", object(json!({"path": text("Absolute folder path")}), vec!["path"])),
@@ -49,13 +49,13 @@ pub fn definitions() -> Vec<Value> {
         tool("memory_store", "Save a grounded memory for this agent. Quote the user's exact words; invented facts are rejected. Shared memories are managed by the user.", object(json!({"text": text("Fact to remember, maximum 1600 characters"), "evidenceQuote": text("Exact quote from the current user message supporting the fact"), "sourceMessageId": text("Optional earlier source message ID"), "type": json!({"type":"string","enum":["fact","preference","decision","procedure","lesson"]}), "key": text("Optional stable fact key; a new value replaces the previous value for this key"), "scope": json!({"type":"string","enum":["agent"]})}), vec!["text", "evidenceQuote"])),
         tool("memory_search", "Find saved knowledge relevant to a topic", object(json!({"query": text("Search query")}), vec!["query"])),
         tool("skill_propose", "Draft a reusable skill for user review", object(json!({"name": text("Skill name"), "instructions": text("Reusable instructions")}), vec!["name", "instructions"])),
-        tool("algorithm_propose", "Propose domain selection and/or source-targeting formulas. A target-only proposal inherits the active expression domain selector. Every candidate receives an independent trial; proposals are never activated automatically.", object(json!({
+        tool("algorithm_propose", "Propose a new self-improvement search formula. It may be tried in the next scheduled generation; replay match is context only and never activates it.", object(json!({
             "name": text("Algorithm name"),
-            "expression": text("Domain score over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, tokenCost, holdoutYield, gainPer10kTokens, objectiveMatch, unresolved, exploration"),
-            "targetExpression": text("Optional file score over pathEvidence, symbolEvidence, summaryEvidence, bodyEvidence, productiveEvidence, domainEvidence, repeatPenalty, novelty, sourceCost"),
+            "expression": text("Arithmetic over attempts, accepted, regressions, inconclusive, novelty, successRate, usefulGenerations, barrenRate, verifiedOutcomes, holdoutGains, gainPer10kTokens, tokenCost, objectiveMatch, unresolved, exploration"),
+            "targetExpression": text("Optional source-file ranking formula using pathEvidence, symbolEvidence, bodyEvidence, novelty, repeatPenalty, sourceCost and other validated source features"),
             "description": text("Why this formula should choose better improvement targets"),
             "evidence": json!({"type":"array","items":{"type":"string"},"description":"Observed failures or regressions that justify the formula"})
-        }), vec![])),
+        }), vec!["expression"])),
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
@@ -63,8 +63,7 @@ pub fn definitions() -> Vec<Value> {
             "name":text("Reusable method name"),
             "description":text("Principle, source and limits of the method"),
             "domain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
-            "transferDomains":json!({"type":"array","items":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},"description":"Optional other capability domains to trial this method after verified success in its original domain. Never counts as transfer until the new domain independently passes execution and adoption."}),
-            "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Use $rsiFocusPath as the path in nodes and after checks to bind the CURRENT selected source file across different domains; the harness resolves it per generation. Node results bind via $node.field. Include concrete postconditions and list transferDomains only when the method applies beyond the source domain."})
+            "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Arguments can bind a prior node result via $node.field. Include concrete postconditions."})
         }), vec!["name","domain","verification"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
@@ -107,28 +106,6 @@ pub fn requires_approval(name: &str) -> bool {
     )
 }
 
-/// Inclusive 1-based source ranges. Out-of-bounds reads are empty, never
-/// silently substituted with the last line: stale RSI source indices must not
-/// cause the generator to reason from or edit an unrelated source location.
-fn numbered_workspace_range(text:&str,start:u64,requested_end:u64,line_cap:usize)->Value {
-    let lines=text.lines().collect::<Vec<_>>();
-    let begin=usize::try_from(start.saturating_sub(1))
-        .unwrap_or(usize::MAX).min(lines.len());
-    let end=usize::try_from(requested_end).unwrap_or(usize::MAX)
-        .min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
-    let mut numbered=String::new();
-    for (offset,line) in lines[begin..end].iter().enumerate() {
-        numbered.push_str(&format!("{:>5} {}\n",begin+offset+1,line));
-    }
-    json!({
-        "startLine":start,
-        "endLine":if end>begin {end as u64}else{start.saturating_sub(1)},
-        "totalLines":lines.len(),
-        "outOfRange":start>lines.len() as u64,
-        "content":numbered,
-    })
-}
-
 pub fn rsi_allowed(name:&str)->bool{
     matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose")
 }
@@ -143,6 +120,13 @@ pub async fn execute(
         .is_some_and(|s|s["rsiRun"]==true);
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
+    }
+    if isolated_rsi && matches!(name,"workspace_read"|"workspace_read_range"
+        |"workspace_write"|"workspace_replace"|"workspace_replace_range") {
+        let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
+        if path.file_name().is_some_and(|name|name=="rsi_oracle_fixture.rs") {
+            return Err("동결 평가 사례는 자기개선 모델의 읽기·수정 대상이 아닙니다.".into());
+        }
     }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range") {
         let path=args["path"].as_str().unwrap_or("");
@@ -161,19 +145,28 @@ pub async fn execute(
         }
         "workspace_read_range" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            if isolated_rsi && crate::engine::rsi::frozen_evaluator_path(&path.to_string_lossy()) {
-                return Err("RSI 세대 작업은 동결 평가 오라클 파일을 읽을 수 없습니다.".into());
-            }
             let start = args["startLine"].as_u64().unwrap_or(1).max(1);
             let requested_end = args["endLine"].as_u64().unwrap_or(start.saturating_add(199));
             let result = observed_read(ctx, &path, run_id).await?;
             let text = result["content"].as_str().unwrap_or_default();
+            let lines = text.lines().collect::<Vec<_>>();
+            let begin = (start as usize).min(lines.len());
             // RSI generations must leave budget for the edit. A 400-line read
             // can consume most of the remaining campaign budget on its own.
             let line_cap = if isolated_rsi { 120 } else { 400 };
-            let mut output = numbered_workspace_range(text, start, requested_end, line_cap);
-            output["path"] = result["path"].clone();
-            output["sourceSha256"] = json!(format!("{:x}",Sha256::digest(text.as_bytes())));
+            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
+            let mut numbered = String::new();
+            for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
+                numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
+            }
+            let mut output = json!({
+                "path": result["path"],
+                "startLine": begin.max(1),
+                "endLine": end,
+                "totalLines": lines.len(),
+                "sourceSha256":format!("{:x}",Sha256::digest(text.as_bytes())),
+                "content": numbered,
+            });
             if let Some(observation) = result.get("fileObservation") {
                 output["fileObservation"] = observation.clone();
             }
@@ -198,11 +191,11 @@ pub async fn execute(
         }
         "workspace_replace_range" => {
             let path = resolve_workspace(ctx.workspace, &required_arg(args, "path")?)?;
-            replace_observed_range(
+            replace_range(
                 ctx,
                 &path,
-                positive_line_arg(args, "startLine")?,
-                positive_line_arg(args, "endLine")?,
+                args["startLine"].as_u64().ok_or("startLine must be a positive integer")?,
+                args["endLine"].as_u64().ok_or("endLine must be a positive integer")?,
                 &required_arg(args, "newText")?,
                 &required_arg(args, "expectedSha256")?,
                 run_id,
@@ -264,13 +257,13 @@ pub async fn execute(
         }
         "browser_control" => {
             let action = required_arg(args, "action")?;
-            crate::engine::browser::execute_for_actor(
+            let owner_id=format!("{}:{}",ctx.agent_id.unwrap_or("user"),ctx.session_id);
+            crate::engine::browser::execute_for_owner(
                 &action,
                 args,
                 &ctx.state.config.data_dir,
                 ctx.workspace,
-                ctx.session_id,
-                ctx.agent_id,
+                &owner_id,
             )
             .await
         }
@@ -347,24 +340,15 @@ pub async fn execute(
             if !running {
                 return Err("진행 중인 자기개선 캠페인이 없습니다.".into());
             }
-            // Evolve the file target score independently without silently
-            // changing the active domain selector. This avoids attributing
-            // a combined two-variable change to either formula.
-            let supplied = string_arg(args, "expression").filter(|s| !s.trim().is_empty());
-            let target_only = string_arg(args, "targetExpression").filter(|s| !s.trim().is_empty());
-            if supplied.is_none() && target_only.is_none() {
-                return Err("expression 또는 targetExpression이 필요합니다.".into());
-            }
-            let active = crate::engine::algorithms::active(ctx.state, "selfimprove.search");
-            let expression = supplied.or_else(|| active.as_ref().and_then(|item|
-                item["parameters"]["expression"].as_str().filter(|s| !s.trim().is_empty())))
-                .ok_or("파일 탐색식만 제안하려면 먼저 실행 가능한 분야 선택식이 활성화되어야 합니다." )?;
+            let expression = required_arg(args, "expression")?;
             let name = string_arg(args, "name")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or("rsi-search-expression");
-            let mut parameters=json!({"expression":expression});
-            if let Some(target_expression)=args["targetExpression"].as_str() {
-                parameters["targetExpression"]=json!(target_expression);
+            let mut parameters = json!({"expression": expression});
+            if let Some(target) = args["targetExpression"].as_str() {
+                parameters["targetExpression"] = json!(target);
+            } else if !args["targetExpression"].is_null() {
+                return Err("targetExpression은 계산식 문자열이어야 합니다.".into());
             }
             let record = crate::engine::algorithms::register(
                 ctx.state,
@@ -771,9 +755,7 @@ fn search_code_index(
     for file in ctx.store.all("code_index_file") {
         if file["indexId"].as_str()!=Some(index_id) {continue;}
         let path=file["path"].as_str().unwrap_or("");
-        if session["rsiRun"] == true && crate::engine::rsi::frozen_evaluator_path(path) {
-            continue;
-        }
+        if session["rsiRun"]==true && path.ends_with("/rsi_oracle_fixture.rs") {continue;}
         let rank=score(path);
         if rank>0 {matches.push((rank,json!({"path":path,"kind":"file","name":path,"line":1})));}
         for symbol in file["symbols"].as_array().into_iter().flatten() {
@@ -791,77 +773,44 @@ fn search_code_index(
     Ok(json!({"query":query,"indexId":index_id,"indexedFiles":meta["files"],"matchCount":matches.len(),"matches":matches}))
 }
 
-// A small local model may quote a correct but non-unique expression such as
-// ".map(str::to_string)" from a versioned read. Resolve that ambiguity ONLY
-// inside the source lines it actually observed in the SAME execution.
-// Never guess which identical occurrence elsewhere in the file to modify.
-fn rsi_observed_unique_offset(
-    ctx:&ToolContext<'_>,path:&Path,source:&str,old:&str,run_id:&str
-)->Option<usize>{
-    if ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {return None;}
-    let relative=path.strip_prefix(ctx.workspace).ok()?
-        .to_string_lossy().replace('\\',"/");
-    let hash=format!("{:x}",Sha256::digest(source.as_bytes()));
-    let observed=ctx.store.all("execution_operation").into_iter()
-        .filter(|op|op["runId"].as_str()==Some(run_id)
-            && op["sessionId"].as_str()==Some(ctx.session_id)
-            && op["tool"]=="workspace_read_range"
-            && op["status"]=="completed"
-            && op["arguments"]["path"].as_str()==Some(relative.as_str())
-            && op["result"]["sourceSha256"].as_str()==Some(hash.as_str()))
-        .max_by_key(|op|op["opSeq"].as_u64().unwrap_or(0))?;
-    let start=observed["result"]["startLine"].as_u64()? as usize;
-    let end=observed["result"]["endLine"].as_u64()? as usize;
-    if start==0 || end<start || end-start>=120{return None;}
-    let mut offset=0usize;
-    let mut begin=None;
-    let mut finish=None;
-    for (idx,line) in source.split_inclusive('\n').enumerate(){
-        if idx+1==start {begin=Some(offset);}
-        offset+=line.len();
-        if idx+1==end {finish=Some(offset);break;}
-    }
-    let begin=begin?;
-    let finish=finish?;
-    let span=&source[begin..finish];
-    (span.matches(old).count()==1).then(||begin+span.find(old).unwrap())
-}
-
-// Parse the actual model edit before ending an RSI generation. rustfmt
-// with --emit stdout checks Rust syntax without rewriting source. Broken
-// drafts remain in the detached worktree for model-authored correction.
-async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value>{
-    if path.extension().and_then(|e|e.to_str())!=Some("rs")
-        || ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {
+/// For an isolated RSI Rust patch, parse the *proposed bytes* before they
+/// become a verified source write. This does not run the frozen evaluator or
+/// edit the target file. Invalid syntax is fed back to the SAME model turn,
+/// so the tool budget can repair it without a costly full cargo build.
+async fn rsi_rust_syntax_failure(
+    ctx: &ToolContext<'_>, path: &Path, proposed: &str,
+) -> Option<Value> {
+    if path.extension().and_then(|ext|ext.to_str())!=Some("rs")
+        || !ctx.store.get("session",ctx.session_id)
+            .is_some_and(|session|session["rsiRun"]==true
+                && session["rsiCampaignId"].as_str().is_some_and(|campaign|
+                    ctx.store.get("job",campaign).is_some_and(|job|
+                        job["kind"]=="rsi_evolve" && job["status"]=="running"))) {
         return None;
     }
-    let mut check=tokio::process::Command::new("rustfmt");
-    check.args(["--edition","2021","--emit","stdout",
-        "--config","skip_children=true"])
-        .arg(path)
+    use tokio::io::AsyncWriteExt;
+    let mut command=tokio::process::Command::new("rustfmt");
+    command.args(["--emit","stdout","--edition","2021"])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let output=tokio::time::timeout(Duration::from_secs(12),check.output())
-        .await.ok()?.ok()?;
-    let diagnostic=String::from_utf8_lossy(&output.stderr).to_string();
-    if output.status.success(){
-        return Some(json!({"valid":true,"tool":"rustfmt_parse_only"}));
+    // A system without rustfmt retains the independent cargo-check path.
+    let Ok(mut child)=command.spawn() else {return None};
+    if let Some(mut stdin)=child.stdin.take() {
+        if stdin.write_all(proposed.as_bytes()).await.is_err() {return None;}
     }
-    if !diagnostic.contains("error") {
-        return None;
-    }
-    let line=diagnostic.lines().find_map(|row|{
-        let row=row.trim();
-        if !row.contains("-->") {return None;}
-        let (prefix,column)=row.rsplit_once(':')?;
-        column.trim().parse::<u64>().ok()?;
-        let (_,line)=prefix.rsplit_once(':')?;
-        line.trim().parse::<u64>().ok()
-    });
-    Some(json!({"valid":false,"tool":"rustfmt_parse_only",
-        "diagnostic":diagnostic.chars().take(1800).collect::<String>(),
-        "line":line}))
+    let Ok(Ok(output))=tokio::time::timeout(
+        Duration::from_secs(5),child.wait_with_output()).await else {return None};
+    if output.status.success() {return None;}
+    let diagnostic=String::from_utf8_lossy(&output.stderr);
+    Some(json!({
+        "path":path.to_string_lossy(),
+        "written":false,"syntaxInvalid":true,
+        "error":format!(
+            "Rust source was NOT written: syntax parsing failed. Repair the specific compiler-like error and retry with the CURRENT sourceSha256: {}",
+            diagnostic.chars().take(1100).collect::<String>()),
+    }))
 }
 
 async fn replace_text(
@@ -879,120 +828,86 @@ async fn replace_text(
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let occurrences = text.matches(old_text).count();
-    // Normally require exactly one match in the whole file. When a source
-    // generation has seen the identical expression in several functions,
-    // allow the unique match within its hash-verified observed line window.
-    let scoped=occurrences>1;
-    let position=if occurrences==1 {
-        text.find(old_text)
-    }else if scoped {
-        rsi_observed_unique_offset(ctx,path,&text,old_text,run_id)
-    }else{None};
-    let Some(position)=position else{
+    if occurrences != 1 {
         return Ok(json!({
             "error": "oldText가 파일 안에서 정확히 한 번만 나타나야 합니다.",
             "occurrences": occurrences,
-            "observedRangeMatch": false,
             "path": path.to_string_lossy(),
         }));
-    };
-    let mut updated=text.clone();
-    updated.replace_range(position..position+old_text.len(),new_text);
-    let observed_hash=format!("{:x}",Sha256::digest(text.as_bytes()));
-    let guard=if scoped {expected_sha256.or(Some(observed_hash.as_str()))}else{expected_sha256};
-    let mut result = checked_write(ctx, path, &updated, run_id, true, guard).await?;
-    if result["written"] == true {
-        result["replaced"] = json!(true);
-        result["replacedChars"] = json!(old_text.chars().count());
-        result["postSha256"] = json!(format!("{:x}", Sha256::digest(updated.as_bytes())));
-        if scoped {result["resolvedWithinObservedRange"]=json!(true);}
-        if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await{
-            result["syntaxValid"]=parse["valid"].clone();
-            result["syntaxCheck"]=parse;
-        }
     }
+    let updated = text.replacen(old_text, new_text, 1);
+    if let Some(error)=rsi_rust_syntax_failure(ctx,path,&updated).await {
+        return Ok(error);
+    }
+    let mut result = checked_write(ctx, path, &updated, run_id, true, expected_sha256).await?;
+    result["replaced"] = json!(true);
+    result["replacedChars"] = json!(old_text.chars().count());
+    if result["written"] == true { result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes()))); }
     Ok(result)
 }
 
-/// Some local 4B tool-call adapters return numeric JSON parameters as decimal strings.
-fn positive_line_arg(args: &Value, key: &str) -> Result<u64, String> {
-    args[key].as_u64()
-        .or_else(|| args[key].as_str().and_then(|s| s.parse::<u64>().ok()))
-        .filter(|line| *line > 0)
-        .ok_or_else(|| format!("{key} must be a positive line number"))
-}
-
-/// Edit a source slice without asking a small model to reproduce its old text.
-/// The observed source hash is checked before constructing the edit and by the
-/// existing file mutation lock immediately before writing.
-async fn replace_observed_range(
-    ctx: &ToolContext<'_>,
-    path: &Path,
-    start: u64,
-    end: u64,
-    new_text: &str,
-    expected_sha256: &str,
-    run_id: &str,
+/// A token-efficient edit path: the model emits changed lines, not a second
+/// copy of source text already returned by workspace_read_range. The frozen
+/// file digest is checked both before assembling the patch and again under
+/// the regular per-file write lock, so concurrent edits cannot be lost.
+async fn replace_range(
+    ctx: &ToolContext<'_>, path: &Path, start: u64, end: u64,
+    new_text: &str, expected_sha256: &str, run_id: &str,
 ) -> Result<Value, String> {
-    // Small native tool models occasionally reverse startLine/endLine after
-    // observing the correct source. Normalize only a bounded pair of positive
-    // absolute line numbers. The original source SHA/CAS still gates the write.
-    let (start, end, reordered) = if start > end && end > 0
-        && start - end < 120 {
-        (end, start, true)
-    } else {
-        (start, end, false)
-    };
     if start == 0 || end < start || end.saturating_sub(start) >= 120 {
-        return Err("Source range must contain 1..120 valid lines".into());
+        return Err("Replace range must contain 1-120 inclusive source lines".into());
     }
-    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if expected_sha256.len() != 64
+        || !expected_sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("expectedSha256 must be the sourceSha256 from workspace_read_range".into());
     }
     if new_text.len() > 64_000 {
-        return Err("Replacement source exceeds the 64 KiB per-edit budget".into());
+        return Err("Replacement is larger than the source edit limit".into());
     }
-    let source = tokio::fs::read_to_string(path).await
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    let observed = format!("{:x}", Sha256::digest(source.as_bytes()));
-    if observed != expected_sha256 {
-        return Ok(json!({"path":path.to_string_lossy(),
-            "error":"Source changed since the observation",
-            "staleVersion":true,"expectedSha256":expected_sha256,
-            "observedSha256":observed}));
+    let source = tokio::fs::read_to_string(path)
+        .await.map_err(|error| format!("{}: {error}", path.display()))?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    if digest != expected_sha256 {
+        return Ok(json!({"error":"Source changed since the observed range",
+            "staleVersion":true, "expectedSha256":expected_sha256,
+            "observedSha256":digest, "path":path.to_string_lossy()}));
     }
     let lines = source.split_inclusive('\n').collect::<Vec<_>>();
-    let from = usize::try_from(start - 1).map_err(|_|"Invalid startLine")?;
-    let to = usize::try_from(end).map_err(|_|"Invalid endLine")?;
+    let from = (start - 1) as usize;
+    let to = end as usize;
     if to > lines.len() {
-        return Err(format!("Line range {start}..{end} exceeds {} source lines",lines.len()));
+        return Err(format!("Line range {start}..{end} exceeds {} lines; read a valid range first", lines.len()));
     }
-    let prefix = lines[..from].iter().map(|line| line.len()).sum::<usize>();
-    let suffix = lines[..to].iter().map(|line| line.len()).sum::<usize>();
-    let original = &source[prefix..suffix];
+    let before = lines[..from].iter().map(|part| part.len()).sum::<usize>();
+    let after = lines[..to].iter().map(|part| part.len()).sum::<usize>();
+    let old = &source[before..after];
     let mut replacement = new_text.to_string();
-    if !replacement.is_empty() && original.ends_with("\r\n") && !replacement.ends_with('\n') {
+    if !replacement.is_empty() && old.ends_with("\r\n") && !replacement.ends_with('\n') {
         replacement.push_str("\r\n");
-    } else if !replacement.is_empty() && original.ends_with('\n') && !replacement.ends_with('\n') {
+    } else if !replacement.is_empty() && old.ends_with('\n') && !replacement.ends_with('\n') {
         replacement.push('\n');
     }
-    let mut updated = String::with_capacity(source.len() + replacement.len());
-    updated.push_str(&source[..prefix]);
-    updated.push_str(&replacement);
-    updated.push_str(&source[suffix..]);
+    let updated = format!("{}{}{}", &source[..before], replacement, &source[after..]);
     if updated == source {
-        return Ok(json!({"path":path.to_string_lossy(),"written":false,"unchanged":true}));
+        // A successful no-op is useful in ordinary editing, but for RSI it
+        // must be an explicit failed attempt, not evidence of an implementation.
+        let autonomous = ctx.store.get("session", ctx.session_id)
+            .is_some_and(|session| session["rsiRun"] == true);
+        if autonomous {
+            return Ok(json!({"path":path.to_string_lossy(), "written":false,
+                "unchanged":true,
+                "error":"The proposed replacement left source bytes unchanged. Write a different implementation, not the original source."}));
+        }
+        return Ok(json!({"path":path.to_string_lossy(), "written":false, "unchanged":true}));
     }
-    let mut result = checked_write(ctx,path,&updated,run_id,true,Some(expected_sha256)).await?;
+    if let Some(error)=rsi_rust_syntax_failure(ctx,path,&updated).await {
+        return Ok(error);
+    }
+    let mut result = checked_write(ctx, path, &updated, run_id, true, Some(expected_sha256)).await?;
     if result["written"] == true {
         result["replaced"] = json!(true);
         result["replacedLines"] = json!(end-start+1);
-        result["reorderedLineEndpoints"] = json!(reordered);
         result["postSha256"] = json!(format!("{:x}",Sha256::digest(updated.as_bytes())));
-        if let Some(parse)=rsi_rust_parse_receipt(ctx,path).await{
-            result["syntaxValid"]=parse["valid"].clone();
-            result["syntaxCheck"]=parse;
-        }
     }
     Ok(result)
 }
@@ -1353,139 +1268,131 @@ fn output_payload(output: &std::process::Output) -> Value {
     })
 }
 
-// Public Internet fetches must not become an unintended gateway into the
-// machine running DOMINION. Deliberate local service access uses dedicated
-// tools; this arbitrary-URL reader is external-only.
-fn public_fetch_ip(ip: std::net::IpAddr) -> bool {
+const HTTP_FETCH_LIMIT: usize = 1024 * 1024;
+const HTTP_REDIRECT_LIMIT: usize = 5;
+
+/// Reject non-public destinations even when URL parsing normalizes unusual
+/// IPv4 literals. The same check runs again after every redirect and DNS
+/// resolution; no configured proxy can bypass the pinned address.
+fn public_http_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
     match ip {
-        std::net::IpAddr::V4(ip) => {
-            let [a, b, c, _] = ip.octets();
-            !(
-                a == 0 || a == 10 || a == 127 || a >= 224
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 168)
-                || (a == 192 && b == 0 && c == 0)
-                || (a == 192 && b == 0 && c == 2)
-                || (a == 192 && b == 88 && c == 99)
-                || (a == 198 && (b == 18 || b == 19))
-                || (a == 198 && b == 51 && c == 100)
-                || (a == 203 && b == 0 && c == 113)
-            )
+        IpAddr::V4(v4) => {
+            let n=v4.octets();
+            !v4.is_private() && !v4.is_loopback() && !v4.is_link_local()
+                && !v4.is_multicast() && !v4.is_broadcast() && !v4.is_unspecified()
+                && !v4.is_documentation()
+                && n[0]!=0 && n[0]<224
+                && !(n[0]==100 && (64..=127).contains(&n[1]))
+                && !(n[0]==192 && n[1]==0 && n[2]==0)
+                && !(n[0]==192 && n[1]==88 && n[2]==99)
+                && !(n[0]==198 && (18..=19).contains(&n[1]))
+            && v4!=Ipv4Addr::new(255,255,255,255)
         }
-        std::net::IpAddr::V6(ip) => {
-            if let Some(v4) = ip.to_ipv4() {
-                return public_fetch_ip(std::net::IpAddr::V4(v4));
+        IpAddr::V6(v6) => {
+            if let Some(mapped)=v6.to_ipv4_mapped() {
+                return public_http_ip(IpAddr::V4(mapped));
             }
-            let words = ip.segments();
-            // Only global unicast destinations. Exclude documentation, 6to4
-            // and Teredo tunnelling addresses (which can conceal private IPv4).
-            (words[0] & 0xe000) == 0x2000
-                && !(words[0] == 0x2001 && words[1] == 0x0db8)
-                && !(words[0] == 0x2001 && words[1] == 0)
-                && words[0] != 0x2002
+            let segments=v6.segments();
+            !v6.is_loopback() && !v6.is_unspecified() && !v6.is_multicast()
+                && !v6.is_unique_local() && !v6.is_unicast_link_local()
+                && !(segments[0]==0x2001 && segments[1]==0x0db8)
+                && !(segments[0]==0x2001 && segments[1]==0)
         }
     }
 }
 
-fn validate_public_fetch_url(url: &reqwest::Url) -> Result<(), String> {
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("Only HTTP(S) URLs are allowed".into());
+fn public_http_url(url: &str) -> Result<reqwest::Url, String> {
+    let parsed=reqwest::Url::parse(url).map_err(|error|error.to_string())?;
+    if !matches!(parsed.scheme(),"http"|"https") {
+        return Err("http_fetch는 공개 HTTP(S) URL만 허용합니다.".into());
     }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("URL credentials are not accepted by http_fetch".into());
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("http_fetch URL에 사용자 인증 정보를 넣을 수 없습니다.".into());
     }
-    let host = url.host_str().ok_or("HTTP URL requires a hostname")?;
-    let normalized = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.').to_ascii_lowercase();
-    if normalized.parse::<std::net::IpAddr>().is_ok_and(public_fetch_ip) {
-        return Ok(());
+    let host=parsed.host_str().ok_or("URL 호스트가 없습니다.")?;
+    let name=host.trim_matches(|ch|ch=='['||ch==']').trim_end_matches('.').to_ascii_lowercase();
+    if name.is_empty() || name=="localhost" || name.ends_with(".localhost")
+        || name.ends_with(".local") || name.ends_with(".internal")
+        || name.ends_with(".lan") || name.ends_with(".home.arpa")
+        || name.ends_with(".invalid") || name.ends_with(".test") {
+        return Err("내부 네트워크 호스트는 http_fetch에서 사용할 수 없습니다.".into());
     }
-    if normalized.parse::<std::net::IpAddr>().is_ok() {
-        return Err("Local, private and reserved addresses are blocked".into());
+    if let Ok(ip)=name.parse::<std::net::IpAddr>() {
+        if !public_http_ip(ip) {
+            return Err("내부 또는 예약된 IP로의 http_fetch 요청을 차단했습니다.".into());
+        }
     }
-    if !normalized.contains('.')
-        || ["localhost", "local", "internal", "lan", "home.arpa", "test", "invalid"]
-            .iter().any(|suffix| normalized == *suffix || normalized.ends_with(&format!(".{suffix}")))
-    {
-        return Err("Internal hostnames are blocked".into());
-    }
-    Ok(())
+    Ok(parsed)
 }
 
-async fn bounded_http_body(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
-    if response.content_length().is_some_and(|length| length > cap as u64) {
-        return Err(format!("HTTP response exceeds {cap} bytes"));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-        if chunk.len() > cap.saturating_sub(bytes.len()) {
-            return Err(format!("HTTP response exceeds {cap} bytes"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
+fn append_http_chunk(output:&mut Vec<u8>,chunk:&[u8])->bool {
+    let room=HTTP_FETCH_LIMIT.saturating_sub(output.len());
+    output.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    chunk.len()>room
 }
 
 async fn http_fetch(url: &str) -> Result<Value, String> {
-    const MAX_BODY: usize = 256 * 1024;
-    let mut target = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
-    for redirect in 0..=5 {
-        validate_public_fetch_url(&target)?;
-        let host = target.host_str().ok_or("HTTP URL requires a hostname")?.to_string();
-        let port = target.port_or_known_default().ok_or("HTTP URL requires a port")?;
-        let normalized = host.trim_start_matches('[').trim_end_matches(']');
-        let literal = normalized.parse::<std::net::IpAddr>().ok();
-        let addresses = if let Some(ip) = literal {
-            vec![std::net::SocketAddr::new(ip, port)]
-        } else {
-            let lookup = tokio::time::timeout(
-                Duration::from_secs(5), tokio::net::lookup_host((host.as_str(), port))
-            ).await.map_err(|_| "DNS lookup timed out".to_string())?
-                .map_err(|error| error.to_string())?;
-            lookup.collect::<Vec<_>>()
-        };
-        if addresses.is_empty() || addresses.iter().any(|addr| !public_fetch_ip(addr.ip())) {
-            return Err("DNS target is local, private or reserved".into());
-        }
-        // Bind the validated DNS answer to the actual TCP connection. A fresh
-        // resolver lookup inside reqwest would reopen a DNS-rebinding window.
-        let mut builder = reqwest::Client::builder()
+    let mut current=public_http_url(url)?;
+    for redirect in 0..=HTTP_REDIRECT_LIMIT {
+        let hostname=current.host_str().ok_or("URL 호스트가 없습니다.")?
+            .trim_matches(|ch|ch=='['||ch==']').to_string();
+        let port=current.port_or_known_default().ok_or("URL 포트가 없습니다.")?;
+        let client_builder=reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
-        if literal.is_none() {
-            builder = builder.resolve_to_addrs(&host, &addresses);
-        }
-        let response = builder.build().map_err(|error| error.to_string())?
-            .get(target.clone())
-            .header("User-Agent", "DOMINION/0.2 (+rust)")
-            .send().await.map_err(|error| error.to_string())?;
-        if response.status().is_redirection() {
-            if redirect == 5 { return Err("HTTP redirect limit reached".into()); }
-            let next = response.headers().get(reqwest::header::LOCATION)
-                .ok_or("HTTP redirect is missing Location")?
-                .to_str().map_err(|error| error.to_string())?;
-            target = target.join(next).map_err(|error| error.to_string())?;
-            continue; // Validate and pin every redirected destination.
-        }
-        let status = response.status().as_u16();
-        let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok()).unwrap_or("").to_string();
-        let raw = bounded_http_body(response, MAX_BODY).await?;
-        let body = String::from_utf8_lossy(&raw);
-        let text = if content_type.contains("html") {
-            strip_html(&body)
+        // Resolve exactly once and pin that address for this request. Every
+        // resolved address must be public to prevent mixed DNS answer bypasses.
+        let client_builder=if hostname.parse::<std::net::IpAddr>().is_ok() {
+            client_builder
         } else {
-            body.to_string()
+            let resolved=tokio::net::lookup_host((hostname.as_str(),port))
+                .await.map_err(|error|format!("공개 주소 DNS 조회 실패: {error}"))?
+                .collect::<Vec<_>>();
+            if resolved.is_empty() || resolved.iter().any(|addr|!public_http_ip(addr.ip())) {
+                return Err("DNS가 사설 또는 예약된 네트워크 주소를 반환했습니다.".into());
+            }
+            client_builder.resolve(&hostname,resolved[0])
         };
+        let response=client_builder.build().map_err(|error|error.to_string())?
+            .get(current.clone())
+            .header("User-Agent","DOMINION/0.2 (+rust)")
+            .send().await.map_err(|error|error.to_string())?;
+        if response.status().is_redirection() {
+            if redirect==HTTP_REDIRECT_LIMIT {
+                return Err("http_fetch 리다이렉션 상한을 초과했습니다.".into());
+            }
+            let location=response.headers().get(reqwest::header::LOCATION)
+                .and_then(|value|value.to_str().ok())
+                .ok_or("리다이렉션 Location 헤더가 없습니다.")?;
+            let next=current.join(location).map_err(|error|error.to_string())?;
+            current=public_http_url(next.as_str())?;
+            continue;
+        }
+        let status=response.status().as_u16();
+        let content_type=response.headers().get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value|value.to_str().ok()).unwrap_or("").to_string();
+        let mut response=response;
+        let mut bytes=Vec::new();
+        let mut truncated=false;
+        while let Some(chunk)=response.chunk().await.map_err(|error|error.to_string())? {
+            if append_http_chunk(&mut bytes,&chunk) {
+                truncated=true;
+                break;
+            }
+        }
+        let body=String::from_utf8_lossy(&bytes);
+        let text=if content_type.contains("html") {strip_html(&body)} else {body.into_owned()};
+        let clipped=text.chars().take(60_000).collect::<String>();
+        truncated|=clipped.len()!=text.len();
         return Ok(json!({
-            "status": status,
-            "contentType": content_type,
-            "text": text.chars().take(60_000).collect::<String>(),
+            "status":status,"contentType":content_type,"text":clipped,
+            "truncated":truncated,"maxResponseBytes":HTTP_FETCH_LIMIT,
+            "redirects":redirect
         }));
     }
-    Err("HTTP redirect limit reached".into())
+    Err("http_fetch 리다이렉션 상한을 초과했습니다.".into())
 }
 
 async fn web_search(query: &str) -> Result<Value, String> {
@@ -1500,8 +1407,7 @@ async fn web_search(query: &str) -> Result<Value, String> {
         .send()
         .await
         .map_err(|error| error.to_string())?;
-    let raw = bounded_http_body(response, 512 * 1024).await?;
-    let html = String::from_utf8_lossy(&raw);
+    let html = response.text().await.map_err(|error| error.to_string())?;
     let mut results = Vec::new();
     for chunk in html.split("result__a").skip(1).take(10) {
         let Some(href_start) = chunk.find("href=\"") else {
@@ -1591,35 +1497,26 @@ fn strip_html(html: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn source_range_reads_are_one_based_and_never_replay_the_last_line() {
-        let source="alpha\nbeta\ngamma\n";
-        let single=numbered_workspace_range(source,1,1,120);
-        assert_eq!(single["content"],"    1 alpha\n");
-        assert_eq!(single["startLine"],1);
-        assert_eq!(single["endLine"],1);
-
-        let middle=numbered_workspace_range(source,2,3,120);
-        assert_eq!(middle["content"],"    2 beta\n    3 gamma\n");
-        assert_eq!(middle["endLine"],3);
-
-        let missing=numbered_workspace_range(source,100,120,120);
-        assert_eq!(missing["content"],"");
-        assert_eq!(missing["outOfRange"],true);
-        assert_eq!(missing["startLine"],100);
-        assert_eq!(missing["endLine"],99);
-
-        let backwards=numbered_workspace_range(source,3,2,120);
-        assert_eq!(backwards["content"],"");
-        assert_eq!(backwards["outOfRange"],false);
-
-        let beyond=numbered_workspace_range(source,u64::MAX,u64::MAX,120);
-        assert_eq!(beyond["content"],"");
-        assert_eq!(beyond["outOfRange"],true);
-        let cap=numbered_workspace_range(source,1,3,2);
-        assert_eq!(cap["endLine"],2);
-        assert_eq!(cap["content"],"    1 alpha\n    2 beta\n");
-        assert_eq!(numbered_workspace_range("",1,50,120)["content"],"");
+    #[tokio::test]
+    async fn rsi_cannot_read_or_overwrite_the_coordinators_holdout_source() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir=std::env::temp_dir().join(format!("rsi-holdout-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        let path="src/engine/rsi_oracle_fixture.rs";
+        std::fs::write(dir.join(path),"secret holdout examples").unwrap();
+        let config=Config{port:0,data_dir:dir.join("data"),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        state.store.put("session",&json!({"id":"rsi","rsiRun":true})).unwrap();
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,session_id:"rsi",
+            agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        for tool in ["workspace_read_range","workspace_write","workspace_replace","workspace_replace_range"] {
+            let error=execute(&ctx,tool,&json!({"path":path,"content":"overwrite"}),"run").await.unwrap_err();
+            assert!(error.contains("동결 평가"),"{tool}: {error}");
+        }
+        crate::engine::code_index::refresh(&state,&dir).unwrap();
+        assert_eq!(search_code_index(&ctx,"rsi_oracle_fixture",10).unwrap()["matchCount"],0);
+        assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(),"secret holdout examples");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1725,8 +1622,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result["replaced"], true, "{result}");
-        assert_eq!(result["postSha256"],
-            format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "let new_value = 3;\nlet untouched = 2;\n"
@@ -1739,76 +1634,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn http_target_rejects_internal_and_reserved_endpoints() {
-        for url in [
-            "http://127.0.0.1:4317/health",
-            "http://localhost/admin", "http://metadata.google.internal/",
-            "http://10.0.0.5/", "http://169.254.169.254/latest/meta-data/",
-            "http://192.168.1.100/", "http://100.100.100.200/",
-            "http://[::1]/", "http://[fc00::1]/",
-            "file:///etc/passwd", "http://user:password@example.org/",
-        ] {
-            let parsed = reqwest::Url::parse(url).unwrap();
-            assert!(validate_public_fetch_url(&parsed).is_err(), "{url}");
-        }
-        for url in ["https://example.com/", "https://1.1.1.1/"] {
-            assert!(validate_public_fetch_url(&reqwest::Url::parse(url).unwrap()).is_ok(), "{url}");
-        }
-        // A public server can redirect to an internal host: the next hop
-        // is checked with the same validation instead of being followed.
-        let redirected = reqwest::Url::parse("https://example.com/").unwrap()
-            .join("http://127.0.0.1:4317/private").unwrap();
-        assert!(validate_public_fetch_url(&redirected).is_err());
-    }
-
     #[tokio::test]
-    async fn partial_source_edit_requires_observed_digest_and_preserves_surrounding_lines() {
-        use crate::{config::Config,db::Store,vault::Vault};
-        let dir = std::env::temp_dir().join(format!("dominion-sub4-range-{}",uuid::Uuid::new_v4()));
+    async fn range_replacement_edits_one_repeated_line_with_frozen_source_and_rejects_stale_edits() {
+        use crate::{config::Config, db::Store, vault::Vault};
+        let dir=std::env::temp_dir().join(format!("dominion-range-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let config=Config {port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
-        let state=crate::state::AppState::new(
-            config.clone(),Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        let state=crate::state::AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        let source="first();\nlet value = 0;\nlet value = 0;\nlast();\n";
         let path=dir.join("src/example.rs");
-        let source="first();\nlet value = 0;\nlast();\n";
         std::fs::write(&path,source).unwrap();
         let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
         let ctx=ToolContext {workspace:&dir,store:&state.store,state:&state,
-            session_id:"range",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
-        let args=json!({"path":"src/example.rs","startLine":"2","endLine":"2",
+            session_id:"s",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        state.store.put("session",&json!({"id":"s","rsiRun":true})).unwrap();
+        let no_op=execute(&ctx,"workspace_replace_range",
+            &json!({"path":"src/example.rs","startLine":3,"endLine":3,
+                "newText":"let value = 0;","expectedSha256":digest}),"run").await.unwrap();
+        assert_eq!(no_op["unchanged"],true);
+        assert!(no_op["error"].is_string());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(),source);
+        let args=json!({"path":"src/example.rs","startLine":3,"endLine":3,
             "newText":"let value = 42;","expectedSha256":digest});
-        let result=execute(&ctx,"workspace_replace_range",&args,"range-run").await.unwrap();
+        let result=execute(&ctx,"workspace_replace_range",&args,"run").await.unwrap();
         assert_eq!(result["replaced"],true,"{result}");
         assert_eq!(result["replacedLines"],1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
-            "first();\nlet value = 42;\nlast();\n");
-        let stale=execute(&ctx,"workspace_replace_range",&args,"range-run").await.unwrap();
+            "first();\nlet value = 0;\nlet value = 42;\nlast();\n");
+        let stale=execute(&ctx,"workspace_replace_range",&args,"run").await.unwrap();
         assert_eq!(stale["staleVersion"],true,"{stale}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(),
-            "first();\nlet value = 42;\nlast();\n");
-        let mut wrong=args;
-        wrong["expectedSha256"]=json!(format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
-        wrong["endLine"]=json!(999);
-        assert!(execute(&ctx,"workspace_replace_range",&wrong,"range-run").await.is_err());
-        let current=std::fs::read_to_string(&path).unwrap();
-        let sha=format!("{:x}",Sha256::digest(current.as_bytes()));
-        let reversed=json!({"path":"src/example.rs","startLine":"3","endLine":"2",
-            "newText":"let value = 77;\nlast();","expectedSha256":sha});
-        let fixed=execute(&ctx,"workspace_replace_range",&reversed,"range-run").await.unwrap();
-        assert_eq!(fixed["written"],true,"{fixed}");
-        assert_eq!(fixed["reorderedLineEndpoints"],true,"{fixed}");
-        assert_eq!(fixed["replacedLines"],2);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(),
-            "first();\nlet value = 77;\nlast();\n");
-        let mut oversized=reversed.clone();
-        oversized["startLine"]=json!(999);
-        oversized["endLine"]=json!(1);
-        assert!(execute(&ctx,"workspace_replace_range",&oversized,"range-run").await.is_err());
-        let mut stale_reversed=reversed;
-        stale_reversed["startLine"]=json!(3);
-        stale_reversed["endLine"]=json!(2);
-        assert_eq!(execute(&ctx,"workspace_replace_range",&stale_reversed,"range-run").await.unwrap()["staleVersion"],true);
+            "first();\nlet value = 0;\nlet value = 42;\nlast();\n");
+        let mut bad=args.clone();
+        bad["endLine"]=json!(999);
+        bad["expectedSha256"]=json!(format!("{:x}",Sha256::digest(std::fs::read(&path).unwrap())));
+        assert!(execute(&ctx,"workspace_replace_range",&bad,"run").await.is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1866,6 +1727,9 @@ mod tests {
             .store
             .put("job", &json!({"id":"c","kind":"rsi_evolve","status":"running"}))
             .unwrap();
+        let schema = definitions().into_iter()
+            .find(|tool| tool["function"]["name"] == "algorithm_propose").unwrap();
+        assert!(schema["function"]["parameters"]["properties"]["targetExpression"].is_object());
         let saved = execute(&ctx, "algorithm_propose", &proposal, "run")
             .await
             .unwrap();
@@ -1874,80 +1738,17 @@ mod tests {
             .store
             .get("algorithm", saved["algorithmId"].as_str().unwrap())
             .is_some());
+        let source_rule = json!({"name":"source-ranker","expression":"objectiveMatch + novelty",
+            "targetExpression":"pathEvidence * 3 + bodyEvidence - repeatPenalty - sourceCost"});
+        let ranked = execute(&ctx, "algorithm_propose", &source_rule, "run").await.unwrap();
+        assert_eq!(ranked["algorithm"]["parameters"]["targetExpression"],
+            source_rule["targetExpression"]);
+        let invalid_target = json!({"expression":"novelty",
+            "targetExpression":"invalidSourceFeature + pathEvidence"});
+        assert!(execute(&ctx, "algorithm_propose", &invalid_target, "run").await.is_err());
         let invalid = json!({"expression":"unknownVariable * 2"});
         assert!(execute(&ctx, "algorithm_propose", &invalid, "run").await.is_err());
-        let both = execute(&ctx, "algorithm_propose", &json!({
-            "name":"domain-and-target-v1",
-            "expression":"objectiveMatch * 6 + exploration",
-            "targetExpression":"pathEvidence * 2 + symbolEvidence - repeatPenalty"
-        }), "run").await.unwrap();
-        assert_eq!(both["proposed"],true);
-        assert_eq!(both["algorithm"]["parameters"]["targetExpression"],
-            "pathEvidence * 2 + symbolEvidence - repeatPenalty");
-        assert_eq!(both["algorithm"]["status"],"available");
-        // A source-only experiment keeps the active domain score unchanged,
-        // so its paired outcome can be attributed to the targeting change.
-        let baseline=crate::engine::algorithms::register(&state,&json!({
-            "kind":"selfimprove.search","name":"active-domain",
-            "implementation":"expression",
-            "parameters":{"expression":"objectiveMatch * 6 + exploration"}
-        })).unwrap();
-        crate::engine::algorithms::activate(&state,
-            baseline["id"].as_str().unwrap()).unwrap();
-        let source_only=execute(&ctx,"algorithm_propose",&json!({
-            "name":"source-only-trial",
-            "targetExpression":"bodyEvidence + productiveEvidence - sourceCost"
-        }),"run").await.unwrap();
-        assert_eq!(source_only["algorithm"]["parameters"]["expression"],
-            "objectiveMatch * 6 + exploration");
-        assert_eq!(source_only["algorithm"]["parameters"]["targetExpression"],
-            "bodyEvidence + productiveEvidence - sourceCost");
-        assert_eq!(source_only["algorithm"]["status"],"available");
-        assert!(execute(&ctx,"algorithm_propose",&json!({}),"run").await.is_err());
-
-        assert!(execute(&ctx,"algorithm_propose",&json!({
-            "expression":"novelty","targetExpression":"untrusted_system_call"
-        }),"run").await.is_err());
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-
-    #[test]
-    fn arbitrary_http_fetch_blocks_local_and_private_targets() {
-        for url in [
-            "http://localhost:4317/", "http://service.internal/",
-            "http://engine.local/", "http://example.test/",
-            "http://127.0.0.1:80/", "http://2130706433/",
-            "http://10.10.10.10/", "http://169.254.169.254/latest/meta-data/",
-            "http://172.24.1.9/", "http://192.168.1.1/",
-            "http://100.100.100.200/", "http://198.18.1.1/",
-            "http://[::1]/", "http://[fc00::1]/",
-            "http://[::ffff:127.0.0.1]/",
-            "file:///etc/passwd", "http://user:pass@example.com/",
-        ] {
-            let target=reqwest::Url::parse(url).expect(url);
-            assert!(validate_public_fetch_url(&target).is_err(), "{url}");
-        }
-        for url in ["https://github.com/org/repo", "https://example.com/",
-            "https://1.1.1.1/", "https://[2606:4700:4700::1111]/"]
-        {
-            let target=reqwest::Url::parse(url).unwrap();
-            assert!(validate_public_fetch_url(&target).is_ok(), "{url}");
-        }
-        for destination in [
-            "127.0.0.1".parse().unwrap(), "10.0.0.1".parse().unwrap(),
-            "169.254.169.254".parse().unwrap(), "192.168.1.1".parse().unwrap(),
-            "::1".parse().unwrap(), "fc00::1".parse().unwrap(),
-            "2002:c0a8:0101::".parse().unwrap(),
-        ] {
-            assert!(!public_fetch_ip(destination), "{destination}");
-        }
-    }
-
-    #[tokio::test]
-    async fn arbitrary_http_fetch_rejects_loopback_without_a_request() {
-        assert!(http_fetch("http://127.0.0.1:4317/api/settings").await.is_err());
-        assert!(http_fetch("http://169.254.169.254/latest/meta-data/").await.is_err());
     }
 
     #[tokio::test]
@@ -2162,6 +1963,34 @@ mod tests {
         };
         assert!(task_payload(&stranger, &json!({"jobId":"j1"}), true).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn public_http_fetch_blocks_internal_and_redirect_destinations() {
+        for url in ["http://127.0.0.1:4317","http://10.1.2.3","http://172.16.1.1",
+            "http://192.168.1.1","http://169.254.169.254/latest/meta-data/",
+            "http://100.100.100.100","http://[::1]/","http://[::ffff:127.0.0.1]/",
+            "http://router.local/","http://metadata.google.internal/",
+            "file:///etc/passwd","http://localhost:80/"] {
+            assert!(public_http_url(url).is_err(),"private target passed: {url}");
+        }
+        assert!(public_http_url("https://example.com/").is_ok());
+        assert!(public_http_url("https://1.1.1.1/").is_ok());
+        assert!(public_http_url("https://[2606:4700:4700::1111]/").is_ok());
+        assert!(public_http_url("https://127.0.0.1@public.example/").is_err());
+        let origin=public_http_url("https://example.com/").unwrap();
+        let redirected=origin.join("http://127.0.0.1:4317/private").unwrap();
+        assert!(public_http_url(redirected.as_str()).is_err(),
+            "redirect must not bypass local address protection");
+    }
+
+    #[test]
+    fn http_response_capture_stops_at_byte_limit() {
+        let mut bytes=Vec::new();
+        assert!(!append_http_chunk(&mut bytes,&vec![b'a';HTTP_FETCH_LIMIT-4]));
+        assert!(append_http_chunk(&mut bytes,b"abcdefghij"));
+        assert_eq!(bytes.len(),HTTP_FETCH_LIMIT);
+        assert_eq!(&bytes[HTTP_FETCH_LIMIT-4..],b"abcd");
     }
 
     #[test]

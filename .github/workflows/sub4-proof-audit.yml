@@ -1,0 +1,37 @@
+name: Sub4 inherited RSI proof and full source validation
+on:
+  push:
+    branches: [dominion-sub4]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sub4-proof-audit-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  audit-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Audit native RSI Git lineage and frozen paired receipts
+        run: |
+          node --check scripts/sub4-audit-inherited-proof.mjs
+          node scripts/sub4-audit-inherited-proof.mjs
+      - name: Validate frontend
+        run: |
+          npm ci --prefix web
+          npm run typecheck --prefix web
+          npm run build --prefix web
+      - name: Validate complete Rust source
+        run: cargo test --release --locked --all-targets

@@ -97,6 +97,7 @@ const en: Record<LocaleKey, string> = {
   'memory.expires': 'Expires',
   'memory.empty': 'No memories match this filter.',
   'memory.loading': 'Loading memories…',
+  'memory.showMore': 'Show more memories · {count} remaining',
   'memory.saved': 'Memory saved.',
   'memory.records': 'Experience, improvements, algorithms and experiments',
   'memory.growth': 'Growth and transfer',

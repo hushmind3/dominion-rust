@@ -1,0 +1,58 @@
+// Re-audit inherited Sub3 proof. This is not a new experiment or model run.
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
+import {execFileSync} from 'node:child_process';
+import assert from 'node:assert/strict';
+
+const report=JSON.parse(fs.readFileSync('benchmark/sub3-rsi-completion-2026-11-12.json','utf8'));
+const git=(...args)=>execFileSync('git',args,{encoding:'utf8'}).trim();
+const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+const commitPattern=/^[0-9a-f]{40}$/;
+assert.equal(report.status,'completed');
+assert.equal(report.stopReason,'capability_demonstrated');
+assert.equal(report.capabilityDemonstrated,true);
+assert.equal(report.maxAcceptedStreak,3);
+assert.equal(report.acceptedGenerations,3);
+assert.equal(report.accelerationProven,false);
+assert.equal(report.modelCalls,0);
+assert.equal(report.productionChanged,false);
+assert.equal(report.historicalBugRestored,false);
+assert.equal(report.generations.length,3);
+let generator=report.sourceCommit;
+const binaryHashes=new Set();
+const domains=new Set();
+for(const [index,g] of report.generations.entries()){
+  assert.match(generator,commitPattern);
+  assert.equal(g.generatorCommit,generator);
+  assert.match(g.acceptedCommit,commitPattern);
+  assert.equal(git('rev-parse',g.acceptedCommit+'^'),generator);
+  assert.equal(git('cat-file','-t',g.acceptedCommit),'commit');
+  assert.ok(git('diff','--name-only',generator,g.acceptedCommit).length>0);
+  assert.match(g.generatorBinarySha256,/^[0-9a-f]{64}$/);
+  binaryHashes.add(g.generatorBinarySha256);
+  assert.equal(g.candidateOrigin,'native_inductive_source_mutation');
+  assert.equal(g.editMethodReward,0);
+  assert.equal(g.tokenUsage.calls,0);
+  assert.equal(g.metrics.eligible,true);
+  assert.equal(g.metrics.regressions,0);
+  assert.ok(g.metrics.improvedHoldouts>=1);
+  assert.equal(g.metrics.baselineSuccesses,14);
+  assert.equal(g.metrics.candidateSuccesses,14);
+  assert.ok(g.metrics.holdoutCases>=2);
+  assert.ok(g.metrics.holdoutDomains.length>=2);
+  assert.equal(g.nativeMutation.sourceChanged,true);
+  assert.match(g.patchSha256,/^[0-9a-f]{64}$/);
+  assert.match(g.pairedEvidenceSha256,/^[0-9a-f]{64}$/);
+  assert.ok(g.evidenceFile.startsWith('benchmark/rsi-evidence/2026-11-12-sub3/'));
+  const bytes=zlib.gunzipSync(fs.readFileSync(g.evidenceFile));
+  assert.equal(sha(bytes),g.pairedEvidenceSha256,'paired evidence hash mismatch');
+  domains.add(g.domain);
+  console.log('gen='+String(index+1)+' source='+generator.slice(0,12)+' accepted='+g.acceptedCommit.slice(0,12)+' domain='+g.domain);
+  generator=g.acceptedCommit;
+}
+assert.equal(generator,report.adoptedHeadCommit);
+assert.equal(binaryHashes.size,3);
+assert.ok(domains.has('memory')&&domains.has('improver'));
+assert.equal(git('merge-base','--is-ancestor',generator,'HEAD'),'');
+console.log('SUB4_INHERITED_NATIVE_PROOF=VERIFIED; generations=3; model_calls=0; independent_sub4_run=false');

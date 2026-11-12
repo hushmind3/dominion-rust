@@ -259,61 +259,6 @@ fn stream_search_policy_statistics(source: &str) -> Option<String> {
         "let mut best=(f64::NEG_INFINITY,scores.first().map(|(domain,_)|*domain).unwrap_or(DOMAINS[0]));",1))
 }
 
-/// The Sub4 selector also scores independent holdout payoffs. Stream all
-/// existing counters in one pass without dropping ANY of its reward features.
-fn stream_sub4_policy_statistics(source: &str) -> Option<String> {
-    const BEGIN: &str = "    let rows = history\n        .iter()\n        .filter(|row| row[\"domain\"] == domain)\n        .collect::<Vec<_>>();";
-    const END: &str = "    let holdout_yield=holdout_gains/(attempts+1.0);";
-    const UNRESOLVED: &str = "let unresolved = if rows\n        .last()";
-    let start=source.find(BEGIN)?;
-    let end=start+source[start..].find(END)?;
-    let old=&source[start..end];
-    for marker in [
-        "let accepted = rows.iter()","let regressions = rows",
-        "let inconclusive = rows","let tokens = rows","let useful=rows",
-        "let holdout_gains=rows.iter()","let holdout_gains=rows.iter()",
-        "row[\"evaluation\"][\"metrics\"][\"improvedHoldouts\"]",
-    ] {
-        if !old.contains(marker) {return None;}
-    }
-    if source.matches(BEGIN).count()!=1 || source.matches(UNRESOLVED).count()!=1
-        || source.matches(END).count()!=1 {
-        return None;
-    }
-    let rewrite=r#"    // One source-history scan preserves all Sub4 reward and cost features.
-    let mut attempts = 0.0_f64;
-    let mut accepted = 0.0_f64;
-    let mut regressions = 0.0_f64;
-    let mut inconclusive = 0.0_f64;
-    let mut tokens = 0.0_f64;
-    let mut useful = 0.0_f64;
-    let mut holdout_gains = 0.0_f64;
-    let mut last_row: Option<&Value> = None;
-    for row in history.iter().filter(|row|row["domain"]==domain) {
-        attempts += 1.0;
-        if row["accepted"]==true { accepted += 1.0; }
-        if row["evaluation"]["verdict"]=="regressed" { regressions += 1.0; }
-        if row["evaluation"]["verdict"]=="inconclusive" { inconclusive += 1.0; }
-        tokens += row["tokens"].as_u64().unwrap_or(0) as f64;
-        if row["accepted"]==true || row["newFindings"].as_u64().unwrap_or(0)>0 {
-            useful += 1.0;
-        }
-        if row["accepted"]==true
-            && row["evaluation"]["metrics"]["eligible"]==true
-            && row["evaluation"]["metrics"]["regressions"].as_u64()==Some(0) {
-            holdout_gains += row["evaluation"]["metrics"]["improvedHoldouts"]
-                .as_u64().unwrap_or(0).min(16) as f64;
-        }
-        last_row=Some(row);
-    }
-"#;
-    let mut result=String::with_capacity(source.len());
-    result.push_str(&source[..start]);
-    result.push_str(rewrite);
-    result.push_str(&source[end..]);
-    Some(result.replacen(UNRESOLVED,"let unresolved = if last_row",1))
-}
-
 /// A third-generation structural optimization: facts originate as immutable
 /// owner statements, yet their text terms are reconstructed for every query.
 /// Cache the exact terms of the *stored, truncated* text at ingestion. Legacy
@@ -452,11 +397,7 @@ pub(crate) fn induce(
                     && candidate["nativeMutation"]["beforeSha256"]==before
                     && candidate["nativeMutation"]["afterSha256"]==trial["afterSha256"]
                     && candidate["nativeMutation"]["operator"]==operator
-                    && candidate["pairedComparisonComplete"]==true
-                    && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
-                    && candidate["evaluation"]["evidenceSha256"].as_str().is_some_and(|sha|
-                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-                    && matches!(candidate["status"].as_str(),Some("verified"|"rejected"))));
+                    && crate::engine::rsi::replayed_pair_metrics(state,&candidate).is_some()));
     let Some((operator,transformed))=choose_transformation(&existing,measured) else {return Ok(None);};
     let receipt = json!({
         "id": job_id, "operator": operator, "sourceDir": repository,
@@ -480,10 +421,9 @@ pub(crate) fn induce(
 /// source-derived alternatives. No model invocation or acceptance is implied.
 fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<(&'static str,String)> {
     type Operator = (&'static str, fn(&str)->Option<String>);
-    let operators: [Operator;8] = [
+    let operators: [Operator;7] = [
         ("streamed_verified_domain_selector_v3",stream_verified_domain_selection),
         ("streamed_verified_improver_statistics_v2",stream_verified_policy_statistics),
-        ("streamed_improver_policy_statistics_v4",stream_sub4_policy_statistics),
         ("streamed_improver_policy_statistics_v1",stream_search_policy_statistics),
         ("verified_owner_provenance_cache_v1",materialize_verified_owner_provenance),
         ("loop_invariant_term_hoist_v1",hoist_invariant_query_terms),
@@ -497,30 +437,207 @@ fn choose_transformation(source: &str, measured: impl Fn(&str)->bool) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn transformations_match_real_sub4_source_and_preserve_independent_scoring() {
-        let room=include_str!("room_state.rs");
-        let changed=materialize_verified_owner_provenance(room)
-            .unwrap_or_else(||room.to_string());
-        assert!(changed.contains("\"verifiedLocalOwner\": true"));
-        let second=hoist_invariant_query_terms(&changed)
-            .unwrap_or_else(||changed.clone());
-        assert!(second.contains("query_tokens"));
-        let improver=include_str!("rsi_evolve.rs");
-        let new=stream_sub4_policy_statistics(improver)
-            .unwrap_or_else(||improver.to_string());
-        for symbol in ["holdoutYield","gainPer10kTokens","tokenCost","objectiveMatch",
-            "let unresolved = if last_row"] {
-            assert!(new.contains(symbol),"{symbol}");
+    fn streaming_domain_selector_preserves_verified_payoff_objective_and_ties() {
+        use crate::engine::rsi_evolve;
+        let mut history=Vec::new();
+        for n in 0..80 {
+            history.push(json!({"domain":rsi_evolve::DOMAINS[n%6],
+                "accepted":n%4==0,"tokens":(n*919)%45000,
+                "evidenceVerified":n%3==0,"verifiedHoldoutGains":n%90,
+                "evaluation":{"verdict":if n%7==0 {"regressed"}else{"inconclusive"}}}));
+            for objective in ["","memory","기억 improver","tools context","algorithm"] {
+                let candidates=rsi_evolve::candidate_domains(objective);
+                let got=accumulator::fast_failure_domain(&history,&candidates,
+                    |domain|rsi_evolve::objective_matches(domain,objective));
+                let scores=rsi_evolve::scored_domains(&json!({"implementation":"failure-clusters"}),&history,objective).unwrap();
+                let expected=scores.into_iter().fold((f64::NEG_INFINITY,candidates[0]),
+                    |best,(domain,score)|if score>best.0 {(score,domain)}else{best}).1;
+                assert_eq!(got,expected,"history={n} objective={objective}");
+                assert_eq!(rsi_evolve::select_domain(
+                    &json!({"implementation":"failure-clusters"}),&history,objective),expected,
+                    "the compiled descendant must execute the same verified selector");
+            }
         }
-        assert!(stream_sub4_policy_statistics(&new).is_none());
+        let source=include_str!("rsi_evolve.rs");
+        let evolved=stream_verified_domain_selection(source).unwrap_or_else(||source.to_string());
+        assert!(evolved.contains("return fast_failure_domain(history"));
+        assert!(evolved.contains("\"expression\"|\"counterexample-first\""));
+        assert!(stream_verified_domain_selection(&evolved).is_none());
+        let changed_formula=source.replace("get(\"objectiveMatch\") * 2.0)",
+            "get(\"objectiveMatch\") * 2.0 + get(\"unresolved\"))");
+        assert_ne!(changed_formula,source);
+        assert!(stream_verified_domain_selection(&changed_formula).is_none(),
+            "a genuinely evolved policy must not be replaced by an old default formula");
+        let changed_features=source.replace("holdout_gains*10_000.0/verified_tokens",
+            "holdout_gains*20_000.0/verified_tokens");
+        assert!(stream_verified_domain_selection(&changed_features).is_none());
     }
     #[test]
-    fn induction_requires_explicit_opt_in_and_reachable_target() {
-        let input=json!({"rsiAutoFocus":true,"rsiTargetDomain":"memory",
-            "rsiFocusFiles":["src/engine/unused.rs"]});
-        assert_eq!(inductive_target_path(&input),Some("src/engine/room_state.rs"));
-        assert_eq!(inductive_target_path(&json!({"rsiAutoFocus":false,
-            "rsiFocusFiles":["src/engine/room_state.rs"]})),Some("src/engine/room_state.rs"));
+    fn a_rejected_applicable_operator_does_not_starve_other_source_hypotheses() {
+        let source=include_str!("room_state.rs");
+        let first=choose_transformation(source, |_|false).unwrap();
+        let second=choose_transformation(source, |name|name==first.0).unwrap();
+        assert_ne!(first.0,second.0);
+        assert_ne!(first.1,second.1);
+        assert!(choose_transformation(source, |_|true).is_none());
+    }
+    #[test]
+    fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
+        let source=include_str!("rsi_evolve.rs");
+        let output=stream_verified_policy_statistics(source)
+            .unwrap_or_else(||source.to_string());
+        assert!(output.contains("gainPer10kTokens"));
+        assert!(output.contains("verifiedHoldoutGains"));
+        assert!(output.contains("holdoutGains"));
+        assert!(output.contains("let unresolved = if last_row")
+            || output.contains("let unresolved = if rows"));
+        if output!=source {
+            assert!(output.contains("let mut last_row: Option<&Value>"));
+            assert!(stream_verified_policy_statistics(&output).is_none());
+        }
+    }
+    #[test]
+    fn verified_owner_origin_cache_keeps_legacy_validation() {
+        // The compiled descendant may already contain these mutations. A
+        // source-evolution regression test must survive actual adoption.
+        let original=include_str!("room_state.rs");
+        let first=materialize_verified_owner_provenance(original)
+            .unwrap_or_else(||original.to_string());
+        assert!(first.contains("\"verifiedLocalOwner\": true"));
+        assert!(first.contains("fact[\"verifiedLocalOwner\"]==true || !fact[\"sourceMessageId\"]"));
+        assert!(first.contains(".and_then(|id| state.store.message(id))"));
+        assert!(materialize_verified_owner_provenance(&first).is_none());
+        let second=hoist_invariant_query_terms(&first)
+            .unwrap_or_else(||first.clone());
+        assert!(second.contains("let query_tokens = memory::terms(query);\n    let mut ranked = facts"));
+        let third=cache_invariant_fact_terms(&second)
+            .unwrap_or_else(||second.clone());
+        assert!(third.contains("\"factTokens\": fact_tokens"));
+        let fourth=hoist_invariant_query_domain(&third)
+            .unwrap_or_else(||third.clone());
+        assert!(fourth.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_domain(&fourth).is_none());
+    }
+
+    #[test]
+    fn current_engine_has_two_distinct_source_generations() {
+        let original=include_str!("room_state.rs");
+        let first=hoist_invariant_query_terms(original)
+            .unwrap_or_else(||original.to_string());
+        assert!(first.contains("let query_tokens = memory::terms(query);\n    let mut ranked = facts"));
+        let second=hoist_invariant_query_domain(&first)
+            .unwrap_or_else(||first.clone());
+        assert!(second.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_terms(&second).is_none());
+        assert!(hoist_invariant_query_domain(&second).is_none());
+    }
+
+    #[test]
+    fn autonomous_induction_follows_measured_domain_but_respects_owner_focus() {
+        let mut request = json!({"rsiAutoFocus":true,
+            "rsiTargetDomain":"memory","rsiFocusFiles":["src/engine/other.rs"]});
+        assert_eq!(inductive_target_path(&request),Some("src/engine/room_state.rs"));
+        request["rsiTargetDomain"]=json!("improver");
+        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi_evolve.rs"));
+        request["rsiTargetDomain"]=json!("tools");
+        assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
+        request["rsiAutoFocus"]=json!(false);
+        assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
+        request["rsiFocusFiles"]=json!([]);
+        assert_eq!(inductive_target_path(&request),None);
+    }
+
+    #[test]
+    fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
+        let source = include_str!("rsi_evolve.rs");
+        // The first adopted child already carries the streamed optimizer.
+        // Descendant CI must verify the preserved behavior instead of
+        // requiring the old, unoptimized source to still exist.
+        let first_generation=stream_verified_policy_statistics(source);
+        let candidate=first_generation.as_deref().unwrap_or(source);
+        assert!(first_generation.is_some()
+            || source.contains("let mut last_row: Option<&Value> = None"));
+        assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
+        assert!(candidate.contains("row[\"evidenceVerified\"]==true"));
+        assert!(candidate.contains("let holdout_gains = holdout_gains_total as f64;"));
+        assert!(candidate.contains("(\"gainPer10kTokens\".to_string(), gain_efficiency)"));
+        assert!(candidate.contains("let unresolved = if last_row"));
+        assert!(stream_verified_policy_statistics(&candidate).is_none());
+    }
+
+    #[test]
+    fn recursive_fact_cache_preserves_legacy_fallback_and_original_ranking() {
+        let source = include_str!("room_state.rs");
+        let hoisted = hoist_invariant_query_terms(source)
+            .unwrap_or_else(||source.to_string());
+        let cached = cache_invariant_fact_terms(&hoisted)
+            .unwrap_or_else(||hoisted.clone());
+        assert!(cached.contains("\"factTokens\": fact_tokens"));
+        assert!(cached.contains("memory::terms(&stored_text)"));
+        assert!(cached.contains("fact[\"factTokens\"].as_array()"));
+        assert!(cached.contains("let text_tokens = memory::terms(text);"));
+        assert!(cached.contains("score + matches.min(12)"));
+        assert_eq!(cached.matches("let query_tokens = memory::terms(query);").count(), 1);
+        assert!(cache_invariant_fact_terms(&cached).is_none());
+        let descendant = hoist_invariant_query_domain(&cached)
+            .unwrap_or_else(||cached.clone());
+        assert!(descendant.contains("let asked_domain = fact_domain(query);"));
+        assert!(hoist_invariant_query_domain(&descendant).is_none());
+    }
+
+    #[test]
+    fn derives_new_query_domain_hoist_after_first_generation() {
+        let source=r#"fn query_relevance(query: &str, text: &str, query_tokens: &std::collections::BTreeSet<String>) -> usize {
+    if query.trim().is_empty() { return 0; }
+    let mut score = 0usize;
+    if let (Some(asked), Some(stated)) = (fact_domain(query), fact_domain(text)) {
+        if asked == stated {
+            score += 32;
+        }
+    }
+    let text_tokens = memory::terms(text);
+    score + query_tokens.intersection(&text_tokens).count().min(12)
+}
+fn context(facts: &[Value], query: &str) {
+    let query_tokens = memory::terms(query);
+    let mut ranked = facts
+        .iter()
+        .filter_map(|(index, fact)| {
+            let text = fact["text"].as_str()?;
+            Some((query_relevance(query, text, &query_tokens), index, fact))
+        });
+}
+"#;
+        let next=hoist_invariant_query_domain(source).unwrap();
+        assert_eq!(next.matches("fact_domain(query)").count(),1);
+        assert!(next.contains("if let Some(asked) = asked_domain"));
+        assert!(next.contains("query_relevance(query, text, &query_tokens, asked_domain)"));
+        assert!(hoist_invariant_query_domain(&next).is_none());
+    }
+
+    #[test]
+    fn hoists_repeated_query_tokenization_without_changing_scoring() {
+        let source = r#"fn relevance(query: &str, text: &str) -> usize {
+    let query_tokens = memory::terms(query);
+    let text_tokens = memory::terms(text);
+    score + query_tokens.intersection(&text_tokens).count().min(12)
+}
+fn choose(facts: &[Value], query: &str) {
+    let mut ranked = facts
+        .iter()
+        .filter_map(|(index, fact)| {
+            let text = fact["text"].as_str()?;
+            Some((relevance(query, text), index, fact))
+        });
+}
+"#;
+        let result = hoist_invariant_query_terms(source).unwrap();
+        assert_eq!(result.matches("memory::terms(query)").count(), 1);
+        assert!(result.contains("relevance(query, text, &query_tokens)"));
+        assert!(result.contains("let query_tokens = memory::terms(query);\n    let mut ranked"));
+        assert!(hoist_invariant_query_terms(&result).is_none());
+        assert!(hoist_invariant_query_terms("fn unrelated() {}").is_none());
     }
 }

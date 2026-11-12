@@ -139,14 +139,6 @@ pub fn resolved_base_url(provider: &Value) -> String {
             .trim_end_matches('/')
             .to_string()
     };
-    // Inference dispatch speaks OpenAI-compatible chat completions.
-    // Ollama's user-facing host is normally bare :11434, which serves
-    // native /api/* but requires /v1 for /chat/completions. Normalize only
-    // the model inference route; native model discovery retains /api/tags.
-    if provider["kind"].as_str()==Some("ollama") {
-        let root=resolved.strip_suffix("/api").unwrap_or(&resolved);
-        return if root.ends_with("/v1") {root.to_string()} else {format!("{root}/v1")};
-    }
     // OpenCode Go publishes its OpenAI-compatible base under
     // /inference/go/openai/v1. Older records still carry /zen/go/v1, so
     // every route resolves to the documented URL.
@@ -607,24 +599,6 @@ mod tests {
         assert!(reserve_generation(base, "Qwen3.6-27B-test", Some(2)).is_err());
         // Keyed routes are not subject to the anonymous limit.
         assert!(reserve_generation(base, "Qwen3.8-27B-test", None).is_ok());
-    }
-
-    #[test]
-    fn real_ollama_bare_host_resolves_to_compatible_chat_route_once() {
-        for base in ["http://127.0.0.1:11434",
-            "http://127.0.0.1:11434/api",
-            "http://127.0.0.1:11434/v1",
-            "http://192.168.1.25:11434/"] {
-            let provider=json!({"id":"local-live","kind":"ollama",
-                "model":"qwen3:4b-instruct","enabled":true,"baseUrl":base});
-            let resolved=resolved_base_url(&provider);
-            assert!(resolved.ends_with("/v1"),"{} -> {}",base,resolved);
-            assert_eq!(resolved.matches("/v1").count(),1);
-            let routed=route_from_provider(&state(),&provider,None).unwrap();
-            assert_eq!(routed.base_url,resolved);
-        }
-        let cloud=json!({"kind":"openai","baseUrl":"https://example.org/v1"});
-        assert_eq!(resolved_base_url(&cloud),"https://example.org/v1");
     }
 
     #[test]

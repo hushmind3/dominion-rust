@@ -74,6 +74,10 @@ pub fn router(state: AppState) -> Router {
             "/api/settings/assistant",
             get(settings::assistant_settings).post(settings::save_assistant_settings),
         )
+        .route(
+            "/api/settings/owner-profile",
+            get(settings::owner_profile).post(settings::save_owner_profile),
+        )
         .route("/api/attachments", post(attachments::upload))
         .route("/api/attachments/:id/content", get(attachments::content))
         .route("/api/events", get(system::events))
@@ -90,6 +94,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rsi/campaigns/:id/choose", post(rsi::choose))
         .route("/api/rsi/campaigns/:id/apply", post(rsi::apply_campaign))
         .route("/api/rsi/campaigns/:id", get(rsi::campaign))
+        .route("/api/rsi/campaigns/:id/verify", get(rsi::verify))
         .route("/api/rsi/:id", get(rsi::one))
         .route("/api/rsi/:id/evaluate", post(rsi::evaluate))
         .route("/api/rsi/:id/apply", post(rsi::apply))

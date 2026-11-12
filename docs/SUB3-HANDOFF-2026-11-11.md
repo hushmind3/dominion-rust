@@ -1,0 +1,296 @@
+# DOMINION — Sub3 인수인계 (2026-11-11)
+
+## 역할·브랜치·기준
+- 역할: Sub3 개발자. 담당 브랜치 **`dominion-sub3`**만 수정한다.
+- 이번 시작 기준: `b9d2598cd166045fed6980df1419fcd3e5c7b451` (기존 CI 성공).
+- 구현 커밋: `c3d05b2`(실패 피드백 기반 정책 실험), `2d6e1b5`(비교 대상 고정), `8ddf66d`(기존 테스트 컴파일 수정).
+- 공통 원본: 프로젝트 `DOMINION_COMMON_SOURCE.md`의 모델 비종속·실행 완주·협력·기억 일반화·자기개선·세대 계승. 검사 항목 증가가 목표가 아니며 실제 개선 실행이 우선이다.
+
+## 핵심 미완성 능력과 이번 세션의 판단
+- 최근 심판 피드백: 연속 3세대 실질 개선과 인과적 holdout 증명이 가장 부족하다. 연구와 정책 제안이 실제 실행으로 이어지지 않는 문제를 우선 선정했다.
+- 기존 Sub3는 유효한 paired holdout 성과가 이미 있어야만 다음 탐색식을 만들었고, 성과 없는 1세대에서 일찍 중단했다.
+- `research_continuation`이 대기 중인 탐색 정책 실험을 선점했고, 평가가 없는 제어 세대가 계속 반복되는 경우 후보가 **등록만 되고 실제로 실행되지 않았다**.
+- 비교 제어를 만든 뒤 후보 점수가 바뀌어 다른 영역을 선택하면 실험이 영원히 비교 불가능해지는 문제도 있었다.
+
+## 실제 구현
+1. **실패 세대에서 새로운 실행 가능한 정책 생성** (`rsi_evolve.rs`):
+   - 서로 다른 실제 `jobId`, 실패 결과, `tokens>0`, 새 발견 없음 등에서 대체 `selfimprove.search` 계산식을 합성한다.
+   - 이미 검증된 paired holdout 이득이 있으면 기존 성과 기반 계산식을 우선한다.
+   - 둘 다 동일한 `queue_search_trial` 경로를 지나며 **가설 등록은 성과 증명이 아니다**.
+2. **차세대 실험 실제 실행 경로**:
+   - 미완료된 탐색 정책 후보가 있는 경우 무한 연구 지속보다 정책 제어/시험을 먼저 실행한다.
+   - 같은 생성기 커밋·같은 대상에서 실험 가능한 제어가 없으면 측정용 제어를 실행한다.
+   - 평가 가능한 제어가 끝내 나오지 않을 때에는 실패 제어 2회 이후 후보 탐색 정책을 실제로 1회 실행한다. 이 성과는 독립 paired 비교 없이 채택되지 않는다.
+   - 제어에서 선택했던 도메인을 `controlForCandidateId`/revision으로 고정해 다음 후보 실행과 같은 문제 영역에서 비교한다.
+   - 자율 실행은 무작정 반복되지 않으며 회복을 위한 최대 6 연속 무진전 세대 제한이 있다. 비자율 모드는 기존 조기 종료를 유지한다.
+3. **회귀 테스트 추가**:
+   - `autonomous_barren_generations_execute_their_evolved_policy_without_false_promotion`: 실패 누적 → 정책 합성 → 동일 영역 제어 → 후보 탐색 실행 → 증거 없는 승격 차단.
+   - `autonomous_recovery_budget_is_bounded_but_does_not_stop_before_trial`: 실제 실험 전에 종료되지 않으면서 6회에 종료.
+   - 기존 3인자 종료조건 테스트 7곳을 5인자 시그니처로 갱신.
+
+## 다른 브랜치에서 직접 참고한 장점
+- Sub1 `780b456`: 캠페인 간 미완성 연구를 구체적인 실행 계획으로 인계, 실패한 패치를 대상 파일에서 교정.
+- Sub2 `7cee3e7`: 무생산 제어가 반복될 때 신규 정책 탐색의 실험 기회를 확보하는 접근.
+- Sub4 `8bc72ac`: 검증된 방법의 업무/도메인 간 전이와 실패한 전이의 피드백 보존.
+- Champion `401cd0f`: frozen holdout receipt와 세대 계보 보존, 자기개선 주장에 대한 독립 측정.
+
+## 직접 확인한 실행 결과 / 검증 제한
+- 기존 기준 커밋 `b9d2598`: GitHub Actions `42928968277` **success**.
+- 첫 구현 커밋의 GitHub Actions `42934339145`: **failure**, Rust test 컴파일에서 종전 테스트 7개가 수정된 함수 인자 수와 불일치(E0061). 원인을 찾아 `8ddf66d`로 모두 수정.
+- 수정 직후 GitHub Actions [`42934891498`](https://github.com/hushmind3/dominion-rust/actions/runs/42934891498): **SUCCESS**. npm ci / 타입 검사 / 웹 빌드 / bash 검사 성공, `cargo test --release` 성공: 16 benchmark + 621 unit + 3 + 99 e2e = **739개 통과, 실패 0개**. 새 `autonomous_barren_generations_execute_their_evolved_policy_without_false_promotion`, `autonomous_recovery_budget_is_bounded_but_does_not_stop_before_trial`, 기존 `goal_capability_loop_inherits_research_adopts_and_applies_next_decision`도 모두 실제 CI에서 성공.
+- 테스트 코드와 실제 GitHub CI를 사용했다. **실제 유료 모델 캠페인에서 3세대 연속 코드 품질 개선을 실행한 것으로 주장하지 않는다.**
+- 이 채팅 실행 컨테이너에는 `cargo`/`rustc`가 없어 로컬 Rust 직접 빌드가 불가하다. Rust 실행 검증 경로는 GitHub Actions다.
+
+## 다음 세션이 바로 해야 할 일
+1. 통과한 전체 CI `42934891498`의 회귀 기준을 유지할 것. 새 변경의 핵심 과제는 수동 단위 테스트 이후 **전체 캠페인에서 실험 후보가 정말 실행되는지** 증명하는 것이다.
+2. 실제 모델 호출 없이도 6세대 이상의 전체 작업 큐/DB/바이너리 경유로 **실패 피드백 → 새 정책 실행**이 관측되는 제어된 e2e fixture를 추가하고, `generation.domainSelection`, `searchStrategy.id`, 선택한 파일, 변경 내용과 `trialOutcome`을 끝까지 확인할 것.
+3. 실제 모델과 고정된 패치/holdout 평가로 3세대 연속 채택 + 계승 + 실사용 개선을 검증할 것. 결과가 없으면 부풀리지 말고 원인을 분리할 것.
+4. 캠페인 간 반복 무생산을 줄이도록 Sub1의 실행 가능한 연구 인계, Sub4의 전이 학습을 실제 세대 검색 경로에 접목할 것. 채택 조건은 Champion의 불변 paired 증거 기준을 참고할 것.
+5. 다른 Sub 또는 Champion 브랜치는 **수정하지 말고** 자신 브랜치에만 구현할 것.
+
+## 실패 재발 방지
+- `should_stop_no_progress` 함수 시그니처 변경 시 기존 테스트 호출도 반드시 함께 업데이트할 것.
+- 새 정책이 실제 사용되기 전에 후보를 활성화하거나, 빈 제어를 paired 이득으로 간주하거나, 학습 자료 수만으로 개선 성공을 주장하지 말 것.
+- 생성기 커밋과 선택 도메인, 실제 사용한 정책 revision이 서로 어긋나면 실험 성과 귀속이 불가능해진다.
+
+## 다음 회차 Sub3 — 심판 재채점 36점/100점 반영 (2026-11-11)
+
+### 목표와 중요한 문제
+- 직전 심판: Sub3 3위, **36점**. 21개 캠페인·41세대에서 채택 1회, 최대 연속 채택 1세대. 첫 실제 모델 자율 개선·후손 세대 계승 미입증.
+- 기존 코드에서 기초 검사 수보다 중요한 것은 **실제 모델이 실패를 해결하는 소스 패치를 만들어 독립 holdout의 문제 해결 품질을 높이는 것**.
+- 조사 결과 `chat/runtime.rs`은 실제 실행에서 `task.decomposition` 커널을 선택하지만, 새 에이전트 기본값이 `single-step`이라 개선된 다중 단계 추출 알고리즘이 실제 대화에 적용되지 않는 경로가 있었다.
+
+### 이번 세션에서 실제 구현해 푸시한 내용
+- `be637525`: `src/engine/decompose.rs`에 한국어 동작 접속 `-고`, `다음`, `나서` 분석. 본문 단어를 유지하면서 순서 있는 하위 실행 단계로 분할하는 코드와 회귀 테스트.
+- `6e3289dc`: 운영 RSI 평가에 해당하는 동결 사례 13개를 별도 A/B 계획으로 보관.
+- `192f0f81`: 변경 전후의 실제 Git worktree를 별도로 빌드하고, baseline의 고정 oracle을 **양쪽에 동일하게** 주입해 실행하는 A/B GitHub Actions.
+- `25687e1d`/`836dede2`: 무료 모델 엔드포인트 접속 후 실제 DOMINION 서버에 모델을 연결하고 `rsi/start` → 도구 호출/코드 변경 → 독립 A/B까지 시도하는 실행기·별도 워크플로. 가짜 모델 fixture는 사용하지 않음.
+- `53dba6fa`/`0c932596`: **제품 실제 채팅 경로**에서도 여러 동작이 명시된 목표에는 품질이 더 나은 실행 커널을 선택하도록 `algorithms.rs`와 `chat/runtime.rs`를 연결. 잘못된 UCB 커널에 실행 성과를 귀속하지 않게 실제 선택 revision을 `algorithm_usage`에 기록하고 회귀 테스트를 추가.
+- `656457f5`: 실측된 정확도·소요시간·비교 방식·증거 출처를 `benchmark/SUB3-FIRST-GAIN-MEASURED-2026-11-11.json`에 영구 보존.
+
+### 실제 결과 — 코드 품질 개선의 독립 실측
+- GitHub Actions: https://github.com/hushmind3/dominion-rust/actions/runs/42944474795 **SUCCESS**.
+- 원본: `1d94e1da1ed4f47243a793ab0625182f5a2c9656`; 새 코드 커밋: `be6375259d1dfe6e9317d14707dbc7d360fb0922`.
+- **고정 13개 사례 모두 baseline/candidate 통과**. 5개 성능 시나리오에 대해 양쪽 6회 반복 측정.
+- 한국어 계획 분해 정확도: **0.75 → 1.00 (+25%p, 상대 33.3%)**. 실행시간 중앙값: **58.59ms → 60.20ms (약 2.74% 증가)**. 기존 평가의 시간 회귀 한도 25% 이내. 기억·탐색·그룹 문맥 정확도는 1.00 유지.
+- 이 변경은 GPT-6 개발자 모델이 직접 작성해 GitHub에 저장한 코드이므로 **모델 생성 코드의 독립 개선 실증**이다. **DOMINION 자체의 내부 RSI 모델이 작성·채택한 결과라고 주장하지 않는다.** 그 별도 실행 증거는 아래 워크플로에서 구한다.
+- 실측 워크플로는 source A/B 결과만 검사했고 `rsi::evaluate_cases`·`rsi::adopt`의 실제 운영 승격 경로를 호출하지 않았다. 성능 수치가 나왔다고 자동 RSI 채택 1회를 추가하지 말 것.
+
+### 실모델 내부 RSI 캠페인
+- workflow: https://github.com/hushmind3/dominion-rust/actions/runs/42945129829
+- 무료 모델 프로브는 성공했고, DOMINION release binary 빌드까지 완료. 진행 중인 `Let DOMINION execute a genuine model-written source improvement` 단계에서 실제 `rsi/start`를 수행한다.
+- JSON 출력 아티팩트: `sub3-real-model-attempt` 안의 `benchmark/sub3-live-campaign-result.json`. 반드시 **진짜 코드 diff·`candidateId`·독립 평가·`acceptedCommit`**를 확인해 실제로 된 것만 기록한다.
+
+### 남은 최우선 미완성
+1. 실모델 내부 캠페인의 종료 결과를 확인하고 무패치·모델 도구 호출 실패·평가 무개선 중 **실제 실패 지점**을 수정한다.
+2. 통과한 코드 A/B 실증을 운영 `rsi_candidate`와 동결 평가·채택·후손 재빌드까지 연결해 첫 **DOMINION 자율 완주** 증거를 만든다.
+3. 원래 41세대·채택 1회 기록에 새로 성공한 내부 캠페인만 추가해 정확한 성공률을 갱신한다.
+4. 후손 세대가 같은 능력을 재사용해 다른 문제에서 추가 성과를 내는지, 독립 holdout으로 검증한다.
+
+### 1차 실모델 캠페인의 종료 결과 — 2026-11-11 11시대(KST)
+- CI run: https://github.com/hushmind3/dominion-rust/actions/runs/42945129829 (**workflow SUCCESS는 실모델 RSI 채택 성공을 의미하지 않음**).
+- 진짜 원격 `openai-fast` 5회 호출·prompt 17,865 tokens·completion 2,274 tokens(합계 20,139).
+- 실제 도구 `code_search` 1회, `workspace_read_range` 1회. 코드 편집 0회, 후보 0건, accepted 0세대, holdout 향상 0.
+- 1세대에는 새 연구 1건을 저장했고, 2세대는 모델 호출 0회에서 `rsi_token_budget` 중단. `maxAttempts=2`, `tokenBudget=24000`.
+- 이 실패는 `benchmark/SUB3-FIRST-INTERNAL-RSI-ATTEMPT-2026-11-11.json`에 관측치·출처·실험 구분을 남김.
+- 원인 해소 구현:
+  - `b0bccc14` `src/api/rsi.rs`: 사용자가 파일과 결함을 직접 정한 작업은 연구만으로 종료하지 말고 실제 `workspace_replace` 호출을 시도하도록 변경.
+  - `a9f28318` `src/engine/rsi_evolve.rs`: 이전 세대에서 소스 연구가 저장되었으면 다음 세대에 **연구→실행** 전환 지시.
+  - `6e836dbb` `scripts/sub3-live-model-campaign.mjs`: 모델 작업 지시를 실제 편집에 맞게 구체화, 최대 3세대·90,000토큰·2,700초로 변경.
+  - `5b3dba23` CI 실모델 실험 상한 연장.
+- 위 수정으로 실행한 다음 워크플로: https://github.com/hushmind3/dominion-rust/actions/runs/42947169857 (조회 시 진행 중). 그 결과는 **별도 재검증 필요**.
+- `0c932596` 실제 대화 선택 경로와 `53dba6fa` 알고리즘 선택 커널의 GitHub Actions 전체 CI 성공이 확인되었다. 새 사용자 목표에서 다단계 분해를 실행하는 경로가 운영 코드에 연결되었지만 실제 사용자 모델 대화의 끝까지 성공한 건 추후 계측할 과제다.
+
+#### 다음 Sub3 시작점
+1. `42947169857`의 `sub3-real-model-attempt` 아티팩트에서 `candidateId`, `toolsUsed`, `acceptedCommit`, `improvedHoldouts`를 확인할 것. 0회라면 **다음 모델 도구 선택이 실제 편집까지 갔는가**를 원인으로 삼아 코드 수정할 것.
+2. 준비된 코드는 13개 고정 A/B에서 0.75→1.00 개선됨; 이를 실모델 자율 채택이라고 잘못 발표하지 말 것.
+3. 내부 실모델 채택이 실제로 나오면 **수정 바이너리 재빌드→같은 목표 다음 세대**와 다른 문제에서의 성능 향상까지 검증할 것.
+
+
+## Sub3 후속 개선 — 실모델 실행 고리 연결 (2026-11-11, 4세대 연속)
+
+### 역할·시작 기준과 이전 심판
+- 역할 Sub3 / 수정 가능 브랜치 `dominion-sub3`; 시작 HEAD `4563fde7c1b85fb2ef99cfcbc5eea9e629639f06`.
+- 이전 심판은 Sub3 **36/100, 3위** (Champion39, Sub2 37, Sub4 35, Sub1 34). 새로운 심판 점수는 스스로 확정하지 않는다.
+- 21개 캠페인·41세대·기록상 채택 1회·최대 연속 1회는 과거 공유 기준. 이번 실모델 실패를 추가 채택으로 계산하지 않는다.
+
+### 다른 브랜치에서 확인한 참고점
+- Sub1 (조회한 HEAD `65deca43`, 기구현 `c8a5113`): 최신 실패 작업과 완료 시각을 다음 캠페인의 실행 가능한 교정 지시로 계승.
+- Sub2 (조회한 HEAD `cc44bfc4`, 기구현 `7cee3e7`): 실제 정책 실험을 대조군과 묶고, 무생산 통제 반복 시 후보 탐색을 실행.
+- Sub4 (조회한 HEAD `523852b7`, 기구현 `8bc72ac`): 검증된 소스 분야 절차를 다른 분야에서 실행하고 도구·사후 조건 피드백으로 결과 기록.
+- Champion (조회한 HEAD `41186886`, 기구현 `75f02240`): 독립 동결 holdout 비교와 증명 없는 후보 승격 차단, 재빌드 계보 보존.
+- 위 브랜치들은 **읽기/비교만 진행**, 수정하지 않았다.
+
+### 관측으로 드러난 장애
+- 실제 자유 모델 `openai-fast` 캠페인 `42947169857`: **3세대/75,971토큰, 실제 편집 0, 후보 0, 채택 0, 마지막 no_progress**. 검색1+읽기8로 끝남.
+- 후속 캠페인 `42949697316`: **2세대/15,469토큰, 모델 호출3, 실제 읽기1, 편집0, 후보0, 채택0**. workflow 성공 ≠ RSI 성공.
+- 원인 분석에서 **캠페인 워커가 과거 BASE_SHA(1d94e1da)로 재빌드되는 실행 계보 문제** 발견: 현재 하네스 변경은 CI에서 테스트되어도 실제 모델 워커에서는 적용되지 않았다. 그러므로 위 모델 결과의 변화는 새 런타임 성능 향상 증거가 아니다.
+
+### 이번 세션에 실제 푸시한 변경
+1. `01facc1` `src/engine/chat/runtime.rs` / `src/engine/jobs.rs`:
+   - 명시적 소스 수정 목표의 확인된 원문/완료된 읽기 호출을 기반으로 **읽기→편집 실행 단계**로 전환.
+   - 체크포인트 이후 다음 라운드에 검색 도구가 다시 열리지 않도록 매 라운드 적용.
+   - 실제 코드 변경이 없는 조기 완료에는 1회 교정 실행 기회를 제공.
+2. `0759930`: 1번 소스 읽고 종료하려는 모델의 **조기 종료**도 단발 편집 재시도로 연결. 실모델 스크립트에 sourceEditCalls, candidateCount, acceptedGenerations, independentlyVerifiedImprovement 추가.
+3. `fd971a7` `.github/workflows/sub3-live-model-cycle.yml`:
+   - 워커를 **현재 Sub3 코드**에서 빌드하기 위해 최신 HEAD로 분리 작업공간 생성.
+   - 오직 `src/engine/decompose.rs`만 역사적 버그가 있는 `BASE_SHA` 버전으로 복원하고 **분리 Git 실험 커밋** 작성.
+   - 실제 모델이 생성한 코드 변경과 재현용 버그 복원 코드를 구별.
+4. `4205f37` → `f7797bf` `runtime.rs`:
+   - 명시적 RSI 편집 단계에서 네이티브 도구 응답 대신 모델이 텍스트 `<tool_call>`을 반환할 경우 기존 알려진 도구 파서로 실행 가능한 호출 복원.
+   - 일반 모델 대화/자율 연구 단계에는 이 복구 경로를 적용하지 않음. 단위 테스트 추가.
+
+### 직접 확인한 실행 및 검증 범위
+- `01facc1`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42949449776 **성공** — Rust 16 benchmark + 623 unit + 3 extra + 99 e2e = **741/741**, 웹 타입 검사/빌드 성공.
+- `0759930`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42949697346 **성공** — 동일 Rust **741/741**, 웹 타입 검사/빌드 성공.
+- `fd971a7`: CI https://github.com/hushmind3/dominion-rust/actions/runs/42950862155 **성공**. 새 실모델 캠페인 https://github.com/hushmind3/dominion-rust/actions/runs/42950861967 실행됨 — **이 문서 작성 당시 결과 미확인**, 성공으로 계산하지 말 것.
+- `f7797bf`: 독립 CI https://github.com/hushmind3/dominion-rust/actions/runs/42951474873 실행 중. 실모델 캠페인 `42950861967`에는 이 후속 텍스트 파서 수정은 포함되지 않음.
+- 실제 모델에 의한 소스 패치 생성→독립 paired holdout 개선→선택→재빌드→후손 적용 전체 완주는 **이 문서 작성 시 아직 입증되지 않음**.
+
+### 다음 세션의 최우선 실행
+1. **첫째:** `42950861967` 종료 후 아티팩트 `sub3-real-model-attempt`에서 `sourceEditCalls`, `candidateId`, `acceptedCommit`, `improvedHoldouts`와 `generatorCommit`을 확인. 부모-워커 계보가 실제 최신 Sub3 코드인지 GitHub Actions의 `SUB3_RUNTIME_HARNESS_COMMIT`/`SUB3_EXPERIMENT_SOURCE_COMMIT` 로그로 검증.
+2. 여전히 편집 0이라면 실제 assistant 반환 내용·미완료/실패한 `execution_operation`을 수집해 **도구 선택 미발생과 도구 호출 실패**를 구분. 네이티브 텍스트 도구 복구 `f7797bf`을 포함한 동일 실모델 실험을 재실행하고 그 결과에 따라 실제 실행기를 수정.
+3. 생성한 candidate가 있으면 이미 있는 frozen paired holdout 비교에서 성공/회귀/토큰을 확인하고, 승격 후 **후손 바이너리 재빌드와 이어지는 다음 개선**까지 실제 실행한다.
+4. 이후 Sub1의 최신 실패 피드백 계승과 Sub4의 실행형 방법 전이를 비교 실험으로 연결한다. 새로운 검증 규칙보다 실제 패치 생성·완주와 성능 개선이 우선.
+
+
+## 5세대 Sub3 — 실제 코드 편집 출력량 병목 개선 (2026-11-11)
+
+### 최신 역할 / 배정 / 심판
+- 담당 Sub3 / 수정 브랜치 `dominion-sub3`. 시작 HEAD `976900fe2`.
+- 새로 전달된 독립 심판: **74/100, 2위** (구현 35/40, 완주 20/30, 자기개선 12/20, 일반화 7/10). Champion 78, Sub4 73, Sub1 70, Sub2 69. 이 점수는 아래 추가 코드에 대한 새 채점이 아니다.
+- 공통 목표: 모델에 비종속적인 하네스가 실행·교정·기억 일반화·자기개선·후손 계승을 **실제 작업에서 완주**하는 것. 정적 검사나 모델 호출 자체는 완주가 아니다.
+
+### 이번 작업의 실제 수정
+1. **`8dd4e59999fe56b27356cde39b4df412e7084b34`**: `workspace_replace_range(path,startLine,endLine,newText,expectedSha256)`를 Rust 실행 도구로 구현. `workspace_read_range`의 원문 해시·줄 번호를 이용해 oldText 복제 없이 새 코드만 생성·대체, 최대 120줄, UTF-8 바이트 오프셋 계산, 기존 줄바꿈 유지, 해시 불일치 시 파일 보존. 기존 `workspace_replace` 유지.
+   - `chat/runtime.rs` 편집 체크포인트·쓰기 인식, `chat/provider.rs` 실제 모델 네이티브 `tool_choice: required`, `api/rsi.rs`와 `rsi_evolve.rs` 연구→편집 지시, 실모델 캠페인 도구 집계 연결.
+   - 실제 모델의 약 1,500 output tokens 제한에서 oldText와 newText를 중복 출력해야 하는 문제를 줄이는 **새 실행 수단**. 채택 성공이라고 해석하지 않는다.
+2. **`43d0ef255e05b6f5759a501c33757e1919427fe3`**: 새 편집 도구의 실제 파일 변경 후 `postSha256`을 반환하고, `effect::seal`이 읽어 확인한 결과와 비교해 `verified` / `effect_unknown` 기록. 편집/읽기 도구의 동일 리소스 정체성 연결. 부모/후손 세대 도구 메뉴와 프롬프트에도 새 도구 등록.
+3. **`2c06b00170e1628515b5543bd98eeeefaf15106a`**: 기존 `research_survives_restart_and_executes_hash_checked_reuse_in_the_next_session` 통합 검증 경로에서 실제 파일 수정 수단을 새 줄 단위 편집으로 변경. 1세대 연구 영구 저장 → 재시작 → 2세대 해시 검증 편집 → 개선 코드 계승과 갱신된 소스 재사용을 한 실행 경로로 확인하도록 수정. 이 변경의 CI 결과는 별도 확인해야 한다.
+
+### 직접 실행해 확인한 결과 (코드 검증과 모델 성능을 구분)
+- **`8dd4e59` CI https://github.com/hushmind3/dominion-rust/actions/runs/42956290382 성공**: 16 benchmark + 626 unit + 3 extra + 99 E2E = **744/744**, 실패 0. 반복 원문 줄에서 지정한 줄만 바꾸고 stale SHA를 거부하는 새 Rust 테스트 포함.
+- **`43d0ef2` CI https://github.com/hushmind3/dominion-rust/actions/runs/42956709647 성공**: 16 benchmark + 627 unit + 3 extra + 99 E2E = **745/745**, 실패 0. 수정 해시 영수증을 별도로 재검증하는 테스트 포함.
+- **`2c06b00` CI https://github.com/hushmind3/dominion-rust/actions/runs/42957662159**: 이 문서 작성 시 진행 중. 성공으로 선기록하지 않는다.
+- 기존 실제 무료 모델 `42953014650`: 모델 6호출, 코드 탐색 1회+파일 읽기 1회, **편집 0, 후보 0, 채택 0**, 종료 `no_progress`.
+- 새 `workspace_replace_range`를 포함한 실모델 run https://github.com/hushmind3/dominion-rust/actions/runs/42956290333 : 이 문서 작성 시 진행 중. 해당 run은 **첫 커밋 `8dd4e59` 기준**이므로 둘째 해시 영수증 통합/셋째 계승 테스트 코드는 포함하지 않는다. 종료 후 `sourceEditCalls`, 도구별 영수증, `candidateId`, `acceptedCommit`, `improvedHoldouts`를 확인해야 한다.
+- 로컬에서 `cargo` 직접 실행 불가, Rust 실제 컴파일·테스트는 GitHub Actions 기록 기준.
+
+### 핵심 미완성과 이어갈 실제 개발
+1. 완료된 `42956290333` 영수증에서 **새 도구 호출을 실제 모델이 했는지**를 확인. 실패하면 처음 코드를 읽은 직후의 tool_choice, 공급자 응답 툴 형식, 줄 번호/해시 일치, 실제 실행_operation 실패 결과로 원인을 분리해 **엔진 코드** 수정.
+2. 최초 유효한 도구 소스 패치를 얻으면 그 후보를 동일 원본과 독립 frozen baseline/holdout에서 실행. 채택은 품질·시간·회귀를 실제 계측한 경우만 인정.
+3. 채택 바이너리의 후손 세대가 **그 능력으로 다음 패치와 추가 성능 향상**을 만드는지 2·3세대까지 돌리고 다른 문제/모델로 전이. 연구 등록만으로 완료 표시 금지.
+4. Sub1의 최신 교정 재시도/지연 모델 구분, Sub2의 실제 로컬 모델 도구 호출과 Sub4의 전이 교정, Champion의 로컬 도구 왕복을 상호 비교해 필요한 부분을 자기 브랜치에서 결합. 이번 세션에서 다른 브랜치는 읽기만 함.
+
+### 반복하지 말아야 할 실패
+- GitHub Actions `success`를 실모델의 코드 채택 성공으로 혼동하지 말 것.
+- 오래된 실험 워커의 `BASE_SHA` 바이너리를 실행해 최신 코드를 검증했다고 주장하지 말 것.
+- `workspace_replace_range`의 부분 영수증만으로 인과적 품질 상승을 선언하지 말 것. 원본 SHA, 범위, 실제 readback, frozen quality 평가, 재빌드/계승은 서로 다른 단계다.
+
+
+### 5세대 후속 핵심 결함 수정 — 자동 승인 누락
+- `9519b46070d093a8694f2aebb247d23fdd8cbe16` `src/engine/rsi_evolve.rs::auto_write_allowed`: 신규 `workspace_replace_range`는 등록·provider 선택·직접 도구 실행까지 연결되었어도 **실제 RSI 쓰기 승인 자동 경로가 `workspace_write`/`workspace_replace` 두 가지만 허용**해 승인 대기/거부가 발생할 수 있었음. 현재 실행 중인 승인된 분리 작업공간, 살아 있는 캠페인·세대 작업, 안전한 소스 경로로 제한된 기존 자동 승인 조건에 새 도구를 추가. 같은 조건에서 새 도구 허용, 비허용 툴·경로·중단된 작업은 계속 차단하는 회귀 테스트 추가.
+- `31565837ab2d5c0b5cf3b440ee9f70e4f048dec4` `scripts/sub3-live-model-campaign.mjs`: 모델 생성 코드가 사용한 편집 수단을 `rangeEditCalls`와 `legacyEditCalls`로 나누어 실제 영수증 집계. 이 변경으로 승인 누락을 수정한 최신 런타임의 실제 원격 모델 캠페인을 재시도: https://github.com/hushmind3/dominion-rust/actions/runs/42958230759 .
+- 먼저 성공한 3번째 실행 CI: https://github.com/hushmind3/dominion-rust/actions/runs/42957662159 — **745/745 Rust 통과**, `research_survives_restart_and_executes_hash_checked_reuse_in_the_next_session` 실제 통과.
+- 승인 누락 수정 CI https://github.com/hushmind3/dominion-rust/actions/runs/42958151269 와 최신 스크립트 연동 CI https://github.com/hushmind3/dominion-rust/actions/runs/42958230828 는 이 기록 시점 진행 중. 성공 전 통과/완주 주장 금지.
+- 현재 브랜치는 Sub3 전용. 다른 4개 개발 브랜치나 `main`은 쓰지 않았다.
+- **다음 세션 첫 실행**: `42958230759`의 실모델 세대별 `rangeEditCalls`·`legacyEditCalls`, `candidateId`, `acceptedCommit`, 독립 `improvedHoldouts`를 확인. 도구 호출 실패/승인 단계 실패/모델 선택 미발생을 구분하고 새로운 실행 코드로 수정. 결과가 없는데 채택·전이 개선을 추가했다고 기록하지 말 것.
+
+## Sub3 후속 — 심판 44/100 및 소스 편집→후보 평가 고리 개선
+
+### 기준
+- 독립 심판 재채점: **Sub3 44/100, 전체 2위** (구현23/30, 실제 자기개선7/40, 계승·일반화8/20, 서비스 통합6/10). Champion 46, Sub4 43, Sub1 41, Sub2 39. 자동 승격·자리 교환 없음.
+- 이번 세션 시작 HEAD `20e70b8`. 다른 개발자 브랜치는 조회만 하고 수정하지 않았다.
+- 최신 실모델 캠페인 `42958230759`: 1세대, 모델 13회, 83,827 토큰, `workspace_read_range` 완료 3회, `workspace_replace_range` 완료 5회(세대 `toolsUsed` 기반), 후보 0, 채택 0, token_budget 종료. 이전 Actions 로그의 `SUB3_RSI_ACTION_TRACE`는 **SQL 필터에 `workspace_replace_range`가 빠져 있어서** 편집의 실제 `written`/영수증 여부를 보여주지 못했다. '도구 호출 5회가 전부 미실행'이라고 단정하지 말 것.
+
+### 실제 코드 변경
+1. `4874a03` — `chat/runtime.rs`: RSI가 이번 모델 라운드에 제공하지 않은 도구를 네이티브 모델이 호출하면 실행하지 않고 오류 반환. `workspace_replace_range`에 대해 실제 같은 실행의 성공한 동일 경로·범위 소스 읽기에서만 SHA256을 재사용하고, 숫자로 된 줄 번호 문자열을 정규화. 소스·코드 변경 내용은 모델이 생성해야 하며 검증되지 않은 인자는 보완하지 않음.
+2. `4eed1fc` — 해시 결과가 확인된 실제 소스 편집 후 또 모델 호출을 반복하지 않고 worktree의 독립 컴파일/후보 평가로 전환하는 실행 경로.
+3. `8fd4884`, `ac63c92` — `sub3-live-model-cycle.yml`: 추적에서 새 범위 편집 도구 누락 수정, 각 모델 도구의 JSON 인자 파싱 상태/실행 오류/실제 편집 작업을 별도 artifact에 저장, `executionTrace`로 실행된 편집 건수와 요청 건수 분리.
+4. `2b8907e`, `3869f01` — 단일 명시적 대상 파일만 편집 완료 즉시 평가로 넘기도록 세션에 `rsiFocusFiles` 저장 및 정확히 일치 검증. 여러 파일 작업은 조기 종료하지 않음.
+5. `7946803` — 조기 평가 진입 전 `effect::seal`의 `toolReceipt.verified=true` 확인.
+6. `2d282c2` — 실제 소스 변경(`result.written=true`)과 읽어 확인된 영수증을 모두 만족한 작업만 RSI의 '쓰기 완료'로 판단. 수정이 없는 편집을 성과로 오인해 조회 단계로 되돌아가는 오류 개선.
+7. `747a3dc` — `tools.rs`: RSI의 byte-identical 범위 대체를 성공한 쓰기로 세지 않고 구체적인 도구 오류로 반환해 모델이 다른 구현을 선택하도록 함.
+
+### 확인 범위와 다음 최우선
+- 커밋 `4874a03` CI `42963749792` **성공**, `4eed1fc` CI `42963899359` **성공**. 이후 커밋의 CI는 이 문서 갱신 시 완료 여부를 별도 확인해야 한다. 테스트 성공과 실제 모델의 개선 채택은 별개의 사건.
+- 실모델 Actions `42963950178`는 `8fd4884` 코드, `42964433317`은 `ac63c92` 코드로 실행되므로 **최신 `747a3dc` 코드를 시험한 것이 아니다**. 실행 후 `sub3-rsi-action-trace.json`의 실제 `written`, `toolReceipt.verified`, 오류·후보·independent holdout을 대조한다.
+- 다음 개발자는 이 데이터로 남은 실패(모델이 원본 동일하게 출력하는지, SHA 누락인지, 도구 인자 파싱 문제인지, 결과가 검사에서 탈락한 것인지)를 분리하고, 진짜 소스 패치 → 후보 등록 → paired holdout → 채택 → 개선된 바이너리로 후손 세대 재실행까지 완주해야 한다.
+- **완주 선언 금지:** 이번 변경은 코드 실행 경로를 개선한 것이며 독립 품질 상승 및 3세대 연속 채택 증명은 아직 없다.
+
+## Sub3 심판 48/100 이후 — 후보 미생성 재수정 및 실제 holdout 실패 계승
+
+- 독립 심판 최신 재채점: **Sub3 48/100, 2위**. Champion 49, Sub4 46, Sub1 45, Sub2 44. 자리 교환 없음. 80점은 세대 간 연속 자율 자기개선이 입증된 시제품 기준.
+- 새로 확인한 **완료된 실모델 캠페인 [42963950178](https://github.com/hushmind3/dominion-rust/actions/runs/42963950178)**: 3세대, 무료 `openai-fast` 실제 모델 13회 호출. 1세대 후보 0, 2세대 후보 1개 `rsi-85fcb08c...` 생성 후 frozen paired **13/13 baseline/candidate 모두 pass**이나 **planning-quality 0.75→0.75**, 다른 측정도 향상 0 → `inconclusive`, 채택 0. 3세대는 토큰 예산 중단. workflow success는 RSI 성과가 아니다.
+- `5348eba`: `rsi_worktree::finish`가 한 모델 세션에서 실제 수행된 `execution_operation`을 따라 편집 시도/독립 영수증/실패 원인을 수집해 `editEvidence`로 영구 저장. 편집을 시도했으나 Git 변경 0인 후보 미생성 세대에만 최대 기존 수리 한도 안에서 근거 기반 재수정을 수행. 단순 무편집 답변·모델 오류에는 맹목적 재호출 없음.
+- `3ffd92c`: 이전 세대의 실제 편집 시도·실패 원인을 다음 세대 프롬프트에 계승하고, `edit_attempt_without_candidate`라는 독립 실패 원인으로 다음 결정에 남김.
+- `0e85d68`: 세대 기록에 실제 `diffBytes`를 추가해 도구 호출과 소스 패치를 분리.
+- `d60edc4`: 실모델 실행 스크립트에 `verifiedWrites`, `unsuccessfulEdits`, `candidateCaptureFailures` 기록. [42967227955](https://github.com/hushmind3/dominion-rust/actions/runs/42967227955) 실모델 캠페인 자동 트리거.
+- `d189c8a`, `875a128`, `689a876`: 다음 세대가 기계적으로 동결된 holdout 품질 실패를 분석하도록 `planning-quality baseline=0.75, candidate=0.75` 같은 실제 수치/도메인을 프롬프트에 삽입. 후보가 존재해도 미채택 원인·실제 편집 실패 영수증을 보존. 회귀 테스트 추가.
+- 작성 시점에 최신 커밋들은 CI 대기 중이다. Rust 로컬 직접 빌드는 수행하지 않았으며, `42967227955`는 `d60edc4` 기준이라 이후 평가 피드백 3개 커밋을 포함하지 않는다.
+- 다음 핵심: CI 완료 확인 → 가장 최근 실모델 영수증의 `editEvidence`와 `diffBytes` 대조 → 모델이 수정한 코드가 `planning-quality`를 실제 높이는지 → frozen paired `eligible=true` → 채택 커밋과 변경된 바이너리의 후손 추가 개선까지 실증. 기존 성공하지 못한 실행은 재귀적 자기개선 완주로 세지 않는다.
+
+## Sub3 재귀적 개선 방법 학습 — 47점 심판 피드백 이후
+
+### 평가와 문제 정의
+- 심판의 **DOMINION 자체 능력 중심** 최신 점수: Champion 51, Sub4 50, **Sub3 47 (3위)**, Sub1 45, Sub2 44. Sub3 약점은 코드 편집/holdout 자체가 아니라 **실패·성공 경험으로 자기개선 실행 정책을 바꿔 후손 세대의 개선 능력을 높이는 고리**.
+- 모델은 소스를 작성하는 도구일 뿐이고, 개선 주체는 DOMINION. 모델 가중치 훈련이나 모델 지능 향상은 목표가 아니다.
+
+### 실제 코드 변경 및 연결
+1. `d127930`: `rsi_evolve.rs`에 `synthesize_edit_method` 추가. 편집 실행 방법 (`balanced`, `focused-range`, `exact-context`)을 이전 세대의 **실제 실행 기록·검증 성과·토큰 비용**으로 UCB 선택. 단순 도구 호출이나 모델의 주장이 성능 향상이라고 취급되지 않으며, 실패하면 다음 세대는 미실험 정책을 시도한다. 선택 정책/근거/revision을 세대 input에 기록.
+2. `e47b093`, `7359ace`: `jobs.rs`가 선택된 개선 방법과 자동 초점 파일을 세션에 저장. 자율 파일 선택 세대에도 정책을 적용.
+3. `1946cb7`, `8dcbf77`: `chat/runtime.rs`의 실제 도구 실행 경로에서 정책의 `checkpointAfter`와 `preferredTool`을 적용. 즉 같은 모델을 사용하더라도 DOMINION의 과거 성과에 따라 소스 조사 종료 시점과 편집 연산 우선순위가 바뀐다. 잘못된 도구 동작을 강제하지 않고 다른 연산으로 복구할 수 있다. 일반 채팅 경로는 기존 기본값 유지.
+4. `d377f60`: 기존 코드의 `E0382`(세대 객체 이동 후 다시 참조) 실제 CI 컴파일 실패를 수정.
+5. `03273df`, `6c8706f`: 성과 보상을 후보 등록/도구 호출로 위장하지 않고 **독립 paired 평가 영수증 + 실제 채택 출처가 재검증된 개선**에만 최상위 보상을 지급한다. neutral paired 결과는 제한된 과정 보상, 미검증 후보는 품질 보상 0.
+6. `fa2cc1e`: **결정적 계승 경로** — 이전 조정기가 선택한 개선 방법을 후손이 그대로 쓰는 대신, 수정된 코드를 포함하는 **후손 바이너리 내부에서 학습 정책을 다시 계산**해 세대 입력 및 로그에 저장한다. 이제 개선된 메타 알고리즘이 다음 개선 실행 경로에 실제로 반영될 수 있다.
+7. `b9d0971`: 실모델 실험 보고서에 세대별 선택된 개선 방법, revision, 정책 보상, 검증된 소스 변경 및 채택 결과를 기록. GitHub Actions [42971842163](https://github.com/hushmind3/dominion-rust/actions/runs/42971842163) 자동 실행 요청.
+
+### 검증 및 한계
+- 다수의 이전 CI에서 발생한 실제 컴파일 실패 `E0382`는 `d377f60`에서 수정. 수정 이후 CI `42971449347`은 이 문서 작성 전후 완료 여부를 확인할 것.
+- 새 정책의 단위 테스트: 실패한 실제 세대 뒤에는 다른 실행 방법을 탐색, 가짜/미실행 기록은 학습 제외, 독립 검증된 성과가 누적되면 비용이 높은 탐색보다 높은 성과 방법 우선, 개선 방법이 실제 checkpoint 시점을 바꾸는지.
+- 편집 성공과 `rsi_candidate` 생성 또는 frozen paired 검증은 독립 재귀적 자기개선 완주와 별개. **새 방법이 실제 후속 세대의 개선 확률/비용을 올렸다는 계측 및 3개 연속 채택은 아직 없음**.
+- 다음 중요 작업: 후손 바이너리의 정책 revision/선택 로그가 실제 변경되는지 확인 → 동일 목표의 반복 캠페인에서 독립 보상 대비 총 모델 호출/토큰/채택률 비교 → 정책 변경이 유의미한 개선을 만들면 다음 후손 세대에 재귀 계승. 의도적인 테스트 fixture 결과를 자율 개선 성과로 계산하지 않는다.
+
+## Sub3 — 53점 심판 평가 후: 새로운 개선·검증 알고리즘 합성 (2026-11-11)
+
+### 평가 기준과 새로운 실측
+- 최신 심판: **Sub3 53/100, 4위**. Champion 57, Sub4 55, Sub2 54, Sub1 52. 핵심 지적: 3개 고정 편집 방법을 선택하는 수준에서 벗어나 **경험으로 새 개선·검증 알고리즘을 생성**할 것.
+- [실모델 RSI `42971842163`](https://github.com/hushmind3/dominion-rust/actions/runs/42971842163)의 실제 artifact `sub3-live-campaign-result.json`: 모델 호출 11, 소스 범위 편집 1회, 효과 검증을 거친 **소스 변경 1회**, 1620바이트 Git diff, 후보 등록 0, 채택 0, 종료 token_budget. 모델 도구 응답에 인자 파싱 및 도구 이름 오염(예: `<|channel|>...`) 오류가 나타나 후속 재수정이 실패. workflow success를 RSI 성공이라고 해석하면 안 됨.
+- 기존 고정 정책 3개(`balanced`, `focused-range`, `exact-context`)는 실제 성공 근거가 부족하고, 새 편집/재수정 원리를 만들지 못한다는 심판 지적 수용.
+
+### 이번에 직접 구현한 코드
+1. `0858a6b` 새 `src/engine/rsi_edit_genome.rs`: **컴포지셔널 개선 방법 생성기**. 모델이 새 알고리즘을 만들어주는 방식이 아니라 DOMINION이 실제 세대의 소스 편집·후보 평가·오류·토큰 비용으로 `checkpointAfter`, `preferredTool`, `repairLimit`을 가진 **새 실행 컨트롤러 조합**을 생성한다. token_budget, 컴파일 실패/검증 실패, native 도구 인자 오류, 중립 holdout 등 관측 실패에 따라 서로 다른 변이 연산을 적용하고, 부모 policy revision과 파생 세대 jobId를 저장한다. 이전 3개 이름 테이블을 사용하지 않는다.
+2. `bf2925d`, `5fdb462`: Rust 엔진 모듈 등록. `rsi_evolve.rs`의 기존 `synthesize_edit_method`를 새 합성기로 교체. 실제 독립 검증/채택을 재검증한 세대만 최고 보상으로 계산하고, 실행 중인 후손 바이너리가 새 방법을 다시 선택하는 기존 `fa2cc1e` 경로에 그대로 연결.
+3. `17f1fe7`, `cbbe34d`: **검증 알고리즘을 실제 실행기에 적용** — `jobs::run_prompt`의 기존 고정 재수정 2회 대신 생성된 `rsiEditPolicy.repairLimit`을 사용하여 독립 컴파일 실패 후 복구 실행 횟수를 0~3회로 조절. 기존 cargo/typecheck 및 동결 paired oracle은 변경하지 않음. Rust 테스트로 정책에 따라 실행 범위가 달라짐을 검증하도록 작성.
+4. `00864a0`: 구형 3개 이름별 성과 테스트를 실제로 다른 정책 유전자 설정을 가진 테스트로 대체. 생성기는 반복된 검증 성과가 있는 방법을 재사용하면서 실패한 방법은 새로운 조합으로 바꾸도록 설계.
+5. `ca27f09`, `d32e4f6`: **실모델 실패에서 발견한 후보 소실 문제 수정**. 첫 소스 변경 후보·컴파일 증거를 얻은 이후 모델의 추가 복구 호출이 토큰 한도·캡처 오류로 중단되더라도 이전 독립 검증 결과를 버리지 않고 유지. 실패 원인 `repairFailure`를 세대 경험으로 저장해 다음 개선 방법 생성에 반영.
+6. `a947f98`: 실모델 리포트에 새 방법의 `mutation`, `parentRevision`, 편집 시점, 편집 도구, 검증 재수정 한도를 별도 기록해 실제 컨트롤러 변경을 추적. [새 실모델 run `42976691017`](https://github.com/hushmind3/dominion-rust/actions/runs/42976691017) 자동 트리거.
+
+### 증거와 남은 관문
+- 마지막 선행 CI [`42972090121`](https://github.com/hushmind3/dominion-rust/actions/runs/42972090121)은 **success**; **이번 추가 커밋 이후 CI는 문서 기록 시점 대기 중**. 최신 상태를 GitHub에서 확인해야 하며 이번 소스를 컴파일 성공한 것으로 선보고하지 않는다.
+- 생성 정책은 **실제 실행 가능한 조합과 계승 경로**이지 품질 향상 증명이나 채택 성공이 아니다. 성공 수를 부풀리지 않고 `improvementProven:false`와 부모/세대/보상 기록을 분리한다.
+- 다음 작업: 신규 CI 오류 있으면 우선 교정 → 실제 실모델 `policyRevision` 변이와 `repairLimit` 실행 영수증 확인 → 동일 목표/동일 기반에서 기존 방법 vs 생성 방법의 소스 후보 완성률·paired 품질·토큰 비용을 비교 → 유효한 정책을 후손 바이너리에서 반복 개선할 것.
+- 타 브랜치/Champion에는 직접 변경하지 않았음. Sub3 branch만 수정함.
+
+## Sub3 후속 — 다중 후손 성공·실패 대비를 통한 판단 원리 귀납 (2026-11-11 저녁)
+
+- 시작 HEAD `94ff8c8905a3177d07ad2bebcf1e312fe16ca864` (독립 심판이 본 `f2f19eb4` 이후 타 세션 커밋 14개 포함). 담당 브랜치 `dominion-sub3`만 변경.
+- 새 `src/engine/rsi_rule_induction.rs`: 성공한 실제 소스 변경이 최종 채택 해시와 일치하고 독립 재검증된 경우만 성공 관측으로 사용. 반대 표본은 실제 candidate가 독립 paired 평가를 받았으나 미채택된 세대로 제한. 각 실행의 소스 조회→편집 직전 도구 상태를 추출한다.
+- 같은 목표/partition/provider/model에서 서로 다른 성공 세대 최소 2개와 실패 세대 최소 2개가 있을 때 `workspace_read_range`, `code_search`, 실행 횟수 조건을 탐색하여 성공 사례를 유지하면서 실패를 구분하는 Boolean 판단 규칙 후보를 생성. 한 실행의 미검증 편집·재시도 뒤에만 맞는 규칙, 다른 실행의 조회를 가져온 가짜 인과, 모델/공급자 혼합은 제외.
+- `src/engine/rsi_edit_genome.rs`의 실제 후손 정책 생성 함수 `evolve`에 연결. 기존 성공 컨트롤러와 새 규칙을 합성해 `cross-descendant-counterexample-trial`로 실행하며, `improvementProven=false`와 별도 `contrastEvidence.status=proposal_needs_actual_descendant_trial` 기록. 실험 후 실제 작업 및 independent paired 평가로 보상받는 기존 경로를 유지한다.
+- `src/engine/mod.rs` 등록. `scripts/sub3-live-model-campaign.mjs` 실모델 증거 출력에 귀납 실험 여부와 contrastEvidence 포함. 생성된 규칙이 실제 `rsi_decision_rules::choose`에서 실행 메뉴를 변경하도록 테스트 추가.
+- 테스트 코드는 독립 채택 2세대+실패 2세대 구분, 표본 부족, 다른 파일에서 가져온 조회 무효, 재시도 후 학습 불허, 다른 모델에서 온 표본 격리를 검사한다. **최신 신규 CI 성공 여부는 미확정**.
+- 시작 HEAD의 실모델 실행 `42992805776`은 확인 시점 소스개선 작업 진행 중(최신 신규 귀납 코드는 그 실행에 포함되지 않음). 수정 후 자동 트리거된 `42997033354`는 대기 중. 이것들을 자율 3세대 채택·실서비스 완주 증거로 기록하지 않는다.
+- 다음 핵심은 CI 오류가 나면 즉시 수정 → 실모델에서 편집·후보·독립 품질·채택 실측 → 채택된 자손에서 다시 판단 규칙을 귀납하고 2·3세대 반복. 테스트에서 2개 성공 샘플을 넣은 것은 실제 자율 개선 증명이 아니다.
+
+
+## Sub3 후속 — 시계열 반례 학습·실모델 도구 실행 복원·독립 우승 정책 우선 (2026-11-11)
+
+- 독립 심판 최신 전달 점수 **61/100, 5위** (심판 기준 17:34, 당시 Sub3 커밋 `f2f19eb4`). 이 절의 변경 이후 **재채점되지 않았음**. 시작 HEAD `c4037d1`, 수정 브랜치 `dominion-sub3`만.
+- `02d3b58` + `7c9a598`: `rsi_rule_induction`에 **동일한 횟수의 source read/search를 가진 두 실행 집단도 순서로 구별**하는 시간 조건 귀납 추가. 실제 순서 `workspace_read_range → code_search`와 반대 순서에서 2세대 이상의 독립 채택 및 2세대 이상의 paired 실패를 비교. 한 세대의 서로 다른 실행을 섞지 않고, **실제 같은 파일 읽기 + 검증된 쓰기 + 독립 평가**가 있는 실패 후보만 반례로 인정. 조건식의 실행 선택 변화·가짜 반례 배제 테스트 추가.
+- `101ae261`: `chat/runtime.rs` 실제 RSI 모델 호출 경로에서 도구 이름에 `<|channel|>commentary` / `<|channel|>analysis`가 정확히 뒤붙은 경우만 **그 라운드에 공표된 도구명으로 복원**. 공표되지 않은 이름이나 임의 접미사는 복원하지 않음. 과거 실모델 로그 `42992805776`의 오염된 도구명·거짓 도구 부재 오류에 대한 직접 수정. 정규화 및 우회 차단 테스트 추가.
+- `3d45e01`: `rsi_edit_genome`의 진화 선택에서 2개 이상 매칭 독립 평가로 입증된 **우승 실행 정책을 반복 가설 생성보다 우선**하도록 이동. 과거 규칙 귀납이 가능한 상태에서도 승자 정책을 선택·변이하는 회귀 테스트 추가. 정량 성과를 기록하지 않은 새 규칙은 계속 실험 후보이며 자동 승격이 아님.
+- `e36fcabd`: `rsi_decision_rules` 시계열 조건의 실제 실행 판정이 서로 다른 `runId`의 작업을 결합하지 않게 수정. 이전 실패 실행이 있어도 같은 실행 안에서 실제 일어난 다음 순서는 탐색하도록 구현·테스트.
+- **독립 실행 근거**: 기존 실모델 Actions `42992805776`(workflow success) 로그에는 실모델 **편집 2회, verified writes 2회**, 문법/타입 컴파일 실패, 후보 0건, 자율 채택 0건. 새 RSI 자체가 3세대 연속 개선·채택하는 것까지 입증되지는 않았음.
+- **검증 대기**: 마지막 새 HEAD `e36fcabd`의 CI `42998753855`은 조회 당시 queued. 현재 컨테이너에는 `cargo`/`rustc` 없어 직접 컴파일을 수행하지 못함. `42997033354` 실제 모델 캠페인은 이전 HEAD `75d6ddf`에서 진행 중이며 이번 새 구현을 포함하지 않음. 그 완료 결과를 이번 변경의 성능으로 소급하지 말 것.
+- **다음 최우선**: 최신 CI 오류 발생 시 수정 → 수정 포함 HEAD에서 실모델 캠페인 재실행 → 소스 편집 → 컴파일 복구 → 정식 candidate → frozen paired holdout 개선 및 채택 → 채택 후손에서 같은 판단 규칙 생성기를 다시 개선해 연속 세대 완주.

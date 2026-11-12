@@ -1,0 +1,2171 @@
+{
+  "schemaVersion": 1,
+  "kind": "dominion.sub3.native_recursive_completion",
+  "campaignId": "6ad36711-7016-4ede-8ad2-0e875899cf68",
+  "sourceCommit": "ae927f6b4153926f892998f6cd312f3a4e94f7db",
+  "adoptedHeadCommit": "71fef4e481a4bca4b087c3e06d85bb66443fe19a",
+  "status": "completed",
+  "stopReason": "capability_demonstrated",
+  "acceptedGenerations": 3,
+  "maxAcceptedStreak": 3,
+  "capabilityDemonstrated": true,
+  "accelerationProven": false,
+  "productionChanged": false,
+  "elapsedMs": 483669,
+  "tokens": 0,
+  "historicalBugRestored": false,
+  "modelCalls": 0,
+  "measurementScope": "frozen_native_cases_only",
+  "generations": [
+    {
+      "attempt": 1,
+      "jobId": "c841e9b0-c2ca-4fa6-97f2-4a2e7ebcf243",
+      "generatorCommit": "ae927f6b4153926f892998f6cd312f3a4e94f7db",
+      "generatorBinarySha256": "e200e683cda58923d2632910355e700a217f634c8f90996520293f8d47e906bf",
+      "generatorModel": "dominion-native:verified_owner_provenance_cache_v1",
+      "requestedModel": "openai-fast",
+      "generatorProviderId": "dominion-native",
+      "acceptedCommit": "4384f1fb60e257a6bd87ade7948bd54c2a092f08",
+      "candidateId": "rsi-5389bdaa60b170b7fd81189e6bac6d2b5e2288c38475a12afd89cbe2b9f1a3aa",
+      "domain": "memory",
+      "candidateOrigin": "native_inductive_source_mutation",
+      "editMethodReward": 0.0,
+      "elapsedMs": 151241,
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "nativeMutation": {
+        "afterSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+        "beforeSha256": "f31e0094b20380a9a3ab677b465b60e2dc8fa49ff112a65ffc4a539f818f5e27",
+        "campaignId": "6ad36711-7016-4ede-8ad2-0e875899cf68",
+        "id": "c841e9b0-c2ca-4fa6-97f2-4a2e7ebcf243",
+        "operator": "verified_owner_provenance_cache_v1",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/room_state.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/private/tmp/dominion-sub3-proof-20261112/runtime/rsi-labs/lab-8a77d2a0-a894-4f17-80de-b3bac741f07c"
+      },
+      "patchSha256": "7570ad2055b5e696d01f1dd617c5d083c9115c9cd79696f9fe20ee7400344cd7",
+      "pairedEvidenceSha256": "96e2511ae6af945e1538ada5a7ee29e39188b6a8d94439d9077a44a8fa9eaa3c",
+      "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+      "metrics": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 103.88525,
+                "candidate": 99.730333,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 129.0592285,
+                "candidate": 70.7889585,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518.0,
+                "candidate": 518.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 44.7421875,
+                "candidate": 45.233604,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 174.11950000000002,
+                "candidate": 177.520312,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 109.936833,
+                "candidate": 107.2170625,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238.0,
+                "candidate": 77238.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 0,
+        "metaHoldoutGains": 0,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      },
+      "frozenCases": [
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::explicit_owner_state_survives_and_a_correction_supersedes_the_old_code",
+          "holdout": true,
+          "id": "memory-explicit",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment",
+          "holdout": true,
+          "id": "memory-correction",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::a_hundred_unrelated_owner_decisions_do_not_evict_a_relevant_early_fact",
+          "holdout": true,
+          "id": "memory-long",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::corrections_keep_unrelated_domains_and_do_not_promote_questions",
+          "holdout": false,
+          "id": "memory-distinct",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels",
+          "holdout": true,
+          "id": "kernel-generation",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::unverified_generated_algorithms_never_enter_live_ucb_until_promoted",
+          "holdout": false,
+          "id": "kernel-promotion",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::evaluation_cannot_switch_its_frozen_oracle_or_test_names",
+          "holdout": true,
+          "id": "rsi-oracle",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation",
+          "holdout": true,
+          "id": "rsi-lineage",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::memory_ranking",
+          "holdout": false,
+          "id": "memory-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::long_owner_recall",
+          "holdout": true,
+          "id": "long-recall-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.1,
+              "minAbsoluteGain": 20.0,
+              "minRelativeGain": 0.1
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_development_quality",
+          "holdout": false,
+          "id": "planning-development",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_quality",
+          "holdout": true,
+          "id": "planning-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "improver",
+          "filter": "rsi_frozen_oracle::improvement_search",
+          "holdout": true,
+          "id": "search-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "context",
+          "filter": "rsi_frozen_oracle::group_chat_context_efficiency",
+          "holdout": true,
+          "id": "group-chat-input-cost",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.0,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.05,
+              "minAbsoluteGain": 50.0,
+              "minRelativeGain": 0.05
+            }
+          ]
+        }
+      ],
+      "rawPairedReport": {
+        "baseCommit": "ae927f6b4153926f892998f6cd312f3a4e94f7db",
+        "baselineBuildOk": true,
+        "candidateBuildOk": true,
+        "cases": [
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-explicit",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-correction",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-long",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-distinct",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-generation",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-promotion",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-oracle",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-lineage",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 103.88525,
+                "candidate": 99.730333,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "long-recall-quality",
+            "metrics": {
+              "contextChars": {
+                "baseline": 518,
+                "candidate": 518,
+                "samples": 6
+              },
+              "elapsedMs": {
+                "baseline": 129.0592285,
+                "candidate": 70.7889585,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-development",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 44.7421875,
+                "candidate": 45.233604,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 174.11950000000002,
+                "candidate": 177.520312,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "search-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 109.936833,
+                "candidate": 107.2170625,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "group-chat-input-cost",
+            "metrics": {
+              "contextChars": {
+                "baseline": 77238,
+                "candidate": 77238,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          }
+        ],
+        "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+        "oracleVersion": "rsi-worktree-v2",
+        "patchSha256": "7570ad2055b5e696d01f1dd617c5d083c9115c9cd79696f9fe20ee7400344cd7",
+        "reportSha256": "96e2511ae6af945e1538ada5a7ee29e39188b6a8d94439d9077a44a8fa9eaa3c",
+        "runner": "balanced-frozen-rsi-lab-v2"
+      },
+      "adoptedPatchMatchesReceipt": true,
+      "gitParentMatchesGenerator": true,
+      "actualEvidenceFileHashMatches": true,
+      "evidenceFile": "benchmark/rsi-evidence/2026-11-12-sub3/generation-1.evidence.txt.gz"
+    },
+    {
+      "attempt": 2,
+      "jobId": "8677e08c-4361-4d92-85d0-0b3bf37cbf71",
+      "generatorCommit": "4384f1fb60e257a6bd87ade7948bd54c2a092f08",
+      "generatorBinarySha256": "ca11b8f2d6e38e7682a810ce530c1fe20648654b10630b221650b642c600b91e",
+      "generatorModel": "dominion-native:streamed_verified_domain_selector_v3",
+      "requestedModel": "openai-fast",
+      "generatorProviderId": "dominion-native",
+      "acceptedCommit": "1c226b6b344c4f52ba30b54d531be78b81bed436",
+      "candidateId": "rsi-36d5fea0706fc85797a9e6e7543e1a4060421538d26d6168537d0c047b6a1f51",
+      "domain": "improver",
+      "candidateOrigin": "native_inductive_source_mutation",
+      "editMethodReward": 0.0,
+      "elapsedMs": 122607,
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "nativeMutation": {
+        "afterSha256": "73dd9661f4cbbc7ce845f40aa52c1b6c55cc686f163c82c926e99fa34c179074",
+        "beforeSha256": "58df8eb29d3568723bcbae04264957704556291a8c28aab9aa981ab2434d0df5",
+        "campaignId": "6ad36711-7016-4ede-8ad2-0e875899cf68",
+        "id": "8677e08c-4361-4d92-85d0-0b3bf37cbf71",
+        "operator": "streamed_verified_domain_selector_v3",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/rsi_evolve.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/private/tmp/dominion-sub3-proof-20261112/runtime/rsi-labs/lab-8a77d2a0-a894-4f17-80de-b3bac741f07c"
+      },
+      "patchSha256": "1d83822968e361ba9a12c618daba9efb85090a665104f5dcd57a60bfa4c74e41",
+      "pairedEvidenceSha256": "d40a03f31185a0f0c5e06a67d6177c1572141a54f8970c44db949a2a2da4589c",
+      "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+      "metrics": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "improver"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 100.849958,
+                "candidate": 99.6950415,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 70.149854,
+                "candidate": 75.127708,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518.0,
+                "candidate": 518.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 44.683708,
+                "candidate": 45.606416499999995,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 171.81204150000002,
+                "candidate": 173.96941650000002,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 104.3775625,
+                "candidate": 11.888187,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238.0,
+                "candidate": 77238.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 1,
+        "metaHoldoutGains": 1,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      },
+      "frozenCases": [
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::explicit_owner_state_survives_and_a_correction_supersedes_the_old_code",
+          "holdout": true,
+          "id": "memory-explicit",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment",
+          "holdout": true,
+          "id": "memory-correction",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::a_hundred_unrelated_owner_decisions_do_not_evict_a_relevant_early_fact",
+          "holdout": true,
+          "id": "memory-long",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::corrections_keep_unrelated_domains_and_do_not_promote_questions",
+          "holdout": false,
+          "id": "memory-distinct",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels",
+          "holdout": true,
+          "id": "kernel-generation",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::unverified_generated_algorithms_never_enter_live_ucb_until_promoted",
+          "holdout": false,
+          "id": "kernel-promotion",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::evaluation_cannot_switch_its_frozen_oracle_or_test_names",
+          "holdout": true,
+          "id": "rsi-oracle",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation",
+          "holdout": true,
+          "id": "rsi-lineage",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::memory_ranking",
+          "holdout": false,
+          "id": "memory-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::long_owner_recall",
+          "holdout": true,
+          "id": "long-recall-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.1,
+              "minAbsoluteGain": 20.0,
+              "minRelativeGain": 0.1
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_development_quality",
+          "holdout": false,
+          "id": "planning-development",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_quality",
+          "holdout": true,
+          "id": "planning-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "improver",
+          "filter": "rsi_frozen_oracle::improvement_search",
+          "holdout": true,
+          "id": "search-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "context",
+          "filter": "rsi_frozen_oracle::group_chat_context_efficiency",
+          "holdout": true,
+          "id": "group-chat-input-cost",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.0,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.05,
+              "minAbsoluteGain": 50.0,
+              "minRelativeGain": 0.05
+            }
+          ]
+        }
+      ],
+      "rawPairedReport": {
+        "baseCommit": "4384f1fb60e257a6bd87ade7948bd54c2a092f08",
+        "baselineBuildOk": true,
+        "candidateBuildOk": true,
+        "cases": [
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-explicit",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-correction",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-long",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-distinct",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-generation",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-promotion",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-oracle",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-lineage",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 100.849958,
+                "candidate": 99.6950415,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "long-recall-quality",
+            "metrics": {
+              "contextChars": {
+                "baseline": 518,
+                "candidate": 518,
+                "samples": 6
+              },
+              "elapsedMs": {
+                "baseline": 70.149854,
+                "candidate": 75.127708,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-development",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 44.683708,
+                "candidate": 45.606416499999995,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 171.81204150000002,
+                "candidate": 173.96941650000002,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "search-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 104.3775625,
+                "candidate": 11.888187,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "group-chat-input-cost",
+            "metrics": {
+              "contextChars": {
+                "baseline": 77238,
+                "candidate": 77238,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          }
+        ],
+        "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+        "oracleVersion": "rsi-worktree-v2",
+        "patchSha256": "1d83822968e361ba9a12c618daba9efb85090a665104f5dcd57a60bfa4c74e41",
+        "reportSha256": "d40a03f31185a0f0c5e06a67d6177c1572141a54f8970c44db949a2a2da4589c",
+        "runner": "balanced-frozen-rsi-lab-v2"
+      },
+      "adoptedPatchMatchesReceipt": true,
+      "gitParentMatchesGenerator": true,
+      "actualEvidenceFileHashMatches": true,
+      "evidenceFile": "benchmark/rsi-evidence/2026-11-12-sub3/generation-2.evidence.txt.gz"
+    },
+    {
+      "attempt": 3,
+      "jobId": "4ac98bd3-db36-4a29-8e72-849a59b06a7f",
+      "generatorCommit": "1c226b6b344c4f52ba30b54d531be78b81bed436",
+      "generatorBinarySha256": "ac56caafca0620fe6d76fa56e6dcb4b5b562c0afdd8e792ccbc79da932975ad3",
+      "generatorModel": "dominion-native:loop_invariant_term_hoist_v1",
+      "requestedModel": "openai-fast",
+      "generatorProviderId": "dominion-native",
+      "acceptedCommit": "71fef4e481a4bca4b087c3e06d85bb66443fe19a",
+      "candidateId": "rsi-4876bf944ffe35ff20dbe38242d04de12035eeeb17e913a7ae75d9f2e9b4e9e3",
+      "domain": "memory",
+      "candidateOrigin": "native_inductive_source_mutation",
+      "editMethodReward": 0.0,
+      "elapsedMs": 131594,
+      "tokenUsage": {
+        "calls": 0,
+        "completionTokens": 0,
+        "estimatedCalls": 0,
+        "promptTokens": 0
+      },
+      "nativeMutation": {
+        "afterSha256": "1bb9029612cd69b7563ef18736bf3f064347b4da0c551c0c122f221f8b14f51a",
+        "beforeSha256": "940b8d83aa87fa4ec33cef3afdc3f36dfe7b2f2a40c196cd599dbda1cc0f5019",
+        "campaignId": "6ad36711-7016-4ede-8ad2-0e875899cf68",
+        "id": "4ac98bd3-db36-4a29-8e72-849a59b06a7f",
+        "operator": "loop_invariant_term_hoist_v1",
+        "origin": "native_inductive_source_mutation",
+        "path": "src/engine/room_state.rs",
+        "proof": "pending_independent_compile_and_paired_holdout",
+        "qualityGain": null,
+        "sourceChanged": true,
+        "sourceDir": "/private/tmp/dominion-sub3-proof-20261112/runtime/rsi-labs/lab-8a77d2a0-a894-4f17-80de-b3bac741f07c"
+      },
+      "patchSha256": "9efc780d73138800fb139d790a3b33816721ec695b4a97e857cefe509432bafc",
+      "pairedEvidenceSha256": "def4e64a837135204e64f8a0ccfccfde796db8cfe609f5192f15ccb10244fd5a",
+      "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+      "metrics": {
+        "baselineSuccesses": 14,
+        "candidateSuccesses": 14,
+        "eligible": true,
+        "gains": 0,
+        "holdoutCases": 10,
+        "holdoutDomains": [
+          "algorithm",
+          "context",
+          "improver",
+          "memory",
+          "planning"
+        ],
+        "improvedHoldoutDomains": [
+          "memory"
+        ],
+        "improvedHoldouts": 1,
+        "measurements": [
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-explicit",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-correction",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "memory-long",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-distinct",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": true,
+            "id": "kernel-generation",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "algorithm",
+            "holdout": false,
+            "id": "kernel-promotion",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-oracle",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "rsi-lineage",
+            "metrics": []
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": false,
+            "id": "memory-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 100.875562,
+                "candidate": 103.2355625,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "memory",
+            "holdout": true,
+            "id": "long-recall-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 74.0985415,
+                "candidate": 50.22475,
+                "direction": "lower",
+                "improved": true,
+                "key": "elapsedMs",
+                "regressed": false
+              },
+              {
+                "baseline": 518.0,
+                "candidate": 518.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": false,
+            "id": "planning-development",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 46.414771,
+                "candidate": 44.253792,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "planning",
+            "holdout": true,
+            "id": "planning-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 181.969896,
+                "candidate": 179.472875,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "improver",
+            "holdout": true,
+            "id": "search-quality",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 12.324791,
+                "candidate": 12.5606665,
+                "direction": "lower",
+                "improved": false,
+                "key": "elapsedMs",
+                "regressed": false
+              }
+            ]
+          },
+          {
+            "baselinePass": true,
+            "candidatePass": true,
+            "domain": "context",
+            "holdout": true,
+            "id": "group-chat-input-cost",
+            "metrics": [
+              {
+                "baseline": 1.0,
+                "candidate": 1.0,
+                "direction": "higher",
+                "improved": false,
+                "key": "quality",
+                "regressed": false
+              },
+              {
+                "baseline": 77238.0,
+                "candidate": 77238.0,
+                "direction": "lower",
+                "improved": false,
+                "key": "contextChars",
+                "regressed": false
+              }
+            ]
+          }
+        ],
+        "metaGains": 0,
+        "metaHoldoutGains": 0,
+        "metricGains": 1,
+        "metricRegressions": 0,
+        "pairedCases": 14,
+        "regressions": 0,
+        "verdict": "improved"
+      },
+      "frozenCases": [
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::explicit_owner_state_survives_and_a_correction_supersedes_the_old_code",
+          "holdout": true,
+          "id": "memory-explicit",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::korean_owner_correction_replaces_the_previous_assignment",
+          "holdout": true,
+          "id": "memory-correction",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::a_hundred_unrelated_owner_decisions_do_not_evict_a_relevant_early_fact",
+          "holdout": true,
+          "id": "memory-long",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "engine::room_state::tests::corrections_keep_unrelated_domains_and_do_not_promote_questions",
+          "holdout": false,
+          "id": "memory-distinct",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::generation_uses_evidence_and_returns_executable_kernels",
+          "holdout": true,
+          "id": "kernel-generation",
+          "metrics": []
+        },
+        {
+          "domain": "algorithm",
+          "filter": "engine::algorithms::tests::unverified_generated_algorithms_never_enter_live_ucb_until_promoted",
+          "holdout": false,
+          "id": "kernel-promotion",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::evaluation_cannot_switch_its_frozen_oracle_or_test_names",
+          "holdout": true,
+          "id": "rsi-oracle",
+          "metrics": []
+        },
+        {
+          "domain": "improver",
+          "filter": "engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation",
+          "holdout": true,
+          "id": "rsi-lineage",
+          "metrics": []
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::memory_ranking",
+          "holdout": false,
+          "id": "memory-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "memory",
+          "filter": "rsi_frozen_oracle::long_owner_recall",
+          "holdout": true,
+          "id": "long-recall-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.1,
+              "minAbsoluteGain": 20.0,
+              "minRelativeGain": 0.1
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_development_quality",
+          "holdout": false,
+          "id": "planning-development",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "planning",
+          "filter": "rsi_frozen_oracle::planning_quality",
+          "holdout": true,
+          "id": "planning-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "improver",
+          "filter": "rsi_frozen_oracle::improvement_search",
+          "holdout": true,
+          "id": "search-quality",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.025,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "elapsedMs",
+              "maxRelativeRegression": 0.25,
+              "minAbsoluteGain": 1.0,
+              "minRelativeGain": 0.2
+            }
+          ]
+        },
+        {
+          "domain": "context",
+          "filter": "rsi_frozen_oracle::group_chat_context_efficiency",
+          "holdout": true,
+          "id": "group-chat-input-cost",
+          "metrics": [
+            {
+              "direction": "higher",
+              "key": "quality",
+              "maxRelativeRegression": 0.0,
+              "minAbsoluteGain": 0.0,
+              "minRelativeGain": 0.02
+            },
+            {
+              "direction": "lower",
+              "key": "contextChars",
+              "maxRelativeRegression": 0.05,
+              "minAbsoluteGain": 50.0,
+              "minRelativeGain": 0.05
+            }
+          ]
+        }
+      ],
+      "rawPairedReport": {
+        "baseCommit": "1c226b6b344c4f52ba30b54d531be78b81bed436",
+        "baselineBuildOk": true,
+        "candidateBuildOk": true,
+        "cases": [
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-explicit",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-correction",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-long",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-distinct",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-generation",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "kernel-promotion",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-oracle",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "rsi-lineage",
+            "metrics": {}
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "memory-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 100.875562,
+                "candidate": 103.2355625,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "long-recall-quality",
+            "metrics": {
+              "contextChars": {
+                "baseline": 518,
+                "candidate": 518,
+                "samples": 6
+              },
+              "elapsedMs": {
+                "baseline": 74.0985415,
+                "candidate": 50.22475,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-development",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 46.414771,
+                "candidate": 44.253792,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "planning-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 181.969896,
+                "candidate": 179.472875,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "search-quality",
+            "metrics": {
+              "elapsedMs": {
+                "baseline": 12.324791,
+                "candidate": 12.5606665,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          },
+          {
+            "baselinePass": true,
+            "behavioralCounterexamples": {
+              "baseline": [],
+              "candidate": []
+            },
+            "candidatePass": true,
+            "id": "group-chat-input-cost",
+            "metrics": {
+              "contextChars": {
+                "baseline": 77238,
+                "candidate": 77238,
+                "samples": 6
+              },
+              "quality": {
+                "baseline": 1,
+                "candidate": 1,
+                "samples": 6
+              }
+            }
+          }
+        ],
+        "oracleSha256": "5576f98271446c0903baf50cc0d582bb416d7eaaf857150c506a1f60e043307e",
+        "oracleVersion": "rsi-worktree-v2",
+        "patchSha256": "9efc780d73138800fb139d790a3b33816721ec695b4a97e857cefe509432bafc",
+        "reportSha256": "def4e64a837135204e64f8a0ccfccfde796db8cfe609f5192f15ccb10244fd5a",
+        "runner": "balanced-frozen-rsi-lab-v2"
+      },
+      "adoptedPatchMatchesReceipt": true,
+      "gitParentMatchesGenerator": true,
+      "actualEvidenceFileHashMatches": true,
+      "evidenceFile": "benchmark/rsi-evidence/2026-11-12-sub3/generation-3.evidence.txt.gz"
+    }
+  ],
+  "provenanceChecks": {
+    "distinctRebuiltGeneratorBinaries": 3,
+    "exactCommitSuccession": true,
+    "allAdoptedPatchesMatchReceipt": true,
+    "allActualEvidenceFileHashesMatch": true
+  },
+  "claimLimits": {
+    "notGeneralIntelligenceEvidence": true,
+    "notLLMAuthoredMutation": true,
+    "notCausalImproverAccelerationProof": true
+  },
+  "resourceLimits": {
+    "maxAttempts": 6,
+    "timeBudgetSeconds": 6000,
+    "tokenBudget": 520000
+  },
+  "sourceFingerprint": "a5180b6ecf667b2f6f85959e10c4156b07aa00316471f3d2bf93723b5ba324cb",
+  "sourceSnapshot": false,
+  "coordinatorSourceCommit": "ae927f6b4153926f892998f6cd312f3a4e94f7db",
+  "coordinatorBinarySha256": "ad791cb028fa7e559142f9e05372063c9ead98dbf6d5c951898fe4068c40c281"
+}

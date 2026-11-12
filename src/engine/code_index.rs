@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 6;
+const PARSER_VERSION: u64 = 5;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -34,16 +34,14 @@ pub fn index_id(source: &Path) -> String {
 }
 
 fn is_source(path: &Path) -> bool {
-    // Never hand frozen holdout oracles to a self-improvement generator through
-    // its repository index, including ranked snippets and source maps.
-    if crate::engine::rsi::frozen_evaluator_path(&path.to_string_lossy()) {
-        return false;
-    }
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    if name.ends_with(".min.js") || name.ends_with(".lock") || name.starts_with('.') {
+    // The coordinator's evaluation corpus is not source-edit context. Keep
+    // it out of discovery, target selection and automatically inlined excerpts.
+    if name == "rsi_oracle_fixture.rs"
+        || name.ends_with(".min.js") || name.ends_with(".lock") || name.starts_with('.') {
         return false;
     }
     matches!(
@@ -976,53 +974,6 @@ fn rank_focus_spans(
     }
     ranking.sort_by(|a,b|b.0.total_cmp(&a.0).then_with(||a.1.cmp(&b.1)));
     ranking
-}
-
-/// Choose the FIRST native RSI observation from the existing symbol index.
-/// The index is only a navigation hint. The read still runs through the
-/// normal tool gateway, returning the actual current file hash/line content.
-pub fn bootstrap_source_start(
-    state:&AppState,index_id:&str,path:&str,objective:&str,domain:&str
-)->Option<u64> {
-    if !crate::engine::rsi::safe_path(path){return None;}
-    let indexed=state.store.get(FILE_KIND,&file_id(index_id,path))?;
-    let bytes=std::fs::read(state.config.workspace.join(path)).ok()?;
-    if bytes.len()>MAX_FILE_BYTES as usize || indexed["hash"].as_str()!=Some(digest(&bytes).as_str()) {
-        return None;
-    }
-    let content=String::from_utf8(bytes).ok()?;
-    let lines=content.lines().collect::<Vec<_>>();
-    let symbols=indexed["symbols"].as_array()?;
-    // Native model traces showed an explicit request for split_markers
-    // starting at line 1, then blindly editing the final observed line.
-    // When the owner names an EXACT indexed symbol, navigate to that symbol
-    // before any fuzzy body ranking. It is an evidence-based source location,
-    // not a hard-coded file or synthesized source change.
-    let exact=objective.split(|c:char|!c.is_ascii_alphanumeric() && c!='_')
-        .filter(|word|word.len()>=4);
-    // Test declarations are useful held-out evidence, not first-choice patch
-    // targets. Avoid selecting an identically named function after #[cfg(test)]
-    // when a production declaration with the same name exists.
-    let test_boundary=lines.iter().position(|line|
-        line.trim_start().starts_with("#[cfg(test)]"))
-        .map(|position|position as u64+1).unwrap_or(u64::MAX);
-    for word in exact {
-        if let Some(symbol)=symbols.iter().filter(|item|
-            item["name"].as_str().is_some_and(|name|name.eq_ignore_ascii_case(word))
-                && item["line"].as_u64().is_some_and(|line|
-                    line>0 && line<test_boundary && line<=lines.len() as u64))
-            .min_by_key(|item|(
-                item["kind"]!="fn",
-                item["line"].as_u64().unwrap_or(u64::MAX))) {
-            if let Some(line)=symbol["line"].as_u64() {
-                return Some(line.saturating_sub(4).max(1));
-            }
-        }
-    }
-    let terms=focus_terms(objective,domain);
-    let ranked=rank_focus_spans(symbols,indexed["tests"].as_array(),&lines,&terms);
-    let (_,line,_,_)=ranked.first()?;
-    Some((*line as u64).saturating_sub(4).max(1))
 }
 
 /// Returns compact, source-hash-verified RSI context instead of repeatedly

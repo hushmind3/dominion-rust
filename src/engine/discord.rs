@@ -76,7 +76,7 @@ pub fn validate(state: &AppState, config: &Value) -> Result<(), String> {
             .and_then(Value::as_array)
             .ok_or("회의실 참가자가 없습니다.")?;
         if participants.is_empty() || participants.len() > MAX_PARTICIPANTS {
-            return Err("Discord 회의실 인원은 대화방 최대 참가자 수를 따라야 합니다.".into());
+            return Err(format!("Discord 회의실은 1~{MAX_PARTICIPANTS}명의 에이전트를 지원합니다."));
         }
         if participants.iter().any(|id| {
             id.as_str()
@@ -617,7 +617,7 @@ fn participants(state: &AppState, config: &Value, message: &Value) -> Result<Vec
     let mut seen = std::collections::HashSet::new();
     agents.retain(|id| seen.insert(id.clone()));
     if agents.is_empty() || agents.len() > MAX_PARTICIPANTS {
-        return Err("Discord 회의실에 허용된 참가자 수를 설정하세요.".into());
+        return Err(format!("Discord 회의실에는 1~{MAX_PARTICIPANTS}명을 설정하세요."));
     }
     let content = text(message, "content").to_lowercase();
     let named = agents
@@ -1037,15 +1037,19 @@ mod tests {
         assert!(validate(&s, &c).is_err());
         c["allowedUserIds"] = json!("30");
         assert!(validate(&s, &c).is_ok());
-        // The channel and native rooms share a 32-actor capacity. Exercise
-        // the actual boundary instead of assuming the old nine-actor cap.
-        let too_many=(0..=MAX_PARTICIPANTS).map(|index|
-            format!("agent-{index}")).collect::<Vec<_>>();
-        s.store.put("room",&json!({"id":"r","agentIds":too_many}));
+        let mut agents=(0..MAX_PARTICIPANTS)
+            .map(|index|format!("agent-{index}")).collect::<Vec<_>>();
+        for id in &agents {
+            s.store.put("agent",&json!({"id":id,"name":id}));
+        }
+        s.store.put("room",&json!({"id":"r","agentIds":agents}));
         c["roomId"] = json!("r");
-        assert!(validate(&s, &c).is_err());
-        s.store.put("room",&json!({"id":"r","agentIds":["a"]}));
-        assert!(validate(&s, &c).is_ok());
+        assert!(validate(&s,&c).is_ok(),
+            "Discord must accept the room engine's 32-agent limit");
+        agents.push("one-more".into());
+        s.store.put("room",&json!({"id":"r","agentIds":agents}));
+        assert!(validate(&s,&c).unwrap_err().contains("1~32"),
+            "the 33rd participant still exceeds the shared limit");
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }

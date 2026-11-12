@@ -606,13 +606,11 @@ pub(super) async fn stream_completion(
             }
             (result, exposed)
         };
-        // A slow room participant may rotate, but a legitimate long-running
-        // source-repair generation must retain its selected model after reading
-        // real source. Quarantining that model here silently killed the NEXT
-        // tool step in the same RSI turn, even when the read had succeeded.
-        if state.store.get("session", session_id).is_some_and(|session|
-            should_quarantine_slow_room_route(&session, candidate_started.elapsed()))
-        {
+        // A two-minute answer is not a usable room participant. Remember it
+        // so the next round does not pay the same price again.
+        let rsi_run = state.store.get("session",session_id)
+            .is_some_and(|session| session["rsiRun"] == true);
+        if should_mark_slow_provider(candidate_started.elapsed(), rsi_run) {
             crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
         }
         match result {
@@ -674,37 +672,26 @@ fn compat_messages(messages: &[Value]) -> Vec<Value> {
     }).collect()
 }
 
-// Slow-response rotation optimizes conversational rooms, never the execution
-// of a task or RSI generation. Tool-call and campaign time budgets still apply.
-fn should_quarantine_slow_room_route(session:&Value,elapsed:std::time::Duration)->bool {
-    session["roomId"].as_str().is_some_and(|room|!room.is_empty())
-        && session["rsiRun"] != true
-        && elapsed >= std::time::Duration::from_secs(60)
+/// Once a focused RSI generation has genuine source evidence and only edit
+/// functions remain, require the native OpenAI-compatible model to choose an
+/// actual tool action instead of another prose explanation. The model still
+/// authors the patch; the independent frozen verifier decides usefulness.
+/// Autonomous RSI runs can already spend up to their explicit time/token
+/// limits. A slow but productive first response must not blacklist the only
+/// selected provider before the model can issue its source-edit action.
+/// Ordinary chats retain the existing slow-route failover heuristic.
+fn should_mark_slow_provider(elapsed: std::time::Duration, rsi_run: bool) -> bool {
+    !rsi_run && elapsed >= std::time::Duration::from_secs(60)
 }
 
-/// First-generation bootstrapping is a real tool action, not synthetic
-/// research evidence: the model must actually request the indexed file read
-/// before native range editing can be offered on the next round.
-fn rsi_source_read_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->bool {
-    session["rsiRun"]==true
-        && session["rsiCampaignId"].is_string()
-        && session["rsiGenerationJobId"].is_string()
-        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
-        && !observed_read && tools.len()==1
-        && tools[0]["function"]["name"]=="workspace_read_range"
-}
-
-/// A source-repair model that has actually read its current source may be
-/// asked for one concrete edit operation instead of another prose answer.
-fn rsi_edit_requires_tool(session:&Value,tools:&[Value],observed_read:bool)->bool {
-    session["rsiRun"]==true
-        && session["rsiCampaignId"].is_string()
-        && session["rsiGenerationJobId"].is_string()
-        && session["rsiFocusFile"].as_str().is_some_and(crate::engine::rsi::safe_path)
-        && observed_read
+fn rsi_edit_requires_tool(session: &Value, tools: &[Value]) -> bool {
+    session["rsiRun"] == true
+        && session["rsiExplicitFocus"] == true
         && !tools.is_empty()
-        && tools.iter().all(|tool|
-            matches!(tool["function"]["name"].as_str(),Some("workspace_replace" | "workspace_replace_range")))
+        && tools.iter().all(|tool| matches!(
+            tool["function"]["name"].as_str(),
+            Some("workspace_replace" | "workspace_replace_range" | "workspace_write")
+        ))
 }
 
 async fn stream_completion_once(
@@ -830,33 +817,11 @@ async fn stream_completion_once_body(
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    // This is a real, narrowly scoped recovery path for models whose native
-    // function-call JSON decoder crashes before returning an edit. No guessed
-    // operation is applied: the second response still must contain a valid,
-    // explicitly named source-edit operation.
-    let mut local_rsi_edit = false;
     if !compatible && !tools.is_empty() {
         body["tools"] = json!(tools);
-        let focused=tools.len()==1 && matches!(tools[0]["function"]["name"].as_str(),
-            Some("workspace_read_range"|"workspace_replace"|"workspace_replace_range"));
-        let observed_read=focused && state.store.all("execution_operation").iter().any(|op|
-            op["sessionId"]==session_id && op["status"]=="completed"
-                && matches!(op["tool"].as_str(),
-                    Some("workspace_read_range" | "workspace_read")));
-        if let Some(session)=state.store.get("session",session_id) {
-            let focused_edit=rsi_edit_requires_tool(&session,tools,observed_read);
-            local_rsi_edit=provider.local && focused_edit;
-            if focused_edit || rsi_source_read_requires_tool(&session,tools,observed_read) {
-                body["tool_choice"]=json!("required");
-            }
-            // Small local models previously returned a completed source read,
-            // then dropped the HTTP chunked stream during the REQUIRED edit.
-            // The final grounded edit is a single atomic response; no partial
-            // tool-call chunks or visible text need to be replayed.
-            if provider.local && focused_edit {
-                body["stream"]=json!(false);
-                body.as_object_mut().unwrap().remove("stream_options");
-            }
+        if state.store.get("session",session_id)
+            .is_some_and(|session| rsi_edit_requires_tool(&session,tools)) {
+            body["tool_choice"] = json!("required");
         }
     }
     if let Some(limit) = provider.max_output_tokens {
@@ -882,42 +847,7 @@ async fn stream_completion_once_body(
     )
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", provider.api_key));
-    let mut response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
-    let mut text_edit_fallback = false;
-    if local_rsi_edit && response.status()==reqwest::StatusCode::INTERNAL_SERVER_ERROR {
-        // llama.cpp may fail to decode a local model's incomplete native tool
-        // arguments on the server itself. It returns HTTP 500 before DOMINION
-        // can validate or repair anything. Retry exactly once without the
-        // server-side tool decoder, using the existing textual tool grammar.
-        let native_error=response.text().await.unwrap_or_default();
-        if !native_error.contains("invalid tool call arguments") {
-            return Err(format!("{} 네이티브 소스 수정 실패 (HTTP 500): {}",
-                provider.name,native_error.chars().take(600).collect::<String>()));
-        }
-        if state.is_cancelled(session_id) {
-            return Err("실행이 중단되었습니다.".into());
-        }
-        let manual=super::protocol::tool_manual(tools,&request.input).await;
-        let mut retry=body.clone();
-        let params=retry.as_object_mut().ok_or("도구 복구 요청 구성이 올바르지 않습니다.")?;
-        params.remove("tools");
-        params.remove("tool_choice");
-        params.remove("stream_options");
-        retry["stream"]=json!(false);
-        let prompts=retry["messages"].as_array_mut()
-            .ok_or("소스 편집 대화 구성이 올바르지 않습니다.")?;
-        prompts.insert(0,json!({"role":"system","content":format!(
-            "{manual}\nOnly perform a single listed workspace source edit. Respond with one <tool_call> JSON object. Do not explain or invent line numbers or source hashes.")}));
-        crate::engine::gateway::reserve_generation(
-            &provider.base_url,&provider.model,provider.requests_per_minute)?;
-        let builder=crate::engine::gateway::benchmark_request(
-            client.post(format!("{}/chat/completions",provider.base_url)))
-            .header("Content-Type","application/json")
-            .header("Authorization",format!("Bearer {}",provider.api_key));
-        response=super::continuity::send(state,provider,builder,&retry,continuity,
-            super::continuity::CacheWire::Key).await?;
-        text_edit_fallback=true;
-    }
+    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
 
     crate::engine::gateway::verify_benchmark_route(&response)?;
 
@@ -945,91 +875,6 @@ async fn stream_completion_once_body(
             provider.name,
             text.chars().take(600).collect::<String>()
         ));
-    }
-
-    if body["stream"]==false {
-        // Only focused local RSI edits use this path. A complete response
-        // either supplies a tool call or is handed to the existing text/JSON
-        // tool decoder. A broken connection cannot masquerade as a write.
-        let answer:Value=response.json().await
-            .map_err(|error|format!("로컬 소스 수정 응답 오류: {error}"))?;
-        let message=&answer["choices"][0]["message"];
-        if !message.is_object() {
-            return Err("로컬 소스 수정 응답에 assistant message가 없습니다.".into());
-        }
-        let mut completion=Completion::default();
-        completion.content=message["content"].as_str().unwrap_or("").to_string();
-        completion.reasoning=message["reasoning_content"].as_str()
-            .or_else(||message["reasoning"].as_str()).unwrap_or("").to_string();
-        if text_edit_fallback {
-            let allowed=tools.iter().filter_map(|tool|
-                tool["function"]["name"].as_str().map(str::to_string))
-                .collect::<std::collections::HashSet<_>>();
-            let (parsed,visible)=super::protocol::parse_text_tool_calls_known(
-                &completion.content,&allowed);
-            completion.content=visible;
-            for (name,arguments) in parsed.into_iter().take(1) {
-                if !allowed.contains(&name)
-                    || !serde_json::from_str::<Value>(&arguments)
-                        .is_ok_and(|args|args.is_object()) {
-                    continue;
-                }
-                completion.tool_calls.push(ToolCall{
-                    id:uuid::Uuid::new_v4().to_string(),name,arguments
-                });
-            }
-            if completion.tool_calls.is_empty() {
-                return Err("로컬 모델 텍스트 복구에서도 유효한 소스 편집 도구 호출이 생성되지 않았습니다.".into());
-            }
-            state.store.audit("rsi.native_tool_decoder_recovered",json!({
-                "sessionId":session_id,"providerId":provider.id,
-                "tool":completion.tool_calls[0].name,
-                "method":"single_text_tool_fallback_after_server_500"
-            }));
-        }
-        for call in message["tool_calls"].as_array().into_iter().flatten() {
-            if completion.tool_calls.len()>=MAX_TOOL_CALLS {
-                return Err("모델이 너무 많은 도구 호출을 반환했습니다.".into());
-            }
-            let Some(name)=call["function"]["name"].as_str().filter(|s|!s.is_empty())
-                else{continue};
-            let arguments=match &call["function"]["arguments"] {
-                Value::String(raw)=>raw.clone(),
-                Value::Object(_) =>call["function"]["arguments"].to_string(),
-                _=>"{}".to_string(),
-            };
-            completion.tool_calls.push(ToolCall{
-                id:call["id"].as_str().filter(|s|!s.is_empty())
-                    .map(str::to_owned).unwrap_or_else(||uuid::Uuid::new_v4().to_string()),
-                name:name.to_string(),arguments
-            });
-        }
-        if completion.content.len()+completion.reasoning.len()
-            +completion.tool_calls.iter().map(|call|call.arguments.len()).sum::<usize>()
-            >2_000_000 {
-            return Err("모델 응답 크기 제한을 초과했습니다.".into());
-        }
-        completion.first_delta_ms=Some(started.elapsed().as_millis() as u64);
-        if !completion.reasoning.is_empty() {
-            let _=tx.send(json!({"type":"reasoning","text":completion.reasoning}));
-        }
-        if !completion.content.is_empty() {
-            let _=tx.send(json!({"type":"text","text":completion.content}));
-        }
-        let usage=&answer["usage"];
-        let exact=usage["prompt_tokens"].as_u64()
-            .zip(usage["completion_tokens"].as_u64());
-        let (prompt,generated)=exact.unwrap_or_else(||
-            estimate_usage(&provider_messages,if compatible{&[]}else{tools},&completion));
-        completion.prompt_tokens=prompt;
-        completion.completion_tokens=generated;
-        completion.usage=usage["total_tokens"].as_u64().unwrap_or(prompt+generated);
-        completion.usage_exact=exact.is_some();
-        completion.cached_prompt_tokens=cached_prompt_tokens(usage);
-        crate::engine::gateway::record_usage_tokens(state,&provider.id,&provider.model,
-            provider.local,"chat",Some(session_id),prompt,generated,
-            completion.usage,!completion.usage_exact);
-        return Ok(completion);
     }
 
     let mut completion = Completion::default();
@@ -1981,17 +1826,6 @@ async fn stream_anthropic_once(
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn native_range_edit_requires_a_real_generation_and_observed_source() {
-        let tool=json!({"type":"function","function":{"name":"workspace_replace_range"}});
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"job","rsiFocusFile":"src/engine/memory.rs"});
-        assert!(rsi_edit_requires_tool(&session,&[tool.clone()],true));
-        assert!(!rsi_edit_requires_tool(&session,&[tool.clone()],false));
-        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&[tool],true));
-    }
-
     use super::*;
 
     #[test]
@@ -2137,36 +1971,29 @@ mod tests {
     }
 
     #[test]
-    fn slow_source_repair_keeps_its_selected_model_between_tool_calls() {
-        let slow=std::time::Duration::from_secs(145);
-        let short=std::time::Duration::from_secs(22);
-        assert!(should_quarantine_slow_room_route(
-            &json!({"roomId":"room-slow"}),slow));
-        assert!(!should_quarantine_slow_room_route(
-            &json!({"roomId":"room-fast"}),short));
-        assert!(!should_quarantine_slow_room_route(
-            &json!({"rsiRun":true,"rsiCampaignId":"c","rsiGenerationJobId":"g"}),slow));
-        assert!(!should_quarantine_slow_room_route(
-            &json!({"roomId":"r","rsiRun":true,"rsiCampaignId":"c"}),slow));
-        assert!(!should_quarantine_slow_room_route(&json!({"kind":"task"}),slow));
+    fn rsi_time_budget_does_not_blacklist_its_only_model_after_a_slow_read() {
+        assert!(should_mark_slow_provider(std::time::Duration::from_secs(61), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(59), false));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(61), true));
+        assert!(!should_mark_slow_provider(std::time::Duration::from_secs(600), true));
     }
 
     #[test]
-    fn only_real_read_then_source_patch_retry_requires_native_edit_action() {
-        let generation=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"child","rsiFocusFile":"src/engine/decompose.rs"});
-        let edits=vec![json!({"type":"function","function":{"name":"workspace_replace"}})];
-        assert!(rsi_edit_requires_tool(&generation,&edits,true));
-        assert!(!rsi_edit_requires_tool(&generation,&edits,false),
-            "never force a patch before source evidence");
-        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&edits,true),
-            "research-only RSI is not a compulsory code edit");
-        let mut with_read=edits.clone();
-        with_read.push(json!({"type":"function","function":{"name":"workspace_read_range"}}));
-        assert!(!rsi_edit_requires_tool(&generation,&with_read,true),
-            "read+write model choices remain voluntary until the final grounded retry");
-        assert!(!rsi_edit_requires_tool(&json!({}),&edits,true));
-        assert!(!rsi_edit_requires_tool(&generation,&[],true));
+    fn a_grounded_rsi_edit_only_stage_requires_a_model_action() {
+        let focus = json!({"rsiRun":true,"rsiExplicitFocus":true});
+        let tools = vec![
+            json!({"type":"function","function":{"name":"workspace_replace"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range"}}),
+            json!({"type":"function","function":{"name":"workspace_write"}}),
+        ];
+        assert!(rsi_edit_requires_tool(&focus,&tools));
+        assert!(!rsi_edit_requires_tool(&json!({"rsiRun":true}),&tools));
+        assert!(!rsi_edit_requires_tool(&json!({}),&tools));
+        let mut reads = tools.clone();
+        reads.push(json!({"type":"function","function":{"name":"workspace_read_range"}}));
+        assert!(!rsi_edit_requires_tool(&focus,&reads),
+            "do not force a write before collecting source evidence");
+        assert!(!rsi_edit_requires_tool(&focus,&[]));
     }
 
     #[test]
@@ -2388,23 +2215,6 @@ mod tests {
         assert_eq!(output, "대체 모델 정상 응답");
         server.abort();
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn targeted_rsi_source_bootstrap_requests_a_real_read_only_for_descendants() {
-        let native_read=vec![json!({"type":"function",
-            "function":{"name":"workspace_read_range"}})];
-        let session=json!({"rsiRun":true,"rsiCampaignId":"campaign",
-            "rsiGenerationJobId":"worker","rsiFocusFile":"src/engine/tools.rs"});
-        assert!(rsi_source_read_requires_tool(&session,&native_read,false));
-        assert!(!rsi_source_read_requires_tool(&session,&native_read,true));
-        assert!(!rsi_source_read_requires_tool(&json!({"rsiRun":true}),
-            &native_read,false));
-        assert!(!rsi_source_read_requires_tool(&session,
-            &[native_read[0].clone(),native_read[0].clone()],false));
-        assert!(!rsi_source_read_requires_tool(&session,
-            &[json!({"type":"function",
-                "function":{"name":"workspace_replace_range"}})],false));
     }
 
     #[test]

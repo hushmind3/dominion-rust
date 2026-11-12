@@ -163,6 +163,8 @@ impl Store {
                  projection_version TEXT NOT NULL,
                  PRIMARY KEY(observation_id, projection_version)
              );
+             CREATE INDEX IF NOT EXISTS idx_records_kind_updated
+                 ON records(kind, updated_at DESC);
              CREATE INDEX IF NOT EXISTS idx_operation_run
                  ON records(json_extract(data,'$.runId'))
                  WHERE kind='execution_operation';
