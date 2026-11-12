@@ -15,6 +15,81 @@ pub fn case() -> Value {
 
 fn sha(bytes: impl AsRef<[u8]>) -> String { format!("{:x}",Sha256::digest(bytes.as_ref())) }
 
+/// Frozen downstream capabilities exercise different parts of the same
+/// compiled agent, instead of two paraphrases targeting a single product bug.
+/// Both arms get identical tasks, source bytes, evaluation and token limits.
+const META_TASK_COUNT:usize=4;
+
+struct MetaTask {
+    domain:&'static str,
+    file:&'static str,
+    request:&'static str,
+    oracle:&'static str,
+    metric:&'static str,
+    guard:&'static str,
+}
+
+fn meta_task(task:usize)->Option<MetaTask> {
+    Some(match task {
+        0=>MetaTask {
+            domain:"tools",file:"src/engine/decompose.rs",
+            request:"Improve Korean multi-action task decomposition in src/engine/decompose.rs without hardcoding example sentences. Inspect actual source and implement a grounded patch that preserves numbered lists and single noun requests.",
+            oracle:"rsi_frozen_oracle::planning_quality",metric:"quality",
+            guard:"engine::decompose::tests::numbered_first_prefers_an_explicit_list"
+        },
+        1=>MetaTask {
+            domain:"memory",file:"src/engine/memory.rs",
+            request:"Improve ranked memory retrieval in src/engine/memory.rs across mixed Korean and English facts with distractors. Keep top-answer accuracy and existing owner provenance, reduce measurable retrieval cost where possible. Inspect current source and implement a real change.",
+            oracle:"rsi_frozen_oracle::memory_ranking",metric:"elapsedMs",
+            guard:"rsi_frozen_oracle::long_owner_recall"
+        },
+        2=>MetaTask {
+            domain:"context",file:"src/engine/chat/context_oracle.rs",
+            request:"Improve group-chat context construction efficiency without losing the owner instructions, participant personas, earlier assistant turns or memory facts. Inspect actual context-harness source and implement a verifiable code change.",
+            oracle:"rsi_frozen_oracle::group_chat_context_efficiency",metric:"contextChars",
+            guard:"rsi_frozen_oracle::long_owner_recall"
+        },
+        3=>MetaTask {
+            domain:"improver",file:"src/engine/rsi_evolve.rs",
+            request:"Improve the source-improvement domain exploration algorithm in src/engine/rsi_evolve.rs without hardcoding a fixed answer sequence. Reduce actual search cost while preserving history-dependent exploration decisions and validated evidence.",
+            oracle:"rsi_frozen_oracle::improvement_search",metric:"elapsedMs",
+            guard:"engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation"
+        },
+        _=>return None
+    })
+}
+
+/// The independent runner repeats the measured case and enforces guard tests.
+/// A new patch earns credit for a quality gain or a substantial resource saving
+/// while holding quality; an unchanged or regressed subject earns zero.
+fn measured_subject_gain(measured:&Value, metric:&str)->(f64,f64,f64) {
+    let subject=measured["cases"].as_array().into_iter().flatten()
+        .find(|row|row["id"]=="subject-capability");
+    let Some(subject)=subject else {return (0.0,0.0,0.0)};
+    let before=subject["metrics"]["quality"]["baseline"].as_f64().unwrap_or(0.0);
+    let after=subject["metrics"]["quality"]["candidate"].as_f64().unwrap_or(0.0);
+    let complete=measured["candidateBuildOk"]==true
+        && measured["cases"].as_array()
+            .is_some_and(|cases|cases.iter().all(|case|case["candidatePass"]==true));
+    if !complete || after+1e-9<before {return (0.0,before,after);}
+    let quality_gain=if before<1.0 {
+        ((after-before)/(1.0-before)).clamp(0.0,1.0)
+    }else{0.0};
+    let resource_gain=if metric!="quality" {
+        let baseline=subject["metrics"][metric]["baseline"].as_f64().unwrap_or(0.0);
+        let candidate=subject["metrics"][metric]["candidate"].as_f64().unwrap_or(f64::INFINITY);
+        // A 10% minimum avoids credit for tiny timer fluctuations. Relative
+        // improvement is capped so cross-domain tasks share a common scale.
+        if baseline.is_finite() && baseline>0.0 && candidate.is_finite()
+            && candidate>=0.0 && candidate<=baseline*0.90 {
+            ((baseline-candidate)/baseline).clamp(0.0,1.0)
+        }else{0.0}
+    }else{0.0};
+    (quality_gain.max(resource_gain),before,after)
+}
+
+
+
 async fn git(context:&JobContext, dir:&Path, args:&[&str]) -> Result<String,String> {
     let mut cmd=Command::new("git");cmd.current_dir(dir).args(args);
     let out=command(context,cmd,Duration::from_secs(30)).await?;
@@ -70,13 +145,8 @@ async fn build(context:&JobContext, source:&Path, target:&Path) -> Result<PathBu
 async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
     generator_source:&Path, source:&Path, source_commit:&str,
     outer_input:&Value, task:usize, arm:&str, root:&Path) -> Result<Value,String> {
-    // Different instructions and example wording are held out from the outer
-    // improver's development trace. Neither arm sees grading sentences.
-    let request=if task==0 {
-        "한국어의 연속 동작 요청을 실제 하위 작업으로 분해하도록 src/engine/decompose.rs를 개선하세요. '초안을 만들고 내용을 고쳐줘'가 2단계가 되어야 합니다. 명사에 들어 있는 '고'로 잘못 분해하지 마세요. 예문 하드코딩 없이 구현을 읽고 작은 실제 변경을 작성하세요."
-    }else{
-        "src/engine/decompose.rs의 한국어 동작 연결 처리를 개선하세요. '설정을 바꾸고 버튼을 누르고 상태를 알려줘'가 3단계가 되어야 합니다. 기존 번호 목록·단일 명사 처리를 보존하세요. 실제 구현을 해시와 함께 읽은 후 소스를 수정하세요."
-    };
+    let task_spec=meta_task(task).ok_or("등록되지 않은 후속 평가 과제")?;
+    let request=task_spec.request;
     let index=super::code_index::refresh(&context.state,source)?;
     let strategy=super::algorithms::active(&context.state,"selfimprove.search")
         .unwrap_or_else(||json!({"implementation":"failure-clusters"}));
@@ -88,13 +158,12 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
     let mut input=json!({"providerId":outer_input["providerId"],"model":outer_input["model"],
         "reasoningEffort":outer_input["reasoningEffort"],"prompt":request,"rsiPromptBase":request,
         "rsiPromptEvidence":"","rsiPromptResearch":"","rsiObjective":request,
-        "rsiAutonomous":true,"rsiAutoFocus":true,"rsiSourceAdvanced":false,
+        "rsiAutonomous":false,"rsiAutoFocus":false,"rsiSourceAdvanced":false,
         "rsiSourceDir":source,"rsiKnowledgeSource":source,"rsiBaseCommit":source_commit,
         "rsiCampaignId":context.job_id,"rsiGeneratorCommit":generator_commit,
-        "rsiIndexId":index["id"],"rsiFocusFiles":["src/engine/decompose.rs"],
-        "rsiSelectedDomain":"tools","rsiTargetDomain":"tools",
-        "rsiDiagnostic":{"failed":1,"domain":"tools","focusFiles":["src/engine/decompose.rs"]},
-        "rsiTargetPlan":{"domain":"tools","selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
+        "rsiIndexId":index["id"],"rsiFocusFiles":[task_spec.file],
+        "rsiSelectedDomain":task_spec.domain,"rsiTargetDomain":task_spec.domain,
+        "rsiTargetPlan":{"domain":task_spec.domain,"selection":"algorithm_active","strategy":strategy,"generatorCommit":generator_commit},
         "rsiFrozenCases":rsi_worktree::metric_cases(),"rsiNativeInduction":false,
         "rsiLocalOnly":outer_input["rsiLocalOnly"],
         "rsiEpisodeTokenLimit":24000,"rsiRemainingCampaignTokens":24000,
@@ -157,10 +226,17 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
         let patch_file=dir.join("subject.patch");std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
         let fixture=dir.join("oracle.rs");let oracle=include_str!("rsi_oracle_fixture.rs");
         std::fs::write(&fixture,oracle).map_err(|e|e.to_string())?;
-        let plan=dir.join("plan.json");std::fs::write(&plan,json!({"oracleVersion":"meta-subject-v1",
+        let plan=dir.join("plan.json");
+        let mut metrics=vec![json!({"key":"quality"})];
+        if task_spec.metric!="quality" {
+            metrics.push(json!({"key":task_spec.metric}));
+        }
+        std::fs::write(&plan,json!({"oracleVersion":"meta-multidomain-v2",
             "oracleFixture":fixture,"oracleSha256":sha(oracle),"cases":[
-                {"id":"subject-planning","domain":"planning","holdout":true,"filter":"rsi_frozen_oracle::planning_quality","metrics":[{"key":"quality"}]},
-                {"id":"subject-guard","domain":"planning","holdout":true,"filter":"engine::decompose::tests::numbered_first_prefers_an_explicit_list"}]}).to_string()).map_err(|e|e.to_string())?;
+                {"id":"subject-capability","domain":task_spec.domain,"holdout":true,
+                    "filter":task_spec.oracle,"metrics":metrics},
+                {"id":"subject-guard","domain":task_spec.domain,"holdout":true,
+                    "filter":task_spec.guard}]}).to_string()).map_err(|e|e.to_string())?;
         let report=dir.join("report.json");let runner=dir.join("rsi-lab.sh");
         std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
         std::fs::write(dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
@@ -170,18 +246,13 @@ async fn episode(context:&JobContext, binary:&Path, generator_commit:&str,
         let checked=command(context,cmd,Duration::from_secs(600)).await?;
         if checked.status.success() {
             let measured:Value=serde_json::from_slice(&std::fs::read(&report).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-            // Complete native checks AND useful held-out behavior are required.
-            let quality=measured["cases"].as_array().into_iter().flatten().find(|c|c["id"]=="subject-planning")
-                .filter(|c|c["candidatePass"]==true).and_then(|c|c["metrics"]["quality"]["candidate"].as_f64()).unwrap_or(0.0);
-            let guards_ok=measured["candidateBuildOk"]==true && measured["cases"].as_array()
-                .is_some_and(|cases|cases.iter().all(|case|case["candidatePass"]==true));
-            let before=measured["cases"].as_array().into_iter().flatten().find(|c|c["id"]=="subject-planning")
-                .and_then(|c|c["metrics"]["quality"]["baseline"].as_f64()).unwrap_or(1.0);
-            // Reward improvement caused by the generated patch, not useful
-            // behavior the unchanged subject already had or unrelated edits.
-            let gain=if guards_ok && before<1.0 {((quality-before)/(1.0-before)).clamp(0.0,1.0)}else{0.0};
-            result["quality"]=json!(gain);result["baselineSubjectQuality"]=json!(before);
-            result["candidateSubjectQuality"]=json!(quality);result["subjectReport"]=measured;
+            let (gain,before,after)=measured_subject_gain(&measured,task_spec.metric);
+            result["quality"]=json!(gain);
+            result["domain"]=json!(task_spec.domain);
+            result["subjectMetric"]=json!(task_spec.metric);
+            result["baselineSubjectQuality"]=json!(before);
+            result["candidateSubjectQuality"]=json!(after);
+            result["subjectReport"]=measured;
         }else{result["gradingError"]=json!(String::from_utf8_lossy(&checked.stderr).chars().take(1000).collect::<String>());}
     }
     context.state.store.put("rsi_meta_episode",&json!({"id":id,"campaignId":context.job_id,"result":result}));
@@ -206,10 +277,10 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
         std::fs::copy(&baseline,&saved).map_err(|e|e.to_string())?;
         let upgraded=build(context,&variant,&target).await?;
         let mut rows=Vec::new();
-        for task in 0..2 {
+        for task in 0..META_TASK_COUNT {
             // Balance ordering, run sequentially, use the same fixed model and
             // identical subject bytes. No previous arm's patch is inherited.
-            for arm in if task==0 {["baseline","candidate"]}else{["candidate","baseline"]} {
+            for arm in if task%2==0 {["baseline","candidate"]}else{["candidate","baseline"]} {
                 let binary=if arm=="baseline"{&saved}else{&upgraded};
                 let revision=if arm=="baseline"{base}else{&commit};
                 let generator_source=if arm=="baseline"{source}else{&variant};
@@ -221,15 +292,15 @@ pub async fn evaluate(context:&JobContext, candidate:&Value, source:&Path, outpu
             return Err("후속 과제 양쪽의 실제 모델 호출 증거가 부족합니다. 재귀 성과로 채택하지 않습니다.".into());
         }
         let mean=|arm:&str,key:&str| rows.iter().filter(|r|r["arm"]==arm).map(|r|
-            if key=="quality"{r["quality"].as_f64().unwrap_or(0.0)}else{r["usage"]["calls"].as_f64().unwrap_or(0.0)}).sum::<f64>()/2.0;
+            if key=="quality"{r["quality"].as_f64().unwrap_or(0.0)}else{r["usage"]["calls"].as_f64().unwrap_or(0.0)}).sum::<f64>()/META_TASK_COUNT as f64;
         let measured=json!({"id":"meta-downstream-editing","baselinePass":true,"candidatePass":true,
-            "metrics":{"quality":{"baseline":mean("baseline","quality"),"candidate":mean("candidate","quality"),"samples":2},
+            "metrics":{"quality":{"baseline":mean("baseline","quality"),"candidate":mean("candidate","quality"),"samples":META_TASK_COUNT},
                 "modelCalls":{"baseline":mean("baseline","calls"),"candidate":mean("candidate","calls"),"samples":2}}});
         let receipt=json!({"version":1,"campaignId":context.job_id,"candidateId":candidate["id"],
             "baselineGeneratorCommit":base,"candidateGeneratorCommit":commit,"subjectCommit":base,
             "providerId":outer["input"]["providerId"],"model":outer["input"]["model"],
-            "tasks":2,"episodes":rows,"measurement":measured,
-            "limitation":"Two held-out source-edit episodes in one subject domain; not a proof of general intelligence or unbounded recursive gains."});
+            "tasks":META_TASK_COUNT,"domains":["tools","memory","context","improver"],"episodes":rows,"measurement":measured,
+            "limitation":"Four separate held-out coding domains with matched model budgets; this tests downstream capability, not unbounded recursive intelligence."});
         std::fs::write(output.join("meta-receipt.json"),serde_json::to_vec_pretty(&receipt).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
         Ok(receipt)
     }.await;
@@ -252,6 +323,28 @@ mod tests {
         assert_eq!((gain,loss),(1,0));
         let (gain,loss,_)=super::super::rsi_metrics::compare(&plan,&json!({"quality":{"baseline":0.75,"candidate":0.5}})).unwrap();
         assert_eq!((gain,loss),(0,1));
+    }
+    #[test]
+    fn downstream_suite_is_cross_domain_and_rewards_only_measured_change() {
+        let domains=(0..META_TASK_COUNT).map(|i|meta_task(i).unwrap().domain)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(domains.len(),4);
+        assert!(meta_task(META_TASK_COUNT).is_none());
+        let unchanged=json!({"candidateBuildOk":true,"cases":[{
+            "id":"subject-capability","candidatePass":true,"metrics":{
+                "quality":{"baseline":1.0,"candidate":1.0},
+                "elapsedMs":{"baseline":200.0,"candidate":200.0}}
+        },{"id":"subject-guard","candidatePass":true}]});
+        assert_eq!(measured_subject_gain(&unchanged,"elapsedMs").0,0.0);
+        let mut gain=unchanged.clone();
+        gain["cases"][0]["metrics"]["elapsedMs"]["candidate"]=json!(130.0);
+        assert!(measured_subject_gain(&gain,"elapsedMs").0>0.3);
+        gain["cases"][0]["metrics"]["quality"]["candidate"]=json!(0.9);
+        assert_eq!(measured_subject_gain(&gain,"elapsedMs").0,0.0,
+            "performance must never compensate for quality regression");
+        let mut failed=unchanged;
+        failed["cases"][1]["candidatePass"]=json!(false);
+        assert_eq!(measured_subject_gain(&failed,"quality").0,0.0);
     }
     #[test]
     fn independent_graders_cannot_be_candidate_source_targets() {
