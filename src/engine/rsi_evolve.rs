@@ -3028,6 +3028,8 @@ async fn run_loop(
             child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
+            child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
+            child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
             descendant_plan=plan;
@@ -3112,7 +3114,11 @@ async fn run_loop(
         }
         // This is the system's learned *execution method*, independently of
         // which model is used to write the candidate patch.
-        child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        if descendant_plan.is_object() {
+            child_input["rsiEditPolicy"]=descendant_plan["editPolicy"].clone();
+        }else{
+            child_input["rsiEditPolicy"]=learned_edit_method(&context.state,&child_input,&history);
+        }
         context.state.store.audit("rsi.edit_method_selected",json!({
             "campaignId":context.job_id,"attempt":attempt,
             "generatorCommit":head,"policy":child_input["rsiEditPolicy"]
@@ -3327,6 +3333,7 @@ async fn run_loop(
             crate::engine::rsi_lineage_transfer::profile(&current["input"]));
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
+        generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3828,6 +3835,8 @@ fn compiled_system_target(
         || plan["metaPolicy"] != input["rsiMetaPolicy"]
         || plan["peerLineages"] != input["rsiPeerLineages"]
         || plan["comparativeMode"] != input["rsiComparativeMode"]
+        || plan["successorStage"] != input["rsiSuccessorStage"]
+        || plan["editPolicy"] != input["rsiEditPolicy"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
         || input["rsiTargetDomain"] != domain
@@ -4108,8 +4117,10 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // This meta-controller lives in the REBUILT BINARY. The frozen previous
     // coordinator cannot overwrite its comparative learning or target.
     let permitted=candidate_domains(&objective);
-    let meta=crate::engine::rsi_meta_controller::synthesize(
+    let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&permitted,inherited.as_deref());
+    let stage=crate::engine::rsi_system::inherited_stage(&history,&frontier);
+    let meta=crate::engine::rsi_meta_controller::apply_successor_stage(raw_meta,&stage);
     let architecture_target=meta["target"].clone();
     let auto=parent["input"]["selectionPolicy"]=="automatic";
     let selected=if auto{
@@ -4151,6 +4162,17 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     }else if meta["counterexamples"].as_array().is_some_and(|v|v.len()>=2){
         "multi_trajectory_design"
     }else{"local_redesign"};
+    let mut descendant_policy=learned_edit_method(&state,&focus,&history);
+    if stage["source"]=="rebound_verified_model_successor_program_v1" {
+        if stage["executionPolicy"]=="grounded_edit" {
+            descendant_policy["checkpointAfter"]=json!(2);
+            descendant_policy["preferredTool"]=json!("workspace_replace_range");
+        }else{
+            descendant_policy["checkpointAfter"]=json!(4);
+        }
+        descendant_policy["successorDesignId"]=stage["designId"].clone();
+        descendant_policy["selectedBySuccessorStage"]=stage["stageIndex"].clone();
+    }
     let plan=json!({
         "source":"compiled_descendant_system_plan_v1",
         "generatorCommit":revision,"campaignId":campaign_id,
@@ -4162,6 +4184,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "architectureTarget":architecture_target,
         "metaPolicy":meta,
         "peerLineages":peers,"comparativeMode":comparative_mode,
+        "successorStage":stage,"editPolicy":descendant_policy,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
@@ -4237,10 +4260,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let inherited_domain=if job["input"]["selectionPolicy"]=="automatic"{
             crate::engine::rsi_system::inherited_domain(&refreshed_history)
         }else{None};
-        let expected_meta=crate::engine::rsi_meta_controller::synthesize(
+        let raw_meta=crate::engine::rsi_meta_controller::synthesize(
             &refreshed_history,&frontier,&allowed_domains,inherited_domain.as_deref());
+        let expected_stage=crate::engine::rsi_system::inherited_stage(
+            &refreshed_history,&frontier);
+        let expected_meta=crate::engine::rsi_meta_controller::apply_successor_stage(
+            raw_meta,&expected_stage);
         let expected_target=expected_meta["target"].clone();
-        if plan["metaPolicy"]!=expected_meta
+        if plan["successorStage"]!=expected_stage
+            || job["input"]["rsiSuccessorStage"]!=expected_stage
+            || plan["metaPolicy"]!=expected_meta
             || job["input"]["rsiMetaPolicy"]!=expected_meta
             || plan["architectureFrontier"]!=json!(frontier)
             || plan["architectureTarget"]!=expected_target
@@ -4288,7 +4317,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // The coordinator that queued this child may be the OLD generator. A
     // recompiled descendant must actually use its own revised policy
     // synthesis, not inherit an obsolete parent-selected edit method.
-    let mut descendant_method=learned_edit_method(&state,&job["input"],&history);
+    let mut descendant_method=if compiled_plan.is_some() {
+        job["input"]["rsiDescendantPlan"]["editPolicy"].clone()
+    }else{
+        learned_edit_method(&state,&job["input"],&history)
+    };
     descendant_method["selectedByGeneratorCommit"]=json!(commit);
     job["input"]["rsiEditPolicy"]=descendant_method.clone();
     job["rsiEditPolicyDecision"]=json!({
@@ -4350,7 +4383,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &job["input"]["rsiMetaPolicy"]);
         let peer_context=crate::engine::rsi_lineage_transfer::instruction(
             &job["input"]["rsiPeerLineages"]);
-        format!("{directive}\n{meta_directive}\n{peer_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        let stage=&job["input"]["rsiSuccessorStage"];
+        let stage_context=if stage.is_object() {
+            format!("\n[EXECUTABLE INHERITED SUCCESSOR PROGRAM] Design={} phase={} objective={} source={} sourceSha256={} learningPolicy={} toolPolicy={} executionPolicy={}. This is your parent's independently adopted task plan; actually implement the stage and improve the meta-program.\n",
+                stage["designId"],stage["stageIndex"],stage["objective"],
+                stage["path"],stage["sourceSha256"],stage["learningPolicy"],
+                stage["toolPolicy"],stage["executionPolicy"])
+        }else{String::new()};
+        format!("{directive}\n{meta_directive}\n{peer_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,

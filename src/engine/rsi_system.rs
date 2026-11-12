@@ -379,6 +379,10 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         cross-module Rust changes with workspace_replace_range/function/write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. For a coupled redesign of several subsystems set component=system and specify 2-7 actual components in components, with up to 24 verified source paths; you can change algorithm, harness, memory, learning, tools and improvement methods together. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
+        You can submit successorStages in rsi_system_plan: concrete future roles, \
+        source files, objectives and learning/tool/execution policies. After \
+        independent adoption your new descendant will execute that program, \
+        not merely display it in a report. \
         The meta-improver in src/engine/rsi_meta_controller.rs is ALSO YOUR EDITABLE CODE, \
         not a fixed external planner. You can redesign how experiments are generated, \
         compared, forecast, selected and inherited across generations. \
@@ -486,16 +490,57 @@ pub(crate) fn propose(
             }
         }
     }
+    // A model can author the actual NEXT descendant's executable task
+    // schedule. Merely declaring a stage does not prove improvement. The
+    // rebuilt child binds each stage to current source SHA and controls the
+    // real execution policy after a separately adopted source redesign.
+    let mut successor_stages=Vec::new();
+    if let Some(stages)=body["successorStages"].as_array() {
+        if stages.len()>8{return Err("후손 개선 프로그램은 최대 8단계입니다.".into());}
+        for stage in stages {
+            let role=stage["role"].as_str()
+                .filter(|role|COMPONENTS.iter().any(|row|row.0==*role))
+                .ok_or("후손 단계 지능 구성요소가 올바르지 않습니다.")?;
+            let domain=stage["domain"].as_str()
+                .filter(|domain|crate::engine::rsi_evolve::DOMAINS.contains(domain))
+                .ok_or("후손 단계 개선 분야가 올바르지 않습니다.")?;
+            let path=stage["path"].as_str()
+                .filter(|p|crate::engine::rsi::safe_path(p))
+                .ok_or("후손 단계 소스 경로가 올바르지 않습니다.")?;
+            let objective=stage["objective"].as_str()
+                .filter(|s|(25..=1200).contains(&s.chars().count()))
+                .ok_or("후손 단계에는 구체적 실행 목표 25~1200자가 필요합니다.")?;
+            let learning=stage["learningPolicy"].as_str().unwrap_or("avoid_failed");
+            let tools=stage["toolPolicy"].as_str().unwrap_or("allow_new_modules");
+            let execution=stage["executionPolicy"].as_str().unwrap_or("explore_then_edit");
+            if !matches!(learning,"avoid_failed"|"retry_failed")
+                || !matches!(tools,"patch_only"|"allow_new_modules")
+                || !matches!(execution,"grounded_edit"|"explore_then_edit") {
+                return Err("후손 단계의 실행·학습·도구 정책이 올바르지 않습니다.".into());
+            }
+            let file=root.join(path);
+            let existing=fs::canonicalize(&file)
+                .map_err(|_|"후손 프로그램 소스 파일이 없습니다.".to_string())?;
+            if !existing.starts_with(&root)||!existing.is_file() {
+                return Err("후손 프로그램은 자기 작업공간의 소스만 선택할 수 있습니다.".into());
+            }
+            successor_stages.push(json!({"role":role,"domain":domain,
+                "path":path,"objective":objective,
+                "learningPolicy":learning,"toolPolicy":tools,
+                "executionPolicy":execution,"qualityProven":false}));
+        }
+    }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,next,hypothesis,design,paths]).to_string().as_bytes()));
+        commit,component,components,next,hypothesis,design,paths,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
         "campaignId":campaign_id,"generationJobId":child_id,
         "generatorCommit":commit,"component":component,
-        "components":components,"nextDomain":next,"hypothesis":hypothesis,
+        "components":components,"successorStages":successor_stages,
+        "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,
         "qualityProven":false,"adopted":false
     });
@@ -531,6 +576,43 @@ pub(crate) fn revalidated_history(
         checked["pairedRevalidated"]=json!(valid);
         checked
     }).collect()
+}
+
+
+/// A compiled descendant inherits a model-written executable task program
+/// only from a paired, source-backed adopted predecessor. It rebinds the
+/// intended file to its CURRENT architecture evidence, and advances a stage
+/// only when a generation has really attempted the previous stage.
+pub(crate) fn inherited_stage(history:&[Value],frontier:&[Value])->Value {
+    let Some(parent)=last_verified_system_design(history) else{return Value::Null};
+    let Some(stages)=parent["systemDesign"]["successorStages"].as_array() else{
+        return Value::Null;
+    };
+    if stages.is_empty(){return Value::Null;}
+    let design_id=&parent["systemDesign"]["id"];
+    let attempts=history.iter().filter(|g|
+        g["successorStage"]["designId"]==*design_id
+            && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+    ).count();
+    let Some(stage)=stages.get(attempts) else{return Value::Null};
+    let Some(path)=stage["path"].as_str().filter(|p|crate::engine::rsi::safe_path(p))
+        else{return Value::Null};
+    let Some(role)=stage["role"].as_str() else{return Value::Null};
+    let Some(target)=frontier.iter().find(|row|
+        row["path"]==path && row["role"]==role
+            && row["domain"]==stage["domain"]
+            && row["sourceSha256"].as_str().is_some_and(|hash|
+                hash.len()==64 && hash.bytes().all(|c|c.is_ascii_hexdigit()))) else{
+        return Value::Null;
+    };
+    let mut binding=stage.clone();
+    binding["designId"]=design_id.clone();
+    binding["stageIndex"]=json!(attempts);
+    binding["acceptedParentCommit"]=parent["acceptedCommit"].clone();
+    binding["sourceSha256"]=target["sourceSha256"].clone();
+    binding["source"]="rebound_verified_model_successor_program_v1".into();
+    binding["qualityProven"]=json!(false);
+    binding
 }
 
 /// Reuse the model's target only when its *source change*, not its

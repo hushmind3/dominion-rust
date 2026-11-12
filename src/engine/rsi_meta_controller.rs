@@ -178,6 +178,32 @@ pub(crate) fn synthesize(
     })
 }
 
+
+/// The accepted program is an inheritable action schedule, not a source
+/// mutation recipe. This selection is compiled into the new descendant's
+/// metacognitive policy and reflected in its forecast and actual tool menu.
+pub(crate) fn apply_successor_stage(mut meta:Value,stage:&Value)->Value {
+    if stage["source"]!="rebound_verified_model_successor_program_v1" {
+        return meta;
+    }
+    let matched=meta["alternatives"].as_array().into_iter().flatten().find(|row|
+        row["target"]["role"]==stage["role"]
+            && row["target"]["domain"]==stage["domain"]
+            && row["target"]["path"]==stage["path"]
+            && row["target"]["sourceSha256"]==stage["sourceSha256"]);
+    let Some(winner)=matched.cloned() else{return meta};
+    let previous=meta["revision"].clone();
+    meta["target"]=winner["target"].clone();
+    meta["selectionEvidence"]=winner.clone();
+    meta["forecast"]["acceptanceProbability"]=winner["predictedAdoptionProbability"].clone();
+    meta["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+    meta["mode"]=json!("inherited_model_written_successor_program");
+    meta["successorStage"]=stage.clone();
+    meta["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([previous,stage,winner])).unwrap_or_default())));
+    meta
+}
+
 /// The model—not this controller—authors the actual design, programs and
 /// reusable procedures. Comparative observations are bounded and source
 /// grounded; they carry no adoption rights.
