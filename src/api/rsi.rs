@@ -29,8 +29,11 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max>=3
-        && engine::campaign_capability_proven(state,record));
+    let bounded=max>=3 && engine::campaign_capability_proven(state,record);
+    record["capabilityDemonstrated"]=json!(bounded);
+    record["systemicHandoffProven"]=json!(bounded
+        && crate::engine::rsi_system::verified_handoff(
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {

@@ -203,9 +203,118 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
         .then(||domain.to_string())
 }
 
+/// This is a strictly narrower claim than general autonomous intelligence:
+/// the *model* produced a cross-component design, the accepted patch touched
+/// that design, and the rebuilt child executed its own subsequent plan.
+/// The caller separately replays independent paired receipts and the exact
+/// source lineage; JSON hints alone cannot establish capability.
+pub(crate) fn verified_handoff(history:&[Value])->bool {
+    let mut chain:Vec<&Value>=Vec::new();
+    for generation in history {
+        let design=&generation["systemDesign"];
+        let edits=generation["acceptedSourceHashes"].as_object();
+        let target=design["targetFiles"].as_array();
+        let valid=generation["accepted"]==true
+            && generation["systemEvolution"]==true
+            && generation["pairedRevalidated"]==true
+            && generation["candidateOrigin"]=="model_driven_detached_worktree"
+            && generation["evaluation"]["metrics"]["eligible"]==true
+            && generation["evaluation"]["metrics"]["regressions"]==0
+            && generation["evaluation"]["metrics"]["improvedHoldouts"]
+                .as_u64().unwrap_or(0)>0
+            && generation["generatorBinarySha256"].as_str()
+                .is_some_and(|hash|hash.len()==64)
+            && generation["systemBlueprint"]["source"]=="compiled_descendant_system_blueprint_v1"
+            && generation["systemBlueprint"]["generatorCommit"]==generation["generatorCommit"]
+            && generation["descendantPlan"]["generatorCommit"]==generation["generatorCommit"]
+            && generation["descendantPlan"]["systemBlueprint"]==
+                generation["systemBlueprint"]
+            && design["source"]=="model_authored_system_design"
+            && design["generatorCommit"]==generation["generatorCommit"]
+            && design["generationJobId"]==generation["jobId"]
+            && design["component"].as_str()
+                .is_some_and(|role|COMPONENTS.iter().any(|r|r.0==role))
+            && target.is_some_and(|files|files.iter().filter_map(Value::as_str)
+                .any(|path|edits.is_some_and(|all|all.get(path)
+                    .and_then(Value::as_str).is_some_and(|hash|hash.len()==64))));
+        if !valid {
+            chain.clear();
+            continue;
+        }
+        if chain.last().is_some_and(|last|
+            last["acceptedCommit"]!=generation["generatorCommit"]) {
+            chain.clear();
+        }
+        chain.push(generation);
+        if chain.len()<3 {continue;}
+        let distinct=chain.iter().filter_map(|g|
+            g["generatorBinarySha256"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if distinct.len()!=chain.len(){continue;}
+        let roles=chain.iter().filter_map(|g|
+            g["systemDesign"]["component"].as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if roles.len()<3 || !roles.contains("improvement_methods"){continue;}
+        let meta_transferred=chain.iter().enumerate().any(|(i,g)|
+            g["domain"]=="improver"
+            && g["evaluation"]["metrics"]["metaHoldoutGains"]
+                .as_u64().unwrap_or(0)>0
+            && chain[i+1..].iter().any(|successor|
+                successor["domain"]!="improver"));
+        if meta_transferred {return true;}
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn systemic_handoff_requires_rebuilt_model_authored_design_and_real_source_receipts() {
+        let make=|i:usize,component:&str,domain:&str| {
+            let parent=format!("{:040x}",i+1);
+            let next=format!("{:040x}",i+2);
+            let path=format!("src/engine/{}.rs",component);
+            json!({
+                "accepted":true,"systemEvolution":true,"pairedRevalidated":true,
+                "candidateOrigin":"model_driven_detached_worktree",
+                "generatorCommit":parent,"acceptedCommit":next,
+                "generatorBinarySha256":format!("{:064x}",i+1),
+                "jobId":format!("job-{i}"),"domain":domain,
+                "evaluation":{"metrics":{"eligible":true,"regressions":0,
+                    "improvedHoldouts":1,"metaHoldoutGains":if domain=="improver"{1}else{0}}},
+                "systemBlueprint":{"source":"compiled_descendant_system_blueprint_v1",
+                    "generatorCommit":parent,"architecture":[]},
+                "descendantPlan":{"generatorCommit":parent,
+                    "systemBlueprint":{"source":"compiled_descendant_system_blueprint_v1",
+                        "generatorCommit":parent,"architecture":[]}},
+                "systemDesign":{"source":"model_authored_system_design",
+                    "generatorCommit":parent,"generationJobId":format!("job-{i}"),
+                    "component":component,"targetFiles":[path]},
+                "acceptedSourceHashes":{(path):"a".repeat(64)}
+            })
+        };
+        let proof=vec![make(0,"algorithms","algorithm"),
+            make(1,"improvement_methods","improver"),
+            make(2,"memory","memory")];
+        assert!(verified_handoff(&proof));
+        let mut forged=proof.clone();
+        forged[1]["systemDesign"]["generatorCommit"]=json!("stale");
+        assert!(!verified_handoff(&forged));
+        let mut copied=proof.clone();
+        copied[2]["generatorBinarySha256"]=copied[1]["generatorBinarySha256"].clone();
+        assert!(!verified_handoff(&copied));
+        let mut no_edits=proof.clone();
+        no_edits[1]["acceptedSourceHashes"]=json!({});
+        assert!(!verified_handoff(&no_edits));
+        let mut no_descendant=proof.clone();
+        no_descendant[2]["descendantPlan"]=Value::Null;
+        assert!(!verified_handoff(&no_descendant));
+        let mut native=proof;
+        native[1]["candidateOrigin"]=json!("native_inductive_source_mutation");
+        assert!(!verified_handoff(&native));
+    }
+
     #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));

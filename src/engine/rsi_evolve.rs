@@ -998,6 +998,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
         "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,
+        "systemicHandoffProven":false,
         "productionChanged":false,"accelerationProven":false});
     save(context, &record)?;
     let started = Instant::now();
@@ -3750,8 +3751,12 @@ async fn run_loop(
         let mut evidence_record=record.clone();
         evidence_record["history"].as_array_mut()
             .ok_or("세대 이력 손상")?.push(generation.clone());
-        record["capabilityDemonstrated"] = json!(max_streak >= 3
-            && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record));
+        let bounded_proof=max_streak >= 3
+            && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record);
+        record["capabilityDemonstrated"]=json!(bounded_proof);
+        record["systemicHandoffProven"]=json!(bounded_proof
+            && crate::engine::rsi_system::verified_handoff(
+                evidence_record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -3846,9 +3851,14 @@ async fn run_loop(
 }
 
 fn proof_goal_reached(state:&AppState,input:&Value,record:&Value)->bool {
-    input["rsiStopAfterProof"]==true
+    let bounded=input["rsiStopAfterProof"]==true
         && record["maxAcceptedStreak"].as_u64().unwrap_or(0)>=3
-        && crate::engine::rsi::campaign_capability_proven(state,record)
+        && crate::engine::rsi::campaign_capability_proven(state,record);
+    // Model-driven whole-system campaigns must not stop at an unrelated
+    // three-generation native optimization streak.
+    bounded && (input["rsiSystemEvolution"]!=true
+        || crate::engine::rsi_system::verified_handoff(
+            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])))
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
