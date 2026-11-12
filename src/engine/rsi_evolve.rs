@@ -4152,7 +4152,15 @@ async fn run_loop(
             }else{Value::Null};
             context.state.store.put("rsi_mutation",&mutation)
                 .ok_or("코드 변형 결과의 지속 저장 실패")?;
+
             generation["nativeMutation"]=mutation;
+            // Sub3's proof distinguished the actual native generator from
+            // the requested LLM. No model calls or tokens may be credited
+            // to a source mutation that executed without an LLM turn.
+            generation["requestedModel"]=input["model"].clone();
+            generation["generatorModel"]=json!(format!("dominion-native:{}",
+                mutation["operator"].as_str().unwrap_or("unknown")));
+            generation["generatorProviderId"]=json!("dominion-native");
         }
         generation["elapsedMs"] = json!((worker_started.elapsed().as_millis() as u64)
             .saturating_sub(
@@ -4362,7 +4370,7 @@ async fn run_loop(
         // objective. Do not spend another local-model generation after the
         // proof is persisted; preserve its final verified receipt.
         if record["capabilityDemonstrated"] == true {
-            return Ok("capability_proven".into());
+            return Ok("capability_demonstrated".into());
         }
         if let Some(reason)=stopped {return Ok(reason.into());}
         if let Some(error)=generation_model_error(&current) {
