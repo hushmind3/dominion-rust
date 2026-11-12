@@ -47,3 +47,29 @@ cargo test rsi_meta_controller::tests -- --nocapture
 ## Evidence boundary
 
 These commits use `[skip ci]` as requested. Compile, full worker execution, repeated-real-model improvement, and overall recursive self-improvement completion were **not** established by this change. Avoid scoring a method as causally superior on the basis of observational matches alone.
+
+## Judge-response extension: compilation and recursive method self-repair
+
+The 2026-11-13 review identified a compilation blocker in `src/engine/rsi_system.rs`: literal JSON examples inside `format!` were interpreted as Rust format placeholders. Five brace pairs are now escaped in the compiled descendant instruction and an exact-literal regression test is supplied. This is source-level repair, not a claim that the latest HEAD has passed CI.
+
+### Independent evidence replay, including rejected candidates
+
+`rsi_system::revalidated_method_history(state, history)` now checks candidate ID, base commit, original frozen report source and evidence SHA, metrics/verdict equality, and `rsi::replayed_pair_metrics` for **both** accepted and rejected paired evaluations. Accepted generations additionally require the verified candidate and matched adoption commit/generator provenance, no production deployment, and a model-authored design fully covering candidate changed paths.
+
+Without a replayable original receipt, it replaces the mutable evaluation metrics/verdict with nulls, marks acceptance/revalidation false, and clears the untrusted prediction-learning row. Thus a forged positive result, a forged negative result or case-specific measurements cannot train the next method policy. For measured records it recomputes the meta feedback from verified outcome data rather than inheriting stored Brier labels.
+
+`rsi_evolve::compiled_system_generation_plan` now constructs one audited history snapshot and uses it throughout the descendant planner: source-grounded architecture blueprint and frontier, inherited domains, meta-policy forecasts, transferable method selection, and subsequent recursive planning.
+
+### A recursive negative-transfer-to-method-repair edge
+
+A matched comparison with at least 3 independently assessed donor experiments and 3 independently assessed non-transfer controls can mark a negative transfer. If the source-bound `rsi_meta_controller.rs` option exists in the descendant frontier and there have been fewer than 2 recent self-edit attempts, the native controller chooses `repair_own_transfer_method`, updates `target`, `controlPolicy`, forecast and revision, and asks the real descendant to rewrite the executable transfer-selection algorithm itself. The non-transfer/transfer evidence is retained with an explicit **observational, not causal proof** label.
+
+`rsi_system::architecture_frontier` keeps the editable `rsi_meta_controller.rs` and `rsi_recursive_discovery.rs` source options reachable even when more than 12 small method files compete in the role. `rsi_evolve` carries the repair choice into the actual domain and isolates the indexed `rsi_meta_controller.rs` as the source-edit focus. Explicit owner focus and previously adopted successor programmes retain priority. Regression tests cover source discoverability, source-receipt rejection, JSON-literal rendering, meta-repair scheduling, donor attribution, and the negative transfer cooldown.
+
+### Current evidence boundary
+
+- GitHub commits and static call-path inspection verify that these changes were written to `dominion-sub2`.
+- A historical failed GitHub Actions log identified the original Rust format-string error. New commits use `[skip ci]`; no new clean compile, worker loop or real-model descendant adoption is claimed.
+- The matched-control signal is a search heuristic, not a randomized causal estimate; the post-repair benefit must be independently measured in subsequent generations.
+
+Research context: [AIDE² (2026)](https://arxiv.org/abs/2609.26457) distinguishes actual self-rebuilt agents and sequential improvements; [EvoAgentBench (2026)](https://aclanthology.org/2026.findings-emnlp.2344/) separates procedural encoding, routing and uptake; [Faithfulness of Self-Evolvers (2026)](https://proceedings.mlr.press/v306/zhao26aw.html) motivates measuring real reliance on prior experiences rather than merely citing summaries.
