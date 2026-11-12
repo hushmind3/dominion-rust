@@ -4076,6 +4076,7 @@ async fn run_loop(
             child_input["rsiOpenProgramPlan"]=plan["openProgramPlan"].clone();
             child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
             child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
+            child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiModelRoute"]=plan["modelRoute"].clone();
             if plan["modelRoute"]["selected"].is_object(){
                 child_input["providerId"]=plan["modelRoute"]["selected"]["providerId"].clone();
@@ -4281,6 +4282,8 @@ async fn run_loop(
         generation["openProgramPlan"]=current["input"]["rsiOpenProgramPlan"].clone();
         generation["openProgramExecuted"]=current["rsiOpenProgramExecuted"].clone();
         generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
+        generation["editPolicy"]=current["input"]["rsiEditPolicy"].clone();
+        generation["sourceBranch"]=current["input"]["rsiSourceBranch"].clone();
         generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
         generation["inheritedCandidateActuallyEdited"]=
             current["result"]["rsi"]["inheritedCandidateActuallyEdited"].clone();
@@ -5490,6 +5493,91 @@ fn reconcile_descendant_target(
     Ok(true)
 }
 
+/// A model-authored edit rule earns credit ONLY if that exact rule fired
+/// before a verified source write to a file present in the independently
+/// adopted post-change source ledger. A neutral paired trial is a small
+/// feasibility observation, never a claimed capability gain.
+fn sub2_edit_policy_reward(g:&Value)->f64 {
+    if g["candidateOrigin"]!="model_driven_detached_worktree"
+        || g["editPolicy"].is_null(){return 0.0;}
+    let accepted=g["accepted"]==true && g["pairedRevalidated"]==true
+        && g["evaluation"]["metrics"]["eligible"]==true
+        && g["evidenceVerified"]==true;
+    if accepted {
+        let Some(rules)=g["editPolicy"]["rules"].as_array()
+            else{return 1.0};
+        if rules.is_empty(){return 1.0;}
+        let Some(timeline)=g["toolTimeline"].as_array()
+            else{return 0.0};
+        let proved=g["ruleExecutions"].as_array().is_some_and(|events|
+            events.iter().any(|event|{
+                let Some(run)=event["runId"].as_str() else{return false};
+                let Some(before)=event["opSeqBefore"].as_u64() else{return false};
+                let matched_rule=event["policyRevision"]==g["editPolicy"]["revision"]
+                    && rules.iter().any(|r|r["id"]==event["ruleId"]);
+                let acted=timeline.iter().any(|op|
+                    op["runId"]==run
+                    && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
+                    && op["status"]=="completed"
+                    && event["allow"].as_array().is_some_and(|tools|
+                        tools.iter().any(|name|name==&op["tool"])));
+                let adopted=timeline.iter().any(|op|
+                    op["runId"]==run
+                    && op["opSeq"].as_u64().is_some_and(|seq|seq>before)
+                    && op["status"]=="completed"
+                    && op["result"]["written"]==true
+                    && op["toolReceipt"]["verified"]==true
+                    && op["path"].as_str().and_then(|path|
+                        g["acceptedSourceHashes"][path].as_str()
+                            .map(|sha|op["result"]["postSha256"]==sha))
+                        ==Some(true));
+                matched_rule && acted && adopted
+            }));
+        return if proved {1.0}else{0.0};
+    }
+    if g["pairedRevalidated"]==true
+        && g["candidateId"].is_string()
+        && g["evaluation"]["metrics"]["regressions"].as_u64()==Some(0) {
+        return 0.1;
+    }
+    0.0
+}
+/// The old supervisor does not synthesize source-edit rules. The current
+/// compiled child learns from its own executed receipts AND persisted earlier
+/// campaigns with the same branch, objective, partition and model identity.
+fn inherited_edit_policy(
+    state:&AppState,input:&Value,history:&[Value],selected_model:&Value
+)->Value{
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    let partition=research_scope(input).partition_key;
+    let provider=selected_model["providerId"].as_str()
+        .or_else(||input["providerId"].as_str()).unwrap_or("");
+    let model=selected_model["model"].as_str()
+        .or_else(||input["model"].as_str()).unwrap_or("");
+    let branch=input["rsiSourceBranch"].as_str().unwrap_or("");
+    let mut seen=BTreeSet::<String>::new();
+    let mut rows=Vec::<Value>::new();
+    for g in history.iter().chain(state.store.all("rsi_generation").iter()) {
+        let Some(id)=g["jobId"].as_str() else{continue};
+        if !seen.insert(id.to_string())
+            || g["objectiveId"]!=objective
+            || g["knowledgePartition"]!=partition
+            || g["sourceBranch"]!=branch
+            || g["generatorProviderId"]!=provider
+            || g["generatorModel"]!=model {continue;}
+        rows.push(g.clone());
+    }
+    rows.sort_by(|a,b|a["createdAt"].as_str()
+        .cmp(&b["createdAt"].as_str())
+        .then_with(||a["jobId"].as_str().cmp(&b["jobId"].as_str())));
+    if rows.len()>128 {
+        rows=rows.split_off(rows.len()-128);
+    }
+    crate::engine::rsi_edit_genome::evolve(&rows,sub2_edit_policy_reward)
+}
+
 /// Compute the NEXT system architecture proposal inside the currently
 /// compiled descendant. The resident coordinator has no authority to replace
 /// this decision; it may validate a plan and then run a frozen evaluator.
@@ -5766,6 +5854,8 @@ fn compiled_system_generation_plan(
         &crate::engine::memory::stable_id(&[
             input["rsiObjective"].as_str().unwrap_or("")
         ]));
+    let edit_policy=inherited_edit_policy(state,input,history,
+        &model_route["selected"]);
     Ok(json!({
         "source":"compiled_descendant_system_controller_v3",
         "generatorCommit":commit,
@@ -5793,6 +5883,7 @@ fn compiled_system_generation_plan(
         "principleActive":principle_active,
         "openProgramPlan":open_program,
         "archiveSelection":archive,
+        "editPolicy":edit_policy,
         "modelRoute":model_route,
         "successorStage":successor_stage,
         "improvementDirective":directive,
@@ -5930,6 +6021,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiPrincipleActive"]!=plan["principleActive"]
             || job["input"]["rsiOpenProgramPlan"]!=plan["openProgramPlan"]
             || job["input"]["rsiArchiveSelection"]!=plan["archiveSelection"]
+            || job["input"]["rsiEditPolicy"]!=plan["editPolicy"]
             || job["input"]["rsiInheritedCandidateId"]
                 !=plan["archiveSelection"]["candidateId"]
             || job["input"]["rsiModelRoute"]!=plan["modelRoute"]
