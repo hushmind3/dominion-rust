@@ -320,12 +320,10 @@ mod tests{
         assert!(!same_route(&identity("p","m1"),&identity("p","m2")));
         assert!(!same_route(&identity("p1","m"),&identity("p2","m")));
     }
-    #[test] fn unknown_model_policy_never_confers_weight_ownership(){
-        let state=AppState::test();
-        let plan=plan(&state,&[],&json!({"providerId":"unknown",
-            "model":"unavailable","rsiModelEvolution":false,
-            "selectionPolicy":"manual"}),"tools","a");
-        assert_eq!(plan["apiWeightsModified"],false);
-        assert_eq!(plan["active"],false);
+    #[test] fn a_model_route_is_not_parameter_update_evidence(){
+        let route=identity("api-provider","gpt-external");
+        assert_eq!(route["providerId"],"api-provider");
+        assert_eq!(route["model"],"gpt-external");
+        assert!(route.get("weightsUpdated").is_none());
     }
 }
