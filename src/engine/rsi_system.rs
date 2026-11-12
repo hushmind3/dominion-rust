@@ -1100,6 +1100,14 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         "learnedPrincipleModels":principle_rows,
 }),
         json!({"crossSubsystemAttribution":"independent_paired_observation_not_isolated_causal_proof",
+        // Independent compiled-method handoff is an L2 lineage property;
+        // cross-task improvements and executed method redesign are separate.
+        "structuralHandoffVerified":chain>=3 && handoffs>=2
+            && missing.is_empty() && method_transfer && meta_gain,
+        "metaQualityEvidenceVerified":improved_descendant_cases>0
+            && (open_programs["executedProgramRewrites"].as_u64().unwrap_or(0)>0
+                || experiment_methods["completedMethodCycles"].as_u64().unwrap_or(0)>0),
+
         // A source adoption streak is not enough to demonstrate that the
         // improvement method actually learns to make BETTER descendants.
         // Require observed cross-role task improvement and an independently
@@ -1503,10 +1511,16 @@ mod integration_contract_tests {
             "status":"completed","tool":"workspace_replace_range","arguments":{"path":"src/engine/memory_part.rs"},
             "result":{"written":true},"toolReceipt":{"verified":true,"observedVersion":format!("sha256:{}","e".repeat(64))}});
         state.store.put("execution_operation",&operation);
-        assert_eq!(handoff_evidence(&state,&history)["demonstrated"],true);
+        let verified_handoff=handoff_evidence(&state,&history);
+        assert_eq!(verified_handoff["inventedMethodTransferred"],true);
+        assert_eq!(verified_handoff["structuralHandoffVerified"],true);
+        assert_eq!(verified_handoff["metaQualityEvidenceVerified"],false);
+        assert_eq!(verified_handoff["demonstrated"],false,
+            "a tool receipt proves lineage transfer but not improved offspring");
         operation["toolReceipt"]["observedVersion"]=json!(format!("sha256:{}","d".repeat(64)));
         state.store.put("execution_operation",&operation);
-        assert_eq!(handoff_evidence(&state,&history)["demonstrated"],false,"superseded method output cannot claim the adopted code");
+        assert_eq!(handoff_evidence(&state,&history)["structuralHandoffVerified"],false,
+            "superseded method output cannot claim the adopted code");
         operation["toolReceipt"]["observedVersion"]=json!(format!("sha256:{}","e".repeat(64)));
         state.store.put("execution_operation",&operation);
         history[1]["acceptedSourceHashes"]["src/engine/learning_part.rs"]=Value::Null;
