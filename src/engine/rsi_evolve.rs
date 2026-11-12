@@ -3555,7 +3555,9 @@ async fn run_loop(
                 &context.state,model,agenda,
                 child_input["rsiIndexId"].as_str().unwrap_or(""),
                 &lab,&head,recorded_history.len())?;
-            if agenda["target"].is_object()
+            if child_input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
+                && child_input["selectionPolicy"]=="automatic"
+                && agenda["target"].is_object()
                 && agenda["target"]["domain"]!=target_domain
                 && crate::engine::rsi_system::inherited_domain(&recorded_history)
                     .as_deref()!=Some(target_domain.as_str()) {
@@ -4983,6 +4985,11 @@ fn reconcile_descendant_target(
     if prior["generatorCommit"]!=commit {
         return Err("rsi_target_plan_mismatch: 후손 바이너리 revision이 부모 계획과 다릅니다.".into());
     }
+    if job["input"]["rsiSystemEvolution"]==true {
+        // A fixed coordinator must not silently replace the compiled
+        // descendant's independently authored target with its old ranking.
+        return Err("rsi_descendant_ownership_mismatch: 후손의 자기설계 계획이 실행 정책과 달라 재검토해야 합니다.".into());
+    }
     let base=job["input"]["rsiPromptBase"].as_str()
         .ok_or("rsi_target_plan_mismatch: 원본 사용자 지시문이 없어 재계획할 수 없습니다.")?.to_string();
     let inherited=job["input"]["rsiPromptInherited"].as_str()
@@ -5078,18 +5085,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
     let action_history=improvement_history(&state,&job["input"],&history,campaign);
+    // The actual newly compiled agent obeys its own source-based design
+    // decision. Previous measured plans remain evidence, not higher-order
+    // commands from a frozen resident coordinator.
+    let system_owned=job["input"]["rsiSystemEvolution"]==true
+        && job["input"]["rsiSystemAgenda"]["source"]==
+            "compiled_descendant_self_controller_v1"
+        && job["input"]["rsiSelectedDomain"].as_str()
+            .is_some_and(|domain|DOMAINS.contains(&domain));
     let inherited=if job["input"]["rsiSystemEvolution"]==true
-        && job["input"]["selectionPolicy"]=="automatic"{
+        && job["input"]["selectionPolicy"]=="automatic" {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
-    let continuation=if inherited.is_some(){None}else{research_continuation(&action_history)};
-    let trial_id=if inherited.is_some(){None}else{
+    let continuation=if system_owned||inherited.is_some(){None}
+        else{research_continuation(&action_history)};
+    let trial_id=if system_owned||inherited.is_some(){None}else{
         job["input"]["rsiTrialAlgorithmId"].as_str()
             .filter(|value|!value.is_empty()).map(str::to_string)
     };
-    let selected_domain=inherited.or_else(||job["input"]["rsiSelectedDomain"]
+    let selected_domain=if system_owned{
+        job["input"]["rsiSelectedDomain"].as_str().map(str::to_string)
+    }else{inherited.or_else(||job["input"]["rsiSelectedDomain"]
         .as_str().filter(|domain|DOMAINS.contains(domain))
-        .map(str::to_string));
+        .map(str::to_string))};
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
     let (domain, domain_selection, strategy) =
         select_generation_strategy(&state,
@@ -5133,7 +5151,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         if model!=job["input"]["rsiSystemBlueprint"] {
             return Err("후손의 실행 코드·시스템 자기모형·독립 계보가 불일치합니다.".into());
         }
+        crate::engine::rsi_system::validate_system_agenda(
+            &state,&model,&job["input"]["rsiSystemAgenda"],
+            job["input"]["rsiIndexId"].as_str().unwrap_or(""),
+            Path::new(source),&commit,history.len())?;
         job["rsiSystemBlueprintVerified"]=json!(true);
+        job["rsiSelfControllerVerified"]=json!(true);
+        // An accepted model-authored research program becomes executable
+        // inside THIS improved descendant, not a descriptive handoff note.
+        if let Some(program)=crate::engine::rsi_system::inherited_program(&history){
+            job["input"]["rsiExecutionMethod"]["actionProgram"]=program.clone();
+            job["rsiInheritedMetaMethod"]=program;
+        }
     }
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
         .filter_map(Value::as_str).take(8).collect::<Vec<_>>().join(", ");
@@ -5143,7 +5172,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let goal=job["input"]["rsiObjective"].as_str().unwrap_or("");
         let instruction=crate::engine::rsi_system::instruction(
             &job["input"]["rsiSystemBlueprint"],goal);
-        format!("{instruction}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        let own_agenda=crate::engine::rsi_system::agenda_instruction(
+            &job["input"]["rsiSystemAgenda"]);
+        let method=if job["rsiInheritedMetaMethod"].is_object(){
+            format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
+                job["rsiInheritedMetaMethod"]["sequence"])
+        }else{String::new()};
+        format!("{instruction}\n\n{own_agenda}{method}\n\n{}",
+            job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let (prompt,fit)=fit_worker_generation_context(
         &system_prompt,
