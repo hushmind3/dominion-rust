@@ -34,6 +34,7 @@ pub mod rsi_mutation;
 pub mod rsi_compiler_repair;
 pub mod rsi_evolve;
 pub mod rsi_system;
+pub mod rsi_meta_controller;
 pub mod rsi_scan;
 pub mod rsi_worktree;
 pub mod recovery;
