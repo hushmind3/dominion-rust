@@ -5810,7 +5810,7 @@ fn compiled_system_generation_plan(
     let open_program=if explicit_focus{Value::Null}else{
         crate::engine::rsi_open_program::synthesize(history,&frontier,commit)
     };
-    let architecture_target=if open_program["target"].is_object(){
+    let mut architecture_target=if open_program["target"].is_object(){
         open_program["target"].clone()
     }else if principle["shouldProbeTaskMethod"]==true
         && principle["target"].is_object()
@@ -5832,16 +5832,29 @@ fn compiled_system_generation_plan(
                 history,&frontier))
             .unwrap_or(Value::Null)
     };
+    // An independently observed meta-rule failure should reach the actual
+    // compiled source target. Existing adopted successor programmes and
+    // explicit owner focus retain their higher priority.
+    let enforce_meta_repair=!explicit_focus && !successor_stage.is_object()
+        && meta["metaRepairChosen"]==true
+        && matches!(meta["mode"].as_str(),
+            Some("repair_own_prediction_mechanism"|"repair_own_transfer_method"))
+        && meta["target"]["path"]=="src/engine/rsi_meta_controller.rs";
+    if enforce_meta_repair{
+        architecture_target=meta["target"].clone();
+    }
     // Owner-constrained source targets must remain authoritative. The
     // autonomous factorial scheduler may not silently redirect an explicit
     // user target or forbid its ordinary source edits at the tool gateway.
     // A live, adopted predecessor's programme takes precedence. Otherwise
     // the compiled meta agent authors the next A->B->A source curriculum.
-    let mutual=if successor_stage.is_object() || explicit_focus{Value::Null}else{
+    let mutual=if successor_stage.is_object() || explicit_focus || enforce_meta_repair{
+        Value::Null
+    }else{
         crate::engine::rsi_mutual_evolution::curriculum(&frontier,&meta,DOMAINS)
     };
     // This experiment designer is compiled into the NEW child and can evolve.
-    let raw_factorial=if successor_stage.is_object() || explicit_focus{
+    let raw_factorial=if successor_stage.is_object() || explicit_focus || enforce_meta_repair{
         Value::Null
     }else{
         crate::engine::rsi_causal_curriculum::design(
@@ -5855,13 +5868,14 @@ fn compiled_system_generation_plan(
     // When the scientific programme is only inventing from no evidence,
     // let the descendant first create an independently testable task↔method
     // principle and measure whether it makes its NEXT descendant stronger.
-    let principle_active=!explicit_focus
+    let principle_active=!explicit_focus && !enforce_meta_repair
         && !successor_stage.is_object()
         && principle["target"].is_object()
         && principle["methodTarget"].is_object()
         && principle["shouldProbeTaskMethod"]==true
         && matches!(phase,"invent_new_intelligence"|"observe_factorial");
-    let scientific_active=!explicit_focus && !principle_active
+    let scientific_active=!explicit_focus && !enforce_meta_repair
+        && !principle_active
         && !open_program["stage"].is_object()
         && suggested["target"].is_object()
         && (matches!(phase,
@@ -5894,10 +5908,14 @@ fn compiled_system_generation_plan(
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let continuation=if successor_domain.is_some()||inherited.is_some()
         ||architecture_domain.is_some(){None}else{research_continuation(history)};
-    let selected=scientific_domain.or(successor_domain).or(factorial_domain)
-        .or(inherited.clone()).or(architecture_domain).or_else(||
-        input["rsiSelectedDomain"].as_str()
-            .filter(|domain|DOMAINS.contains(domain)).map(str::to_string));
+    let selected=if enforce_meta_repair{
+        architecture_domain.clone()
+    }else{
+        scientific_domain.or(successor_domain).or(factorial_domain)
+            .or(inherited.clone()).or(architecture_domain)
+            .or_else(||input["rsiSelectedDomain"].as_str()
+                .filter(|domain|DOMAINS.contains(domain)).map(str::to_string))
+    };
     let (domain,selection,strategy)=select_generation_strategy(
         state,history,&objective,continuation,
         None,selected,commit
