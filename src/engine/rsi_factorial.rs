@@ -20,6 +20,7 @@ fn paired(g:&Value)->bool {
         && g["evaluationProfileSha256"].as_str().is_some_and(|s|s.len()==64
             && s.bytes().all(|c|c.is_ascii_hexdigit()))
         && g["evaluation"]["metrics"]["measurements"].is_array()
+        && g["evaluation"]["metrics"]["verdict"].as_str().is_some()
 }
 fn variant(roles:&[String],a:&str,b:&str)->Option<usize> {
     if roles.len()==1 && roles[0]==a {Some(0)}
@@ -257,7 +258,7 @@ mod tests {
         json!({"id":id,"generatorCommit":"f".repeat(40),
             "evaluationProfileSha256":"e".repeat(64),
             "candidateId":id,"pairedMeasured":true,"changedSourcePaths":paths,
-            "evaluation":{"metrics":{"measurements":[{"id":"case1","holdout":true,
+            "evaluation":{"metrics":{"verdict":"paired_measured","measurements":[{"id":"case1","holdout":true,
                 "baselinePass":false,"candidatePass":after}]}}})
     }
     #[test]
