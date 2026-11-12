@@ -193,6 +193,7 @@ fn quality_forecast_calibration(history:&[Value])->Value {
     let mut seen=BTreeSet::new();
     let mut errors=Vec::<f64>::new();
     let mut regressions=0_u64;
+    let mut measured_candidates=0_u64;
     for generation in history.iter().rev() {
         let Some(id)=generation["candidateId"].as_str() else{continue};
         let key=(generation["evaluationProfileSha256"].as_str().unwrap_or("").to_owned(),
@@ -206,20 +207,25 @@ fn quality_forecast_calibration(history:&[Value])->Value {
             || generation["compiledPlanExecuted"]["metaRevision"]!=generation["metaPolicy"]["revision"] {
             continue;
         }
-        for (better,worse) in heldout_quality(generation) {
+        let cases=heldout_quality(generation);
+        if !cases.is_empty(){measured_candidates+=1;}
+        for (better,worse) in cases {
             errors.push((p-f64::from(u8::from(better))).powi(2));
             regressions+=u64::from(worse);
         }
-        if errors.len()>=64 {break;}
+        // The repair trigger needs several independently measured candidate
+        // decisions, not four correlated cases from one candidate.
+        if measured_candidates>=8 {break;}
     }
     let n=errors.len();
     let mean=if n>0 {errors.iter().sum::<f64>()/n as f64}else{0.0};
     // Four independent case outcomes in the last observed window trigger
     // hypothesis generation, never self-acceptance or oracle edits.
     json!({"source":"prequential_sealed_task_gain_calibration_v1",
-        "observations":n,"meanBrierError":mean,
-        "observedRegressions":regressions,
-        "needsPredictorSourceRevision":n>=4 && mean>0.35,
+        "observations":n,"measuredCandidates":measured_candidates,
+        "meanBrierError":mean,"observedRegressions":regressions,
+        "needsPredictorSourceRevision":measured_candidates>=4
+            && n>=4 && mean>0.35,
         "editableSource":"src/engine/rsi_meta_controller.rs",
         "qualityImproved":false,"independentMetaABProven":false})
 }
@@ -888,6 +894,7 @@ mod tests {
         assert_eq!(repaired["selectionMode"],"prequential_task_quality_predictor_repair");
         assert_eq!(repaired["target"]["path"],"src/engine/rsi_meta_controller.rs");
         assert_eq!(repaired["qualityCalibration"]["observations"],4);
+        assert_eq!(repaired["qualityCalibration"]["measuredCandidates"],4);
         assert_eq!(repaired["qualityCalibration"]["independentMetaABProven"],false);
         assert!(valid_policy(&repaired,history.len()));
         history[0]["pairedMeasured"]=json!(false);
