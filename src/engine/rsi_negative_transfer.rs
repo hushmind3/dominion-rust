@@ -38,14 +38,11 @@ type CohortKey=(String,String,String,String);
 struct Cases{
     candidate_ids:BTreeSet<String>,
     case_ids:BTreeSet<String>,
-    observations:usize,
 }
 fn record(cohorts:&mut BTreeMap<CohortKey,Cases>,key:CohortKey,
     candidate:&str,case:&str) {
     let row=cohorts.entry(key).or_default();
-    if row.candidate_ids.insert(candidate.to_string()){
-        row.observations+=1;
-    }
+    row.candidate_ids.insert(candidate.to_string());
     row.case_ids.insert(case.to_string());
 }
 /// Confirm frozen paired receipts *again*, not the generation's editable
@@ -128,8 +125,11 @@ pub(crate) fn plan(state:&AppState,history:&[Value],frontier:&[Value],
             .then_with(||a["victimRole"].as_str().cmp(&b["victimRole"].as_str()))
     });
     evidence.truncate(32);
+    // Historical failures remain visible to learning. They cannot force a
+    // new edit on a DIFFERENT, already rewritten source revision.
     let selected=evidence.iter().find(|row|
-        row["supportedForPairedInvestigation"]==true)
+        row["supportedForPairedInvestigation"]==true
+        && row["generatorSourceCommit"]==commit)
         .cloned().unwrap_or(Value::Null);
     let mut plan=json!({
         "source":"compiled_replayed_negative_transfer_repair_v1",
@@ -137,6 +137,7 @@ pub(crate) fn plan(state:&AppState,history:&[Value],frontier:&[Value],
         "selected":selected,"crossCapabilityCounterexamples":evidence,
         "requiredIndependentCandidates":2,
         "requiredDistinctHoldoutCases":2,
+        "selectedRequiresCurrentUnmodifiedSourceRevision":true,
         "experiment":"source_only_vs_victim_only_vs_joint",
         "noClaimOfAcceptedIntelligenceRegression":true,
         "causalityProven":false,"qualityProven":false
@@ -152,11 +153,13 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
         || plan["generatorCommit"]!=commit
         || plan["historyCount"].as_u64()!=Some(len as u64)
         || plan["sha256"].as_str()!=Some(hash(&unsigned).as_str())
+        || plan["selectedRequiresCurrentUnmodifiedSourceRevision"]!=true
         || plan["noClaimOfAcceptedIntelligenceRegression"]!=true
         || plan["causalityProven"]!=false || plan["qualityProven"]!=false {
         return false;
     }
     let good=|row:&Value| row["supportedForPairedInvestigation"]==true
+        && row["generatorSourceCommit"]==commit
         && row["independentCandidateCounterexamples"].as_u64().unwrap_or(0)>=2
         && row["distinctDamagedHoldoutCases"].as_u64().unwrap_or(0)>=2
         && frontier.contains(&row["source"])
@@ -264,6 +267,9 @@ mod tests {
         assert_eq!(result["selected"]["independentCandidateCounterexamples"],2);
         assert_eq!(result["selected"]["distinctDamagedHoldoutCases"],2);
         assert!(valid(&result,&frontier,&head,2));
+        let next_revision=plan(&state,&history,&frontier,&"e".repeat(40));
+        assert!(next_revision["selected"].is_null(),
+            "old failures cannot force a joint edit after source code changed");
         // One untrusted self-reported damaged case cannot unlock a new
         // two-source edit objective; only the replayed original pair does.
         history[1]["evaluation"]["metrics"]["measurements"][0]["candidatePass"]
