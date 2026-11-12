@@ -5986,7 +5986,19 @@ fn compiled_system_generation_plan(
     // Both source modules enter the NATIVE edit context, not merely the
     // prompt text. The B module may belong to a different domain than A.
     let mut paths=Vec::<String>::new();
-    if principle_active {
+    if enforce_meta_repair {
+        // A meta-repair generation must edit the method-learning source,
+        // not merely mention it alongside cheaper unrelated focus files.
+        if let (Some(path),Some(sha))=(architecture_target["path"].as_str(),
+            architecture_target["sourceSha256"].as_str()) {
+            if crate::engine::rsi::safe_path(path) && root.join(path).is_file()
+                && crate::engine::code_index::indexed_source_hash(
+                    state,input["rsiIndexId"].as_str().unwrap_or(""),path)
+                    .as_deref()==Some(sha) {
+                paths.push(path.to_string());
+            }
+        }
+    }else if principle_active {
         // Source-ground both ends of the proposed learning law. This is an
         // actual two-file edit target, not just an abstract method label.
         for key in ["target","methodTarget"] {
@@ -6040,7 +6052,9 @@ fn compiled_system_generation_plan(
             }
         }
     }
-    if scientific_active {
+    if enforce_meta_repair {
+        // Preserve only the observed self-repair source for this experiment.
+    }else if scientific_active {
         // Invention may need a new module plus existing consumers; leave the
         // execution target no broader than its SOURCE-GROUNDED programme.
     }else if principle_active {
