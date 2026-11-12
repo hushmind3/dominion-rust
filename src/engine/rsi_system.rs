@@ -56,7 +56,7 @@ fn source_inventory(root:&Path)->Vec<Value>{
             let relative=relative.to_string_lossy().replace('\\',"/");
             if !intelligence_editable_path(&relative){continue;}
             if !matches!(path.extension().and_then(|ext|ext.to_str()),
-                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css")){continue;}
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css"|"py")){continue;}
             let Ok(bytes)=fs::read(&path) else{continue};
             if bytes.len()>2_000_000 {continue;}
             files.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&bytes)),
@@ -965,6 +965,23 @@ pub(crate) fn inherited_domain(history:&[Value])->Option<String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn python_model_architecture_mutations_change_whole_system_identity(){
+        let root=std::env::temp_dir().join(format!("rsi-python-model-{}",
+            uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        let source=root.join("src/engine/model_architecture.py");
+        fs::write(&source,"def model(): return 'v1'\n").unwrap();
+        let first=blueprint(&root,"same-revision",&[]);
+        let paths=first["sourceInventory"].as_array().unwrap();
+        assert!(paths.iter().any(|row|
+            row["path"]=="src/engine/model_architecture.py"));
+        assert_eq!(source_role("src/engine/model_architecture.py"),"models");
+        fs::write(&source,"def model(): return 'v2'\n").unwrap();
+        let second=blueprint(&root,"same-revision",&[]);
+        assert_ne!(first["sourceTreeSha256"],second["sourceTreeSha256"]);
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
