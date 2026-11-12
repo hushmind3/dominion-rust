@@ -4522,6 +4522,27 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         }
         focus.truncate(8);
     }
+    // An isolated intervention must not inherit the ordinary coupled
+    // redesign's extra edit targets. A joint intervention needs exactly
+    // its two independently source-anchored roles in the focus window.
+    if !explicit && meta_policy["selectionMode"]=="matched_factorial_experiment_design"
+        && architecture_target["domain"]==domain {
+        let experiment=&factorial["selected"];
+        match experiment["phase"].as_str() {
+            Some("isolate_left"|"isolate_right")=>{
+                if let Some(path)=experiment["target"]["path"].as_str(){
+                    focus=vec![path];
+                }
+            }
+            Some("test_joint_interaction")=>{
+                if let (Some(a),Some(b))=(experiment["left"]["path"].as_str(),
+                    experiment["right"]["path"].as_str()){
+                    if a!=b {focus=vec![a,b];}
+                }
+            }
+            _=>{}
+        }
+    }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let comparative_mode=if peers["references"].as_array()
         .is_some_and(|items|!items.is_empty()) {"compare_independent_peer_lineage"}
@@ -5008,7 +5029,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let meta_instructions=if job["input"]["rsiMetaPolicy"].is_object() {
             crate::engine::rsi_meta_controller::instruction(&job["input"]["rsiMetaPolicy"])
         }else{String::new()};
-        let coupled_instructions=if job["input"]["rsiCoDesignPortfolio"].is_object() {
+        let coupled_instructions=if job["input"]["rsiMetaPolicy"]["selectionMode"]
+            =="matched_factorial_experiment_design"
+            && job["input"]["rsiFactorialExperiment"]["selected"]["isolatedEditRequired"]==true {
+            "ISOLATED INTERVENTION: all other subsystem files are read-only context. This experiment changes ONLY the designated source role; cross-system redesign follows after a separately measured isolated variant.".to_string()
+        }else if job["input"]["rsiCoDesignPortfolio"].is_object() {
             let source=job["input"]["rsiCoDesignPortfolio"]["focus"].as_array()
                 .into_iter().flatten().take(3)
                 .map(|row|format!("role={} path={} sha={}",
