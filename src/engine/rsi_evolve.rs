@@ -4408,8 +4408,20 @@ async fn run_loop(
                     // needs a MODEL-authored design tied to its changed files.
                     generation["candidateOrigin"]=candidate["origin"].clone();
                     generation["factorialChangedPaths"]=candidate["paths"].clone();
+                    // compare_at returns a flat runner receipt, while the
+                    // authenticated store candidate carries its verified
+                    // source tag. Preserve that source in the generation
+                    // row so policy tournaments and rule induction can
+                    // consume ACTUAL completed runs, not a missing field.
+                    generation["evaluation"]["source"]=
+                        candidate["evaluation"]["source"].clone();
+                    // Replayed neutral/rejected pairs are genuine negative
+                    // training examples. verified_pair_receipt only accepts
+                    // IMPROVED candidates, causing prior tournaments to
+                    // silently exclude their controls. A valid paired
+                    // measurement is not necessarily a quality improvement.
                     generation["pairedRevalidated"]=json!(
-                        rsi::verified_pair_receipt(&context.state,&candidate));
+                        rsi::replayed_pair_metrics(&context.state,&candidate).is_some());
                     let model_design=&generation["systemDesign"];
                     let authored_system_change=input["rsiSystemEvolution"]!=true
                         || (candidate["origin"]=="model_driven_detached_worktree"
