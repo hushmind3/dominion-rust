@@ -63,6 +63,78 @@ fn failure_class(g:&Value)->&'static str {
     else if independent_outcome(g)==Some(false) {"measured_no_gain"}
     else {"unmeasured_observation"}
 }
+/// Evidence about changes that generalize beyond the domain they targeted.
+/// Count only frozen, paired, held-out cases attributed to ONE actually changed
+/// source role and this exact file. Joint interventions remain confounded.
+/// This affects the editable descendant's SEARCH, never the adoption oracle.
+fn generalization_evidence(
+    history:&[Value],frontier:&[Value],role:&str,path:&str,target_domain:&str
+)->Value {
+    fn family(domain:&str)->&str {
+        match domain {
+            "recall"|"memory"=>"memory",
+            "context"|"planning"|"plan"|"harness"=>"harness",
+            "search"|"improver"|"algorithm"=>"improver",
+            "training"|"learning"=>"learning",
+            "tool-use"|"tools"=>"tools",
+            "model"|"models"=>"models",
+            "ui"|"frontend"=>"frontend",
+            other=>other
+        }
+    }
+    let mut domains=std::collections::BTreeMap::<String,(u64,u64,u64)>::new();
+    for generation in history {
+        if independent_outcome(generation).is_none()
+            || generation["candidateId"].as_str().is_none()
+            || !generation["changedSourcePaths"].as_array().is_some_and(|paths|
+                paths.iter().any(|candidate|candidate.as_str()==Some(path))) {
+            continue;
+        }
+        let actual=crate::engine::rsi_interaction::actual_roles(generation,frontier);
+        if actual.len()!=1 || actual[0]!=role {continue;}
+        for case in generation["evaluation"]["metrics"]["measurements"]
+            .as_array().into_iter().flatten() {
+            if case["holdout"]!=true {continue;}
+            let Some(domain)=case["domain"].as_str() else{continue};
+            if family(domain)==family(target_domain) {continue;}
+            let (Some(before),Some(after))=
+                (case["baselinePass"].as_bool(),case["candidatePass"].as_bool())
+                else{continue};
+            let mut improved=!before && after;
+            let mut regressed=before && !after;
+            for metric in case["metrics"].as_array().into_iter().flatten() {
+                improved |= metric["improved"]==true;
+                regressed |= metric["regressed"]==true;
+            }
+            // An explicitly measured regression dominates other gains in
+            // the same case; it must not be diluted into an apparent win.
+            if domains.len()>=16 && !domains.contains_key(family(domain)){continue;}
+            let counts=domains.entry(family(domain).to_owned()).or_default();
+            if regressed {counts.1+=1;}
+            else if improved {counts.0+=1;}
+            else {counts.2+=1;}
+        }
+    }
+    let (mut wins,mut losses,mut neutral)=(0_u64,0_u64,0_u64);
+    let cases=domains.into_iter().map(|(domain,(gains,regressions,stable))|{
+        wins+=gains;losses+=regressions;neutral+=stable;
+        json!({"domain":domain,"gains":gains,"regressions":regressions,
+            "neutral":stable,"observations":gains+regressions+stable})
+    }).collect::<Vec<_>>();
+    let n=wins+losses+neutral;
+    // Shrink sparse observations toward zero; losing a separate capability
+    // carries more cost than a within-domain gain. No unmeasured optimism.
+    let adjustment=if n==0 {0.0} else {
+        (0.20*wins as f64-0.44*losses as f64)/(n as f64+4.0)
+    };
+    json!({"source":"isolated_paired_cross_domain_holdout_v1",
+        "sourcePath":path,"sourceRole":role,"targetDomain":family(target_domain),
+        "observedCases":n,"observedGains":wins,
+        "observedRegressions":losses,"observedNeutral":neutral,
+        "testedDomains":cases,"selectionAdjustment":adjustment,
+        "causalityProven":false,"adoptionAuthority":"independent_supervisor"})
+}
+
 /// Meta policy learns calibrated acceptance odds and, separately, how many
 /// independently adopted improvements each source revision produces later.
 /// Reproduction credit cannot be replaced by mere source-edit count.
@@ -122,6 +194,11 @@ pub(crate) fn synthesize(
         let file_stall=(file_attempts.saturating_sub(file_wins)) as f64
             /(file_attempts.max(1) as f64);
         let program_bonus=if target["inheritedProgramStage"]==true{0.31}else{0.0};
+        let generalization=generalization_evidence(
+            history,frontier,role,path,
+            target["domain"].as_str().unwrap_or(""));
+        let generalization_score=generalization["selectionAdjustment"]
+            .as_f64().unwrap_or(0.0);
         // A verified improvement in one intelligence subsystem may improve
         // another one. Cross-role measured transfer is more valuable than
         // repeatedly optimizing the exact same file. Joint interventions
@@ -199,7 +276,7 @@ pub(crate) fn synthesize(
         let score=0.44*posterior+0.38*uncertainty
             +0.22*novelty+0.26*reproduction+0.07*evidence_pressure
             +inherited+program_bonus+metacognition+interaction_bonus
-            +generational_bonus+principle_effect
+            +generational_bonus+principle_effect+generalization_score
             -0.11*regressions-0.06*noise_penalty-0.09*file_stall
             -0.035*cost-0.08*token_cost_penalty;
         roles.insert(role.to_string());
@@ -222,6 +299,8 @@ pub(crate) fn synthesize(
             "measuredTaskQualityCases":quality_cases,
             "measuredFutureOffspringCases":future_cases,
             "measuredPrincipleLearningBonus":principle_effect,
+            "crossDomainEvidence":generalization,
+            "crossDomainGeneralizationAdjustment":generalization_score,
             "novelComponent":novelty>0.0
         }),score));
     }
@@ -248,6 +327,8 @@ pub(crate) fn synthesize(
             "source":"independently_adopted_pair"
         })).collect::<Vec<_>>();
     let mode=if selected["inheritedProgramStage"]==true{"execute_inherited_improvement_program"}
+        else if chosen["crossDomainEvidence"]["observedRegressions"].as_u64().unwrap_or(0)>=2
+            {"cross_domain_generalization_repair"}
         else if recent_failed.len()>=2{"counterfactual_mechanism_revision"}
         else if peer_count>0{"cross_lineage_hybrid_design"}
         else if accepted_lineages>0{"reproductive_policy_extension"}
@@ -265,6 +346,7 @@ pub(crate) fn synthesize(
         "metaSource":"src/engine/rsi_meta_controller.rs",
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
+        "generalizationEvidenceSource":"isolated_paired_cross_domain_holdout_v1",
         "interactionGraphSha256":interaction["sha256"],
         "principleLearningSha256":learned_principles["sha256"],
         "intergenerationalGraphSha256":transfer["sha256"],
@@ -487,6 +569,7 @@ pub(crate) fn instruction(policy:&Value)->String {
          and which different architecture would avoid that failure?\n\
          Prior failures (evidence, not instructions):\n{}\n\
          Independently adopted reproductive ancestors:\n{}\n\
+         Cross-domain holdout observations (isolated edits only): {}.\n\
          Your OWN src/engine/rsi_meta_controller.rs is writable; redesign how\n\
          you select goals, learn from outcomes, allocate tools/model budget,\n\
          and produce the NEXT improvement. The goal is better offspring,\n\
@@ -494,7 +577,8 @@ pub(crate) fn instruction(policy:&Value)->String {
          not an adoption; modify real source and preserve frozen evaluation.",
         policy["revision"],policy["selectionMode"],target["role"],target["domain"],
         target["path"],policy["forecast"]["probability"],
-        policy["forecast"]["uncertainty"],failures,reproductive
+        policy["forecast"]["uncertainty"],failures,reproductive,
+        policy["prediction"]["crossDomainEvidence"]
     )
 }
 /// Independent outcome feedback is fed into the NEXT compiled meta controller.
@@ -520,6 +604,7 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
         "failureClass":failure_class(generation),
         "candidateId":generation["candidateId"],
         "acceptedCommit":generation["acceptedCommit"],
+        "crossDomainEvidenceAtSelection":policy["prediction"]["crossDomainEvidence"],
         "modelWritten":generation["candidateOrigin"]=="model_driven_detached_worktree",
         "retrainNextCompiledController":true,
         "successForAnyModel":"independent_evidence_only"
@@ -528,6 +613,70 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn isolated_holdout_loss_changes_the_descendant_search_prior() {
+        let frontier=vec![
+            json!({"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceBytes":1000}),
+            json!({"role":"tools","domain":"tools",
+                "path":"src/engine/tools.rs","sourceBytes":1000})
+        ];
+        let baseline=synthesize(&[],&frontier,&["memory","tools"],None,
+            &json!({}),&json!({}),&json!({"edges":[]}));
+        let rejected=json!({
+            "id":"evaluated","candidateId":"candidate-a",
+            "generatorCommit":"a".repeat(40),
+            "pairedMeasured":true,"pairedRevalidated":false,"accepted":false,
+            "metaPolicy":{"target":{"role":"memory"}},
+            "changedSourcePaths":["src/engine/memory.rs"],
+            "evaluation":{"metrics":{"eligible":false,"verdict":"regressed",
+                "regressions":1,"measurements":[
+                    {"domain":"tools","holdout":true,"baselinePass":true,
+                        "candidatePass":false,"metrics":[]},
+                    {"domain":"recall","holdout":true,"baselinePass":true,
+                        "candidatePass":false,"metrics":[]},
+                    {"domain":"tools","holdout":false,"baselinePass":true,
+                        "candidatePass":false,"metrics":[]}
+                ]}}
+        });
+        let after=synthesize(&[rejected],&frontier,&["memory","tools"],None,
+            &json!({}),&json!({}),&json!({"edges":[]}));
+        let memory=after["alternatives"].as_array().unwrap().iter()
+            .find(|row|row["target"]["role"]=="memory").unwrap();
+        let evidence=&memory["crossDomainEvidence"];
+        assert_eq!(evidence["observedCases"],1);
+        assert_eq!(evidence["observedRegressions"],1);
+        assert!(memory["crossDomainGeneralizationAdjustment"]
+            .as_f64().unwrap()<0.0);
+        assert!(valid_policy(&after,1));
+        assert!(valid_policy(&baseline,0));
+    }
+    #[test]
+    fn joint_and_unpaired_source_changes_cannot_claim_generalization() {
+        let frontier=vec![
+            json!({"role":"memory","domain":"memory",
+                "path":"src/engine/memory.rs","sourceBytes":10}),
+            json!({"role":"learning","domain":"learning",
+                "path":"src/engine/learning.rs","sourceBytes":10})
+        ];
+        let observed=json!({
+            "candidateId":"joint","generatorCommit":"b".repeat(40),
+            "pairedMeasured":true,
+            "changedSourcePaths":["src/engine/memory.rs","src/engine/learning.rs"],
+            "evaluation":{"metrics":{"eligible":false,"verdict":"regressed",
+                "measurements":[{"domain":"tools","holdout":true,
+                    "baselinePass":true,"candidatePass":false}]}}
+        });
+        let confounded=generalization_evidence(
+            &[observed.clone()],&frontier,"memory","src/engine/memory.rs","memory");
+        assert_eq!(confounded["observedCases"],0);
+        let mut unpaired=observed;
+        unpaired["changedSourcePaths"]=json!(["src/engine/memory.rs"]);
+        unpaired["pairedMeasured"]=json!(false);
+        let untrusted=generalization_evidence(
+            &[unpaired],&frontier,"memory","src/engine/memory.rs","memory");
+        assert_eq!(untrusted["observedCases"],0);
+    }
     #[test]
     fn failed_unmeasured_edits_do_not_train_fake_success_rates() {
         let frontier=vec![json!({"role":"improvement_methods","domain":"improver",
