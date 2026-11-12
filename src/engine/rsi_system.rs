@@ -7,7 +7,7 @@ use std::{path::Path,fs};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
@@ -89,7 +89,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         agent's algorithm, harness, memory, learning, tools or improvement \
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
-        cross-module Rust changes with workspace_replace_range/function/write. \
+        cross-module Rust changes with workspace_replace_range/workspace_replace/workspace_write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         Make your next-generation planning and implementation behavior better, \
@@ -149,10 +149,29 @@ pub(crate) fn propose(
         if !crate::engine::rsi::safe_path(path)||!unique.insert(path.to_string()){
             return Err("중복 또는 허용되지 않은 소스 경로입니다.".into());
         }
-        let file=fs::canonicalize(root.join(path))
-            .map_err(|_|"설계 대상이 실제 소스에 없습니다.".to_string())?;
-        if !file.starts_with(&root)||!file.is_file(){
-            return Err("외부 파일은 설계 범위가 아닙니다.".into());
+        let candidate=root.join(path);
+        if fs::symlink_metadata(&candidate).is_ok() {
+            // An existing file is allowed only if it resolves inside this
+            // exact rebuilt descendant's checkout. Never follow outside links.
+            let file=fs::canonicalize(&candidate)
+                .map_err(|_|"설계 대상 소스를 확인할 수 없습니다.".to_string())?;
+            if !file.starts_with(&root)||!file.is_file() {
+                return Err("외부 파일은 설계 범위가 아닙니다.".into());
+            }
+        } else {
+            // Genuine architectural redesign may CREATE a new Rust module.
+            // Pin the closest existing parent to the worktree, including
+            // when the new module is in a new subdirectory.
+            let mut ancestor=candidate.parent()
+                .ok_or("새 소스의 상위 디렉터리가 없습니다.")?;
+            while !ancestor.exists() {
+                ancestor=ancestor.parent()
+                    .ok_or("새 소스의 작업공간 상위 경로가 없습니다.")?;
+            }
+            let parent=fs::canonicalize(ancestor).map_err(|e|e.to_string())?;
+            if !parent.starts_with(&root)||!parent.is_dir() {
+                return Err("새 소스를 외부 디렉터리에 만들 수 없습니다.".into());
+            }
         }
     }
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
@@ -363,6 +382,18 @@ mod tests {
         assert_eq!(proposed["proposal"]["qualityProven"],false);
         assert_eq!(proposed["proposal"]["generatorCommit"],"revision-a");
         assert_eq!(state.store.get("session","session").unwrap()["rsiSystemDesign"]["nextDomain"],"learning");
+        // New executable modules must be designable, not only edits to a
+        // predeclared static set of optimizer operators.
+        let mut novel=request.clone();
+        novel["targetFiles"]=json!(["src/engine/novel_meta_planner.rs"]);
+        assert!(propose(&state,"session",&novel).is_ok());
+        // A symlinked parent cannot be used to write outside the experiment.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc",workspace.join("src/engine/escape")).unwrap();
+            novel["targetFiles"]=json!(["src/engine/escape/outside.rs"]);
+            assert!(propose(&state,"session",&novel).is_err());
+        }
         let mut bad=request.clone();
         bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
         assert!(propose(&state,"session",&bad).is_err());
