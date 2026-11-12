@@ -352,6 +352,44 @@ mod tests {
         assert!(valid(&plan,&frontier,"a",0,&Value::Null,&portfolio));
     }
     #[test]
+    fn repeated_independent_rejection_changes_the_experimental_method(){
+        let a=target("harness","src/engine/jobs.rs");
+        let b=target("memory","src/engine/memory.rs");
+        let frontier=vec![a.clone(),b.clone()];
+        let factorial=json!({"sha256":"e".repeat(64),
+            "selected":{"phase":"isolate_left","target":a.clone(),"companion":b.clone()}});
+        let portfolio=json!({"sha256":"f".repeat(64),"focus":[a.clone(),b]});
+        let failures=(0..3).map(|n|json!({
+            "candidateId":format!("c-{n}"),"accepted":false,
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "recursiveScientificProgram":{
+                "source":"compiled_recursive_scientific_discovery_v1",
+                "phase":"isolate_left","focus":[a]}
+        })).collect::<Vec<_>>();
+        let revised=plan(&failures,&frontier,&factorial,&portfolio,"a");
+        assert_eq!(revised["phase"],"discover_new_mechanism");
+        assert!(revised["invention"].is_object());
+        assert_eq!(revised["scientificMethodLearning"][0]["observedCandidateTrials"],3);
+        assert!(valid(&revised,&frontier,"a",3,&factorial,&portfolio));
+        let mut tampered=revised.clone();
+        tampered["qualityProven"]=json!(true);
+        assert!(!valid(&tampered,&frontier,"a",3,&factorial,&portfolio));
+    }
+    #[test]
+    fn unaccepted_born_role_cannot_trigger_a_false_recursive_handoff(){
+        let role="bridge_memory_learning";
+        let path="src/engine/rsi_bridge_memory_learning.rs";
+        let frontier=vec![target(role,path),target("memory","src/engine/memory.rs")];
+        let mut birth=adopted(role,&"a".repeat(40),&"b".repeat(40),"birth",path);
+        birth["pairedRevalidated"]=json!(false);
+        birth["systemDesign"]["newComponents"]=json!([
+            {"role":role,"improvesRole":"memory"}]);
+        let result=plan(&[birth],&frontier,&Value::Null,
+            &Value::Null,&"b".repeat(40));
+        assert_eq!(result["phase"],"discover_new_mechanism");
+        assert!(result["recursiveAncestry"].is_null());
+    }
+    #[test]
     fn only_real_source_adoptions_advance_invented_child_return_and_meta(){
         let a="a".repeat(40);let b="b".repeat(40);
         let c="c".repeat(40);let d="d".repeat(40);
