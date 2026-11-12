@@ -217,9 +217,14 @@ pub(crate) fn propose(
         || child["cancelRequested"]==true{
         return Err("진행 중인 전체 시스템 자기개선 후손만 설계할 수 있습니다.".into());
     }
+    // A succeeding intelligence may invent a new architecture component.
+    // Requiring membership in the ORIGINAL seven subsystem names would make
+    // every valid redesign fail before its source module could be created.
     let component=body["component"].as_str()
-        .filter(|name|COMPONENTS.iter().any(|row|row.0==*name))
-        .ok_or("시스템 구성요소 지정 오류")?;
+        .filter(|name|!name.is_empty() && name.len()<=64
+            && name.bytes().all(|c|c.is_ascii_alphanumeric()
+                || c==b'_' || c==b'-'))
+        .ok_or("시스템 구성요소 이름은 영문·숫자·밑줄·하이픈 1~64자여야 합니다.")?;
     let next=body["nextDomain"].as_str()
         .filter(|name|crate::engine::rsi_evolve::DOMAINS.contains(name))
         .ok_or("다음 개선 분야 오류")?;
@@ -365,6 +370,13 @@ mod tests {
         new_module["targetFiles"]=json!(["src/engine/new_agent_method.rs"]);
         assert!(propose(&state,"session",&new_module).is_ok(),
             "a successor may design a new source module");
+        let mut fresh_component=new_module.clone();
+        fresh_component["component"]=json!("new_reasoning_controller");
+        assert!(propose(&state,"session",&fresh_component).is_ok(),
+            "the intelligence may invent architectural roles beyond original fixed components");
+        fresh_component["component"]=json!("../outside");
+        assert!(propose(&state,"session",&fresh_component).is_err());
+
         let mut bad=request.clone();
         bad["targetFiles"]=json!(["src/engine/../escape.rs"]);
         assert!(propose(&state,"session",&bad).is_err());
