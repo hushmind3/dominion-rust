@@ -3,11 +3,11 @@
 //! or any measured gain. Only independent paired evaluation can adopt edits.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{path::Path,fs};
+use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
@@ -15,47 +15,170 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
-/// Read only source assets under the experiment's pinned checkout. The
-/// coordinator cannot author or alter this blueprint without changing its
-/// measured generator revision; no holdout content is read here.
-pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
+/// Complete editable intelligence source inventory. The source tree is not
+/// just seven hand-picked files: new descendants may create new modules and
+/// rewrite the task agent, meta-agent, tool harness and memory together.
+/// Stable sorting + content hashes make this an actual revision self-model.
+fn source_inventory(root:&Path)->Vec<Value>{
+    let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
+    let mut pending=vec![root.join("src"),root.join("web").join("src")];
+    let mut visited=BTreeSet::<std::path::PathBuf>::new();
+    let mut files=Vec::new();
+    while let Some(directory)=pending.pop(){
+        let Ok(directory)=fs::canonicalize(directory) else{continue};
+        if !directory.starts_with(&root)||!visited.insert(directory.clone()){continue;}
+        let Ok(entries)=fs::read_dir(&directory) else{continue};
+        for entry in entries.flatten(){
+            let Ok(path)=fs::canonicalize(entry.path()) else{continue};
+            if !path.starts_with(&root){continue;}
+            if path.is_dir(){pending.push(path);continue;}
+            if !path.is_file(){continue;}
+            let Ok(relative)=path.strip_prefix(&root) else{continue};
+            let relative=relative.to_string_lossy().replace('\\',"/");
+            if !crate::engine::rsi::safe_path(&relative)
+                || crate::engine::rsi::hidden_rsi_oracle_path(&relative){continue;}
+            if !matches!(path.extension().and_then(|ext|ext.to_str()),
+                Some("rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"|"css")){continue;}
+            let Ok(bytes)=fs::read(&path) else{continue};
+            if bytes.len()>2_000_000 {continue;}
+            files.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&bytes)),
+                "bytes":bytes.len()}));
+            if files.len()>=2048 {break;}
+        }
+        if files.len()>=2048 {break;}
+    }
+    files.sort_by(|a,b|a["path"].as_str().cmp(&b["path"].as_str()));
+    files
+}
+
+/// Parent-visible invariant: only the source bytes and commit identity are
+/// stable. The descendant's role graph, exploration order and search program
+/// are evolvable algorithms, never recomputed as a parent policy veto.
+pub(crate) fn source_facts(root:&Path)->Value{
+    let files=source_inventory(root);
+    json!({"fileCount":files.len(),"sha256":format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&files).unwrap_or_default()))})
+}
+
+fn valid_role(role:&str)->bool{
+    !role.is_empty()&&role.len()<=64&&role.bytes().all(|b|
+        b.is_ascii_alphanumeric()||b==b'_'||b==b'-')
+}
+fn role_domain(role:&str)->&'static str{
+    match role {
+        "memory"=>"memory","learning"=>"learning","tools"=>"tools",
+        "harness"|"context"=>"context","frontend"|"ui"=>"ui",
+        _=>"improver"
+    }
+}
+fn design_roles(design:&Value)->Vec<String>{
+    design["components"].as_array().map(|items|items.iter()
+        .filter_map(Value::as_str).filter(|role|valid_role(role))
+        .map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_else(||design["component"].as_str().filter(|role|valid_role(role))
+            .map(|name|vec![name.to_string()]).unwrap_or_default())
+}
+fn design_implemented(design:&Value, accepted_hashes:&Value)->bool{
+    let Some(targets)=design["targetFiles"].as_array()
+        .filter(|targets|!targets.is_empty()) else{return false};
+    targets.iter().all(|target|target.as_str().is_some_and(|path|
+        crate::engine::rsi::safe_path(path) &&
+        accepted_hashes[path].as_str().is_some_and(|sha|
+            sha.len()==64&&sha.bytes().all(|c|c.is_ascii_hexdigit()))))
+}
+
+/// A plan is not inherited because the model said it was good. Every
+/// declared target must actually be part of an accepted, hash-recorded
+/// model-authored source change. Unverified candidates cannot train policy.
+fn accepted_model_design(generation:&Value)->Option<&Value>{
+    let design=&generation["systemDesign"];
+    if generation["accepted"]!=true || generation["pairedRevalidated"]!=true
+        || generation["evaluation"]["metrics"]["eligible"]!=true
+        || generation["candidateOrigin"]!="model_driven_detached_worktree"
+        || !generation["acceptedCommit"].as_str().is_some_and(|s|s.len()==40)
+        || design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=generation["generatorCommit"]
+        || design["generationJobId"]!=generation["jobId"]
+        || !design_implemented(design,&generation["acceptedSourceHashes"]) {
+        return None;
+    }
+    Some(design)
+}
+
+/// Read only original, real source assets under the experiment checkout.
+pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
     let canonical_root=fs::canonicalize(root).ok();
     let mut components=Vec::new();
     for (role,paths) in COMPONENTS {
         let mut inventory=Vec::new();
         for relative in *paths {
-            if !crate::engine::rsi::safe_path(relative) {continue;}
-            let Some(root)=canonical_root.as_ref() else {continue;};
-            let Ok(file)=fs::canonicalize(root.join(relative)) else {continue;};
+            if !crate::engine::rsi::safe_path(relative){continue;}
+            let Some(root)=canonical_root.as_ref() else{continue};
+            let Ok(file)=fs::canonicalize(root.join(relative)) else{continue};
             if !file.starts_with(root)||!file.is_file(){continue;}
-            let Ok(contents)=fs::read(&file) else {continue;};
-            inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
-                "bytes":contents.len()}));
+            let Ok(bytes)=fs::read(&file) else{continue};
+            inventory.push(json!({"path":relative,
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),"bytes":bytes.len()}));
         }
-        components.push(json!({"role":role,"representativeSources":inventory}));
+        components.push(json!({"role":role,"domain":role_domain(role),
+            "representativeSources":inventory}));
+    }
+    // New accepted modules and novel architectural roles must remain visible.
+    // A fixed seven-role topology would prevent self-redesign of the topology.
+    for generation in history {
+        let Some(design)=accepted_model_design(generation) else{continue};
+        for role in design_roles(design) {
+            if components.iter().any(|row|row["role"]==role){continue;}
+            let files=design["componentFiles"][&role].as_array().or_else(||
+                (design_roles(design).len()==1).then(||design["targetFiles"].as_array()).flatten());
+            let entries=files.into_iter().flatten().filter_map(|path|{
+                let path=path.as_str().filter(|p|crate::engine::rsi::safe_path(p))?;
+                let base=canonical_root.as_ref()?;
+                let real=fs::canonicalize(base.join(path)).ok()?;
+                if !real.starts_with(base)||!real.is_file(){return None;}
+                let bytes=fs::read(real).ok()?;
+                let hash=format!("{:x}",Sha256::digest(&bytes));
+                if generation["acceptedSourceHashes"][path]!=hash{return None;}
+                Some(json!({"path":path,"sha256":hash,"bytes":bytes.len()}))
+            }).collect::<Vec<_>>();
+            if !entries.is_empty() && components.len()<64 {
+                components.push(json!({"role":role,"domain":design["nextDomain"],
+                    "representativeSources":entries}));
+            }
+        }
     }
     let evidence=history.iter().rev().take(8).map(|generation|json!({
         "generatorCommit":generation["generatorCommit"],
         "acceptedCommit":generation["acceptedCommit"],
-        "domain":generation["domain"],
-        "candidateTarget":generation["candidateTarget"],
+        "domain":generation["domain"],"candidateTarget":generation["candidateTarget"],
         "accepted":generation["accepted"]==true,
         "verdict":generation["evaluation"]["verdict"],
         "improvedHoldouts":generation["evaluation"]["metrics"]["improvedHoldouts"],
         "metaHoldoutGains":generation["evaluation"]["metrics"]["metaHoldoutGains"],
         "regressions":generation["evaluation"]["metrics"]["regressions"],
-        "candidateOrigin":generation["candidateOrigin"]
+        "candidateOrigin":generation["candidateOrigin"],
+        "designId":generation["systemDesign"]["id"],
+        "attemptedFiles":generation["focusFiles"],
+        "modelError":generation["error"]
     })).collect::<Vec<_>>();
+    let files=source_inventory(root);
+    let tree=format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&files).unwrap_or_default()));
+    let count=files.len();
     json!({
-        "source":"compiled_descendant_system_blueprint_v1",
+        "source":"compiled_descendant_system_blueprint_v2",
         "generatorCommit":revision,
         "architecture":components,
+        "sourceInventory":files.into_iter().take(64).collect::<Vec<_>>(),
+        "sourceFileCount":count,"sourceTreeSha256":tree,
         "historyCount":history.len(),
-        "inheritedDesign":history.last().filter(|g|g["accepted"]==true && g["pairedRevalidated"]==true && g["evaluation"]["metrics"]["eligible"]==true).map(|g|g["systemDesign"].clone()).unwrap_or(Value::Null),
+        "inheritedDesign":history.iter().rev().find_map(accepted_model_design)
+            .cloned().unwrap_or(Value::Null),
         "recentMeasuredGenerations":evidence,
         "scope":"whole_system",
-        "designOwnership":"compiled_descendant_and_its_model_worker",
-        "immutableBoundary":["experiment_baseline","frozen_paired_evaluator","budget","production_apply_gate"]
+        "designOwnership":"compiled_descendant_task_and_meta_controller",
+        "immutableBoundary":["experiment_baseline","frozen_paired_evaluator","budget",
+            "production_apply_gate"]
     })
 }
 
