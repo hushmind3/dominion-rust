@@ -202,6 +202,8 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
     let mut successes=0_f64;
     let mut gains=0_f64;
     let mut regressions=0_f64;
+    let mut productive_children=0_f64;
+    let mut observed_children=0_f64;
     for g in history {
         if g["openProgramPlan"]["program"]["revision"]!=program["revision"]
             || g["openProgramPlan"]["nodeId"]!=n["id"]
@@ -215,6 +217,30 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
             && g["acceptedSourceHashes"][target_path].as_str().is_some_and(|h|
                 h.len()==64 && h.bytes().all(|b|b.is_ascii_hexdigit())) {
             successes+=1.0;
+            // A successful task patch is a different observation from
+            // whether the newly built child can improve another subsystem.
+            // Learn clade productivity only from a different compiled binary
+            // and its own independently adopted, source-bound experiment.
+            if let Some(head)=g["acceptedCommit"].as_str() {
+                for child in history.iter().filter(|child|
+                    child["generatorCommit"].as_str()==Some(head)
+                    && child["generatorBinarySha256"].as_str().is_some_and(|h|
+                        !h.is_empty())
+                    && child["generatorBinarySha256"]!=g["generatorBinarySha256"]
+                    && child["jobId"]!=g["jobId"]) {
+                    observed_children+=1.0;
+                    let different_role=child["systemDesign"]["components"]
+                        .as_array().is_some_and(|roles|roles.iter().any(|role|
+                            role!=&n["role"] && role!="improvement_methods"))
+                        || child["systemDesign"]["component"].as_str()
+                            .is_some_and(|role|role!=n["role"].as_str().unwrap_or(""));
+                    if different_role && actual_source_role(child)
+                        && child["evaluation"]["metrics"]["improvedHoldouts"]
+                            .as_u64().unwrap_or(0)>0 {
+                        productive_children+=1.0;
+                    }
+                }
+            }
         }
         if g["pairedRevalidated"]==true {
             gains+=g["evaluation"]["metrics"]["improvedHoldouts"]
@@ -227,6 +253,7 @@ fn score(history: &[Value], program: &Value, n: &Value) -> f64 {
     // measurements never include hidden holdout identities or answers.
     (successes+1.0)/(trials+2.0)
         + 0.35*(gains-regressions)/(gains+regressions+2.0)
+        + 0.44*(productive_children+1.0)/(observed_children+2.0)
         + 0.20/(trials+1.0).sqrt()
 }
 /// The parent may invent a NEW experiment graph or execute the current one.
@@ -316,6 +343,8 @@ pub(crate) fn synthesize(history: &[Value], frontier: &[Value], commit: &str)
         "program":program,"programRevision":program["revision"],
         "nodeId":selected["id"],"node":selected,"target":target,"stage":stage,
         "estimatedPriority":priority,
+        "rankerLearnedFrom":"independent_task_results_and_rebuilt_child_productivity",
+        "cladeProductivityMeasuredNotGuaranteed":true,
         "qualityProven":false,"decisionOwner":"rebuilt_descendant_binary"
     });
     plan["revision"]=json!(hash(&plan));
