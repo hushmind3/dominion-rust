@@ -102,8 +102,12 @@ def run():
         model.save_pretrained(str(out),safe_serialization=True)
         tok.save_pretrained(str(out))
         artifact=out/"adapter_model.safetensors"
-        if not artifact.is_file(): raise ValueError("LoRA weights not created")
-        response.update(status="trained",artifact=artifact.name,adapterSha256=sha_file(artifact))
+        config=out/"adapter_config.json"
+        if not artifact.is_file() or not config.is_file():
+            raise ValueError("The PEFT weights/config pair was not created")
+        response.update(status="trained",artifact=artifact.name,
+                        adapterSha256=sha_file(artifact),
+                        adapterConfigSha256=sha_file(config))
     print("DOMINION_ADAPTER_RESULT="+json.dumps(response,sort_keys=True))
 
 if __name__=="__main__":

@@ -134,7 +134,15 @@ pub(crate) async fn run_tool(
             return Err("로컬 LoRA 파일의 SHA-256 불일치".into());
         }
         receipt["adapterCreated"]=json!(true);
+        let config=fs::canonicalize(root.join("adapter_config.json"))
+            .map_err(|e|e.to_string())?;
+        let actual_config_hash=sha_file(&config)?;
+        if !inside(&config,&root)
+            ||parsed["adapterConfigSha256"].as_str()!=Some(actual_config_hash.as_str()){
+            return Err("LoRA 구성 파일의 SHA-256 불일치".into());
+        }
         receipt["adapterSha256"]=parsed["adapterSha256"].clone();
+        receipt["adapterConfigSha256"]=parsed["adapterConfigSha256"].clone();
         receipt["candidateDirectory"]=json!(root);
         let saved=state.store.put("rsi_adapter_candidate",&receipt)
             .ok_or("학습된 어댑터 후보의 영구 기록 실패")?;
@@ -210,6 +218,7 @@ mod model_promotion_tests{
             "status":"promoted","pairedModelImprovementMeasured":true,
             "campaignId":"campaign-a","generatorCommit":"a".repeat(40),
             "adapterSha256":"b".repeat(64),
+            "adapterConfigSha256":"e".repeat(64),
             "privateCasesSha256":"c".repeat(64),
             "independentEvaluatorSha256":"d".repeat(64),
             "adoptionScope":"isolated_descendant_inference_only",
@@ -303,6 +312,14 @@ pub(crate) async fn evaluate_candidate(
             ||sha_file(&training)?!=train_sha{
             return Err("독립 평가 전 학습 데이터 계보가 변경됐습니다.".into());
         }
+        let config_expected=candidate["adapterConfigSha256"].as_str()
+            .filter(|s|hex(s)).ok_or("어댑터 구성 파일 해시 없음")?;
+        let config_path=fs::canonicalize(adapter.join("adapter_config.json"))
+            .map_err(|e|e.to_string())?;
+        if !inside(&config_path,&adapter)
+            ||sha_file(&config_path)?!=config_expected{
+            return Err("독립 평가 전 LoRA 설정 파일 변경".into());
+        }
         let private_root=fs::canonicalize(state.config.data_dir.join("rsi-adapter-eval-private"))
             .map_err(|e|format!("독립 평가 자료가 준비되지 않았습니다: {e}"))?;
         let manifest:Value=serde_json::from_slice(&fs::read(private_root.join("manifest.json"))
@@ -335,6 +352,8 @@ pub(crate) async fn evaluate_candidate(
             .arg("--adapter").arg(&adapter).arg("--cases").arg(&dataset)
             .arg("--case-sha").arg(case_sha)
             .arg("--train").arg(&training).arg("--train-sha").arg(train_sha)
+            .arg("--adapter-config-sha").arg(config_expected)
+            .arg("--adapter-sha").arg(expected)
             .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1");
         let result=tokio::time::timeout(Duration::from_secs(900),
             evaluator.output()).await
@@ -354,6 +373,7 @@ pub(crate) async fn evaluate_candidate(
             "campaignId":campaign_id,"generationJobId":generation["jobId"],
             "candidateId":candidate["id"],"generatorCommit":generation["generatorCommit"],
             "baseModel":base,"candidateDirectory":adapter,"adapterSha256":expected,
+            "adapterConfigSha256":config_expected,
             "privateCasesSha256":case_sha,"independentEvaluatorSha256":script_sha,
             "measurements":metrics,
             "pairedModelImprovementMeasured":promoted,
@@ -394,6 +414,7 @@ fn promotion_scope_valid(receipt:&Value,campaign:&str)->bool{
         && receipt["generatorCommit"].as_str().is_some_and(|s|
             s.len()==40 && s.bytes().all(|b|b.is_ascii_hexdigit()))
         && receipt["adapterSha256"].as_str().is_some_and(hex)
+        && receipt["adapterConfigSha256"].as_str().is_some_and(hex)
         && receipt["privateCasesSha256"].as_str().is_some_and(hex)
         && receipt["independentEvaluatorSha256"].as_str().is_some_and(hex)
         && receipt["measurements"]["source"]=="separate_parent_paired_lora_oracle_v1"
@@ -424,11 +445,15 @@ pub(crate) fn selected_for_child(state:&AppState,campaign_id:&str)->Value{
         else{return Value::Null};
     let Some(expected)=receipt["adapterSha256"].as_str().filter(|s|hex(s))
         else{return Value::Null};
+    let Some(config_expected)=receipt["adapterConfigSha256"].as_str()
+        .filter(|s|hex(s))else{return Value::Null};
     let root=match fs::canonicalize(state.config.data_dir.join("rsi-adapter-candidates")){
         Ok(x)=>x,Err(_)=>return Value::Null};
     let path=match fs::canonicalize(location){Ok(x)=>x,Err(_)=>return Value::Null};
     if !inside(&path,&root)||sha_file(&path.join("adapter_model.safetensors"))
-        .ok().as_deref()!=Some(expected){return Value::Null;}
+        .ok().as_deref()!=Some(expected)
+        ||sha_file(&path.join("adapter_config.json")).ok().as_deref()
+            !=Some(config_expected){return Value::Null;}
     receipt
 }
 
@@ -480,6 +505,11 @@ pub(crate) async fn launch(
         .ok_or("LoRA 어댑터 디렉터리 없음")?).map_err(|e|e.to_string())?;
     let sha=promoted["adapterSha256"].as_str().filter(|s|hex(s))
         .ok_or("LoRA 해시가 올바르지 않습니다.")?;
+    let config_sha=promoted["adapterConfigSha256"].as_str()
+        .filter(|s|hex(s)).ok_or("어댑터 설정 해시 없음")?;
+    if sha_file(&dir.join("adapter_config.json"))?!=config_sha{
+        return Err("후손의 LoRA 설정이 평가 기록과 다릅니다.".into());
+    }
     if sha_file(&dir.join("adapter_model.safetensors"))?!=sha{
         return Err("채택된 모델 가중치가 변경됐습니다.".into());
     }
@@ -490,6 +520,7 @@ pub(crate) async fn launch(
     let mut process=Command::new("python3");
     process.arg(&script).arg("--base").arg(&model)
         .arg("--adapter").arg(&dir).arg("--sha").arg(sha)
+        .arg("--config-sha").arg(config_sha)
         .arg("--port").arg(port.to_string())
         .env("HF_HUB_OFFLINE","1").env("TRANSFORMERS_OFFLINE","1")
         .env("PYTHONNOUSERSITE","1")

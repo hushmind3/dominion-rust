@@ -108,9 +108,15 @@ def main():
     parser.add_argument("--case-sha",required=True)
     parser.add_argument("--train",required=True)
     parser.add_argument("--train-sha",required=True)
+    parser.add_argument("--adapter-sha",required=True)
+    parser.add_argument("--adapter-config-sha",required=True)
     options=parser.parse_args()
     test_cases=cases(Path(options.cases),options.case_sha)
     verify_training_separation(Path(options.train),options.train_sha,test_cases)
+    adapter_root=Path(options.adapter).resolve(strict=True)
+    if hash_file(adapter_root/"adapter_model.safetensors")!=options.adapter_sha \
+            or hash_file(adapter_root/"adapter_config.json")!=options.adapter_config_sha:
+        raise ValueError("Adapter weights/config changed before private evaluation")
     from transformers import AutoModelForCausalLM,AutoTokenizer
     from peft import PeftModel
     import torch

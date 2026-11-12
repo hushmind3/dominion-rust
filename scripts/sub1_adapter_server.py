@@ -27,11 +27,15 @@ def main():
     parser.add_argument("--base",required=True)
     parser.add_argument("--adapter",required=True)
     parser.add_argument("--sha",required=True)
+    parser.add_argument("--config-sha",required=True)
     parser.add_argument("--port",type=int,required=True)
     cli=parser.parse_args()
     if not 0<cli.port<65536:raise ValueError("Invalid local port")
     adapter=Path(cli.adapter).resolve(strict=True)
     weights=adapter/"adapter_model.safetensors"
+    config=adapter/"adapter_config.json"
+    if not config.is_file() or digest(config)!=cli.config_sha:
+        raise ValueError("Promoted adapter config was changed")
     if not weights.is_file() or digest(weights)!=cli.sha:
         raise ValueError("Promoted adapter was changed")
     from transformers import AutoModelForCausalLM,AutoTokenizer
