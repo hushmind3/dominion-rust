@@ -3025,6 +3025,7 @@ async fn run_loop(
             }
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
             child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
+            child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
             descendant_plan=plan;
@@ -3318,6 +3319,8 @@ async fn run_loop(
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
         generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
+        generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
+        generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3482,6 +3485,8 @@ async fn run_loop(
         generation["knowledgeArtifactHashes"]=json!(hashes);
         generation["newFindings"]=json!(new_findings);
         generation["stopReason"]=json!(stopped);
+        generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
+            &generation["metaPolicy"],&generation);
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
             generation["error"]=Value::Null;
@@ -3806,6 +3811,7 @@ fn compiled_system_target(
         || plan["historyCount"].as_u64() != Some(history_len as u64)
         || plan["attempt"].as_u64() != Some(history_len as u64 + 1)
         || plan["systemBlueprint"] != input["rsiSystemBlueprint"]
+        || plan["metaPolicy"] != input["rsiMetaPolicy"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
         || input["rsiTargetDomain"] != domain
@@ -4083,15 +4089,17 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let blueprint=crate::engine::rsi_system::blueprint(Path::new(lab),revision,&history);
     let frontier=crate::engine::rsi_system::architecture_frontier(
         &state,&blueprint,&history,campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab));
-    // Only the rebuilt descendant chooses coverage gaps. Explicit narrow
-    // owner objectives still constrain the choice to their own domains.
-    let architecture_target=frontier.iter().find(|row|
-        candidate_domains(&objective).contains(&row["domain"].as_str().unwrap_or("")))
-        .cloned().unwrap_or(Value::Null);
+    // This meta-controller lives in the REBUILT BINARY. The frozen previous
+    // coordinator cannot overwrite its comparative learning or target.
+    let permitted=candidate_domains(&objective);
+    let meta=crate::engine::rsi_meta_controller::synthesize(
+        &history,&frontier,&permitted,inherited.as_deref());
+    let architecture_target=meta["target"].clone();
     let auto=parent["input"]["selectionPolicy"]=="automatic";
-    let selected=inherited.clone().or_else(||if auto {
-        architecture_target["domain"].as_str().map(str::to_string)
-    }else{None});
+    let selected=if auto{
+        architecture_target["domain"].as_str()
+            .map(str::to_string).or(inherited.clone())
+    }else{inherited.clone()};
     let (domain,selection,strategy)=select_generation_strategy(
         &state,&history,&objective,None,None,selected,revision);
     let mut focus=parent["input"].clone();
@@ -4103,7 +4111,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let mut ranked=if focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
         choose_focus_files(&state,&focus,&history,policy.as_ref())
     }else{Vec::new()};
-    if auto && inherited.is_none() && architecture_target["domain"]==domain
+    if auto && architecture_target["domain"]==domain
         && focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
         if let (Some(path),Some(hash))=(
             architecture_target["path"].as_str(),
@@ -4125,6 +4133,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "rankedFiles":ranked,"systemBlueprint":blueprint,
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
+        "metaPolicy":meta,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
@@ -4193,10 +4202,15 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             job["input"]["rsiIndexId"].as_str().unwrap_or(""),root);
         let plan=&job["input"]["rsiDescendantPlan"];
         let allowed_domains=candidate_domains(&objective);
-        let expected_target=frontier.iter().find(|row|
-            allowed_domains.contains(&row["domain"].as_str().unwrap_or("")))
-            .cloned().unwrap_or(Value::Null);
-        if plan["architectureFrontier"]!=json!(frontier)
+        let inherited_domain=if job["input"]["selectionPolicy"]=="automatic"{
+            crate::engine::rsi_system::inherited_domain(&refreshed_history)
+        }else{None};
+        let expected_meta=crate::engine::rsi_meta_controller::synthesize(
+            &refreshed_history,&frontier,&allowed_domains,inherited_domain.as_deref());
+        let expected_target=expected_meta["target"].clone();
+        if plan["metaPolicy"]!=expected_meta
+            || job["input"]["rsiMetaPolicy"]!=expected_meta
+            || plan["architectureFrontier"]!=json!(frontier)
             || plan["architectureTarget"]!=expected_target
             || job["input"]["rsiArchitectureTarget"]!=expected_target
             || plan["sourceTreeSha256"]!=model["sourceTree"]["sourceTreeSha256"]
@@ -4264,6 +4278,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "sourceIndexId":job["input"]["rsiIndexId"],
             "attempt":job["input"]["rsiDescendantPlan"]["attempt"]
         });
+        job["rsiMetaPolicyExecuted"]=json!({
+            "source":"running_compiled_descendant_meta_controller",
+            "generatorCommit":commit,
+            "metaRevision":job["input"]["rsiMetaPolicy"]["revision"],
+            "forecast":job["input"]["rsiMetaPolicy"]["forecast"],
+            "selectedRole":job["input"]["rsiMetaPolicy"]["target"]["role"]
+        });
     }
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
@@ -4293,7 +4314,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nCompiled descendant architecture target: role={} source={} currentSha256={} reason={}. Inspect source and make an actual cross-module change when needed. This is a proposed experiment, not a proven gain.\n",
                 target["role"],target["path"],target["sourceSha256"],target["reason"])
         }else{String::new()};
-        format!("{directive}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        let meta_directive=crate::engine::rsi_meta_controller::instruction(
+            &job["input"]["rsiMetaPolicy"]);
+        format!("{directive}\n{meta_directive}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,

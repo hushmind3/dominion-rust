@@ -33,6 +33,7 @@ pub mod rsi_archive;
 pub mod rsi_metrics;
 pub mod rsi_evolve;
 pub mod rsi_system;
+pub mod rsi_meta_controller;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;
 pub mod rsi_decision_rules;
