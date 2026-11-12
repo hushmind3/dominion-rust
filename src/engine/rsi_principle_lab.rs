@@ -271,7 +271,13 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
             let wins = accepted_roles.get(role).copied().unwrap_or(0) as f64;
             let bytes = f["sourceBytes"].as_u64().unwrap_or(0) as f64;
             let coverage = if f["verifiedRoleImproved"] == true { 0.0 } else { 1.0 };
-            coverage + 0.35 / (1.0 + n) + 0.20 / (1.0 + wins)
+            let trainability_gap = match role {
+                "models" => 0.30 / (1.0 + wins),
+                "learning" => 0.16 / (1.0 + wins),
+                _ => 0.0
+            };
+            coverage + trainability_gap + 0.35 / (1.0 + n)
+                + 0.20 / (1.0 + wins)
                 - 0.05 * (bytes / 25_000.0).min(1.0)
         };
         score(b).partial_cmp(&score(a))
@@ -442,6 +448,23 @@ mod tests {
         let p = plan(&[g], &[], "0123456789abcdef0123456789abcdef01234567");
         assert!(p["priorPrinciples"].as_array().unwrap().is_empty());
         assert!(!p.to_string().contains("secret"));
+    }
+    #[test]
+    fn finite_transfer_cannot_be_faked_by_an_unverified_proposal() {
+        let g=json!({"accepted":true,"pairedRevalidated":false,
+            "systemDesign":{"improvementPrinciple":{"name":"proposed"}},
+            "evaluation":{"metrics":{"eligible":true}}});
+        assert!(!established_transfer(&[g]));
+    }
+    #[test]
+    fn task_meta_probe_cannot_starve_open_invention_forever() {
+        let history=vec![
+            json!({"principleActive":true,"accepted":false}),
+            json!({"principleActive":true,"accepted":false})
+        ];
+        let p=plan(&history,&[], "0123456789abcdef0123456789abcdef01234567");
+        assert_eq!(p["shouldProbeTaskMethod"],false);
+        assert_eq!(p["consecutivePrincipleProbes"],2);
     }
     #[test]
     fn coupling_requires_two_distinct_witnessed_sources() {
