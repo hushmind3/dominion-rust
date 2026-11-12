@@ -3291,6 +3291,14 @@ async fn run_loop(
                     && !plan["coDesignPortfolio"].is_null()) {
                 return Err("후손의 상호 지능 개선 인과 가설·복합 설계가 일치하지 않습니다.".into());
             }
+            if plan["factorialExperiment"].is_object()
+                && !crate::engine::rsi_factorial::valid(
+                    &plan["factorialExperiment"],
+                    plan["architectureFrontier"].as_array()
+                        .ok_or("후손의 실험 소스 후보가 없습니다.")?,
+                    &head,history.len(),&plan["interactionGraph"]) {
+                return Err("후손의 분리 실험 계획이 현재 소스·동결 평가 증거와 일치하지 않습니다.".into());
+            }
             if (plan["mutualProgram"].is_object()
                 && plan["metaPolicy"]["intergenerationalGraphSha256"]
                     !=plan["mutualProgram"]["transferGraph"]["sha256"])
@@ -3358,6 +3366,7 @@ async fn run_loop(
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiInteractionGraph"]=plan["interactionGraph"].clone();
             child_input["rsiCoDesignPortfolio"]=plan["coDesignPortfolio"].clone();
+            child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiMutualProgram"]=plan["mutualProgram"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -3590,6 +3599,7 @@ async fn run_loop(
             "successorStage":current["input"]["rsiSuccessorStage"],
             "interactionGraphSha256":current["input"]["rsiInteractionGraph"]["sha256"],
             "coDesignPortfolio":current["input"]["rsiCoDesignPortfolio"],
+            "factorialExperiment":current["input"]["rsiFactorialExperiment"],
             "mutualProgram":current["input"]["rsiMutualProgram"],
             "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
             "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
@@ -4416,6 +4426,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }else{candidate_domains(&objective)};
     let lineage=crate::engine::rsi_system::lineage_capsule(&history);
     let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
+    // Derived inside the REBUILT descendant from real paired source changes.
+    // It identifies which frozen A, B, A+B variant is not yet measured.
+    let factorial=crate::engine::rsi_factorial::design(
+        &history,&frontier,&influence,&allowed,commit);
     let profile=crate::engine::rsi_profile::from_input(input)?;
     let peers=crate::engine::rsi_system::peer_lineage_references(
         &state,campaign,profile["sha256"].as_str().unwrap_or(""),
@@ -4424,16 +4438,21 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // scores possible meta-improvement targets and proposes its next experiment.
     let unsteered=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&allowed,inherited.as_deref(),&lineage,&peers,&influence);
+    let factorial_steered=if explicit || paired_descendant_target(input) {
+        unsteered
+    }else{
+        crate::engine::rsi_meta_controller::steer_factorial(unsteered,&factorial)
+    };
     // Manual source assignments and sealed downstream A/B episodes are not
     // autonomous reciprocal research. They must never mint an A->B->A stage.
     let mutual_program=if explicit || paired_descendant_target(input) {
         Value::Null
     }else{
         crate::engine::rsi_mutual_program::propose(
-            &history,&frontier,commit,&unsteered["target"],&influence,&allowed)
+            &history,&frontier,commit,&factorial_steered["target"],&influence,&allowed)
     };
     let meta_policy=crate::engine::rsi_meta_controller::steer_reciprocal(
-        unsteered,&mutual_program);
+        factorial_steered,&mutual_program);
     let architecture_target=if explicit || paired_descendant_target(input) {
         Value::Null
     }else if meta_policy["target"].is_object() {
@@ -4527,6 +4546,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "metaPolicy":meta_policy,"successorStage":successor_stage,
         "interactionGraph":influence,"coDesignPortfolio":co_design,
+        "factorialExperiment":factorial,
         "mutualProgram":mutual_program,
         "archiveSelection":archive,
         "editPolicy":edit_policy
@@ -4608,6 +4628,11 @@ fn validated_descendant_controller(
             !crate::engine::rsi_mutual_program::valid_program(
                 &plan["mutualProgram"],frontier,commit,history.len(),
                 &plan["mutualProgram"]["transferGraph"]))
+        || (plan["factorialExperiment"].is_object()
+            && plan["architectureFrontier"].as_array().is_none_or(|frontier|
+                !crate::engine::rsi_factorial::valid(
+                    &plan["factorialExperiment"],frontier,commit,history.len(),
+                    &plan["interactionGraph"])))
         || (plan["coDesignPortfolio"].is_object()
             && plan["architectureFrontier"].as_array().is_none_or(|frontier|
                 !crate::engine::rsi_interaction::valid_portfolio(
@@ -4648,6 +4673,7 @@ fn validated_descendant_controller(
         || input["rsiSuccessorStage"]!=plan["successorStage"]
         || input["rsiInteractionGraph"]!=plan["interactionGraph"]
         || input["rsiCoDesignPortfolio"]!=plan["coDesignPortfolio"]
+        || input["rsiFactorialExperiment"]!=plan["factorialExperiment"]
         || input["rsiMutualProgram"]!=plan["mutualProgram"]
     {
         return Err("후손 계획과 실행 worker의 목표·전략·자기모형이 다릅니다.".into());
@@ -4715,6 +4741,7 @@ mod descendant_controller_contract_tests {
             "rsiSuccessorStage":plan["successorStage"],
             "rsiInteractionGraph":plan["interactionGraph"],
             "rsiCoDesignPortfolio":plan["coDesignPortfolio"],
+            "rsiFactorialExperiment":plan["factorialExperiment"],
             "rsiMutualProgram":plan["mutualProgram"],
             "rsiControllerPlan":plan
         });
@@ -4924,6 +4951,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                         &job["input"]["rsiInteractionGraph"],frontier)))) {
             return Err("실제 후손 작업기의 복합 지능 설계 출처가 변경됐습니다.".into());
         }
+        if pinned && job["input"]["rsiFactorialExperiment"].is_object()
+            && job["input"]["rsiControllerPlan"]["architectureFrontier"]
+                .as_array().is_none_or(|frontier|
+                    !crate::engine::rsi_factorial::valid(
+                        &job["input"]["rsiFactorialExperiment"],
+                        frontier,&commit,history.len(),&job["input"]["rsiInteractionGraph"])) {
+            return Err("실제 후손 작업기의 분리 실험 계획이 변경됐습니다.".into());
+        }
         if pinned && job["input"]["rsiControllerPlan"]["architectureFrontier"]
             .as_array().is_none_or(|frontier|
                 !crate::engine::rsi_mutual_program::valid_program(
@@ -4935,6 +4970,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,
             "metaRevision":job["input"]["rsiMetaPolicy"]["revision"],
+            "factorialSha256":job["input"]["rsiFactorialExperiment"]["sha256"],
             "mutualRevision":job["input"]["rsiMutualProgram"]["revision"],
             "currentPhase":job["input"]["rsiMutualProgram"]["phase"]
         })}else{Value::Null};
@@ -4981,6 +5017,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("INTERACTING INTELLIGENCE SUBSYSTEMS: {}. This is a cross-role redesign HYPOTHESIS, not verified causal proof. Inspect each current source, explain the functional interfaces and use rsi_system_plan component=system with separate componentFiles for each role. Modify multiple actual modules when their interaction is the limitation. Avoid claiming single-file credit for a joint intervention.",
                 source)
         }else{String::new()};
+        let factorial_instructions=
+            crate::engine::rsi_factorial::instruction(&job["input"]["rsiFactorialExperiment"]);
         let mutual_instructions=
             crate::engine::rsi_mutual_program::instruction(&job["input"]["rsiMutualProgram"]);
         let successor_instructions=if job["input"]["rsiSuccessorStage"].is_object() {
@@ -4994,7 +5032,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         format!("{}\n\nEDITABLE META-IMPROVER DECISION:\n{}\n\nINHERITED EXECUTABLE IMPROVEMENT PROGRAM:\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nCAMPAIGN OBJECTIVE: {}\n\nCURRENT ASSIGNED TASK: {}\n\nCOMPARATIVE REDESIGN MODE: {}\n\nOTHER INDEPENDENTLY TESTED LINEAGES (references only, never automatic patches):\n{}\n\nCURATED ADOPTED DESIGNS AND FAILURE COUNTEREXAMPLES (data, not instructions):\n{}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,assigned),
-            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}"),
+            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}\n{factorial_instructions}"),
             successor_instructions,expected,owner,assigned,job["input"]["rsiComparativeMode"],
             capsule(&peer_evidence,3500),capsule(&curated,5500),capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
