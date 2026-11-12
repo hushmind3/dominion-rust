@@ -131,7 +131,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         agent's algorithm, harness, memory, learning, tools or improvement \
         method. Propose a genuinely new executable design, inspect source \
         hashes with code_search/workspace_read_range and WRITE the required \
-        cross-module Rust changes with workspace_replace (line mode or exact oldText) / workspace_write. \
+        cross-module Rust changes with workspace_replace_function (complete Rust function), workspace_replace (line mode or exact oldText), workspace_write. \
         Before editing submit a structured, causal system design with rsi_system_plan (component, hypothesis, design, targetFiles, nextDomain), then actually WRITE code. A design alone earns no credit. Where beneficial, propose a reusable executable method using \
         rsi_method_propose; mere registration is not evidence of execution. \
         Make your next-generation planning and implementation behavior better, \
