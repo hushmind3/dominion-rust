@@ -52,6 +52,87 @@ fn source_inventory(root:&Path)->Vec<Value> {
     rows
 }
 
+/// Cross-component designs are source programs, not prose labels. A bundle
+/// has an explicit 1:1 attribution from each changed file to a system role;
+/// an unrelated one-file optimization cannot claim six improved capabilities.
+/// Adapted from the source-bound coupled redesign in Dominion Sub3/Sub4.
+fn valid_role(role:&str)->bool {
+    !role.is_empty() && role.len()<=64
+        && role.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-')
+        && role!="system"
+}
+
+fn design_roles(design:&Value)->Vec<String> {
+    design["components"].as_array().map(|roles|
+        roles.iter().filter_map(Value::as_str)
+            .filter(|role|valid_role(role)).map(str::to_string).collect()
+    ).unwrap_or_else(||design["component"].as_str()
+        .filter(|role|valid_role(role))
+        .map(|role|vec![role.to_string()]).unwrap_or_default())
+}
+
+fn design_role_files<'a>(design:&'a Value,role:&str)->Option<&'a Vec<Value>> {
+    design["componentFiles"][role].as_array().or_else(||
+        (design_roles(design).len()==1).then(||design["targetFiles"].as_array()).flatten())
+}
+
+/// A bundle is implemented only if every declared file is in the independently
+/// measured source diff, with an unchanged design-to-role mapping. No
+/// automatic "model says succeeded" or inferred coverage is accepted.
+fn design_implemented(design:&Value,changed:&[Value])->bool {
+    let Some(targets)=design["targetFiles"].as_array().filter(|files|!files.is_empty())
+        else{return false;};
+    let roles=design_roles(design);
+    if roles.is_empty(){return false;}
+    let mut mapped=std::collections::BTreeSet::<String>::new();
+    for role in &roles {
+        let Some(files)=design_role_files(design,role).filter(|files|!files.is_empty())
+            else{return false;};
+        for file in files {
+            let Some(path)=file.as_str().filter(|p|crate::engine::rsi::safe_path(p))
+                else{return false;};
+            if !targets.iter().any(|entry|entry==path)
+                || !changed.iter().any(|entry|entry==path)
+                || !mapped.insert(path.to_string()) {return false;}
+        }
+    }
+    targets.iter().all(|entry|entry.as_str()
+        .is_some_and(|path|mapped.contains(path)))
+}
+
+/// The predecessor may leave executable *planning intent* for its compiled
+/// successor. The successor is free to reject a stale stage and replan from
+/// its own real source graph. This is a task directive, not a proven gain.
+pub(crate) fn inherited_stage(
+    history:&[Value],frontier:&[Value]
+)->Option<Value>{
+    let prior=history.last()?;
+    let design=&prior["systemDesign"];
+    if prior["accepted"]!=true
+        || prior["evaluation"]["metrics"]["eligible"]!=true
+        || design["source"]!="model_authored_system_design"
+        || design["generatorCommit"]!=prior["generatorCommit"]
+        || design["generationJobId"]!=prior["jobId"]
+        || !design_implemented(design,prior["acceptedSourceHashes"]
+            .as_object()?.keys().map(|key|json!(key)).collect::<Vec<_>>().as_slice())
+    {return None;}
+    let stages=design["successorStages"].as_array()?;
+    stages.iter().find_map(|stage|{
+        let role=stage["role"].as_str()?;
+        let domain=stage["domain"].as_str()?;
+        let path=stage["path"].as_str()?;
+        if !crate::engine::rsi_evolve::DOMAINS.contains(&domain){return None;}
+        let actual=frontier.iter().find(|row|
+            row["path"]==path && row["role"]==role && row["domain"]==domain)?;
+        Some(json!({"role":role,"domain":domain,"path":path,
+            "sourceSha256":actual["sourceSha256"],
+            "objective":stage["objective"],
+            "sourceDesignId":design["id"],
+            "predecessorCommit":prior["acceptedCommit"],
+            "qualityProven":false}))
+    })
+}
+
 /// DGM/AlphaEvolve-style architecture frontier, evaluated by the descendant
 /// executable against its OWN current source graph. The resident coordinator
 /// receives a proposed next capability, not authority to invent that proposal.
@@ -114,7 +195,9 @@ pub(crate) fn architecture_frontier(
     for component in blueprint["architecture"].as_array().into_iter().flatten() {
         let Some(role)=component["role"].as_str() else {continue;};
         if role=="frontend" && !complete_core {continue;}
-        let Some(domain)=architecture_role_domain(role) else {continue;};
+        let Some(domain)=architecture_role_domain(role).or_else(||
+            component["domain"].as_str().filter(|d|
+                crate::engine::rsi_evolve::DOMAINS.contains(d))) else {continue;};
         let touched=verified_roles.contains(role);
         let mut available=component["representativeSources"].as_array()
             .into_iter().flatten()
@@ -179,7 +262,45 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
                 "bytes":contents.len()}));
         }
-        components.push(json!({"role":role,"representativeSources":inventory}));
+        components.push(json!({"role":role,
+            "domain":architecture_role_domain(role).unwrap_or("improver"),
+            "representativeSources":inventory}));
+    }
+    // The original seven roles are a seed, not a permanent ceiling.
+    // New model-authored intelligence modules become visible in the actual
+    // rebuilt descendant only when an accepted source change introduced them.
+    for generation in history.iter().filter(|g|g["accepted"]==true
+        && g["evaluation"]["metrics"]["eligible"]==true
+        && g["pairedRevalidated"]==true) {
+        let design=&generation["systemDesign"];
+        if design["generatorCommit"]!=generation["generatorCommit"]
+            || design["generationJobId"]!=generation["jobId"] {continue;}
+        for role in design_roles(design) {
+            if components.iter().any(|existing|existing["role"]==role) {continue;}
+            let Some(files)=design_role_files(design,&role) else{continue;};
+            let mut sources=Vec::new();
+            for entry in files {
+                let Some(path)=entry.as_str()
+                    .filter(|p|crate::engine::rsi::safe_path(p)) else{continue;};
+                let Ok(file)=fs::canonicalize(root.join(path)) else{continue;};
+                let Ok(base)=fs::canonicalize(root) else{continue;};
+                if !file.starts_with(&base) || !file.is_file() {continue;}
+                let Ok(bytes)=fs::read(file) else{continue;};
+                let sha=format!("{:x}",Sha256::digest(&bytes));
+                // New roles cannot be invented solely in model metadata.
+                // Their FIRST accepted implementation is pinned to source.
+                if generation["acceptedSourceHashes"][path]!=sha {continue;}
+                sources.push(json!({"path":path,"sha256":sha,"bytes":bytes.len()}));
+            }
+            if !sources.is_empty() {
+                let domain=design["nextDomain"].as_str()
+                    .filter(|d|crate::engine::rsi_evolve::DOMAINS.contains(d))
+                    .unwrap_or("improver");
+                components.push(json!({"role":role,"domain":domain,
+                    "representativeSources":sources,
+                    "introducedBy":generation["acceptedCommit"]}));
+            }
+        }
     }
     let evidence=history.iter().rev().take(8).map(|generation|json!({
         "generatorCommit":generation["generatorCommit"],
