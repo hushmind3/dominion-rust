@@ -754,6 +754,8 @@ mod tests {
                 "evaluation":{"evidenceSha256":"e".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history));
+        assert!(!model_driven_capability_proven(&state,&history),
+            "three accepted source improvements do not imply a model ever made a code edit");
         let mut broken=history.clone();
         broken[1]=json!({"accepted":false});
         assert!(!capability_proven(&state,&broken),
