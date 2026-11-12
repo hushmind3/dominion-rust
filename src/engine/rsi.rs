@@ -489,9 +489,45 @@ fn generation_proof(state:&AppState,generation:&Value)
 /// model-origin source write whose FINAL bytes were adopted. Native mutation
 /// may establish source improvement, but is never proof that an API model
 /// generated an improvement, even if it independently passes A/B evaluation.
+/// Independently replay the real API route, owner-selected model and origin
+/// of the candidate. A written generation JSON field is not a usage receipt.
+pub(crate) fn model_route_replayed(state:&AppState,g:&Value)->bool {
+    if !model_driven_generation_provenance(g) {return false;}
+    let (Some(id),Some(job_id),Some(session),Some(provider),Some(model))=(
+        g["candidateId"].as_str(),g["jobId"].as_str(),
+        g["apiRouteSessionId"].as_str(),g["requestedProviderId"].as_str(),
+        g["requestedModel"].as_str())else{return false};
+    let Some(job)=state.store.get("job",job_id)else{return false};
+    if job["sessionId"]!=session
+        || job["input"]["providerId"]!=provider
+        || job["input"]["model"]!=model {return false;}
+    let Some(candidate)=state.store.get("rsi_candidate",id)else{return false};
+    if candidate["origin"]!="model_driven_detached_worktree"
+        || candidate["rsiJobId"]!=job_id
+        || candidate["modelSessionId"]!=session
+        || candidate["generatorModel"]!=model
+        || candidate["actualModelRoute"]["providerId"]!=provider
+        || candidate["actualModelRoute"]["model"]!=model
+        || candidate["modelRouteSessionExclusive"]!=true {return false;}
+    let usage=state.store.api_route_usage(session,provider,model);
+    if usage["matchedExactProviderModelSession"]!=true
+        || usage!=g["apiRouteUsage"]
+        || usage!=candidate["modelRouteUsage"]{return false;}
+    let Ok(routes)=state.store.session_model_routes(session)else{return false};
+    routes.len()==1 && routes[0]["providerId"]==provider
+        && routes[0]["model"]==model
+}
+
 pub(crate) fn model_driven_generation_provenance(g:&Value)->bool {
     if g["accepted"]!=true
         || g["candidateOrigin"]!="model_driven_detached_worktree"
+        || g["apiRouteExecutionVerified"]!=true
+        || g["apiRouteSessionExclusive"]!=true
+        || g["apiRouteUsage"]["matchedExactProviderModelSession"]!=true
+        || g["requestedProviderId"]!=g["generatorProviderId"]
+        || g["requestedModel"]!=g["generatorModel"]
+        || g["modelSelectionActual"]["providerId"]!=g["generatorProviderId"]
+        || g["modelSelectionActual"]["model"]!=g["generatorModel"]
         || g["tokenUsage"]["calls"].as_u64().unwrap_or(0)==0
         || g["editEvidence"]["verifiedWrites"].as_u64().unwrap_or(0)==0 {
         return false;
@@ -521,11 +557,7 @@ fn capability_proven_with_origin(state:&AppState, history:&[Value], model_only:b
     for generation in history {
         let Some(generator)=generation["generatorCommit"].as_str().filter(|s|sha(s))
             else{chain.clear();continue;};
-        if model_only && (!model_driven_generation_provenance(generation)
-            || generation["candidateId"].as_str()
-                .and_then(|id|state.store.get("rsi_candidate",id))
-                .is_none_or(|candidate|
-                    candidate["origin"]!="model_driven_detached_worktree")) {
+        if model_only && !model_route_replayed(state,generation) {
             chain.clear();continue;
         }
         let Some(proof)=generation_proof(state,generation)
@@ -628,7 +660,7 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
             "independentReceipt":proof.is_some(),
             "modelProviderCalls":generation["tokenUsage"]["calls"],
             "modelDrivenSourceWriteProvenance":
-                proof.is_some() && model_driven_generation_provenance(generation),
+                proof.is_some() && model_route_replayed(state,generation),
             "sourceImprovementOrigin":generation["candidateOrigin"],
             "metaTransfer":proof.as_ref().is_some_and(|(_,meta,_)|*meta),
             "regressions":metrics.as_ref().and_then(|metrics|metrics["regressions"].as_u64()),
@@ -906,6 +938,13 @@ mod model_driven_origin_audit_tests{
         let mut g=json!({
             "accepted":true,"candidateOrigin":"native_inductive_source_mutation",
             "tokenUsage":{"calls":0},"editEvidence":{"verifiedWrites":0},
+            "apiRouteExecutionVerified":true,"apiRouteSessionExclusive":true,
+            "apiRouteUsage":{"calls":1,"totalTokens":20,
+                "matchedExactProviderModelSession":true},
+            "apiRouteSessionId":"session-real",
+            "requestedProviderId":"provider","requestedModel":"model",
+            "generatorProviderId":"provider","generatorModel":"model",
+            "modelSelectionActual":{"providerId":"provider","model":"model"},
             "acceptedSourceHashes":{"src/engine/memory.rs":"a".repeat(64)}
         });
         assert!(!model_driven_generation_provenance(&g));
