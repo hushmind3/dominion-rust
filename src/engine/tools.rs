@@ -59,11 +59,15 @@ pub fn definitions() -> Vec<Value> {
         tool("unsafe_audit", "Scan workspace Rust files for unsafe blocks, functions, impls, traits or extern items without a preceding SAFETY justification. Read-only; available only during RSI generations.", object(json!({
             "path": text("Optional relative file or folder; defaults to the workspace root")
         }), vec![])),
-        tool("rsi_system_plan", "Propose a causal redesign of the running descendant's own algorithms, harness, memory, learning, tools or improvement methods; the proposal earns no credit until real code is independently adopted.", object(json!({
-            "component":json!({"type":"string","enum":["algorithms","harness","memory","learning","tools","improvement_methods","frontend"]}),
+        tool("rsi_system_plan", "Propose a causal, source-bound redesign of one or multiple intelligence subsystems. A proposal is not evidence until every target is changed and independently adopted.", object(json!({
+            "component":text("Existing or newly invented component, or 'system' for a coupled redesign (ASCII letters, digits, '_' or '-')"),
+            "components":json!({"type":"array","items":{"type":"string"},"minItems":2,"maxItems":32,
+                "description":"For component=system, list the subsystems being redesigned, including new roles"}),
+            "componentFiles":json!({"type":"object","description":"For component=system, map each role to one or more entries from targetFiles; cover every target",
+                "additionalProperties":{"type":"array","items":{"type":"string"},"minItems":1}}),
             "hypothesis":text("Observed causal limitation and falsifiable prediction (20-2000 chars)"),
-            "design":text("Concrete executable redesign and how it changes the successor (30-6000 chars)"),
-            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":8}),
+            "design":text("Executable architectural change and how it improves the successor (30-6000 chars)"),
+            "targetFiles":json!({"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}),
             "nextDomain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS})
         }), vec!["component","hypothesis","design","targetFiles","nextDomain"])),
         tool("rsi_method_propose", "Save a reusable executable procedure learned during RSI research. Existing procedure nodes run through the normal tool runtime in later scheduled work; registration is not improvement evidence.", object(json!({

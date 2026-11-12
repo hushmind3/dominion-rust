@@ -3225,10 +3225,15 @@ async fn run_loop(
             if plan["systemBlueprint"]["generatorCommit"]!=head
                 || plan["systemBlueprint"]["historyCount"].as_u64()!=Some(history.len() as u64)
                 || plan["systemBlueprint"]["architecture"].as_array()
-                    .is_none_or(|items|items.len()!=7)
+                    .is_none_or(|items|items.is_empty() || items.len()>64)
                 || !plan["improvementDirective"].is_object() {
                 return Err("후손 시스템 자기모형·실패 학습·계보가 일치하지 않습니다.".into());
             }
+            // The invariant is the actual source, not an older generation's
+            // fixed role taxonomy or copied architecture ranking.
+            crate::engine::rsi_system::validate_plan_evidence(
+                &context.state,&lab,&head,
+                child_input["rsiIndexId"].as_str().unwrap_or(""),&plan)?;
             let domain=plan["domain"].as_str()
                 .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
             let focus=plan["focusFiles"].as_array()
@@ -3259,6 +3264,8 @@ async fn run_loop(
                 "generatorCommit":head
             });
             child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
+            child_input["rsiArchitectureFrontier"]=plan["architectureFrontier"].clone();
+            child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
             child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
             if !plan["archiveSelection"].is_null() {
                 let id=plan["archiveSelection"]["candidateId"].as_str()
@@ -3491,6 +3498,8 @@ async fn run_loop(
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
         generation["controllerPlan"]=current["input"]["rsiControllerPlan"].clone();
+        generation["architectureFrontier"]=current["input"]["rsiArchitectureFrontier"].clone();
+        generation["architectureTarget"]=current["input"]["rsiArchitectureTarget"].clone();
         generation["improvementDirective"]=current["input"]["rsiImprovementDirective"].clone();
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["improvementDirectiveVerified"]=current["rsiImprovementDirectiveVerified"].clone();
@@ -4217,13 +4226,37 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let mut history=state.store.all("rsi_generation").into_iter()
         .filter(|row|row["campaignId"]==campaign).collect::<Vec<_>>();
     history.sort_by_key(|row|row["attempt"].as_u64().unwrap_or(0));
+    let source=input["rsiSourceDir"].as_str()
+        .ok_or("후손 시스템 소스 위치가 없습니다.")?;
+    let source_root=Path::new(source);
+    let system_blueprint=crate::engine::rsi_system::blueprint(
+        source_root,commit,&history);
+    // Planning intelligence belongs to the newly compiled descendant.
+    // The former coordinator never recomputes this source-grounded ranking.
+    let frontier=crate::engine::rsi_system::architecture_frontier(
+        &state,&system_blueprint,&history,
+        input["rsiIndexId"].as_str().unwrap_or(""),source_root);
+    let architecture_target=frontier.first().cloned().unwrap_or(Value::Null);
+    let owner_focus=input["rsiFocusFiles"].as_array()
+        .is_some_and(|files|!files.is_empty());
+    let paired=paired_descendant_target(input);
+    let inherited=if input["rsiAutonomous"]==true {
+        crate::engine::rsi_system::inherited_domain(&history)
+    }else{None};
+    let frontier_hint=if input["rsiAutonomous"]==true && !paired && !owner_focus
+        && inherited.is_none() {
+        architecture_target["domain"].as_str().filter(|domain|DOMAINS.contains(domain))
+            .map(str::to_string)
+    }else{None};
+    let successor_hint=if paired || owner_focus {
+        input["rsiSelectedDomain"].as_str().map(str::to_string)
+    }else{
+        inherited.clone().or(frontier_hint)
+            .or_else(||system_evolution_target_hint(
+                input,snapshot["attempt"].as_u64().unwrap_or(0)))
+    };
     let objective=selection_objective(input);
-    let successor_hint=system_evolution_target_hint(input,
-        snapshot["attempt"].as_u64().unwrap_or(0))
-        .or_else(||if input["rsiAutonomous"]==true {
-            crate::engine::rsi_system::inherited_domain(&history)
-        }else{None});
-    let trial=if paired_descendant_target(input) {None} else {
+    let trial=if paired {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
     };
     let (domain,selection,strategy)=select_generation_strategy(
@@ -4234,14 +4267,26 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let policy=strategy["id"].as_str()
         .and_then(|id|state.store.get("algorithm",id))
         .or_else(||crate::engine::algorithms::active(&state,"selfimprove.search"));
-    let ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
+    let mut ranked=choose_focus_files(&state,&source_input,&history,policy.as_ref());
+    // A source-bound architecture gap is a descendant-selected candidate,
+    // never an independently proven gain.
+    if input["rsiAutonomous"]==true && !owner_focus && !paired && inherited.is_none()
+        && architecture_target["domain"]==domain {
+        if let Some(path)=architecture_target["path"].as_str() {
+            if crate::engine::rsi::safe_path(path) && source_root.join(path).is_file() {
+                ranked.retain(|row|row["path"]!=path);
+                ranked.insert(0,json!({
+                    "path":path,"sourceHash":architecture_target["sourceSha256"],
+                    "source":"compiled_descendant_architecture_frontier",
+                    "role":architecture_target["role"],
+                    "domain":domain,"sourceIndexId":input["rsiIndexId"]
+                }));
+            }
+        }
+    }
     let focus=ranked.iter().filter_map(|row|row["path"].as_str())
         .filter(|p|crate::engine::rsi::safe_path(p))
         .take(8).collect::<Vec<_>>();
-    let source=input["rsiSourceDir"].as_str()
-        .ok_or("후손 시스템 소스 위치가 없습니다.")?;
-    let system_blueprint=crate::engine::rsi_system::blueprint(
-        Path::new(source),commit,&history);
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let archive=crate::engine::rsi_archive::select(
         &state,&history,commit,&input["rsiFrozenCases"]);
@@ -4252,6 +4297,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "domain":domain,"selection":selection,"strategy":strategy,
         "focusFiles":focus,"ranked":ranked,
         "systemBlueprint":system_blueprint,
+        "sourceTreeSha256":system_blueprint["sourceTreeSha256"],
+        "architectureFrontier":frontier,
+        "architectureTarget":architecture_target,
+        "decisionOwner":"rebuilt_descendant_binary",
         "improvementDirective":directive,
         "archiveSelection":archive,
         "editPolicy":edit_policy
@@ -4341,13 +4390,37 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let (mut domain, mut domain_selection, mut strategy)=select_generation_strategy(
-        &state,&history,&objective,continuation.clone(),trial_id.clone(),
-        selected_domain.clone(),&commit);
+    let (mut domain, mut domain_selection, mut strategy)=if job["input"]["rsiSystemEvolution"]==true {
+        // The real compiled successor already issued an authenticated controller plan.
+        // Do not silently replace its decision with the parent-era selector.
+        let plan=&job["input"]["rsiControllerPlan"];
+        if plan["source"]!="compiled_descendant_system_controller_v2"
+            || plan["generatorCommit"]!=commit
+            || plan["systemBlueprint"]!=job["input"]["rsiSystemBlueprint"]
+            || plan["domain"]!=job["input"]["rsiTargetDomain"]
+            || plan["focusFiles"]!=job["input"]["rsiFocusFiles"]
+                && job["input"]["rsiFocusSelection"]["source"]!="owner_selected" {
+            return Err("후손 제어 계획의 출처 또는 실행 대상이 달라졌습니다.".into());
+        }
+        let chosen=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
+            .ok_or("후손 제어기가 유효하지 않은 개선 분야를 선택했습니다.")?;
+        let mode=match plan["selection"].as_str() {
+            Some("algorithm_active")=>"algorithm_active",
+            Some("algorithm_trial")=>"algorithm_trial",
+            Some("research_continuation")=>"research_continuation",
+            _=>return Err("후손 제어기의 선택 정책이 유효하지 않습니다.".into())
+        };
+        (chosen.to_string(),mode,plan["strategy"].clone())
+    }else{
+        select_generation_strategy(
+            &state,&history,&objective,continuation.clone(),trial_id.clone(),
+            selected_domain.clone(),&commit)
+    };
     // An adopted binary can revise its own targeting logic. Keep the original
     // parent decision unless the recompiled generator reaches a different
     // conclusion on the same durable history and objective.
-    if job["input"]["rsiSourceAdvanced"]==true
+    if job["input"]["rsiSystemEvolution"]!=true
+        && job["input"]["rsiSourceAdvanced"]==true
         && job["input"]["rsiAutoFocus"]==true && continuation.is_none()
         && selected_domain.is_some() && !paired_target {
         let fresh=select_generation_strategy(&state,&history,&objective,
