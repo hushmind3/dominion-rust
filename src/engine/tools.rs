@@ -81,6 +81,7 @@ pub fn definitions() -> Vec<Value> {
                     "role":{"type":"string"},
                     "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
                     "purpose":{"type":"string"},
+                    "improvesRole":{"type":"string","description":"Previously existing intelligence role whose future self-improvement ability this new executable component develops"},
                     "sourcePaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4},
                     "integrationPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":4}
                 },"required":["role","domain","purpose","sourcePaths","integrationPaths"]}}),
