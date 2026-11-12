@@ -2993,6 +2993,7 @@ async fn run_loop(
             record["planAttempt"]=json!(attempt);
             record["planIndexId"]=child_input["rsiIndexId"].clone();
             record["planSelectedDomain"]=child_input["rsiSelectedDomain"].clone();
+            record["planObjective"]=json!(selection_objective(&child_input));
             record["phase"]=json!("planning_with_compiled_descendant");
             save(context,record)?;
             let mut planner=Command::new(&binary);
@@ -3313,6 +3314,7 @@ async fn run_loop(
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
+        generation["compiledPlanExecuted"]=current["rsiCompiledPlanExecuted"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
@@ -3771,6 +3773,59 @@ fn generation_target_plan(domain:&str,selection:&str,strategy:&Value,commit:&str
     json!({"domain":domain,"selection":selection,"strategy":strategy,"generatorCommit":commit})
 }
 
+
+/**
+ * A compiled successor's plan is an executable command, not a suggestion
+ * that the predecessor may silently replace in a second selection pass.
+ * Reject stale/mismatched plans rather than falling back to parent policy.
+ * The frozen evaluator remains independent of this decision.
+ */
+fn compiled_system_target(
+    job: &Value,
+    commit: &str,
+    history_len: usize,
+) -> Result<Option<(String, &'static str, Value)>, String> {
+    let input = &job["input"];
+    if input["rsiSystemEvolution"] != true {
+        return Ok(None);
+    }
+    let plan = &input["rsiDescendantPlan"];
+    let domain = plan["domain"].as_str()
+        .filter(|value| DOMAINS.contains(value))
+        .ok_or("후손 시스템 계획에 실행 가능한 분야가 없습니다.")?;
+    let expected = generation_target_plan(
+        domain, "compiled_descendant_system_plan", &plan["strategy"], commit,
+    );
+    if plan["source"] != "compiled_descendant_system_plan_v1"
+        || plan["generatorCommit"] != commit
+        || plan["campaignId"] != input["rsiCampaignId"]
+        || plan["indexId"] != input["rsiIndexId"]
+        || plan["historyCount"].as_u64() != Some(history_len as u64)
+        || plan["attempt"].as_u64() != Some(history_len as u64 + 1)
+        || plan["systemBlueprint"] != input["rsiSystemBlueprint"]
+        || plan["systemBlueprint"]["generatorCommit"] != commit
+        || input["rsiTargetPlan"] != expected
+        || input["rsiTargetDomain"] != domain
+        || plan["rankedFiles"].as_array().is_none()
+    {
+        return Err("컴파일된 후손 계획의 세대·색인·전략·시스템 모형이 실행 작업과 다릅니다.".into());
+    }
+    if input["rsiFocusSelection"]["source"] == "compiled_descendant_system_plan" {
+        let ranked = plan["rankedFiles"].as_array().expect("validated ranked files");
+        let listed: Vec<&str> = ranked.iter()
+            .filter_map(|entry| entry["path"].as_str()).collect();
+        let selected: Vec<&str> = input["rsiFocusFiles"].as_array()
+            .into_iter().flatten().filter_map(Value::as_str).collect();
+        if listed != selected
+            || listed.iter().any(|path| !crate::engine::rsi::safe_path(path))
+        {
+            return Err("후손이 선택한 실제 소스 파일을 기존 코디네이터가 변경했습니다.".into());
+        }
+    }
+    Ok(Some((domain.to_string(), "compiled_descendant_system_plan",
+        plan["strategy"].clone())))
+}
+
 fn reconcile_descendant_target(
     state:&AppState,job:&mut Value,history:&[Value],
     domain:&str,selection:&str,strategy:&Value,commit:&str
@@ -4014,7 +4069,8 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         return Err("후손 계획과 저장된 세대 계보 불일치".into());
     }
     let history=crate::engine::rsi_system::revalidated_history(&state,&history);
-    let objective=selection_objective(&parent["input"]);
+    let objective=campaign["planObjective"].as_str()
+        .map(str::to_string).unwrap_or_else(||selection_objective(&parent["input"]));
     let inherited=if parent["input"]["selectionPolicy"]=="automatic"{
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
@@ -4096,13 +4152,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .filter(|domain| DOMAINS.contains(domain))
         .map(str::to_string);
     let commit=job["input"]["rsiGeneratorCommit"].as_str().unwrap_or("").to_string();
-    let (mut domain, mut domain_selection, mut strategy)=select_generation_strategy(
-        &state,&history,&objective,continuation.clone(),trial_id.clone(),
-        selected_domain.clone(),&commit);
+    let compiled_plan=compiled_system_target(&job,&commit,history.len())?;
+    let (mut domain, mut domain_selection, mut strategy)=if let Some((domain,selection,strategy))=&compiled_plan {
+        (domain.clone(),*selection,strategy.clone())
+    } else {
+        select_generation_strategy(&state,&history,&objective,
+            continuation.clone(),trial_id.clone(),selected_domain.clone(),&commit)
+    };
     // An adopted binary can revise its own targeting logic. Keep the original
     // parent decision unless the recompiled generator reaches a different
     // conclusion on the same durable history and objective.
-    if job["input"]["rsiSourceAdvanced"]==true
+    if compiled_plan.is_none() && job["input"]["rsiSourceAdvanced"]==true
         && job["input"]["rsiAutoFocus"]==true && continuation.is_none()
         && selected_domain.is_some() && !paired_target {
         let fresh=select_generation_strategy(&state,&history,&objective,
@@ -4143,6 +4203,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     state.store.audit("rsi.descendant_edit_method_selected",json!({
         "jobId":job_id,"generatorCommit":commit,"method":descendant_method,
     }));
+    if compiled_plan.is_some() {
+        job["rsiCompiledPlanExecuted"]=json!({
+            "source":"running_compiled_descendant_binary",
+            "generatorCommit":commit,
+            "domain":domain,
+            "selection":domain_selection,
+            "strategy":strategy,
+            "sourceIndexId":job["input"]["rsiIndexId"],
+            "attempt":job["input"]["rsiDescendantPlan"]["attempt"]
+        });
+    }
     job["rsiDomain"] = json!(domain);
     job["rsiDomainSelection"] = json!(domain_selection);
     job["rsiSearchStrategy"] = strategy.clone();
@@ -4204,6 +4275,46 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiled_descendant_plan_cannot_be_overruled_by_parent_policy() {
+        let blueprint=json!({"generatorCommit":"child-commit"});
+        let strategy=json!({"implementation":"descendant-rule","revision":"child-v2"});
+        let plan=json!({"source":"compiled_descendant_system_plan_v1",
+            "generatorCommit":"child-commit","campaignId":"campaign",
+            "indexId":"indexed-child","historyCount":2,"attempt":3,
+            "domain":"learning","selection":"algorithm_active",
+            "strategy":strategy,"systemBlueprint":blueprint,
+            "rankedFiles":[{"path":"src/engine/learning.rs"}]});
+        let job=json!({"input":{"rsiSystemEvolution":true,
+            "rsiGeneratorCommit":"child-commit","rsiCampaignId":"campaign",
+            "rsiIndexId":"indexed-child",
+            "rsiDescendantPlan":plan,"rsiSystemBlueprint":blueprint,
+            "rsiTargetDomain":"learning",
+            "rsiTargetPlan":generation_target_plan("learning",
+                "compiled_descendant_system_plan",&strategy,"child-commit"),
+            "rsiFocusFiles":["src/engine/learning.rs"],
+            "rsiFocusSelection":{"source":"compiled_descendant_system_plan"}}});
+        let actual=compiled_system_target(&job,"child-commit",2).unwrap().unwrap();
+        assert_eq!(actual.0,"learning");
+        assert_eq!(actual.1,"compiled_descendant_system_plan");
+        assert_eq!(actual.2,strategy);
+        let mut stale=job.clone();
+        stale["input"]["rsiTargetDomain"]=json!("memory");
+        assert!(compiled_system_target(&stale,"child-commit",2).is_err());
+        let mut rewritten=job.clone();
+        rewritten["input"]["rsiFocusFiles"]=json!(["src/engine/memory.rs"]);
+        assert!(compiled_system_target(&rewritten,"child-commit",2).is_err());
+        let mut mismatched=job.clone();
+        mismatched["input"]["rsiDescendantPlan"]["systemBlueprint"]["generatorCommit"]=json!("other");
+        assert!(compiled_system_target(&mismatched,"child-commit",2).is_err());
+        assert!(compiled_system_target(&job,"other-commit",2).is_err());
+        assert!(compiled_system_target(&job,"child-commit",1).is_err());
+        let mut legacy=job;
+        legacy["input"]["rsiSystemEvolution"]=json!(false);
+        assert!(compiled_system_target(&legacy,"child-commit",2).unwrap().is_none());
+    }
+
     fn state() -> (AppState, PathBuf) {
         let root =
             std::env::temp_dir().join(format!("dominion-evolution-test-{}", uuid::Uuid::new_v4()));
