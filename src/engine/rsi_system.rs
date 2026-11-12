@@ -199,11 +199,91 @@ pub(crate) fn architecture_frontier(
     frontier
 }
 
+
+/// Discover live source by module semantics, including newly created code.
+/// Static paths above remain orientation examples, never the whole search
+/// space. The executable meta-improver can now choose real functions outside
+/// yesterday's hand-picked file set.
+fn discovered_architecture_sources(root:&Path)->Vec<(String,Vec<&'static str>,Value)>{
+    let Ok(root)=fs::canonicalize(root) else{return Vec::new()};
+    let mut pending=vec![root.join("src"),root.join("web/src"),root.join("scripts")];
+    let mut files=std::collections::BTreeMap::<String,(Vec<&'static str>,Value)>::new();
+    while let Some(directory)=pending.pop(){
+        if files.len()>=2048 {break;}
+        let Ok(entries)=fs::read_dir(&directory) else{continue};
+        for entry in entries.flatten(){
+            let Ok(kind)=entry.file_type() else{continue};
+            if kind.is_symlink(){continue;}
+            let path=entry.path();
+            if kind.is_dir(){pending.push(path);continue;}
+            if !kind.is_file(){continue;}
+            let Some(relative)=path.strip_prefix(&root).ok()
+                .and_then(|value|value.to_str()) else{continue};
+            if !crate::engine::rsi::safe_path(relative){continue;}
+            let supported=path.extension().and_then(|ext|ext.to_str())
+                .is_some_and(|ext|matches!(ext,"rs"|"ts"|"tsx"|"js"|"jsx"|"mjs"));
+            if !supported{continue;}
+            let name=relative.to_ascii_lowercase();
+            let mut roles=Vec::new();
+            if name.starts_with("web/"){roles.push("frontend");}
+            else if name.starts_with("src/") || name.starts_with("scripts/"){
+                if name.contains("/rsi")||name.contains("algorithm_eval")
+                    ||name.contains("policy_patch")||name.contains("improve")
+                    ||name.contains("agent_growth"){
+                    roles.push("improvement_methods");
+                }
+                if name.contains("algorith")||name.contains("reason")
+                    ||name.contains("decompose")||name.contains("goal_control")
+                    ||name.contains("router")||name.contains("policy"){
+                    roles.push("algorithms");
+                }
+                if name.contains("memory")||name.contains("knowledge")
+                    ||name.contains("room_state")||name.contains("compact")
+                    ||name.contains("recall"){
+                    roles.push("memory");
+                }
+                if name.contains("learn")||name.contains("experience")
+                    ||name.contains("distill")||name.contains("adaptation")
+                    ||name.contains("procedure")||name.contains("reflect"){
+                    roles.push("learning");
+                }
+                if name.contains("tool")||name.contains("/mcp")
+                    ||name.contains("browser")||name.contains("gateway")
+                    ||name.contains("bridge")||name.contains("cli_model"){
+                    roles.push("tools");
+                }
+                if name.contains("harness")||name.contains("jobs")
+                    ||name.contains("scheduler")||name.contains("runtime")
+                    ||name.contains("worktree")||name.contains("run_state")
+                    ||name.contains("chat")||name.contains("lease")
+                    ||name.contains("verification"){
+                    roles.push("harness");
+                }
+                // All executable source not otherwise classified still
+                // belongs to the agent harness; it cannot disappear from
+                // architectural redesign simply because its filename is new.
+                if roles.is_empty(){roles.push("harness");}
+            }
+            if roles.is_empty(){continue;}
+            let Ok(file)=fs::canonicalize(&path) else{continue};
+            if !file.starts_with(&root) || !file.is_file(){continue;}
+            let Ok(contents)=fs::read(file) else{continue};
+            if contents.len()>2_000_000{continue;}
+            let row=json!({"path":relative,
+                "sha256":format!("{:x}",Sha256::digest(&contents)),
+                "bytes":contents.len()});
+            files.insert(relative.to_string(),(roles,row));
+        }
+    }
+    files.into_iter().map(|(name,(roles,row))|(name,roles,row)).collect()
+}
+
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its
 /// measured generator revision; no holdout content is read here.
 pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
     let canonical_root=fs::canonicalize(root).ok();
+    let discovered=discovered_architecture_sources(root);
     let mut components=Vec::new();
     for (role,paths) in COMPONENTS {
         let mut inventory=Vec::new();
@@ -215,6 +295,14 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             let Ok(contents)=fs::read(&file) else {continue;};
             inventory.push(json!({"path":relative,"sha256":format!("{:x}",Sha256::digest(&contents)),
                 "bytes":contents.len()}));
+        }
+        let mut known=inventory.iter().filter_map(|item|item["path"].as_str())
+            .map(str::to_string).collect::<std::collections::BTreeSet<_>>();
+        for (relative,roles,row) in &discovered {
+            if inventory.len()>=48{break;}
+            if roles.contains(role) && known.insert(relative.clone()){
+                inventory.push(row.clone());
+            }
         }
         components.push(json!({"role":role,"representativeSources":inventory}));
     }
@@ -635,6 +723,26 @@ mod tests {
             index["id"].as_str().unwrap(),&workspace);
         assert!(!stale.iter().any(|row|row["role"]=="memory"),
             "a stale indexed SHA must never drive a source edit");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+
+    #[test]
+    fn architectural_map_discovers_new_meta_and_harness_modules_without_static_registration(){
+        let root=std::env::temp_dir().join(format!("rsi-dynamic-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src/engine")).unwrap();
+        fs::write(root.join("src/engine/rsi_new_mutator.rs"),
+            "pub fn modify_learning_policy() {}").unwrap();
+        fs::write(root.join("src/engine/future_new_agent.rs"),
+            "pub fn future() {}").unwrap();
+        let model=blueprint(&root,"new-child",&[]);
+        let architecture=model["architecture"].as_array().unwrap();
+        let meta=architecture.iter().find(|item|item["role"]=="improvement_methods").unwrap();
+        assert!(meta["representativeSources"].as_array().unwrap().iter().any(|item|
+            item["path"]=="src/engine/rsi_new_mutator.rs"));
+        let harness=architecture.iter().find(|item|item["role"]=="harness").unwrap();
+        assert!(harness["representativeSources"].as_array().unwrap().iter().any(|item|
+            item["path"]=="src/engine/future_new_agent.rs"));
         fs::remove_dir_all(root).unwrap();
     }
 
