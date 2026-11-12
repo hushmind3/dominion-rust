@@ -16,6 +16,9 @@ name: Sub1 full-system descendant design RSI
 # inventories the actual seven-system source graph, prioritizes previously
 # unmodified intelligence components, and controls next-generation source
 # focus. Independent frozen evaluation alone controls code adoption.
+# Follow-up to run 43189004497 (attempts=0): filter native descendant source
+# plans against canonical editable paths and exactly hashed detached files.
+# Rerun the real campaign only after the new regression passes.
 
 on:
   workflow_dispatch:
@@ -80,6 +83,7 @@ jobs:
           cargo test --release --locked --bin dominion-rust rsi_workspace_replace_repairs_missing_end_line_with_model_authored_function -- --nocapture
           cargo test --release --locked --bin dominion-rust model_receives_real_current_rust_bytes_sha_and_absolute_source_lines -- --nocapture
           cargo test --release --locked --bin dominion-rust rsi_system::tests -- --nocapture
+          cargo test --release --locked --bin dominion-rust system_descendant_filters_non_source_and_stale_indexed_paths_before_planning -- --nocapture
           cargo test --release --locked --bin dominion-rust real_model_edit_without_end_line_recovers_only_unambiguous_intent -- --nocapture
           cargo test --release --locked --bin dominion-rust descendant_function_edit_without_end_line_writes_real_sha_pinned_rust -- --nocapture
 
