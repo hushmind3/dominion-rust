@@ -4369,6 +4369,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }else{None};
     let allowed=candidate_domains(&objective);
     let lineage=crate::engine::rsi_system::lineage_capsule(&history);
+    let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
     let profile=crate::engine::rsi_profile::from_input(input)?;
     let peers=crate::engine::rsi_system::peer_lineage_references(
         &state,campaign,profile["sha256"].as_str().unwrap_or(""),
@@ -4376,7 +4377,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // Crucial: the *compiled descendant*, rather than the resident server,
     // scores possible meta-improvement targets and proposes its next experiment.
     let meta_policy=crate::engine::rsi_meta_controller::synthesize(
-        &history,&frontier,&allowed,inherited.as_deref(),&lineage,&peers);
+        &history,&frontier,&allowed,inherited.as_deref(),&lineage,&peers,&influence);
     let architecture_target=if explicit || paired_descendant_target(input) {
         Value::Null
     }else if meta_policy["target"].is_object() {
@@ -4386,6 +4387,17 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             allowed.contains(&domain) && inherited.as_deref().is_none_or(|pinned|pinned==domain)))
             .cloned().unwrap_or(Value::Null)
     };
+    // A whole-system successor can design interlocking improvements in
+    // memory, harness, learning and meta-search in the SAME generation.
+    // Explicit owner-assigned targets remain a higher-priority constraint.
+    let coupled_domains=if input["rsiAutonomous"]==true && !explicit
+        && !paired_descendant_target(input) {
+        DOMAINS.to_vec()
+    }else{allowed.clone()};
+    let co_design=if architecture_target.is_object() {
+        crate::engine::rsi_interaction::coupled_portfolio(
+            &architecture_target,&frontier,&influence,&coupled_domains)
+    }else{Value::Null};
     let successor_stage=if architecture_target["inheritedProgramStage"]==true
         && inherited_stage.as_ref().is_some_and(|stage|
             stage["role"]==architecture_target["role"]
@@ -4421,10 +4433,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             .take(8).collect::<Vec<_>>()
     };
     if !explicit && architecture_target["domain"]==domain {
-        if let Some(path)=architecture_target["path"].as_str() {
+        let mut chosen=co_design["focus"].as_array().into_iter().flatten()
+            .filter_map(|row|row["path"].as_str()).collect::<Vec<_>>();
+        chosen.reverse();
+        for path in chosen {
             focus.retain(|current|*current!=path);
-            focus.insert(0,path);focus.truncate(8);
+            focus.insert(0,path);
         }
+        focus.truncate(8);
     }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let comparative_mode=if peers["references"].as_array()
@@ -4449,6 +4465,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "lineageCapsule":lineage,
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "metaPolicy":meta_policy,"successorStage":successor_stage,
+        "interactionGraph":influence,"coDesignPortfolio":co_design,
         "archiveSelection":archive,
         "editPolicy":edit_policy
     }));
