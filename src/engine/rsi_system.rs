@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_evolve.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_system.rs","src/engine/rsi_factorial.rs","src/engine/rsi_reflexive.rs","src/engine/rsi_component_birth.rs","src/engine/rsi_program_graph.rs"]),
+    ("improvement_methods",&["src/engine/rsi_evolve.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_system.rs","src/engine/rsi_factorial.rs","src/engine/rsi_reflexive.rs","src/engine/rsi_component_birth.rs","src/engine/rsi_program_graph.rs","src/engine/rsi_principle_learning.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
