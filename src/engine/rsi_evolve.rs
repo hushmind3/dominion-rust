@@ -5324,10 +5324,48 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // Repair the real failed patch before running an unrelated queued
     // search-policy trial. That trial remains pending for a later generation.
     let selected_trial=if failed_patch_domain.is_some(){None}else{trial_id};
-    let (domain, domain_selection, strategy) =
+    let (domain, domain_selection, strategy) = if job["input"]["rsiSystemEvolution"]==true {
+        let plan=&job["input"]["rsiDescendantPlan"];
+        let blueprint=crate::engine::rsi_system::blueprint(
+            Path::new(job["input"]["rsiSourceDir"].as_str()
+                .ok_or("후손 시스템 소스 없음")?),&commit,&history);
+        let directive=crate::engine::rsi_system::improvement_directive(&history);
+        let domain=plan["domain"].as_str().filter(|v|DOMAINS.contains(v))
+            .ok_or("후손이 계획한 개선 분야가 유효하지 않습니다.")?;
+        let selection=match plan["selection"].as_str() {
+            Some("algorithm_active")=>"algorithm_active",
+            Some("algorithm_trial")=>"algorithm_trial",
+            Some("research_continuation")=>"research_continuation",
+            _=>return Err("후손의 개선 전략 선택이 유효하지 않습니다.".into())
+        };
+        let strategy=plan["strategy"].clone();
+        if plan["source"]!="compiled_descendant_system_controller_v3"
+            || plan["generatorCommit"]!=commit
+            || plan["historyCount"].as_u64()!=Some(history.len() as u64)
+            || plan["systemBlueprint"]!=blueprint
+            || job["input"]["rsiSystemBlueprint"]!=blueprint
+            || job["input"]["rsiImprovementDirective"]!=directive
+            || plan["improvementDirective"]!=directive
+            || plan["targetPlan"]!=generation_target_plan(
+                domain,selection,&strategy,&commit)
+            || job["input"]["rsiTargetPlan"]!=plan["targetPlan"] {
+            return Err("이전 코디네이터의 계획과 실제 후손 자기모형·판단이 일치하지 않습니다.".into());
+        }
+        job["rsiSystemBlueprintVerified"]=json!(true);
+        job["rsiImprovementDirectiveVerified"]=json!(true);
+        state.store.audit("rsi.descendant_system_runtime",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "source":"rebuilt_child_verified_against_current_source_graph",
+            "sourceTreeSha256":blueprint["sourceTreeSha256"],
+            "architectureComponents":7,
+            "decision":directive["mode"]
+        }));
+        (domain.to_string(),selection,strategy)
+    } else {
         select_generation_strategy(&state, &history, &objective,
             if repair_domain.is_some(){None}else{continuation},selected_trial,
-            repair_domain,&commit);
+            repair_domain,&commit)
+    };
     if failed_patch_domain.is_some() {
         job["rsiRepairPinnedDomain"]=json!(domain);
         job["rsiRepairCandidateId"]=
@@ -5379,8 +5417,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("\n### 이번 세대의 실행 행동\n{}\n관측된 이전 세대 실패: {}\n",
             execution_action_contract(&action),action)
     } else {String::new()};
-    job["input"]["prompt"]=json!(format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
-        job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback));
+    let instructions=if job["input"]["rsiSystemEvolution"]==true {
+        let objective=state.store.get("job",&campaign)
+            .and_then(|parent|parent["input"]["rsiObjective"].as_str()
+                .map(str::to_string)).unwrap_or_default();
+        format!("{}\n\nNEXT SOURCE-EDIT ACTION: {}\n\nREAL PREDECESSOR RESULTS:\n{}\n\nCURRENT TARGET SOURCE (read again if the SHA changed):\n{}",
+            crate::engine::rsi_system::instruction(
+                &job["input"]["rsiSystemBlueprint"],&objective),
+            job["input"]["rsiImprovementDirective"],feedback,
+            job["input"]["rsiPromptResearch"].as_str().unwrap_or("")
+                .chars().take(3600).collect::<String>())
+    }else{
+        format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
+            job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
+    };
+    job["input"]["prompt"]=json!(instructions);
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
     let result = jobs::run_prompt(&context, &job).await;
