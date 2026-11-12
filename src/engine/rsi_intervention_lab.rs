@@ -103,6 +103,7 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
         && g["factorialMeasured"]==true) {
         let Some(arm)=count_variant(g,a,b) else{continue};
         let Some(id)=g["candidateId"].as_str() else{continue};
+        if provenance.len()>=32{break;}
         if !provenance.insert(id.to_string()){continue;}
         let mut contributed=false;
         for case in g["evaluation"]["metrics"]["measurements"].as_array()
@@ -346,7 +347,7 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
         grounded(a)&&grounded(b)&&a["role"]!=b["role"]
             && frontier.iter().any(|r|r==a) && frontier.iter().any(|r|r==b)
             && matches!(arm,Some(0|1|2))
-            && target==if arm==Some(1){b}else{a}
+            && target==(if arm==Some(1){b}else{a})
             && trial["sourceIsolationRequired"]==(arm!=Some(2))
             && trial["qualityProven"]==false && trial["causalityProven"]==false
             && trial["evidence"]["source"]=="independent_matched_frozen_case_factorial_evidence_v1"
@@ -360,7 +361,7 @@ pub(crate) fn validate(plan:&Value,frontier:&[Value],commit:&str,
             }
     };
     if !plan["pairAlternatives"].as_array().is_some_and(|rows|
-        rows.iter().all(check)
+        rows.iter().all(|row|check(row))
         && (plan["selected"].is_null()
             || (check(&plan["selected"])&&rows.contains(&plan["selected"])))) {
         return Err("후손의 요인별 실험 대상이 실제 소스 구조와 다릅니다.".into());

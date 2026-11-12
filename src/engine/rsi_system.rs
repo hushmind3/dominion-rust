@@ -442,6 +442,13 @@ pub(crate) fn validate_plan_evidence(
     }else if !peer.is_null(){
         return Err("후손 상호 개선 계획의 자료형이 올바르지 않습니다.".into());
     }
+    let factorial=&plan["factorialExperiment"];
+    if factorial.is_object() && (
+        factorial["selected"]["target"]!=*target
+        || meta["factorialExperimentSha256"]!=factorial["sha256"]
+        || meta["mode"]!="independently_matched_factorial_experiment_design"){
+        return Err("요인별 실험이 실제 후손 메타 선택과 일치하지 않습니다.".into());
+    }
     let stage=&plan["successorStage"];
     if stage.is_object() && (
         stage["source"]!="rebound_verified_model_successor_program_v1"

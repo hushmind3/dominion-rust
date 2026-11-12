@@ -4208,6 +4208,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let method_promoted=inherited_experiment_method["source"]
         =="model_authored_causal_experiment_policy_v1";
     let factorial_active=auto && stage.is_null()
+        && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
         && proposed_factorial["selected"].is_object()
         && (measured_siblings>0 || history.len()%3==1 || method_promoted);
     // An explicit owner objective or a previously adopted successor program
