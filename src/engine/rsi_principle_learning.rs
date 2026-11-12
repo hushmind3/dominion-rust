@@ -277,7 +277,7 @@ pub(crate) fn study(history:&[Value])->Value {
             else{continue};
         let mechanism=mechanism.trim().to_owned();
         if mechanism.is_empty()||mechanism.len()>1600{continue;}
-        let group=groups.entry(mechanism).or_default();
+        let group=groups.entry(mechanism.clone()).or_default();
         group.attempts+=1;
         group.roles.insert(role.clone());
         if g["openImprovementProgram"]["source"]
