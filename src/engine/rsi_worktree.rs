@@ -13,7 +13,10 @@ const CHECK_LIMIT: Duration = Duration::from_secs(360);
 /// A branch must be an explicitly owned RSI work checkout, never main or a
 /// sibling competitor's source. Preserve the legacy dominion-sub checkout.
 pub(crate) fn rsi_work_branch(branch: &str) -> bool {
-    matches!(branch, "dominion-sub" | "dominion-sub3")
+    // Sub4 is an independently owned work branch. A previously inherited
+    // Sub3-only allowlist would reject its detached source before ANY source
+    // or model self-improvement cycle could execute.
+    matches!(branch, "dominion-sub" | "dominion-sub3" | "dominion-sub4")
 }
 
 /// Legacy experiments did not record a source branch. They may only be
@@ -1167,14 +1170,19 @@ mod tests {
         assert!(valid_sha("1234567890abcdef1234567890abcdef12345678"));
         assert!(!valid_sha("bad"));
         assert!(rsi_work_branch("dominion-sub3"));
+        assert!(rsi_work_branch("dominion-sub4"));
         assert!(rsi_work_branch("dominion-sub"));
         assert!(owns_application_branch("dominion-sub3",Some("dominion-sub3")));
+        assert!(owns_application_branch("dominion-sub4",Some("dominion-sub4")));
+        assert!(!owns_application_branch("dominion-sub4",Some("dominion-sub3")));
+        assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub4")));
+        assert!(!owns_application_branch("dominion-sub4",None));
         assert!(!owns_application_branch("dominion-sub3",Some("dominion-sub2")));
         assert!(!owns_application_branch("dominion-sub3",None));
         assert!(!owns_application_branch("dominion-sub3",Some("")));
         assert!(owns_application_branch("dominion-sub",None));
         assert!(!owns_application_branch("main",Some("main")));
-        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub4","dominion-sub3-other"] {
+        for forbidden in ["main","dominion-champion","dominion-sub1","dominion-sub2","dominion-sub3-other","dominion-sub4-other"] {
             assert!(!rsi_work_branch(forbidden), "다른 브랜치에 적용하면 안 됩니다: {forbidden}");
         }
     }
