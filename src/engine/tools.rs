@@ -147,6 +147,16 @@ pub async fn execute(
             return Err("동결 평가 사례는 자기개선 모델의 읽기·수정 대상이 아닙니다.".into());
         }
     }
+    if isolated_rsi && name=="workspace_write"
+        && ctx.store.get("session",ctx.session_id)
+            .is_some_and(|session|session["rsiSuccessorStage"]["toolPolicy"]=="patch_only")
+    {
+        let path=args["path"].as_str().unwrap_or("");
+        if !crate::engine::rsi::safe_path(path)
+            || !ctx.workspace.join(path).is_file() {
+            return Err("후손이 계승한 patch_only 정책은 신규 모듈 생성을 차단합니다.".into());
+        }
+    }
     if isolated_rsi && matches!(name, "workspace_write" | "workspace_replace" | "workspace_replace_range") {
         let path=args["path"].as_str().unwrap_or("");
         if !crate::engine::rsi::safe_path(path) {
