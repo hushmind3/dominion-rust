@@ -11,6 +11,9 @@ on:
       - 'src/api/rsi.rs'
       - 'src/engine/rsi_worktree.rs'
       - 'src/engine/rsi_evolve.rs'
+      - 'src/engine/rsi_system.rs'
+      - 'src/engine/rsi_mutual_program.rs'
+      - 'src/engine/rsi_principle_learning.rs'
   workflow_dispatch:
 
 permissions:
@@ -24,6 +27,8 @@ concurrency:
 
 jobs:
   real-model:
+    # Manual dispatch against main must never relabel that source as sub3.
+    if: github.ref == 'refs/heads/dominion-sub3'
     runs-on: ubuntu-latest
     timeout-minutes: 115
     env:
