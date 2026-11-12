@@ -3490,6 +3490,10 @@ async fn run_loop(
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
+        generation["controllerPlan"]=current["input"]["rsiControllerPlan"].clone();
+        generation["improvementDirective"]=current["input"]["rsiImprovementDirective"].clone();
+        generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
+        generation["improvementDirectiveVerified"]=current["rsiImprovementDirectiveVerified"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["candidateOrigin"]=current["result"]["rsi"]["candidateOrigin"].clone();
@@ -4403,8 +4407,20 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             && own!=job["input"]["rsiSystemBlueprint"] {
             return Err("후손의 시스템 자기모형과 생성기 소스가 다릅니다.".into());
         }
+        let directive=crate::engine::rsi_system::improvement_directive(&history);
+        if job["input"]["rsiImprovementDirective"]!=directive {
+            return Err("후손의 학습 지시가 독립적으로 저장된 세대 기록과 다릅니다.".into());
+        }
         job["input"]["rsiSystemBlueprint"]=own.clone();
         job["rsiSystemBlueprintVerified"]=json!(true);
+        job["rsiImprovementDirectiveVerified"]=json!(true);
+        state.store.audit("rsi.descendant_system_runtime",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "source":"compiled_successor_planning_and_context",
+            "architectureComponents":own["architecture"].as_array().map(Vec::len),
+            "sourceTreeSha256":own["sourceTreeSha256"],
+            "improvementDirective":directive["mode"]
+        }));
         let instruction=crate::engine::rsi_system::instruction(
             &own,job["input"]["rsiObjective"].as_str().unwrap_or(""));
         format!("{instruction}\n\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
