@@ -66,12 +66,12 @@ def verify_training_separation(path, expected, private_cases):
             prompt, completion = row.get("prompt"), row.get("completion")
             if not isinstance(prompt, str) or not isinstance(completion, str):
                 raise ValueError("Unstructured training data")
-            identity = hashlib.sha256((prompt+"\\x00"+completion).encode()).hexdigest()
+            identity = hashlib.sha256((prompt+"\x00"+completion).encode()).hexdigest()
             training.add(identity)
     if not training:
         raise ValueError("No approved training material")
     for prompt, completion, _domain in private_cases:
-        identity = hashlib.sha256((prompt+"\\x00"+completion).encode()).hexdigest()
+        identity = hashlib.sha256((prompt+"\x00"+completion).encode()).hexdigest()
         if identity in training:
             raise ValueError("Training and frozen evaluation examples overlap")
 
