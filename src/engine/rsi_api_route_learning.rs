@@ -287,6 +287,51 @@ mod tests {
                         "baselinePass":before,"candidatePass":after}]}}})
     }
     #[test]
+    fn only_pre_registered_owner_approved_api_models_can_be_selected(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("dominion-api-rsi-{}",
+            uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        state.store.put("provider",&json!({
+            "id":"deepseek","baseUrl":"https://api.deepseek.com/v1",
+            "name":"DeepSeek","kind":"openai","enabled":true,
+            "model":"deepseek-flash",
+            "rsiApprovedModels":["deepseek-flash","deepseek-v4-pro"]
+        })).unwrap();
+        let original=json!({"providerId":"deepseek","model":"deepseek-flash"});
+        let approved=authorized(&state,&original,
+            &json!([{"providerId":"deepseek","model":"deepseek-v4-pro"}]),
+            false).unwrap();
+        assert_eq!(approved.as_array().unwrap().len(),2);
+        assert!(authorized(&state,&original,
+            &json!([{"providerId":"deepseek","model":"invented-unregistered"}]),
+            false).is_err());
+        assert!(authorized(&state,&original,
+            &json!([{"providerId":"unapproved","model":"deepseek-v4-pro"}]),
+            false).is_err());
+        let _=std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn new_api_model_may_be_explored_only_after_independent_baseline_evidence(){
+        let original=json!({"providerId":"deepseek","model":"api-a"});
+        let single=vec![episode("a","api-a",false,true)];
+        assert_eq!(decide(&single,&routes(),&original,&"a".repeat(40))
+            ["chosen"]["model"],"api-a");
+        let two=vec![episode("a","api-a",false,true),
+            episode("b","api-a",false,true)];
+        let choice=decide(&two,&routes(),&original,&"a".repeat(40));
+        assert_eq!(choice["chosen"]["model"],"api-b");
+        assert_eq!(choice["explanation"],"owner_approved_bounded_exploration_trial");
+        assert!(approved_choice(&choice,&routes()));
+        let mut tampered=choice;
+        tampered["chosen"]["model"]=json!("made-up-model");
+        assert!(!approved_choice(&tampered,&routes()));
+    }
+    #[test]
     fn never_change_owner_api_without_evidence(){
         let baseline=json!({"providerId":"deepseek","model":"api-a"});
         let p=decide(&[],&routes(),&baseline,&"a".repeat(40));
