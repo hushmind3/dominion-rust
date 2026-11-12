@@ -292,13 +292,19 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         components.push(json!({"role":role,"domain":domain,
             "representativeSources":inventory,"discoveredSourceCount":discovered}));
     }
+    let verified_new_roles=crate::engine::rsi_open_topology::inherited_roles(history)
+        .into_iter().filter_map(|record|record["role"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
     for generation in history.iter().filter(|generation|generation["accepted"]==true
         && generation["pairedRevalidated"]==true
         && generation["candidateOrigin"]=="model_driven_detached_worktree"
         && generation["evaluation"]["metrics"]["eligible"]==true) {
         let design=&generation["systemDesign"];
         for role in design_roles(design) {
+            // Newly named roles must have an independently adopted
+            // executable birth/integration record, not just a design label.
             if components.iter().any(|item|item["role"]==role){continue;}
+            if !verified_new_roles.contains(&role) {continue;}
             let paths=design["componentFiles"][&role].as_array().or_else(||
                 if design_roles(design).len()==1 {design["targetFiles"].as_array()}else{None});
             let sources=paths.into_iter().flatten().filter_map(|path| {
