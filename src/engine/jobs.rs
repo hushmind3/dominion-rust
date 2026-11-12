@@ -601,8 +601,50 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
     if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
-    let mut message = run_quiet(&scoped_state, &request).await;
+    // An opted-in autonomous generation may execute an inductively generated
+    // source mutation before calling a model. It is a different generator:
+    // a native patch is never counted as a model tool call.
+    let native_preflight=input["rsiNativeInduction"]==true
+        && input["rsiAutoFocus"]==true
+        && !input["rsiSourceIntegrityRepair"]["candidateId"].is_string()
+        && !input["rsiInheritedNeutralCandidateId"].is_string();
+    let mut native_mutation=if native_preflight {
+        if let Some(worktree)=&rsi_workspace {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,&worktree.source,&worktree.path
+            ) {
+                Ok(receipt)=>receipt,
+                Err(error)=>{
+                    context.state.store.audit("rsi.native_induction_error",
+                        json!({"jobId":context.job_id,"error":error}));
+                    None
+                }
+            }
+        } else {None}
+    }else{None};
+    let mut message = if native_mutation.is_some() {
+        Ok(None)
+    } else {
+        run_quiet(&scoped_state, &request).await
+    };
     let result = if let Some(worktree)=&rsi_workspace {
+        // A model that made no write may leave a pristine worktree. Try
+        // native induction once before the final no-candidate verdict.
+        if native_mutation.is_none() && input["rsiNativeInduction"]==true
+            && !input["rsiSourceIntegrityRepair"]["candidateId"].is_string()
+            && !input["rsiInheritedNeutralCandidateId"].is_string() {
+            match crate::engine::rsi_mutation::induce(
+                &context.state,&context.job_id,&input,&worktree.source,&worktree.path
+            ) {
+                Ok(Some(receipt))=>{
+                    native_mutation=Some(receipt);
+                    message=Ok(None);
+                }
+                Ok(None)=>{},
+                Err(error)=>context.state.store.audit("rsi.native_induction_error",
+                    json!({"jobId":context.job_id,"error":error}))
+            }
+        }
         // At most 2 model repair calls after a grounded verifier failure.
         // All attempts share the same detached worktree and model selection.
         const MAX_REPAIRS:usize=2;
@@ -689,6 +731,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let mut output=finished?;
         output["repairAttempts"]=json!(attempts.len());
         output["previousAttempts"]=json!(attempts);
+        output["nativeMutation"]=native_mutation.map_or(Value::Null,|r|r);
         output
     } else {
         let message=message?;
