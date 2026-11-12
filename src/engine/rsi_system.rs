@@ -1028,6 +1028,17 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let reflexive=crate::engine::rsi_reflexive::completed(history);
     let open_programs=crate::engine::rsi_program_graph::handoff(history);
     let principle_learning=crate::engine::rsi_principle_learning::study(history);
+    let approved_api_routes=history.iter().rev()
+        .find_map(|g|g["apiModelPolicy"]["authorizedRoutes"].as_array()
+            .map(|_|g["apiModelPolicy"]["authorizedRoutes"].clone()))
+        .unwrap_or(Value::Null);
+    let api_learning=crate::engine::rsi_api_route_learning::learn(
+        history,&approved_api_routes);
+    let verified_api_calls=history.iter().filter(|g|
+        g["apiRouteExecutionVerified"]==true).count();
+    let api_heldout_cases=api_learning["routes"].as_array().into_iter().flatten()
+        .map(|r|r["independentlyMeasuredCases"].as_u64().unwrap_or(0))
+        .sum::<u64>();
     let principle_rows=principle_learning["principles"].as_array().cloned().unwrap_or_default();
     let improved_task_cases=principle_rows.iter()
         .map(|r|r["improvedCases"].as_u64().unwrap_or(0)).sum::<u64>();
@@ -1074,6 +1085,11 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
                 .map(|features|features.iter().filter(|row|
                     row["transferEligible"]==true).count()).unwrap_or(0),
         "learnedPrincipleLedgerSha256":principle_learning["sha256"],
+        "apiExecutionRouteLearningSha256":api_learning["sha256"],
+        "verifiedApiCoderGenerationCalls":verified_api_calls,
+        "apiRouteObservedHoldoutCases":api_heldout_cases,
+        "apiRouteModelWeightUpdates":0,
+        "apiRouteQualityEvidence":"observational_source_task_proxy_not_direct_model_AB",
         "independentlyImprovedTaskCases":improved_task_cases,
         "independentlyImprovedDescendantCases":improved_descendant_cases,
         "learnedPrincipleModels":principle_rows,
