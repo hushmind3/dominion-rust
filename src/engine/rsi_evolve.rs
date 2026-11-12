@@ -4516,9 +4516,18 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         crate::engine::rsi_program_graph::synthesize(
             &history,&frontier,&allowed,commit)
     };
+    // Learning failure is evidence of an inadequate improvement ALGORITHM,
+    // so it must be able to interrupt a speculative fixed seed. Previously
+    // accepted, executing reciprocal complement/return work stays intact.
+    let learner_repair=principle_learning["predictiveCalibration"]
+        ["needsLearnerSourceRevision"]==true
+        && open_program.is_null()
+        && input["rsiAutonomous"]==true && !explicit
+        && !paired_descendant_target(input)
+        && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return"));
     // The earlier fixed reflexive curriculum is a fallback, not a ceiling
     // over dynamically authored successor improvement programs.
-    let reflexive_program=if open_program.is_object()
+    let reflexive_program=if learner_repair || open_program.is_object()
         || explicit || paired_descendant_target(input)
         || input["rsiAutonomous"]!=true
         || matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
@@ -4530,10 +4539,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let initial_policy=crate::engine::rsi_meta_controller::steer_open_program(
         crate::engine::rsi_meta_controller::steer_reflexive(
             prior_meta,&reflexive_program),&open_program);
-    let meta_policy=if input["rsiAutonomous"]==true && !explicit
-        && !paired_descendant_target(input)
-        && !open_program.is_object() && !reflexive_program.is_object()
-        && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
+    let meta_policy=if learner_repair {
         crate::engine::rsi_meta_controller::steer_learner_repair(
             initial_policy,&principle_learning,&frontier,&allowed)
     }else{initial_policy};
