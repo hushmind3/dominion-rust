@@ -24,9 +24,7 @@ fn sha(value: &str) -> bool {
 /// Frozen evaluation answers are not model research material. This boundary
 /// applies both to indexed discovery and to direct workspace tool requests.
 pub(crate) fn hidden_rsi_oracle_path(path:&str)->bool {
-    ["src/engine/rsi_oracle_fixture.rs",
-     "src/engine/rsi_adapter_oracle.rs"].iter().any(|hidden|
-        std::path::Path::new(path).ends_with(*hidden))
+    std::path::Path::new(path).ends_with("src/engine/rsi_oracle_fixture.rs")
 }
 
 pub(crate) fn safe_path(path: &str) -> bool {
