@@ -2962,6 +2962,55 @@ fn transfer_verified_mutation_operator(mut program:Value,rows:&[Value])->Value {
 /// patch. Concrete edit receipts are training examples; independent paired
 /// evidence, when present, outweighs mere file writes. The result controls
 /// the next generation's native tool ordering and retry selection.
+/// Long-lived edit-method learning must NOT use improvement_history():
+/// that routine intentionally drops completed-candidate history when a new
+/// research campaign starts. Preserve every comparable, genuinely measured
+/// descendant's rule executions after a restart, while replaying the old
+/// evaluator receipt before giving a successful method any reward.
+fn durable_edit_policy_history(
+    state:&AppState,input:&Value,campaign:&[Value]
+)->Vec<Value>{
+    let partition=research_scope(input).partition_key;
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")]);
+    let mut rows=std::collections::BTreeMap::<String,Value>::new();
+    for mut generation in state.store.all("rsi_generation").into_iter()
+        .chain(campaign.iter().cloned()){
+        if generation["knowledgePartition"]!=partition
+            ||generation["objectiveId"]!=objective{
+            continue;
+        }
+        let Some(job)=generation["jobId"].as_str()
+            .filter(|id|!id.is_empty()).map(str::to_owned)else{continue};
+        if generation["accepted"]==true{
+            let independently_adopted= generation["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+                .is_some_and(|candidate|
+                    candidate["baseCommit"]==generation["generatorCommit"]
+                    &&candidate["evaluation"]["evidenceSha256"]
+                        ==generation["evaluation"]["evidenceSha256"]
+                    &&candidate["experimentAdoption"]["commit"]
+                        ==generation["acceptedCommit"]
+                    &&crate::engine::rsi::verify_paired_receipt(
+                        state,&candidate).is_ok());
+            generation["evidenceVerified"]=json!(independently_adopted);
+        }else{
+            generation["evidenceVerified"]=json!(false);
+        }
+        rows.entry(job).and_modify(|current|{
+            if generation_completion_millis(&generation)
+                >generation_completion_millis(current) {
+                *current=generation.clone();
+            }
+        }).or_insert(generation);
+    }
+    let mut output=rows.into_values().collect::<Vec<_>>();
+    output.sort_by(|a,b|
+        generation_completion_millis(a).cmp(&generation_completion_millis(b))
+            .then_with(||a["jobId"].as_str().cmp(&b["jobId"].as_str())));
+    output
+}
+
 fn verified_genome_reward(g:&Value)->f64{
     if g["candidateOrigin"]=="native_inductive_source_mutation"{
         return 0.0;
@@ -3680,8 +3729,10 @@ async fn run_loop(
         // stages and rules derived from actually measured child edits.
         // Program generation itself earns no score; independent paired
         // descendants must execute a rule before it can accumulate payoff.
+        let durable_evidence=durable_edit_policy_history(
+            &context.state,&child_input,&recorded_history);
         let edit_policy=crate::engine::rsi_edit_genome::evolve(
-            &action_history,verified_genome_reward);
+            &durable_evidence,verified_genome_reward);
         child_input["rsiEditPolicy"]=edit_policy;
 
         child_input["rsiImprovementDirective"]=if native_planning {
