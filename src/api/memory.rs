@@ -41,7 +41,7 @@ pub async fn memory_overview(State(state): State<AppState>) -> Json<Value> {
         json!({"total":memories.len(),"path":path,"table":"records (kind=memory)","byType":by_type,"bySource":by_source,"byStatus":by_status,"scopes":by_scope,"byScope":by_scope,
         "learningJobs":jobs,"checkpoints":state.store.all("learning_checkpoint").into_iter().take(50).collect::<Vec<_>>(),
         "feedback":state.store.all("learning_feedback").into_iter().take(30).collect::<Vec<_>>(),"toolReliability":state.store.all("tool_stat"),"draftSkills":drafts,
-        "capabilities":{"storage":"SQLite WAL","retrieval":"local lexical words and Korean bigrams","evidence":"exact source quotes, successful tool provenance","corrections":"scoped stable keys with superseded history","modelWeightTraining":false,"automaticSkillActivation":false},
+        "capabilities":{"storage":"SQLite WAL","retrieval":"local lexical words and Korean bigrams","evidence":"exact source quotes, successful tool provenance","corrections":"scoped stable keys with superseded history","automaticSkillActivation":false},
         "updatedAt":chrono::Utc::now().to_rfc3339()}),
     )
 }
