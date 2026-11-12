@@ -630,7 +630,7 @@ pub(crate) fn instruction(policy:&Value)->String {
             "failed roles={} cause={} source={} observed error={}",
             g["roles"],g["failureKind"],g["sourceTarget"],g["error"]
         )).collect::<Vec<_>>().join("\n");
-    format!(
+    let mut message=format!(
         "[EDITABLE META-IMPROVER revision={}]\n\
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
@@ -656,7 +656,28 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
         policy["taskOutcomeForecast"],policy["controlPolicy"],
         policy["nextMutualRedesign"],refs,failures
-    )
+    );
+    if policy["peerMethodTransfer"]["active"]==true {
+        let rows=policy["peerMethodTransfer"]["references"].as_array()
+            .into_iter().flatten().take(3)
+            .map(|r|format!(
+                "independent donor={} source roles={} target={} current file={} \
+                 measured recipient trials={} actual source adoptions={} \
+                 smoothed portability={}",
+                r["candidateId"],r["fromRoles"],r["toRole"],
+                r["toSourcePath"],r["independentlyMeasuredTransferTrials"],
+                r["recipientSourceAdoptions"],r["empiricalTransferPosterior"]
+            )).collect::<Vec<_>>();
+        message.push_str(&format!(
+            "\nPORTABLE METHOD HYPOTHESIS (not a performance claim): \
+             re-derive the improvement METHOD from these independently paired \
+             donor experiments and test it on the newly chosen component. \
+             Do not reuse their patch or label this transfer successful. \
+             Make a new source edit, predict the result, and allow the frozen \
+             evaluator to measure it:\n{}\n",rows.join("\n")
+        ));
+    }
+    message
 }
 
 /// Bounded, independently evaluated ideas from compatible foreign lineages.
@@ -815,6 +836,7 @@ mod tests{
         assert_eq!(evolved["peerMethodTransfer"]["active"],true);
         assert_eq!(evolved["peerMethodTransfer"]["automaticallyApplied"],false);
         assert_eq!(evolved["peerMethodTransfer"]["transferProven"],false);
+        assert!(instruction(&evolved).contains("PORTABLE METHOD HYPOTHESIS"));
         assert_ne!(evolved["revision"],original["revision"]);
         let mut drift=peer.clone();
         drift["references"][0]["identicalSourceFiles"]=json!(0);
