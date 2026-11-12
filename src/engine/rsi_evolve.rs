@@ -3359,6 +3359,13 @@ async fn run_loop(
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
+        // A real learned weight artifact is a separate candidate capability.
+        // Persist its provenance for successors, without ever equating a
+        // training receipt with independently improved model quality.
+        generation["modelAdapterCandidate"]=context.state.store.all("rsi_adapter_candidate")
+            .into_iter().rev().find(|adapter|
+                adapter["generationJobId"].as_str()==Some(child_id))
+            .unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         if generation["candidateOrigin"]=="native_inductive_source_mutation" {
             generation["generatorModel"]=json!(format!("dominion-native:{}",
@@ -3552,6 +3559,15 @@ async fn run_loop(
         generation["principleLearningFeedback"]=
             crate::engine::rsi_principle_learning::feedback(
                 &generation["metaPolicy"],independently_checked);
+        generation["modelWeightLearning"]=json!({
+            "candidate":generation["modelAdapterCandidate"],
+            "adapterWeightsActuallyCreated":generation["modelAdapterCandidate"]
+                ["adapterCreated"]==true,
+            "independentWeightGainMeasured":false,
+            "adapterPromoted":false,
+            "requiresPairedModelHarnessEvaluation":generation["modelAdapterCandidate"]
+                ["adapterCreated"]==true
+        });
         let mut lineage=history.clone();
         lineage.push(independently_checked.clone());
         generation["reciprocalCycleEvidence"]=json!(

@@ -39,8 +39,9 @@ pub(crate) fn approved(
     if !inside(&model,model_root)||!model.is_dir(){
         return Err("기본 모델이 로컬 관리 영역 밖에 있습니다.".into());
     }
+    let actual_data_hash=sha_file(&data)?;
     if manifest["datasetSha256"].as_str().is_none_or(|s|!hex(s))
-        ||manifest["datasetSha256"]!=sha_file(&data)?{
+        ||manifest["datasetSha256"].as_str()!=Some(actual_data_hash.as_str()){
         return Err("학습 데이터 SHA-256 불일치".into());
     }
     let steps=manifest["maxSteps"].as_u64().unwrap_or(0);
@@ -125,7 +126,9 @@ pub(crate) async fn run_tool(
         if file!="adapter_model.safetensors"{return Err("가중치 파일 형식 오류".into());}
         let root=fs::canonicalize(destination).map_err(|e|e.to_string())?;
         let artifact=fs::canonicalize(root.join(file)).map_err(|e|e.to_string())?;
-        if !inside(&artifact,&root)||sha_file(&artifact)?!=parsed["adapterSha256"]{
+        let actual_adapter_hash=sha_file(&artifact)?;
+        if !inside(&artifact,&root)
+            ||parsed["adapterSha256"].as_str()!=Some(actual_adapter_hash.as_str()){
             return Err("로컬 LoRA 파일의 SHA-256 불일치".into());
         }
         receipt["adapterCreated"]=json!(true);
