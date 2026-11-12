@@ -145,6 +145,29 @@ fn rsi_patch_ready_for_verification(
             files.iter().any(|file|file.as_str()==Some(path)))
 }
 
+/// Whole-system redesign is a BUNDLE, not "one tool succeeded".
+/// The older early-handoff policy stopped as soon as its FIRST verified
+/// source file changed, leaving coupled learning, memory and tool edits
+/// impossible to finish. A model-authored multi-file contract now keeps the
+/// same native turn alive until every declared source has a witnessed write.
+/// No simulated success, inferred edit, or unrecorded file earns completion.
+fn rsi_complete_system_bundle(session:&Value,operations:&[Value])->bool {
+    if session["rsiSystemEvolution"]!=true{return true;}
+    let Some(targets)=session["rsiSystemDesign"]["targetFiles"].as_array()
+        else{return true;};
+    if targets.len()<=1 {return true;}
+    targets.iter().all(|target|target.as_str()
+        .filter(|path|crate::engine::rsi::safe_path(path))
+        .is_some_and(|path|operations.iter().any(|op|{
+            op["arguments"]["path"]==path
+                && matches!(op["tool"].as_str(),
+                    Some("workspace_replace"|"workspace_replace_function"|"workspace_write"))
+                && op["status"]=="completed"
+                && op["result"]["written"]==true
+                && op["toolReceipt"]["verified"]==true
+        })))
+}
+
 /// Classify literal native source-tool failures that do not need another LLM
 /// planning call. A focused worker will get a bounded read opportunity on
 /// the next round. The original error and unsuccessful source write remain
@@ -2285,16 +2308,24 @@ async fn run_turn_body(
                 // One successful targeted observation closes this repair read.
                 rsi_repair_read_allowed=false;
             }
-            if ok && state.store.get("execution_operation",
-                    &format!("{execution_id}:{round}:{call_index}:{}",call.id))
-                .is_some_and(|operation|rsi_patch_ready_for_verification(
-                    &session,&call.name,&arguments,&operation))
-            {
-                rsi_patch_written=true;
+            if ok {
+                // The design tool updates the persisted session DURING this
+                // turn. An old in-memory session would miss its targetFiles.
+                let live_session=state.store.get("session",session_id)
+                    .unwrap_or_else(||session.clone());
+                let observed=state.store.execution_operations(execution_id)?;
+                let ready=state.store.get("execution_operation",
+                        &format!("{execution_id}:{round}:{call_index}:{}",call.id))
+                    .is_some_and(|operation|rsi_patch_ready_for_verification(
+                        &live_session,&call.name,&arguments,&operation));
+                if ready && rsi_complete_system_bundle(&live_session,&observed) {
+                    rsi_patch_written=true;
                 state.store.audit("rsi.patch_submitted_for_verification",json!({
                     "sessionId":session_id,"executionId":execution_id,
-                    "tool":call.name,"callId":call.id,"path":arguments["path"]
+                    "tool":call.name,"callId":call.id,"path":arguments["path"],
+                    "systemBundleComplete":true
                 }));
+                }
             }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
@@ -2619,14 +2650,18 @@ async fn run_harness_nodes(
         // source evaluator must see that program's own final source tree.
         if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
             let executed=state.store.execution_operations(execution_id)?;
+            let current_session=state.store.get("session",session_id)
+                .unwrap_or_else(||session.clone());
             let verified=executed.iter().any(|op|
                 op["origin"]=="procedure"
                     && op["procedureStrategyId"]==strategy["id"]
                     && op["procedureRevision"]==strategy["revision"]
-                    && rsi_patch_ready_for_verification(session,
+                    && rsi_patch_ready_for_verification(&current_session,
                         op["tool"].as_str().unwrap_or(""),
                         &op["arguments"],op));
-            if verified { break; }
+            if verified && rsi_complete_system_bundle(&current_session,&executed) {
+                break;
+            }
         }
     }
     Ok(synthetic)
@@ -6568,6 +6603,28 @@ mod harness_tool_selection_tests {
         assert!(repair.contains("workspace_read_range로 현재"));
         assert!(repair.contains("expectedSha256"));
         assert!(!repair.contains("제공되지 않습니다"));
+    }
+
+    #[test]
+    fn coupled_system_requires_all_verified_source_effects_before_handoff() {
+        let session=json!({"rsiSystemEvolution":true,"rsiSystemDesign":{
+            "component":"system","targetFiles":[
+                "src/engine/memory.rs","src/engine/learning.rs"]
+        }});
+        let recorded=|path:&str|json!({"tool":"workspace_replace",
+            "arguments":{"path":path},"status":"completed",
+            "result":{"written":true},"toolReceipt":{"verified":true}});
+        let first=recorded("src/engine/memory.rs");
+        assert!(!rsi_complete_system_bundle(&session,&[first.clone()]),
+            "a one-file patch must never stand in for a coupled redesign");
+        let mut unverified=recorded("src/engine/learning.rs");
+        unverified["toolReceipt"]["verified"]=json!(false);
+        assert!(!rsi_complete_system_bundle(
+            &session,&[first.clone(),unverified]));
+        assert!(rsi_complete_system_bundle(&session,&[
+            first,recorded("src/engine/learning.rs")]));
+        assert!(rsi_complete_system_bundle(&json!({"rsiRun":true}),&[]),
+            "single-file legacy mode retains its original handoff");
     }
 
     #[test]
