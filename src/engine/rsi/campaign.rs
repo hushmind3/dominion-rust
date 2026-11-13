@@ -1,5 +1,9 @@
 //! Campaign admission, selection and durable orchestration entry point.
-use super::*;
+use super::{
+    AppState, Value, JobContext, Duration, Instant,
+    json, rsi, limits, git, save,
+    elapsed, lineage_fingerprint_valid, snapshot_source, worker, run_loop,
+};
 
 pub fn choose(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     let record = state
