@@ -150,6 +150,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err("후손 실패 학습 지시와 실제 세대 기록이 다릅니다.".into());
         }
         let lineage=crate::engine::rsi_system::lineage_capsule(&history);
+        let replayed_transfer=crate::engine::rsi_system::method_transfer_target(
+            &state,&history,&job["input"]);
+        if job["input"]["rsiControllerPlan"].is_object()
+            && (job["input"]["rsiMethodTransfer"]!=replayed_transfer
+                || (replayed_transfer.is_object()
+                    && (replayed_transfer["domain"]!=domain
+                        || job["input"]["rsiControllerPlan"]["methodTransfer"]!=replayed_transfer))) {
+            return Err("실행 후손의 방법 계승 선택이 원본 메타 세대·절차와 일치하지 않습니다.".into());
+        }
+        job["rsiMethodTransferVerified"]=json!(job["input"]["rsiControllerPlan"].is_object()
+            && replayed_transfer.is_object());
         if job["input"]["rsiControllerPlan"].is_object()
             && job["input"]["rsiLineageCapsule"]!=lineage {
             return Err("후손의 성공·실패 학습 계보가 현재 기록과 다릅니다.".into());
