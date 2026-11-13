@@ -495,7 +495,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
         // Two real isolated downstream workers: method OFF vs inherited method ON.
         // This consumes additional model calls and is explicitly opted in.
-        "rsiMethodAblation":continuous && body["methodAblation"]==true
+        "rsiMethodAblation":continuous && body["methodAblation"]!=false
             && body["evolutionTarget"]!="product" && body["nativeInduction"]!=true,
         // User-approved model routing belongs to DOMINION's API harness,
         // NOT to trainable weights. No routing opt-in means no model changes.
