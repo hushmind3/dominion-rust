@@ -8,7 +8,7 @@ pub(super) async fn ensure_compiled_generator(
     context:&JobContext,lab:&Path,target:&Path,binary:&Path,
     record:&mut Value,head:&str,remaining:u64,built_commit:&mut String,
 )->Result<(),String>{
-    if built_commit != head {
+    if built_commit.as_str() != head {
             record["phase"] = json!("building_generator");
             save(context, record)?;
             let mut build = Command::new(rsi_worktree::cargo_executable());
