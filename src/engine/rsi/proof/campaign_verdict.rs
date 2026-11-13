@@ -1,7 +1,7 @@
 //! One authoritative, source-replayed verdict for RSI campaign progress.
 //! The coordinator, API and final audit must never independently redefine
 //! what "capability demonstrated" or "recursive completion" means.
-use super::super::*;
+use super::*;
 use serde_json::{json, Value};
 
 /// An accepted row is not necessarily an independently verified improvement.
