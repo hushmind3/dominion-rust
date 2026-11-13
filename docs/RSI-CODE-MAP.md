@@ -58,3 +58,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 ### Versioned room-economy algorithm and feedback (2026-11-14)
 
 `api/rooms.rs::validated_config` (owner-specified adaptive/full, model tier validation) → `submit_internal` → `algorithms::choose_for_agent("multiagent.economy")` → immutable job `input.roomSnapshot.economyKernel` → `rooms/{speakers,economy}.rs` → `rooms.rs::run_locked` → provider/chat → durable outputs. Completed automatic runs expose `POST /api/rooms/:id/jobs/:job_id/feedback`; `room_feedback` stores an idempotent owner preference on that exact executed revision and `algorithms::record_owner_feedback` updates global bandit statistics. No generation-weight training. These subjective preferences are not independent evaluation receipts. Unit contracts: `tests/unit/engine_rooms_economy_tests.rs` and `tests/unit/engine_rooms_pool_tests.rs` (authored, not executed).
+
+### Paid media checkpoint persistence and executable product frontier (2026-11-14)
+
+`video/runway.rs::{merge_video_state,checkpoint_video}` preserves the full paid clip ledger and frozen shot plan across the job store's shallow nested patch behavior. Test source `tests/unit/video_checkpoint_merge_tests.rs` is authored but not executed. `rsi_system.rs::{COMPONENTS,discovered_architecture_sources}` now inventories group speaker-economy, room context and actual video generation source under algorithm/harness/tool roles. These are independent mutable capability source paths, not method-source RSI proof nor holdout success receipts.
