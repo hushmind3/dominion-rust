@@ -20,6 +20,7 @@
 
 ## 서브3 · 출시 후 전체 시스템 개선 (2026-11-14)
 
+- **자율 에이전트 하네스 · Claude Code/Codex급 구조 지향:** `/api/goals → jobs → goals::run → goal_workspace(사전 프로젝트 지도) → chat/runtime·tools(실행·하위 작업) → verification(실도구 증거) → goal_progress(진척·재계획) → goal_recovery(멱등 검토 재개) → goal.receipt·episode(완수 증거)`. 활동 화면의 `GoalWorkbench`에서 목표 등록·계획·검증·토큰 상한·취소를 제어합니다. 도구 실행 중 미확정 상태는 자동 재실행하지 않습니다. 소스 세부 연결과 검증 제한은 [에이전트 하네스 구조](docs/AGENT-HARNESS-2026-11-14.md)에 정리했습니다.
 - **고화질 영상 바로 생성:** 2026년 10월 22일 종료된 Veo Preview 대신 Gemini Omni Flash 1.2를 선택하고 Gemini API 키를 암호화 저장한 뒤, 오디오 포함 단편 MP4를 기존 내구성 작업 큐로 생성합니다. `web/src/pages/Video.tsx → src/api/video.rs → src/engine/video.rs → src/engine/video/omni.rs → Interactions API → MP4`. FFmpeg 카드 영상과 기존 ComfyUI 워크플로도 그대로 지원합니다. 실제 API 생성 성공은 별도 검증이 필요합니다.
 - **그룹대화 비용 제어:** 기존 역할별 선택 발언에 더해, 중복된 장문 답변의 호출 중지와 명시적으로 등급을 지정한 모델 간 저비용/고성능 선택을 옵션으로 연결했습니다. `web/src/pages/Rooms.tsx → src/api/rooms.rs → src/engine/rooms.rs → src/engine/rooms/economy.rs`. 전원 요청·지목·의견 충돌은 보호하며 모델 가격을 이름으로 추측하지 않습니다.
 - **실제 캐시 토큰 계측:** 채팅·그룹대화 공급자 스트림이 보고하는 캐시 읽기 토큰을 `src/engine/chat/provider.rs → src/engine/gateway.rs`의 `model.usage` 감사 기록에 전달합니다. 캐시를 보고하지 않는 호출은 절감률을 추정하지 않습니다.
