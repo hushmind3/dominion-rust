@@ -25,9 +25,11 @@ pub(crate) fn instruction(policy:&Value)->String {
         Valid successes and their descendant productivity:\n{}\n\
         Counterexamples to avoid repeating:\n{}\n\
         Author the novel executable redesign yourself, including new modules or \
-        multi-component changes. You may also edit src/engine/rsi_meta_controller.rs, \
-        src/engine/rsi_system.rs and the task/memory/learning/tool harness, so \
-        the next compiled child changes HOW it designs improvements. \
+        multi-component changes. Executable meta-methods live in \
+        src/engine/rsi/meta_controller/ and the editable source-model lives \
+        in src/engine/rsi/system/. Edit the actual relevant files and the \
+        task/memory/learning/tool harness so the next compiled child changes \
+        HOW it designs improvements. \
         Explain a counterfactual or failure mode for your proposal and predict \
         observable changes before editing. After an accepted change the NEXT \
         binary must generate the new improvement plan. Frozen verification is \

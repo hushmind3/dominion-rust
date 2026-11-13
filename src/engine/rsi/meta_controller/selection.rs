@@ -133,7 +133,14 @@ pub(crate) fn synthesize(
             "failurePosterior":winner["failurePosterior"],
             "calibrationFactor":calibration,
             "qualityProven":false},
-        "metaMechanismSource":"src/engine/rsi_meta_controller.rs",
+        "metaMechanismSource":"src/engine/rsi/meta_controller/selection.rs",
+        "metaMechanismModules":[
+            "src/engine/rsi/meta_controller/provenance.rs",
+            "src/engine/rsi/meta_controller/reciprocal.rs",
+            "src/engine/rsi/meta_controller/selection.rs",
+            "src/engine/rsi/meta_controller/transfer.rs",
+            "src/engine/rsi/meta_controller/feedback.rs"
+        ],
         "successorCanRewriteMetaMechanism":true,
         "frozenEvaluatorUnchanged":true
     })
