@@ -100,3 +100,18 @@ quality gain. It follows the 2026 AIDE² principle of inherited accepted
 agent revisions (https://arxiv.org/abs/2609.26457) and 2026 RRSI history-aware
 proposal discipline (https://github.com/google-research/rrsi).
 No test, compile, benchmark, workflow, or model-generation run was performed.
+
+## Responsibility-based RSI regression suite
+
+The prior `src/engine/rsi/tests/evolve.rs` held 105 test cases across
+4,326 lines and intertwined search, research, adoption, tool-repair and
+lineage test responsibilities. It is now a small entry-point `include!`
+manifest for 12 responsibility-named siblings in the **same directory**.
+This preserves the original module scope and relative `include_str!` file
+locations. No test bodies or assertions were changed, and a source-string
+reconstruction check confirmed that the original test items were retained
+in order; this is not a compile or test result.
+
+The production engine path is unchanged. These test files remain excluded
+from the editable method frontier via `runtime_source_file`, while the
+independent scorer and source verification stay outside the editable planner.
