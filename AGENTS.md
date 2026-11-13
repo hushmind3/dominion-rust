@@ -58,3 +58,6 @@ and other safe compiled improvement modules. Keep these independent:
 an editable method must never become the verifier of its own success.
 
 **Observed method feedback:** `rsi/method_feedback.rs` checks authentic predecessor source and compiled B job before the next meta rewrite is proposed. Only `rsi/proof.rs` certifies source adoption.
+
+
+**Final verdict boundary:** `rsi/proof.rs::revalidated_history` overwrites self-reported feedback flags, replays the original C job and method source receipt from B, and stamps `recursiveFeedbackVerified` only for measured A→B→A. `recursive_closure_report` then gates campaign status and API results on that replayed proof.

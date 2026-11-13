@@ -569,3 +569,9 @@ The corresponding source assertions were updated. No test was executed.
 ### Compiled A→B→A experimental execution path
 
 The rebuilt planner returns `methodSnapshot` and `downstreamFeedback`. The frozen coordinator independently recomputes them from original accepted candidate receipts and actual B generation jobs, then passes them into the child job. The rebuilt worker repeats verification before tool/model execution. The measured B feedback can redirect the actual source-indexed frontier to A's unchanged improvement method file, and is explicitly delivered in C's system instructions. C must still produce a new source edit and independently win its paired evaluation. The frozen proof has a separate final gate; these input records are not self-certifying.
+
+### Single success gate: replayed source, B execution, C feedback consumption
+
+Campaign completion (`rsi/execution.rs`) and all RSI API reads (`src/api/rsi.rs`) already use `revalidated_history` then `recursive_closure_report`. The frozen `rsi/proof.rs` now independently requires the exact A-method SHA to match B's stored compiled method snapshot and original B job, an independently accepted B task gain, a replayed B feedback object passed into the original C job and its *actual model prompt*, plus a new independently accepted C revision of the **same method source file**. It resets any caller-supplied `recursiveFeedbackVerified` before replay and only then may report `closedLoopObserved=true`. A→B→A observational provenance does not constitute causal ablation; `causalAblationProven=false` remains explicit. No tests/builds/CI were run during these edits.
+
+2026 methodological context: [PAST-Bench (Aug 2026)](https://arxiv.org/abs/2608.04003), [AIDE² (Sep 2026)](https://arxiv.org/abs/2609.26457), [Trustworthy Recursive Self-Improvement (Nov 2026)](https://arxiv.org/abs/2611.10787).

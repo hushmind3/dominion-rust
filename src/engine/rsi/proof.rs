@@ -23,7 +23,7 @@ pub fn generation_is_verified(generation: &Value) -> bool {
 /// persisting a claimed recursive capability. A mutable generation flag is
 /// only a cache; it must never be the final proof.
 pub fn revalidated_history(state:&AppState, history:&[Value]) -> Vec<Value> {
-    history.iter().map(|generation| {
+    let mut checked=history.iter().map(|generation| {
         let mut checked=generation.clone();
         let valid=if generation_is_verified(generation) {
             generation["candidateId"].as_str()
@@ -47,8 +47,16 @@ pub fn revalidated_history(state:&AppState, history:&[Value]) -> Vec<Value> {
             false
         };
         checked["pairedRevalidated"]=json!(valid);
+        // A serialized success flag is not evidence: only replayed jobs and
+        // exact original A/B/C receipts can set this later in this function.
+        checked["recursiveFeedbackVerified"]=json!(false);
         checked
-    }).collect()
+    }).collect::<Vec<_>>();
+    for index in 2..checked.len(){
+        let valid=verified_feedback_reuse(state,&checked[index-2..=index]);
+        checked[index]["recursiveFeedbackVerified"]=json!(valid);
+    }
+    checked
 }
 
 /// Only a locally paired, evidence-hashed comparison can establish a
@@ -190,6 +198,66 @@ fn improved_domain(g:&Value,domain:&str)->bool {
         }))
 }
 
+/// The frozen adjudicator follows the original B/C jobs and original
+/// independently paired candidate receipts. A claimed feedback field in
+/// generation JSON is never enough: the rebuilt B binary must have executed
+/// A's exact method bytes, and C must actually consume the B observation
+/// before editing those same bytes into a new independently improved version.
+fn verified_feedback_reuse(state:&AppState,chain:&[Value])->bool{
+    let [a,b,c]=chain else{return false};
+    if ![a,b,c].iter().all(|g|generation_is_verified(g)
+        && source_change_recorded(g) && compiled_plan_executed(g))
+        || a["acceptedCommit"]!=b["generatorCommit"]
+        || b["acceptedCommit"]!=c["generatorCommit"]
+        || c["candidateTarget"]!="improver"
+        || c["candidateOrigin"]!="model_driven_detached_worktree" {
+        return false;
+    }
+    let feedback=super::method_feedback::downstream_feedback(
+        state,&chain[..2],c["generatorCommit"].as_str().unwrap_or(""));
+    if !feedback.is_object(){return false;}
+    let Some(method)=feedback["methodPath"].as_str() else{return false};
+    let changed=c["changedSourcePaths"].as_array();
+    if !changed.is_some_and(|paths|paths.len()==1
+        && paths[0].as_str()==Some(method))
+        || !valid_hex(&c["acceptedSourceHashes"][method],64)
+        || c["acceptedSourceHashes"][method]==feedback["methodSourceSha256"]
+        || c["downstreamFeedback"]!=feedback
+        || c["nativePlan"]["downstreamFeedback"]!=feedback
+        || c["systemAgenda"]["downstreamFeedbackFocus"]!=feedback
+        || c["systemAgenda"]["target"]["path"]!=method
+        || c["metaPolicyExecuted"]["downstreamFeedback"]!=feedback
+        || !improved_domain(c,"improver")
+        || c["evaluation"]["metrics"]["metaHoldoutGains"]
+            .as_u64().unwrap_or(0)==0 {
+        return false;
+    }
+    let Some(job)=c["jobId"].as_str().and_then(|id|
+        state.store.get("job",id)) else{return false};
+    if job["kind"]!="rsi_generation"
+        || job["id"]!=c["jobId"]
+        || job["input"]["rsiGeneratorCommit"]!=c["generatorCommit"]
+        || job["input"]["rsiDownstreamFeedback"]!=feedback
+        || job["input"]["rsiNativePlan"]["downstreamFeedback"]!=feedback
+        || job["input"]["rsiSystemAgenda"]["downstreamFeedbackFocus"]!=feedback
+        || job["rsiMetaPolicyExecuted"]!=c["metaPolicyExecuted"]
+        || job["rsiMetaPolicyExecuted"]["downstreamFeedback"]!=feedback
+        || job["rsiDomain"]!=c["domain"]
+        || job["result"]["rsi"]["candidateId"]!=c["candidateId"]
+        || !job["input"]["prompt"].as_str().is_some_and(|prompt|
+            feedback["taskEvaluationSha256"].as_str().is_some_and(|hash|
+                prompt.contains(hash)))
+    {return false;}
+    c["candidateId"].as_str()
+        .and_then(|id|state.store.get("rsi_candidate",id))
+        .is_some_and(|candidate|{
+            candidate["paths"]==c["changedSourcePaths"]
+                && candidate["target"]=="improver"
+                && candidate["experimentAdoption"]["commit"]==c["acceptedCommit"]
+                && crate::engine::rsi::verify_paired_receipt(state,&candidate).is_ok()
+        })
+}
+
 fn closing_triplet(history:&[Value])->Option<[&Value;3]> {
     history.windows(3).find_map(|chain|{
         let [parent,child,grandchild]=chain else{return None;};
@@ -215,6 +283,10 @@ fn closing_triplet(history:&[Value])->Option<[&Value;3]> {
             || !improved_domain(child,child["domain"].as_str().unwrap_or(""))
             || !improved_domain(grandchild,"improver")
             || !chain.iter().any(|g|generation_meta_transfer_proven(g))
+            // A→B→A means the actual descendant B used inherited method A,
+            // and C consumed independently measured B feedback to rewrite A.
+            // A source-labelled story without this replayed job link fails.
+            || grandchild["recursiveFeedbackVerified"]!=true
         {return None;}
         let first=&parent["metaPolicyExecuted"]["actualExecutedRole"];
         let second=&child["metaPolicyExecuted"]["actualExecutedRole"];
@@ -253,6 +325,9 @@ pub fn recursive_closure_report(history:&[Value])->Value {
             c["acceptedSourceHashes"]],
         "crossDomainGainMeasured":true,
         "methodEvolvedTwice":true,
+        "originalDescendantFeedbackReplayed":true,
+        "revisedMethodSource":c["downstreamFeedback"]["methodPath"],
+        "downstreamPairedReceipt":c["downstreamFeedback"]["taskEvaluationSha256"],
         "causalAblationProven":false})
 }
 
@@ -297,6 +372,7 @@ mod closure_tests {
         let mut g=json!({
             "id":id,"jobId":id,"campaignId":"campaign",
             "accepted":true,"pairedRevalidated":true,
+            "recursiveFeedbackVerified":true,
             "candidateId":format!("candidate-{id}"),
             "candidateOrigin":"model_driven_detached_worktree",
             "domain":domain,"candidateTarget":if domain=="improver"{"improver"}else{"harness"},
@@ -356,6 +432,9 @@ mod closure_tests {
         let mut wrong_binary=grandchild.clone();
         wrong_binary["nativePlan"]["generatorCommit"]=json!(b);
         assert!(!capability_demonstrated(&[parent.clone(),child.clone(),wrong_binary]));
+        let mut no_feedback=grandchild.clone();
+        no_feedback["recursiveFeedbackVerified"]=json!(false);
+        assert!(!capability_demonstrated(&[parent.clone(),child.clone(),no_feedback]));
         let mut no_second_meta=grandchild.clone();
         no_second_meta["acceptedSourceHashes"]=json!({
             "src/engine/jobs.rs":"a".repeat(64)});
