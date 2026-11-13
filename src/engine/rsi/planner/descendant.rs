@@ -629,6 +629,14 @@ pub(super) fn validated_descendant_controller(
                 &plan["principleLearning"],history)
                 || plan["metaPolicy"]["principleLearningSha256"]
                     !=plan["principleLearning"]["sha256"]))
+        || plan["architectureFrontier"].as_array().is_none_or(|frontier|
+            !crate::engine::rsi_evolve::meta_evolution::valid(
+                &plan["metaEvolutionProgram"],history,frontier,commit))
+        || (plan["metaEvolutionProgram"].is_object()
+            && (plan["metaPolicy"]["selectionMode"]!="authored_recursive_evolution_protocol"
+                || plan["metaPolicy"]["target"]!=plan["metaEvolutionProgram"]["target"]
+                || plan["metaPolicy"]["evolutionProtocolRevision"]
+                    !=plan["metaEvolutionProgram"]["revision"]))
         || (plan["openImprovementProgram"].is_object()
             && plan["architectureFrontier"].as_array().is_none_or(|frontier|
                 !crate::engine::rsi_program_graph::valid(
@@ -700,6 +708,7 @@ pub(super) fn validated_descendant_controller(
         || input["rsiFactorialExperiment"]!=plan["factorialExperiment"]
         || input["rsiReflexiveProgram"]!=plan["reflexiveProgram"]
         || input["rsiOpenImprovementProgram"]!=plan["openImprovementProgram"]
+        || input["rsiMetaEvolutionProgram"]!=plan["metaEvolutionProgram"]
         || input["rsiPrincipleLearning"]!=plan["principleLearning"]
         || input["rsiApiRoutePolicy"]!=plan["apiRoutePolicy"]
         || input["rsiMutualProgram"]!=plan["mutualProgram"]
