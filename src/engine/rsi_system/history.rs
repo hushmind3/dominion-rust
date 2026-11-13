@@ -7,7 +7,7 @@ use serde_json::{json,Value};
 pub(crate) fn revalidated_method_history(
     state:&crate::state::AppState,history:&[Value]
 )->Vec<Value>{
-    history.iter().map(|generation|{
+    let mut checked=history.iter().map(|generation|{
         let mut checked=generation.clone();
         let candidate=generation["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id));
@@ -56,6 +56,28 @@ pub(crate) fn revalidated_method_history(
                 &checked["metaPolicy"],&checked);
         }
         checked
-    }).collect()
+    }).collect::<Vec<_>>();
+    // Reconstruct inherited method evidence AFTER replaying original frozen
+    // receipts, so mutable generation fields cannot fabricate a learned win.
+    let independently_checked=checked.clone();
+    for row in &mut checked {
+        let observed=crate::engine::rsi_system::inherited_method_receipt(
+            &independently_checked,&row["systemBlueprint"],&row["metaPolicy"],
+            row["generatorCommit"].as_str().unwrap_or(""),&row["focusFiles"]);
+        if observed.is_null()
+            || row["metaMethodInheritance"]!=observed
+            || row["systemBlueprintVerified"]!=true
+            || row["descendantPlan"]["source"]
+                !="compiled_descendant_system_controller_v3"
+            || row["descendantPlan"]["systemBlueprint"]!=row["systemBlueprint"] {
+            row["metaMethodInheritance"]=Value::Null;
+            row["metaMethodOutcome"]=Value::Null;
+            continue;
+        }
+        row["metaMethodInheritance"]=observed;
+        row["metaMethodOutcome"]=
+            crate::engine::rsi_system::observed_method_outcome(row);
+    }
+    checked
 }
 
