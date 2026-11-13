@@ -124,7 +124,10 @@ pub(super) fn capture_generation_evidence(
             "evaluationProfileSha256":evaluation_profile_sha,
             "architectureTarget":current["input"]["rsiArchitectureTarget"],
             "systemBlueprint":current["input"]["rsiSystemBlueprint"],
-            "improvementDirective":current["input"]["rsiImprovementDirective"]
+            "improvementDirective":current["input"]["rsiImprovementDirective"],
+            "methodTransfer":current["input"]["rsiMethodTransfer"],
+            "methodTransferVerified":current["rsiMethodTransferVerified"],
+            "feedbackRepairSelected":current["input"]["rsiFeedbackRepairSelected"]
         }),
         json!({
             "lineageSha256":current["input"]["rsiLineageCapsule"]["sha256"],
