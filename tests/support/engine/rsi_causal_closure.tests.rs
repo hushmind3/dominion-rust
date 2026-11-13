@@ -75,6 +75,7 @@ mod recursive_method_feedback_contract {
         }]}}});
         assert!(independent_quality_gain(&quality,"improver"));
         quality_check_does_not_credit_cost_only();
+    }
 
     fn quality_check_does_not_credit_cost_only(){
         let cost=json!({"evaluation":{"metrics":{"measurements":[{
@@ -83,6 +84,5 @@ mod recursive_method_feedback_contract {
                 "candidate":5.0,"improved":true,"regressed":false}]
         }]}}});
         assert!(!independent_quality_gain(&cost,"improver"));
-    }
     }
 }
