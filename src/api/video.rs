@@ -48,7 +48,8 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
-        "runway": {"available":runway,"recipe":"2026-06","audio":true,"durations":[5,10,15]},
+        "runway": {"available":runway,"recipe":"2026-06","audio":true,"durations":[5,10,15],
+            "qualities":["720p","1080p"],"ratios":["9:16","16:9","1:1"],"shotModes":["auto","custom"]},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
             {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
@@ -79,6 +80,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "providerId",
         "model",
         "useModel",
+        "runwayQuality",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
@@ -222,7 +224,7 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
     })];
     if cfg["hasRunwayKey"] == true {
         items.push(json!({"id":"runway","name":"Runway Multi-Shot (2026-06)",
-            "kind":"runway","available":true,"hint":"API 키로 5개 샷·오디오 포함 영상을 생성합니다."}));
+            "kind":"runway","available":true,"hint":"자동 구성 또는 3~5개 샷, 720p·1080p·오디오를 지원합니다."}));
     }
     if comfy {
         items.push(json!({
