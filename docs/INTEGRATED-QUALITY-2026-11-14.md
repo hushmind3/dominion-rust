@@ -61,3 +61,12 @@
 - [MAS-PromptBench 2026-10-22 갱신](https://github.com/juyangbai/MAS-PromptBench) — 멀티에이전트의 역할/통신 포맷/팀 크기 평가.
 
 **평가 시의 원칙**: 선언된 모듈보다 실제 UI/API→Job→엔진→provider/도구→영수증→상태→후속 동작을 우선 추적하고, 명시된 미완료를 성취로 세지 않습니다. 새 코드의 정적 경계 검토만 수행했습니다.
+
+
+### 자율 목표 25점 신규 연결
+
+[자율 목표 실행·복구 하네스](AUTONOMOUS-AGENT-2026-11-14.md)에서 새 심사 기준의 **일반 목적 에이전트** 전 경로를 별도 추적합니다.
+
+`WorkflowsPage` → `GoalConsole` → `api/goals::create_goal` → `jobs::enqueue/run_job` → `goals::run` → `chat/runtime/turn`/Tools → `goal_review::snapshot` → `verification::acceptance_gaps`/Reviewer → `replan` → `episode::set_root_outcome`/Learning.
+
+추가된 실제 런타임 불변 조건: 안전한 리뷰만 재시작, 사용자 테스트 요청의 성공 영수증 요구, Job/Goal 등록·취소·크래시 최종 상태 정합. 병렬 Goal DAG, 통합 diff/되돌리기, 실모델 완주 측정은 미구현 범위입니다.
