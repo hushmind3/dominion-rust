@@ -498,3 +498,9 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 대조 결과의 통계적 인과 증명은 달성했다고 보고하지 않습니다.
 테스트·컴파일·빌드·CI·벤치마크는 이번 소스 작업에서 수행하지 않았습니다.
 기반 모델 가중치는 변경하지 않습니다.
+
+## Evolving experiment design as editable intelligence (2026-11-13)
+
+`rsi/experiment_policy.rs::design` is an **editable and compiled** descendant experiment allocator. It ranks authentic indexed source targets using history of independently adopted improvements, regressions and exploration, including its own `experiment_design` role, without prescribing A→B→A→B turns. When repeated experiments stall, the source policy can choose its own implementation as the next modification target. It chooses a bounded frozen source-pair protocol or an independently run method ON/OFF control for inherited method-assisted task experiments. `rsi/descendant_plan.rs` applies this choice to the **actual agenda target and source focus**, not just a side report.
+
+The stable typed `rsi/proof/experiment_contract.rs` authenticates the source SHA-256 of the compiled policy implementation and target, generator commit, history length, target role/domain and frozen execution protocol. The parent coordinator and actual child worker both validate it before editing; neither recomputes the child's mutable selection scores. `rsi/execution.rs` records observed source edits and independent evaluation in `experimentOutcome`, which future policies use as evidence. Worker instructions receive the validated experiment proposal. The four-generation closure verifier is solely the independent **claim adjudicator**, not the intelligence's mandatory planning schedule. No model weights are trained.

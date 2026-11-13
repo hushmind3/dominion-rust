@@ -214,6 +214,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiNativePlan"]["downstreamFeedback"]!=expected_feedback {
             return Err("후손이 실행한 개선법 소스 또는 독립 측정 피드백이 원본과 다릅니다.".into());
         }
+        let experiment=&job["input"]["rsiExperimentDesign"];
+        if experiment!=&job["input"]["rsiNativePlan"]["experimentDesign"] {
+            return Err("재컴파일된 실험 계약이 실제 세대 계획과 다릅니다.".into());
+        }
+        verify_experiment_design(experiment,&commit,history.len(),
+            &job["input"]["rsiSystemAgenda"],Path::new(source),
+            &expected_snapshot)?;
+        job["rsiExperimentDesignExecuted"]=experiment.clone();
         let expected_meta=crate::engine::rsi_meta_controller::synthesize(
             &history,
             job["input"]["rsiSystemAgenda"]["frontier"].as_array()
@@ -369,7 +377,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}{causal_feedback}\n\n{}",
+        let experiment=&job["input"]["rsiExperimentDesign"];
+        let scientific_design=if experiment.is_object() {
+            format!("\n[DESCENDANT-AUTHORED EXPERIMENT — SOURCE GROUNDED] policySource={} protocol={} revision={} target={} sourceSha256={} question={}. You can revise this experiment allocation algorithm itself in a future independently evaluated source revision; this proposal is not a success claim.\n",
+                "src/engine/rsi/experiment_policy.rs",experiment["protocol"],
+                experiment["policyRevision"],experiment["target"]["path"],
+                experiment["target"]["sourceSha256"],experiment["question"])
+        }else{String::new()};
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{scientific_design}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}{causal_feedback}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     // Source-edit procedures are inherited code-level intelligence. The

@@ -450,6 +450,16 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
             }
         }
     }
+    // Reconstructed child can evolve the experiment allocator itself.
+    // Unlike the four-generation proof, this is not a fixed A-B-A schedule:
+    // any indexed capability or experiment-policy source may be the next edit.
+    let experiment_design=if automatic {
+        experiment_policy::design(Path::new(lab),binary_commit,&history,
+            &agenda,&meta_policy,&method_snapshot)
+    }else{Value::Null};
+    if experiment_design.is_object() {
+        experiment_policy::apply(&mut agenda,&experiment_design);
+    }
     let self_domain=if automatic {
         agenda["target"]["domain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
@@ -457,6 +467,8 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
     let explicit=campaign["planSelectedDomain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let selected=if automatic && agenda["downstreamFeedbackFocus"].is_object() {
+        self_domain.or(inherited).or(explicit)
+    }else if automatic && agenda["experimentDesign"].is_object() {
         self_domain.or(inherited).or(explicit)
     }else if automatic && agenda["inheritedStage"].is_object() {
         // Model-authored successor stage can override a generic inherited
@@ -527,6 +539,7 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
         "metaMethodHypothesis":method_hypothesis,
         "crossLineageHypothesis":hybrid,
         "methodSnapshot":method_snapshot,"downstreamFeedback":downstream_feedback,
+        "experimentDesign":experiment_design,
         "rankedFiles":ranked
     }))
 }

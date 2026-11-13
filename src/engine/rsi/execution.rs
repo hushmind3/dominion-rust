@@ -314,6 +314,9 @@ pub(super) async fn run_loop(
                     .as_deref()!=Some(target_domain.as_str()) {
                 return Err("후손의 재설계 목표와 실제 선택 분야가 다릅니다.".into());
             }
+            let experiment=&record["nextGenerationPlan"]["experimentDesign"];
+            verify_experiment_design(experiment,&head,recorded_history.len(),
+                agenda,&lab,&record["nextGenerationPlan"]["methodSnapshot"])?;
             let meta=&record["nextGenerationPlan"]["metaPolicy"];
             if meta["source"]!="compiled_editable_meta_controller_v1"
                 || meta["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
@@ -361,6 +364,14 @@ pub(super) async fn run_loop(
             child_input["rsiSystemBlueprint"]=model.clone();
             child_input["rsiSystemAgenda"]=agenda.clone();
             child_input["rsiMetaPolicy"]=meta.clone();
+            child_input["rsiExperimentDesign"]=
+                record["nextGenerationPlan"]["experimentDesign"].clone();
+            // Normal API opts in to control experiments; the newly compiled
+            // policy chooses which generation needs that measured protocol.
+            if child_input["rsiMethodAblation"]==true {
+                child_input["rsiMethodAblation"]=json!(
+                    child_input["rsiExperimentDesign"]["protocol"]=="method_on_off");
+            }
             child_input["rsiFactorialExperiment"]=factorial.clone();
             child_input["rsiRecursiveLaboratory"]=laboratory.clone();
             child_input["rsiPrincipleModel"]=predictor.clone();
@@ -734,6 +745,9 @@ pub(super) async fn run_loop(
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["methodSnapshot"]=current["input"]["rsiMethodSnapshot"].clone();
+        generation["experimentDesign"]=current["input"]["rsiExperimentDesign"].clone();
+        generation["experimentDesignExecuted"]=
+            current["rsiExperimentDesignExecuted"].clone();
         generation["downstreamFeedback"]=current["input"]["rsiDownstreamFeedback"].clone();
         generation["metaMethodHypothesis"]=current["input"]["rsiMetaMethodHypothesis"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
@@ -961,6 +975,22 @@ pub(super) async fn run_loop(
             .unwrap_or(0)
             .max(verified_streak);
         record["maxVerifiedStreak"] = json!(verified_max);
+        let design=&generation["experimentDesign"];
+        let edited=design["target"]["path"].as_str().is_some_and(|path|
+            generation["changedSourcePaths"].as_array()
+                .is_some_and(|paths|paths.iter().any(|row|row==path)));
+        generation["experimentOutcome"]=json!({
+            "source":"independent_source_experiment_outcome_v1",
+            "policyRevision":design["policyRevision"],
+            "sourceEditObserved":edited,
+            "generatorCommit":head,
+            "evaluationId":generation["evaluation"]["evaluationId"],
+            "verifiedQualityGain":edited&&generation["accepted"]==true
+                &&generation["pairedRevalidated"]==true
+                &&generation_is_verified(&generation),
+            "protocol":design["protocol"],
+            "actualWorkerExecuted":generation["experimentDesignExecuted"]==*design
+        });
         generation["evidenceVerified"]=json!(
             generation["accepted"]==true
             &&generation["pairedRevalidated"]==true

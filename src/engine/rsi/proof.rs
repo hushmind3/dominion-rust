@@ -8,6 +8,10 @@ mod method_lineage;
 mod method_contrast;
 #[path = "proof/full_cycle.rs"]
 mod full_cycle;
+#[path = "proof/experiment_contract.rs"]
+pub(crate) mod experiment_contract;
+pub(crate) use experiment_contract::verify_experiment_design;
+
 
 pub fn full_cycle_report(state:&AppState,history:&[Value])->Value {
     full_cycle::report(state,history)

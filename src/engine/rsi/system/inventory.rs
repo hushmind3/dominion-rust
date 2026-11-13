@@ -21,6 +21,10 @@ pub(super) const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/rsi_whole_agent.rs","src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
+    ("experiment_design",&["src/engine/rsi/experiment_policy.rs",
+        "src/engine/rsi/descendant_plan.rs",
+        "src/engine/rsi/meta_controller/selection.rs",
+        "src/engine/rsi_recursive_laboratory.rs"]),
     ("improvement_methods",&["src/engine/rsi_edit_genome.rs","src/engine/rsi_edit_program.rs","src/engine/rsi_rule_induction.rs","src/engine/rsi_rule_tournament.rs","src/engine/rsi_decision_rules.rs","src/engine/rsi_rule_rewrite.rs","src/engine/rsi_archive.rs","src/engine/rsi_principle_learner.rs","src/engine/rsi_recursive_laboratory.rs","src/engine/rsi_causal_ecology.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi/descendant_plan.rs","src/engine/rsi/method_feedback.rs","src/engine/rsi/selection.rs","src/engine/rsi/programs/selection.rs","src/engine/rsi/programs/transfer.rs","src/engine/rsi/meta_controller/provenance.rs","src/engine/rsi/meta_controller/reciprocal.rs","src/engine/rsi/meta_controller/selection.rs","src/engine/rsi/meta_controller/transfer.rs","src/engine/rsi/meta_controller/feedback.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi/system/inventory.rs","src/engine/rsi/system/blueprint.rs","src/engine/rsi/system/discovery.rs","src/engine/rsi/system/frontier.rs","src/engine/rsi/system/agenda.rs","src/engine/rsi/system/design.rs"]),
     ("models",&["src/engine/rsi_model_learning.rs","src/engine/router.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])

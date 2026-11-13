@@ -61,3 +61,7 @@ fixture를 중심으로 구분합니다.
 - [AIDE² — Recursive self-improvement of AI research agents (2026-09)](https://arxiv.org/abs/2609.26457): 독립 평가 뒤 개선된 agent가 후속 agent가 되는 형태
 - [Recursive Self-Improvement on a Budget (2026-10)](https://arxiv.org/abs/2610.29121): 한정된 개선 예산과 검증 가능한 선택
 - [RRSI (2026-09)](https://github.com/google-research/rrsi): frozen model과 열린 하네스 개선 공간의 구분
+
+## Adaptable experiment allocation contract
+
+`experiment_policy::design` (editable and executed by compiled descendant) consumes typed source/target data and original generation observations. `experiment_policy::apply` changes `systemAgenda.target/focus`. The stable `proof/experiment_contract.rs::verify_experiment_design` validates immutable source hashes and allowed evaluator controls in parent and child. Actual `rsiMethodAblation` depends on the descendant-selected protocol and user authorization. A live generation records `experimentOutcome`; the next compiled policy observes that outcome and may rewrite **its own source** via the same ordinary model editing + frozen paired worktree + adoption route. This is an architectural live feedback cycle; there are no demonstrated successful multi-generation experimental results from source changes alone.
