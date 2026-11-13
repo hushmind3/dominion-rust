@@ -67,3 +67,10 @@ its workspace mutation boundary from `tools/dispatch.rs`, `tools/edit.rs`,
 `tools/process.rs`, `tools/network.rs` and companion modules. Trace
 `tools::execute` → pinned write receipt → detached RSI candidate →
 original frozen paired evaluator. `tools/tests.rs` is test-only.
+
+**Chat runtime:** `chat/runtime.rs` composes active Rust modules
+`runtime/rsi_guard.rs`, `entry.rs`, `adaptation.rs`, `tool_selection.rs`,
+`program.rs`, `tool_dispatch.rs`, `evaluation.rs`,
+`finalization.rs`, `session.rs`, and the preexisting `turn.rs`.
+The public `run_turn*` and evidence finalization API remain re-exported.
+`tests/support/engine/chat_runtime.tests.rs` is still attached to the root.

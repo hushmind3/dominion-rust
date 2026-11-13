@@ -596,3 +596,19 @@ module. Existing public `tools::execute`, `run_command`,
 `WORKSPACE_ESCAPE` and `resolve_workspace` entrypoints are re-exported.
 The split changes no model weights or tool protocol. The source was moved,
 not tested or built.
+
+### Chat runtime module boundaries (Sub1, 2026-11-13)
+
+`src/engine/chat/runtime.rs` is now the Rust composition root for its
+unchanged public streaming turn APIs and the existing `runtime/turn.rs` turn
+implementation. `runtime/rsi_guard.rs` manages method/tool source checkpoints,
+`runtime/entry.rs` handles admission and streaming, `runtime/adaptation.rs`
+recovers failed tool action, `runtime/tool_selection.rs` applies tool context
+policies, `runtime/program.rs` runs checkpointed executable programs,
+`runtime/tool_dispatch.rs` executes deterministic and requested tools,
+`runtime/evaluation.rs` reviews outcomes, `runtime/finalization.rs`
+commits bounded evidence, and `runtime/session.rs` owns lifecycle/statistics.
+The original cross-module exports and `chat_runtime.tests.rs` include remain
+on the composition root. The RSI source-edit flow stays
+`run_turn` → `run_turn_body` → `tools::execute` → recorded source
+receipt → detached candidate. No tests, builds or benchmarks were executed.
