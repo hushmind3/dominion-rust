@@ -30,6 +30,9 @@ struct Transition {
     from:String,
     to:String,
     when:String,
+    // The accepted model can evolve thresholded experiment transitions.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    guard:Option<super::meta_transition_policy::Guard>,
 }
 #[derive(Debug,Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
@@ -100,6 +103,8 @@ fn valid_protocol(p:&Protocol)->bool {
     for edge in &p.transitions {
         if !ids.contains(edge.from.as_str()) || !ids.contains(edge.to.as_str())
             || !outcomes(&edge.when)
+            || edge.guard.as_ref().is_some_and(|guard|
+                !super::meta_transition_policy::valid(guard))
             || !transitions.insert((&edge.from,&edge.to,&edge.when)) {return false;}
     }
     true
@@ -175,7 +180,9 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],allowed:&[&str],commit:
     }else{return Value::Null};
     let Ok(p)=serde_json::from_value::<Protocol>(protocol.clone()) else{return Value::Null;};
     let choices:Vec<&Operator>=if let Some(prior)=prior_id.as_deref(){
-        p.transitions.iter().filter(|edge|edge.from==prior && edge.when==outcome(ancestor))
+        p.transitions.iter().filter(|edge|edge.from==prior && edge.when==outcome(ancestor)
+            && edge.guard.as_ref().is_none_or(|guard|
+                super::meta_transition_policy::evaluate(guard,ancestor)))
             .filter_map(|edge|p.operators.iter().find(|op|op.id==edge.to))
             .collect()
     }else{p.operators.iter().filter(|op|op.id==p.entry).collect()};
@@ -245,7 +252,9 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],commit:&str)-
             && p.previous_operator_id.as_deref()==prev["operatorId"].as_str()
             && p.protocol.transitions.iter().any(|edge|
                 Some(edge.from.as_str())==p.previous_operator_id.as_deref()
-                    && edge.to==p.operator_id && edge.when==outcome(ancestor))
+                    && edge.to==p.operator_id && edge.when==outcome(ancestor)
+                    && edge.guard.as_ref().is_none_or(|guard|
+                        super::meta_transition_policy::evaluate(guard,ancestor)))
     }
 }
 pub(crate) fn instruction(plan:&Value)->String {
