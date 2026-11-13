@@ -23,9 +23,22 @@
 
 `rsi_causal_closure.rs::independently_adopted`는 세대에 복사된 평가 ID·메트릭·증거 SHA가 후보의 독립 A/B 원본과 일치하는지도 검증한다. `handoff.rs`는 방법 계승 검사 중 경험 레코드를 매번 다시 읽지 않고 한 번의 동일 시점 스냅샷을 이용한다.
 
+## 판정 통일: 진입점에서 자동 종료까지의 실제 경로
+
+- 등록: `src/api/rsi.rs`의 RSI 실행 요청은 `rsiSystemEvolution`과 작업 범위를 고정해 durable job을 생성한다.
+- 실행: `src/engine/rsi/execution/campaign.rs::run_loop`는 후보를 worktree에서 고정 페어 평가한 후 채택한다. 각 세대의 실제 편집 파일, 후보·평가 ID, 유료 모델 호출, 빌드 및 감독 계획 기록을 보존한다.
+- 후손: 채택 커밋의 재컴파일된 `--rsi-plan-generation`과 `--rsi-worker-job`가 다음 목표·도구·프롬프트·소스 변경을 결정한다. `matched_planner_intervention`은 모델 없이 이전/후손 계획 차이를 비교하되, 이 비교 단독으로 성과를 부여하지 않는다.
+- 독립 감사: `src/engine/rsi_causal_closure.rs::audit`는 4개의 연속 메타 A→능력 B→메타 A2→능력 B2를 검사한다. 채택된 소스의 SHA·원본 frozen pair 평가·기존 작업의 실제 컴파일 후손 실행 영수증과, A가 제안한 실행 절차를 B가 실제 소스 쓰기에 사용했는지, A2가 B의 피드백을 읽고 새 절차 버전을 냈는지, B2에서 그 새 버전이 사용됐는지를 확인한다. 모든 단계는 독립 홀드아웃에서 실제 실패→성공 사례가 있어야 한다.
+- 단일 성공 결정: `src/engine/rsi.rs::recursive_proof_report` → `rsi_system/handoff.rs::handoff_evidence` → `rsi_causal_closure.rs::audit`. `rsi::attach_recursive_proof`가 캠페인·API 표시 필드를 동일하게 채우며, `campaign.rs::proof_goal_reached`, `src/api/rsi.rs::verify`, `campaign_view`, `list`, `campaigns`가 동일 판정을 사용한다. `generationCapabilityProven`은 채택 기반 일반 능력 개선 참고 값일 뿐 전체 RSI 완성이 아니다.
+- 메모리: `rsi_system/lineage.rs::lineage_capsule`은 모델 제안 절차 ID·revision과 실제 후손의 실행·성과 피드백을 제한된 계보에 담는다. 재컴파일된 후손의 `worker.rs`가 이를 현재 계획 문맥으로 재주입하고 독립 원본 검증을 거친다.
+
+### 심판 규칙과 공개 상태
+
+2026-11-13 제공된 판정은 45점·4위, 완성 0개였다. 이후 구조·검증 통합을 수정했으나 재채점·실컴파일·실모델 완료를 주장하지 않는다. 고정 모델의 파라미터 학습, LoRA, 파인튜닝은 이번 RSI 경로에 연결하지 않았다. 교차 세대의 사용·피드백은 기술적으로 추적하지만 개선 절차를 끈 상태의 동일 조건 A/B **인과 제거실험**은 별도로 필요하다.
+
 ## 남은 핵심 과제
 
-- 후손 행동 차이와 실제 A/B 개선 사이의 **세대 간 개입 인과성**을 여러 환경·과제로 실증해야 한다. 행동 해시만으로는 충분하지 않다.
+- 동일 과제·모델·예산에서 개선 절차를 실행한 조건과 끈 조건을 비교하는 **개선법별 인과 제거실험**이 필요하다. 현재 경로는 검증된 소스 쓰기·계보·홀드아웃 성과의 결합 증거이며, 개별 절차만의 기여량과 장기 일반화는 별도 측정 대상이다.
 - 커밋·아카이브·실행기는 독립 검증과 작업공간 격리를 전제로 한다. OS 수준의 네트워크·프로세스 예산 강제는 현재 소스 검토에서 별도 검증이 필요하다.
 - 고정 평가로 채택된 후손이 일반 목적 기능과 그 개선법을 상호 발전시켰는지 실제 유료 모델 캠페인으로 측정해야 한다.
 
@@ -35,3 +48,6 @@
 - Liu et al., *Mendel Gödel Machine* (2026-08): 다른 계보의 성과를 출처와 함께 비교하는 진화 방식. https://arxiv.org/abs/2608.07645
 - Xie et al., *Predict Before You Modify* (2026-09): 예상 개선과 사후 측정 간 피드백을 다시 다음 개선 정책의 입력으로 만드는 방법. https://arxiv.org/abs/2610.13991
 - Huang et al., *How Agent Skills Evolve* (2026-11): 실행 계약·중복 관리·객관적 회귀 검증의 필요성을 다룬 대규모 GitHub 분석. https://arxiv.org/abs/2611.04456
+
+- Srikanth et al., *Recursive self-improvement of AI research agents* (2026-09): 후손이 개선기가 되는 연속 버전과 숨겨진 평가의 경계. https://arxiv.org/abs/2609.26457
+- Xue et al., *PAST-Bench* (2026-08): 같은 조건에서 과거 경험을 켜고 끄는 경로별 효과 분리. https://arxiv.org/abs/2608.04003
