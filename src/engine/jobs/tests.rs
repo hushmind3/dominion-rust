@@ -311,3 +311,45 @@
         assert_eq!(job["lastError"], "model unavailable");
         let _ = std::fs::remove_dir_all(dir);
     }
+
+#[test]
+fn recover_resumes_only_a_complete_read_only_goal_review() {
+    let state = temp_state();
+    state.store.put("goal",&json!({"id":"g","status":"running","goal":"write report"}));
+    let snapshot = crate::engine::goal_review::snapshot("s",0,
+        &[json!({"tool":"workspace_write","result":{"success":true}})],"done",&[],None,&[]);
+    state.store.put("job",&json!({"id":"j","kind":"goal","status":"running",
+        "attempts":1,"input":{"goalId":"g"},"goalState":snapshot}));
+    recover(&state);
+    let job=state.store.get("job","j").unwrap();
+    assert_eq!(job["status"],"queued");
+    assert_eq!(job["goalState"]["reviewPending"],true);
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"running");
+}
+
+#[test]
+fn incomplete_or_legacy_review_checkpoint_requires_human_reconciliation() {
+    let state = temp_state();
+    state.store.put("goal",&json!({"id":"g","status":"running","goal":"write report"}));
+    state.store.put("job",&json!({"id":"j","kind":"goal","status":"running","attempts":1,
+        "input":{"goalId":"g"},"goalState":{"inFlight":false,"reviewPending":true,
+            "nextIteration":1,"evidence":[]}}));
+    recover(&state);
+    assert_eq!(state.store.get("job","j").unwrap()["status"],"needs_review");
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"needs_review");
+}
+
+#[test]
+fn completed_goal_is_reconciled_without_restarting_a_side_effecting_turn() {
+    let state=temp_state();
+    state.store.put("goal",&json!({"id":"g","status":"completed","goal":"write",
+        "sessionId":"s","iterations":2,"evidence":[{"tool":"workspace_write"}]}));
+    state.store.put("job",&json!({"id":"j","kind":"goal","status":"running","attempts":3,
+        "input":{"goalId":"g"},"goalState":{"inFlight":true}}));
+    recover(&state);
+    let recovered=state.store.get("job","j").unwrap();
+    assert_eq!(recovered["status"],"completed");
+    assert_eq!(recovered["result"]["status"],"completed");
+    assert_eq!(recovered["result"]["iterations"],2);
+    assert!(next_queued(&state).is_none());
+}
