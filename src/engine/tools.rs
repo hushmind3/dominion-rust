@@ -562,7 +562,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     // queued/running children in the SAME parent session before spawning.
     let active_children=ctx.state.store.all("job").into_iter().filter(|job| {
         job["kind"]=="prompt" && job["input"]["delegation"]==true
-            && job["input"]["parentSessionId"]==ctx.session_id
+            && job["input"]["parentSessionId"].as_str()==Some(ctx.session_id)
             && matches!(job["status"].as_str(),Some("queued"|"running"))
     }).count();
     if active_children>=MAX_ACTIVE_DELEGATES_PER_SESSION {
