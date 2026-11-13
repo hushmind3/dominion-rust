@@ -8,6 +8,10 @@ mod tests {
         assert!(!meta_source("src/engine/memory.rs"));
         assert!(!meta_source("README.md"));
         assert!(!meta_source("src/engine/rsi/proof.rs"));
+        assert!(!meta_source("src/engine/rsi.rs"));
+        assert!(!meta_source("src/engine/rsi_evolve.rs"));
+        assert!(!meta_source("src/engine/rsi_system.rs"));
+        assert!(meta_source("src/engine/rsi/planner/domain_selection.rs"));
         assert!(!meta_source("src/engine/rsi_system/handoff.rs"));
         assert!(!meta_source("src/engine/rsi/execution/compiled_planning.rs"));
         assert!(!meta_source("src/engine/rsi/execution/generation_evidence.rs"));
