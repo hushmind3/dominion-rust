@@ -79,3 +79,27 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
+#[cfg(test)]
+mod proof_goal_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    #[test]
+    fn even_opted_in_campaign_cannot_stop_on_three_claimed_adoptions(){
+        let root=std::env::temp_dir().join(
+            format!("rsi-runtime-proof-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let claimed=json!({"id":"three-native", "acceptedStreak":3,
+            "maxAcceptedStreak":3,"capabilityDemonstrated":true,
+            "actualCompletion":true,"history":[
+                {"accepted":true},{"accepted":true},{"accepted":true}]});
+        assert!(!proof_goal_reached(&state,&json!({"rsiStopAfterProof":true}),&claimed));
+        assert_eq!(crate::engine::rsi::campaign_verdict(&state,&claimed)["actualCompletion"],false);
+        assert!(!proof_goal_reached(&state,&json!({"rsiStopAfterProof":false}),&claimed));
+        let _=std::fs::remove_dir_all(root);
+    }
+}
