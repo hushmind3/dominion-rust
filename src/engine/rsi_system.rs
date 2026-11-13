@@ -33,6 +33,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/rsi/learning/methods.rs","src/engine/rsi/learning/research.rs",
         "src/engine/rsi/learning/generation_feedback.rs",
         "src/engine/rsi/meta/evolution.rs",
+        "src/engine/rsi/meta/transition_policy.rs",
+        "src/engine/rsi/meta/inputs.rs",
         "src/engine/rsi/meta/policy_dispatch.rs",
         "src/engine/rsi/meta/experiment_dispatch.rs",
         "src/engine/rsi/meta/composition.rs",
