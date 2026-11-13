@@ -448,3 +448,18 @@ cargo test --release
 Copyright 2026 hushmind3.
 
 DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
+
+## 2026-11-13 서브2: 실제 개선기 계승·재수정 폐회로 (소스 구현)
+
+**실행 경로:** `src/api/rsi.rs` (`jobs::enqueue`) → `src/engine/jobs.rs` (`rsi_evolve::run`) → `src/engine/rsi/execution.rs::run_loop` → 새 커밋으로 빌드된 `rsi/worker.rs::worker` → `rsi/planner/compiled.rs::compiled_system_generation_plan` → 실제 모델/도구 편집 → `rsi_worktree/{candidate,comparison}.rs`의 동결 평가 → `rsi/lineage.rs::adopt` → 다음 커밋·바이너리·실행기.
+
+**새로 연결한 후손 개선기 피드백:**
+
+1. `rsi_system/history.rs::revalidated_method_history`는 후보의 원본 paired 영수증과 지표를 재생해 신뢰할 수 없는 저장 성적을 폐기합니다.
+2. `rsi_system/method_lineage.rs::inherited_method_receipt`는 **실제로 호출되는 개선기 소스**의 채택 전·후 SHA와 새 후손의 현재 소스 SHA를 대조합니다. `rsi/worker.rs`에서 재컴파일된 개선기 계획과 실제 focus에 연결하며 `rsiMetaMethodInheritance` 실행 기록을 남깁니다.
+3. 후손이 실제 작업·독립 평가를 거치면 `rsi_system::observed_method_outcome`이 측정·채택·추가 메타소스 수정 여부를 세대 원장에 보존합니다. 다음 세대에서는 동일 영수증을 **독립 재검증**하여 원장 변조로 인한 허위 학습을 제한합니다.
+4. `rsi_meta_controller.rs::inherited_method_repair`는 같은 상속 소스·정책 revision에서 독립 평가된 실패 2회와 성공 0회를 관측하면 해당 개선기 소스 자체를 재수정 대상으로 올립니다. `rsi/planner/compiled.rs::evidence_based_meta_repair_focus`가 그 결정을 실제 source focus에 연결하며, 기존 동결 평가·프로덕션 적용은 별도 경계를 유지합니다.
+
+**독립 증명 경계:** 새 루프는 소스·행동 계보 및 실패 후 개선 방법 **재설계 경로**를 구현한 것입니다. 실제 컴파일·실모델 후손 3세대의 연속적인 개선, 동등 예산 A/B 성과, 일반화 능력은 아직 실행 증거가 없으므로 완전한 RSI 성공으로 표시하지 않습니다. 모델 가중치 변경·LoRA·파인튜닝은 연결하지 않았습니다. 이 변경은 `dominion-sub2`에만 반영됐습니다.
+
+구조·한계와 증거 경계는 `docs/research/SUB2-EXECUTABLE-RSI-BOUNDARIES-2026-11-13.md`에 정리했습니다.

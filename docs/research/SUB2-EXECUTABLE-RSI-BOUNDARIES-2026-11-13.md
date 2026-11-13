@@ -49,3 +49,29 @@ Preserve three material boundaries when selecting these changes:
 3. A proposed new method, code-edit call, or research finding is not an adopted improvement. Only a verified source diff with independent paired evidence and a descendant able to execute its inherited method can establish that link.
 
 All sub2 changes are isolated to `dominion-sub2` and committed with `[skip ci]`; the user did not request a build or a full-model CI run at this stage.
+
+## 2026-11-13 judge 35/100 feedback: inheritable executable method closure
+
+The independent judge awarded **Sub2 35/55 structural and 0/45 RSI** on the available evidence; the scores are not changed by author documentation or source-only commits. In response, this branch repaired a specific implementation failure and added a native, independently revalidated descendant-method feedback path.
+
+### Source-backed invocation path
+
+`src/api/rsi.rs` → `src/engine/jobs.rs::run` (`rsi_evolve`) → `src/engine/rsi/execution.rs::run_loop` → newly built `rsi/worker.rs::worker` → `rsi/planner/compiled.rs::compiled_system_generation_plan` → `rsi_meta_controller::synthesize` / `peer_transfer::evolve_from_peer_methods` → actual model edit gateway → `rsi_worktree/comparison.rs::compare_at` frozen paired evaluation → `rsi/lineage.rs::adopt` → following generated binary.
+
+The previous module extraction left `rsi_meta_controller/observations.rs` calling private helpers in `peer_transfer.rs` without importing them. This is repaired by exposing them to sibling modules and explicitly importing them. The executable `peer_transfer.rs` source is also always included in the candidate alternatives when present in the frontier, avoiding silent loss under top-six truncation.
+
+### Verified-method inheritance and recursive repair
+
+- `rsi_system/method_lineage.rs::inherited_method_receipt`: requires an independently adopted ancestor with a model-authored design covering a recognized, actually called meta-method module. Both the inherited commit and current source bytes must match the accepted before/after SHA lineage. It records whether the rebuilt child changed target or mode and actually focused that new target, WITHOUT claiming causal gain.
+- `rsi/worker.rs::worker`: computes the receipt against `revalidated_method_history` before the child model call, persists it in the job and provides the observed lineage in the actual tool-facing instruction when applicable.
+- `rsi/execution.rs::run_loop`: persists `metaMethodInheritance` and `metaMethodOutcome` after the real child was evaluated, keeping assessed, adopted, and subsequent method rewrite distinct.
+- `rsi_system/history.rs`: replays original paired measurement records and recomputes method inheritance/outcomes, discarding unmatched stored reports.
+- `rsi_meta_controller.rs::inherited_method_repair`: upon two independently assessed unsuccessful successors in the same method/commit lineage and no adopted successes, it schedules a rewrite of the very meta-method source; `rsi/planner/compiled.rs::evidence_based_meta_repair_focus` and `guidance.rs` turn this into an executable source target and tool-facing task. Cooldown prevents an endless meta-only revision spiral.
+
+**Boundary:** neither the success of an edited source nor an observed changed next target proves that the edited policy CAUSED a gain. Follow-up live-model, independent same-budget controls and multiple accepted descendant generations are still outstanding. This work does not execute CI, compile, run a benchmark, or connect model training.
+
+### 2026 sources for architecture decisions
+
+- [Meta HyperAgents, 2026-03-24](https://ai.meta.com/research/publications/hyperagents/): put task-solving and meta-improvement methods in the actual mutable execution program.
+- [AIDE², 2026-09-22](https://arxiv.org/abs/2609.26457): an accepted source rewrite becomes the next agent, and hidden held-out evaluations determine admission.
+- [RSI-Env, 2026-11-01](https://arxiv.org/abs/2611.01736): retain a persistent independent host controller for evaluation/versioning while accepted descendants take over subsequent improvement rounds. The cited system may also train models; this branch restricts RSI to source, policy, memory and harness changes with fixed base weights.
