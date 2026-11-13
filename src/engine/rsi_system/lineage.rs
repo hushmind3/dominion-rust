@@ -69,6 +69,7 @@ pub(crate) fn lineage_capsule(history:&[Value])->Value {
                             "qualityClaim":"independent_pair_receipt_required"
                         })).collect::<Vec<_>>()).unwrap_or_default(),
                     "measuredDomainGains":generation["evaluation"]["metrics"]["improvedHoldoutDomains"],
+                    "methodAblation":generation["methodAblation"],
                     "previousFeedbackGeneration":generation["improvementDirective"]["sourceGenerationId"],
                     "components":design["components"].as_array()
                         .map(|items|items.iter().take(12).cloned().collect::<Vec<_>>())
