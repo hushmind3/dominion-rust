@@ -390,7 +390,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     } else {job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &descendant_prompt, &domain, &capability,
-        &history, job["input"]["rsiRemainingCampaignTokens"].as_u64()
+        &history, if job["input"]["providerId"].as_str().is_some_and(|p|!p.is_empty())
+            && job["input"]["model"].as_str().is_some_and(|m|!m.is_empty()) {
+            job["input"]["rsiRemainingCampaignTokens"].as_u64()
+        }else{None}
     );
     let (prompt, plan) = match prepared {
         Ok(value) => value,
