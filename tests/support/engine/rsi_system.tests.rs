@@ -537,7 +537,8 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi_system/peer_verifier.rs",
             "src/engine/rsi/execution/compiled_planning.rs",
             "src/engine/rsi/execution/generation_evidence.rs",
-            "src/engine/rsi/execution/generation_finalization.rs"
+            "src/engine/rsi/execution/generation_finalization.rs",
+            "src/engine/rsi/execution/method_ablation.rs"
         ] {
             assert!(!crate::engine::rsi::safe_path(path),
                 "a descendant candidate cannot modify its own final judge: {path}");
