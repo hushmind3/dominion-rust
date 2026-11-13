@@ -47,6 +47,16 @@ use super::*;
             assert!(runtime_source_file(module));
         }
         assert_eq!(source_role("src/engine/learning.rs"),"learning");
+        assert_eq!(source_role("src/engine/video.rs"),"video");
+        assert_eq!(source_role("src/engine/video/ltx.rs"),"video");
+        assert_eq!(source_role("src/api/video.rs"),"video");
+        assert_eq!(source_role("src/engine/rooms.rs"),"multiagent");
+        assert_eq!(source_role("src/engine/rooms/model_tiering.rs"),"multiagent");
+        assert_eq!(source_role("src/engine/chat/room_context/role_routing.rs"),"multiagent");
+        assert_eq!(architecture_role_domain("video"),Some("tools"));
+        assert_eq!(architecture_role_domain("multiagent"),Some("context"));
+        assert!(!runtime_source_file("src/engine/video/tests.rs"));
+        assert!(!runtime_source_file("src/engine/rooms/tests.rs"));
     }
     #[test]
     fn descendant_source_inventory_excludes_test_only_artifacts() {
@@ -150,7 +160,7 @@ use super::*;
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),10);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["sourceInventory"].as_array().unwrap().len(),2);
