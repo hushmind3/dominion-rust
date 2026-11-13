@@ -158,6 +158,10 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         && off["input"]["rsiMethodAblationArm"]=="without_methods"
         && on["input"]["rsiMethodAblationArm"]=="with_methods"
         && saved["sourceCommit"]==g["generatorCommit"]
+        && saved["campaignId"]==g["campaignId"]
+        && sealed["rsiCampaignId"]==g["campaignId"]
+        && off["input"]["rsiCampaignId"]==g["campaignId"]
+        && on["input"]["rsiCampaignId"]==g["campaignId"]
         && on["input"]["rsiGeneratorCommit"]==g["generatorCommit"]
         && off["input"]["rsiGeneratorCommit"]==g["generatorCommit"]
         && stable.iter().all(|k|sealed[*k]==off["input"][*k]
@@ -179,14 +183,20 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         else{return Value::Null};
     let ctrl_eval=&control["evaluation"];
     let on_eval=&treatment["evaluation"];
-    if crate::engine::rsi::replayed_pair_metrics(state,&control).is_none()
-        || crate::engine::rsi::replayed_pair_metrics(state,&treatment).is_none()
+    if crate::engine::rsi::replayed_pair_metrics(state,&control)
+            .as_ref()!=Some(&ctrl_eval["metrics"])
+        || crate::engine::rsi::replayed_pair_metrics(state,&treatment)
+            .as_ref()!=Some(&on_eval["metrics"])
         || ctrl_eval["source"]!="server_invoked_local_paired_git_worktrees"
         || on_eval["source"]!="server_invoked_local_paired_git_worktrees"
         || ctrl_eval["id"]!=saved["evaluation"]["evaluationId"]
         || ctrl_eval["evidenceSha256"]!=saved["evaluation"]["evidenceSha256"]
         || ctrl_eval["metrics"]!=saved["evaluation"]["metrics"]
         || control["baseCommit"]!=treatment["baseCommit"]
+        || control["rsiJobId"]!=off["id"]
+        || treatment["rsiJobId"]!=on["id"]
+        || g["evaluation"]["evidenceSha256"]!=on_eval["evidenceSha256"]
+        || g["evaluation"]["metrics"]!=on_eval["metrics"]
         || control["cases"]!=treatment["cases"]
         || saved["controlCandidateId"]==g["candidateId"] {
         return json!({"status":"invalid_paired_receipts",
