@@ -196,7 +196,7 @@ pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &st
 // Source template for the native domain-selection mutation. This file is
 // compiled in differential tests; production uses it only after a real patch
 // inserts it into the descendant's own RSI selector and A/B accepts it.
-pub(super) fn fast_failure_domain(
+pub(crate) fn fast_failure_domain(
     history: &[serde_json::Value],
     candidates: &[&str],
     objective_matches: impl Fn(&str) -> bool,
