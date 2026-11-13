@@ -185,9 +185,17 @@ fn revised_method_after_feedback(previous:&Value,revised:&Value,prior_child:&Val
         && previous["domain"]==revised["domain"]
         && previous["methodId"]!=revised["methodId"]
         && previous["revision"]!=revised["revision"]
+        && prior_child["methodAblation"]["methodAssociationObserved"]==true
+        && prior_child["methodAblation"]["qualityProven"]==true
+        && meta_revision["improvementDirective"]["mode"]=="evolve_executed_method_from_feedback"
         && meta_revision["improvementDirective"]["sourceGenerationId"]==prior_child["id"]
         && meta_revision["improvementDirective"]["previousAccepted"]==true
         && meta_revision["improvementDirective"]["previousCandidateId"]==prior_child["candidateId"]
+        && meta_revision["improvementDirective"]["methodFeedback"]["sourceGenerationId"]==prior_child["id"]
+        && meta_revision["improvementDirective"]["methodFeedback"]["controlId"]==prior_child["methodAblation"]["controlId"]
+        && meta_revision["improvementDirective"]["methodFeedback"]["controlEvaluationId"]==prior_child["methodAblation"]["controlEvaluationId"]
+        && meta_revision["improvementDirective"]["methodFeedback"]["treatmentEvaluationId"]==prior_child["methodAblation"]["treatmentEvaluationId"]
+        && meta_revision["improvementDirective"]["methodFeedback"]["requiresNewRevisionAndSuccessorExecution"]==true
 }
 
 pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
