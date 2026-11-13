@@ -1201,14 +1201,12 @@ pub(super) async fn run_loop(
         let mut evidence_record=record.clone();
         evidence_record["history"].as_array_mut()
             .ok_or("세대 이력 손상")?.push(generation.clone());
-        if input["rsiSystemEvolution"]==true {
-            let history=evidence_record["history"].as_array().cloned().unwrap_or_default();
-            record["systemEvidence"]=crate::engine::rsi_system::handoff_evidence(&context.state,&history);
-            record["capabilityDemonstrated"]=record["systemEvidence"]["demonstrated"].clone();
-        }else{
-            record["capabilityDemonstrated"] = json!(max_streak >= 3
-                && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record));
-        }
+        evidence_record["systemEvolution"]=input["rsiSystemEvolution"].clone();
+        let proof=crate::engine::rsi::recursive_proof_report(&context.state,&evidence_record);
+        record["recursiveProof"]=proof.clone();
+        record["systemEvidence"]=proof["systemEvidence"].clone();
+        record["generationCapabilityProven"]=proof["generationCapabilityProven"].clone();
+        record["capabilityDemonstrated"]=proof["demonstrated"].clone();
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -1303,13 +1301,10 @@ pub(super) async fn run_loop(
 }
 
 pub(super) fn proof_goal_reached(state:&AppState,input:&Value,record:&Value)->bool {
-    input["rsiStopAfterProof"]==true && if input["rsiSystemEvolution"]==true {
-        let history=record["history"].as_array().cloned().unwrap_or_default();
-        crate::engine::rsi_system::handoff_evidence(state,&history)["demonstrated"]==true
-    }else{
-        record["maxAcceptedStreak"].as_u64().unwrap_or(0)>=3
-            && crate::engine::rsi::campaign_capability_proven(state,record)
-    }
+    if input["rsiStopAfterProof"]!=true {return false;}
+    let mut current=record.clone();
+    current["systemEvolution"]=input["rsiSystemEvolution"].clone();
+    crate::engine::rsi::recursive_proof_report(state,&current)["demonstrated"]==true
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
