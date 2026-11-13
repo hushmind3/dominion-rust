@@ -16,7 +16,7 @@ const MAX_ROOM_PARTICIPANTS=32
 
 type RoutingMode='discussion'|'round_robin'|'mentioned'
 type EconomyMode='adaptive'|'full'
-type RoomModel={providerId:string;model:string;reasoningEffort?:string}
+type RoomModel={providerId:string;model:string;reasoningEffort?:string;tier?:'auto'|'economy'|'frontier'}
 type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;economyMode?:EconomyMode;rounds?:number;maxTurns?:number;tokenBudget?:number;contextBudgetTokens?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];reasoningEffort?:string;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
 type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;economyMode:EconomyMode;rounds:number;maxTurns:number;tokenBudget:number;contextBudgetTokens:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[];reasoningEffort:string}
 type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string;roomSnapshot?:{economyMode?:EconomyMode;economyKernel?:{revision?:string}};explicitAgentIds?:boolean};ownerFeedback?:{positive:boolean};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
@@ -126,6 +126,8 @@ function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomMo
  },[providerId,catalog])
  const has=(provider:string,model:string)=>value.some(item=>item.providerId===provider&&item.model===model)
  const effortOf=(model:string)=>value.find(item=>item.providerId===providerId&&item.model===model)?.reasoningEffort||''
+ const tierOf=(model:string)=>value.find(item=>item.providerId===providerId&&item.model===model)?.tier||'auto'
+ const setTier=(model:string,tier:'auto'|'economy'|'frontier')=>onChange(value.map(item=>item.providerId===providerId&&item.model===model?{...item,tier}:item))
  const setEffort=(model:string,effort:string)=>onChange(value.map(item=>item.providerId===providerId&&item.model===model?{...item,reasoningEffort:effort||undefined}:item))
  const toggle=(model:string)=>onChange(has(providerId,model)?value.filter(item=>!(item.providerId===providerId&&item.model===model)):[...value,{providerId,model}])
  const models=(catalog[providerId]||[]).filter(item=>item.id)
@@ -140,7 +142,11 @@ function RoomModelPicker({value,onChange,providers,disabled=false}:{value:RoomMo
   </div>
   {loading&&<p className="room-note">{t('rooms.modelsLoading')}</p>}
   {error&&<p className="room-message-error">{translateError(error)}</p>}
-  {!loading&&!error&&<div className="room-model-list">{models.map(item=>{const checked=has(providerId,item.id);return <div key={item.id} className={'room-model-option '+(checked?'checked':'')}><label className="room-model-check"><input type="checkbox" checked={checked} onChange={()=>toggle(item.id)} disabled={disabled}/><span>{item.name||item.id}</span></label>{checked&&<ReasoningSelect className="room-model-effort" value={effortOf(item.id)} onChange={effort=>setEffort(item.id,effort)} model={item} requireCatalog={available.find(provider=>provider.id===providerId)?.kind==='codex'} defaultLabel={t('rooms.models.effortDefault')} disabled={disabled}/>}{checked&&<Check size={13}/>}</div>})}{!models.length&&<p className="room-note">{t('rooms.modelsEmpty')}</p>}</div>}
+  {!loading&&!error&&<div className="room-model-list">{models.map(item=>{const checked=has(providerId,item.id);return <div key={item.id} className={'room-model-option '+(checked?'checked':'')}><label className="room-model-check"><input type="checkbox" checked={checked} onChange={()=>toggle(item.id)} disabled={disabled}/><span>{item.name||item.id}</span></label>{checked&&<ReasoningSelect className="room-model-effort" value={effortOf(item.id)} onChange={effort=>setEffort(item.id,effort)} model={item} requireCatalog={available.find(provider=>provider.id===providerId)?.kind==='codex'} defaultLabel={t('rooms.models.effortDefault')} disabled={disabled}/>}
+   {checked&&<SelectInput value={tierOf(item.id)} onChange={e=>setTier(item.id,e.target.value as 'auto'|'economy'|'frontier')} disabled={disabled} title="적응형 그룹 대화에서 모델 역할 (사용자가 직접 지정)">
+    <option value="auto">모델 역할 자동</option><option value="economy">⚡ 저비용 응답</option><option value="frontier">🧠 심층 추론</option>
+   </SelectInput>}
+   {checked&&<Check size={13}/>} </div>})}{!models.length&&<p className="room-note">{t('rooms.modelsEmpty')}</p>}</div>}
   <small className="room-note">{t('rooms.modelsHint')}</small>
  </div>
 }
