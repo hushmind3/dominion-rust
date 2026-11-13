@@ -37,3 +37,9 @@ and `rsi/descendant_plan.rs` (rebuilt child planning). Follow the API →
 jobs → run → execution → compiled worker_plan → native_generation_plan →
 paired worktree → adoption → new executable → proof call path. External
 function exports and the original tests include remain at the parent level.
+
+**Paired evaluator map:** `src/engine/rsi_worktree.rs` re-exports
+`rsi/worktree/candidate.rs` (worktree/checks/repair),
+`rsi/worktree/evaluation.rs` (paired evaluator/receipt), and
+`rsi/worktree/promotion.rs` (confirmed branch apply).
+Their tests are isolated in `rsi/worktree/tests.rs`.

@@ -511,3 +511,21 @@ tests, builds, CI, benchmarks or paid model requests were run.
 [AIDE²](https://arxiv.org/abs/2609.26457) (September 2026),
 [MetaSkill-Evolve](https://arxiv.org/abs/2607.05297) (July 2026),
 [Predict Before You Modify](https://arxiv.org/abs/2610.13991) (September 2026).
+
+
+### Paired source evaluation boundaries (Sub1, 2026-11-13)
+
+`src/engine/rsi_worktree.rs` now exposes its unchanged public API from
+three compiled submodules: `rsi/worktree/candidate.rs` owns detached candidate
+creation, immutable source checks and compiler diagnostics;
+`rsi/worktree/evaluation.rs` owns frozen independent paired A/B measurements,
+receipts and cleanup; `rsi/worktree/promotion.rs` owns owner-confirmed
+branch application. Their unit tests live separately in
+`rsi/worktree/tests.rs`, attached with `#[cfg(test)]` to the same root module.
+
+Registered calls continue through `rsi_evolve::run` →
+`rsi/execution.rs` → `rsi_worktree::compare_at` → original
+`rsi::verify_paired_receipt` → `rsi/adoption.rs::adopt`. Independent
+proof precedes acceptance, and acceptance remains separate from
+owner-requested branch promotion. These are source changes only:
+no tests, compilation, CI, benchmarking or real model calls were run.
