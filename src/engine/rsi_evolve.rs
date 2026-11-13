@@ -70,6 +70,9 @@ use execution_generation_receipt::assemble as assemble_generation_receipt;
 #[path = "rsi/execution/campaign.rs"]
 mod execution_campaign;
 use execution_campaign::{run_loop};
+#[path = "rsi/evaluation/candidate_selection.rs"]
+mod evaluation_candidate_selection;
+use evaluation_candidate_selection::compare_and_adopt;
 #[path = "rsi/evaluation/adoption.rs"]
 mod evaluation_adoption;
 use evaluation_adoption::{proof_goal_reached, generation_model_error};
