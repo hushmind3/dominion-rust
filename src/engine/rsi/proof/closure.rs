@@ -78,6 +78,13 @@ fn method_gain(candidate: &Value) -> bool {
             .as_u64().unwrap_or(0)>0
         && candidate["evaluation"]["metrics"]["improvedHoldoutDomains"]
             .as_array().is_some_and(|domains|domains.iter().any(|v|v=="improver"))
+        // A faster no-op planner is not evidence that its decisions improved.
+        // Require at least one frozen improver task that the predecessor
+        // failed and the revised method actually passed.
+        && candidate["evaluation"]["metrics"]["measurements"]
+            .as_array().is_some_and(|cases|cases.iter().any(|case|
+                case["domain"]=="improver" && case["holdout"]==true
+                    && case["baselinePass"]==false && case["candidatePass"]==true))
 }
 
 fn cross_domain_gain(candidate: &Value) -> bool {
