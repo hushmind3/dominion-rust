@@ -1,5 +1,6 @@
 //! DOMINION's durable media pipeline. Native cards are rendered by Rust; FFmpeg
-//! only encodes them. Optional ComfyUI is an explicit HTTP rendering connector.
+//! only encodes them. Paid Runway multi-shot and optional ComfyUI are explicit connectors.
+mod runway;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -25,6 +26,7 @@ pub fn config(state: &AppState) -> Value {
         }
     }
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
+    value["hasRunwayKey"] = json!(state.store.has_secret("video:runway"));
     value
 }
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
@@ -100,7 +102,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui") {
+    if !matches!(engine, "native" | "comfyui" | "runway") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
@@ -111,10 +113,16 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     {
         return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
     }
+    if engine == "runway" && !state.store.has_secret("video:runway") {
+        return Err("Runway API 키를 영상 설정에서 먼저 등록하세요.".into());
+    }
     let duration = body["duration"]
         .as_u64()
         .or(cfg["duration"].as_u64())
         .unwrap_or(15);
+    if engine == "runway" && !matches!(duration, 5 | 10 | 15) {
+        return Err("Runway 멀티샷은 5·10·15초만 지원합니다.".into());
+    }
     if !(3..=180).contains(&duration) {
         return Err("영상 길이는 3~180초입니다.".into());
     }
@@ -122,6 +130,9 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["aspectRatio"].as_str())
         .unwrap_or("9:16");
+    if engine == "runway" && aspect == "1:1" {
+        return Err("Runway 멀티샷은 9:16·16:9 비율만 지원합니다.".into());
+    }
     if !matches!(aspect, "9:16" | "16:9" | "1:1") {
         return Err("지원 비율은 9:16,16:9,1:1입니다.".into());
     }
@@ -497,6 +508,8 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let input = &job["input"];
     let result = if input["engine"] == "comfyui" {
         comfy(ctx, input, &dir).await
+    } else if input["engine"] == "runway" {
+        runway::render(ctx, input, &dir).await
     } else {
         native(ctx, input, &dir).await
     };
