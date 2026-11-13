@@ -57,3 +57,7 @@ No Rust compilation, tests, build, CI, benchmark or paid model campaign ran duri
 ## Subsequent 2026-11-13 stricter gate
 
 The A→B→A gate documented above has been superseded by an actual **A→B→A→B live OFF/ON method ablation** requirement in [the newer implementation and execution trace](CHAMPION-METHOD-ABLATION-2026-11-13.md). The canonical verdict is unchanged as the common runtime/API/audit entry point, but its complete proof now requires four generations and two independently evaluated OFF/ON descendants. Previously described three-generation observations are partial method-lineage evidence, never a present-day full-RSI completion.
+
+## Structural supersession — 2026-11-13 18:00 judgment
+
+The newer [source-evolvable meta-architecture](CHAMPION-META-ARCHITECTURE-2026-11-13.md) separates **proof of RSI** (this file's strict 4-step method lineage) from the **meta planner that selects open-ended targets and experiment protocols**. No fixed A/B lineage stage is required for each exploration episode. Current experiments keep a frozen evaluator; a new evaluator proposal cannot approve itself. Source modules were decomposed, but all changes are static and unexecuted.
