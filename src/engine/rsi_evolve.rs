@@ -550,12 +550,16 @@ pub fn campaign_source(state: &AppState, input: &Value, source: &Path, base: &st
     // the main checkout as its lab merely to bypass the owned branch gate.
     let Some(lab_root)=std::fs::canonicalize(state.config.data_dir.join("rsi-labs")).ok()
         else{return false};
-    if source.parent()!=Some(lab_root.as_path()) {return false;}
+    // macOS temporary roots are symlinked (/var -> /private/var); compare the
+    // resolved lab path so a real private lab is not rejected as a main tree.
+    let Ok(source_path)=std::fs::canonicalize(source) else {return false;};
+    if source_path.parent()!=Some(lab_root.as_path()) {return false;}
     state.store.get("rsi_campaign", id).is_some_and(|record| {
         record["labDir"]
             .as_str()
-            .is_some_and(|p| Path::new(p) == source)
-            && record["sourceDir"].as_str().is_some_and(|p|Path::new(p)!=source)
+            .is_some_and(|p| std::fs::canonicalize(p).ok().as_deref()==Some(source_path.as_path()))
+            && record["sourceDir"].as_str().is_some_and(|p|
+                std::fs::canonicalize(p).ok().as_deref()!=Some(source_path.as_path()))
             && owned_source_origin(record["sourceBranch"].as_str(),
                 input["rsiSourceBranch"].as_str().unwrap_or(""))
             && record["headCommit"] == base
