@@ -132,7 +132,7 @@ pub(crate) fn synthesize(
         let principle_effect=quality_signal+future_signal+underexplored_intelligence;
         // Give the descendant's own editable meta-program a fair place in
         // the portfolio without declaring it automatically better.
-        let metacognition=if path=="src/engine/rsi_meta_controller.rs"{0.08}else{0.0};
+        let metacognition=if path=="src/engine/rsi/meta/controller_selection.rs"{0.08}else{0.0};
         // This scoring equation is intentionally EDITABLE by an adopted
         // descendant. Its predictions remain unproven until later paired
         // outcomes; no change to the external validation threshold is allowed.
@@ -212,7 +212,7 @@ pub(crate) fn synthesize(
             "taskPredictionSource":task_prior["source"],
             "uncertainty":chosen["uncertainty"],"calibration":calibration,
             "verifiedByIndependentHoldout":false},
-        "metaSource":"src/engine/rsi_meta_controller.rs",
+        "metaSource":"src/engine/rsi/meta/controller_selection.rs",
         "editableInNextGeneration":true,
         "peerReferences":peer_count,
         "generalizationEvidenceSource":"isolated_paired_cross_domain_holdout_v1",
