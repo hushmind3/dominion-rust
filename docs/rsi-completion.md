@@ -3,6 +3,19 @@
 이 문서는 "재귀적 자기개선이 완성됐다"를 판정하는 기준과, 그 기준에 대한 현재 측정값을 기록한다.
 주장은 저장된 캠페인 기록으로만 뒷받침한다.
 
+## 2026-11-13 — Sub4: 엄격한 폐회로 증거 기준 (현재 소스)
+
+**현재 판정: 완전한 RSI 작동 미입증.** 독립 심판의 잠정 구조 점수 39점, RSI 0/45를 새로운 실행 증거 없이 변경하지 않는다. 아래 내용은 **코드의 검증 요건을 보강한 것**이며 실제 캠페인 성공 보고가 아니다.
+
+- **진입과 실행:** `src/engine/rsi_evolve.rs`가 등록하는 캠페인을 `src/engine/rsi/execution/campaign.rs`가 운영한다. 재컴파일된 자손의 `src/engine/rsi/planner/worker_plan.rs`가 자기 소스·이력으로 계획을 정하고, `src/engine/rsi/execution/worker.rs`가 실행하는 모델·provider·도구·편집 정책을 결정한다.
+- **영속화와 채택:** `src/engine/rsi/evaluation/worktree.rs`의 동결 paired 사례와 `src/engine/rsi/lineage/adoption.rs`의 커밋이 `rsi_candidate`, `rsi_pair`, `job`, `rsi_generation`으로 연결된다. `src/engine/rsi/lineage/history.rs`는 원본 세대 후보와 잡 입력으로 과거 증거를 재검증한다.
+- **방법·지능 A→B→A 증거:** `src/engine/rsi/proof/closure.rs::evidence`는 연속 채택된 3개 원본 후보와 실행 잡을 다시 읽는다. A는 개선 방법 소스의 수정과 improver held-out 이득이 필요하다. B는 실제 개선된 후손 바이너리가 편집·메타 정책을 선택·실행한 기록과 **다른 능력**의 paired held-out 개선이 필요하다. 다음 A는 B의 후손이 다시 개선 방법 소스를 고쳤고 독립 평가에서 improver held-out 이득을 냈음을 요구한다. 혼합된 방법/능력 소스 편집은 B로 인정하지 않는다.
+- **대외적으로 노출되는 완료 판정:** `src/engine/rsi.rs::campaign_capability_proven`과 `capability_audit.recursiveClosure`; `rsi::capability_proven`의 기초 3세대 판정만으로는 완료 처리하지 않는다.
+- **아직 측정되지 않은 사항:** 현재 Sub4 커밋에서 3세대 A→B→A 사례를 새로 수행하거나 제3자 동결 평가로 관측하지 않았다. 후손 행동 변화에 대한 모든 인과 귀속, 장기 누적 가속, 상용 운영 안정성 역시 미입증이다. 기초모델 가중치는 고정하며 재학습 경로를 두지 않는다.
+- **운영 확인:** 새로운 실모델/CI 비용 지출은 하지 않았고, 소스 코드와 문서만 갱신했다.
+
+아래 2026-11-12 Sub3 기록은 **별도 브랜치의 과거 실험**으로 보존한다. Sub4의 실측 성과나 새 판정 근거가 아니다.
+
 ## 2026-11-12 현재 Sub3 측정
 
 캠페인 `6ad36711-7016-4ede-8ad2-0e875899cf68`이 **3세대 연속 독립 채택**으로 완료됐다.
@@ -55,7 +68,7 @@
   기존 캠페인은 `GET /api/rsi/campaigns`와 `GET /api/rsi/campaigns/:id`에서 세대 이력으로부터 파생 계산한다.
 - 기존 `rsi_current`(빈 지문)는 `stale=true`로 표시했다. 새 캠페인에서 재사용되지 않는다.
 
-## 판정
+## 과거 Sub3 실험의 판정(보관 기록)
 
 - 메커니즘: 완료. 재귀 루프, 격리 빌드, paired 평가, held-out 게이트, 생산 승격 분리가 구현되어 있고 테스트로 검증된다.
 - 제한된 네이티브 소스 개선 프로토콜: 위의 새 캠페인에서 연속 3세대·개선기 변경·다른 분야 후손 개선을 관측했다. 과거 표의 미충족 판정은 새 캠페인에 적용하지 않는다.
