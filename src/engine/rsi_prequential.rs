@@ -186,6 +186,16 @@ pub(crate) fn drift(history:&[Value],window:usize)->Value{
         "requiresSourceBoundReplay":true})
 }
 
+/// A single verified *attempt* can cool down predictor repair; an
+/// unmeasured focus hint must not indefinitely suppress self-correction.
+pub(crate) fn measured_target_attempt(g:&Value,path:&str)->bool{
+    g["pairedReceiptReplayed"]==true
+        && g["metaPolicy"]["target"]["path"]==path
+        && g["changedSourcePaths"].as_array().is_some_and(|paths|
+            paths.iter().any(|changed|changed==path))
+        && trusted_feedback(g).is_some()
+}
+
 /// Distinguish the model's repair intention from executable source editing
 /// and independent adoption. This record is NOT itself an evaluation receipt.
 pub(crate) fn repair_execution_evidence(g:&Value)->Value{
