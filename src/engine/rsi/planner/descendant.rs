@@ -468,6 +468,11 @@ pub(super) fn validated_descendant_controller(
         return Ok(None);
     }
     let plan=&input["rsiControllerPlan"];
+    let frozen=crate::engine::rsi_profile::from_input(input)?;
+    if !crate::engine::rsi_evolve::experiment_contract::valid(
+        plan,frozen["sha256"].as_str().unwrap_or(""),&input["rsiExperimentContract"]) {
+        return Err("후손의 동결 평가·소스 커밋·메타 프로그램 계약이 불일치합니다.".into());
+    }
     if plan["source"]!="compiled_descendant_system_controller_v2"
         || plan["generatorCommit"]!=commit
         || plan["historyCount"].as_u64()!=Some(history.len() as u64)
