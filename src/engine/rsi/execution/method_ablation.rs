@@ -15,6 +15,8 @@ fn method_selected(input:&Value)->bool {
     input["rsiSystemEvolution"]==true &&
         input["rsiImprovementAlgebra"]["selected"]["rule"]["method"]["path"]
             .as_str().is_some_and(crate::engine::rsi::safe_path)
+        && input["rsiImprovementAlgebra"]["selected"]["target"]["path"]
+            !=input["rsiImprovementAlgebra"]["selected"]["rule"]["method"]["path"]
 }
 
 /// This is called on the normal source evolution route, BEFORE the ON worker
