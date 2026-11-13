@@ -9,14 +9,15 @@
 | 책임 | 소스/연결 | 현 상태 |
 | --- | --- | --- |
 | 사용자 생성 요청 | `web/src/pages/Video.tsx` → `POST /api/video/jobs` → `src/api/video.rs` → `video::enqueue` → `jobs::enqueue` | 이미 내구성 있는 작업 큐 |
-| 단일 클립의 촬영 플랜 | `src/engine/video/shot_plan.rs::shots` → `request` → `video/runway.rs::run` | **이번 변경**: 3~15초를 1~3개 카메라 샷으로 나누고 전체 길이 보존, 반복 인물·배경 앵커, `providerSettings.multiPrompt` 적용 |
+| Kling 3.0 네이티브 멀티샷 | `src/engine/video/shot_plan.rs::{shots,request}` → `video/runway.rs::run` | **이번 변경**: 3~15초를 1~3개 카메라 샷으로 나누고 전체 길이 보존, 반복 인물·배경 앵커, `providerSettings.multiPrompt` 적용 |
+| Kling 4.0 연속 생성 | `src/engine/video/kling4.rs::{clip_durations,direction,request,attach_prior_frame}` → `video/runway.rs::run` | **이번 변경**: 3~30초 1080p 네이티브 오디오, 최대 180초를 필요한 30초 클립으로 분리. 4.0에는 3.0 전용 `multiPrompt`/`audio`를 보내지 않고, 이미지-투-비디오의 `auto_1080p` 계약 사용 |
 | 장편 클립 간 연속성 | `src/engine/video/frame_anchor.rs::first_frame_for_next` → `runway.rs::run` | **이번 변경**: 이전 클립 다운로드가 완료된 뒤 FFmpeg로 마지막 프레임을 JPEG로 추출하고 다음 `image_to_video`의 `promptImage`로 제공. 계정 키는 기존 vault 사용 |
 | 비용·상태 | `runway.rs` 원격 task ID 체크포인트 → 다운로드 → FFmpeg 합성 → `video::public_job` | 기존 유료 중복 제출 방지와 `needs_review` 유지, 신규 `shotCount`/`frameAnchoredClips` 결과 필드 |
-| 사용자 선택 | `Video.tsx`의 **클립 간 연속성** 옵션 → `/api/video/config` → `runwayContinuityFrames` | **이번 변경**: 설정 저장·입력 스냅샷 고정. 생성 버튼 앞에 유료 클립 개수를 표시하며, 장면 전환이 필요하면 연속성 옵션 해제 가능 |
+| 사용자 선택 | `Video.tsx`의 **Kling 3.0/4.0 모델·클립 간 연속성** 옵션 → `/api/video/config` → `runwayModel`·`runwayContinuityFrames` | **이번 변경**: 설정 저장·입력 스냅샷 고정, 모델별 최대 길이에 따른 유료 클립 개수 표시. 장면 전환이 필요하면 연속성 옵션 해제 가능 |
 
-Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_to_video` 입력은 2026-10-26 Runway Dev 공식 문서에 근거한다. 이 구현은 비용을 늘리는 별도 샷 요청 대신 동일 요청 안의 네이티브 멀티샷을 활용한다. **시각·인물 일관성은 확률적인 모델 결과**이며 영상 전체 화질·오디오 정합성이 자동 보장되는 것은 아니다. 15초를 넘는 영상은 여러 개의 유료 task와 합성으로 완성되므로 요청 총 길이에 비례한 비용이 발생한다.
+Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_to_video` 입력은 2026-10-26 Runway Dev 공식 문서에 근거한다. Kling 4.0의 30초 길이, `kling_4` 모델 ID, `auto_1080p` 이미지-투-비디오 비율은 2026-10-23 출시 및 10-26 공식 문서에 근거한다. 이 구현은 비용을 늘리는 별도 샷 요청 대신 동일 요청 안의 네이티브 멀티샷을 활용한다. **시각·인물 일관성은 확률적인 모델 결과**이며 영상 전체 화질·오디오 정합성이 자동 보장되는 것은 아니다. 15초를 넘는 영상은 여러 개의 유료 task와 합성으로 완성되므로 요청 총 길이에 비례한 비용이 발생한다.
 
-관련 검사 소스: `tests/unit/video_shot_plan_tests.rs` (샷 길이 합·요청 형식·앵커). 실행하지 않음.
+관련 검사 소스: `tests/unit/video_shot_plan_tests.rs` (3.0 샷 길이 합·요청 형식·앵커), `tests/unit/video_kling4_contract_tests.rs` (4.0 30초 분할·요청·이미지 비율·프롬프트). 실행하지 않음.
 
 ## 2. 실제 변경 — 그룹 대화, 토큰과 모델 가격 계측
 
@@ -45,7 +46,8 @@ React (Rooms / Models / Video / Chat / SelfImprovement)
   │                      ├── provider (도구·cache telemetry·stream)
   │                      └── router + gateway (능력·가격·제한·감사)
   ├── /api/video/jobs → engine::video → engine::jobs
-  │                            ├── shot_plan (샷·시간 계약)
+  │                            ├── shot_plan (Kling 3.0 멀티샷·시간 계약)
+  │                            ├── kling4 (Kling 4.0 30초·비디오 계약)
   │                            ├── runway (외부 제출·폴링·재개 경계)
   │                            ├── frame_anchor (FFmpeg 추출·이미지 연속성)
   │                            └── FFmpeg 합성 → 영속 출력
@@ -68,6 +70,7 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 ## 5. 근거 — 2026 확인
 
 - Runway Dev Kling 3.0 API, 2026-10-22 게시 / 10-26 갱신: https://dev.runwayml.com/learn/kling-3-0-api
+- Runway Dev Kling 4.0 API, 2026-10-26 게시: https://dev.runwayml.com/learn/kling-4-0-api
 - Runway Dev API 변경 이력, 2026-10-13 Kling 멀티샷 출시: https://docs.dev.runwayml.com/api-details/api_changelog/
 - OpenAI API 프롬프트 캐싱 설명: https://developers.openai.com/api/docs/guides/prompt-caching
 - 2026 ACL LLM-as-Scheduler 실험: https://aclanthology.org/2026.acl-long.581/
