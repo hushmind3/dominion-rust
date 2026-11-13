@@ -29,7 +29,7 @@ pub(super) async fn run_method_control(
     // Own the domain before mutating child_input; retaining a borrowed str
     // across arm assignment would conflict with the treatment input update.
     let domain=child_input["rsiTargetDomain"].as_str().unwrap_or("").to_owned();
-    let transfer=&child_input["rsiMethodTransfer"];
+    let transfer=child_input["rsiMethodTransfer"].clone();
     let choice=method_reuse_decision(&context.state,child_input,&domain);
     if transfer["domain"]!=domain || transfer["methodId"].as_str().is_none()
         || choice["action"]!="execute_methods"
