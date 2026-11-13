@@ -341,7 +341,7 @@ pub(crate) fn tool_name(item: &Value) -> &str {
 /// after checking parent-session ownership. A child's prose, queued state,
 /// or failed tool is never counted as completed work.
 fn delegated_successful_operations(item:&Value)->Vec<Value>{
-    if tool_name(item)!="delegate_task" || !successful_evidence(item)
+    if !matches!(tool_name(item),"delegate_task"|"task_result") || !successful_evidence(item)
         || item["result"]["status"]!="completed" {return Vec::new();}
     item["result"]["operations"].as_array().into_iter().flatten()
         .filter(|operation|successful_evidence(operation))
@@ -358,7 +358,7 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
         return false;
     }
     match tool_name(item) {
-        "delegate_task" => delegated_successful_operations(item).iter().any(is_action_evidence),
+        "delegate_task" | "task_result" => delegated_successful_operations(item).iter().any(is_action_evidence),
         "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" =>
             item["result"]["written"]==true,
         "shell_exec" | "terminal_exec" => {
@@ -425,7 +425,7 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
     }
 }
 pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
-    if tool_name(item)=="delegate_task" {
+    if matches!(tool_name(item),"delegate_task"|"task_result") {
         return delegated_successful_operations(item).iter()
             .any(|child|command_matches(child,command));
     }
