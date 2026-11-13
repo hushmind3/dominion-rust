@@ -309,7 +309,11 @@ pub(crate) fn handoff(history:&[Value])->Value {
                 .is_some_and(|changed|
                     changed.iter().filter_map(Value::as_str).any(|p|
                         matches!(p,"src/engine/rsi_program_graph.rs"
-                            |"src/engine/rsi_meta_controller.rs")
+                            |"src/engine/rsi_meta_controller.rs"
+                            |"src/engine/rsi/meta/controller_selection.rs"
+                            |"src/engine/rsi/meta/controller_policy.rs"
+                            |"src/engine/rsi/meta/evolution.rs"
+                            |"src/engine/rsi/meta/composition.rs")
                         && author["acceptedSourceHashes"][p].as_str()
                             .is_some_and(|h|h.len()==64
                                 && h.bytes().all(|b|b.is_ascii_hexdigit()))));
