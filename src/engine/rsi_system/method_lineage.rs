@@ -21,9 +21,9 @@ fn sha256(value:&str)->bool {
 }
 
 fn inventory_hash<'a>(blueprint:&'a Value,path:&str)->Option<&'a str>{
-    blueprint["sourceInventory"].as_array()?.iter()
-        .find(|row|row["path"]==path)?
-        ["sha256"].as_str().filter(|hash|sha256(hash))
+    let source=blueprint["sourceInventory"].as_array()?.iter()
+        .find(|row|row["path"]==path)?;
+    source["sha256"].as_str().filter(|hash|sha256(hash))
 }
 
 /// Input history must FIRST pass revalidated_method_history; caller cannot
@@ -111,8 +111,10 @@ pub(crate) fn observed_method_outcome(generation:&Value)->Value {
         && generation["systemDesign"]["targetFiles"].as_array().is_some_and(|paths|
             paths.iter().any(|path|path.as_str().is_some_and(|source|
                 EXECUTABLE_METHOD_SOURCES.contains(&source)
-                && generation["acceptedSourceHashes"][source].as_str()
-                    .is_some_and(sha256))));
+                && inventory_hash(&generation["systemBlueprint"],source)
+                    .is_some_and(|prior|
+                        generation["acceptedSourceHashes"][source].as_str()
+                            .is_some_and(|after|sha256(after)&&after!=prior)))));
     json!({
         "source":"observed_compiled_meta_method_successor_outcome_v1",
         "inheritedParentCommit":inherited["parentAcceptedCommit"],
