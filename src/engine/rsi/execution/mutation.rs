@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
 #[cfg(test)]
-#[path = "../../rsi_domain_accumulator.rs"]
+#[path = "../meta/domain_accumulator.rs"]
 mod accumulator;
 
 fn digest(text: &str) -> String {
@@ -41,7 +41,7 @@ fn stream_verified_domain_selection(source: &str) -> Option<String> {
     let dispatch=format!("{entry}\n    let implementation=algorithm[\"implementation\"].as_str()\n        .or_else(||algorithm[\"variant\"].as_str()).unwrap_or(\"failure-clusters\");\n    if !matches!(implementation,\"expression\"|\"counterexample-first\") {{\n        return fast_failure_domain(history,&candidate_domains(objective),\n            |domain|objective_matches(domain,objective));\n    }}");
     let mut next=source.replacen(entry,&dispatch,1);
     next.push('\n');
-    next.push_str(include_str!("../../rsi_domain_accumulator.rs"));
+    next.push_str(include_str!("../meta/domain_accumulator.rs"));
     Some(next)
 }
 

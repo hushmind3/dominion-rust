@@ -33,3 +33,5 @@ The stable `rsi_evolve` public API dispatches into `src/engine/rsi/`:
 - `lineage/adoption.rs`: independently validated source adoption and next-generator target reconciliation
 
 The `select_domain()` source and native differential test hook remain in `rsi_evolve.rs` because the existing deterministic source mutator requires that exact owned function.
+
+The old flat `rsi_*.rs` helpers now live under `rsi/{planner,execution,evaluation,lineage,meta,learning}/`, while public `crate::engine::rsi_*` module names stay stable. New Rust method files in `src/engine/rsi/` are recognized without adding an exact-file allowlist.

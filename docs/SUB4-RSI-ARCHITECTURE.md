@@ -23,3 +23,7 @@ Unit suites live under `tests/unit/`; integration checks remain in `tests/e2e.rs
 ## Fixed-weight-only RSI guarantee
 
 The local LoRA/PEFT training and promotion module, training/evaluation/server scripts, associated tool registration, generation inference sidecar, model-adapter receipts and weight-based principle reward were removed. No running RSI path writes model parameters. `rsi_model_ecology` still experiments with **configured inference routes** to fixed pretrained models, using descendant source-change outcomes. The recursive loop evolves code, policy, memory, tools, and model-routing logic, not model weights.
+
+## Physical module boundaries
+
+`rsi_evolve.rs` is now a small API surface plus native selector template. Generation planning, model execution, research, empirical method trials, and adopted-source lineage logic live in `src/engine/rsi/`. Worktree evaluation, archived source evidence, fixed-weight model ecology, credit assignment, and method rewriting helpers are also grouped physically. The frozen evaluator remains outside the model's source-edit index.
