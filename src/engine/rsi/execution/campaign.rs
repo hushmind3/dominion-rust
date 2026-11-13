@@ -522,6 +522,7 @@ pub(super) async fn run_loop(
             child_input["rsiExperimentPolicy"]=plan["experimentPolicy"].clone();
             child_input["rsiMetaOperatorActive"]=plan["metaOperatorActive"].clone();
             child_input["rsiMetaRedesignTarget"]=plan["metaRedesignTarget"].clone();
+            child_input["rsiMetaRedesignActive"]=plan["metaRedesignActive"].clone();
             child_input["rsiModelEvolutionPlan"]=plan["modelEvolutionPlan"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
