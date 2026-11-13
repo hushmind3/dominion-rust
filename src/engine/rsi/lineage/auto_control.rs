@@ -23,7 +23,7 @@ fn scheduled_input(original:&Value, anchor:&Value, treated:&Value)->Option<Value
     // Using the same route and effective limit prevents an underfunded control
     // from masquerading as evidence of superiority.
     let remaining=treated["input"]["rsiRemainingCampaignTokens"].as_u64();
-    if remaining.is_some_and(|n|n<1000 ||n>2_000_000) {return None;}
+    if remaining.is_some_and(|n|n>2_000_000) {return None;}
     let mut input=original.clone();
     input["prompt"]=treated["input"]["rsiPromptBase"].clone();
     input["rsiObjective"]=treated["input"]["rsiObjective"].clone();
@@ -53,7 +53,7 @@ fn scheduled_input(original:&Value, anchor:&Value, treated:&Value)->Option<Value
     input["rsiNativeApproved"]=json!(true);
     input["limits"]=json!({
         "maxAttempts":1,
-        "tokenBudget":remaining,
+        "tokenBudget":remaining.map(|n|n.max(1000)),
         "timeBudgetSeconds":original["limits"]["timeBudgetSeconds"]
     });
     Some(input)
@@ -91,5 +91,5 @@ pub(super) fn queue_if_needed(
     }))
 }
 #[cfg(test)]
-#[path = "../../../tests/unit/engine_rsi_auto_control_tests.rs"]
+#[path = "../../../../tests/unit/engine_rsi_auto_control_tests.rs"]
 mod tests;
