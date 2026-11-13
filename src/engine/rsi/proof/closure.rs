@@ -148,6 +148,7 @@ pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
             continue;
         }
         return json!({
+            "proven":true,
             "methodControl":control,
             "source":"replayed_method_capability_method_closed_loop_v1",
             "shape":"improver_A -> different_capability_B -> improver_A",

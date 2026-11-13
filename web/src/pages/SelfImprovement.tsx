@@ -13,7 +13,7 @@ type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:strin
  evidence?:{path?:number;symbols?:number;body?:number;domain?:number;priorProductive?:number}}
 type FocusSelection={source?:string;domain?:string;policyRevision?:string;
  candidates?:FocusCandidate[]}
-type Campaign={id:string;status:string;phase:string;controlRun?:boolean;controlOf?:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
+type Campaign={id:string;status:string;phase:string;controlRun?:boolean;controlOf?:string;controlParentCampaignId?:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
  limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
@@ -206,7 +206,7 @@ export function SelfImprovementPage(){
    try{localStorage.setItem(SAVED,job.id)}catch{}
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- const status=campaign?campaign.status==='completed'?(adopted>0?'검증된 개선본을 선택했습니다':research>0?'연구를 보존했습니다 · 채택한 코드 없음':'개선 근거가 없어 종료했습니다'):campaign.status==='cancelled'?'중단했습니다':
+ const status=campaign?.controlRun?(working?'개선법 제거 대조군을 실제 실행하는 중입니다':campaign.status==='completed'?'대조군 실행 완료 · 원래 캠페인에서 검증 결과를 다시 확인하세요':'대조군 실행 점검이 필요합니다'):campaign?campaign.status==='completed'?(adopted>0?'검증된 개선본을 선택했습니다':research>0?'연구를 보존했습니다 · 채택한 코드 없음':'개선 근거가 없어 종료했습니다'):campaign.status==='cancelled'?'중단했습니다':
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="기존 지식으로 연구하고 새 방법과 코드를 만들며, 검증된 버전이 다음 개선을 이어갑니다."
@@ -230,7 +230,12 @@ export function SelfImprovementPage(){
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>
    {working?<Button variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={13}/>중단</Button>:
-    <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||installing||!providerId||!model.trim()} onClick={()=>void start(true)}><Play size={14}/>같은 목표로 이어가기</Button></div>}</div>
+    <div className="flex flex-wrap gap-2">{campaign.controlRun&&campaign.controlParentCampaignId?
+     <Button variant="secondary" disabled={busy} onClick={()=>{
+      setJobId(campaign.controlParentCampaignId!);setCampaign(null);setVerify(null);
+      try{localStorage.setItem(SAVED,campaign.controlParentCampaignId!)}catch{}
+     }}><ArrowLeft size={14}/>원래 RSI 캠페인으로 돌아가기</Button>:
+     <><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||installing||!providerId||!model.trim()} onClick={()=>void start(true)}><Play size={14}/>같은 목표로 이어가기</Button></>}</div>}</div>
    {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>

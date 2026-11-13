@@ -91,3 +91,8 @@ missing control. It calls the ordinary `POST /api/rsi/start` and swaps the
 job display to that real isolated control campaign. The derived control
 budget is at least the treatment's preflight budget (when bounded), and
 the ordinary time cap applies. No silent background control requests run.
+
+The normal 3-generation success response must set `proven:true` **only
+after** the replayed method-off comparison passes; the verifier returns an
+explicit pending control otherwise. Control campaigns retain their original
+treatment campaign ID so the UI can return to the correct proof record.

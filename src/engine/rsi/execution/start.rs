@@ -424,7 +424,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,
         "productionChanged":false,"accelerationProven":false,
         "controlRun":control_commit.is_some(),
-        "controlOf":input["rsiCausalControlOf"]});
+        "controlOf":input["rsiCausalControlOf"],
+        "controlParentCampaignId":input["rsiCausalControlCampaign"]});
     save(context, &record)?;
     let started = Instant::now();
     let result = run_loop(context, job, &mut record, started).await;

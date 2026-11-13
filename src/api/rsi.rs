@@ -472,6 +472,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         input["rsiFrozenCases"]=treated_input["rsiFrozenCases"].clone();
         input["rsiCausalControlOf"]=controlled["treatedJobId"].clone();
         input["rsiCausalControlGeneration"]=controlled["treatedGenerationId"].clone();
+        input["rsiCausalControlCampaign"]=controlled["treatedCampaignId"].clone();
         input["rsiCausalControlCommit"]=controlled["methodOffGeneratorCommit"].clone();
         input["rsiSystemEvolution"]=json!(true);
     }
