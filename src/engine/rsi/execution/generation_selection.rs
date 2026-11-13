@@ -47,7 +47,7 @@ pub(super) async fn evaluate_and_adopt_generation(
                     let design_complete=input["rsiSystemEvolution"]!=true || (
                         candidate["origin"]=="model_driven_detached_worktree"
                         && design["source"]=="model_authored_system_design"
-                        && design["generatorCommit"]==head
+                        && design["generatorCommit"]==head.as_str()
                         && design["generationJobId"]==child_id
                         && generation["systemBlueprintVerified"]==true
                         && crate::engine::rsi_system::design_implemented(design,&paths));
