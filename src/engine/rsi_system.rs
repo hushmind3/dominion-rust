@@ -6,7 +6,7 @@ use sha2::{Digest,Sha256};
 use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
-    ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
+    ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi/planner/domain_selection.rs","src/engine/reasoning.rs"]),
     ("harness",&[
         "src/engine/jobs.rs", "src/engine/rsi_worktree.rs",
         "src/engine/chat/runtime.rs",
@@ -24,7 +24,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&[
-        "src/engine/rsi_evolve.rs",
+        "src/engine/rsi/planner/domain_selection.rs",
         "src/engine/rsi/planner/policy.rs","src/engine/rsi/planner/context.rs",
         "src/engine/rsi/planner/descendant.rs",
         "src/engine/rsi/execution/campaign.rs","src/engine/rsi/execution/generation.rs",
@@ -33,7 +33,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/rsi/learning/methods.rs","src/engine/rsi/learning/research.rs",
         "src/engine/rsi/learning/generation_feedback.rs",
         "src/engine/rsi/evaluation/trials.rs",
-        "src/engine/rsi_meta_controller.rs","src/engine/rsi_system.rs",
+        "src/engine/rsi_meta_controller.rs",
         "src/engine/rsi_system/lineage.rs",
         "src/engine/rsi_system/guidance.rs",
         "src/engine/rsi_factorial.rs","src/engine/rsi_reflexive.rs",
