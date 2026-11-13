@@ -374,7 +374,7 @@ pub(super) async fn run_loop(
         // If an authorized ablation has an executable inherited method,
         // first measure a real OFF worker from the same immutable source and
         // evaluated task input. Only the subsequent ON worker may be adopted.
-        run_method_control(context,record,input,&mut child_input,&lab,&binary,attempt).await?;
+        run_method_control(context,record,input,&mut child_input,&lab,&binary,attempt,started).await?;
         if !generation_fits_remaining_budget(record,&child_input) {
             return Ok("token_budget".into());
         }
