@@ -7,7 +7,7 @@ import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
+type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number};videoQuality?:string;shotMode?:string;generateAudio?:boolean;storyboard?:string[]}
 type VideoEngine='native'|'comfyui'|'runway'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasRunwayKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
@@ -25,6 +25,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
+ const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'>('1080p'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -62,7 +63,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  }
  const changeEngine=async(next:VideoEngine)=>{
   if(savingConfig)return;
-  setEngine(next);if(next==='runway'){setSeconds(10);if(ratio==='1:1')setRatio('9:16')};setSavingConfig(true);setError('');
+  setEngine(next);if(next==='runway')setSeconds(10);setSavingConfig(true);setError('');
   try{await post('/api/video/config',{engine:next,comfyUrl:comfyUrl.trim()||video.value.config.comfyUrl});await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
@@ -94,7 +95,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const generate=async()=>{
   if(!ready||!prompt.trim()||generating)return;
   const requestedSeed=Number(seed);
-  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||(usingRunway&&(![5,10,15].includes(seconds)||ratio==='1:1'))||
+  const scenes=customShots.split(/\r?\n/).map(scene=>scene.trim()).filter(Boolean);
+  if(usingRunway&&shotMode==='custom'&&(scenes.length<3||scenes.length>5||
+    scenes.some(scene=>Array.from(scene).length<3||Array.from(scene).length>512))){
+   setError('커스텀 샷을 줄마다 1개씩 3~5개 입력하세요. 각 샷은 3~512자입니다.');return;
+  }
+  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||(usingRunway&&![5,10,15].includes(seconds))||
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
   }
@@ -102,6 +108,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
+    ...(usingRunway?{videoQuality,shotMode,scenes:shotMode==='custom'?scenes:[],generateAudio}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
@@ -171,7 +178,15 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).filter(key=>!usingRunway||key!=='1:1').map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}>{usingRunway?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}><option value={5}>5초</option><option value={10}>10초</option><option value={15}>15초</option></SelectInput>:<TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/>}</FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}>{usingRunway?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}><option value={5}>5초</option><option value={10}>10초</option><option value={15}>15초</option></SelectInput>:<TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/>}</FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      {usingRunway&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <FormField label="영상 품질" hint={videoQuality==='1080p'?'고화질 Pro 렌더링 · 추가 API 비용 발생 가능':'표준 720p 렌더링'}><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p')}><option value="1080p">1080p · Pro</option><option value="720p">720p · Standard</option></SelectInput></FormField>
+        <FormField label="샷 구성"><SelectInput value={shotMode} onChange={e=>setShotMode(e.target.value as 'auto'|'custom')}><option value="auto">자동 연출 · 5개 컷</option><option value="custom">직접 구성 · 3~5개 컷</option></SelectInput></FormField>
+       </div>
+       {shotMode==='custom'&&<FormField label="샷별 연출" hint="각 줄이 한 샷입니다. 총 길이에 맞춰 시간을 자동 배분합니다."><TextArea rows={5} value={customShots} onChange={e=>setCustomShots(e.target.value)} placeholder={'장면 1: 도시 야경을 비추는 와이드샷\n장면 2: 인물 클로즈업\n장면 3: 추적 카메라와 마무리 장면'}/></FormField>}
+       <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
+      </div>}
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
       <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:usingRunway?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Runway 유료 API로 영상·사운드를 생성합니다. 결과만 로컬에 저장됩니다.':'설정에서 Runway API 키를 등록하세요.'}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
@@ -186,7 +201,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </Panel>}
    </div>
    {tab==='create'&&<div className="grid min-w-0 content-start gap-4">
-    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
+    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.shotMode&&<p className="text-[11px] text-[#7C7469]">제작 설정: {videoJob.videoQuality||'1080p'} · {videoJob.shotMode==='custom'?'사용자 샷 구성':'자동 멀티샷'} · {videoJob.generateAudio===false?'무음':'AI 오디오'}</p>}{videoJob.storyboard&&videoJob.storyboard.length>0&&<details className="text-xs text-[#5C544A]"><summary className="cursor-pointer font-medium">샷 구성 확인</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{videoJob.storyboard.map((scene,i)=><li key={i}>{scene}</li>)}</ol></details>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
     <Panel className="min-w-0 p-5"><Subheading title={t('vid.upload')} extra={<span className="text-[11px] text-[#8A8176]">{selectedOutput?t('vid.fileReady'):t('vid.pickFile')}</span>}/><div className="grid gap-3"><FormField label={t('vid.videoFile')} hint={t('vid.generatedNote')}><div className="flex flex-col gap-2">{outputs.value.length?<SelectInput value={selectedOutput?.id||''} onChange={e=>{
  const picked=outputs.value.find(item=>item.id===e.target.value);
  if(!picked)return;
