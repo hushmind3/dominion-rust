@@ -210,10 +210,17 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         if !valid_effort(effort) {
             return Err(bad("추론 강도 값이 올바르지 않습니다."));
         }
+        let tier=entry.get("tier").and_then(Value::as_str).unwrap_or("auto");
+        if !matches!(tier,"auto"|"economy"|"frontier") {
+            return Err(bad("방 모델의 역할은 자동·저비용·고성능 중 선택하세요."));
+        }
         if seen_models.insert(format!("{provider_id}|{model}")) {
             let mut picked = json!({"providerId":provider_id,"model":model});
             if !effort.is_empty() {
                 picked["reasoningEffort"] = json!(effort);
+            }
+            if tier!="auto" {
+                picked["tier"]=json!(tier);
             }
             models.push(picked);
         }
