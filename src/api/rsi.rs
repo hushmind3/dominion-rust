@@ -187,7 +187,10 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         if record["phase"]=="diagnosing_and_editing" && active["status"]=="running"
             && active["rsiPhase"].is_string() {record["phase"]=active["rsiPhase"].clone();}
     }
-    if job["status"]!="running"||record["status"].is_null(){record["status"]=job["status"].clone();}
+    if record["closureClaimInvalidated"]!=true
+        && (job["status"]!="running"||record["status"].is_null()){
+        record["status"]=job["status"].clone();
+    }
     if !job["error"].is_null(){record["error"]=job["error"].clone();}
     record
 }
