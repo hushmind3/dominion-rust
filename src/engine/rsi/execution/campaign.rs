@@ -250,6 +250,19 @@ pub(super) async fn run_loop(
             crate::engine::rsi_intervention_lab::validate_receipts(
                 &context.state,record["history"].as_array().map(Vec::as_slice).unwrap_or(&[]),
                 &plan["factorialExperiment"])?;
+            if !plan["negativeTransfer"].is_null() {
+                if !crate::engine::rsi_negative_transfer::valid(
+                    &plan["negativeTransfer"],
+                    plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                    &head,record["history"].as_array().map(Vec::len).unwrap_or(0)) {
+                    return Err("후손 역전이 실험 출처·대상·증거 범위가 잘못됐습니다.".into());
+                }
+                let original=crate::engine::rsi_system::revalidated_history(
+                    &context.state,record["history"].as_array()
+                        .map(Vec::as_slice).unwrap_or(&[]));
+                crate::engine::rsi_negative_transfer::validate_receipts(
+                    &context.state,&original,&plan["negativeTransfer"])?;
+            }
             // Enforce the compiled child's actual parent decision,
             // subject to the unchanged previous-generation evidence gate.
             child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
@@ -263,6 +276,7 @@ pub(super) async fn run_loop(
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
+            child_input["rsiNegativeTransfer"]=plan["negativeTransfer"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
             child_input["rsiModelEcologyPolicy"]=plan["modelPolicy"].clone();
             if plan["modelPolicy"]["active"]==true {
@@ -587,6 +601,7 @@ pub(super) async fn run_loop(
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
+        generation["negativeTransfer"]=current["input"]["rsiNegativeTransfer"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
