@@ -30,11 +30,26 @@ pub(super) async fn run_method_control(
         || child_input["providerId"].as_str().is_none_or(str::is_empty)
         || child_input["model"].as_str().is_none_or(str::is_empty)
     {return Ok(());}
+    // The two arms receive identical bounded model-token allowances.
+    // The OFF arm must not consume the ON arm's entire campaign quota.
+    if let Some(tokens)=child_input["rsiGenerationTokenLimit"].as_u64() {
+        let each=tokens/2;
+        if each<1000 {return Ok(());}
+        child_input["rsiGenerationTokenLimit"]=json!(each);
+        child_input["rsiRemainingCampaignTokens"]=json!(each);
+    }
     let fingerprint=input_fingerprint(child_input);
     let control_dir=context.state.config.data_dir.join("rsi-labs")
         .join(format!("method-control-{}",uuid::Uuid::new_v4()));
     let control_path=control_dir.to_str().ok_or("대조군 경로 오류")?;
-    git(context,lab,&["worktree","add","--detach",control_path,head]).await?;
+    if let Err(message)=git(context,lab,
+        &["worktree","add","--detach",control_path,head]).await {
+        record["methodControlError"]=json!(message);
+        save(context,record)?;
+        // The control is optional evidence; its failure never authorizes
+        // a false quality claim or blocks the normal ON candidate.
+        return Ok(());
+    }
     let observed=async {
         let mut input=child_input.clone();
         input["rsiSourceDir"]=json!(control_dir);
@@ -67,7 +82,7 @@ pub(super) async fn run_method_control(
             Err("method_control_time_budget".to_string())
         }else{
             command(context,process,Duration::from_secs(
-                if remaining==u64::MAX{900}else{remaining.min(900)})).await
+                if remaining==u64::MAX{300}else{(remaining/2).clamp(1,300)})).await
                 .map(|p|p.status.success())
         };
         let job=context.state.store.get("job",&id).ok_or("대조군 결과 소실")?;

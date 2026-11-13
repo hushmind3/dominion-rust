@@ -23,6 +23,12 @@ pub(in super::super) fn finalize_execution(
     let Some(mut record) = state.store.get("execution", execution_id) else {
         return;
     };
+    // Control-arm model/tool traces must remain observable, but cannot
+    // teach the persistent production learner or influence its selectors.
+    let is_control=record["sessionId"].as_str()
+        .and_then(|id|state.store.get("session",id))
+        .is_some_and(|session|session["rsiControlExperiment"]==true);
+    record["rsiControlExperiment"]=json!(is_control);
     let counters = metrics.lock().unwrap();
     record["iterations"] = json!(counters.iterations);
     record["tokens"] = json!(counters.tokens);
@@ -265,7 +271,7 @@ pub(in super::super) fn finalize_execution(
     // Every terminal execution updates only this agent's growth record:
     // runs, failures, failing tools and concrete guidance for next time.
     // A deterministic shortcut is excluded: zero model calls is not growth.
-    if record["deterministicShortcut"].is_null() {
+    if !is_control && record["deterministicShortcut"].is_null() {
         if let Some(agent_id) = record["agentId"]
             .as_str()
             .filter(|value| !value.is_empty())
@@ -286,13 +292,15 @@ pub(in super::super) fn finalize_execution(
     }
     // Close the principle loop before learning new ones: a used principle
     // gains a supporting case or counterexample for this run.
-    let _ = crate::engine::principle::finalize_usage(
-        state,
-        &record,
-        task_outcome == TaskOutcome::Succeeded,
-    );
+    if !is_control {
+        let _ = crate::engine::principle::finalize_usage(
+            state,
+            &record,
+            task_outcome == TaskOutcome::Succeeded,
+        );
+    }
     // A success experience requires Succeeded and a first-time finalization.
-    if applied && task_outcome == TaskOutcome::Succeeded {
+    if !is_control && applied && task_outcome == TaskOutcome::Succeeded {
         // Use the same first-success-per-root marker as the original case
         // bank: room speakers and repeat task attempts are not independent
         // evidence for conditional intervention rules.
@@ -301,10 +309,12 @@ pub(in super::super) fn finalize_execution(
             let _ = crate::engine::principle::learn_from_execution(state, &record);
         }
     }
-    mark_run_signals(state, &record);
+    if !is_control {mark_run_signals(state, &record);}
     // Finalize after learning so algorithm usages created while learning
     // (for example multiagent.sharing) are included in this execution.
-    crate::engine::algorithms::finalize_execution(state, &record);
+    if !is_control {
+        crate::engine::algorithms::finalize_execution(state, &record);
+    }
     if let Some(mut saved) = state.store.get("execution", execution_id) {
         saved["growthFinalized"] = json!(true);
         state.store.put("execution", &saved);

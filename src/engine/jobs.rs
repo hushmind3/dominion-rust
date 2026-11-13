@@ -625,6 +625,7 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     if rsi_workspace.is_some() {
         if let Some(mut session)=context.state.store.get("session",&session_id) {
             session["rsiRun"]=json!(true);
+            session["rsiControlExperiment"]=json!(job["rsiControlExperiment"]==true);
             session["rsiSystemEvolution"]=json!(input["rsiSystemEvolution"]==true);
             // The actual provider call enforces this local allowance across
             // all model and compiler-repair turns sharing this session.
