@@ -543,7 +543,9 @@ pub fn capability_proven(state:&AppState, history:&[Value])->bool {
 /// Prove recursive capability across a continued campaign only when the
 /// previous campaign is the exact binary and source lineage being resumed.
 /// Campaign labels or inherited streak counters alone never establish proof.
-pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
+/// Reassemble an exact persisted continuation lineage. Both the old
+/// descriptive transfer metric and the real closure audit use these rows.
+pub(crate) fn campaign_history(state: &AppState, campaign: &Value) -> Vec<Value> {
     let mut segments = Vec::new();
     let mut visited = BTreeSet::new();
     let mut current = campaign.clone();
@@ -571,8 +573,19 @@ pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
         current = prior;
     }
     segments.reverse();
-    let history=segments.into_iter().flatten().collect::<Vec<_>>();
-    capability_proven(state,&history)
+    segments.into_iter().flatten().collect::<Vec<_>>()
+}
+
+/// Legacy limited meta-transfer metric. Never use this as complete RSI.
+pub fn campaign_capability_proven(state: &AppState, campaign: &Value) -> bool {
+    capability_proven(state,&campaign_history(state,campaign))
+}
+
+/// Sole A -> B -> A completion authority for campaign stop, API and audit.
+/// An unexecuted source file cannot promote itself through a stored flag.
+pub(crate) fn campaign_recursive_evidence(state:&AppState,campaign:&Value)->Value {
+    crate::engine::rsi_evolve::recursive_closure_evidence(
+        state,&campaign_history(state,campaign))
 }
 
 pub fn list(state: &AppState) -> Vec<Value> {

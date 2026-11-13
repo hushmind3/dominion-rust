@@ -44,6 +44,15 @@ mod evaluation;
 mod execution;
 #[path = "rsi/planner.rs"]
 mod planner;
+// Closure is owned by the ACTUAL native evolution coordinator, not by a
+// parallel candidate-ledger scoring path.
+#[path = "rsi/closure.rs"]
+mod recursive_closure;
+pub(crate) fn recursive_closure_evidence(
+    state:&AppState,history:&[Value]
+)->Value {
+    recursive_closure::evidence(state,history)
+}
 
 use search::{
     objective_matches, search_features, score_domain, eligible_domains, valid_domain_scores,
