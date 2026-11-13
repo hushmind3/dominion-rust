@@ -7,36 +7,10 @@ fn error(message: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"error":message}))).into_response()
 }
 
-/// Longest run of adopted generations in a campaign. Older campaigns stored
-/// only per-generation flags, so derive the streak instead of rewriting them.
-fn accepted_streak(record: &Value) -> (u64, u64) {
-    let mut streak = 0u64;
-    let mut max = 0u64;
-    for generation in record["history"].as_array().cloned().unwrap_or_default() {
-        if generation["accepted"] == true {
-            streak += 1;
-            max = max.max(streak);
-        } else {
-            // Research-only and failed attempts interrupt a consecutive run.
-            streak = 0;
-        }
-    }
-    (streak, max)
-}
-
-fn apply_capability(state: &AppState, record: &mut Value) {
-    let (streak, measured_max) = accepted_streak(record);
-    let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
-    record["acceptedStreak"] = json!(streak);
-    record["maxAcceptedStreak"] = json!(max);
-    let source_bounded=max>=3 && engine::campaign_capability_proven(state,record);
-    let bounded=source_bounded && engine::campaign_recursive_method_closure_proven(state,record);
-    record["sourceEvolutionDemonstrated"]=json!(source_bounded);
-    record["recursiveMethodClosureProven"]=json!(bounded);
-    record["capabilityDemonstrated"]=json!(bounded);
-    record["systemicHandoffProven"]=json!(bounded
-        && crate::engine::rsi_system::verified_handoff(
-            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
+/// All three surfaces (campaign runtime, API, audit) use the same
+/// receipt-backed method-closure verdict from the RSI engine.
+fn apply_capability(state:&AppState,record:&mut Value) {
+    engine::apply_campaign_verdict(state,record);
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
