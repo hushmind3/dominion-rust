@@ -320,14 +320,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 &expected_experiment,&commit,&experiment_input).is_none() {
             return Err("후손이 실행할 메타 실험 방식과 소스 편집 정책이 일치하지 않습니다.".into());
         }
-        job["rsiExperimentPolicyExecuted"]=json!({
-            "source":"running_compiled_descendant_experiment_designer_v1",
-            "generatorCommit":commit,
-            "protocol":expected_experiment["selectedProtocol"],
-            "frozenProfileSha256":expected_experiment["frozen"]["profileSha256"],
-            "policySha256":expected_experiment["signatureSha256"],
-            "qualityProven":false
-        });
         if job["input"]["rsiFactorialExperiment"]!=factor_expected
             || job["input"]["rsiRecursiveScientificProgram"]!=science_expected
             || job["input"]["rsiControllerPlan"]["factorialExperiment"]!=factor_expected
@@ -355,6 +347,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                     portfolio,&observed_influence,frontier)) {
             return Err("실행 후손의 영역별 실제 변경·독립 평가 학습 기록이 불일치합니다.".into());
         }
+        job["rsiExperimentPolicyExecuted"]=json!({
+            "source":"running_compiled_descendant_experiment_designer_v1",
+            "generatorCommit":commit,
+            "protocol":expected_experiment["selectedProtocol"],
+            "frozenProfileSha256":expected_experiment["frozen"]["profileSha256"],
+            "policySha256":expected_experiment["signatureSha256"],
+            "qualityProven":false
+        });
         if expected_stage.is_object(){
             job["rsiSuccessorStageExecuted"]=json!({
                 "source":"running_compiled_descendant_binary",
