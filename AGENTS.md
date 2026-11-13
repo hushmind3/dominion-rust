@@ -27,3 +27,13 @@
 - 하위 모듈의 공개 인터페이스는 상위 조정자에서 명시적으로 연결한다. 내부 증거·평가·실행에 대한 책임은 섞지 않는다.
 - 테스트는 원래 호출 계약과 시나리오를 유지하며 이동한다. 상대 경로 `include_str!`는 이동한 실제 소스 위치에 맞춰 갱신한다.
 - 새 실행 로직을 다시 `rsi_evolve.rs`나 `chat/runtime.rs`에 몰아넣지 않는다. 기능 변경 시 기존 모듈을 먼저 수정한다.
+
+## Sub1 coordinator file map (2026-11-13)
+
+In `src/engine/rsi_evolve.rs` the active compiled helpers are split into
+`rsi/selection.rs` (strategy), `rsi/source_control.rs` (source/budget/choice),
+`rsi/focus.rs` (evidence and source focus), `rsi/adoption.rs` (verified adoption),
+and `rsi/descendant_plan.rs` (rebuilt child planning). Follow the API →
+jobs → run → execution → compiled worker_plan → native_generation_plan →
+paired worktree → adoption → new executable → proof call path. External
+function exports and the original tests include remain at the parent level.

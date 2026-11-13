@@ -477,3 +477,37 @@ cargo test --release
 Copyright 2026 hushmind3.
 
 DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
+
+## Sub1: compiled RSI coordinator module boundaries (2026-11-13)
+
+The parent `src/engine/rsi_evolve.rs` owns `run`, limits and orchestration.
+The original public entrypoints remain exported. The actual functions now live
+in responsibility-focused compiled Rust modules:
+
+| Source module | Active responsibility |
+| --- | --- |
+| `src/engine/rsi/selection.rs` | Measured selection and domain search strategy |
+| `src/engine/rsi/source_control.rs` | Experiment source permissions, source fingerprint, quota and user choice |
+| `src/engine/rsi/focus.rs` | Versioned source focus, tool research history and next generation context |
+| `src/engine/rsi/adoption.rs` | Independently verified patch adoption and inheritable action directives |
+| `src/engine/rsi/descendant_plan.rs` | Recompiled successor's experiment strategy, system agenda and new plan |
+| `src/engine/rsi/execution.rs` | Spawn and advance the isolated compiled generation |
+| `src/engine/rsi/proof.rs` | Revalidation of the observed A→B→A lineage |
+
+**Live registered path:** `src/api/rsi.rs::start` →
+`src/engine/jobs.rs` → `rsi_evolve::run` →
+`rsi/execution.rs::run_loop` → rebuilt `rsi/worker.rs::worker_plan` →
+`rsi/descendant_plan.rs::native_generation_plan` →
+`rsi_worktree::compare_at` → `rsi/adoption.rs::adopt` →
+rebuilt successor → `rsi/proof.rs`.
+The built agent's improvement methods are editable source, not an
+unconnected report or a copied reference patch.
+
+**Evidence boundary:** this source-level refactor itself does not demonstrate
+new performance gains or a completed 3-generation campaign. No compilation,
+tests, builds, CI, benchmarks or paid model requests were run.
+
+2026 design reading:
+[AIDE²](https://arxiv.org/abs/2609.26457) (September 2026),
+[MetaSkill-Evolve](https://arxiv.org/abs/2607.05297) (July 2026),
+[Predict Before You Modify](https://arxiv.org/abs/2610.13991) (September 2026).
