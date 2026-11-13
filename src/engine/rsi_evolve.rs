@@ -61,6 +61,9 @@ pub(crate) use method_ablation::measure as measured_method_ablation;
 #[path = "rsi/execution/observation.rs"]
 mod execution_observation;
 use execution_observation::{GenerationObservation,collect_generation_observation};
+#[path = "rsi/execution/generator_build.rs"]
+mod execution_generator_build;
+use execution_generator_build::ensure_compiled_generator;
 #[path = "rsi/execution/generation_receipt.rs"]
 mod execution_generation_receipt;
 use execution_generation_receipt::assemble as assemble_generation_receipt;
