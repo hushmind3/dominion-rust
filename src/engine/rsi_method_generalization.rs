@@ -390,6 +390,39 @@ mod tests {
         assert!(!prefer_capability_target(&strong,&learning));
     }
     #[test]
+    fn measured_control_routes_a2_method_rewrite_then_b2_use(){
+        let method=json!({"rankedCandidates":[{"ruleId":"a".repeat(64),
+            "selectionPriority":100,"intent":"improve_composed_intelligence",
+            "target":{"path":"src/engine/memory.rs"},
+            "productTarget":{"path":"src/engine/memory.rs"},
+            "rule":{"method":{"path":"src/engine/rsi_meta_controller.rs",
+                "sourceSha256":"b".repeat(64)}}}]});
+        let measured=json!({"sha256":"c".repeat(64),"operatorLearning":[{
+            "ruleId":"a".repeat(64),"independentReplayedTrials":1,
+            "verifiedMethodControlTrials":1,"methodControlQualityWins":2,
+            "methodControlQualityLosses":0,"transferScore":0.3,
+            "methodControlEvidenceSha256":["d".repeat(64)]}]});
+        let after_b1=adapt(method.clone(),&measured);
+        assert_eq!(after_b1["selected"]["intent"],
+            "evolve_measured_method_after_controlled_downstream_gain");
+        assert_eq!(after_b1["selected"]["target"]["path"],
+            "src/engine/rsi_meta_controller.rs");
+        let mut revised=measured;
+        revised["operatorLearning"][0]["revisedMethodAwaitingDownstreamControl"]=json!(true);
+        let after_a2=adapt(method.clone(),&revised);
+        assert_eq!(after_a2["selected"]["intent"],
+            "run_revised_method_in_controlled_descendant");
+        assert_eq!(after_a2["selected"]["target"]["path"],
+            "src/engine/memory.rs");
+        let no_controls=adapt(method,&json!({"sha256":"e".repeat(64),
+            "operatorLearning":[{"ruleId":"a".repeat(64),
+                "independentReplayedTrials":1,"transferScore":0.3}]}));
+        assert_ne!(no_controls["selected"]["target"]["path"],
+            "src/engine/rsi_meta_controller.rs",
+            "ordinary paired gain must not trigger controlled A2 rewrite");
+    }
+
+    #[test]
     fn measured_regression_redirects_a_future_method_edit(){
         let method=json!({"rankedCandidates":[{"ruleId":"a".repeat(64),
             "selectionPriority":100,"intent":"improve_composed_intelligence",
