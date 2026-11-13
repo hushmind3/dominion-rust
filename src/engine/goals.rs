@@ -555,7 +555,7 @@ mod tests {
             &state,
             "create a report",
             &json!([]),
-            &[json!({"tool":"workspace_write","result":{"ok":true}})]
+            &[json!({"tool":"workspace_write","result":{"written":true}})]
         )
         .is_empty());
         std::fs::remove_dir_all(dir).unwrap();
@@ -566,7 +566,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "old").unwrap();
         let checks = baseline_checks(&state, infer_criteria("a.txt를 수정해줘"));
         assert_eq!(checks[0]["path"], "a.txt");
-        let evidence = vec![json!({"tool":"workspace_write","result":{"ok":true}})];
+        let evidence = vec![json!({"tool":"workspace_write","result":{"written":true}})];
         assert!(!acceptance_gaps(&state, "a.txt 수정", &checks, &evidence).is_empty());
         std::fs::write(dir.join("a.txt"), "new").unwrap();
         assert!(acceptance_gaps(&state, "a.txt 수정", &checks, &evidence).is_empty());
