@@ -824,6 +824,24 @@ mod tests {
                 "evaluation":{"evidenceSha256":"e".repeat(64)}}));
         }
         assert!(capability_proven(&state,&history));
+        // The old source-evolution score is demonstrably true here, yet no
+        // model used an improved METHOD and re-edited that method. All three
+        // public completion surfaces must therefore remain false.
+        let mut campaign=json!({"id":"source-only",
+            "history":history.clone(),"status":"completed",
+            "stopReason":"capability_demonstrated",
+            "capabilityDemonstrated":true,
+            "maxAcceptedStreak":3});
+        let proof=campaign_verdict(&state,&campaign);
+        assert_eq!(proof["sourceEvolutionDemonstrated"],true);
+        assert_eq!(proof["modelDrivenCapabilityDemonstrated"],false);
+        assert_eq!(proof["recursiveMethodClosureProven"],false);
+        assert_eq!(proof["actualCompletion"],false);
+        assert!(proof["recursiveMethodEvidence"].is_null());
+        apply_campaign_verdict(&state,&mut campaign);
+        assert_eq!(campaign["capabilityDemonstrated"],false);
+        assert_eq!(campaign["stopReason"],"recursive_method_closure_not_proven");
+        assert_eq!(campaign["status"],"needs_review");
         assert!(!model_driven_capability_proven(&state,&history),
             "three accepted source improvements do not imply a model ever made a code edit");
         let mut broken=history.clone();
