@@ -1,6 +1,7 @@
 pub mod goal_control;
 pub(crate) mod goal_review;
 pub(crate) mod goal_verification;
+pub(crate) mod goal_metrics;
 pub mod adaptation_loop;
 pub mod distill;
 pub mod effect;
