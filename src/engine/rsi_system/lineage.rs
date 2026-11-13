@@ -134,6 +134,66 @@ pub(crate) fn lineage_capsule(history:&[Value])->Value {
     capsule
 }
 
+/// An accepted META generation may author a method for a different domain.
+/// The next COMPILED descendant must actually select a task where the stored,
+/// executable method can run. Otherwise meta→capability transfer is only prose.
+/// Read active methods, frozen holdout domains and the exact adopted lineage;
+/// do not mint a transfer from an unmeasured proposal or cross-partition method.
+pub(crate) fn method_transfer_target(
+    state:&crate::state::AppState, history:&[Value], input:&Value,
+)->Value {
+    if input["rsiSystemEvolution"]!=true || input["rsiMethodAblation"]!=true
+        || input["rsiAutonomous"]!=true {return Value::Null;}
+    let Some(meta)=history.last().filter(|g|g["accepted"]==true
+        && g["domain"]=="improver"
+        && g["evaluation"]["metrics"]["eligible"]==true
+        && g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0)
+    else {return Value::Null;};
+    let frozen=input["rsiFrozenCases"].as_array();
+    let earlier_method=history.iter().rev().skip(1).find_map(|g|
+        if g["methodAblation"]["methodAssociationObserved"]==true
+            && g["methodAblation"]["qualityProven"]==true {
+            Some(g)
+        }else{None});
+    for method in meta["methodProposals"].as_array().into_iter().flatten() {
+        let Some(domain)=method["domain"].as_str().filter(|d|
+            *d!="improver" && crate::engine::rsi_evolve::DOMAINS.contains(d)) else {continue};
+        if method["sourceGenerationJobId"]!=meta["jobId"]
+            || !method["synthesis"].is_null()
+            || method["verification"]["type"]!="procedure"
+            || !frozen.is_some_and(|cases|cases.iter().any(|case|
+                case["domain"]==domain && case["holdout"]==true)) {continue;}
+        let eligible=crate::engine::rsi_evolve::method_reuse_decision(state,input,domain);
+        if eligible["action"]!="execute_methods"
+            || !eligible["methodIds"].as_array().is_some_and(|methods|
+                methods.contains(&method["id"])) {continue;}
+        // Feedback-based A2 must produce a new revision of the same REAL
+        // method used in B1, not an unrelated method with a coincidental name.
+        if meta["improvementDirective"]["mode"]=="evolve_executed_method_from_feedback" {
+            let Some(b)=earlier_method else {continue};
+            let old=history.iter().rev().skip(1).flat_map(|g|
+                g["methodProposals"].as_array().into_iter().flatten())
+                .find(|old|old["name"]==method["name"]
+                    && old["domain"]==method["domain"]
+                    && old["id"]!=method["id"]
+                    && b["methodExecutions"].as_array().is_some_and(|uses|
+                        uses.iter().any(|used|used["methodId"]==old["id"])));
+            if old.is_none(){continue;}
+        }
+        return json!({
+            "source":"compiled_inherited_executable_method_transfer_v1",
+            "metaGenerationId":meta["id"],"metaGenerationJobId":meta["jobId"],
+            "acceptedMetaCommit":meta["acceptedCommit"],
+            "methodId":method["id"],"revision":method["revision"],
+            "name":method["name"],"domain":domain,
+            "feedbackSourceGenerationId":meta["improvementDirective"]["sourceGenerationId"],
+            "methodExecutionRequired":true,
+            "ablationRequired":true
+        });
+    }
+    Value::Null
+}
+
 /// Comparative evolution without unverified cherry-picks: successful
 /// architectures from OTHER campaigns are read-only references. Each must
 /// have an independently replayable paired receipt under the same immutable
