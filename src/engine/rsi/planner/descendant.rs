@@ -286,7 +286,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let model_evolution=crate::engine::rsi_model_lineage::plan(
         &state,&history,input,commit)?;
     let science_active=input["rsiAutonomous"]==true && !owner_focus && !paired;
-    let mut negative_transfer_active=science_active
+    // A measured B1 control or a newly rewritten A2 method reserves the
+    // immediate successor for the next source-grounded intervention. Other
+    // diagnostic programs remain available once this trial has completed.
+    let controlled_transition=science_active && matches!(
+        algebra["selected"]["intent"].as_str(),
+        Some("evolve_measured_method_after_controlled_downstream_gain"
+            |"run_revised_method_in_controlled_descendant"));
+    let mut negative_transfer_active=science_active && !controlled_transition
         && negative_transfer["selected"]["victim"].is_object()
         && negative_transfer["selected"]["source"].is_object();
     let mut capability_active=science_active && !negative_transfer_active
@@ -320,7 +327,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // On sustained verified prediction drift, the compiled child must
     // actually try revising its prediction implementation before unrelated
     // exploratory curricula overwrite the chosen source.
-    let predictor_repair_active=science_active
+    let predictor_repair_active=science_active && !controlled_transition
         && meta_policy["predictionRuleRepair"]["repairRuleSourceSelected"]==true
         && meta_policy["target"]["path"]=="src/engine/rsi_prequential.rs";
     if predictor_repair_active {
