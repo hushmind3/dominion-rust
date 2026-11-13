@@ -44,10 +44,10 @@ impl ExperimentDesign {
     pub(crate) fn revision(&self)->String {
         format!("{:x}",Sha256::digest(
             serde_json::to_vec(&serde_json::json!([
-                self.generator_commit,self.history_count,
-                self.policy_source_sha256,self.target.path,
-                self.target.source_sha256,self.protocol,
-                self.parent_experiment_revision,self.question
+                &self.generator_commit,self.history_count,
+                &self.policy_source_sha256,&self.target.path,
+                &self.target.source_sha256,&self.protocol,
+                &self.parent_experiment_revision,&self.question
             ])).unwrap_or_default()))
     }
     pub(crate) fn seal(&mut self) {
