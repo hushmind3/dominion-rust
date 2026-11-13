@@ -95,6 +95,11 @@ pub(crate) fn downstream_feedback(state:&AppState,history:&[Value],binary_commit
         || b["acceptedCommit"]!=binary_commit
         || !task_gain(b)
     {return Value::Null;}
+    let method_contrast=super::method_contrast::evidence(state,b);
+    // The task outcome alone is not the source of recursive method
+    // knowledge: require an actually executed OFF control and independently
+    // replayed held-out advantage before teaching C to rewrite method A.
+    if method_contrast["qualityProven"]!=true{return Value::Null;}
     let inherited=method_snapshot(state,&history[..1],
         b["generatorCommit"].as_str().unwrap_or(""));
     if !inherited.is_object(){return Value::Null;}
@@ -127,6 +132,11 @@ pub(crate) fn downstream_feedback(state:&AppState,history:&[Value],binary_commit
         "taskEvaluationSha256":b["evaluation"]["evidenceSha256"],
         "taskDomain":b["domain"],"taskAcceptedCommit":b["acceptedCommit"],
         "compiledTaskBinarySha256":b["generatorBinarySha256"],
+        "methodContrast":method_contrast,
+        "controlId":method_contrast["controlId"],
+        "controlEvaluationSha256":method_contrast["controlEvaluationSha256"],
+        "controlCandidateId":method_contrast["controlCandidateId"],
+        "methodContrastTaskWins":method_contrast["treatmentOnlyGains"],
         "nextBinaryCommit":binary_commit,
         "causalAblationProven":false
     })

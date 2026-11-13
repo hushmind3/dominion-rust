@@ -679,3 +679,7 @@ The control session in `jobs::run_prompt` now records `rsiControlExperiment=true
 ### Method control cannot enter normal research memory
 
 `jobs::run_prompt` keeps the control's original prompt, detached edit, candidate and evaluator receipts, but excludes OFF-arm runs from `remember_research` and persistent executable-method feedback. Together with finalization's learning guard, the OFF arm has no authorized path to teach the subsequent ON generation through those durable learning stores.
+
+### The independently measured B control is actual C-generation input
+
+`rsi/proof/method_lineage.rs::downstream_feedback` now calls the frozen `method_contrast::evidence(state,B)` on the original B job and refuses to construct any method-to-task-to-method feedback if B lacked a verified OFF/ON method-execution advantage. The resulting immutable B control candidate, control paired SHA-256, treatment paired SHA-256, winning task cases and A source bytes are included in the next compiled planner's `downstreamFeedback` and the C worker's **actual model system prompt**. C still must edit A's exact method path, pass the independent paired oracle and produce a B2 descendant with a second separately verified method contrast. This isolates the provenance and measured procedure contribution, without treating one run as a definitive causal estimate.

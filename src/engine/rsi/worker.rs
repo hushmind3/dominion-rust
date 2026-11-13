@@ -357,10 +357,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let verified_feedback=&job["input"]["rsiDownstreamFeedback"];
         let causal_feedback=if verified_feedback["source"]==
             "independent_downstream_feedback_for_method_rewrite_v1" {
-            format!("\n[ORIGINAL PAIRED DESCENDANT FEEDBACK — SOURCE REWRITE TRIAL]\n                Your predecessor compiled method path={} sha={}.                 Its actual rebuilt task descendant improved domain={}                 with independently verified candidate={} pairedReceipt={}.                 This evidence was replayed from original generation jobs;                 now REVISE the exact method source, with a new falsifiable                 hypothesis for why B succeeded/failed. The frozen evaluator                 must separately accept the new method version.                 Feedback inheritance alone is NOT a causal ablation.\n",
+            format!("\n[ORIGINAL PAIRED DESCENDANT FEEDBACK — SOURCE REWRITE TRIAL]\n                Your predecessor compiled method path={} sha={}.                 B improved independent domain={} with candidate={} pairedReceipt={}.                 ORIGINAL METHOD-OFF CONTROL id={} candidate={} pairedReceipt={}                 produced {} fewer task wins than the method-ON worker.                 Use these exact independent observations to design and WRITE                 a new version of the SAME method source. State which B control                 failures the new version should remedy and what B2 must do better.                 Re-test through the original frozen evaluator. This observed                 single-run contrast is NOT statistical causal certainty.\n",
                 verified_feedback["methodPath"],verified_feedback["methodSourceSha256"],
                 verified_feedback["taskDomain"],verified_feedback["taskCandidateId"],
-                verified_feedback["taskEvaluationSha256"])
+                verified_feedback["taskEvaluationSha256"],
+                verified_feedback["controlId"],verified_feedback["controlCandidateId"],
+                verified_feedback["controlEvaluationSha256"],
+                verified_feedback["methodContrastTaskWins"])
         }else{String::new()};
         let method=if job["rsiInheritedMetaMethod"].is_object(){
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
