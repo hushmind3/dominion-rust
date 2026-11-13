@@ -941,7 +941,10 @@ fn rsi_pinned_source_sha(ctx:&ToolContext<'_>,path:&Path,args:&Value)->Option<St
     let session=ctx.store.get("session",ctx.session_id)?;
     if session["rsiRun"]!=true {return None;}
     let index=session["rsiCodeIndexId"].as_str()?;
-    let relative=path.strip_prefix(ctx.workspace).ok()?.to_str()?;
+    // macOS temp roots are symlinks (/var -> /private/var); the resolved edit
+    // path must still be recognised as inside the configured workspace.
+    let workspace=ctx.workspace.canonicalize().unwrap_or_else(|_|ctx.workspace.to_path_buf());
+    let relative=path.strip_prefix(&workspace).ok()?.to_str()?;
     if !crate::engine::rsi::safe_path(relative){return None;}
     crate::engine::code_index::indexed_source_hash(ctx.state,index,relative)
 }

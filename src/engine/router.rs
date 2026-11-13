@@ -88,6 +88,13 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
                     .then_with(||rsi_model_learning::compared_preference(&learned,a,b)
                         .unwrap_or(std::cmp::Ordering::Equal))
                     .then_with(|| {
+                        // Without a learned preference, a deep route must not
+                        // ignore the real context window it is bought for.
+                        let window=|provider:&Value|provider["capabilities"]["contextTokens"]
+                            .as_u64().or_else(||provider["contextTokens"].as_u64()).unwrap_or(0);
+                        window(b).cmp(&window(a))
+                    })
+                    .then_with(|| {
                         score(b)
                             .partial_cmp(&score(a))
                             .unwrap_or(std::cmp::Ordering::Equal)

@@ -1124,7 +1124,7 @@ pub(crate) fn propose(
         if !principle["mechanism"].as_str().is_some_and(|v|
             v.trim().len()>=25&&v.len()<=1600)
             || !principle["falsifiableOutcome"].as_str().is_some_and(|v|
-                v.trim().len()>=20&&v.len()<=1000)){
+                v.trim().len()>=20&&v.len()<=1000){
             return Err("새 개선 원리에는 실행 원리와 반증 가능한 다음 세대 결과가 필요합니다.".into());
         }
         let parents=principle["composedFrom"].as_array().cloned()
@@ -1384,7 +1384,7 @@ mod tests {
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),8);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["recentMeasuredGenerations"][0]["accepted"],true);

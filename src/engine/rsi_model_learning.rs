@@ -264,7 +264,7 @@ pub(crate) fn generator_competition(
         for generation in history.iter().filter(|g|
             g["generatorCommit"]==commit
                 && eligible(g)) {
-            if let Some(pair)=identity(g){*trials.entry(pair).or_default()+=1;}
+            if let Some(pair)=identity(generation){*trials.entry(pair).or_default()+=1;}
         }
         let unknown=available.iter().filter(|pair|!trials.contains_key(*pair))
             .cloned().collect::<Vec<_>>();

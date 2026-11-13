@@ -187,7 +187,7 @@ pub(crate) fn plan(history:&[Value],frontier:&[Value],commit:&str)->Value{
     let mut assessed_generations=0usize;
     for generation in history.iter().filter(|g|assessed(g)){
         assessed_generations+=1;
-        let accepted=adopted(g);
+        let accepted=adopted(generation);
         for case in generation["evaluation"]["metrics"]["holdoutEvidence"]
             .as_array().into_iter().flatten(){
             let Some(domain)=case["domain"].as_str()else{continue};

@@ -559,7 +559,7 @@ pub(crate) fn peer_lineages(
                 || candidate["evaluation"]["metrics"]["eligible"]!=true
                 || candidate["baseCommit"]!=generation["generatorCommit"]
                 || candidate["experimentAdoption"]["commit"]!=generation["acceptedCommit"]
-                || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {continue;}
+                || crate::engine::rsi::verify_paired_receipt(state,&candidate).is_err() {continue;}
             let Some(patch)=candidate["patchSha256"].as_str() else{continue};
             if !patches.insert(patch.to_string()){continue;}
             let mut aligned=Vec::new();let mut same=0usize;
@@ -654,7 +654,7 @@ pub(crate) fn validate_peer_lineages(
             || candidate["patchSha256"]!=row["patchSha256"]
             || candidate["baseCommit"]!=row["generatorCommit"]
             || candidate["experimentAdoption"]["commit"]!=row["acceptedCommit"]
-            || !crate::engine::rsi::verified_pair_receipt(state,&candidate){
+            || crate::engine::rsi::verify_paired_receipt(state,&candidate).is_err(){
             return Err("교차 계보 후보의 독립 평가 영수증이 다릅니다.".into());
         }
     }

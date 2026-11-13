@@ -5421,8 +5421,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }
     let campaign = job["input"]["rsiCampaignId"]
         .as_str()
-        .ok_or("자동 개선 ID 없음")?;
-    if state.store.get("job", campaign).is_none_or(|p| {
+        .ok_or("자동 개선 ID 없음")?
+        .to_string();
+    if state.store.get("job", &campaign).is_none_or(|p| {
         p["kind"] != "rsi_evolve" || p["status"] != "running" || p["cancelRequested"] == true
     }) {
         return Err("자동 개선이 중단되었습니다.".into());
@@ -5431,11 +5432,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         .store
         .all("rsi_generation")
         .into_iter()
-        .filter(|g| g["campaignId"] == campaign)
+        .filter(|g| g["campaignId"] == json!(campaign))
         .collect::<Vec<_>>();
     history.sort_by_key(|g|g["attempt"].as_u64().unwrap_or(0));
     let objective = selection_objective(&job["input"]);
-    let action_history=improvement_history(&state,&job["input"],&history,campaign);
+    let action_history=improvement_history(&state,&job["input"],&history,&campaign);
     // The actual newly compiled agent obeys its own source-based design
     // decision. Previous measured plans remain evidence, not higher-order
     // commands from a frozen resident coordinator.
@@ -5576,7 +5577,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }
         let profile=crate::engine::rsi_meta_controller::comparison_profile(&job["input"]);
         crate::engine::rsi_meta_controller::validate_peer_lineages(
-            &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),campaign)?;
+            &state,&job["input"]["rsiPeerLineages"],profile.as_deref(),&campaign)?;
         let expected_hybrid=crate::engine::rsi_meta_controller::compositional_hypothesis(
             &job["input"]["rsiPeerLineages"],&expected_meta);
         if job["input"]["rsiCrossLineageHypothesis"]!=expected_hybrid {
