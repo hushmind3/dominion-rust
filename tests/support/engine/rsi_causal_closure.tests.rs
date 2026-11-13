@@ -8,6 +8,9 @@ mod tests {
         assert!(meta_source("src/engine/rsi_system/handoff.rs"));
         assert!(!meta_source("src/engine/memory.rs"));
         assert!(!meta_source("README.md"));
+        assert!(!meta_source("src/engine/rsi/proof.rs"));
+        assert!(!meta_source("src/engine/rsi_system/handoff.rs"));
+        assert!(meta_source("src/engine/rsi_system/guidance.rs"));
     }
     #[test]
     fn forged_action_flag_does_not_pass_handoff(){
