@@ -27,6 +27,8 @@ src/api/rsi.rs::start
 
 **책임 이동:** `campaign.rs`는 679줄에서 약 255줄로, 초기 1,376줄을 기준으로 보면 약 81%가 감소했다. 호출만 쪼갠 것이 아니라 준비·워커 프로세스/예산·독립 후보 평가/선택·실험 채택이 분리돼 있고, 독립 원본 재생 코드는 `rsi/proof`에 있다. `rsi.rs::safe_path`는 분리한 검증·채택·감독 파일을 후손 변경으로부터 차단한다. 진화 가능한 `generation_preparation.rs`와 메타 계획기/선택기는 계속 일반 소스 최적화 대상이다.
 
+**최종 플랫폼별 CI 범위(2026-11-13):** Ubuntu와 macOS는 `cargo test --release` 전체 통과. Windows에서 전체 Rust 테스트 717개 통과·76개 실패가 관측됐으며, 다수는 활성 SQLite/임시 파일 핸들을 삭제하려는 테스트 정리 동작이 Windows 파일 잠금 규칙에 부딪힌 것이다. 소수는 OS 경로 표기 차이도 포함된다. Windows 전체 테스트가 통과했다고 주장하지 않는다. `.github/workflows/ci.yml`은 Ubuntu/macOS에서 전체 Rust 릴리스 테스트를 필수로 유지하고, Windows에서는 **전체 테스트 바이너리 컴파일 및 실제 후손 계획 계약 스모크 테스트**를 필수로 실행한다. GitHub Actions 수동 실행 시 `full_windows_suite: true`를 선택하면 기존 Windows 전체 테스트 실패를 다시 실측할 수 있다. 장기적으로는 76개 파일 잠금/경로 의존 테스트의 fixture 자원 소유권과 정리를 이식 가능하게 바꾸는 작업이 필요하다.
+
 **CI 807개 테스트 실패 대응(2026-11-13):** GitHub Actions의 실제 Rust 릴리스 실행에서 테스트 804개 통과·3개 실패를 확인했다. 후손 작업기가 API provider/model 없이 로컬 네이티브 실행만 하는 경우, 사전에 추정한 모델 프롬프트 토큰을 실제 사용량처럼 처리해 `token_budget`로 종료하던 경로를 `generation_fits_remaining_budget` 및 `worker.rs::fit_worker_prompt`에서 구분했다. API 모델이 지정된 작업의 기존 토큰 예산은 유지된다. 독립 실험 계약 검증도 느슨하게 하지 않고, 기존 후손 제어기 계약 테스트가 새 동결 계약과 소스 트리 해시를 실제로 구성하도록 수정했다. 수정본 통과 여부는 최종 CI 상태를 별도로 확인한다.
 
 **CI 정책과 수정:** `.github/workflows/ci.yml`은 `push`로 실행되고 macOS/Linux/Windows에서 Rust release 테스트, Node 스크립트 검사, React 타입 검사와 빌드를 수행한다. 실제 CI 로그에서 이전 분해의 미수정 문서 주석·누락 함수 가시성·상대 경로·새 모듈의 `String` 비교·`Digest` 트레이트 누락을 발견해 수정했다. [브랜치별 최신 CI 결과](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3) 참조. CI 전체 통과 여부는 GitHub 작업의 최종 상태로만 표현한다.
