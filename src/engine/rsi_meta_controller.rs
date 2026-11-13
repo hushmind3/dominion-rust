@@ -211,16 +211,12 @@ pub(crate) fn synthesize(
     }
     // Repeated source-bound Brier errors make the prediction algorithm
     // itself a real executable redesign target, with cooldown.
-    let errors=history.iter().rev().filter_map(|g|{
-        let row=&g["metaLearning"];
-        (row["source"]=="source_bound_prequential_feedback_v1"
-            && row["nextPolicyCanTrainFromObservation"]==true
-            && g["pairedMeasured"]==true)
-            .then(||row["brierError"].as_f64()).flatten()
-            .filter(|value|value.is_finite()&&(0.0..=1.0).contains(value))
-    }).take(6).collect::<Vec<_>>();
-    let mean_error=(!errors.is_empty()).then(||
-        errors.iter().sum::<f64>()/errors.len() as f64);
+    // Forecast drift is inferred from the independently replayed policy,
+    // candidate and source path. The mutable historical Brier field alone
+    // must never direct the descendant's next source edit.
+    let drift=crate::engine::rsi_prequential::drift(history,6);
+    let errors=drift["recentMeasuredPredictions"].as_u64().unwrap_or(0);
+    let mean_error=drift["meanBrierError"].as_f64();
     let cooldown=history.iter().rev().take(4).any(|g|
         g["pairedMeasured"]==true && g["focusFiles"].as_array()
             .is_some_and(|files|files.iter().any(|path|
@@ -228,7 +224,7 @@ pub(crate) fn synthesize(
     let predictor_available=ranked.iter().any(|(row,_)|
         row["target"]["path"]=="src/engine/rsi_prequential.rs"
         && row["domain"]=="improver");
-    let repair=errors.len()>=4 && mean_error.is_some_and(|v|v>0.35)
+    let repair=errors>=4 && mean_error.is_some_and(|v|v>0.35)
         && !cooldown && predictor_available;
     if repair {
         for (row,score) in &mut ranked {
@@ -277,7 +273,8 @@ pub(crate) fn synthesize(
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let prediction_repair=json!({
         "source":"replayed_prequential_error_feedback_v1",
-        "recentMeasuredPredictions":errors.len(),"meanBrierError":mean_error,
+        "recentMeasuredPredictions":errors,"meanBrierError":mean_error,
+        "replayedDriftEvidence":drift,
         "cooldown":cooldown,"repairRuleSourceSelected":repair,
         "targetSource":"src/engine/rsi_prequential.rs",
         "requiresActualDescendantSourceEdit":repair,"improvementProven":false
