@@ -240,8 +240,16 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
         for (method_path,method_sha,method_bytes) in sources.iter().copied() {
             let predictor=method_path=="src/engine/rsi_prequential.rs"
                 && role=="improvement_methods";
-            if method_path==path || !(predictor || adopted_method_paths.contains(
-                &(role.to_owned(),method_path.to_owned()))) {continue;}
+            // The experiment-selection policy must remain an executable
+            // source target even when another experimental-design file is
+            // the frontier's most-used representative. Otherwise repeated
+            // bad experiments can NEVER repair their own search principle.
+            let experiment_designer=
+                method_path=="src/engine/rsi/meta/experiment_policy.rs"
+                && role=="experimental_design";
+            if method_path==path || !(predictor || experiment_designer
+                || adopted_method_paths.contains(
+                    &(role.to_owned(),method_path.to_owned()))) {continue;}
             rows.push(json!({"role":role,"domain":role_domain(component),
                 "path":method_path,"sourceSha256":method_sha,
                 "sourceBytes":method_bytes,
@@ -250,6 +258,7 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState, model:&Value,
                 "usageSignalCount":related(method_path).len(),
                 "verifiedRoleChanged":true,"qualityProven":false,
                 "reason":if predictor{"source_editable_prediction_method"}
+                    else if experiment_designer{"source_editable_experiment_design_policy"}
                     else{"inherited_model_written_improvement_operator"}}));
         }
     }
