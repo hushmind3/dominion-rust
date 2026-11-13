@@ -21,6 +21,8 @@ fn three_claimed_improvements_are_not_a_method_closure_without_real_receipts(){
                 "methodAssociationObserved":true}}))).collect::<Vec<_>>();
     assert!(!proven(&state,&fake_four),
         "four accepted patches and claimed method superiority are no proof");
+    assert!(evidence(&state,&fake_four).is_none(),
+        "unbacked ON/OFF quality claims must fail the four-stage audit");
     assert!(evidence(&state,&fake).is_none(),
         "a fabricated A-B-A narrative must not manufacture a receipt chain");
     let _=std::fs::remove_dir_all(root);
