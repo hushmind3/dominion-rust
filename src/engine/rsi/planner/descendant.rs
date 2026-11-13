@@ -398,7 +398,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }
     if !explicit && meta_policy["selectionMode"]
         =="prequential_task_quality_predictor_repair" {
-        focus=vec!["src/engine/rsi_meta_controller.rs"];
+        focus=vec!["src/engine/rsi/meta/controller_selection.rs"];
     }
     if !explicit && evolution_program.is_object() {
         if let Some(path)=evolution_program["target"]["path"].as_str(){
