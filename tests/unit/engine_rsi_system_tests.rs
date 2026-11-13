@@ -1,5 +1,91 @@
 use super::*;
     #[test]
+    fn factorial_history_reconstructs_an_exact_job_bound_receipt(){
+        let commit="a".repeat(40);
+        let cases=json!([{"id":"frozen-case","holdout":true}]);
+        let profile=crate::engine::rsi_lineage_transfer::profile(
+            &json!({"rsiFrozenCases":cases})).unwrap();
+        let plan=json!({"source":"compiled_open_topology_counterfactual_lab_v1",
+            "generatorCommit":commit,"comparisonProfileSha256":profile,
+            "selected":{"phase":"isolate_a",
+                "a":{"path":"src/engine/memory.rs"},
+                "b":{"path":"src/engine/tools.rs"}}});
+        let job=json!({"id":"job-one","kind":"rsi_generation",
+            "input":{"rsiGeneratorCommit":commit,"rsiFrozenCases":cases,
+                "rsiFactorialExperiment":plan}});
+        let generation=json!({"jobId":"job-one","generatorCommit":commit,
+            "factorialExperiment":plan,"factorialMeasured":false,
+            "factorialCompliance":{"eligibleForFactorial":false}});
+        let candidate=json!({"baseCommit":commit,
+            "paths":["src/engine/memory.rs"],
+            "evaluation":{"metrics":{"measurements":[{"id":"frozen-case",
+                "holdout":true,"baselinePass":false,"candidatePass":true}]}}});
+        let (compliance,measured)=verified_factorial_receipt(
+            &generation,&candidate,&job);
+        assert!(measured);
+        assert_eq!(compliance["phase"],"isolate_a");
+        assert_eq!(compliance["eligibleForFactorial"],true);
+    }
+    #[test]
+    fn forged_factorial_flags_cannot_override_actual_edited_paths(){
+        let commit="b".repeat(40);
+        let cases=json!([{"id":"case-one"}]);
+        let profile=crate::engine::rsi_lineage_transfer::profile(
+            &json!({"rsiFrozenCases":cases})).unwrap();
+        let plan=json!({"source":"compiled_open_topology_counterfactual_lab_v1",
+            "generatorCommit":commit,"comparisonProfileSha256":profile,
+            "selected":{"phase":"isolate_a",
+                "a":{"path":"src/engine/memory.rs"},
+                "b":{"path":"src/engine/tools.rs"}}});
+        let job=json!({"id":"child","kind":"rsi_generation",
+            "input":{"rsiGeneratorCommit":commit,"rsiFrozenCases":cases,
+                "rsiFactorialExperiment":plan}});
+        let mut generation=json!({"jobId":"child","generatorCommit":commit,
+            "factorialExperiment":plan,"factorialMeasured":true,
+            "factorialCompliance":{"eligibleForFactorial":true}});
+        let candidate=json!({"baseCommit":commit,
+            "paths":["src/engine/tools.rs"],
+            "evaluation":{"metrics":{"measurements":[{"id":"case-one"}]}}});
+        let (receipt,eligible)=verified_factorial_receipt(
+            &generation,&candidate,&job);
+        assert!(!eligible);
+        assert_eq!(receipt["eligibleForFactorial"],false);
+        // Even a well-formed invented phase is not the original job input.
+        generation["factorialExperiment"]["selected"]["phase"]=json!("isolate_b");
+        let (receipt,eligible)=verified_factorial_receipt(
+            &generation,&candidate,&job);
+        assert!(!eligible);
+        assert!(receipt.is_null());
+    }
+    #[test]
+    fn unrelated_job_or_missing_paired_measurements_cannot_train_factorial(){
+        let commit="c".repeat(40);
+        let cases=json!([{"id":"case-one"}]);
+        let profile=crate::engine::rsi_lineage_transfer::profile(
+            &json!({"rsiFrozenCases":cases})).unwrap();
+        let plan=json!({"source":"compiled_open_topology_counterfactual_lab_v1",
+            "generatorCommit":commit,"comparisonProfileSha256":profile,
+            "selected":{"phase":"isolate_a",
+                "a":{"path":"src/engine/memory.rs"}}});
+        let job=json!({"id":"child","kind":"rsi_generation",
+            "input":{"rsiGeneratorCommit":commit,"rsiFrozenCases":cases,
+                "rsiFactorialExperiment":plan}});
+        let generation=json!({"jobId":"child","generatorCommit":commit,
+            "factorialExperiment":plan});
+        let mut candidate=json!({"baseCommit":commit,
+            "paths":["src/engine/memory.rs"],
+            "evaluation":{"metrics":{"measurements":[]}}});
+        let (receipt,eligible)=verified_factorial_receipt(
+            &generation,&candidate,&job);
+        assert!(eligible);
+        assert_eq!(receipt["eligibleForFactorial"],true);
+        candidate["evaluation"]["metrics"]["measurements"]=Value::Null;
+        assert!(!verified_factorial_receipt(&generation,&candidate,&job).1);
+        let mut foreign=job;
+        foreign["id"]=json!("another-worker");
+        assert!(!verified_factorial_receipt(&generation,&candidate,&foreign).1);
+    }
+    #[test]
     fn prequential_history_replays_rejected_receipts_instead_of_trusting_flags(){
         let root=std::env::temp_dir().join(format!("rsi-preq-replay-{}",uuid::Uuid::new_v4()));
         let config=crate::config::Config{port:0,data_dir:root.join("data"),
