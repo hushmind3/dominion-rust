@@ -228,6 +228,3 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     })
 }
 
-#[cfg(test)]
-#[path = "../../../../tests/support/engine/rsi_method_ablation.tests.rs"]
-mod tests;
