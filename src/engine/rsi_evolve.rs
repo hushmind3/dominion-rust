@@ -312,6 +312,10 @@ mod counterfactual_execution;
 use counterfactual_execution::{retain_generator, matched_planner_intervention};
 pub(crate) use counterfactual_execution::action_hash;
 
+#[path = "rsi/execution/compiled_planning.rs"]
+mod compiled_planning;
+use compiled_planning::plan_compiled_descendant;
+
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};
