@@ -187,10 +187,14 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if engine == "native" && ffmpeg(state).is_none() {
         return Err("FFmpeg가 필요합니다. 고급 설정에서 실행 파일을 지정하세요.".into());
     }
-    if engine == "comfyui"
-        && (cfg["comfyUrl"].as_str().unwrap_or("").is_empty() || !cfg["comfyWorkflow"].is_object())
-    {
-        return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
+    if engine == "comfyui" {
+        let built_in = video_models(state).iter()
+            .any(|model| model["id"] == cfg["videoModel"] && model["available"] == true);
+        if cfg["comfyUrl"].as_str().unwrap_or("").is_empty()
+            || (!cfg["comfyWorkflow"].is_object() && !built_in)
+        {
+            return Err("ComfyUI 주소와 영상 모델(또는 API 형식 워크플로 JSON)을 먼저 저장하세요.".into());
+        }
     }
     let duration = body["duration"]
         .as_u64()
@@ -584,7 +588,8 @@ async fn comfy(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, Str
         }
         if let Some(outputs) = result["outputs"].as_object() {
             for node in outputs.values() {
-                for field in ["videos", "gifs"] {
+                // SaveVideo reports mp4 files under "images" with animated=true.
+                for field in ["videos", "gifs", "images"] {
                     if let Some(files) = node[field].as_array() {
                         for file in files {
                             let filename = file["filename"].as_str().unwrap_or("");
