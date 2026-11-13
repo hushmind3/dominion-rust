@@ -103,8 +103,8 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     if !state.begin_session(&lock_id){return error(StatusCode::CONFLICT,"목표 복구가 진행 중입니다.");}
     let _guard=state.session_guard(&lock_id);
     let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");};
-    if !matches!(goal["status"].as_str(),Some("needs_review"|"failed")){
-        return error(StatusCode::CONFLICT,"검토 또는 실패한 목표만 이어서 실행할 수 있습니다.");
+    if !matches!(goal["status"].as_str(),Some("needs_review"|"failed"|"cancelled")){
+        return error(StatusCode::CONFLICT,"검토·실패·중단된 목표만 이어서 실행할 수 있습니다.");
     }
     let previous=goal["jobId"].as_str().and_then(|key|state.store.get("job",key))
         .or_else(||{
@@ -172,6 +172,7 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     }));
     let Some(saved)=saved else{return error(StatusCode::CONFLICT,"목표 상태가 변경되었습니다.");};
     state.bus.record("goal",&saved);
+    if !session.is_empty(){state.clear_cancel(session);}
     let Some(job)=crate::engine::jobs::enqueue(&state,"goal",json!({"goalId":id})) else{
         let _=state.store.patch_if("goal",&id,"status",&json!("queued"),
             &json!({"status":"needs_review","phase":"needs_review"}));
@@ -193,4 +194,32 @@ pub async fn goal_diff(State(state):State<AppState>,Path(id):Path<String>)->Resp
         Ok(result)=>Json(result).into_response(),
         Err(message)=>error(StatusCode::BAD_REQUEST,&message),
     }
+}
+
+/// Owner edits only a paused/queued plan; a running model must never silently
+/// ignore edits made to its captured in-memory plan.
+pub async fn edit_plan(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    let lock_id=format!("goal-resume:{id}");
+    if !state.begin_session(&lock_id){return error(StatusCode::CONFLICT,"목표 상태를 변경 중입니다.");}
+    let _guard=state.session_guard(&lock_id);
+    let Some(goal)=state.store.get("goal",&id)else{return error(StatusCode::NOT_FOUND,"목표가 없습니다.");};
+    if !matches!(goal["status"].as_str(),Some("queued"|"needs_review"|"failed"|"cancelled")){
+        return error(StatusCode::CONFLICT,"실행 중이거나 완료된 목표의 계획은 직접 변경할 수 없습니다.");
+    }
+    let Some(plan)=body["plan"].as_str().map(str::trim).filter(|s|!s.is_empty()&&s.chars().count()<=8000)
+        else{return error(StatusCode::BAD_REQUEST,"계획은 1~8,000자여야 합니다.");};
+    let mut history=goal["planHistory"].as_array().cloned().unwrap_or_default();
+    let revision=history.iter().filter_map(|v|v["version"].as_u64()).max().unwrap_or(0)+1;
+    history.push(json!({"version":revision,"plan":plan,"reason":"owner_revision",
+        "at":chrono::Utc::now().to_rfc3339()}));
+    if history.len()>40{history.drain(..history.len()-40);}
+    let text=goal["goal"].as_str().unwrap_or("");
+    let updated=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"plan":plan,"planHistory":history,
+        "planScore":crate::engine::plan_quality::score(plan,text)}));
+    let Some(updated)=updated else{return error(StatusCode::CONFLICT,"목표 상태가 변경되었습니다.");};
+    state.bus.record("goal",&updated);
+    state.store.audit("goal.plan_owner_revision",json!({"goalId":id,"revision":revision}));
+    Json(updated).into_response()
 }

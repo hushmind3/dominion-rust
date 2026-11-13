@@ -26,6 +26,7 @@ export function GoalConsole(){
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState(''),[notice,setNotice]=useState('')
  const [reviewNote,setReviewNote]=useState('')
+ const [editingPlan,setEditingPlan]=useState(false),[planDraft,setPlanDraft]=useState('')
  const [acknowledged,setAcknowledged]=useState(false)
  const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
  const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
@@ -60,6 +61,13 @@ export function GoalConsole(){
    setNotice('외부 작업 확인 기록을 보존하고 새 복구 작업을 등록했습니다. 작업 ID: '+response.jobId)
    setAcknowledged(false);setReviewNote('');setDiff(null);await reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const savePlan=async()=>{
+  if(!chosen||busy||!planDraft.trim())return
+  setBusy(true);setError('')
+  try{await post('/api/goals/'+encodeURIComponent(chosen.id)+'/plan',{plan:planDraft.trim()});
+   setNotice('사용자 수정 계획을 다음 작업에 적용했습니다.');setEditingPlan(false);await reload()}
+  catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  const showDiff=async()=>{
   if(!chosen||busy)return
@@ -112,7 +120,13 @@ export function GoalConsole(){
      <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy}><FileCode2 size={13}/> Diff 확인</Button>
     </div>
      {chosen.plan&&<details open><summary className="cursor-pointer text-xs font-semibold">실행 계획</summary>
-       <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#FAF7F1] p-3 text-xs">{chosen.plan}</pre></details>}
+       <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#FAF7F1] p-3 text-xs">{chosen.plan}</pre>
+       {['queued','failed','needs_review','cancelled'].includes(chosen.status)&&<div className="mt-2 space-y-2">
+        <Button size="sm" variant="secondary" onClick={()=>{setPlanDraft(chosen.plan||'');setEditingPlan(!editingPlan)}}>계획 직접 수정</Button>
+        {editingPlan&&<><TextArea rows={5} value={planDraft} onChange={e=>setPlanDraft(e.target.value)}/>
+          <Button size="sm" disabled={!planDraft.trim()||busy} onClick={()=>void savePlan()}>수정한 계획 저장</Button></>}
+       </div>}
+     </details>}
      <div className="text-xs"><strong className="flex items-center gap-1"><CheckCircle2 size={14}/> 검증된 산출물</strong>
       {chosen.deliverables?.files?.length?<div className="mt-2 space-y-1">{chosen.deliverables.files.map(item=><div key={item.path} className="break-all rounded bg-[#FAF7F1] p-2">
        {item.path} · {item.bytes.toLocaleString()}B {item.sha256&&<span className="text-[#8A8176]">SHA256 {item.sha256.slice(0,12)}…</span>}
@@ -120,7 +134,7 @@ export function GoalConsole(){
      </div>
      {(chosen.gaps?.length||0)>0&&<div><strong className="flex items-center gap-1 text-xs"><AlertTriangle size={14}/> 검증 보완사항</strong>
        <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-amber-800">{chosen.gaps.slice(0,5).map((gap,i)=><li key={i}>{gap}</li>)}</ul></div>}
-     {['failed','needs_review'].includes(chosen.status)&&<div className="space-y-2 border-t border-[#E7E0D5] pt-3">
+     {['failed','needs_review','cancelled'].includes(chosen.status)&&<div className="space-y-2 border-t border-[#E7E0D5] pt-3">
       <p className="text-xs font-semibold">수동 확인 후 안전하게 재개</p>
       <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={acknowledged} onChange={e=>setAcknowledged(e.target.checked)}/>
        <span>이전 실행의 외부 결과와 변경 사항을 확인했습니다.</span></label>
