@@ -99,6 +99,12 @@ pub(super) async fn render(ctx: &JobContext, job: &Value, dir: &Path) -> Result<
             .header("x-goog-api-key",&key).json(&params)
             .timeout(Duration::from_secs(60)).send().await
             .map_err(|_|"needs_review: Veo 요청 접수 여부 확인 필요")?;
+        if !response.status().is_success() {
+            let status=response.status();
+            ctx.checkpoint(json!({"videoState":{"inFlight":false,
+                "submissionStarted":true,"operationName":null}}))?;
+            return Err(format!("Veo 영상 요청이 거부되었습니다 (HTTP {status})."));
+        }
         let response=json_response(response).await
             .map_err(|_|"needs_review: Veo 생성 응답 검토 필요")?;
         let name=operation_path(response["name"].as_str()
@@ -120,6 +126,8 @@ pub(super) async fn render(ctx: &JobContext, job: &Value, dir: &Path) -> Result<
     }
     let result=done.ok_or("needs_review: Veo 작업이 대기 제한을 초과했습니다.")?;
     if result["error"].is_object() {
+        ctx.checkpoint(json!({"videoState":{"inFlight":false,
+            "submissionStarted":true,"operationName":operation}}))?;
         return Err(format!("Veo 생성 오류 코드 {}",result["error"]["code"]));
     }
     let url=result.pointer("/response/generateVideoResponse/generatedSamples/0/video/uri")
