@@ -1,6 +1,7 @@
 //! DOMINION's durable media pipeline. Native cards are rendered by Rust; FFmpeg
 //! only encodes them. Paid Runway multi-shot and optional ComfyUI are explicit connectors.
 mod runway;
+mod ltx;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -15,7 +16,7 @@ use std::{
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayQuality":"1080p"});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayQuality":"1080p","videoQuality":"1080p","videoModel":"ltx-2-5-pro"});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -27,6 +28,7 @@ pub fn config(state: &AppState) -> Value {
     }
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
     value["hasRunwayKey"] = json!(state.store.has_secret("video:runway"));
+    value["hasLtxKey"] = json!(ltx::ready(state));
     value
 }
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
@@ -90,7 +92,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":if job["input"]["engine"]=="runway" {job["input"]["videoQuality"].clone()} else {Value::Null},"shotMode":if job["input"]["engine"]=="runway" {job["input"]["shotMode"].clone()} else {Value::Null},"generateAudio":if job["input"]["engine"]=="runway" {job["input"]["generateAudio"].clone()} else {Value::Null}})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["videoQuality"].clone()} else {Value::Null},"videoModel":job["input"]["videoModel"],"shotMode":if job["input"]["engine"]=="runway" {job["input"]["shotMode"].clone()} else {Value::Null},"generateAudio":if job["input"]["engine"]=="runway" {job["input"]["generateAudio"].clone()} else {Value::Null}})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -102,7 +104,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui" | "runway") {
+    if !matches!(engine, "native" | "comfyui" | "runway" | "ltx") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
@@ -115,6 +117,9 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     }
     if engine == "runway" && !state.store.has_secret("video:runway") {
         return Err("Runway API 키를 영상 설정에서 먼저 등록하세요.".into());
+    }
+    if engine == "ltx" && !ltx::ready(state) {
+        return Err("LTX API 키를 영상 설정에서 먼저 등록하세요.".into());
     }
     let duration = body["duration"]
         .as_u64()
@@ -143,11 +148,13 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     // Freeze billable generation preferences before queueing. Every restart
     // reads the same scene list, resolution and sound choice from the job.
     let video_quality = body["videoQuality"].as_str()
-        .or(cfg["runwayQuality"].as_str()).unwrap_or("1080p");
+        .or(if engine=="ltx" {cfg["videoQuality"].as_str()} else {cfg["runwayQuality"].as_str()})
+        .unwrap_or("1080p");
+    let video_model = body["videoModel"].as_str().or(cfg["videoModel"].as_str()).unwrap_or("ltx-2-5-pro");
     let shot_mode = body["shotMode"].as_str().unwrap_or("auto");
     let scenes = body["scenes"].as_array().cloned().unwrap_or_default();
     let generate_audio = body["generateAudio"].as_bool().unwrap_or(true);
-    let fps = body["fps"].as_u64().unwrap_or(16);
+    let fps = body["fps"].as_u64().unwrap_or(if engine=="ltx" {24} else {16});
     let seed = body["seed"].as_i64().unwrap_or(-1);
     let negative_prompt = body["negativePrompt"].as_str().unwrap_or("");
     if !(1..=60).contains(&fps) || seed < -1 || negative_prompt.len() > 16_000 {
@@ -164,17 +171,18 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
-    let input = json!({
+    let mut input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
-        "videoQuality":video_quality, "shotMode":shot_mode,
-        "scenes":scenes, "generateAudio":generate_audio,
+        "videoQuality":video_quality, "videoModel":video_model, "fps":fps,
+        "shotMode":shot_mode, "scenes":scenes, "generateAudio":generate_audio,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
     // Validate against the dated provider contract before persisting a paid
     // job; render() validates again before remote submission.
     if engine == "runway" { runway::recipe_input(&input)?; }
+    if engine == "ltx" { input["render"] = ltx::spec(&input, &cfg)?; }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -519,6 +527,8 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         comfy(ctx, input, &dir).await
     } else if input["engine"] == "runway" {
         runway::render(ctx, input, &dir).await
+    } else if input["engine"] == "ltx" {
+        ltx::run(ctx, input, &dir).await
     } else {
         native(ctx, input, &dir).await
     };
