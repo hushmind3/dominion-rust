@@ -100,13 +100,21 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
         decision["reuseDecision"] = method_reuse_decision(state,input,domain);
     }
+    if input["rsiMethodAblationArm"]=="without_methods" {
+        // The procedure router must receive an executable OFF policy, not
+        // merely a prompt asking the model to avoid inherited methods.
+        decision["reuseDecision"]=json!({"action":"research_only","methodIds":[]});
+        session["rsiMethodAblationArm"]=json!("without_methods");
+    }
     session["rsiDecisionInput"] = decision;
 }
 
 /// Called by the normal chat runtime. Only the parent's concrete reuse choice
 /// can inject a learned method; ordinary chats and other repositories cannot.
 pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value> {
-    if !method_session_running(state,session) || session["rsiDecisionInput"]["reuseDecision"]["action"] != "execute_methods" {
+    if session["rsiMethodAblationArm"]=="without_methods"
+        || !method_session_running(state,session)
+        || session["rsiDecisionInput"]["reuseDecision"]["action"] != "execute_methods" {
         return Vec::new();
     }
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
