@@ -110,7 +110,7 @@ pub(super) async fn review_action(
     Some(ActionReview { gaps, next_action })
 }
 
-pub(super) fn tool_succeeded(value: &Value) -> bool {
+pub(in super::super) fn tool_succeeded(value: &Value) -> bool {
     value.get("isError").and_then(Value::as_bool) != Some(true)
         && value.get("success").and_then(Value::as_bool) != Some(false)
         && value.get("error").is_none_or(Value::is_null)

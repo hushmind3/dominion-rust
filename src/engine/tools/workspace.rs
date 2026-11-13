@@ -16,7 +16,7 @@ pub(super) fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
 pub const WORKSPACE_ESCAPE: &str = "Path escapes the workspace";
 
 /// Reject `..` traversal and symlink escapes for workspace-scoped tools.
-pub(super) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(in super::super) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
     let base = canonical_target(workspace).map_err(|error| error.to_string())?;
     let candidate = Path::new(relative);
     if candidate

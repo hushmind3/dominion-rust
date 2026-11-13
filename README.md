@@ -612,3 +612,5 @@ The original cross-module exports and `chat_runtime.tests.rs` include remain
 on the composition root. The RSI source-edit flow stays
 `run_turn` → `run_turn_body` → `tools::execute` → recorded source
 receipt → detached candidate. No tests, builds or benchmarks were executed.
+
+The original parent-visible `chat::runtime::{tool_succeeded,finish_attempt,finalize_execution}` and `engine::tools::resolve_workspace` visibility are restored through explicit grandparent-scope Rust imports after subdivision. Source-only correction; no compilation or tests run.
