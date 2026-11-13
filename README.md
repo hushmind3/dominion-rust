@@ -20,8 +20,8 @@
 
 ## 서브3 · 출시 후 전체 시스템 개선 (2026-11-14)
 
-- **고화질 영상 바로 생성:** 영상 화면에서 Veo 3.1 엔진을 선택하고 Gemini API 키를 암호화 저장한 뒤, 8초 음성 포함 MP4를 기존 내구성 작업 큐로 생성합니다. `web/src/pages/Video.tsx → src/api/video.rs → src/engine/video.rs → src/engine/video/veo.rs`. FFmpeg 카드 영상과 기존 ComfyUI 워크플로도 그대로 지원합니다.
-- **그룹대화 비용 제어:** 기존 역할별 선택 발언에 더해, 별도 활성화한 방에서 실질적으로 중복된 장문 답변에 한해 추가 모델 호출을 줄이는 선택적 토론을 연결했습니다. `web/src/pages/Rooms.tsx → src/api/rooms.rs → src/engine/rooms.rs → src/engine/rooms/economy.rs`. 전원 요청·지목·의견 충돌은 보호합니다.
+- **고화질 영상 바로 생성:** 2026년 10월 22일 종료된 Veo Preview 대신 Gemini Omni Flash 1.2를 선택하고 Gemini API 키를 암호화 저장한 뒤, 오디오 포함 단편 MP4를 기존 내구성 작업 큐로 생성합니다. `web/src/pages/Video.tsx → src/api/video.rs → src/engine/video.rs → src/engine/video/omni.rs → Interactions API → MP4`. FFmpeg 카드 영상과 기존 ComfyUI 워크플로도 그대로 지원합니다. 실제 API 생성 성공은 별도 검증이 필요합니다.
+- **그룹대화 비용 제어:** 기존 역할별 선택 발언에 더해, 중복된 장문 답변의 호출 중지와 명시적으로 등급을 지정한 모델 간 저비용/고성능 선택을 옵션으로 연결했습니다. `web/src/pages/Rooms.tsx → src/api/rooms.rs → src/engine/rooms.rs → src/engine/rooms/economy.rs`. 전원 요청·지목·의견 충돌은 보호하며 모델 가격을 이름으로 추측하지 않습니다.
 - **실제 캐시 토큰 계측:** 채팅·그룹대화 공급자 스트림이 보고하는 캐시 읽기 토큰을 `src/engine/chat/provider.rs → src/engine/gateway.rs`의 `model.usage` 감사 기록에 전달합니다. 캐시를 보고하지 않는 호출은 절감률을 추정하지 않습니다.
 - **전체 엔진·하네스·알고리즘 개선 경로와 남은 범위:** [2026-11-14 소스 연결 문서](docs/POST-LAUNCH-ENGINE-INTEGRATION-2026-11-14.md). **소스 편집만 수행했으며** 테스트·빌드·실 API 호출·성능 수치 검증은 수행하지 않았습니다.
 
