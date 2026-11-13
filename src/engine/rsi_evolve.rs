@@ -65,6 +65,8 @@ use execution_campaign::{run_loop};
 mod evaluation_adoption;
 use evaluation_adoption::{proof_goal_reached, generation_model_error};
 pub(crate) use evaluation_adoption::{adopt};
+#[path = "rsi/meta/experiment_policy.rs"]
+pub(crate) mod meta_experiment_policy;
 #[path = "rsi/planner/descendant.rs"]
 mod planner_descendant;
 use planner_descendant::{generation_target_plan, reconcile_descendant_target, select_generation_strategy, paired_descendant_target, system_evolution_target_hint};
