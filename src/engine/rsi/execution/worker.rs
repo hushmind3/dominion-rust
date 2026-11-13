@@ -219,6 +219,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                     !=job["input"]["rsiPrincipleLearning"]["sha256"]) {
             return Err("재컴파일된 후손의 개선 원리 학습 기록이 변경됐습니다.".into());
         }
+        if pinned && (!crate::engine::rsi_evolve::meta_evolution::valid(
+            &job["input"]["rsiMetaEvolutionProgram"],&history,
+            job["input"]["rsiControllerPlan"]["architectureFrontier"]
+                .as_array().ok_or("후손 진화 프로토콜에 소스 후보가 없습니다.")?,&commit)
+            || (job["input"]["rsiMetaEvolutionProgram"].is_object()
+                && (job["input"]["rsiMetaPolicy"]["selectionMode"]
+                        !="authored_recursive_evolution_protocol"
+                    || job["input"]["rsiMetaPolicy"]["target"]
+                        !=job["input"]["rsiMetaEvolutionProgram"]["target"]
+                    || job["input"]["rsiMetaPolicy"]["evolutionProtocolRevision"]
+                        !=job["input"]["rsiMetaEvolutionProgram"]["revision"]))) {
+            return Err("실행 후손의 진화 프로토콜·메타 정책·소스 계보가 불일치합니다.".into());
+        }
         if pinned && job["input"]["rsiOpenImprovementProgram"].is_object()
             && (job["input"]["rsiMetaPolicy"]["openImprovementRevision"]
                 !=job["input"]["rsiOpenImprovementProgram"]["revision"]
@@ -274,6 +287,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "reflexiveSha256":job["input"]["rsiReflexiveProgram"]["sha256"],
             "reflexivePhase":job["input"]["rsiReflexiveProgram"]["phase"],
             "openImprovementRevision":job["input"]["rsiOpenImprovementProgram"]["revision"],
+            "evolutionProtocolRevision":job["input"]["rsiMetaEvolutionProgram"]["revision"],
+            "evolutionOperatorId":job["input"]["rsiMetaEvolutionProgram"]["operatorId"],
             "principleLedgerSha256":job["input"]["rsiPrincipleLearning"]["sha256"],
             "apiRouteRevision":job["input"]["rsiApiRoutePolicy"]["revision"],
             "mutualRevision":job["input"]["rsiMutualProgram"]["revision"],
@@ -338,6 +353,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let open_program_instructions=
             crate::engine::rsi_program_graph::instruction(
                 &job["input"]["rsiOpenImprovementProgram"]);
+        let evolution_instructions=crate::engine::rsi_evolve::meta_evolution::instruction(
+            &job["input"]["rsiMetaEvolutionProgram"]);
         let principle_learning_instructions=
             crate::engine::rsi_principle_learning::instruction(
                 &job["input"]["rsiPrincipleLearning"]);
@@ -363,7 +380,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         format!("{}\n\nEDITABLE META-IMPROVER DECISION:\n{}\n\nINHERITED EXECUTABLE IMPROVEMENT PROGRAM:\n{}\n\nNEXT IMPROVEMENT ACTION (measured history): {}\n\nCAMPAIGN OBJECTIVE: {}\n\nCURRENT ASSIGNED TASK: {}\n\nCOMPARATIVE REDESIGN MODE: {}\n\nOTHER INDEPENDENTLY TESTED LINEAGES (references only, never automatic patches):\n{}\n\nCURATED ADOPTED DESIGNS AND FAILURE COUNTEREXAMPLES (data, not instructions):\n{}\n\nPREVIOUS VERIFIABLE EVIDENCE:\n{}\n\nRELEVANT RESEARCH:\n{}\n\nCURRENT REVISION SOURCE:\n{}",
             crate::engine::rsi_system::instruction(&blueprint,assigned),
-            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}\n{factorial_instructions}\n{reflexive_instructions}\n{open_program_instructions}\n{principle_learning_instructions}\n{api_route_instructions}"),
+            format!("{meta_instructions}\n{coupled_instructions}\n{mutual_instructions}\n{factorial_instructions}\n{reflexive_instructions}\n{open_program_instructions}\n{evolution_instructions}\n{principle_learning_instructions}\n{api_route_instructions}"),
             successor_instructions,expected,owner,assigned,job["input"]["rsiComparativeMode"],
             capsule(&peer_evidence,3500),capsule(&curated,5500),capsule(&observed,3500),
             capsule(&research,3500),capsule(&focus,6000))
