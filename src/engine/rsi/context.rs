@@ -325,7 +325,7 @@ pub(super) fn choose_focus_files(
 /// Smaller local models were spending their entire 300-second streamed call
 /// on context prefill. Preserve selected indexed lines and let the model read
 /// missing exact ranges instead of dropping the entire large excerpt.
-pub(super) fn source_excerpt_limit(state:&AppState,input:&Value)->usize {
+fn source_excerpt_limit(state:&AppState,input:&Value)->usize {
     let provider=input["providerId"].as_str()
         .and_then(|id|state.store.get("provider",id));
     if provider.as_ref().is_some_and(|provider|
