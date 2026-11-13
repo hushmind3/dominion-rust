@@ -12,6 +12,15 @@ pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
     "src/engine/rsi/planner/compiled.rs",
     "src/engine/rsi/planner/operator_policy.rs",
     "src/engine/rsi/planner/actions.rs",
+    "src/engine/rsi/search.rs",
+    "src/engine/rsi_edit_genome.rs",
+    "src/engine/rsi_decision_rules.rs",
+    "src/engine/rsi_edit_program.rs",
+    "src/engine/rsi_rule_induction.rs",
+    "src/engine/rsi_rule_rewrite.rs",
+    "src/engine/rsi_mutation.rs",
+    "src/engine/rsi_open_program.rs",
+    "src/engine/rsi_principle_lab.rs",
     "src/engine/rsi/planner/edit_policy.rs",
     "src/engine/rsi/learning/selection.rs",
     "src/engine/rsi_recursive_discovery.rs",
@@ -22,7 +31,15 @@ pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
 /// The actual compiled sources the child can improve; receipt verification
 /// uses this SAME list, so source discovery and candidate admission agree.
 pub(crate) fn executable_method_source(path:&str)->bool{
-    EXECUTABLE_METHOD_SOURCES.contains(&path)
+    crate::engine::rsi::safe_path(path)
+        && crate::engine::rsi_system::runtime_source_file(path)
+        && (EXECUTABLE_METHOD_SOURCES.contains(&path)
+            // New model-authored planner/learner modules become real source
+            // methods when the rebuilt program imports and executes them.
+            // Candidate admission and inherited-method receipts use this
+            // SAME open source boundary, not unrelated hardcoded lists.
+            || path.starts_with("src/engine/rsi/planner/")
+            || path.starts_with("src/engine/rsi/learning/"))
 }
 
 fn sha256(value:&str)->bool {
@@ -59,11 +76,13 @@ pub(crate) fn inherited_method_receipt(
             && row["systemDesign"]["generationJobId"]==row["jobId"])
         else{return Value::Null;};
     let mut changes=Vec::new();
-    for &path in EXECUTABLE_METHOD_SOURCES {
-        if !parent["systemDesign"]["targetFiles"].as_array()
-            .is_some_and(|targets|targets.iter().any(|entry|entry==path)){
-            continue;
-        }
+    // Do not enumerate a frozen source allowlist to recover inherited A:
+    // an accepted descendant can author NEW planner/learning modules.
+    // Every attribution still needs an adopted target file, its original
+    // source SHA, its accepted SHA, and the rebuilt child's exact inventory.
+    for path in parent["systemDesign"]["targetFiles"].as_array()
+        .into_iter().flatten().filter_map(Value::as_str)
+        .filter(|path|executable_method_source(path)) {
         let Some(before)=inventory_hash(&parent["systemBlueprint"],path)else{continue;};
         let Some(after)=parent["acceptedSourceHashes"][path].as_str()
             .filter(|hash|sha256(hash)&&*hash!=before)else{continue;};
@@ -144,6 +163,16 @@ pub(crate) fn observed_method_outcome(generation:&Value)->Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_compiled_method_modules_enter_lineage_without_opening_frozen_proof(){
+        assert!(executable_method_source("src/engine/rsi/search.rs"));
+        assert!(executable_method_source("src/engine/rsi/planner/invented_selector.rs"));
+        assert!(executable_method_source("src/engine/rsi/learning/invented_replay.rs"));
+        assert!(!executable_method_source("src/engine/rsi/closure.rs"));
+        assert!(!executable_method_source("src/engine/rsi/contract.rs"));
+        assert!(!executable_method_source("src/engine/rsi/tests/evolve.rs"));
+    }
 
     #[test]
     fn inherited_source_method_reaches_actual_next_compiled_selector() {

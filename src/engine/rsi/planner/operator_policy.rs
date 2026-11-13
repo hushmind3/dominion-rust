@@ -104,7 +104,7 @@ pub(crate) fn select(
         evaluated.push((candidate.id.clone(),score,attempts,wins,regressions,
             candidate.target.clone()));
     }
-    evaluated.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(b.0)));
+    evaluated.sort_by(|a,b|b.1.total_cmp(&a.1).then_with(||a.0.cmp(&b.0)));
     let Some((id,score,attempts,wins,regressions,target))=evaluated.first()
         else{return Value::Null};
     let revision=format!("{:x}",Sha256::digest(

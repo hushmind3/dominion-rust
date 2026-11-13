@@ -549,3 +549,7 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 ### 2026-11-13: 새 지능 역할을 자동 등록하는 실험 포트폴리오
 
 `rsi/planner/operator_policy.rs::select`는 이제 고정된 5종의 실험 제안자와 함께, 실제 재빌드된 코드 그래프 `architectureFrontier`에서 해시로 입증된 **모든 추가 지능 역할·소스 파일**에 대해 안정적인 `source_graph_*` 실험 후보를 자동 생성합니다. 역할 이름을 기존 enum에 추가할 필요가 없습니다. 실측 평가를 재생한 독립 성과와 퇴행 횟수만 다음 선택 우선순위에 반영합니다. 이것은 후손이 새 구성요소를 만들었을 때 실제 실험 대상으로 등장하도록 연결한 것이며, 아직 임의 도구 플러그인의 안전한 동적 실행·독립 평가 마이그레이션을 전부 제공한다는 의미는 아닙니다. 모델 가중치는 고정됩니다.
+
+### 2026-11-13: 새 개선법 소스 계보 자동 등록
+
+`rsi_system/method_lineage.rs::executable_method_source`는 실제 런타임에서 사용되는 `rsi/search.rs`, `rsi_edit_genome.rs`, `rsi_decision_rules.rs`, `rsi_open_program.rs` 등 개선법 소스를 포함하며, 새 후손이 만들고 실제 컴파일한 `rsi/planner/`, `rsi/learning/` 하위 소스도 안전 경로·런타임 파일 조건을 통과하면 개선법 수정 대상으로 인정합니다. `inherited_method_receipt`는 고정 소스 목록 대신 **독립 평가를 거쳐 채택된 시스템 설계의 실제 변경 파일들**에서 계보를 검증합니다. 원본 소스 SHA·채택 SHA·후손 블루프린트 SHA 검사는 유지되며, 동결된 `rsi/closure.rs`와 `rsi/contract.rs`는 개선법 대상에서 제외됩니다.
