@@ -110,11 +110,15 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
                 state.store.get("rsi_candidate",id))
                 .is_some_and(|candidate|candidate["target"]=="improver"
                     && rsi::replayed_pair_metrics(state,&candidate).is_some()));
-        let revised_method_used=history.iter().rev().take(6).any(|g|
-            g["accepted"]==true
-            && g["operatorExecution"]["methodSourceSha256"]==current_method
-            && g["operatorExecution"]["targetPath"]!=method_path
-            && g["methodAblation"]["methodAssociationObserved"]==true);
+        let revised_method_used=history.iter().rev().take(6).any(|g|{
+            let observed=crate::engine::rsi_evolve::measured_method_ablation(state,g);
+            g["accepted"]==true && g["pairedRevalidated"]==true
+                && g["operatorExecution"]["methodSourceSha256"]==current_method
+                && g["operatorExecution"]["targetPath"]!=method_path
+                && observed["methodAssociationObserved"]==true
+                && observed["qualityProven"]==true
+                && g["methodAblation"]==observed
+        });
         let pending_revised_trial=method_rewritten && !revised_method_used;
         let predecessor=method_versions.iter().rfind(|sha|
             sha.as_str()!=current_method).map(String::as_str);
