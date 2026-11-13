@@ -647,3 +647,7 @@ The canonical source/receipt replay has moved to the **frozen** `rsi/proof/metho
 ### Contiguous predecessor pair in ongoing campaigns
 
 `proof/method_lineage.rs::downstream_feedback` now reads the last **contiguous** A→B pair even when the campaign already includes failed or research-only generations. Only the actual two most recent adopted descendants, verified from their original immutable paired receipts and original B job, can propose C feedback. A nonadjacent historic success cannot be resurrected as if it belonged to the current executable. Source-only change; no tests or compilation were run.
+
+### Frozen runner source paths after module extraction
+
+`src/engine/rsi/worktree/evaluation.rs` uses repository-relative `include_str!` targets for `scripts/rsi-lab.sh`, `scripts/rsi-measure.mjs`, and `src/engine/rsi_oracle_fixture.rs` after its move under `rsi/worktree/`. This restores the actual frozen evaluation path used by `rsi_worktree::compare_at`. Source-only inspection, no compile/test/CI run.
