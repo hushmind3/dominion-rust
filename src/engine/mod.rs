@@ -46,6 +46,8 @@ pub mod rsi_open_topology;
 pub mod rsi_recursive_scientist;
 pub mod rsi_improvement_algebra;
 pub mod rsi_method_generalization;
+#[path = "rsi/learning/rsi_operator_provenance.rs"]
+pub mod rsi_operator_provenance;
 #[path = "rsi/learning/rsi_negative_transfer.rs"]
 pub mod rsi_negative_transfer;
 #[path = "rsi/lineage/rsi_model_lineage.rs"]

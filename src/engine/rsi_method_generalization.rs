@@ -50,6 +50,8 @@ fn independent_use<'a>(state:&AppState,g:&'a Value,rule:&Value)
         || !plan["sha256"].as_str().is_some_and(|s|hash_ok(s,64)) {
         return None;
     }
+    // Paired gain is not attributable to a rule merely mentioned by a plan.
+    if !crate::engine::rsi_operator_provenance::verified(state,g,rule){return None;}
     let changed=g["changedSourcePaths"].as_array()?;
     let target=plan["selected"]["target"]["path"].as_str()
         .filter(|p|rsi::safe_path(p))?;
@@ -541,7 +543,7 @@ mod tests {
             crate::engine::rsi_improvement_algebra::method_family_id(&altered));
     }
     #[test]
-    fn archived_paired_receipt_fixture_links_method_revisions_with_different_ids(){
+    fn archived_pair_without_executed_operator_does_not_train_a_method(){
         use crate::{config::Config,db::Store,vault::Vault};
         let root=std::env::temp_dir().join(
             format!("rsi-method-family-replay-{}",uuid::Uuid::new_v4()));
@@ -606,8 +608,8 @@ mod tests {
             "evaluation":{"metrics":metrics},
             "evaluationProfileSha256":"6".repeat(64)});
         assert_ne!(plan["selected"]["ruleId"],current_rule["id"]);
-        assert!(independent_use(&state,&generation,&current_rule).is_some(),
-            "independent receipt for an old method must inform its accepted revision");
+        assert!(independent_use(&state,&generation,&current_rule).is_none(),
+            "a real paired receipt cannot attribute gains to an unexecuted method");
         let mut unrelated=current_rule.clone();
         unrelated["name"]=json!("other_principle");
         assert!(independent_use(&state,&generation,&unrelated).is_none(),

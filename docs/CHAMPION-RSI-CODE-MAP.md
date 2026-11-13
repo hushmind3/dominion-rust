@@ -41,3 +41,9 @@ The runtime module names and call interfaces are unchanged. Fourteen independent
 ## Test ownership after structural extraction (2026-11-13)
 
 Unit-test bodies for `engine/memory`, `engine/tools`, `engine/chat/provider`, `engine/rsi_worktree`, `engine/algorithms`, `engine/rooms`, `engine/learning`, `engine/rsi_meta_controller`, `api/providers` and `db` are in their corresponding test-only source directories. Production function and type definitions, module-level imports, and runtime call paths were left unchanged. The `#[cfg(test)]` gates remain on every extracted module, so test-only dependencies do not enter the non-test binary. No build or CI was run for this split.
+
+## Compiled operator → verified edit → paired method learning (2026-11-13)
+
+`rsi/planner/descendant.rs::plan_generation_from_file` creates a source-grounded operator choice. `rsi/execution/worker.rs::worker` replays that choice and `rsi/learning/rsi_operator_provenance.rs::dispatch` binds only an **active** operator to the current method/target hashes and first focus path. The supervising `rsi/execution/campaign.rs` calls `observe` after candidate capture, rechecking the original job, exact model usage, candidate paths and durable verified tool operation. `rsi_method_generalization::independent_use` now requires this attribution alongside the original frozen paired receipt. `rsi_improvement_algebra::record_trial` excludes selected-but-unexecuted methods from failure counts. The only validated outcome remains a source-level precondition; this unexecuted revision does **not** prove end-to-end RSI capability.
+
+2026 research used for design comparison: HyperAgents (March, editable meta-agent) and AIDE² (September, held-out downstream descendant assessment). No source code was copied.

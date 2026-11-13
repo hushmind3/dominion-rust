@@ -56,6 +56,16 @@ src/
 web/                 React 프론트엔드 (Vite)
 ```
 
+## 챔피온 RSI 실제 개선법 실행 계보 (2026-11-13)
+
+- `src/api/rsi.rs` → `src/engine/jobs.rs` → `src/engine/rsi/execution/campaign.rs`: 사용자 모델·예산을 보존하고 격리된 후보를 생성합니다.
+- `src/engine/rsi/planner/descendant.rs::plan_generation_from_file`: 재컴파일된 후손이 독립 평가 기록을 읽어 새로운 개선법과 수정 파일을 결정합니다.
+- `src/engine/rsi/execution/worker.rs::worker`: 동일 계획을 재검증하고, 실제 제어권을 얻은 규칙만 `rsi_operator_provenance::dispatch`에서 모델 편집 대상·개선법 소스 SHA에 묶습니다.
+- `src/engine/rsi_worktree.rs`: 도구 편집을 후보로 캡처하고 원본 동결 사례와 비교합니다. 채택된 소스는 다음 컴파일된 세대가 물려받습니다.
+- 감독 실행기는 `rsi_operator_provenance::observe`에서 실제 워커·모델 라우트·도구 영수증·후보 변경을 재확인하고 `operatorExecution`을 세대 기록에 저장합니다.
+- `rsi_method_generalization::independent_use`가 이 기록을 원본 저장소와 대조해야만 동결 평가를 개선법의 학습 신호로 사용합니다. `rsi_improvement_algebra::record_trial`은 실행되지 않은 규칙을 실패한 실험으로 세지 않습니다.
+- 모델 가중치는 변경하지 않습니다. 이 소스 수정에 대한 컴파일·CI·실모델 다세대 실행과 품질 상승 증거는 아직 없습니다.
+
 ## 런타임 구성
 
 ```

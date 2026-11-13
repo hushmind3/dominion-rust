@@ -96,6 +96,11 @@ fn record_trial(g:&Value,rule_id:&str,target:&Value)->bool {
         && g["improvementAlgebraPlan"]["selected"]["ruleId"]==rule_id
         && g["improvementAlgebraPlan"]["selected"]["target"]["path"]==target["path"]
         && g["improvementAlgebraPlan"]["generatorCommit"]==g["generatorCommit"]
+        && g["operatorExecution"]["source"]=="verified_compiled_operator_tool_edit_v1"
+        && g["operatorExecution"]["ruleId"]==rule_id
+        && g["operatorExecution"]["targetPath"]==target["path"]
+        && g["operatorExecution"]["generatorCommit"]==g["generatorCommit"]
+        && g["operatorExecution"]["candidateId"]==g["candidateId"]
 }
 /// Parent-authored source rules are admitted ONLY after independent accepted
 /// compilation. Accepted rules may freely refer to invented future roles.
@@ -432,7 +437,10 @@ mod tests{
                 "generatorCommit":a,
                 "selected":{"ruleId":rule_id,
                     "target":{"path":"src/engine/learning.rs"}}
-            }
+            },
+            "operatorExecution":{"source":"verified_compiled_operator_tool_edit_v1",
+                "ruleId":rule_id,"targetPath":"src/engine/learning.rs",
+                "generatorCommit":a,"candidateId":format!("rejected-{n}")}
         })).collect::<Vec<_>>();
         let mut history=vec![birth];
         history.extend(rejects);

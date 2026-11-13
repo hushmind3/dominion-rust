@@ -317,6 +317,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 "qualityProven":false
             });
         }
+        // Only the actually controlling compiled operator is dispatched.
+        let operator_dispatch=crate::engine::rsi_operator_provenance::dispatch(
+            &state,&job,&commit,algebra_active)?;
+        job["rsiOperatorDispatch"]=operator_dispatch;
         job["rsiMetaPolicyExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
             "generatorCommit":commit,

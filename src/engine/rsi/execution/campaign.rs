@@ -1005,6 +1005,9 @@ pub(super) async fn run_loop(
                 && replayed_adoption);
         generation["modelCallsObserved"]=json!(
             generation["tokenUsage"]["calls"].as_u64().unwrap_or(0));
+        // Provenance is independently re-read from worker and tool receipts.
+        generation["operatorExecution"]=crate::engine::rsi_operator_provenance::observe(
+            &context.state,&generation);
         generation["proofCategory"]=json!(if proven_model_edit && replayed_adoption {
             "independently_adopted_model_invoked_source_edit"
         }else if generation["candidateOrigin"]=="native_inductive_source_mutation"
