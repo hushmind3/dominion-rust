@@ -287,12 +287,15 @@ src/api/rsi.rs::start
   → 실험 소스 빌드 → --rsi-worker-plan
   → rsi/system/{inventory,blueprint,discovery,frontier,agenda,design}.rs
   → rsi/meta_controller/{provenance,reciprocal,selection,transfer,feedback}.rs
-  → --rsi-worker → jobs::run_prompt → provider + 모델/도구/실제 소스 편집
+  → src/engine/rsi/worker.rs::worker (--rsi-worker-job)
+  → jobs::run_prompt → provider + 모델/도구/실제 소스 편집
   → src/engine/rsi_worktree.rs::compare_at (동결 A/B, 원본 증거 해시)
   → src/engine/rsi_evolve.rs::adopt (분리된 worktree 채택)
   → 후손 재컴파일·새 계획·개선 방법 실행 → 다음 평가
   → src/engine/rsi/proof.rs::recursive_closure_report
 ```
+
+`src/engine/rsi.rs::safe_path`는 동결된 독립 평가기와 `rsi/proof.rs`를 모델이 작성하는 후보 패치에서 제외합니다. 계획·기억·탐색·메타개선 모듈은 계속 수정 가능합니다.
 
 `rsi_worktree::classify`는 실제 변경 경로에서 하위 `rsi/` 모듈도 개선기(`improver`) 수정으로 분류합니다. `rsi_system.rs`와 `rsi_meta_controller.rs`는 모듈 진입점이며 실제 자기개선 소스는 `rsi/system/`과 `rsi/meta_controller/`에 있습니다.
 

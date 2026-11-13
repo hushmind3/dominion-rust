@@ -5,14 +5,14 @@
 ## RSI 수정 시 읽는 순서
 
 1. **요청/상태:** `src/api/rsi.rs`, `src/engine/jobs.rs`
-2. **실행·계승 중심:** `src/engine/rsi_evolve.rs`는 조정자입니다. 실제 세대 실행은 `src/engine/rsi/execution.rs`, 계승 방법은 `rsi/method.rs`, 연구 기록은 `rsi/research.rs`, 토큰 예산은 `rsi/budget.rs`, 방법 프로그램은 `rsi/programs.rs`, 관측은 `rsi/telemetry.rs`부터 읽습니다.
+2. **실행·계승 중심:** `src/engine/rsi_evolve.rs`는 조정자입니다. 실제 캠페인 반복은 `src/engine/rsi/execution.rs`, 재컴파일 후손의 계획·실행은 `src/engine/rsi/worker.rs`, 계승 방법은 `rsi/method.rs`, 연구 기록은 `rsi/research.rs`, 토큰 예산은 `rsi/budget.rs`, 방법 프로그램은 `rsi/programs.rs`, 관측은 `rsi/telemetry.rs`부터 읽습니다.
 3. **후손의 구조 인식·소스 후보:** `src/engine/rsi_system.rs`는 재노출용 진입점입니다. 실구현은 `src/engine/rsi/system/`의 inventory(실제 소스 해시), blueprint(구조도), discovery(연구·코드 분류), frontier(수정 후보), agenda(후손 작업 계획), design(실제 시스템 설계 등록)에서 확인합니다.
 4. **개선 방법 자체의 진화:** `src/engine/rsi_meta_controller.rs`는 진입점입니다. 실제 개선기는 `src/engine/rsi/meta_controller/`의 provenance(채택 증거), reciprocal(A→B→A), selection(선택 정책), transfer(계보 전이), feedback(예측 검증·후손 지시)에서 변경합니다. 실모델에게 가리키는 소스 경로도 새 모듈을 사용해야 합니다.
 5. **전체 능력의 상호 개선:** `src/engine/rsi_whole_agent.rs`, `src/engine/rsi_causal_ecology.rs`, `src/engine/rsi_recursive_laboratory.rs`
 6. **계승되는 개선 원리:** `src/engine/rsi_principle_learner.rs`, `src/engine/rsi_edit_genome.rs`
 7. **독립 검증·폐회로:** `src/engine/rsi.rs`의 후보 영수증, `src/engine/rsi_worktree.rs::classify/compare_at`의 동결 A/B, `src/engine/rsi/proof.rs`의 메타→능력→메타 3세대 검증, `src/api/rsi.rs::apply_verified_capability`의 API 원본 영수증 재검증, `src/engine/rsi_archive.rs`의 참고 계보.
 
-기능 변경 전에는 **호출자 → 실제 실행 → 독립 평가 → 채택된 후손의 재실행** 경로를 추적한다. 모델이 말한 성공과 독립 검증된 코드 채택을 혼동하지 않는다. 새 메커니즘은 하네스·알고리즘·기억 등 전체 지능으로 전이될 수 있어야 한다.
+기능 변경 전에는 **호출자 → 실제 실행 → 독립 평가 → 채택된 후손의 재실행** 경로를 추적한다. 독립 평가기 `rsi.rs`, `rsi_worktree.rs`, `rsi_metrics.rs`, `rsi_profile.rs`, `rsi/proof.rs`는 후손 후보가 수정하는 경로에서 제외하고 메타개선기·자기 모델은 계속 진화시킨다. 모델이 말한 성공과 독립 검증된 코드 채택을 혼동하지 않는다. 새 메커니즘은 하네스·알고리즘·기억 등 전체 지능으로 전이될 수 있어야 한다.
 
 ## 읽기·실행 비용 억제
 

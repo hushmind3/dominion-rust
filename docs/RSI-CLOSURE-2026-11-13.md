@@ -21,3 +21,7 @@
 - HyperAgents (2026-03, 2026-11 개정): https://arxiv.org/abs/2603.19461
 - AIDE² (2026-09): https://arxiv.org/abs/2609.26457
 - Predict Before You Modify (2026-09): https://arxiv.org/abs/2610.13991
+
+## Frozen boundary and modularity
+
+The child planning and model/tool execution entrypoints reside in `src/engine/rsi/worker.rs`; the coordinator lives in `rsi_evolve.rs` and the campaign loop in `rsi/execution.rs`. `rsi::safe_path` denies proposed edits to the original paired evaluator, evidence/profile modules, and `rsi/proof.rs`. New or changed method logic under `rsi/meta_controller/` and `rsi/system/` remains editable and is tracked by exact source receipts. These boundaries prevent descendants from redefining the independent scoring oracle as part of a candidate source edit.
