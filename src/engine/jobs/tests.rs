@@ -353,3 +353,18 @@ fn completed_goal_is_reconciled_without_restarting_a_side_effecting_turn() {
     assert_eq!(recovered["result"]["iterations"],2);
     assert!(next_queued(&state).is_none());
 }
+
+#[test]
+fn goal_review_recovery_never_replays_unknown_external_effect_from_goal_session() {
+    let state = temp_state();
+    state.store.put("goal",&json!({"id":"g","status":"running","goal":"write report"}));
+    let snapshot=crate::engine::goal_review::snapshot("session-goal",0,&[],"done",&[],None,&[]);
+    state.store.put("job",&json!({"id":"j","kind":"goal","status":"running",
+        "attempts":1,"input":{"goalId":"g"},"goalState":snapshot}));
+    state.store.put("execution",&json!({"id":"e","sessionId":"session-goal","status":"interrupted"}));
+    state.store.put("execution_operation",&json!({"id":"e:o","runId":"e","status":"interrupted",
+        "outcomeUnknown":true,"tool":"shell_exec"}));
+    recover(&state);
+    assert_eq!(state.store.get("job","j").unwrap()["status"],"needs_review");
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"needs_review");
+}
