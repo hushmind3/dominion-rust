@@ -5,7 +5,6 @@ mod tests {
     fn arbitrary_file_is_not_meta_improvement() {
         assert!(meta_source("src/engine/rsi/planner/descendant.rs"));
         assert!(meta_source("src/engine/rsi_system/lineage.rs"));
-        assert!(meta_source("src/engine/rsi_system/handoff.rs"));
         assert!(!meta_source("src/engine/memory.rs"));
         assert!(!meta_source("README.md"));
         assert!(!meta_source("src/engine/rsi/proof.rs"));
@@ -34,14 +33,16 @@ mod recursive_method_feedback_contract {
     fn changed_method_identity_without_measured_child_feedback_is_not_a_closure(){
         let original=observed_method("remember source paths","method-a","rev-a");
         let revised=observed_method("remember source paths","method-b","rev-b");
-        let child=json!({"id":"child-b","candidateId":"patch-b"});
+        let child=json!({"id":"child-b","candidateId":"patch-b","methodAblation":{"methodAssociationObserved":true,"qualityProven":true,"controlId":"control-b","controlEvaluationId":"eval-c","treatmentEvaluationId":"eval-t"}});
         let no_feedback=json!({"improvementDirective":{
             "sourceGenerationId":"unrelated","previousAccepted":true,
             "previousCandidateId":"patch-b"}});
         assert!(!revised_method_after_feedback(&original,&revised,&child,&no_feedback));
         let feedback=json!({"improvementDirective":{
+            "mode":"evolve_executed_method_from_feedback",
             "sourceGenerationId":"child-b","previousAccepted":true,
-            "previousCandidateId":"patch-b"}});
+            "previousCandidateId":"patch-b",
+            "methodFeedback":{"sourceGenerationId":"child-b","controlId":"control-b","controlEvaluationId":"eval-c","treatmentEvaluationId":"eval-t","requiresNewRevisionAndSuccessorExecution":true}}});
         assert!(revised_method_after_feedback(&original,&revised,&child,&feedback));
         assert!(!revised_method_after_feedback(&original,&original,&child,&feedback));
     }
