@@ -1,3 +1,11 @@
+## 2026-11-13 21시대 — 구조 병목 추가 정리 및 CI
+
+- `src/engine/rsi/execution/campaign.rs`는 최상위 상태 조정에 집중하며, 실제 소스 준비·컴파일된 후손 계획·모델 작업기 수명·독립 후보 채택·세대 기록 확정을 각각 `generation_preparation.rs`, `compiled_planning.rs`, `generation_launch.rs`, `generation_selection.rs`, `generation_finalization.rs`에 위임한다. 최신 캠페인 실행기는 약 264줄이며 이전 679줄 기준을 그대로 인용하지 않는다.
+- `src/engine/rsi_system.rs`의 인벤토리·구조 후보 탐색·청사진·검증을 `rsi_system/{inventory,frontier,blueprint,validation}.rs`에 **실제 호출 연결 상태로** 분리했다. 독립 소스 검증은 재컴파일된 후손의 가변적 탐색 점수를 재계산하지 않으며 소스 해시·경로·역할 계약을 검사한다.
+- `src/engine/rsi_principle_learning.rs::study`에서 사용하던 실측 예측 오차 계산을 `rsi/learning/principle_calibration.rs`로 분리했다. `AppState` 없이 실제 후보별 동결 평가 관찰만 소비하며 학습원리 검증과 모델 추정은 기존 공개 API를 유지한다.
+- `rsi/meta/transition_policy.rs`의 실험 조건 비교 표현을 Rust의 차용 규칙에 맞게 정리했다. 모델이 만든 동적 전이 정책과 독립 평가/채택 영역은 계속 분리한다.
+- 위 새 소스 모듈은 자기개선 대상 소스 인벤토리에 등록했다. 코드 작성 후 `ci.yml`의 push 트리거로 Ubuntu/macOS/Windows 작업을 수행하도록 했다. **CI 결론은 GitHub Actions가 실제 보고한 결과로만 기록한다.**
+
 ## 2026-11-13 — 후손 실행·채택·독립 증명의 실제 분해 및 CI
 
 다음은 **현재 커밋의 실제 호출 관계**다. 과거의 679줄 캠페인 구조나 ‘CI 미실행’ 언급은 그 당시 기록이고, 이 개편에서는 GitHub Actions를 실행해 컴파일 오류를 확인·교정한다.
