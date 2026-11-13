@@ -143,6 +143,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     if compiled_plan.is_some() {
         meta_experiment_evolution::validate(
             &job["input"]["rsiExperimentStrategy"],&commit)?;
+        if !meta_experiment_evolution::implementation_matches(
+            &job["input"]["rsiExperimentStrategy"],
+            &job["input"]["rsiFactorialExperiment"],
+            &job["input"]["rsiNegativeTransfer"]){
+            return Err("실제 후손 실행기의 실험 정책·소스 작업범위 불일치".into());
+        }
         job["rsiExperimentExecuted"]=json!({
             "source":"running_compiled_descendant_experiment_strategy_v1",
             "generatorCommit":commit,

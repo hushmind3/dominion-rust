@@ -186,3 +186,35 @@ branch, base commit and source fingerprint are independently checked.
 The actual previous persisted `rsi_generation` row, not a text label,
 is still required. The normal automatic control enqueue uses this
 anchor, enabling long-running RSI across verified resumptions.
+
+## Evolvable meta-experiment policy (2026-11-13)
+
+**Existing separation retained:** `planner/` proposes the next task,
+`execution/` compiles and launches it, `evaluation/` runs an independent
+frozen paired evaluator, `learning/` learns edit programs, `lineage/`
+reopens original receipts, `meta/` changes the strategy of experiment
+selection, and `proof/` exclusively owns promotion evidence.
+
+**New executable path:** `rsi_evolve::run` → compiled descendant
+`planner/worker_plan.rs::worker_plan` →
+`meta/experiment_evolution.rs::propose` →
+`factorial / negative-transfer / open-edit` executable scope →
+`execution/campaign.rs` typed contract validation →
+`execution/worker.rs` source-editing model with exact compiled policy →
+independent frozen `rsi_worktree::compare_at` →
+`rsi_generation` original worker provenance →
+`lineage/history.rs::revalidated_history` →
+next compiled `propose` inherits/mutates/recombines only independently
+replayed work outcomes. All three boundaries enforce a typed, content-hashed
+policy and the actual experiment mode's correspondence to its runnable plan.
+
+**Difference from the previous bounded closure design:** experiment
+allocation is no longer tied to a 3-generation schedule or a fixed
+single-kind intervention. The actual choice algorithm is itself a Rust
+source-editable system component, and its parameters change on the
+independently measured run of that component. The separate 4-generation
+proof is a conservative acceptance criterion, not a hard-coded search
+trajectory. Because candidate policy comparison is observational, a
+selected variant is not automatically a proven superior experiment-design
+algorithm. Unknown operators and evaluation-policy revisions require
+separate explicit execution contracts and a new frozen-version evaluation.

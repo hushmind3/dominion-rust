@@ -589,3 +589,42 @@ A2의 원본 B 피드백은 실제 모델 입력 프롬프트의 SHA-256과 함�
 ID**를 세대별 기록에 표시하며, 독립 재검증 화면에서는 A→B와
 A2→B2의 **2개 대조 결과**를 각각 보여 줍니다. 자동 대조가 없는
 예전 계보에서는 수동 대조가 필요할 때에만 실행 버튼을 제공합니다.
+
+### 2026-11-13 — 실험 설계 원리의 재귀 진화
+
+`src/engine/rsi/meta/experiment_evolution.rs`는
+`planner/worker_plan.rs`가 **재컴파일된 후손 바이너리에서 실제 호출**하는
+실험 전략 유전체입니다. 기존 `3세대마다 요인 실험` 고정 배분 대신,
+직전 세대의 독립 재검증된 평가 결과와 작업 영수증에서
+실험 수익·새로움·토큰 비용·퇴행 복구 가중치를 **계승·변이·재조합**해
+개방 탐색(`explore`), 요인 실험(`factorial`), 역전이 복구(`repair`)를
+선택합니다. 선택은 실제 `rsi_intervention_lab`·
+`rsi_negative_transfer` 계획의 활성화와 수정 파일 범위를 바꿉니다.
+
+유전체는 Rust `serde`의 엄격한 `Contract` 타입으로 전송되며,
+`revision`에 내용 지문을 부여합니다. Coordinator
+`execution/campaign.rs`는 실행 가능한 실험과 유전체 선택을 대조한 뒤
+`rsiExperimentStrategy`를 전달하고, 후손
+`execution/worker.rs`는 같은 계약을 다시 검사한 후
+`rsiExperimentExecuted` 영수증을 남깁니다.
+`lineage/history.rs`는 원본 작업에서 실행 여부를 다시 읽습니다.
+실제 실행·독립 paired 평가가 검증된 기록만 다음 유전체의 부모나
+재조합 기증자가 됩니다. `proof/closure.rs`의 독립 채택 증거와
+고정 평가기는 **이 실험 선택 유전체로 수정할 수 없습니다.**
+
+이 구조는 4세대 A→B→A2→B2라는 검증 예시와 무관하게 다음 세대의
+실험 원리 자체를 업데이트합니다. 메타 정책·편집 유전체·실험
+유전체의 계승·재컴파일은 이미 연결되어 있으나, 임의의 새로운
+실험 연산자를 동적으로 발명하는 일반 실행기까지 완성된 상태는
+아닙니다. 모델 가중치 변경·학습은 없습니다.
+
+2026년 연구의 공통점: GEPA(2026, ICLR)의 실행 흔적을 활용한
+반성·파레토 탐색, GEPA 2026년 7월의 복수 최적화기 결합,
+Meta-Agent(2026)의 빠른 하네스 진화/느린 개선기 진화,
+CoCoEvolve(2026)의 전체 진화 기록을 통한 메타 반성에서
+**계층별로 제어하되 성과는 독립 평가하는 구조**를 참고했습니다.
+코드를 그대로 복사한 것은 아닙니다.
+- https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html
+- https://gepa-ai.github.io/gepa/blog/archive/2026/
+- https://github.com/canvas-org/meta-agent
+- https://arxiv.org/abs/2610.12794

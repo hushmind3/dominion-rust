@@ -43,3 +43,6 @@ The old flat `rsi_*.rs` helpers now live under `rsi/{planner,execution,evaluatio
 
 The self-improvement page now shows automatic method-off job IDs from the
 normal generation history and independent A→B / A2→B2 replay outcomes.
+
+| Evolving experiment selection | `rsi/meta/experiment_evolution.rs::propose` → compiled `planner/worker_plan.rs` → executable factorial/negative/open mode → `execution/campaign.rs` → `execution/worker.rs` → `rsi_generation` → `lineage/history.rs` |
+| Stable experiment-policy contract | `meta/experiment_evolution.rs::Contract` (serde deny-unknown, SHA-256 revision), `validate` + `implementation_matches` enforced by compiled planner, controller and worker |

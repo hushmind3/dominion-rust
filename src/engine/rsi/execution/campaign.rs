@@ -277,6 +277,11 @@ pub(super) async fn run_loop(
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
             meta_experiment_evolution::validate(&plan["experimentStrategy"],&head)?;
+            if !meta_experiment_evolution::implementation_matches(
+                &plan["experimentStrategy"],&plan["factorialExperiment"],
+                &plan["negativeTransfer"]) {
+                return Err("컴파일된 후손 실험 정책과 실제 실행계획이 다릅니다.".into());
+            }
             child_input["rsiExperimentStrategy"]=plan["experimentStrategy"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiNegativeTransfer"]=plan["negativeTransfer"].clone();

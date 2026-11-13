@@ -104,7 +104,12 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // Use the original negative-transfer evidence before choosing an arm.
     let negative_evidence=crate::engine::rsi_negative_transfer::plan(
         &state,&history,&frontier,revision);
-    let repair_available=negative_evidence["selected"]["supportedForPairedInvestigation"]==true
+    let repair_available=auto &&stage.is_null()
+        &&parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
+        &&inherited_meta["principleLearning"]["active"]!=true
+        &&inherited_meta["predictionRuleRepair"]["active"]!=true
+        &&inherited_meta["recursiveProgram"]["active"]!=true
+        &&negative_evidence["selected"]["supportedForPairedInvestigation"]==true
         &&negative_evidence["selected"]["frozenProfileSha256"].as_str()==profile.as_deref()
         &&crate::engine::rsi_negative_transfer::valid(
             &negative_evidence,&frontier,revision,history.len())
@@ -118,15 +123,8 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // inventions. Continue measured sibling interventions on this EXACT
     // source revision; otherwise allocate every third task to experiments.
     // A model-authored adopted experimental method can change this balance.
-    let measured_siblings=proposed_factorial["selected"]["evidence"]
-        ["candidateCount"].as_u64().unwrap_or(0);
-    let method_promoted=inherited_experiment_method["source"]
-        =="model_authored_causal_experiment_policy_v1";
-    // Unknown contribution in a jointly adopted redesign is a reason to
-    // isolate components on the next frozen profile, not to award every role
-    // the full success or continue exploiting an ambiguous result.
-    let isolation_debt=inherited_meta["selectionEvidence"]["causalCredit"]
-        ["requiresIsolation"]==true;
+    // The real experiment-selection genome now owns trial allocation.
+    // No source-blind modulo-based campaign rotation or honorary credit.
     let factorial_available=auto && stage.is_null()
         // A learned principle experiment has to execute on its selected
         // source; otherwise its downstream payoff can never be observed.
@@ -220,6 +218,10 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         serde_json::to_vec(&json!([
             "rsi.meta.experiment.bound.v1",previous_revision,experiment_strategy
         ])).unwrap_or_default())));
+    if !meta_experiment_evolution::implementation_matches(
+        &experiment_strategy,&factorial,&negative_transfer){
+        return Err("후손 메타 실험 유전체와 실제 실험 작업계획 불일치".into());
+    }
     let architecture_target=meta["target"].clone();
     // The same compiled child can rewrite its coupling search algorithm.
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(

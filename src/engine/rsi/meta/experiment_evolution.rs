@@ -153,6 +153,18 @@ pub(crate) fn propose(history:&[Value],revision:&str,factorial:bool,repair:bool)
     serde_json::to_value(contract).unwrap_or(Value::Null)
 }
 
+/// Bind the selected arm to its actual executable experiment plan.
+pub(crate) fn implementation_matches(
+    policy:&Value,factorial:&Value,repair:&Value
+)->bool{
+    match policy["arm"].as_str(){
+        Some("explore")=>factorial.is_null()&&repair.is_null(),
+        Some("factorial")=>factorial.is_object()&&repair.is_null(),
+        Some("repair")=>repair.is_object()&&factorial.is_null(),
+        _=>false
+    }
+}
+
 /// Validate the stable typed interface at the coordinator/worker boundary.
 /// A child is free to evolve its ranking algorithm in source code, but may not
 /// send an unrecognized strategy or change the immutable source identity.
