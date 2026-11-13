@@ -27,7 +27,8 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/rsi_method_generalization.rs",
         "src/engine/rsi/lineage/rsi_model_lineage.rs",
         "src/engine/rsi/learning/rsi_negative_transfer.rs"]),
-    ("experimental_design",&["src/engine/rsi/evaluation/rsi_factorial.rs"]),
+    ("experimental_design",&["src/engine/rsi/meta/experiment_policy.rs",
+        "src/engine/rsi/evaluation/rsi_factorial.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_prequential.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs"]),
     ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
