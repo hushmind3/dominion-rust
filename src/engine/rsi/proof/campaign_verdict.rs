@@ -31,8 +31,12 @@ pub(crate) fn evaluate(state:&AppState,campaign:&Value)->Value {
     // model-authored revision of the very method, remains incomplete.
     let source=max_verified>=3 && capability_proven(state,&history);
     let model_source=source && model_driven_capability_proven(state,&history);
-    let closed=model_source
-        && crate::engine::rsi_recursive_closure::proven(state,&history);
+    let closure=if model_source {
+        crate::engine::rsi_recursive_closure::evidence(state,&history)
+    }else{
+        None
+    };
+    let closed=closure.is_some();
     let systemic=closed
         && crate::engine::rsi_system::verified_handoff(&history);
     json!({
@@ -47,6 +51,7 @@ pub(crate) fn evaluate(state:&AppState,campaign:&Value)->Value {
         "capabilityDemonstrated":closed,
         "actualCompletion":closed,
         "systemicHandoffProven":systemic,
+        "recursiveMethodEvidence":closure,
         "causalAblationProven":false,
         "requiredMethodSequence":"model_authored_method_edit -> compiled_child_method_use_and_independent_other_capability_gain -> feedback_bound_method_rewrite_with_independent_meta_gain"
     })
