@@ -220,3 +220,24 @@ pub(super) fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(S
     pool
 }
 
+
+/// Use ONLY owner-tagged tiers; names like "fast"/"pro" do not establish
+/// model price or capability. Tagged routes remain stable for the whole job.
+pub(super) fn tiered_model_pool(
+    room:&Value, owner_text:&str,
+    pool:Vec<(String,String,Option<String>)>,
+)->Vec<(String,String,Option<String>)> {
+    if !economy::active(room) || pool.len()<2
+        || economy::all_requested(owner_text) {
+        return pool;
+    }
+    let wanted=if is_deep_request(owner_text){"frontier"}else{"economy"};
+    let filtered=pool.iter().filter(|(provider,model,_)|{
+        room["models"].as_array().into_iter().flatten().any(|entry|{
+            entry["providerId"].as_str()==Some(provider.as_str())
+                && entry["model"].as_str()==Some(model.as_str())
+                && entry["tier"].as_str()==Some(wanted)
+        })
+    }).cloned().collect::<Vec<_>>();
+    if filtered.is_empty(){pool}else{filtered}
+}
