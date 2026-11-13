@@ -97,10 +97,20 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
 /// model optimism. The rebuilt descendant uses the outcome to choose whether
 /// to discover, implement, repair, change approach or transfer an adopted gain.
 pub(crate) fn improvement_directive(history:&[Value])->Value {
-    let Some(previous)=history.last() else {
+    let Some(latest)=history.last() else {
         return json!({"mode":"discover","sourceGenerationId":null,
             "reason":"no_recorded_generation"});
     };
+    // A measured capability B must remain the feedback source for a later
+    // meta revision A2 even if attempts to write A2 have failed meanwhile.
+    // The last failure is separately recorded below and is never promoted.
+    let previous=history.iter().rev().find(|g|g["accepted"]==true
+        && g["domain"]!="improver"
+        && g["methodAblation"]["methodAssociationObserved"]==true
+        && g["methodAblation"]["qualityProven"]==true)
+        .filter(|g|history.iter().rev().find(|g|g["accepted"]==true)
+            .is_some_and(|last|last["id"]==g["id"]))
+        .unwrap_or(latest);
     let observed=previous["evaluation"]["metrics"]["eligible"]==true;
     let has_patch=previous["candidateId"].is_string();
     let new_findings=previous["newFindings"].as_u64().unwrap_or(0);
@@ -137,6 +147,9 @@ pub(crate) fn improvement_directive(history:&[Value])->Value {
             "sourceGenerationId":previous["id"],
             "requiresNewRevisionAndSuccessorExecution":true
         })}else{Value::Null},
+        "latestAttemptGenerationId":latest["id"],
+        "latestAttemptAccepted":latest["accepted"],
+        "latestAttemptError":latest["error"],
         "previousFocusFiles":previous["focusFiles"].as_array()
             .map(|a|a.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "previousError":previous["error"].as_str().unwrap_or("")
