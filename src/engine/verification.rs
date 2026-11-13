@@ -337,11 +337,28 @@ pub(crate) fn tool_name(item: &Value) -> &str {
         .and_then(Value::as_str)
         .unwrap_or("")
 }
+/// Child operations are returned by DOMINION's own delegate_task handler
+/// after checking parent-session ownership. A child's prose, queued state,
+/// or failed tool is never counted as completed work.
+fn delegated_successful_operations(item:&Value)->Vec<Value>{
+    if tool_name(item)!="delegate_task" || !successful_evidence(item)
+        || item["result"]["status"]!="completed" {return Vec::new();}
+    item["result"]["operations"].as_array().into_iter().flatten()
+        .filter(|operation|successful_evidence(operation))
+        .take(20).cloned().collect()
+}
+pub(crate) fn evidence_has_tool(item:&Value,required:&str)->bool{
+    (successful_evidence(item) && tool_name(item)==required)
+        || delegated_successful_operations(item).iter()
+            .any(|child|tool_name(child)==required)
+}
+
 pub(crate) fn is_action_evidence(item: &Value) -> bool {
     if !successful_evidence(item) {
         return false;
     }
     match tool_name(item) {
+        "delegate_task" => delegated_successful_operations(item).iter().any(is_action_evidence),
         "workspace_write" | "file_write" => true,
         "shell_exec" | "terminal_exec" => {
             let args = item
@@ -407,6 +424,10 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
     }
 }
 pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
+    if tool_name(item)=="delegate_task" {
+        return delegated_successful_operations(item).iter()
+            .any(|child|command_matches(child,command));
+    }
     if !matches!(tool_name(item), "shell_exec" | "terminal_exec") || !successful_evidence(item) {
         return false;
     }
@@ -480,7 +501,7 @@ pub(crate) fn acceptance_gaps(
                         .unwrap_or(false)
             }
             "tool_succeeded" => evidence.iter().any(|item| {
-                successful_evidence(item) && tool_name(item) == check["tool"].as_str().unwrap_or("")
+                evidence_has_tool(item,check["tool"].as_str().unwrap_or(""))
             }),
             "command_succeeded" => evidence
                 .iter()
