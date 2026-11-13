@@ -71,20 +71,23 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "목표를 저장할 수 없습니다.",
         );
     };
-    state.bus.record("goal", &record);
     let goal_id = record
         .get("id")
-        .and_then(|value| value.as_str())
+        .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let job = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id }));
-    let job_id = job
-        .as_ref()
-        .and_then(|job| job.get("id"))
-        .cloned()
-        .unwrap_or(Value::Null);
-
-    let mut payload = record.clone();
-    payload["jobId"] = job_id;
-    Json(payload).into_response()
+    // Do not leave a permanent "queued" goal without a corresponding durable
+    // job. The goal and the job are separate records with a recoverable link.
+    let Some(job) = crate::engine::jobs::enqueue(
+        &state,"goal",json!({"goalId":goal_id})
+    ) else {
+        state.store.remove("goal",&goal_id);
+        return error(StatusCode::INTERNAL_SERVER_ERROR,
+            "목표 실행 작업을 저장할 수 없습니다.");
+    };
+    let job_id=job["id"].clone();
+    let saved=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
+        &json!({"jobId":job_id})).unwrap_or_else(||record.clone());
+    state.bus.record("goal",&saved);
+    Json(saved).into_response()
 }
