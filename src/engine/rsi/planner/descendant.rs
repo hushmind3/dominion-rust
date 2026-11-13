@@ -325,7 +325,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // unrelated pending search trial. Otherwise the source chooser can silently
     // move to another domain and the A->B->A stage never actually executes.
     let trial=if paired_descendant_target(input) || method_transfer.is_object() || feedback_repair
-        || reflexive_program.is_object() || open_program.is_object()
+        || evolution_program.is_object() || reflexive_program.is_object() || open_program.is_object()
         || (!explicit && matches!(mutual_program["phase"].as_str(),
             Some("complement"|"return"))) {None} else {
         input["rsiTrialAlgorithmId"].as_str().map(str::to_string)
