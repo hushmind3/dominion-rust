@@ -125,14 +125,15 @@ export function ModelHub(){
  const [name,setName]=useState(''),[baseUrl,setBaseUrl]=useState(''),[kind,setKind]=useState('openai'),[apiKey,setApiKey]=useState(''),[local,setLocal]=useState(false),[modelId,setModelId]=useState(''),[defaultModel,setDefaultModel]=useState(''),[reflection,setReflection]=useState(false),[rpm,setRpm]=useState(''),[accountId,setAccountId]=useState(''),[testBusy,setTestBusy]=useState(false),[testResult,setTestResult]=useState<{ok:boolean;message:string}|null>(null)
  const [defaultEffort,setDefaultEffort]=useState('')
  const [costInput,setCostInput]=useState(''),[costOutput,setCostOutput]=useState('')
+ const [qualityRating,setQualityRating]=useState('')
  const editModels=useProviderModels(modal&&edit?edit.id:'')
  const probe=async(p:Provider)=>{
   setCounts(old=>({...old,[p.id]:{list:[],busy:true}}))
   try{const list=await get<{id:string;catalogStale?:boolean}[]>('/api/providers/'+p.id+'/models');setCounts(old=>({...old,[p.id]:{list:list.map(m=>m.id),error:list.some(m=>m.catalogStale)?'최근 저장된 목록입니다. 실시간 Codex 조회가 실패했습니다.':undefined}}))}
   catch(e){setCounts(old=>({...old,[p.id]:{list:[],error:(e as Error).message}}))}
  }
- const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':p?.integration==='opencode-go'?'opencode-go':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setCostInput(typeof p?.costPerMillionInputKrw==='number'?String(p.costPerMillionInputKrw):'');setCostOutput(typeof p?.costPerMillionOutputKrw==='number'?String(p.costPerMillionOutputKrw):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
- const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setCostInput('');setCostOutput('');setAccountId('');setTestResult(null);setError('');setModal(true)}
+ const open=(p?:Provider)=>{setEdit(p||null);setIntegration(p?.integration==='freellmapi'?'freellmapi':p?.integration==='opencode-go'?'opencode-go':undefined);setFreePreset(false);setPresetMode(false);setName(p?.name||'');setBaseUrl(p?.baseUrl||'');setKind(p?.kind||'openai');setApiKey('');setLocal(Boolean(p?.local));setModelId(p?.reflectionModel||(p?.reflection??p?.learning?p?.model:'')||'');setDefaultModel(p?.model||'');setDefaultEffort(String(p?.reasoningEffort||''));setReflection(Boolean(p?.reflection ?? p?.learning));setRpm(p?.requestsPerMinute?String(p.requestsPerMinute):'');setCostInput(typeof p?.costPerMillionInputKrw==='number'?String(p.costPerMillionInputKrw):'');setCostOutput(typeof p?.costPerMillionOutputKrw==='number'?String(p.costPerMillionOutputKrw):'');setQualityRating(typeof p?.capabilities?.quality==='number'?String(Math.round(p.capabilities.quality*100)):'');setAccountId(p?.accountId||'');setTestResult(null);setError('');setModal(true)}
+ const openPreset=(preset:ProviderPreset)=>{setEdit(null);setIntegration(preset.integration);setFreePreset(Boolean(preset.free&&preset.auth==='none'));setPresetMode(true);setName(preset.name);setBaseUrl(preset.baseUrl);setKind(preset.kind);setLocal(preset.local);setApiKey('');setModelId('');setDefaultModel('');setDefaultEffort('');setReflection(false);setRpm(preset.requestsPerMinute?String(preset.requestsPerMinute):'');setCostInput('');setCostOutput('');setQualityRating('');setAccountId('');setTestResult(null);setError('');setModal(true)}
  const goProvider=providers.value.find(p=>p.integration==='opencode-go'||p.baseUrl.includes('opencode.ai/zen/go')||p.baseUrl.includes('opencode.ai/inference/go'))
  const connectOpencodeGo=()=>{if(goProvider)open(goProvider);else openPreset(opencodeGoPreset)}
  const needsNewKey=presetMode&&!freePreset&&(!local||integration==='freellmapi')
@@ -151,15 +152,22 @@ export function ModelHub(){
  const save=async()=>{
   if(saving||!baseUrl.trim()||(needsNewKey&&!apiKey.trim()))return
   if(reflection&&!modelId.trim()){setError(t('models.dlg.needReflectionModel'));return}
+  if(qualityRating.trim()!==''&&(!Number.isFinite(Number(qualityRating))||Number(qualityRating)<0||Number(qualityRating)>100)){
+   setError('자동 라우팅 품질 점수는 0~100점입니다.');return
+  }
   if([costInput,costOutput].some(value=>value.trim()!==''&&(!Number.isFinite(Number(value))||Number(value)<0||Number(value)>100_000_000))){
    setError('토큰 가격은 0~1억원 범위의 숫자로 입력하세요.');return
   }
   setSaving(true);setError('')
   try{
+   const capabilities={...(edit?.capabilities||{})}
+   if(qualityRating.trim()!=='')capabilities.quality=Number(qualityRating)/100
+   else delete capabilities.quality
    const saved=await post<Provider>('/api/providers',{
     ...edit,name:name.trim(),baseUrl:baseUrl.trim(),kind,apiKey:apiKey.trim()||undefined,local,integration,accountId:accountId.trim()||undefined,requestsPerMinute:Number(rpm)||0,
     toolMode:edit?.kind===kind?edit.toolMode:undefined,
     reasoningEffort:defaultEffort,enabled:edit?.enabled??true,model:defaultModel.trim()||edit?.model,reflection,reflectionModel:reflection?modelId.trim():undefined,
+    capabilities,
     costPerMillionInputKrw:costInput.trim()===''?null:Number(costInput),
     costPerMillionOutputKrw:costOutput.trim()===''?null:Number(costOutput),
    })
@@ -463,8 +471,11 @@ export function ModelHub(){
       <FormField label="입력 100만 토큰 (원)"><TextInput type="number" min={0} max={100000000} step="any" value={costInput} onChange={e=>setCostInput(e.target.value)} placeholder="예: 1000"/></FormField>
       <FormField label="출력 100만 토큰 (원)"><TextInput type="number" min={0} max={100000000} step="any" value={costOutput} onChange={e=>setCostOutput(e.target.value)} placeholder="예: 5000"/></FormField>
      </div>
+     <FormField label="자동 선택 품질 점수 · 0~100" hint="선택 사항입니다. 실제 작업 성공률을 기준으로 직접 매긴 점수이며, 값이 없으면 기존 모델 능력 추정 기준을 사용합니다.">
+      <TextInput type="number" min={0} max={100} step={1} value={qualityRating} onChange={e=>setQualityRating(e.target.value)} placeholder="측정 후 입력"/>
+     </FormField>
     </details>
-    {error&&<Notice message={error}/>}
+    {error&&<Notice message={error}/>} 
     {testResult&&<div className={'rounded-xl border px-3 py-2 text-[12px] '+(testResult.ok?'border-[#CFE0CF] bg-[#F4FAF3] text-[#4F6F52]':'border-[#EAD3CB] bg-[#FFF4F0] text-[#9A5B48]')}>{testResult.message}</div>}
    </div>
    <div className="flex justify-end gap-2 border-t border-[#EFE9DF] p-4">{edit&&edit.id!=='dominion-native'&&<Button variant="danger" className="mr-auto" disabled={saving} onClick={()=>void disconnect()}>{t('models.disconnect')}</Button>}<Button variant="ghost" disabled={saving||testBusy||!baseUrl.trim()} onClick={()=>void testConnection()}>{testBusy?<RefreshCw size={14} className="animate-spin"/>:<ShieldCheck size={14}/>} {testBusy?t('models.testing'):t('models.test')}</Button><Button onClick={close} disabled={saving}>{t('models.cancel')}</Button><Button variant="primary" disabled={saving||!baseUrl.trim()||(needsNewKey&&!apiKey.trim())} onClick={()=>void save()}><Check size={14}/> {saving?t('models.saving'):t('models.save')}</Button></div>
