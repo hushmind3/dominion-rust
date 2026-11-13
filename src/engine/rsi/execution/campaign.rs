@@ -594,6 +594,8 @@ pub(super) async fn run_loop(
         generation["principlePolicyExecuted"]=
             current["input"]["rsiMetaPolicy"]["principleLearning"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        // This is the worker's chosen policy revision, not a planner claim.
+        generation["editPolicyDecision"]=current["rsiEditPolicyDecision"].clone();
         generation["comparisonProfileSha256"]=json!(
             crate::engine::rsi_lineage_transfer::profile(&current["input"]));
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
