@@ -262,6 +262,15 @@ OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolM
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
 
+## 서브3: 실행 책임 분리와 동일 소스 개선법 ON/OFF 실험 (2026-11-13 추가)
+
+- `src/engine/rsi/execution/campaign.rs::run_loop`은 **1,376줄 → 약 678줄**로 축소했습니다. `compiled_planning.rs::plan_compiled_descendant`는 재빌드 후손의 계획 실행과 모든 출처·메타정책 유효성 검증, `generation_evidence.rs::capture_generation_evidence`는 실제 작업 도구·모델 호출·사용량·소스 편집 영수증, `generation_finalization.rs::finalize_generation`은 세대 기록 영속화·단일 RSI 증명·자동 종료/다음 선택을 담당합니다. `rsi/learning/generation_feedback.rs`가 실제 알고리즘 탐색 시행과 메타학습 피드백을 맡습니다. 모두 기존 캠페인 호출부에서 사용합니다.
+- `src/api/rsi.rs`와 `web/src/pages/SelfImprovement.tsx`에서 유료 추가 호출이 필요한 `methodAblation`을 **명시적으로 선택**할 수 있습니다. 켜면 `rsi/execution/method_ablation.rs::run_method_control`이 동일 소스 커밋·모델·작업 입력으로 **개선법 OFF 별도 후손 작업기**를 먼저 실행해 독립 동결 평가합니다. 그 소스는 채택하지 않습니다. 그 뒤 같은 입력으로 개선법 ON 작업기를 실행하고 일반 채택 절차를 수행합니다.
+- `rsi/learning/methods.rs::configure_method_session/method_strategies`는 OFF 작업기의 실제 상속 절차 실행을 차단합니다. 영수증 재검산은 `method_ablation.rs::measured_method_ablation`이 두 작업의 원본 사전입력 SHA, 소스/모델/프로필, 실제 procedure 실행 기록, 원본 후보의 재연 가능 평가 수치와 동일 홀드아웃 사례를 비교합니다. 결과는 `generation.methodAblation`에 기록되며, `rsi_causal_closure.rs::audit`가 **A→B→A→B의 2개 B 세대에 실제 ON/OFF 대조군 성과**를 추가 필수조건으로 요구합니다.
+- 단일 ON/OFF 쌍은 모델 샘플링·공유 상태의 완전 통제가 아니라는 한계를 `causalAblationProven:false`로 노출합니다. 대조군 미실행, 평가 영수증 누락, 동일성·홀드아웃 불일치 시 전체 RSI 완성 판정은 거절합니다. 재현성 향상을 위한 여러 독립 시드 반복은 후속 검증 범위입니다.
+- 동결 판정기·계획 원본 검증과 증거 기록기(`rsi/{proof.rs,execution/{counterfactual,compiled_planning,generation_evidence,generation_finalization,method_ablation}.rs}`, `rsi_causal_closure.rs`)는 `rsi.rs::safe_path`로 보호합니다. 실제 학습·정책 로직 `rsi/learning/generation_feedback.rs`은 후손의 수정 대상에 등록합니다.
+- 관련 유지보수 테스트는 `tests/support/engine/{rsi_system,rsi_causal_closure,rsi_method_ablation}.tests.rs`와 API 테스트에 분리됐습니다. **테스트·컴파일·빌드·벤치마크·유료 모델 실행은 하지 않았습니다.** 이번 변경의 심판 점수는 아직 없습니다.
+
 ## 서브3: 구조·계보 검증 정리 (2026-11-13)
 
 - `rsi.rs`의 증명 관련 로직은 `rsi/proof.rs`로 분리돼 후보 평가·채택 코드와의 책임을 나눕니다. `rsi_system/peer_verifier.rs`도 수정 가능한 교차 계보 선택기와 분리한 고정 원본 검증기입니다.
