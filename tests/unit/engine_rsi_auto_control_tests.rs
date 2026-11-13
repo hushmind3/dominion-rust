@@ -23,10 +23,12 @@ fn control_starts_from_pre_method_revision_and_treated_task(){
     assert_eq!(result["rsiAutoMethodControl"],false);
 }
 #[test]
-fn undersized_control_budget_does_not_generate_unfair_comparison(){
+fn undersized_treated_budget_gives_control_a_full_minimum_budget(){
     let anchor=json!({"methodOffGeneratorCommit":"a".repeat(40),"treatedJobId":"B"});
     let bad=json!({"id":"B","kind":"rsi_generation","input":{
        "rsiPromptBase":"task","rsiFrozenCases":[{"id":"case"}],
        "rsiRemainingCampaignTokens":500}});
-    assert!(scheduled_input(&json!({}),&anchor,&bad).is_none());
+    let control=scheduled_input(&json!({}),&anchor,&bad).unwrap();
+    assert_eq!(control["limits"]["tokenBudget"],1000);
+    assert_eq!(control["rsiCausalControlCommit"],"a".repeat(40));
 }
