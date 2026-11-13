@@ -9,7 +9,7 @@ import {t,useLocale} from '../i18n'
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
 type VideoEngine='native'|'comfyui'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;voice?:string;narration?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -25,6 +25,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<'native'|'comfyui'>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
+ const [voice,setVoice]=useState('Yuna'),[narration,setNarration]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -44,6 +45,10 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
+ useEffect(()=>{
+  setVoice(video.value.config.voice||'Yuna')
+  setNarration(video.value.config.narration!==false)
+ },[video.value.config.voice,video.value.config.narration])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
@@ -80,6 +85,13 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    await post('/api/video/config',{engine:'comfyui',comfyWorkflow,comfyWorkflowName:file.name});
    await video.reload();
   }catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
+ const saveAudio=async(patch:{voice?:string;narration?:boolean})=>{
+  if(patch.voice!==undefined)setVoice(patch.voice)
+  if(patch.narration!==undefined)setNarration(patch.narration)
+  setSavingConfig(true);setError('')
+  try{await post('/api/video/config',patch);await video.reload()}
+  catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
  const reveal=async(id:string)=>{
   try{await post('/api/video/jobs/'+id+'/reveal',{})}catch(e){setError((e as Error).message)}
@@ -127,6 +139,15 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
      <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as 'native'|'comfyui')} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option></SelectInput>
     </div>
    </div>
+  </Panel>
+  <Panel className="mb-4 p-4">
+   <div className="grid gap-3 sm:grid-cols-2">
+    <FormField label="내레이션 음성"><SelectInput value={voice} disabled={savingConfig} onChange={e=>void saveAudio({voice:e.target.value})}>
+     {['Yuna'].map(name=><option key={name} value={name}>{name}</option>)}
+    </SelectInput></FormField>
+    <label className="mt-6 flex items-center gap-2 text-[12px]"><input type="checkbox" checked={narration} disabled={savingConfig} onChange={e=>void saveAudio({narration:e.target.checked})}/>내레이션 자동 생성</label>
+   </div>
+   <p className="mt-2 text-[11px] leading-5 text-[#8A8176]">제목과 주제만 넣고 생성하면 선택한 음성으로 읽고, 소리까지 합쳐 영상이 나옵니다. 음성 엔진이 없으면 무음으로 만듭니다.</p>
   </Panel>
   <div className="mb-4 grid grid-cols-1 items-start gap-3 md:grid-cols-2">
    {engine==='comfyui'&&<Panel className={'p-4 '+(video.value.comfy.reachable?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>

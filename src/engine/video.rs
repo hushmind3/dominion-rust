@@ -261,6 +261,9 @@ async fn say_scenes(
             .ok()?;
         if !status.success() { return None; }
         let seconds = probe_duration(&ffprobe, &path).await?;
+        // Some installed "voices" are novelty entries that render silence;
+        // a near-zero file would make -shortest truncate the whole video.
+        if seconds < 0.2 { return None; }
         durations.push((seconds + 0.35).max(1.0));
         list.push_str(&format!("file '{file}'\n"));
     }

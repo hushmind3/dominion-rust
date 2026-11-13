@@ -76,6 +76,10 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "providerId",
         "model",
         "useModel",
+        "voice",
+        "rate",
+        "narration",
+        "subtitles",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
