@@ -108,9 +108,16 @@ pub fn recursive_proof_report(state:&AppState,campaign:&Value)->Value {
         crate::engine::rsi_system::handoff_evidence(state,&history)
     }else{Value::Null};
     let closure=system_evidence["causalClosure"].clone();
+    // Alternative topologies are valid only when the independent source
+    // evaluator replayed two REAL meta-policy rewrites and the resulting
+    // different compiled descendants' task-quality gains. The old exact
+    // A→B→A→B check remains available but no longer dictates the architecture.
+    let open=if system_evolution {
+        crate::engine::rsi_evolve::open_evolution_proof::audit(state,&history)
+    }else{Value::Null};
     let demonstrated=system_evolution
-        && system_evidence["demonstrated"]==true
-        && closure["demonstrated"]==true;
+        && ((system_evidence["demonstrated"]==true && closure["demonstrated"]==true)
+            || open["demonstrated"]==true);
     let source_proven=capability_proven(state,&history);
     json!({
         "source":"canonical_recursive_proof_gate_v1",
@@ -121,7 +128,8 @@ pub fn recursive_proof_report(state:&AppState,campaign:&Value)->Value {
         "historyCount":history.len(),
         "systemEvidence":system_evidence,
         "causalClosure":closure,
-        "requires":"independent source adoption, executed inherited methods, revised method generation, downstream holdout gains and the same recompiled causal-closure lineage",
+        "openRecursiveEvolution":open,
+        "requires":"one independent replayable proof mode: strict 4-generation method contrast OR feedback-redesigned source-bound meta protocols with independently adopted compiled descendant task quality; frozen evaluator and adoption required",
         "modelWeightUpdates":0
     })
 }
