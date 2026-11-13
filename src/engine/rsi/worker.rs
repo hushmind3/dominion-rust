@@ -206,6 +206,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &state,&model,&job["input"]["rsiSystemAgenda"],
             job["input"]["rsiIndexId"].as_str().unwrap_or(""),
             Path::new(source),&commit,history.len())?;
+        let expected_snapshot=method_feedback::method_snapshot(&state,&history,&commit);
+        let expected_feedback=method_feedback::downstream_feedback(&state,&history,&commit);
+        if job["input"]["rsiMethodSnapshot"]!=expected_snapshot
+            || job["input"]["rsiDownstreamFeedback"]!=expected_feedback
+            || job["input"]["rsiNativePlan"]["methodSnapshot"]!=expected_snapshot
+            || job["input"]["rsiNativePlan"]["downstreamFeedback"]!=expected_feedback {
+            return Err("후손이 실행한 개선법 소스 또는 독립 측정 피드백이 원본과 다릅니다.".into());
+        }
         let expected_meta=crate::engine::rsi_meta_controller::synthesize(
             &history,
             job["input"]["rsiSystemAgenda"]["frontier"].as_array()
@@ -283,7 +291,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "metaRevision":expected_meta["revision"],
             "metaForecastTargetRole":expected_meta["target"]["role"],
             "actualExecutedRole":job["input"]["rsiSystemAgenda"]["target"]["role"],
-            "forecast":expected_meta["forecast"]
+            "forecast":expected_meta["forecast"],
+            "methodSnapshot":expected_snapshot,
+            "downstreamFeedback":expected_feedback
         });
         job["rsiSystemBlueprintVerified"]=json!(true);
         job["rsiSelfControllerVerified"]=json!(true);
@@ -330,11 +340,19 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 "other lineage roles={} hypothesis={} priorDesign={}",
                 row["roles"],row["hypothesis"],row["designSummary"]))
             .collect::<Vec<_>>().join("\n");
+        let verified_feedback=&job["input"]["rsiDownstreamFeedback"];
+        let causal_feedback=if verified_feedback["source"]==
+            "independent_downstream_feedback_for_method_rewrite_v1" {
+            format!("\n[ORIGINAL PAIRED DESCENDANT FEEDBACK — SOURCE REWRITE TRIAL]\n                Your predecessor compiled method path={} sha={}.                 Its actual rebuilt task descendant improved domain={}                 with independently verified candidate={} pairedReceipt={}.                 This evidence was replayed from original generation jobs;                 now REVISE the exact method source, with a new falsifiable                 hypothesis for why B succeeded/failed. The frozen evaluator                 must separately accept the new method version.                 Feedback inheritance alone is NOT a causal ablation.\n",
+                verified_feedback["methodPath"],verified_feedback["methodSourceSha256"],
+                verified_feedback["taskDomain"],verified_feedback["taskCandidateId"],
+                verified_feedback["taskEvaluationSha256"])
+        }else{String::new()};
         let method=if job["rsiInheritedMetaMethod"].is_object(){
             format!("\nINHERITED EXECUTABLE SELF-IMPROVEMENT TRIAL: {}\n",
                 job["rsiInheritedMetaMethod"]["sequence"])
         }else{String::new()};
-        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}\n\n{}",
+        format!("{instruction}\n\n{own_agenda}\n\n{meta}\n\n{causal}\n\n{scientific}\n\n{principle}\n\n{whole_growth}\n\n{model_experiment}\n\n            EDITABLE IMPROVEMENT METHOD HYPOTHESIS: {hypothesis}\n\n            COMPATIBLE PEER-LINEAGE RESEARCH (references only):\n{cross_lineage}\n            SELF-COMPOSED CROSS-LINEAGE NEW DESIGN EXPERIMENT: {hybrid}            {method}{causal_feedback}\n\n{}",
             job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     // Source-edit procedures are inherited code-level intelligence. The

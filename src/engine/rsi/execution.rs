@@ -271,6 +271,14 @@ pub(super) async fn run_loop(
             {
                 return Err("차세대 실행기의 실패 학습·개선 지시가 세대 이력과 일치하지 않습니다.".into());
             }
+            // The independent supervisor replays method A and actual B job
+            // receipts instead of trusting an arbitrary descendant plan.
+            if plan["methodSnapshot"]!=method_feedback::method_snapshot(
+                &context.state,&recorded_history,&head)
+                || plan["downstreamFeedback"]!=method_feedback::downstream_feedback(
+                    &context.state,&recorded_history,&head) {
+                return Err("실제 개선법 계승과 독립 과제 피드백 출처가 맞지 않습니다.".into());
+            }
             let rows=plan["rankedFiles"].as_array()
                 .ok_or("차세대 실행기의 소스 탐색 결과가 배열이 아닙니다.")?.clone();
             if rows.len()>2 || rows.iter().any(|row|row["path"].as_str()
@@ -359,6 +367,10 @@ pub(super) async fn run_loop(
             child_input["rsiPrincipleCurriculum"]=learned.clone();
             child_input["rsiWholeDominionGrowth"]=whole.clone();
             child_input["rsiPeerLineages"]=peers.clone();
+            child_input["rsiMethodSnapshot"]=
+                record["nextGenerationPlan"]["methodSnapshot"].clone();
+            child_input["rsiDownstreamFeedback"]=
+                record["nextGenerationPlan"]["downstreamFeedback"].clone();
             child_input["rsiMetaMethodHypothesis"]=
                 record["nextGenerationPlan"]["metaMethodHypothesis"].clone();
             child_input["rsiCrossLineageHypothesis"]=
@@ -714,6 +726,8 @@ pub(super) async fn run_loop(
         generation["inheritedMetaMethod"]=current["rsiInheritedMetaMethod"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        generation["methodSnapshot"]=current["input"]["rsiMethodSnapshot"].clone();
+        generation["downstreamFeedback"]=current["input"]["rsiDownstreamFeedback"].clone();
         generation["metaMethodHypothesis"]=current["input"]["rsiMetaMethodHypothesis"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["crossLineageHypothesis"]=

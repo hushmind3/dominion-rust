@@ -302,6 +302,12 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
         crate::engine::rsi_system::system_agenda(state,&model,&history,
             campaign["planIndexId"].as_str().unwrap_or(""),Path::new(lab))
     }else{Value::Null};
+    let method_snapshot=if system_mode {
+        method_feedback::method_snapshot(state,&history,binary_commit)
+    }else{Value::Null};
+    let downstream_feedback=if system_mode {
+        method_feedback::downstream_feedback(state,&history,binary_commit)
+    }else{Value::Null};
     let inherited=if automatic {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
@@ -393,13 +399,50 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
         crate::engine::rsi_meta_controller::compositional_hypothesis(
             &peers,&meta_policy)
     }else{Value::Null};
+    // A verified B outcome can send a real A-method revision back into the
+    // executable source planner. Only a same-revision, indexed A source can
+    // redirect this child; a feedback label alone never earns adoption.
+    if automatic && downstream_feedback.is_object()
+        && agenda["inheritedStage"].is_null() {
+        if let Some(method_path)=downstream_feedback["methodPath"].as_str() {
+            let matching=agenda["frontier"].as_array().and_then(|rows|
+                rows.iter().find(|row|row["path"]==method_path
+                    && row["sourceSha256"]==downstream_feedback["methodSourceSha256"]
+                    && row["domain"]=="improver")).cloned();
+            let grounded=matching.or_else(||{
+                let sha=crate::engine::code_index::indexed_source_hash(
+                    state,campaign["planIndexId"].as_str().unwrap_or(""),method_path)?;
+                if downstream_feedback["methodSourceSha256"].as_str()!=Some(sha.as_str())
+                    || !crate::engine::rsi::safe_path(method_path) {return None;}
+                let bytes=std::fs::read(Path::new(lab).join(method_path)).ok()?;
+                if format!("{:x}",Sha256::digest(&bytes))!=sha{return None;}
+                Some(json!({"role":"improvement_methods","domain":"improver",
+                    "path":method_path,"sourceSha256":sha,"sourceBytes":bytes.len(),
+                    "attempts":0,"verifiedRedesigns":0,"reason":"measured_downstream_method_feedback",
+                    "qualityProven":false}))
+            });
+            if let Some(row)=grounded {
+                let frontier=agenda["frontier"].as_array_mut()
+                    .ok_or("후손 개선 소스 탐색 결과가 없습니다.")?;
+                if !frontier.contains(&row) {
+                    if frontier.len()>=64 {frontier.pop();}
+                    frontier.push(row.clone());
+                }
+                agenda["target"]=row.clone();
+                agenda["focus"]=json!([row]);
+                agenda["downstreamFeedbackFocus"]=downstream_feedback.clone();
+            }
+        }
+    }
     let self_domain=if automatic {
         agenda["target"]["domain"].as_str()
             .filter(|domain|DOMAINS.contains(domain)).map(str::to_string)
     }else{None};
     let explicit=campaign["planSelectedDomain"].as_str()
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
-    let selected=if automatic && agenda["inheritedStage"].is_object() {
+    let selected=if automatic && agenda["downstreamFeedbackFocus"].is_object() {
+        self_domain.or(inherited).or(explicit)
+    }else if automatic && agenda["inheritedStage"].is_object() {
         // Model-authored successor stage can override a generic inherited
         // domain when the current source and observed failures support it.
         self_domain.or(inherited).or(explicit)
@@ -467,6 +510,7 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
         "peerLineages":peers,
         "metaMethodHypothesis":method_hypothesis,
         "crossLineageHypothesis":hybrid,
+        "methodSnapshot":method_snapshot,"downstreamFeedback":downstream_feedback,
         "rankedFiles":ranked
     }))
 }

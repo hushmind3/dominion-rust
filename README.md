@@ -565,3 +565,7 @@ The corresponding source assertions were updated. No test was executed.
 ### Source-attested meta → task → meta feedback (Sub1, 2026-11-13)
 
 `rsi/method_feedback.rs` binds one independently accepted improvement-method source revision to the immediate rebuilt binary, then replays the next task generation's original job, actual compiled meta execution and independent paired receipt before it can propose feedback for rewriting the *same* method. An unobserved or unaccepted task gain does not become feedback. The feedback is an experimental hypothesis, not evidence of causal ablation or RSI completion. `rsi/proof.rs` is the independent frozen closure verifier.
+
+### Compiled A→B→A experimental execution path
+
+The rebuilt planner returns `methodSnapshot` and `downstreamFeedback`. The frozen coordinator independently recomputes them from original accepted candidate receipts and actual B generation jobs, then passes them into the child job. The rebuilt worker repeats verification before tool/model execution. The measured B feedback can redirect the actual source-indexed frontier to A's unchanged improvement method file, and is explicitly delivered in C's system instructions. C must still produce a new source edit and independently win its paired evaluation. The frozen proof has a separate final gate; these input records are not self-certifying.
