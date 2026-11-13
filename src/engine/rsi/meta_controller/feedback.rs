@@ -1,6 +1,7 @@
 //! feedback stage of the compiled, revisable meta-improvement controller.
 //! These observations propose experiments; only frozen independent evaluation may adopt them.
 use super::*;
+use super::provenance::OUTCOME_CLASSES;
 
 /// The model—not this controller—authors the actual design, programs and
 /// reusable procedures. Comparative observations are bounded and source

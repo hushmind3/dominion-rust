@@ -99,7 +99,7 @@ pub(super) fn next_generation_productivity(history:&[Value],generation:&Value)->
 /// A scalar benchmark score cannot tell an agent whether to improve its
 /// hypothesis, compiler repair procedure, code writer or predictor.
 /// Dirichlet smoothing avoids certainty from one sparse experiment.
-const OUTCOME_CLASSES:[&str;5]=[
+pub(crate) const OUTCOME_CLASSES:[&str;5]=[
     "adopted","compiler_failure","no_verified_code_candidate",
     "behavior_regression","no_independent_gain"
 ];

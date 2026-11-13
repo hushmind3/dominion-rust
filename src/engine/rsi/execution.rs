@@ -51,7 +51,7 @@ pub(super) async fn run_loop(
             .as_str()
             .ok_or("세대 커밋 없음")?
             .to_string();
-        ensure_compiled_generator(context,record,&lab,&binary,
+        ensure_compiled_generator(context,record,&lab,&binary,&target,
             &head,&mut built_commit,remaining).await?;
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
@@ -592,7 +592,7 @@ pub(super) async fn run_loop(
         let session = current["sessionId"].as_str();
         let stopped=generation_stop_reason(&current,output.as_ref().err().map(String::as_str));
         let mut generation=collect_generation_evidence(
-            context,record,&current,attempt,&head,
+            context,record,&current,attempt,child_id,&head,
             worker_started.elapsed().as_millis() as u64);
         // Keep serde_json's macro recursion bounded while preserving
         // native provenance as first-class generation evidence.
@@ -870,7 +870,7 @@ pub(super) async fn run_loop(
                 &&generation["pairedRevalidated"]==true
                 &&generation_is_verified(&generation),
             "protocol":design["protocol"],
-            "actualWorkerExecuted":generation["experimentDesignExecuted"]==*design
+            "actualWorkerExecuted":generation["experimentDesignExecuted"]==design
         });
         generation["evidenceVerified"]=json!(
             generation["accepted"]==true

@@ -5,7 +5,7 @@ use super::*;
 
 pub(super) fn collect_generation_evidence(
     context:&JobContext,record:&mut Value,current:&Value,
-    attempt:u64,head:&str,worker_elapsed_ms:u64,
+    attempt:u64,child_id:&str,head:&str,worker_elapsed_ms:u64,
 )->Value{
     let session=current["sessionId"].as_str();
         let tools_used = session

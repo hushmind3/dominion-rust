@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) async fn ensure_compiled_generator(
     context:&JobContext,record:&mut Value,lab:&Path,
-    binary:&Path,head:&str,built_commit:&mut String,remaining:u64,
+    binary:&Path,target:&Path,head:&str,built_commit:&mut String,remaining:u64,
 )->Result<(),String>{
     if built_commit.as_str() != head {
             record["phase"] = json!("building_generator");

@@ -587,6 +587,16 @@ mod tests {
 #[cfg(test)]
 mod capability_tests {
     use super::*;
+    fn test_state() -> AppState {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("dominion-rsi-api-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        AppState::new(config,store,vault)
+    }
+
 
     #[test]
     fn capability_requires_three_consecutive_accepts() {
@@ -605,7 +615,7 @@ mod capability_tests {
         assert_eq!(accepted_streak(&gap), (1,1),
             "Research-only generations must not be skipped between adoptions");
         let mut derived = partial.clone();
-        apply_capability(&mut derived);
+        apply_capability(&test_state(),&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false);
 
         let verified = json!({"accepted":true,"pairedRevalidated":true,"domain":"memory","evaluation":{
@@ -621,7 +631,7 @@ mod capability_tests {
                 ]}}});
         let full = json!({"history":[verified.clone(),verified.clone(),verified.clone()]});
         let mut derived = full.clone();
-        apply_capability(&mut derived);
+        apply_capability(&test_state(),&mut derived);
         assert_eq!(derived["maxAcceptedStreak"], 3);
         assert_eq!(derived["capabilityDemonstrated"], false,
             "Three copied results without executable lineage are not recursion");
@@ -644,12 +654,12 @@ mod capability_tests {
         grandchild["generatorCommit"]=json!(c);
         grandchild["acceptedCommit"]=json!(d);
         let mut lineage=json!({"history":[parent,child,grandchild]});
-        apply_capability(&mut lineage);
+        apply_capability(&test_state(),&mut lineage);
         assert_eq!(lineage["capabilityDemonstrated"],false,
             "Three adopted commits without real meta source receipts and executing plans are not closure");
         let unmeasured = json!({"history":[{"accepted":true},{"accepted":true},{"accepted":true}]});
         let mut derived = unmeasured.clone();
-        apply_capability(&mut derived);
+        apply_capability(&test_state(),&mut derived);
         assert_eq!(derived["capabilityDemonstrated"], false, "adoption alone is not proof");
     }
 }
