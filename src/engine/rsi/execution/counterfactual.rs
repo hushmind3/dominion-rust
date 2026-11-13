@@ -73,7 +73,10 @@ pub(super) async fn matched_planner_intervention(
     context:&JobContext,lab:&Path,snapshot:&Value,current_plan:&Value,
     current_binary_sha:&str,history:&[Value]
 )->Result<Value,String>{
-    let Some(parent)=history.last().filter(|g|g["accepted"]==true
+    // Failed generation attempts do not replace the last ADOPTED binary.
+    // Replay the actual immediately preceding adopted source, preserving
+    // every unsuccessful attempt in the full matched planner history.
+    let Some(parent)=history.iter().rev().find(|g|g["accepted"]==true
         && g["acceptedCommit"]==snapshot["generatorCommit"]) else{return Ok(Value::Null)};
     let prior_commit=parent["generatorCommit"].as_str().ok_or("missing parent commit")?;
     let prior_sha=parent["generatorBinarySha256"].as_str().ok_or("missing parent binary SHA")?;
