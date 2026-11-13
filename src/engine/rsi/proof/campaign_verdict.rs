@@ -52,8 +52,9 @@ pub(crate) fn evaluate(state:&AppState,campaign:&Value)->Value {
         "actualCompletion":closed,
         "systemicHandoffProven":systemic,
         "recursiveMethodEvidence":closure,
+        "methodAssociationObserved":closed,
         "causalAblationProven":false,
-        "requiredMethodSequence":"model_authored_method_edit -> compiled_child_method_use_and_independent_other_capability_gain -> feedback_bound_method_rewrite_with_independent_meta_gain"
+        "requiredMethodSequence":"A1_model_method_source_edit -> B1_real_method_on_off_worker_gain -> A2_feedback_bound_method_rewrite -> B2_new_method_on_off_worker_gain_exceeding_B1"
     })
 }
 
@@ -66,7 +67,8 @@ pub(crate) fn apply(state:&AppState,campaign:&mut Value)->Value {
         "acceptedStreak","maxAcceptedStreak","verifiedStreak","maxVerifiedStreak",
         "sourceEvolutionDemonstrated","modelDrivenCapabilityDemonstrated",
         "recursiveMethodClosureProven","capabilityDemonstrated",
-        "actualCompletion","systemicHandoffProven","causalAblationProven"
+        "actualCompletion","systemicHandoffProven","causalAblationProven",
+        "methodAssociationObserved"
     ] {
         campaign[key]=verdict[key].clone();
     }
