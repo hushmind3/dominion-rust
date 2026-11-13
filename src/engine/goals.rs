@@ -704,6 +704,42 @@ mod tests {
         (result, state, dir, count)
     }
     #[tokio::test]
+    async fn safe_review_recovery_uses_saved_evidence_without_reexecuting_tools() {
+        use std::sync::atomic::Ordering;
+        let (state, dir)=state();
+        std::fs::write(dir.join("proof.txt"),"verified").unwrap();
+        let (port,calls,server)=mock_provider("workspace_read").await;
+        state.store.put("provider",&json!({"id":"mock","name":"mock","baseUrl":
+            format!("http://127.0.0.1:{port}/v1"),"model":"test",
+            "enabled":true,"toolMode":"native"}));
+        state.store.put("session",&json!({"id":"s","goalId":"g"}));
+        state.store.put("goal",&json!({"id":"g","goal":"verify proof.txt",
+            "status":"running","phase":"review","sessionId":"s",
+            "plan":"1. Existing proof is checked; 2. Verify the acceptance criteria",
+            "acceptanceChecks":[{"type":"file_exists","path":"proof.txt"}],
+            "executor":{"providerId":"mock","model":"test"},"maxIterations":1
+        }));
+        state.store.put("job",&json!({"id":"j","kind":"goal","status":"running",
+            "attempts":1,"sessionId":"s","input":{"goalId":"g"},
+            "goalState":{"inFlight":false,"reviewPending":true,
+                "sessionId":"s","nextIteration":1,
+                "evidence":[],"transcript":"executor output persisted",
+                "gaps":[],"turnError":null,"toolErrors":[]}
+        }));
+        crate::engine::jobs::recover(&state);
+        let job=state.store.get("job","j").unwrap();
+        assert_eq!(job["status"],"queued");
+        assert_eq!(state.store.get("goal","g").unwrap()["status"],"running");
+        let context=JobContext::new(state.clone(),"j".into());
+        let result=run(&context,&job).await.unwrap();
+        assert_eq!(result["status"],"completed");
+        assert_eq!(calls.load(Ordering::SeqCst),1,"only a model-only review is allowed");
+        assert_eq!(state.store.count("execution"),0,"no tool turn was replayed");
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn lying_executor_and_reviewer_cannot_complete_read_only_goal_run() {
         let (result, state, dir, calls) =
             execute_mock_goal("workspace_read", "create a report").await;
