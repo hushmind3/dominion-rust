@@ -47,6 +47,10 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const maxDuration=usingComfy?9:usingRunway?15:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
+  if(usingRunway&&![5,10,15].includes(seconds))setSeconds(10)
+  else if(usingComfy&&seconds>9)setSeconds(9)
+ },[usingRunway,usingComfy,seconds])
+ useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
  useEffect(()=>{
