@@ -594,7 +594,7 @@ pub fn refresh(state: &AppState, source: &Path) -> Result<Value, String> {
         let path = file["path"].as_str().unwrap_or("");
         // Preserve complete test source lookup for developers, but do not
         // report test-only modules as production complexity hotspots.
-        if path.starts_with("tests/")
+        if path.split('/').any(|part|matches!(part,"tests"|"fixtures"))
             || path.ends_with("_tests.rs")
             || path.ends_with("_fixture.rs") {
             continue;
@@ -1070,17 +1070,24 @@ mod tests {
             "fn secret_frozen_metric() {}\n").unwrap();
         std::fs::write(source.join("src/engine/search.rs"),
             "fn public_improvement_search() {}\n").unwrap();
+        std::fs::create_dir_all(source.join("src/engine/rsi/tests")).unwrap();
+        std::fs::write(source.join("src/engine/rsi/tests/evolve.rs"),
+            "fn mock_worker_fixture() {}\n").unwrap();
         let meta=refresh(&state,&source).unwrap();
         let id=meta["id"].as_str().unwrap();
         let paths=state.store.all("code_index_file").into_iter()
             .filter(|file|file["indexId"]==id)
             .map(|file|file["path"].as_str().unwrap_or("").to_string())
             .collect::<Vec<_>>();
-        assert_eq!(paths.len(),3,
+        assert_eq!(paths.len(),4,
             "ordinary development must retain full source visibility");
         assert!(paths.iter().any(|path|path=="src/engine/rsi_oracle_fixture.rs"));
         assert!(paths.iter().any(|path|path=="src/engine/rsi_metrics.rs"));
         assert!(paths.iter().any(|path|path=="src/engine/search.rs"));
+        assert!(paths.iter().any(|path|path=="src/engine/rsi/tests/evolve.rs"));
+        assert!(!meta["hotspots"].as_array().unwrap().iter().any(|row|
+            row["path"]=="src/engine/rsi/tests/evolve.rs"),
+            "test-only sources are searchable but not release complexity hotspots");
         let _=std::fs::remove_dir_all(root);
     }
 
