@@ -356,7 +356,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // complementary graph to the adopted-generation A→B→A lineage. Joint
     // edits remain confounded, never evidence of a single role's causal gain.
     let coupled_portfolio=if input["rsiAutonomous"]==true
-        && !owner_focus && !paired && architecture_target.is_object() {
+        && !meta_redesign_active && !owner_focus && !paired
+        && architecture_target.is_object() {
         crate::engine::rsi_interaction::coupled_portfolio(
             &architecture_target,&frontier,&interaction_graph,DOMAINS)
     }else{Value::Null};
@@ -517,7 +518,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // The generated experiment is an actual editing decision, not just
     // appended prompt text. Isolated experiments MUST focus only one role;
     // accepted-source recursive stages take priority over older guesses.
-    if science_active && !predictor_repair_active
+    if science_active && !predictor_repair_active && !meta_redesign_active
         && !algebra_active && !capability_active
         && science["phase"]!="discover_new_mechanism" {
         let members=science["focus"].as_array().cloned().unwrap_or_default();
@@ -559,7 +560,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }));
         }
     }
-    let focus=if negative_transfer_active {
+    let focus=if meta_redesign_active {
+        ranked.iter().take(1).filter_map(|row|row["path"].as_str())
+            .collect::<Vec<_>>()
+    }else if negative_transfer_active {
         ranked.iter().take(2).filter_map(|row|row["path"].as_str())
             .collect::<Vec<_>>()
     }else if algebra_active || capability_active
