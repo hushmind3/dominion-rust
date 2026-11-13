@@ -5,7 +5,7 @@ use super::{
     rsi, tools, limits, select,
 };
 
-pub(super) fn isolated_write_check(
+fn isolated_write_check(
     state: &AppState, session_id: &str, tool: &str, args: &Value,
 ) -> Result<(), &'static str> {
     if !matches!(tool, "workspace_write" | "workspace_replace" | "workspace_replace_function") {
