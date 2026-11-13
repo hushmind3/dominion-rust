@@ -240,3 +240,7 @@ The product-wide source changes are mapped in [SUB4-PRODUCT-UPGRADE-2026-11-14.m
 ### Adaptive multi-agent economic self-improvement (2026-11-14)
 
 The connected `multiagent.economy` algorithm runs through `api/rooms.rs` → `algorithms::choose_for_agent` → immutable job roomSnapshot → compiled `rooms/economy.rs` and `rooms/speakers.rs` → chat provider tools. Completed automatic room jobs accept idempotent owner preference feedback for the exact selected source revision, reusing `algorithm_stat` for future policy selection. This closes a domain-level preference adaptation loop without changing model weights. It is not accepted as independent RSI evidence or a measured answer-quality improvement. See [product integration map](SUB4-PRODUCT-UPGRADE-2026-11-14.md).
+
+### Full-product source discoverability (2026-11-14)
+
+`rsi_system.rs` now treats executable video and room economy code as explicit descendant architecture examples, not only generic unknown harness files. The paired evaluator and independent source-proof files remain unchanged and protected. Only an actual model-edited, independently measured, accepted worktree can produce a new RSI success receipt. `video/runway.rs::checkpoint_video` also compensates for shallow job-level JSON patches to retain immutable shot plans and paid remote task IDs without changing other domains' checkpoint contracts.
