@@ -474,3 +474,11 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 `rsi_meta_controller::synthesize` → `rsi/planner/descendant.rs` → `rsi/execution/worker.rs` → `rsi/execution/campaign.rs` → `rsi_system::revalidated_history`로 이어지며, `predictionRepairEvidence`는 계획·실제 정책 실행·후보 파일 변경·독립 채택을 분리해 기록합니다. 상세 경로, 근거 연구, 검증 경계는 [챔피온 출처 결속 예측기 구조](docs/CHAMPION-SOURCE-FORECAST-2026-11-13.md)를 참조하세요. **이 변경에 대한 컴파일·CI·실모델 검증은 아직 수행하지 않았습니다.**
 
 모듈 경계도 분리했습니다. `src/engine/rsi_worktree/{adoption,comparison}.rs`가 실제 채택·독립 비교를 각각 맡고, `src/engine/rsi_system/{design,replay,lineage}.rs`가 모델 설계 제안·원본 영수증 재검증·후손 계승을 각각 맡습니다. 상위 `rsi_worktree`와 `rsi_system`의 호출 API는 재노출하여 기존 라우팅을 유지했습니다. 본 작업에서는 테스트·빌드·벤치마크를 실행하지 않았습니다.
+
+### 심판 피드백 반영: RSI 성공 판정 단일화 (2026-11-13)
+
+최신 심사에서 지적된 실행기/캠페인/API 성공 판정 불일치를 제거했습니다. `src/engine/rsi/proof/campaign_verdict.rs::{evaluate,apply}`는 공통의 원본 paired 영수증·모델 및 도구 실행 출처·컴파일된 계승 커밋을 재확인합니다. 엄격한 `rsi_recursive_closure::evidence`가 **개선법 실제 수정 A → 변경된 방법을 사용한 후손의 다른 능력 개선 B → 해당 B 평가 영수증을 이용한 방법 재수정 A**의 3세대 계보를 제공할 때만 `actualCompletion=capabilityDemonstrated=recursiveMethodClosureProven=true`가 됩니다.
+
+`rsi/execution/campaign.rs`는 세대 저장 직후, `rsi/execution/source.rs`는 종료 저장 직전에, `rsi/evaluation/adoption.rs::proof_goal_reached`는 중지 판단에서, `src/api/rsi.rs`와 `rsi.rs::capability_audit`는 조회·감사에서 **동일한 판정 함수**를 사용합니다. 기존 캠페인에 남은 근거 없는 `capability_demonstrated` 종료 사유는 재검증 시 `recursive_method_closure_not_proven`으로 정정합니다. 이 소스 변경에는 테스트·컴파일·실모델 실행 결과가 아직 없습니다.
+
+실제 함수·모듈·증거 경계와 2026년 참고 연구는 [챔피온 RSI 성공 판정 통합 설계](docs/CHAMPION-UNIFIED-CLOSURE-2026-11-13.md)에 정리했습니다.
