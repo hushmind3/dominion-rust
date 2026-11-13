@@ -64,7 +64,7 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
         let second_rule=&apply2["improvementAlgebraPlan"]["selected"]["rule"];
         let revised_sha=&rewrite["acceptedSourceHashes"][method_path];
         if apply2["operatorExecution"]["targetPath"]==method_path
-            || apply2["operatorExecution"]["methodSourceSha256"]!=*revised_sha
+            || &apply2["operatorExecution"]["methodSourceSha256"]!=revised_sha
             || apply2["operatorExecution"]["methodFamilyId"]!=family
             || !rsi_operator_provenance::verified(state,apply2,second_rule) {
             continue;
