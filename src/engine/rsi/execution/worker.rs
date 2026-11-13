@@ -197,13 +197,33 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             job["input"]["rsiImprovementAlgebra"]["selected"]["intent"].as_str(),
             Some("evolve_measured_method_after_controlled_downstream_gain"
                 |"run_revised_method_in_controlled_descendant"));
+        let science_active=job["input"]["rsiAutonomous"]==true
+            && !owner_focus && !paired_descendant_target(&job["input"]);
+        let initial_experiment=crate::engine::rsi_evolve::meta_experiment_policy::synthesize(
+            &history,frontier,&job["input"]["rsiImprovementAlgebra"],
+            &job["input"],&commit);
+        let source_redesign=crate::engine::rsi_evolve::meta_experiment_policy::design_target(
+            &initial_experiment,&commit,&job["input"]);
+        let meta_redesign_target=source_redesign.as_ref().and_then(|target|
+            frontier.iter().find(|row|row["path"]==target["path"]
+                && row["sourceSha256"]==target["sourceSha256"])).cloned();
+        let meta_redesign_active=science_active && !controlled_transition
+            && meta_redesign_target.is_some();
+        if job["input"]["rsiMetaRedesignTarget"]!=json!(meta_redesign_target)
+            || job["input"]["rsiMetaRedesignActive"]!=json!(meta_redesign_active)
+            || job["input"]["rsiControllerPlan"]["metaRedesignTarget"]
+                !=job["input"]["rsiMetaRedesignTarget"]
+            || job["input"]["rsiControllerPlan"]["metaRedesignActive"]
+                !=job["input"]["rsiMetaRedesignActive"] {
+            return Err("메타 실험 자체의 재설계 대상과 실제 소스 정책이 불일치합니다.".into());
+        }
         let predictor_repair_active=job["input"]["rsiAutonomous"]==true
-            && !controlled_transition
+            && !controlled_transition && !meta_redesign_active
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiMetaPolicy"]["predictionRuleRepair"]["repairRuleSourceSelected"]==true
             && job["input"]["rsiMetaPolicy"]["target"]["path"]=="src/engine/rsi_prequential.rs";
         let negative_transfer_active=!predictor_repair_active
-            && !controlled_transition
+            && !controlled_transition && !meta_redesign_active
             && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["victim"].is_object()
@@ -218,20 +238,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 return Err("후손의 실제 편집 파일 2개가 독립 검증된 간섭 대상과 다릅니다.".into());
             }
         }
-        let capability_active=!predictor_repair_active
+        let capability_active=!predictor_repair_active && !meta_redesign_active
             && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && !negative_transfer_active
             && crate::engine::rsi_method_generalization::prefer_capability_target(
                 &job["input"]["rsiImprovementAlgebra"],
                 &job["input"]["rsiMethodGeneralization"]);
-        let algebra_active=!predictor_repair_active
+        let algebra_active=!predictor_repair_active && !meta_redesign_active
             && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && !negative_transfer_active && !capability_active
             && job["input"]["rsiImprovementAlgebra"]["selected"]["target"].is_object();
         let suggested=if job["input"]["rsiAutonomous"]==true && !owner_focus
             && !paired_descendant_target(&job["input"])
+            && !meta_redesign_active
             && !negative_transfer_active && !algebra_active && !capability_active {
             crate::engine::rsi_system::inherited_stage(&state,&history,frontier)
         }else{Value::Null};
@@ -284,6 +305,29 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             &state,&history,frontier,&authored_algebra,&commit);
         let algebra_expected=crate::engine::rsi_method_generalization::adapt(
             authored_algebra,&learning_expected);
+        // The worker's own source decides its experiment protocol. The
+        // parent must not alter or infer the policy from a proof verdict.
+        let mut experiment_input=job["input"].clone();
+        experiment_input["rsiMetaOperatorActive"]=json!(algebra_active);
+        let expected_experiment=crate::engine::rsi_evolve::meta_experiment_policy::synthesize(
+            &history,frontier,&algebra_expected,&experiment_input,&commit);
+        if job["input"]["rsiMetaOperatorActive"]!=json!(algebra_active)
+            || job["input"]["rsiExperimentPolicy"]!=expected_experiment
+            || job["input"]["rsiControllerPlan"]["experimentPolicy"]!=expected_experiment
+            || job["input"]["rsiControllerPlan"]["metaOperatorActive"]
+                !=json!(algebra_active)
+            || crate::engine::rsi_evolve::meta_experiment_policy::decode(
+                &expected_experiment,&commit,&experiment_input).is_none() {
+            return Err("후손이 실행할 메타 실험 방식과 소스 편집 정책이 일치하지 않습니다.".into());
+        }
+        job["rsiExperimentPolicyExecuted"]=json!({
+            "source":"running_compiled_descendant_experiment_designer_v1",
+            "generatorCommit":commit,
+            "protocol":expected_experiment["selectedProtocol"],
+            "frozenProfileSha256":expected_experiment["frozen"]["profileSha256"],
+            "policySha256":expected_experiment["signatureSha256"],
+            "qualityProven":false
+        });
         if job["input"]["rsiFactorialExperiment"]!=factor_expected
             || job["input"]["rsiRecursiveScientificProgram"]!=science_expected
             || job["input"]["rsiControllerPlan"]["factorialExperiment"]!=factor_expected
