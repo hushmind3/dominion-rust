@@ -320,6 +320,14 @@ use compiled_planning::plan_compiled_descendant;
 mod generation_evidence;
 use generation_evidence::capture_generation_evidence;
 
+#[path = "rsi/learning/generation_feedback.rs"]
+mod generation_feedback;
+use generation_feedback::record_generation_feedback;
+
+#[path = "rsi/execution/generation_finalization.rs"]
+mod generation_finalization;
+use generation_finalization::{finalize_generation,GenerationObservation};
+
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};
