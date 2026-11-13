@@ -292,6 +292,7 @@ use super::*;
         ];
         let observations=(0..2).map(|n|json!({
             "id":format!("attempt-{n}"),
+            "jobId":format!("child-{n}"),
             "generatorCommit":"b".repeat(40),
             "focusFiles":["src/engine/rsi_evolve.rs"],
             "metaMethodInheritance":{"sourceChanges":[{"path":source}]},
@@ -305,6 +306,10 @@ use super::*;
                 "independentCandidateAdopted":false
             }
         })).collect::<Vec<_>>();
+        let duplicated=vec![observations[0].clone(),observations[0].clone()];
+        let one_job_twice=synthesize(&duplicated,&frontier,&["improver"],None);
+        assert_ne!(one_job_twice["mode"],
+            "repair_inherited_method_from_downstream_failures");
         let policy=synthesize(&observations,&frontier,&["improver"],None);
         assert_eq!(policy["target"]["path"],source);
         assert_eq!(policy["mode"],

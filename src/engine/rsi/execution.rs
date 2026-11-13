@@ -802,7 +802,10 @@ pub(super) async fn run_loop(
                                     json!(format!("{:x}",Sha256::digest(&bytes))));
                             }
                         }
-                        generation["acceptedSourceHashes"]=Value::Object(accepted_hashes);
+                        // Store the independently adopted source fingerprint with
+                        // the candidate receipt as well as the generation summary.
+                        // Replayed method learning must match BOTH records.
+                        generation["acceptedSourceHashes"]=Value::Object(accepted_hashes.clone());
                         generation["accepted"] = json!(true);
                         generation["acceptedCommit"] = json!(commit);
                         record["headCommit"] = json!(commit);
@@ -810,7 +813,8 @@ pub(super) async fn run_loop(
                             json!(record["acceptedGenerations"].as_u64().unwrap_or(0) + 1);
                         let mut saved = candidate;
                         saved["experimentAdoption"] = json!({"campaignId":context.job_id,
-                            "commit":commit,"generatorCommit":head,"productionDeployed":false});
+                            "commit":commit,"generatorCommit":head,"productionDeployed":false,
+                            "acceptedSourceHashes":accepted_hashes});
                         context
                             .state
                             .store

@@ -44,6 +44,7 @@ pub(crate) fn inherited_method_receipt(
     }
     let Some(parent)=checked_history.iter().rev().find(|row|
         row["accepted"]==true && row["pairedRevalidated"]==true
+            && row["sourceLineageVerified"]==true
             && row["candidateOrigin"]=="model_driven_detached_worktree"
             && row["acceptedCommit"]==generator_commit
             && row["systemDesign"]["source"]=="model_authored_system_design"
@@ -145,6 +146,7 @@ mod tests {
             "id":"generation-1","candidateId":"candidate-1",
             "generatorCommit":"a".repeat(40),"acceptedCommit":commit,
             "accepted":true,"pairedRevalidated":true,
+            "sourceLineageVerified":true,
             "candidateOrigin":"model_driven_detached_worktree",
             "jobId":"worker-1",
             "systemDesign":{"source":"model_authored_system_design",

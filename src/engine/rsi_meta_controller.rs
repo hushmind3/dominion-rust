@@ -98,13 +98,18 @@ fn inherited_method_repair(history:&[Value],ranked:&[(Value,f64)])->Option<Value
     let lineage=&latest["metaMethodOutcome"]["inheritedParentCommit"];
     let revision=&latest["metaMethodOutcome"]["compiledPolicyRevision"];
     if !lineage.is_string() || !revision.is_string(){return None;}
+    let mut seen_jobs=std::collections::BTreeSet::new();
     let matched=history.iter().rev().take(12).filter(|g|
         g["metaMethodOutcome"]["source"]
             =="observed_compiled_meta_method_successor_outcome_v1"
             && g["metaMethodOutcome"]["independentlyAssessed"]==true
             && g["metaMethodOutcome"]["inheritedParentCommit"]==*lineage
             && g["metaMethodOutcome"]["compiledPolicyRevision"]==*revision
-            && g["metaMethodOutcome"]["actuallyFocused"]==true)
+            && g["metaMethodOutcome"]["actuallyFocused"]==true
+            // Replayed snapshots and duplicate log rows are NOT
+            // independent downstream experiments.
+            && g["jobId"].as_str().is_some_and(|job|
+                !job.is_empty() && seen_jobs.insert(job.to_owned())))
         .collect::<Vec<_>>();
     let failures=matched.iter().filter(|g|
         g["metaMethodOutcome"]["independentCandidateAdopted"]==false).count();

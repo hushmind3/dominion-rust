@@ -75,3 +75,28 @@ The previous module extraction left `rsi_meta_controller/observations.rs` callin
 - [Meta HyperAgents, 2026-03-24](https://ai.meta.com/research/publications/hyperagents/): put task-solving and meta-improvement methods in the actual mutable execution program.
 - [AIDE², 2026-09-22](https://arxiv.org/abs/2609.26457): an accepted source rewrite becomes the next agent, and hidden held-out evaluations determine admission.
 - [RSI-Env, 2026-11-01](https://arxiv.org/abs/2611.01736): retain a persistent independent host controller for evaluation/versioning while accepted descendants take over subsequent improvement rounds. The cited system may also train models; this branch restricts RSI to source, policy, memory and harness changes with fixed base weights.
+
+## Adoption-source provenance and independent descendant attempts — 2026-11-13
+
+The method-inheritance receipt now requires `sourceLineageVerified`, recomputed by
+`rsi_system/history.rs` from an independently replayed paired candidate and a
+second source-hash ledger stored at **the actual worktree adoption action**.
+`rsi/execution.rs` writes the adopted source SHA-256 map both to its generation
+summary and to the candidate's `experimentAdoption.acceptedSourceHashes`.
+The revalidator binds candidate ID, originating child job, origin, base commit,
+adoption commit, and each mapped changed path before allowing the
+`rsi_system/method_lineage.rs` inheritance claim.
+
+Prior paired outcomes without the new adoption ledger are still replayed as
+task feedback but are not retroactively credited with method-source inheritance.
+The `rsi_meta_controller::inherited_method_repair` uses unique child job IDs,
+so two copies of one assessed child cannot produce the two-independent-failure
+signal that rewrites the executable improvement method. Regression cases cover
+cross-job borrowing, modified SHA maps, and duplicate descendant observations.
+
+This is a stronger provenance and independent-observation boundary; it is not
+a cryptographic append-only record and does not prove that an edit caused a
+quality gain. It follows the 2026 AIDE² principle of inherited accepted
+agent revisions (https://arxiv.org/abs/2609.26457) and 2026 RRSI history-aware
+proposal discipline (https://github.com/google-research/rrsi).
+No test, compile, benchmark, workflow, or model-generation run was performed.

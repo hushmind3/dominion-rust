@@ -463,3 +463,20 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 **독립 증명 경계:** 새 루프는 소스·행동 계보 및 실패 후 개선 방법 **재설계 경로**를 구현한 것입니다. 실제 컴파일·실모델 후손 3세대의 연속적인 개선, 동등 예산 A/B 성과, 일반화 능력은 아직 실행 증거가 없으므로 완전한 RSI 성공으로 표시하지 않습니다. 모델 가중치 변경·LoRA·파인튜닝은 연결하지 않았습니다. 이 변경은 `dominion-sub2`에만 반영됐습니다.
 
 구조·한계와 증거 경계는 `docs/research/SUB2-EXECUTABLE-RSI-BOUNDARIES-2026-11-13.md`에 정리했습니다.
+
+## 2026-11-13 서브2: 채택 소스 원본 결속과 독립 후손 계수
+
+- `rsi/execution.rs`: 실험 worktree 채택 직후 계산한 변경 소스 SHA-256을
+  세대 요약과 별도로 **후보의 experimentAdoption 영수증**에도 보존합니다.
+- `rsi_system/history.rs`: 동일 child job에서 생산된 원본 paired 후보만
+  세대 평가로 재생하고, 후보 영수증과 세대 요약의 source SHA가 일치할 때에만
+  `sourceLineageVerified`를 설정합니다.
+- `rsi_system/method_lineage.rs`: 위 독립 채택 원본 결속 없이는 변경된
+  개선 방법이 다음 컴파일된 후손에게 계승되었다고 인정하지 않습니다.
+- `rsi_meta_controller.rs`: 계승된 개선 방법의 실패 후 자기수정은 동일
+  job의 중복 기록을 1회로 계산합니다. 실제 독립 후손 2회 이상이 필요합니다.
+
+예전 채택 후보에 새 source SHA 영수증이 없다면 과거 paired **평가 기록은
+유지**하되 개선 방법의 소스 계승 증거로는 사용하지 않습니다. 이는
+성능 개선 입증이 아니라 학습·계승 데이터의 출처 경계 강화입니다.
+새 회귀 테스트는 작성했지만 지침에 따라 빌드·CI·테스트는 실행하지 않았습니다.
