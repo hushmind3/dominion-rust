@@ -58,3 +58,27 @@ fn source_boundary_rejects_injected_genome_weights(){
     p["effectProven"]=json!(true);
     assert!(validate(&p,&"a".repeat(40)).is_err());
 }
+
+#[test]
+fn experiment_genome_must_match_real_runnable_intervention(){
+    let open=propose(&[],&"a".repeat(40),false,false);
+    assert!(implementation_matches(&open,&Value::Null,&Value::Null));
+    assert!(!implementation_matches(&open,&json!({"selected":{}}),&Value::Null));
+    let factorial=propose(&[],&"a".repeat(40),true,false);
+    let mut payload=factorial.clone();
+    payload["arm"]=json!("factorial");
+    assert!(implementation_matches(&payload,&json!({"selected":{"id":"test"}}),&Value::Null));
+    assert!(!implementation_matches(&payload,&Value::Null,&Value::Null));
+    let repaired=propose(&[],&"a".repeat(40),true,true);
+    assert_eq!(repaired["arm"],"repair");
+    assert!(implementation_matches(&repaired,&Value::Null,&json!({"selected":{"id":"test"}})));
+}
+#[test]
+fn manually_altered_policy_revision_cannot_be_inherited(){
+    let mut p=propose(&[],&"a".repeat(40),false,false);
+    p["genome"]["novelty_weight"]=json!(7);
+    assert!(validate(&p,&"a".repeat(40)).is_err());
+    p["genome"]["novelty_weight"]=json!(4);
+    p["revision"]=json!("0".repeat(64));
+    assert!(validate(&p,&"a".repeat(40)).is_err());
+}
