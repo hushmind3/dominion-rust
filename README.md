@@ -473,4 +473,4 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 
 `rsi_meta_controller::synthesize` → `rsi/planner/descendant.rs` → `rsi/execution/worker.rs` → `rsi/execution/campaign.rs` → `rsi_system::revalidated_history`로 이어지며, `predictionRepairEvidence`는 계획·실제 정책 실행·후보 파일 변경·독립 채택을 분리해 기록합니다. 상세 경로, 근거 연구, 검증 경계는 [챔피온 출처 결속 예측기 구조](docs/CHAMPION-SOURCE-FORECAST-2026-11-13.md)를 참조하세요. **이 변경에 대한 컴파일·CI·실모델 검증은 아직 수행하지 않았습니다.**
 
-모듈 경계도 분리했습니다. `src/engine/rsi_worktree/{adoption,comparison}.rs`가 실제 채택·독립 비교를 각각 맡고, `src/engine/rsi_system/{replay,lineage}.rs`가 원본 영수증 재검증·후손 계승을 각각 맡습니다. 상위 `rsi_worktree`와 `rsi_system`의 호출 API는 재노출하여 기존 라우팅을 유지했습니다. 본 작업에서는 테스트·빌드·벤치마크를 실행하지 않았습니다.
+모듈 경계도 분리했습니다. `src/engine/rsi_worktree/{adoption,comparison}.rs`가 실제 채택·독립 비교를 각각 맡고, `src/engine/rsi_system/{design,replay,lineage}.rs`가 모델 설계 제안·원본 영수증 재검증·후손 계승을 각각 맡습니다. 상위 `rsi_worktree`와 `rsi_system`의 호출 API는 재노출하여 기존 라우팅을 유지했습니다. 본 작업에서는 테스트·빌드·벤치마크를 실행하지 않았습니다.
