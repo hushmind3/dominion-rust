@@ -1,7 +1,7 @@
 //! Typed, bounded experiment-policy predicates owned by the editable RSI
 //! meta engine. An adopted descendant may rewrite this predicate vocabulary,
 //! thresholds, and selection algorithm without changing the frozen evaluator.
- //! The compiler consumes measured episode fields; it never assigns success.
+//! The compiler consumes measured episode fields; it never assigns success.
 use serde::{Deserialize,Serialize};
 use serde_json::Value;
 
@@ -17,7 +17,7 @@ enum Metric {
     ActualToolFailures,
     ModelTokens,
 }
-#[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
+#[derive(Clone,Copy,Debug,Serialize,Deserialize,PartialEq)]
 #[serde(rename_all="snake_case")]
 enum Comparison { GreaterThan, AtLeast, LessThan, AtMost, Equal }
 
