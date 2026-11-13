@@ -111,8 +111,8 @@ pub(crate) fn plan(state:&AppState,history:&[Value],frontier:&[Value],
             "sourceWritingModelStratum":actor,
             "source":source,"victim":victim,
             "generatorSourceCommit":generator,"frozenProfileSha256":profile,
-            "independentCandidateCounterexamples":case.candidate_ids.len(),
-            "distinctDamagedHoldoutCases":case.case_ids.len(),
+            "independentCandidateCounterexamples":case.candidate_ids.len().min(8),
+            "distinctDamagedHoldoutCases":case.case_ids.len().min(12),
             "candidateIds":case.candidate_ids.iter().take(8).collect::<Vec<_>>(),
             "caseIds":case.case_ids.iter().take(12).collect::<Vec<_>>(),
             "supportedForPairedInvestigation":supported,
@@ -166,6 +166,11 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
         && row["generatorSourceCommit"]==commit
         && row["independentCandidateCounterexamples"].as_u64().unwrap_or(0)>=2
         && row["distinctDamagedHoldoutCases"].as_u64().unwrap_or(0)>=2
+        && row["candidateIds"].as_array().is_some_and(|ids|
+            ids.len()>=2 && ids.len()<=8 && row["independentCandidateCounterexamples"]==ids.len())
+        && row["caseIds"].as_array().is_some_and(|ids|
+            ids.len()>=2 && ids.len()<=12 && row["distinctDamagedHoldoutCases"]==ids.len())
+        && row["sourceWritingModelStratum"].as_str().is_some_and(|s|!s.is_empty())
         && frontier.contains(&row["source"])
         && frontier.contains(&row["victim"])
         && row["source"]["role"]!=row["victim"]["role"]
@@ -184,6 +189,63 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
     plan["selected"].is_null()
         || (good(&plan["selected"])
             && all.iter().any(|row|row==&plan["selected"]))
+}
+/// Frozen supervisor only replays immutable candidate receipts for selected
+/// source/victim pairs; the descendant keeps ownership of its ranking
+/// algorithm. Non-selected hints never grant edit or adoption authority.
+pub(crate) fn validate_receipts(
+    state:&AppState,history:&[Value],plan:&Value
+)->Result<(),String>{
+    let selected=&plan["selected"];
+    if selected.is_null(){return Ok(());}
+    let candidates=selected["candidateIds"].as_array()
+        .ok_or("실패 후보 영수증 목록 없음")?;
+    let damaged=selected["caseIds"].as_array()
+        .ok_or("손상 홀드아웃 기록 없음")?;
+    let commit=selected["generatorSourceCommit"].as_str()
+        .ok_or("소스 세대 없음")?;
+    let profile=selected["frozenProfileSha256"].as_str()
+        .ok_or("동결 프로필 없음")?;
+    let actor=selected["sourceWritingModelStratum"].as_str()
+        .ok_or("모델 실행 계층 없음")?;
+    let source=selected["source"]["path"].as_str()
+        .ok_or("변경된 소스 경로 없음")?;
+    let victim=selected["victimRole"].as_str()
+        .ok_or("피해 역할 없음")?;
+    let mut independently_damaged=BTreeSet::<String>::new();
+    for id in candidates {
+        let id=id.as_str().filter(|s|!s.is_empty())
+            .ok_or("실패 후보 ID 없음")?;
+        let row=history.iter().find(|g|
+            g["candidateId"]==id
+            && g["generatorCommit"]==commit
+            && g["comparisonProfileSha256"]==profile
+            && g["pairedMeasured"]==true
+            && g["changedSourcePaths"]==json!([source])
+            && rsi_intervention_lab::source_actor(g).as_deref()==Some(actor))
+            .ok_or("실패 영수증이 원래 세대·평가 조건·모델에서 생성되지 않았습니다.")?;
+        let candidate=state.store.get("rsi_candidate",id)
+            .ok_or("원본 실패 후보가 없음")?;
+        if candidate["baseCommit"]!=commit || candidate["paths"]!=json!([source])
+            || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"{
+            return Err("실패 후보의 출처 또는 편집 범위 불일치".into());
+        }
+        let metrics=rsi::replayed_pair_metrics(state,&candidate)
+            .ok_or("동결 평가 영수증을 독립 재계산하지 못했습니다.")?;
+        if metrics!=row["evaluation"]["metrics"]{
+            return Err("과거 세대가 보고한 평가와 원본이 다릅니다.".into());
+        }
+        for m in metrics["measurements"].as_array().into_iter().flatten(){
+            if regressed(m) && m["domain"].as_str().map(measured_role)==Some(victim) {
+                if let Some(id)=m["id"].as_str(){independently_damaged.insert(id.to_string());}
+            }
+        }
+    }
+    if damaged.iter().any(|v|v.as_str().is_none_or(|id|
+        !independently_damaged.contains(id))){
+        return Err("서로 다른 동결 홀드아웃 손상 증거가 부족합니다.".into());
+    }
+    Ok(())
 }
 pub(crate) fn instruction(plan:&Value)->String{
     let pair=&plan["selected"];
@@ -285,6 +347,13 @@ mod tests {
         assert_eq!(result["selected"]["independentCandidateCounterexamples"],2);
         assert_eq!(result["selected"]["distinctDamagedHoldoutCases"],2);
         assert!(valid(&result,&frontier,&head,2));
+        assert!(validate_receipts(&state,&history,&result).is_ok());
+        // Distinct source-writing actors cannot be pooled as a single
+        // repeated regression, even on an identical frozen case profile.
+        history[1]["generatorModel"]=json!("another-writer");
+        let mixed=plan(&state,&history,&frontier,&head);
+        assert!(mixed["selected"].is_null());
+        history[1]["generatorModel"]=json!("source-writer");
         let mut forged_plan=result.clone();
         forged_plan["selected"]["victim"]["path"]=json!("src/engine/other.rs");
         let mut unsigned=forged_plan.clone();
