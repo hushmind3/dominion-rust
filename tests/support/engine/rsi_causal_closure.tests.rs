@@ -42,15 +42,25 @@ mod recursive_method_feedback_contract {
     fn changed_method_identity_without_measured_child_feedback_is_not_a_closure(){
         let original=observed_method("remember source paths","method-a","rev-a");
         let revised=observed_method("remember source paths","method-b","rev-b");
-        let child=json!({"id":"child-b","candidateId":"patch-b"});
+        let child=json!({"id":"child-b","candidateId":"patch-b",
+            "methodAblation":{"methodAssociationObserved":true,"qualityProven":true,
+                "controlId":"control-b","controlEvaluationId":"eval-off",
+                "treatmentEvaluationId":"eval-on"}});
         let no_feedback=json!({"improvementDirective":{
             "sourceGenerationId":"unrelated","previousAccepted":true,
             "previousCandidateId":"patch-b"}});
         assert!(!revised_method_after_feedback(&original,&revised,&child,&no_feedback));
         let feedback=json!({"improvementDirective":{
+            "mode":"evolve_executed_method_from_feedback",
             "sourceGenerationId":"child-b","previousAccepted":true,
-            "previousCandidateId":"patch-b"}});
+            "previousCandidateId":"patch-b",
+            "methodFeedback":{"sourceGenerationId":"child-b","controlId":"control-b",
+                "controlEvaluationId":"eval-off","treatmentEvaluationId":"eval-on",
+                "requiresNewRevisionAndSuccessorExecution":true}}});
         assert!(revised_method_after_feedback(&original,&revised,&child,&feedback));
+        let mut forged=feedback.clone();
+        forged["improvementDirective"]["methodFeedback"]["controlEvaluationId"]=json!("wrong");
+        assert!(!revised_method_after_feedback(&original,&revised,&child,&forged));
         assert!(!revised_method_after_feedback(&original,&original,&child,&feedback));
     }
 
