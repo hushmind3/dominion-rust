@@ -271,7 +271,7 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 - `rsi/learning/methods.rs::configure_method_session/method_strategies`는 OFF 작업기의 실제 상속 절차 실행을 차단합니다. 영수증 재검산은 `method_ablation.rs::measured_method_ablation`이 두 작업의 원본 사전입력 SHA, 소스/모델/프로필, 실제 procedure 실행 기록, 원본 후보의 재연 가능 평가 수치와 동일 홀드아웃 사례를 비교합니다. 결과는 `generation.methodAblation`에 기록되며, `rsi_causal_closure.rs::audit`가 **A→B→A→B의 2개 B 세대에 실제 ON/OFF 대조군 성과**를 추가 필수조건으로 요구합니다.
 - 단일 ON/OFF 쌍은 모델 샘플링·공유 상태의 완전 통제가 아니라는 한계를 `causalAblationProven:false`로 노출합니다. 대조군 미실행, 평가 영수증 누락, 동일성·홀드아웃 불일치 시 전체 RSI 완성 판정은 거절합니다. 재현성 향상을 위한 여러 독립 시드 반복은 후속 검증 범위입니다.
 - 동결 판정기·계획 원본 검증과 증거 기록기(`rsi/{proof.rs,execution/{counterfactual,compiled_planning,generation_evidence,generation_finalization,method_ablation}.rs}`, `rsi_causal_closure.rs`)는 `rsi.rs::safe_path`로 보호합니다. 실제 학습·정책 로직 `rsi/learning/generation_feedback.rs`은 후손의 수정 대상에 등록합니다.
-- 관련 유지보수 테스트는 `tests/support/engine/{rsi_system,rsi_causal_closure,rsi_method_ablation}.tests.rs`와 API 테스트에 분리됐습니다. **테스트·컴파일·빌드·벤치마크·유료 모델 실행은 하지 않았습니다.** 이번 변경의 심판 점수는 아직 없습니다.
+- **테스트 코드를 추가하지 않고, 테스트·컴파일·빌드·벤치마크·유료 모델 실행도 하지 않았습니다.** 본 작업 중 새로 작성한 회귀 테스트 변경은 되돌렸으며 실제 RSI 본체 경로만 남겼습니다. 이번 변경의 심판 점수는 아직 없습니다.
 
 ## 서브3: 구조·계보 검증 정리 (2026-11-13)
 
