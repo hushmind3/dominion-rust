@@ -56,3 +56,13 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - **영상**: `web/src/pages/Video.tsx` → `src/api/video.rs` → `src/engine/video.rs` → `src/engine/video/{runway,ltx}.rs`. 결과는 job checkpoint/MP4 파일 및 사용자 업로드 단계에서 확인하고, 결제 불확실 작업을 자동 재생성하지 않습니다.
 - **테스트 분리**: `src/engine/{memory,algorithms,learning,improve,jobs}/` 및 `src/db/tests.rs`, `src/api/{providers,video}/tests.rs`, `src/engine/rooms/tests.rs`, `src/engine/chat/room_context/tests.rs`. 테스트 모듈을 이동했지만 CI/컴파일/테스트는 이번 작업에서 실행하지 않았습니다.
 - **남은 경계**: 높은 복잡도를 가진 `src/engine/chat/runtime/turn.rs`의 단일 실행 함수, provider별 실제 원화 과금계산, 취소/복구/중복결제 영수증 확인, 영상 샷 품질 평가, 시맨틱 캐시 정책은 구조적으로 분리할 대상입니다. 성공 영수증을 지어내지 않습니다.
+
+
+## v3.0 자율 목표 에이전트 — 2026-11-14
+
+- 새 기준의 실제 UI/API→Job→작업→증거→검토→복구→계승 경로는 [AUTONOMOUS-AGENT-2026-11-14.md](docs/AUTONOMOUS-AGENT-2026-11-14.md)를 읽습니다.
+- UI: `web/src/pages/workflows/GoalConsole.tsx`를 `WorkflowsPage`에서 렌더링합니다. 목표 POST와 중단, 독립 계획·검토, 단계별 기록을 연결했습니다.
+- 엔진: `api/goals.rs::create_goal` → `jobs::enqueue/next_queued/run_job` → `goals.rs::run` → `goal_control::complete` 및 `run_quiet_outcome` → `chat/runtime/turn.rs` → 도구 결과 수집 → `verification::acceptance_gaps` → 실패 수정/재계획 → `episode::set_root_outcome` / `learning`.
+- 크래시 복구: `goal_review.rs::snapshot/replayable`는 **도구 완료 후** 영속화된 검토만 재시도할 수 있게 합니다. 실행 중 작업, 레거시 체크포인트는 실행 결과를 알 수 없으므로 자동 재실행하지 않습니다. `jobs::recover`는 목표 최종 결정이 이미 저장된 경우 Job을 그 결정에 맞춰 정합화합니다.
+- `goal_verification.rs::inferred_checks`는 명시적인 테스트 요청에 대해서만 검증 조건을 요구합니다. 실제 검증 명령이 성공하지 않은 경우 목표를 완료 처리하지 않습니다. 이 모듈은 도구 자체를 호출하지 않습니다.
+- 관련 테스트 소스: `engine/goals/tests.rs`, `engine/jobs/tests.rs`, `engine/goal_review.rs`, `engine/goal_verification.rs`. 기존 inline 테스트를 이동하였지만 실행하지 않았습니다.
