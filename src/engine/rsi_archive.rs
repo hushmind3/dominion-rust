@@ -233,7 +233,11 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         let Some((id,scores)) = candidate_scores(state,&candidate,base,&plan,&oracle) else {
             continue;
         };
-        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        // Never mix JSON-string formatting (including quotes) with the
+        // raw SHA string stored by the durable archive. The same live
+        // candidate and persisted record must occupy ONE Pareto slot.
+        let Some(patch)=candidate["patchSha256"].as_str()else{continue};
+        if !seen.insert(patch.to_owned()) {continue;}
         let persisted=remember(state,&identity,&candidate);
         entries.push((id, candidate["patchSha256"].clone(), scores,persisted));
     }
