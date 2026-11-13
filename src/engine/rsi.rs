@@ -34,7 +34,10 @@ pub(crate) fn safe_path(path: &str) -> bool {
         "src/engine/rsi_system/design.rs" |
         "src/engine/rsi_system/proposal.rs" |
         "src/engine/rsi_system/handoff.rs" |
-        "src/engine/rsi_system/peer_verifier.rs")
+        "src/engine/rsi_system/peer_verifier.rs" |
+        "src/engine/rsi/execution/compiled_planning.rs" |
+        "src/engine/rsi/execution/generation_evidence.rs" |
+        "src/engine/rsi/execution/generation_finalization.rs")
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
