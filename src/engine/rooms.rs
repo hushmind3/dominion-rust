@@ -3,6 +3,7 @@ use crate::engine::{chat::TurnRequest, run_room_quiet};
 use crate::state::AppState;
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
+mod economy;
 
 pub const MAX_PARTICIPANTS: usize = 32;
 /// Safety ceiling only. The room's own rounds/maxTurns decide the budget;
@@ -806,6 +807,17 @@ async fn run_locked(
             context, session_id, generation, source_id, &mode, &roster, &initial, &pending,
             &outputs, budget, false, None,
         )?;
+        // 2026 sparse-debate optimization: stop only after near-identical
+        // independent replies and only when the owner enabled this mode.
+        if mode == "discussion" && economy::should_finish(&room, owner_text,
+            input["explicitAgentIds"].as_bool().unwrap_or(input.get("agentIds").is_some()),
+            &outputs, &resolution) {
+            state.store.audit("room.sparse_debate_stopped",json!({
+                "roomId":room_id,"sourceMessageId":source_id,"turns":outputs.len(),
+                "reason":"repeated_answer_without_new_evidence"}));
+            return Ok(finish(context,room_id,session_id,"completed",&outputs,
+                "redundant_answers",None));
+        }
     }
     if stopped(context, session_id, generation) {
         return Ok(finish(
