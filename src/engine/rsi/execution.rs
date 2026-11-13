@@ -557,6 +557,13 @@ pub(super) async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(focus.chars().count());
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        // Real source-task ablation uses a different detached worktree and
+        // independent paired evaluator. It never adopts the control patch.
+        run_method_control(context,record,&mut child_input,
+            &lab,&binary,&head,started).await?;
+        if !generation_fits_remaining_budget(record,&child_input) {
+            return Ok("token_budget".into());
+        }
         let child = context
             .state
             .store

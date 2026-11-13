@@ -655,3 +655,7 @@ The canonical source/receipt replay has moved to the **frozen** `rsi/proof/metho
 ### Method-control experiment verification boundary
 
 `rsi::verify_control_receipt` independently replays original frozen local paired reports for an experimental control, including losing or inconclusive source candidates. Controls cannot be adopted by the coordinator; this verifier never authorizes source promotion. The executable control worker is registered through `rsi_evolve::method_control` and is evaluated separately from the ordinary worktree candidate. The next commit supplies the runtime module. No builds or tests executed.
+
+### Actual model-off method control
+
+The normal `rsi_evolve::run_loop` calls `rsi/method_control.rs::run_method_control` immediately before creating the actual ON worker. When an independently adopted method snapshot exists and `rsiMethodAblation` is enabled, a separate detached worktree at the exact same commit executes one OFF worker with the same initial prompt/provider/model/frozen cases; the control candidate goes through `rsi_worktree::compare_at` and is never adopted. Its original job, candidate, evaluation and cost are stored as `rsi_method_control`. The ON worker is then executed by the unchanged production campaign. The OFF arm must disable induced procedures inside the worker; proof is reported only if the original persisted OFF job documents it. This is a method-execution contrast, not a claim of isolated source-code causality. Source review only; no tests/builds run.
