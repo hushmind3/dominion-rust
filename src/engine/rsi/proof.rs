@@ -6,6 +6,13 @@ use super::*;
 mod method_lineage;
 #[path = "proof/method_contrast.rs"]
 mod method_contrast;
+#[path = "proof/full_cycle.rs"]
+mod full_cycle;
+
+pub fn full_cycle_report(state:&AppState,history:&[Value])->Value {
+    full_cycle::report(state,history)
+}
+
 
 pub(crate) fn contrast_evidence(state:&AppState,generation:&Value)->Value {
     method_contrast::evidence(state,generation)

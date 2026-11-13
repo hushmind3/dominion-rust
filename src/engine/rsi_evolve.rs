@@ -43,7 +43,8 @@ pub use worker_stage::{worker_plan,worker};
 #[path = "rsi/proof.rs"]
 mod proof;
 pub use proof::{generation_is_verified,revalidated_history,meta_transfer_proven,
-    capability_demonstrated,verified_capability_streak,recursive_closure_report};
+    capability_demonstrated,verified_capability_streak,recursive_closure_report,
+    full_cycle_report};
 pub(crate) fn method_contrast_evidence(state:&AppState,generation:&Value)->Value {
     proof::contrast_evidence(state,generation)
 }

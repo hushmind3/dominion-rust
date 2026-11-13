@@ -974,7 +974,8 @@ pub(super) async fn run_loop(
         record["maxVerifiedStreak"]=json!(proven_max);
         let meta_transfer = meta_transfer_proven(&proven_history);
         record["metaTransferProven"] = json!(meta_transfer);
-        record["recursiveProof"]=recursive_closure_report(&proven_history);
+        record["threeGenerationProof"]=recursive_closure_report(&proven_history);
+        record["recursiveProof"]=full_cycle_report(&context.state,&history_now);
         record["capabilityDemonstrated"]=
             record["recursiveProof"]["closedLoopObserved"].clone();
         let generation_knowledge = generation["knowledgeId"].clone();

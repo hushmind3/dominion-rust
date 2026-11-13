@@ -25,7 +25,7 @@ fn accepted_streak(record: &Value) -> (u64, u64) {
     (streak, max)
 }
 
-fn apply_capability(record: &mut Value) {
+fn apply_capability(state:&AppState,record: &mut Value) {
     let (streak, max) = accepted_streak(record);
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
@@ -34,7 +34,10 @@ fn apply_capability(record: &mut Value) {
     let meta = crate::engine::rsi_evolve::meta_transfer_proven(&history);
     record["maxVerifiedStreak"] = json!(verified);
     record["metaTransferProven"] = json!(meta);
-    record["recursiveProof"]=crate::engine::rsi_evolve::recursive_closure_report(&history);
+    record["threeGenerationProof"]=crate::engine::rsi_evolve::recursive_closure_report(&history);
+    // Public API and campaign share the SAME independent four-generation
+    // evidence gate. A serialized campaign success bit is never trusted.
+    record["recursiveProof"]=crate::engine::rsi_evolve::full_cycle_report(state,&history);
     record["capabilityDemonstrated"]=record["recursiveProof"]["closedLoopObserved"].clone();
 }
 
@@ -45,9 +48,9 @@ fn apply_verified_capability(state:&AppState, record:&mut Value) {
     let checked=crate::engine::rsi_evolve::revalidated_history(state,&history);
     let mut verified_record=record.clone();
     verified_record["history"]=json!(checked);
-    apply_capability(&mut verified_record);
+    apply_capability(state,&mut verified_record);
     for field in ["acceptedStreak","maxAcceptedStreak","maxVerifiedStreak",
-        "metaTransferProven","capabilityDemonstrated","recursiveProof"] {
+        "metaTransferProven","capabilityDemonstrated","recursiveProof","threeGenerationProof"] {
         record[field]=verified_record[field].clone();
     }
 }
