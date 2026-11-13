@@ -1203,10 +1203,7 @@ pub(super) async fn run_loop(
             .ok_or("세대 이력 손상")?.push(generation.clone());
         evidence_record["systemEvolution"]=input["rsiSystemEvolution"].clone();
         let proof=crate::engine::rsi::recursive_proof_report(&context.state,&evidence_record);
-        record["recursiveProof"]=proof.clone();
-        record["systemEvidence"]=proof["systemEvidence"].clone();
-        record["generationCapabilityProven"]=proof["generationCapabilityProven"].clone();
-        record["capabilityDemonstrated"]=proof["demonstrated"].clone();
+        crate::engine::rsi::attach_recursive_proof(record,&proof);
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
