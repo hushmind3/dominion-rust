@@ -146,6 +146,21 @@ fn executed_inherited_method(state:&AppState,parent:&Value,child:&Value)->Option
             || method["domain"]!=child["domain"] {
             continue;
         }
+        // The method must have changed the actual successor's selected
+        // executable plan, passed live worker replay and then produced the
+        // independently adopted source. Co-occurring method use is insufficient.
+        let transfer=&child["methodTransfer"];
+        if child["methodTransferVerified"]!=true
+            || transfer["source"]!="compiled_inherited_executable_method_transfer_v1"
+            || transfer["metaGenerationId"]!=parent["id"]
+            || transfer["metaGenerationJobId"]!=parent["jobId"]
+            || transfer["acceptedMetaCommit"]!=parent["acceptedCommit"]
+            || transfer["methodId"]!=method["id"]
+            || transfer["revision"]!=method["revision"]
+            || transfer["domain"]!=child["domain"]
+            || child["controllerPlan"]["methodTransfer"]!=*transfer {
+            continue;
+        }
         for execution in child["methodExecutions"].as_array()?.iter() {
             if execution["methodId"]!=method["id"] || execution["revision"]!=method["revision"]
                 || execution["result"]["verified"]!=true || execution["result"]["followed"]!=true
@@ -170,7 +185,9 @@ fn executed_inherited_method(state:&AppState,parent:&Value,child:&Value)->Option
                     "executedGenerationJobId":child["jobId"],
                     "executionId":execution["executionId"],
                     "experienceId":execution["experienceId"],
-                    "wroteAdoptedSource":true,"qualityClaim":"paired_downstream_only"
+                    "wroteAdoptedSource":true,
+                    "compiledMethodTransfer":transfer,
+                    "qualityClaim":"paired_downstream_only"
                 }));
             }
         }
