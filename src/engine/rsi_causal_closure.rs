@@ -111,9 +111,17 @@ fn improved_domain(g:&Value,domain:&str)->bool {
         .is_some_and(|rows|rows.iter().any(|row|row.as_str()==Some(domain)))
 }
 fn independent_quality_gain(g:&Value,domain:&str)->bool {
+    // Frozen task-quality gains have two valid native forms: a failed case
+    // turning into a pass, or a non-regressing quality/discovery metric gain
+    // between two already-passing cases. Time and token wins alone must not
+    // prove that the system learned to solve better tasks.
     g["evaluation"]["metrics"]["measurements"].as_array().is_some_and(|cases|
         cases.iter().any(|case|case["domain"]==domain && case["holdout"]==true
-            && case["baselinePass"]==false && case["candidatePass"]==true))
+            && ((case["baselinePass"]==false && case["candidatePass"]==true)
+                || (case["baselinePass"]==true && case["candidatePass"]==true
+                    && case["metrics"].as_array().is_some_and(|metrics|metrics.iter().any(|metric|
+                        matches!(metric["key"].as_str(),Some("quality"|"discoveryScore"))
+                        && metric["improved"]==true && metric["regressed"]==false))))))
 }
 fn positive_meta(g:&Value)->bool {
     g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0 &&
