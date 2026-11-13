@@ -17,6 +17,7 @@ const ko = {
   'nav.activity': '실행 기록',
   'nav.settings': '설정',
   'nav.workflows': '반복 작업',
+  'nav.goals': '자율 목표',
   'nav.developer': '소스 개발 스튜디오',
   'nav.rsi': '자기개선',
   'dashboard.shortcut.rsi.desc': '알고리즘 진단 · 수동 RSI',

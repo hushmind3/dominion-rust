@@ -7,6 +7,7 @@ const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.Hom
 const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
+const AutonomousGoalsPage=lazy(()=>import('./pages/AutonomousGoals').then(module=>({default:module.AutonomousGoalsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
 const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
@@ -195,7 +196,8 @@ export default function App(){
     {page==='home'&&<HomePage navigate={navigate}/>}
     {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
-    {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
+    {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>} 
+    {page==='goals'&&<AutonomousGoalsPage openSession={id=>navigate('chat',id)}/>}
     {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}

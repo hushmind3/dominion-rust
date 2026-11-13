@@ -543,3 +543,5 @@ Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation r
 - Source change only: tests, build, CI, and paid-model evaluations have not run.
 
 - 2026-11-14: Live goal steering: `api/goals.rs::steer_goal` → `goal_steering::submit` (optimistic version) → `goals.rs::run` next safe turn; it preserves owner acceptance checks and does not replay an uncertain tool turn. `cancel_goal` stops queued/running durable work via job cancellation and goal control. The active plan revision is checkpointed and appears in plan history.
+
+- A new **자율 목표** page (`web/src/pages/AutonomousGoals.tsx`, `App.tsx`, `WorkspaceShell.tsx`) is connected to the real `/api/goals` and `/api/jobs` records. It starts goals from a single objective, shows phases, plan/history/gaps, observed output hashes, provides versioned plan steering, cancellation, chat-session handoff, and a developer diff link. Its UI does not pretend to verify code from hashes.

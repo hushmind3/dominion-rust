@@ -18,6 +18,7 @@ const en: Record<LocaleKey, string> = {
   'nav.activity': 'Activity',
   'nav.settings': 'Settings',
   'nav.workflows': 'Workflows',
+  'nav.goals': 'Autonomous Goals',
   'nav.developer': 'Developer studio',
   'nav.rsi': 'Self-improvement',
   'dashboard.shortcut.rsi.desc': 'Algorithm diagnosis · manual RSI',

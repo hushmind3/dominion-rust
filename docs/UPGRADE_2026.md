@@ -36,3 +36,5 @@
 - No compile, benchmark or model run performed for this patch.
 
 - `POST /api/goals/:id/steer` uses a compare-and-swap `planRevision` and applies owner edits only before the next executor turn; a new edit arriving during review prevents completion on an obsolete plan. `POST /api/goals/:id/cancel` marks queued/running jobs and goal records cancelled.
+
+- UI entrypoint: `WorkspaceShell.tsx` `goals` → `App.tsx` `AutonomousGoalsPage` → `POST /api/goals`, `GET /api/goals`, `GET /api/jobs`, `POST /api/goals/:id/steer|cancel`, and the existing chat/developer pages. Server event refresh and active-goal 6-second polling show progress.
