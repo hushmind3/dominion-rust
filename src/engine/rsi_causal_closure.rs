@@ -6,6 +6,12 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 
 fn meta_source(path:&str)->bool {
+    // A source candidate must never earn a META gain by editing the judge.
+    if matches!(path,"src/engine/rsi/proof.rs"
+        |"src/engine/rsi_system/design.rs"
+        |"src/engine/rsi_system/proposal.rs"
+        |"src/engine/rsi_system/handoff.rs"
+        |"src/engine/rsi_system/peer_verifier.rs") {return false;}
     path=="src/engine/rsi_evolve.rs" ||
     path=="src/engine/rsi_meta_controller.rs" ||
     path=="src/engine/rsi_program_graph.rs" ||
