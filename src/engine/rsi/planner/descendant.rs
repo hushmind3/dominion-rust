@@ -606,6 +606,7 @@ pub(super) fn validated_descendant_controller(
         || input["rsiReflexiveProgram"]!=plan["reflexiveProgram"]
         || input["rsiOpenImprovementProgram"]!=plan["openImprovementProgram"]
         || input["rsiMetaEvolutionProgram"]!=plan["metaEvolutionProgram"]
+        || input["rsiMetaExperimentDispatch"]!=plan["metaExperimentDispatch"]
         || input["rsiPrincipleLearning"]!=plan["principleLearning"]
         || input["rsiApiRoutePolicy"]!=plan["apiRoutePolicy"]
         || input["rsiMutualProgram"]!=plan["mutualProgram"]
