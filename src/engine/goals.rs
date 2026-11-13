@@ -436,10 +436,28 @@ fn finish(
         .get("job", &context.job_id)
         .is_some_and(|job| job["cancelRequested"].as_bool() == Some(true));
     let status = if cancelled { "cancelled" } else { status };
+    let previous=context.state.store.get("goal",id).unwrap_or(Value::Null);
+    let usage=previous["sessionId"].as_str()
+        .map(|session|context.state.store.session_usage(session))
+        .unwrap_or(Value::Null);
+    // This receipt is audit data for agent quality/RSI analysis. It never
+    // self-awards task success: only the parent verification gate may do that.
+    let receipt=json!({
+        "status":status,"verified":status=="completed",
+        "iterations":previous["iterations"],
+        "replans":previous["replans"],
+        "acceptanceChecks":previous["acceptanceChecks"].as_array().map(Vec::len).unwrap_or(0),
+        "successfulToolEvidence":previous["evidence"].as_array().map(Vec::len).unwrap_or(0),
+        "remainingGaps":gaps.len(),
+        "tokenUsage":usage,
+        "verificationOwner":"goal-parent",
+    });
     patch_goal(
         &context.state,
         id,
-        json!({"status":status,"phase":if status=="completed" {"complete"} else {status},"gaps":gaps,"error":error,"finishedAt":chrono::Utc::now().to_rfc3339()}),
+        json!({"status":status,"phase":if status=="completed" {"complete"} else {status},
+            "gaps":gaps,"error":error,"finishedAt":chrono::Utc::now().to_rfc3339(),
+            "receipt":receipt}),
     );
     let goal = context
         .state
@@ -457,7 +475,8 @@ fn finish(
     }
     context.state.store.audit(
         "goal.finished",
-        json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
+        json!({"goalId":id,"status":status,"iterations":goal.get("iterations"),
+            "receipt":goal.get("receipt")}),
     );
     if status == "completed" {
         if let Some(session_id) = goal["sessionId"].as_str().filter(|id| !id.is_empty()) {
