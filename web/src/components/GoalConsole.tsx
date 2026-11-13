@@ -8,7 +8,7 @@ type Agent={id:string;name:string;providerId?:string;model?:string}
 type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
  id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;
- jobId?:string;iterations?:number;maxIterations?:number;
+ jobId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
  resumeHistory?:{at:string;resolutionNote:string}[];
@@ -26,6 +26,7 @@ export function GoalConsole(){
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState(''),[notice,setNotice]=useState('')
  const [reviewNote,setReviewNote]=useState('')
+ const [resumeTokens,setResumeTokens]=useState(80000)
  const [editingPlan,setEditingPlan]=useState(false),[planDraft,setPlanDraft]=useState('')
  const [acknowledged,setAcknowledged]=useState(false)
  const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
@@ -56,6 +57,7 @@ export function GoalConsole(){
   try{
    const response=await post<{jobId:string}>('/api/goals/'+encodeURIComponent(chosen.id)+'/resume',{
     acknowledgeExternalEffects:acknowledged,resolutionNote:reviewNote.trim(),
+    maxExecutorTokens:Math.max(chosen.maxExecutorTokens||80000,resumeTokens),
     maxIterations:Math.min(64,Math.max((chosen.maxIterations||16)+4,(chosen.iterations||0)+4))
    })
    setNotice('외부 작업 확인 기록을 보존하고 새 복구 작업을 등록했습니다. 작업 ID: '+response.jobId)
@@ -140,6 +142,10 @@ export function GoalConsole(){
        <span>이전 실행의 외부 결과와 변경 사항을 확인했습니다.</span></label>
       <TextArea rows={2} value={reviewNote} onChange={e=>setReviewNote(e.target.value)}
        placeholder="확인한 실제 상태와 남은 문제를 기록하세요. 불확실한 작업은 승인과 10자 이상 기록이 필요합니다."/>
+      <label className="block text-xs text-[#7C7469]">재개 후 실행 모델 토큰 한도 (기존 {chosen.maxExecutorTokens||80000} 이상)
+       <TextInput type="number" min={chosen.maxExecutorTokens||80000} max={2000000} value={Math.max(chosen.maxExecutorTokens||80000,resumeTokens)}
+        onChange={e=>setResumeTokens(Math.min(2000000,Math.max(chosen.maxExecutorTokens||80000,Number(e.target.value)||80000)))}/>
+      </label>
       <Button variant="secondary" disabled={busy} onClick={()=>void resume()}><RotateCcw size={14}/> 새 작업으로 재개</Button>
      </div>}
      {diff?.id===chosen.id&&<details open><summary className="cursor-pointer text-xs font-semibold">실제 Git Diff</summary>

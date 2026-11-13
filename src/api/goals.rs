@@ -140,6 +140,11 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     if max==0 || max>64 || max<=next_step || max<configured{
         return error(StatusCode::BAD_REQUEST,"총 반복 한도를 남은 실행 단계보다 크게 지정하세요(최대 64).");
     }
+    let previous_cap=goal["maxExecutorTokens"].as_u64().unwrap_or(80000);
+    let new_cap=body["maxExecutorTokens"].as_u64().unwrap_or(previous_cap);
+    if new_cap<previous_cap || new_cap>2000000 || new_cap<5000{
+        return error(StatusCode::BAD_REQUEST,"재개 시 실행 모델 토큰 한도는 기존 한도 이상 2,000,000 이하로 지정하세요.");
+    }
     let mut transcript=old["transcript"].as_str().unwrap_or("").to_string();
     if !note.is_empty(){
         transcript.push_str("\n[사용자 복구 확인] ");
@@ -167,7 +172,7 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
         "at":chrono::Utc::now().to_rfc3339()}));
     let saved=state.store.patch_if("goal",&id,"status",&goal["status"],&json!({
         "status":"queued","phase":"queued","resumeState":resume,"resumeHistory":history,
-        "maxIterations":max,"error":Value::Null,"gaps":gaps,
+        "maxIterations":max,"maxExecutorTokens":new_cap,"error":Value::Null,"gaps":gaps,
         "resumedAt":chrono::Utc::now().to_rfc3339()
     }));
     let Some(saved)=saved else{return error(StatusCode::CONFLICT,"목표 상태가 변경되었습니다.");};
