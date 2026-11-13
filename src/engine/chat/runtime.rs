@@ -39,7 +39,8 @@ mod tool_dispatch;
 use tool_dispatch::{frozen_replacements, replacement_content, deterministic_tool, record_partial_shortcut, run_frozen_replacements, dispatch_tool_call, record_soft_tool_error};
 #[path = "runtime/finalization.rs"]
 mod finalization;
-use finalization::{finalization_semantic_payload, finalization_payload_hash, compliance_summary, compliance_detail, standing_violation, determine_task_outcome, record_success_experience, record_selection_snapshot, finish_attempt, finalize_execution};
+use finalization::{finalization_semantic_payload, finalization_payload_hash, compliance_summary, compliance_detail, standing_violation, determine_task_outcome, record_success_experience, record_selection_snapshot, finish_attempt};
+pub(super) use finalization::finalize_execution;
 #[path = "runtime/session.rs"]
 mod session_evidence;
 use session_evidence::{mark_budget_exhausted, mark_run_signals, retitle_if_placeholder, ensure_session, record_tool_stat};
