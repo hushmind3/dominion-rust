@@ -10,6 +10,12 @@ pub async fn run(args: Vec<String>) -> Result<(), String> {
         println!("{}",option_env!("DOMINION_BUILD_COMMIT").unwrap_or("unknown"));
         return Ok(());
     }
+    // Read-only, revision-pinned old-binary planner for a source-identical
+    // method control. It never starts a server or promotes any source edits.
+    if args.first().map(String::as_str)==Some("--rsi-plan-counterfactual") {
+        return engine::rsi_evolve::plan_counterfactual(
+            args.get(1).ok_or("대조 계획 입력이 없습니다.")?).await;
+    }
     if args.first().map(String::as_str)==Some("--rsi-plan-generation") {
         return engine::rsi_evolve::plan_generation(args.get(1).ok_or("후손 계획 입력이 없습니다.")?).await;
     }

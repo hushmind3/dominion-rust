@@ -14,6 +14,7 @@ use super::{
     proposed_algorithms, queue_search_trial, propose_autonomous_search_trial, pending_trial_candidate, record_trial_outcome,
     observed_edit_outcome, observed_action_value, evolved_execution_action, research_continuation, generation_target_plan,
     pending_failed_patch_domain, pending_method_recovery_domain, select_generation_strategy, sub2_edit_policy_reward,
+    run_compiled_method_control,
 };
 
 pub(super) async fn run_loop(
@@ -50,6 +51,10 @@ pub(super) async fn run_loop(
     let binary = target
         .join("release")
         .join(format!("dominion-rust{}", std::env::consts::EXE_SUFFIX));
+    // Keep the exact previous compiled generator for one source-identical
+    // treatment/control generation after an adopted executable method edit.
+    let control_binary=target.join(format!("previous-dominion-rust{}",
+        std::env::consts::EXE_SUFFIX));
     let mut built_commit = String::new();
     loop {
         let remaining = record["limits"]["timeBudgetSeconds"]
@@ -79,6 +84,17 @@ pub(super) async fn run_loop(
             .ok_or("세대 커밋 없음")?
             .to_string();
         if built_commit != head {
+            if !built_commit.is_empty() && binary.is_file() {
+                std::fs::copy(&binary,&control_binary)
+                    .map_err(|e|format!("이전 개선기 대조 바이너리 보존 실패: {e}"))?;
+                record["controlGeneratorCommit"]=json!(built_commit);
+                record["controlGeneratorBinarySha256"]=json!(format!("{:x}",
+                    Sha256::digest(std::fs::read(&control_binary)
+                        .map_err(|e|e.to_string())?)));
+            }else{
+                record["controlGeneratorCommit"]=Value::Null;
+                record["controlGeneratorBinarySha256"]=Value::Null;
+            }
             record["phase"] = json!("building_generator");
             save(context, record)?;
             let mut build = Command::new(rsi_worktree::cargo_executable());
@@ -474,6 +490,25 @@ pub(super) async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(focus.chars().count());
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        // Run an independent previous-binary B control only after the NEW
+        // compiled descendant has already selected its treatment plan and
+        // ONLY when the prior verified adoption edited executable methods.
+        // Both arms use the same source HEAD, model and frozen case set.
+        let control_commit=record["controlGeneratorCommit"]
+            .as_str().unwrap_or("").to_string();
+        if child_input["rsiMethodControlEnabled"]==true
+            && control_commit.len()==40 {
+            if let Err(error)=run_compiled_method_control(
+                context,record,&mut child_input,&lab,&control_binary,
+                &control_commit,&head,attempt,started).await {
+                record["methodControlError"]=json!(error);
+                record["activeGenerationJobId"]=Value::Null;
+                save(context,record)?;
+            }
+        }
+        if model_bound && !generation_fits_remaining_budget(record,&child_input) {
+            return Ok("token_budget".into());
+        }
         let child = context
             .state
             .store
@@ -614,6 +649,8 @@ pub(super) async fn run_loop(
             current["input"]["rsiDescendantPlan"]["methodReapplication"].clone();
         generation["methodReapplicationExecuted"]=
             current["rsiMetaReapplicationExecuted"].clone();
+        generation["methodControlId"]=
+            current["input"]["rsiMethodControlId"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
@@ -1106,6 +1143,17 @@ pub(super) async fn run_loop(
         // adopted and authored a further change to executable meta source.
         generation["metaMethodOutcome"]=
             crate::engine::rsi_system::observed_method_outcome(&generation);
+        // The independent old-binary control never joins accepted genealogy.
+        // Replay BOTH immutable candidate receipts before recording any
+        // attributed benefit for this method's real downstream execution.
+        let verified_ancestors=crate::engine::rsi_system::revalidated_method_history(
+            &context.state,record["history"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]));
+        let method_control_outcome=verified_ancestors.last()
+            .map(|parent|super::method_control::measured_advantage(
+                &context.state,parent,&generation))
+            .unwrap_or(Value::Null);
+        generation["methodControlOutcome"]=method_control_outcome;
         // The immediate quality receipt and the future descendant's
         // productivity are SEPARATE learning targets. Future descendants
         // reconstruct the latter only after real independent evaluations.

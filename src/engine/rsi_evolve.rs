@@ -40,6 +40,9 @@ mod campaign;
 mod learning;
 #[path = "rsi/evaluation.rs"]
 mod evaluation;
+#[path = "rsi/method_control.rs"]
+mod method_control;
+use method_control::run_compiled_method_control;
 #[path = "rsi/execution.rs"]
 mod execution;
 #[path = "rsi/planner.rs"]
@@ -107,7 +110,7 @@ pub use campaign::{choose,run};
 pub(crate) use context::policy_requests_source_edit;
 pub(crate) use research::{remember_research,reuse_research};
 pub(crate) use lineage::adopt;
-pub use worker::{plan_generation,worker};
+pub use worker::{plan_generation,plan_counterfactual,worker};
 
 // Preserve external call sites in tools, policy and descendant workers.
 pub(crate) use learning::{

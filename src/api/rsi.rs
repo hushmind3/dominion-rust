@@ -394,9 +394,18 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             && body["selectionPolicy"]=="automatic",
         "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
             && body["selectionPolicy"]=="automatic",
-        "rsiSystemEvolution": continuous && body["systemEvolution"]==true
+        // Automatic continuous RSI uses the whole compiled descendant
+        // execution path by default. Explicit false retains the lighter
+        // historical source-edit mode.
+        "rsiSystemEvolution": continuous && body["systemEvolution"]!=false
             && body["selectionPolicy"]=="automatic",
-        "rsiAdaptiveModelSelection": continuous && body["systemEvolution"]==true
+        // Source-identical old/new COMPILED model workers run automatically
+        // after a measured source-method edit. The operator can opt out of
+        // the extra model calls without silently claiming a causal proof.
+        "rsiMethodControlEnabled": continuous && body["systemEvolution"]!=false
+            && body["selectionPolicy"]=="automatic"
+            && body["methodControl"]!=false,
+        "rsiAdaptiveModelSelection": continuous && body["systemEvolution"]!=false
             && body["selectionPolicy"]=="automatic"
             && body["adaptiveModelSelection"]==true,
         "rsiModelCandidates":body["modelCandidates"],

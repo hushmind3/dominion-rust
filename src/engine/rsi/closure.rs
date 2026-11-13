@@ -170,8 +170,20 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
                 !files.iter().any(|f|f.as_str()==Some(target))) {
             continue;
         }
+        // A/B and A'/B' must also be real old-binary/new-binary
+        // interventional worker comparisons on the SAME source revision,
+        // SAME model, and SAME sealed cases. Stored flags alone never earn
+        // method advantage or complete recursive RSI.
+        let first_control=super::method_control::measured_advantage(state,a,b);
+        let second_control=super::method_control::measured_advantage(state,c,d);
+        if first_control["qualityProven"]!=true
+            || second_control["qualityProven"]!=true
+            || b["methodControlOutcome"]!=first_control
+            || d["methodControlOutcome"]!=second_control {
+            continue;
+        }
         return json!({
-            "source":"replayed_executed_method_capability_method_capability_closure_v2",
+            "source":"replayed_interventional_method_capability_method_capability_closure_v3",
             "proven":true,
             "shape":"method_A -> capability_B -> improved_method_A -> improved_capability_B",
             "candidateIds":[ca["id"],cb["id"],cc["id"],cd["id"]],
@@ -183,6 +195,8 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
             "downstreamIndependentReceipt":b["evaluation"]["evidenceSha256"],
             "reapplicationIndependentReceipt":d["evaluation"]["evidenceSha256"],
             "reappliedCapabilitySourcePath":target,
+            "firstSourceLevelMethodControl":first_control,
+            "secondSourceLevelMethodControl":second_control,
             "actualCompiledReturnExecution":true,
             "actualCompiledReapplicationExecution":true,
             "independentPairedRevalidation":true,
@@ -190,8 +204,8 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
             "unboundedGrowthProven":false
         });
     }
-    json!({"source":"replayed_executed_method_capability_method_capability_closure_v2",
-        "proven":false,"requires":"four contiguous independently adopted revisions: method A -> assessed B using A -> measured revision A' using B evidence -> assessed B' running revised A' and improving B's capability again"})
+    json!({"source":"replayed_interventional_method_capability_method_capability_closure_v3",
+        "proven":false,"requires":"four contiguous independently adopted A-B-A'-B' revisions, with independently paired old-binary/new-binary method controls for both downstream B and B' executions"})
 }
 
 #[cfg(test)]
