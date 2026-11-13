@@ -935,7 +935,12 @@ fn verified_factorial_receipt(
             plan["comparisonProfileSha256"].as_str()==Some(hash.as_str()))
         && job["input"]["rsiFactorialExperiment"]==*plan
         && candidate["baseCommit"]==generation["generatorCommit"]
-        && candidate["evaluation"]["metrics"]["measurements"].is_array();
+        && candidate["evaluation"]["metrics"]["measurements"].as_array()
+            .is_some_and(|cases|cases.iter().any(|case|
+                case["holdout"]==true
+                && case["id"].as_str().is_some_and(|id|!id.is_empty())
+                && case["baselinePass"].is_boolean()
+                && case["candidatePass"].is_boolean()));
     if !bound{return (Value::Null,false);}
     let paths=candidate["paths"].as_array().cloned().unwrap_or_default();
     let compliance=crate::engine::rsi_intervention_lab::compliance(plan,&paths);
