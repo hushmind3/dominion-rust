@@ -3,7 +3,7 @@
 //! source target and a bounded intervention. Frozen evaluators are separate.
 use super::*;
 use serde_json::{json,Value};
-use crate::engine::rsi_evolve::proof::experiment_contract::{
+use crate::engine::rsi_evolve::contracts::{
     ExperimentDesign,ExperimentProtocol,ExperimentTarget
 };
 use std::path::Path;

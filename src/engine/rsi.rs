@@ -32,10 +32,11 @@ pub(crate) fn frozen_rsi_evaluator_path(path:&str)->bool {
     // Otherwise a compiled descendant could rewrite the paired-run verifier.
     path.starts_with("src/engine/rsi/worktree/")
         || path.starts_with("src/engine/rsi/proof/")
+        || path.starts_with("src/engine/rsi/contracts/")
         || matches!(path,
             "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
             |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
-            |"src/engine/rsi/proof.rs")
+            |"src/engine/rsi/proof.rs"|"src/engine/rsi/contracts.rs")
 }
 pub(crate) fn safe_path(path: &str) -> bool {
     !hidden_rsi_oracle_path(path)
@@ -633,6 +634,8 @@ mod tests {
             "src/engine/rsi/worktree/evaluation.rs",
             "src/engine/rsi/worktree/tests.rs",
             "src/engine/rsi/proof/method_lineage.rs",
+            "src/engine/rsi/contracts.rs",
+            "src/engine/rsi/contracts/experiment.rs",
             "src/engine/rsi_metrics.rs",
             "src/engine/rsi_profile.rs",
             "src/engine/rsi/proof.rs",

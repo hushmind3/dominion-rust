@@ -45,7 +45,9 @@ mod proof;
 pub use proof::{generation_is_verified,revalidated_history,meta_transfer_proven,
     capability_demonstrated,verified_capability_streak,recursive_closure_report,
     full_cycle_report};
-pub(crate) use proof::verify_experiment_design;
+#[path = "rsi/contracts.rs"]
+mod contracts;
+pub(crate) use contracts::verify_experiment_design;
 
 pub(crate) fn method_contrast_evidence(state:&AppState,generation:&Value)->Value {
     proof::contrast_evidence(state,generation)

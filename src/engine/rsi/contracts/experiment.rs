@@ -1,4 +1,4 @@
-//! Frozen, typed experiment envelope shared by compiled children and their
+//! Typed experiment envelope shared by compiled children and independent
 //! supervising evaluator. Mutable policy code may choose experiments, but may
 //! not forge source bytes, target identity, evaluation or adoption rights.
 use super::*;
