@@ -415,7 +415,7 @@ pub(super) fn finish_attempt(
     finalize_execution(state, execution_id, result, metrics);
 }
 
-pub(super) fn finalize_execution(
+pub(in crate::engine::chat) fn finalize_execution(
     state: &AppState,
     execution_id: &str,
     result: &Result<Option<Value>, String>,
