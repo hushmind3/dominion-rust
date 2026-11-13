@@ -111,6 +111,10 @@ pub(crate) fn propose(
     // higher-order self-rewrites. It becomes executable only if the actual
     // source revision is independently accepted by the frozen evaluator.
     let open_program=crate::engine::rsi_program_graph::normalize(&body["openProgram"])?;
+    // Meta-evolution is also an adopted, source-backed program: the agent
+    // can redesign experiment choice and the rules that choose experiments.
+    let evolution_protocol=crate::engine::rsi_evolve::meta_evolution::normalize(
+        &body["evolutionProtocol"])?;
     // The next source revision can inherit a model-written multi-step
     // improvement procedure, including its learning and tool-use policies.
     // It is activated only after this generation's REAL source patch passes
@@ -158,7 +162,7 @@ pub(crate) fn propose(
     let commit=child["input"]["rsiGeneratorCommit"].as_str()
         .ok_or("후손 원본 revision 없음")?;
     let revision=format!("{:x}",Sha256::digest(json!([
-        commit,component,components,assignments,next,hypothesis,design,paths,new_components,open_program,successor_stages]).to_string().as_bytes()));
+        commit,component,components,assignments,next,hypothesis,design,paths,new_components,open_program,evolution_protocol,successor_stages]).to_string().as_bytes()));
     let proposal=json!({
         "id":format!("system-design-{revision}"),"status":"proposed",
         "source":"model_authored_system_design",
@@ -166,7 +170,8 @@ pub(crate) fn propose(
         "generatorCommit":commit,"component":component,"components":components,"componentFiles":assignments,
         "nextDomain":next,"hypothesis":hypothesis,
         "design":design,"targetFiles":paths,"newComponents":new_components,
-        "openProgram":open_program,"successorStages":successor_stages,
+        "openProgram":open_program,"evolutionProtocol":evolution_protocol,
+        "successorStages":successor_stages,
         "qualityProven":false,"adopted":false
     });
     session["rsiSystemDesign"]=proposal.clone();
