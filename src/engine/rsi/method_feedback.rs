@@ -3,9 +3,10 @@
 use super::*;
 
 fn method_source(path:&str)->bool {
-    path=="src/engine/rsi/descendant_plan.rs"
-        || path.starts_with("src/engine/rsi/meta_controller/") && path.ends_with(".rs")
-        || path.starts_with("src/engine/rsi/system/") && path.ends_with(".rs")
+    !path.ends_with("/tests.rs")
+        && (path=="src/engine/rsi/descendant_plan.rs"
+            || path.starts_with("src/engine/rsi/meta_controller/") && path.ends_with(".rs")
+            || path.starts_with("src/engine/rsi/system/") && path.ends_with(".rs"))
 }
 
 fn measured(g:&Value)->bool {

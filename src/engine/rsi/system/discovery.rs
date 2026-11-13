@@ -19,7 +19,12 @@ pub(super) fn executable_meta_source(path:&str)->bool{
         |"src/engine/rsi/system/discovery.rs"
         |"src/engine/rsi/system/frontier.rs"
         |"src/engine/rsi/system/agenda.rs"
-        |"src/engine/rsi/system/design.rs")
+        |"src/engine/rsi/system/design.rs"
+        |"src/engine/rsi/descendant_plan.rs"
+        |"src/engine/rsi/method_feedback.rs"
+        |"src/engine/rsi/programs/action.rs"
+        |"src/engine/rsi/programs/selection.rs"
+        |"src/engine/rsi/programs/transfer.rs")
 }
 
 pub(super) fn source_role(path:&str)->&'static str{

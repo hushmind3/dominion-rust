@@ -35,7 +35,9 @@ pub(super) fn independent_adoption(g:&Value)->bool{
 pub(crate) fn meta_source_changed(g:&Value)->bool{
     if !independent_adoption(g){return false;}
     let Some(files)=g["acceptedSourceHashes"].as_object() else{return false};
-    files.keys().any(|path|matches!(path.as_str(),
+    files.keys().any(|path|crate::engine::rsi::safe_path(path)
+        && !path.ends_with("/tests.rs")
+        && (matches!(path.as_str(),
         "src/engine/rsi_meta_controller.rs"|"src/engine/rsi_system.rs"
         |"src/engine/rsi_evolve.rs"|"src/engine/rsi_mutation.rs"
         |"src/engine/procedure.rs"|"src/engine/learning.rs"
@@ -49,7 +51,17 @@ pub(crate) fn meta_source_changed(g:&Value)->bool{
         |"src/engine/rsi/system/discovery.rs"
         |"src/engine/rsi/system/frontier.rs"
         |"src/engine/rsi/system/agenda.rs"
-        |"src/engine/rsi/system/design.rs"))
+        |"src/engine/rsi/system/design.rs")
+        || matches!(path.as_str(),
+            "src/engine/rsi/descendant_plan.rs"
+            |"src/engine/rsi/method_feedback.rs"
+            |"src/engine/rsi/selection.rs"
+            |"src/engine/rsi/source_control.rs"
+            |"src/engine/rsi/focus.rs"
+            |"src/engine/rsi/adoption.rs"
+            |"src/engine/rsi/programs/action.rs"
+            |"src/engine/rsi/programs/selection.rs"
+            |"src/engine/rsi/programs/transfer.rs")))
 }
 
 pub(super) fn role_touched(g:&Value,role:&str)->bool{
