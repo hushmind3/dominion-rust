@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) async fn wait_cancelled(state: &AppState, session_id: &str, generation: u64) {
+pub(crate) async fn wait_cancelled(state: &AppState, session_id: &str, generation: u64) {
     while !state.is_cancelled(session_id) && state.cancellation_generation(session_id) == generation
     {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -11,7 +11,7 @@ pub(super) async fn wait_cancelled(state: &AppState, session_id: &str, generatio
 
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_harness_nodes(
+pub(crate) async fn run_harness_nodes(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session: &Value,
@@ -113,7 +113,7 @@ pub(super) async fn run_harness_nodes(
 
 /// Observable state related to a failed call. This is what "the environment
 /// changed" means for retry admission; a successful call count is not proof.
-pub(super) fn failure_observation(
+pub(crate) fn failure_observation(
     state: &AppState,
     tool: &str,
     arguments: &Value,
@@ -151,7 +151,7 @@ pub(super) fn failure_observation(
     })
 }
 
-pub(super) fn environment_fingerprint(state: &AppState, tool: &str, arguments: &Value) -> String {
+pub(crate) fn environment_fingerprint(state: &AppState, tool: &str, arguments: &Value) -> String {
     let observation = failure_observation(state, tool, arguments, "");
     let mut entries = Vec::new();
     if let Ok(read_dir) = std::fs::read_dir(&state.config.workspace) {
@@ -170,7 +170,7 @@ pub(super) fn environment_fingerprint(state: &AppState, tool: &str, arguments: &
     ])
 }
 
-pub(super) fn record_adaptation_error(state: &AppState, execution_id: &str, error: &str) {
+pub(crate) fn record_adaptation_error(state: &AppState, execution_id: &str, error: &str) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["lastAdaptationError"] = json!(error.chars().take(600).collect::<String>());
         if let Some(saved) = state.store.put("execution", &execution) {
@@ -179,7 +179,7 @@ pub(super) fn record_adaptation_error(state: &AppState, execution_id: &str, erro
     }
 }
 
-pub(super) fn adaptation_repair_prompt(original: &str, raw: &str, error: &str) -> String {
+pub(crate) fn adaptation_repair_prompt(original: &str, raw: &str, error: &str) -> String {
     format!(
         "{original}\n\nYour previous response was rejected: {error}.\nPrevious response excerpt:\n{}\nReturn ONLY one JSON object with non-empty \"hypotheses\" and \"interventions\" arrays. Do not write prose or markdown. Each intervention needs id, hypothesisIds (array), tool, inputs (object), expectedChecks (array) and estimatedCost (number).",
         raw.chars().take(900).collect::<String>()
@@ -187,7 +187,7 @@ pub(super) fn adaptation_repair_prompt(original: &str, raw: &str, error: &str) -
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn attempt_model_adaptation(
+pub(crate) async fn attempt_model_adaptation(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session: &Value,

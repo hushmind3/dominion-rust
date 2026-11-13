@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn record_soft_tool_error(
+pub(crate) fn record_soft_tool_error(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session_id: &str,
@@ -25,14 +25,14 @@ pub(super) fn record_soft_tool_error(
     }
 }
 
-pub(super) struct ActionReview {
-    gaps: Vec<String>,
-    next_action: Option<String>,
+pub(crate) struct ActionReview {
+    pub(crate) gaps: Vec<String>,
+    pub(crate) next_action: Option<String>,
 }
 
 /// Deterministic single-step file work should not pay for an extra planner
 /// call. Multi-step, long or unverified requests still get one.
-pub(super) fn needs_plan(input: &str, acceptance: &Option<(String, Value)>) -> bool {
+pub(crate) fn needs_plan(input: &str, acceptance: &Option<(String, Value)>) -> bool {
     let text = input.trim();
     if text.chars().count() > 240 || text.contains('\n') {
         return true;
@@ -52,7 +52,7 @@ pub(super) fn needs_plan(input: &str, acceptance: &Option<(String, Value)>) -> b
     }
 }
 
-pub(super) async fn action_plan(state: &AppState, request: &TurnRequest, text: &str) -> Option<String> {
+pub(crate) async fn action_plan(state: &AppState, request: &TurnRequest, text: &str) -> Option<String> {
     let plan = llm::complete_for_turn(
         state,
         request.provider_id.as_deref().unwrap_or(""),
@@ -67,7 +67,7 @@ pub(super) async fn action_plan(state: &AppState, request: &TurnRequest, text: &
     (!plan.is_empty()).then_some(plan)
 }
 
-pub(super) async fn review_action(
+pub(crate) async fn review_action(
     state: &AppState,
     request: &TurnRequest,
     acceptance_text: &str,
@@ -110,7 +110,7 @@ pub(super) async fn review_action(
     Some(ActionReview { gaps, next_action })
 }
 
-pub(in super::super) fn tool_succeeded(value: &Value) -> bool {
+pub(crate) fn tool_succeeded(value: &Value) -> bool {
     value.get("isError").and_then(Value::as_bool) != Some(true)
         && value.get("success").and_then(Value::as_bool) != Some(false)
         && value.get("error").is_none_or(Value::is_null)
@@ -128,12 +128,12 @@ pub(in super::super) fn tool_succeeded(value: &Value) -> bool {
 /// Evaluator version is separate from the payload hash, so re-running the same
 /// terminal attempt with a new evaluator is a new evaluation revision rather
 /// than a conflicting payload.
-pub(super) const FINALIZATION_EVALUATOR_VERSION: &str = "finalize-semantic-v1";
+pub(crate) const FINALIZATION_EVALUATOR_VERSION: &str = "finalize-semantic-v1";
 
 /// Immutable semantic content of a terminal attempt. Counters, timings and
 /// `finishedAt` are excluded: a retried finalization of the same attempt must
 /// produce the same hash even though those mutable fields differ.
-pub(super) fn finalization_semantic_payload(record: &Value, operations: &[Value]) -> Value {
+pub(crate) fn finalization_semantic_payload(record: &Value, operations: &[Value]) -> Value {
     let mut normalized = operations
         .iter()
         .map(|operation| {
@@ -177,7 +177,7 @@ pub(super) fn finalization_semantic_payload(record: &Value, operations: &[Value]
     })
 }
 
-pub(super) fn finalization_payload_hash(record: &Value, operations: &[Value]) -> String {
+pub(crate) fn finalization_payload_hash(record: &Value, operations: &[Value]) -> String {
     crate::engine::memory::stable_id(&[
         &finalization_semantic_payload(record, operations).to_string(),
     ])
@@ -188,7 +188,7 @@ pub(super) fn finalization_payload_hash(record: &Value, operations: &[Value]) ->
 ///    or by an `unknown` sibling;
 /// 2. then `unknown/invalid` (evidence not trustworthy);
 /// 3. then `followed`; 4. `not_triggered`; 5. otherwise `not_applicable`.
-pub(super) fn compliance_summary(
+pub(crate) fn compliance_summary(
     entries: &[Value],
 ) -> crate::engine::adaptation::types::Compliance {
     use crate::engine::adaptation::types::Compliance;
@@ -220,7 +220,7 @@ pub(super) fn compliance_summary(
 
 /// Lossless per-verdict counts stored next to the single summary so a violated
 /// arm stays visible even when another arm is unknown.
-pub(super) fn compliance_detail(entries: &[Value]) -> Value {
+pub(crate) fn compliance_detail(entries: &[Value]) -> Value {
     let mut violated = Vec::new();
     let mut unknown = Vec::new();
     let mut followed = Vec::new();
@@ -254,7 +254,7 @@ pub(super) fn compliance_detail(entries: &[Value]) -> Value {
     })
 }
 
-pub(super) fn standing_violation(execution: &Value) -> bool {
+pub(crate) fn standing_violation(execution: &Value) -> bool {
     execution["strategyCompliance"]
         .as_array()
         .is_some_and(|items| {
@@ -268,7 +268,7 @@ pub(super) fn standing_violation(execution: &Value) -> bool {
         })
 }
 
-pub(super) fn determine_task_outcome(execution: &Value) -> TaskOutcome {
+pub(crate) fn determine_task_outcome(execution: &Value) -> TaskOutcome {
     match execution["status"].as_str() {
         Some("cancelled") => return TaskOutcome::Cancelled,
         Some("completed") => {}
@@ -290,7 +290,7 @@ pub(super) fn determine_task_outcome(execution: &Value) -> TaskOutcome {
     TaskOutcome::Failed
 }
 
-pub(super) fn record_success_experience(
+pub(crate) fn record_success_experience(
     state: &AppState,
     record: &Value,
     execution_id: &str,
@@ -365,7 +365,7 @@ pub(super) fn record_success_experience(
 /// model settings used by this attempt. Recorded before the first model call
 /// and before any harness node so the attempt cannot drift from its evidence.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_selection_snapshot(
+pub(crate) fn record_selection_snapshot(
     state: &AppState,
     execution_id: &str,
     task_id: &str,

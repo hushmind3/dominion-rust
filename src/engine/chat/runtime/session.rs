@@ -2,14 +2,14 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn mark_budget_exhausted(state: &AppState, execution_id: &str) {
+pub(crate) fn mark_budget_exhausted(state: &AppState, execution_id: &str) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["budgetExhausted"] = json!(true);
         state.store.put("execution", &execution);
     }
 }
 
-pub(super) fn mark_run_signals(state: &AppState, record: &Value) {
+pub(crate) fn mark_run_signals(state: &AppState, record: &Value) {
     let Some(execution_id) = record["id"].as_str() else {
         return;
     };
@@ -88,7 +88,7 @@ pub(super) fn mark_run_signals(state: &AppState, record: &Value) {
     }
 }
 
-pub(super) fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
+pub(crate) fn retitle_if_placeholder(state: &AppState, session: &Value, text: &str) {
     let title = session
         .get("title")
         .and_then(|value| value.as_str())
@@ -104,7 +104,7 @@ pub(super) fn retitle_if_placeholder(state: &AppState, session: &Value, text: &s
     }
 }
 
-pub(super) fn ensure_session(state: &AppState, request: &TurnRequest) -> Result<Value, String> {
+pub(crate) fn ensure_session(state: &AppState, request: &TurnRequest) -> Result<Value, String> {
     if let Some(id) = &request.session_id {
         if let Some(session) = state.store.get("session", id) {
             return Ok(session);
@@ -124,7 +124,7 @@ pub(super) fn ensure_session(state: &AppState, request: &TurnRequest) -> Result<
     session.ok_or_else(|| "세션을 만들 수 없습니다.".to_string())
 }
 
-pub(super) fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, name: &str, ok: bool) {
+pub(crate) fn record_tool_stat(state: &AppState, session_id: &str, agent_id: Option<&str>, name: &str, ok: bool) {
     let Some(stat) = state.store.increment_counters(
         "tool_stat",
         name,

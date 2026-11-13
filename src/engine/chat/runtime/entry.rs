@@ -39,7 +39,7 @@ pub async fn run_room_turn(
     run_turn_with_policy(state, request, tx, false, false, Some(source_message_id)).await
 }
 
-pub(super) async fn run_turn_with_policy(
+pub(crate) async fn run_turn_with_policy(
     state: &AppState,
     request: &TurnRequest,
     tx: &UnboundedSender<Value>,

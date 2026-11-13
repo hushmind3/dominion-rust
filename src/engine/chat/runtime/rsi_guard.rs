@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn bounded_contract_intent(input: &str) -> String {
+pub(crate) fn bounded_contract_intent(input: &str) -> String {
     if input.chars().count() <= 4096 {
         return input.to_string();
     }
@@ -14,7 +14,7 @@ pub(super) fn bounded_contract_intent(input: &str) -> String {
 }
 
 /// Repository maps, quoted source and prior evidence are context, not tasks.
-pub(super) fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
+pub(crate) fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
     if session["rsiRun"]==true {
         session["rsiObjective"].as_str().filter(|text|!text.trim().is_empty()).unwrap_or(input)
     } else {input}
@@ -26,17 +26,17 @@ pub(super) fn task_input<'a>(session: &'a Value, input: &'a str) -> &'a str {
 /// Qwen edits before the detached diff could be collected.
 /// Bound a real repair more tightly than broad exploration without forcing
 /// it to finish before the source has been observed and corrected.
-pub(super) fn rsi_generation_round_limit(default:usize,compiler_repair:bool)->usize {
+pub(crate) fn rsi_generation_round_limit(default:usize,compiler_repair:bool)->usize {
     if compiler_repair {default.min(6)} else {default.max(16)}
 }
 
-pub(super) fn elapsed_limit_for_session(session:&Value)->std::time::Duration {
+pub(crate) fn elapsed_limit_for_session(session:&Value)->std::time::Duration {
     if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {
         std::time::Duration::from_secs(840)
     } else {MAX_ELAPSED}
 }
 
-pub(super) fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
+pub(crate) fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String> {
     let remaining=MAX_TOKENS.saturating_sub(spent).saturating_sub(input);
     if remaining<256 {return Err(format!("토큰 예산({MAX_TOKENS})이 부족해 다음 호출 전에 중단했습니다."));}
     Ok(remaining.min(8192))
@@ -45,13 +45,13 @@ pub(super) fn rsi_output_allowance(spent: u64, input: u64) -> Result<u64,String>
 /// When RSI has spent most of the turn on exploration, stop offering read
 /// tools. The model must decide: make the grounded change, or finish without
 /// one. This is a decision checkpoint, not a forced write.
-pub(super) fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
+pub(crate) fn rsi_should_checkpoint(tool_calls: u64, has_write: bool) -> bool {
     !has_write && tool_calls >= 6
 }
 
 /// Stop broad discovery but allow exact missing ranges to be read. Bounded
 /// excerpts are intentionally incomplete, so banning all reads would prevent edits.
-pub(super) fn rsi_checkpoint_stage(
+pub(crate) fn rsi_checkpoint_stage(
     tool_calls: u64, read_calls: u64, has_write: bool,
     explicit_focus: bool, source_in_prompt: bool,
 ) -> Option<bool> {
@@ -61,7 +61,7 @@ pub(super) fn rsi_checkpoint_stage(
 
 /// Historical source/candidate receipts tune this *native harness* limit.
 /// The original fixed six-call checkpoint remains the cold-start policy.
-pub(super) fn rsi_checkpoint_stage_with_limit(
+pub(crate) fn rsi_checkpoint_stage_with_limit(
     tool_calls:u64, read_calls:u64, has_write:bool,
     explicit_focus:bool, source_in_prompt:bool, exploration_limit:u64,
 ) -> Option<bool> {
@@ -72,11 +72,11 @@ pub(super) fn rsi_checkpoint_stage_with_limit(
     (tool_calls>=exploration_limit.clamp(2,12)).then_some(false)
 }
 
-pub(super) fn rsi_initial_focused_tool(name:&str)->bool {
+pub(crate) fn rsi_initial_focused_tool(name:&str)->bool {
     matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"|"workspace_write")
 }
 
-pub(super) fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
+pub(crate) fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
     if edit_only {return matches!(name,"workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function");}
     matches!(
         name,
@@ -87,7 +87,7 @@ pub(super) fn rsi_checkpoint_tool(name: &str, edit_only:bool) -> bool {
 /// A learned repair may need to refresh a stale source version *after* an
 /// edit failure. Allow that exact read even in the edit-only checkpoint, but
 /// never reopen unrestricted search or unrelated tools.
-pub(super) fn rsi_checkpoint_with_recovery(
+pub(crate) fn rsi_checkpoint_with_recovery(
     tool:&str,edit_only:bool,next:Option<&(String,String)>
 )->bool {
     rsi_checkpoint_tool(tool,edit_only)
@@ -102,7 +102,7 @@ pub(super) fn rsi_checkpoint_with_recovery(
 /// Some local models echo the absolute path returned by older read tools.
 /// The resulting path must resolve to an existing source file within the
 /// disposable worktree; external paths can never become authorized edits.
-pub(super) fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Option<String>{
+pub(crate) fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Option<String>{
     let root=std::fs::canonicalize(workspace).ok()?;
     let path=std::path::Path::new(raw);
     let relative=if path.is_absolute() {
@@ -127,7 +127,7 @@ pub(super) fn rsi_relative_edit_path(workspace:&std::path::Path,raw:&str)->Optio
 /// An LLM's non-empty but shortened SHA is not a usable source revision.
 /// The detached worker may bind the full SHA only from a successful native
 /// workspace_read_range receipt on the *same session and exact path*.
-pub(super) fn rsi_source_sha_valid(sha:Option<&str>)->bool {
+pub(crate) fn rsi_source_sha_valid(sha:Option<&str>)->bool {
     sha.is_some_and(|value|value.len()==64
         && value.bytes().all(|byte|byte.is_ascii_hexdigit()))
 }
@@ -137,7 +137,7 @@ pub(super) fn rsi_source_sha_valid(sha:Option<&str>)->bool {
 /// not transcribe 64 hex characters from a prior tool response: DOMINION can
 /// copy that hash without guessing. checked_write re-verifies the whole file
 /// under its mutation lock; stale observations therefore still fail closed.
-pub(super) fn rsi_observed_source_hash(
+pub(crate) fn rsi_observed_source_hash(
     operations:&[Value],session_id:&str,path:&str,
 )->Option<(String,String)> {
     operations.iter()
@@ -160,7 +160,7 @@ pub(super) fn rsi_observed_source_hash(
 /// Derive a conservative function-window *hint* from observed source.
 /// No source is changed by this scanner, and it does not authorize a write:
 /// all writes still require the native SHA and independent verification.
-pub(super) fn rsi_target_function_window(
+pub(crate) fn rsi_target_function_window(
     objective:&str, observed:&str, first_line:u64,
 )->Option<(String,u64,u64)> {
     let lines=observed.lines().collect::<Vec<_>>();
@@ -196,7 +196,7 @@ pub(super) fn rsi_target_function_window(
 /// to a small, source-exact editing context. This is a native harness action:
 /// the model authors the replacement; DOMINION supplies only observed bytes
 /// and the tools/checker still decide whether a write happened.
-pub(super) fn rsi_grounded_edit_messages(
+pub(crate) fn rsi_grounded_edit_messages(
     session:&Value,session_id:&str,operations:&[Value],repair_input:&str
 )->Option<Vec<Value>> {
     if session["rsiRun"]!=true
@@ -259,14 +259,14 @@ pub(super) fn rsi_grounded_edit_messages(
 
 /// Compiler repair has an actual source target and exact failing lines.
 /// It must not spend its limited retry round doing repository discovery.
-pub(super) fn rsi_compiler_repair_tool(name:&str)->bool {
+pub(crate) fn rsi_compiler_repair_tool(name:&str)->bool {
     matches!(name,"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function")
 }
 
 /// A quality-plateau descendant starts from the original model's measured
 /// patch, not from a clean checkout. Require a fresh source read and then a
 /// function-scoped edit; historical discovery recipes cannot bury this work.
-pub(super) fn rsi_quality_revision_tool(name:&str,has_current_read:bool)->bool{
+pub(crate) fn rsi_quality_revision_tool(name:&str,has_current_read:bool)->bool{
     if has_current_read {
         matches!(name,"workspace_replace_function"|"workspace_replace_range"|"workspace_replace")
     } else {
@@ -278,7 +278,7 @@ pub(super) fn rsi_quality_revision_tool(name:&str,has_current_read:bool)->bool{
 /// Force one new observed source read in the SAME repair session before another
 /// edit. Earlier code checked read_calls==0 only for inherited patches, which
 /// incorrectly treated pre-edit reads as current for same-generation repairs.
-pub(super) fn rsi_compiler_requires_current_read(session:&Value, operations:&[Value])->bool {
+pub(crate) fn rsi_compiler_requires_current_read(session:&Value, operations:&[Value])->bool {
     if session["rsiCompilerRepair"]!=true {return false;}
     let confirmed_write=operations.iter().filter(|op|
         op["status"]=="completed"
@@ -308,7 +308,7 @@ pub(super) fn rsi_compiler_requires_current_read(session:&Value, operations:&[Va
 
 /// RSI needs a real write, not a completed tool call whose result says error.
 /// The isolated candidate verifier remains the authority for quality.
-pub(super) fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
+pub(crate) fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)->bool {
     operations.iter().any(|row|
         row["runId"].as_str()==Some(execution_id)
         && row["status"]=="completed"
@@ -323,7 +323,7 @@ pub(super) fn rsi_confirmed_source_write(operations:&[Value], execution_id:&str)
 /// Turn experience into an actual harness decision. A prior failed
 /// mutation switches this generation to the alternative learned edit method;
 /// successful effects remain separate from the independent quality verdict.
-pub(super) fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
+pub(crate) fn rsi_method_edit_choice(method:&Value, operations:&[Value], execution_id:&str)
     -> Option<(String,bool)>
 {
     let primary=method["preferredTool"].as_str()
@@ -343,7 +343,7 @@ pub(super) fn rsi_method_edit_choice(method:&Value, operations:&[Value], executi
 /// merely their display order in a model prompt. The three competing
 /// existing-source editors are mutually exclusive once empirical evidence
 /// chooses one; reads and new-file writes remain available independently.
-pub(super) fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
+pub(crate) fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->bool {
     !learned
         || !matches!(name,"workspace_replace"|"workspace_replace_range"|"workspace_replace_function")
         || name==chosen
@@ -352,7 +352,7 @@ pub(super) fn rsi_method_tool_allowed(name:&str, chosen:&str, learned:bool)->boo
 /// Execute the recombined, experience-induced tool sequence in the
 /// native harness, not as a suggestion embedded in a prompt. Failures can
 /// redirect to a different actual tool learned from earlier recoveries.
-pub(super) fn rsi_action_failed(operation:&Value)->bool {
+pub(crate) fn rsi_action_failed(operation:&Value)->bool {
     let edit=matches!(operation["tool"].as_str(),
         Some("workspace_write"|"workspace_replace"|"workspace_replace_range"|"workspace_replace_function"));
     operation["status"]=="failed"
@@ -364,7 +364,7 @@ pub(super) fn rsi_action_failed(operation:&Value)->bool {
 /// A stale edit precondition is a signal to refresh the observed source,
 /// not evidence that the same patch should be replayed unchanged. The
 /// recovery operator is selected from the actual tool error, not prose.
-pub(super) fn rsi_needs_fresh_source(operation:&Value)->bool {
+pub(crate) fn rsi_needs_fresh_source(operation:&Value)->bool {
     if !matches!(operation["tool"].as_str(),
         Some("workspace_replace"|"workspace_replace_range"|"workspace_replace_function")) || !rsi_action_failed(operation) {
         return false;
@@ -381,7 +381,7 @@ pub(super) fn rsi_needs_fresh_source(operation:&Value)->bool {
 /// The first unmatched step is selected only if every preceding step ran
 /// successfully *after* the relevant failure in the current execution.
 /// A failed replay can never masquerade as a completed recovery.
-pub(super) fn rsi_recovery_path_next(program:&Value,actual:&[&Value])->Option<String> {
+pub(crate) fn rsi_recovery_path_next(program:&Value,actual:&[&Value])->Option<String> {
     for (position,failed) in actual.iter().enumerate().rev() {
         if !rsi_action_failed(failed) {continue;}
         for path in program["recoveryPaths"].as_array().into_iter().flatten() {
@@ -402,7 +402,7 @@ pub(super) fn rsi_recovery_path_next(program:&Value,actual:&[&Value])->Option<St
     None
 }
 
-pub(super) fn rsi_action_program_next(
+pub(crate) fn rsi_action_program_next(
     program:&Value, operations:&[Value], execution_id:&str,
 )->Option<(String,String)> {
     // A receipt-verified edit is the handoff to detached candidate checking,
@@ -447,7 +447,7 @@ pub(super) fn rsi_action_program_next(
 /// those executions so "read -> edit" does not restart at "read" forever.
 /// This is an observation-only projection: the original receipts and their
 /// run IDs remain immutable in the durable ledger.
-pub(super) fn rsi_program_next_in_session(
+pub(crate) fn rsi_program_next_in_session(
     program:&Value, all:&[Value], execution_id:&str, session_id:&str,
 )->Option<(String,String)> {
     let mut actions=all.iter().filter(|op|
@@ -478,7 +478,7 @@ pub(super) fn rsi_program_next_in_session(
 /// Before the first real source read, keep only the minimum hash-observation
 /// path needed for an edit. A stale edit explicitly selects a fresh read via
 /// rsi_action_program_next; never advertise unrestricted search as fallback.
-pub(super) fn rsi_action_program_tool_allowed(
+pub(crate) fn rsi_action_program_tool_allowed(
     name:&str,selected:&str,has_source_read:bool
 )->bool {
     name==selected || (!has_source_read
@@ -490,7 +490,7 @@ pub(super) fn rsi_action_program_tool_allowed(
 /// of being permanently excluded by a policy learned before that tool existed.
 /// Never widen read/search stages; the trial is only offered after a verified
 /// source observation and only alongside an actual editing decision.
-pub(super) fn rsi_untried_function_tool_allowed(
+pub(crate) fn rsi_untried_function_tool_allowed(
     name:&str,chosen:&str,already_allowed:bool,
     untried_function:bool,
 )->bool {
@@ -502,13 +502,13 @@ pub(super) fn rsi_untried_function_tool_allowed(
 /// Native RSI program decisions are executable restrictions, not simply
 /// tool hints to the model. A model may emit a stale/hallucinated tool call
 /// even when that function was not advertised on this exact round.
-pub(super) fn rsi_tool_offered_this_round(tools:&[Value], requested:&str)->bool {
+pub(crate) fn rsi_tool_offered_this_round(tools:&[Value], requested:&str)->bool {
     tools.iter().any(|entry|tool_name(entry)==requested)
 }
 
 /// Query-based tool discovery must not shrink the RSI toolset: a generation
 /// needs read, search and replace together to produce a grounded patch.
-pub(super) fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
+pub(crate) fn tool_discovery_applies(is_room: bool, rsi_run: bool) -> bool {
     !is_room && !rsi_run
 }
 

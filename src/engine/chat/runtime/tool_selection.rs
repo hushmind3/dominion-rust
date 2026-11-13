@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn restore_program_state(
+pub(crate) fn restore_program_state(
     state: &AppState,
     task_id: &str,
     execution_id: &str,
@@ -64,7 +64,7 @@ pub(super) fn restore_program_state(
     Ok(())
 }
 
-pub(super) fn tool_is_read_only(name: &str) -> bool {
+pub(crate) fn tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
         "workspace_list" | "workspace_read" | "workspace_read_range" | "file_list" | "file_read"
@@ -73,7 +73,7 @@ pub(super) fn tool_is_read_only(name: &str) -> bool {
     )
 }
 
-pub(super) fn mark_tool_argument_signal(
+pub(crate) fn mark_tool_argument_signal(
     state: &AppState, request: &TurnRequest, execution_id: &str, ok: bool,
 ) {
     let _ = crate::engine::algorithms::choose_for_agent(
@@ -85,7 +85,7 @@ pub(super) fn mark_tool_argument_signal(
     crate::engine::algorithms::mark_signal(state, execution_id, "tool.arguments", ok);
 }
 
-pub(super) fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> Value {
+pub(crate) fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> Value {
     if strategy != "normalize-paths" {
         return arguments;
     }
@@ -110,7 +110,7 @@ pub(super) fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> 
     arguments
 }
 
-pub(super) fn tool_name(definition: &Value) -> &str {
+pub(crate) fn tool_name(definition: &Value) -> &str {
     definition["function"]["name"]
         .as_str()
         .or_else(|| definition["name"].as_str())
@@ -119,7 +119,7 @@ pub(super) fn tool_name(definition: &Value) -> &str {
 
 /// Casual room turns carry zero tool schemas. Action requests select the
 /// exact native schemas the harness judges relevant; no model call is used.
-pub(super) fn room_tool_request(input: &str) -> bool {
+pub(crate) fn room_tool_request(input: &str) -> bool {
     let lower = input.to_lowercase();
     [
         "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
@@ -137,7 +137,7 @@ pub(super) fn room_tool_request(input: &str) -> bool {
     .any(|term| lower.contains(term))
 }
 
-pub(super) fn recent_room_tools(state: &AppState, session_id: &str) -> std::collections::HashSet<String> {
+pub(crate) fn recent_room_tools(state: &AppState, session_id: &str) -> std::collections::HashSet<String> {
     state
         .store
         .messages(session_id)
@@ -158,7 +158,7 @@ pub(super) fn recent_room_tools(state: &AppState, session_id: &str) -> std::coll
         .collect()
 }
 
-pub(super) fn select_room_tools(
+pub(crate) fn select_room_tools(
     definitions: Vec<Value>,
     query: &str,
     recent: &std::collections::HashSet<String>,
@@ -263,7 +263,7 @@ pub(super) fn select_room_tools(
     scored.into_iter().map(|(_, definition)| definition).collect()
 }
 
-pub(super) fn select_tool_definitions(
+pub(crate) fn select_tool_definitions(
     definitions: Vec<Value>,
     query: &str,
     algorithm: &Value,
@@ -341,7 +341,7 @@ pub(super) fn select_tool_definitions(
         .collect()
 }
 
-pub(super) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
+pub(crate) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
     let mut kept = Vec::new();
     let mut used = 0usize;
     for definition in definitions {

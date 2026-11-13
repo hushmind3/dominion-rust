@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
+pub(crate) fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["programCheckpoint"] = checkpoint.clone();
         if let Some(saved) = state.store.put("execution", &execution) {
@@ -12,7 +12,7 @@ pub(super) fn save_program_checkpoint(state: &AppState, execution_id: &str, chec
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn execute_program_tool(
+pub(crate) async fn execute_program_tool(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session: &Value,
@@ -90,7 +90,7 @@ pub(super) async fn execute_program_tool(
     Ok(result)
 }
 
-pub(super) fn mark_program_completed(checkpoint: &mut Value, node_id: &str) {
+pub(crate) fn mark_program_completed(checkpoint: &mut Value, node_id: &str) {
     if node_id.is_empty() {
         return;
     }
@@ -104,7 +104,7 @@ pub(super) fn mark_program_completed(checkpoint: &mut Value, node_id: &str) {
     checkpoint["completedOperationIds"] = json!(completed);
 }
 
-pub(super) struct ProgramCtx<'a> {
+pub(crate) struct ProgramCtx<'a> {
     state: &'a AppState,
     tx: &'a UnboundedSender<Value>,
     session: &'a Value,
@@ -115,7 +115,7 @@ pub(super) struct ProgramCtx<'a> {
     generation: u64,
 }
 
-pub(super) struct ProgramFrame {
+pub(crate) struct ProgramFrame {
     resolved: Value,
     checkpoint: Value,
     budget: super::super::budget::BudgetLedger,
@@ -127,7 +127,7 @@ pub(super) struct ProgramFrame {
 
 /// Rewrites ids inside a loop body so the same node in two iterations is a
 /// different durable operation. `saveAs` keeps the original binding name.
-pub(super) fn scope_program_node_ids(node: &Value, prefix: &str) -> Value {
+pub(crate) fn scope_program_node_ids(node: &Value, prefix: &str) -> Value {
     let mut copy = node.clone();
     let node_type = node["type"].as_str().unwrap_or("");
     if node_type != "observe" {
@@ -152,7 +152,7 @@ pub(super) fn scope_program_node_ids(node: &Value, prefix: &str) -> Value {
 /// Executes nodes recursively so Sequence/Branch/Parallel/Loop can contain any
 /// supported node. All side effects go through the same tool gateway.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn execute_nodes<'a>(
+pub(crate) fn execute_nodes<'a>(
     ctx: &'a ProgramCtx<'a>,
     nodes: Vec<Value>,
     mut resolved: Value,
@@ -692,7 +692,7 @@ pub(super) fn execute_nodes<'a>(
     })
 }
 
-pub(super) fn save_revised_program(state: &AppState, execution_id: &str, program: &Value) {
+pub(crate) fn save_revised_program(state: &AppState, execution_id: &str, program: &Value) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["revisedProgram"] = program.clone();
         if let Some(saved) = state.store.put("execution", &execution) {
@@ -702,7 +702,7 @@ pub(super) fn save_revised_program(state: &AppState, execution_id: &str, program
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn propose_program_revision(
+pub(crate) async fn propose_program_revision(
     ctx: &ProgramCtx<'_>,
     program: &Value,
     checkpoint: &Value,
@@ -758,7 +758,7 @@ pub(super) async fn propose_program_revision(
     Ok(Some(revised))
 }
 
-pub(super) async fn run_program(
+pub(crate) async fn run_program(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session: &Value,

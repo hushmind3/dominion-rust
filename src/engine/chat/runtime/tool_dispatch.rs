@@ -2,7 +2,7 @@
 //! Active Rust subtree of chat::runtime.
 use super::*;
 
-pub(super) fn frozen_replacements(checks: &Value) -> Option<Vec<Value>> {
+pub(crate) fn frozen_replacements(checks: &Value) -> Option<Vec<Value>> {
     let items = checks.as_array()?;
     (!items.is_empty()
         && items.len() <= 32
@@ -19,7 +19,7 @@ pub(super) fn frozen_replacements(checks: &Value) -> Option<Vec<Value>> {
 /// Applies the literal replacement only when the old text occurs once and the
 /// result matches the hash captured in the contract. A mismatch is not a
 /// failure of the task; it means the deterministic path does not apply.
-pub(super) fn replacement_content(check: &Value, content: &str) -> Option<String> {
+pub(crate) fn replacement_content(check: &Value, content: &str) -> Option<String> {
     let old = check["old"].as_str()?;
     let new = check["new"].as_str()?;
     if content.matches(old).count() != 1 {
@@ -33,7 +33,7 @@ pub(super) fn replacement_content(check: &Value, content: &str) -> Option<String
 /// Runs one deterministic tool call through the same approval, file lock,
 /// effect receipt and evidence store as a model-issued call.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn deterministic_tool(
+pub(crate) async fn deterministic_tool(
     state: &AppState,
     request: &TurnRequest,
     tx: &UnboundedSender<Value>,
@@ -181,7 +181,7 @@ pub(super) async fn deterministic_tool(
 /// Records what was already applied when a later write cannot proceed. The
 /// operations remain the primary evidence; this marker makes the partial state
 /// explicit on the execution record.
-pub(super) fn record_partial_shortcut(
+pub(crate) fn record_partial_shortcut(
     state: &AppState,
     execution_id: &str,
     applied: &[Value],
@@ -207,7 +207,7 @@ pub(super) fn record_partial_shortcut(
 /// completed and validated first; a single mismatch falls back to the normal
 /// model path without mutating anything.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_frozen_replacements(
+pub(crate) async fn run_frozen_replacements(
     state: &AppState,
     request: &TurnRequest,
     tx: &UnboundedSender<Value>,
@@ -353,7 +353,7 @@ pub(super) async fn run_frozen_replacements(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn dispatch_tool_call(
+pub(crate) async fn dispatch_tool_call(
     state: &AppState,
     tx: &UnboundedSender<Value>,
     session: &Value,

@@ -28,42 +28,42 @@ use turn::run_turn_body;
 
 #[path = "runtime/rsi_guard.rs"]
 mod rsi_guard;
-use rsi_guard::*;
+pub(crate) use rsi_guard::*;
 
 #[path = "runtime/entry.rs"]
 mod entry;
 pub use entry::{run_turn,run_turn_background,run_turn_resume,run_room_turn};
-use entry::*;
+pub(crate) use entry::*;
 
 #[path = "runtime/adaptation.rs"]
 mod adaptation;
-use adaptation::*;
+pub(crate) use adaptation::*;
 
 #[path = "runtime/tool_selection.rs"]
 mod tool_selection;
-use tool_selection::*;
+pub(crate) use tool_selection::*;
 
 #[path = "runtime/program.rs"]
 mod program;
-use program::*;
+pub(crate) use program::*;
 
 #[path = "runtime/tool_dispatch.rs"]
 mod tool_dispatch;
-use tool_dispatch::*;
+pub(crate) use tool_dispatch::*;
 
 #[path = "runtime/evaluation.rs"]
 mod evaluation;
-use evaluation::*;
+pub(crate) use evaluation::*;
 pub(super) use evaluation::tool_succeeded;
 
 #[path = "runtime/finalization.rs"]
 mod finalization;
-use finalization::*;
+pub(crate) use finalization::*;
 pub(super) use finalization::{finish_attempt,finalize_execution};
 
 #[path = "runtime/session.rs"]
 mod session;
-use session::*;
+pub(crate) use session::*;
 
 
 /// Task contracts bound intent to 4096 characters. Keep the full model prompt
