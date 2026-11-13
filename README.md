@@ -482,3 +482,9 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 `rsi/execution/campaign.rs`는 세대 저장 직후, `rsi/execution/source.rs`는 종료 저장 직전에, `rsi/evaluation/adoption.rs::proof_goal_reached`는 중지 판단에서, `src/api/rsi.rs`와 `rsi.rs::capability_audit`는 조회·감사에서 **동일한 판정 함수**를 사용합니다. 기존 캠페인에 남은 근거 없는 `capability_demonstrated` 종료 사유는 재검증 시 `recursive_method_closure_not_proven`으로 정정합니다. 이 소스 변경에는 테스트·컴파일·실모델 실행 결과가 아직 없습니다.
 
 실제 함수·모듈·증거 경계와 2026년 참고 연구는 [챔피온 RSI 성공 판정 통합 설계](docs/CHAMPION-UNIFIED-CLOSURE-2026-11-13.md)에 정리했습니다.
+
+### 2026-11-13 최신 챔피온 — 실측 대조 워커와 4세대 재귀 폐회로
+
+심판의 48점·2위 판정에서 지적한 **개선법 사용의 실제 대조군**을 `dominion-champion` 정상 캠페인 경로에 연결했습니다. 시스템 RSI 시작 시 별도 설정을 생략하면 실제 개선법 비활성화 후손(OFF)을 먼저 실행하고 동일 소스·모델·동결 평가로 실제 개선법 적용 후손(ON)을 실행합니다. 대조군의 변경은 채택하지 않습니다. 다음 세대 학습은 영수증 재검증한 OFF/ON 차이를 이용해 실제 방법 재수정을 선택하고, 수정된 방법을 다시 사용하는 B2 후손까지 요구합니다.
+
+현재의 전체 RSI 성공은 **A1 방법 소스 변경 → B1 대조군 대비 개선 → A2 B1 근거로 방법 수정 → B2 새 방법으로 추가 대조군 대비 개선 및 관측 우위 증가**의 4세대 실증에서만 가능합니다. 모든 성공 표시는 공통 `campaign_verdict`에서 결정합니다. 한 번의 모델 샘플 ON/OFF는 엄격한 통계적 인과증명은 아니므로 `causalAblationProven=false`로 둡니다. 테스트·컴파일·CI·실모델 실행은 하지 않았습니다. [실행 및 코드 연결 상세](docs/CHAMPION-METHOD-ABLATION-2026-11-13.md).
