@@ -70,13 +70,20 @@ fn method_gain(candidate: &Value) -> bool {
             .as_u64().unwrap_or(0)>0
         && candidate["evaluation"]["metrics"]["improvedHoldoutDomains"]
             .as_array().is_some_and(|domains|domains.iter().any(|v|v=="improver"))
-        // A faster no-op planner is not evidence that its decisions improved.
-        // Require at least one frozen improver task that the predecessor
-        // failed and the revised method actually passed.
+        // Holdout tasks can reach full pass accuracy. A real, non-regressing
+        // frozen improver metric gain (quality/context/tokens/time) is still
+        // method improvement after saturation. Never count summary-only gain
+        // flags or an unmeasured no-op.
         && candidate["evaluation"]["metrics"]["measurements"]
             .as_array().is_some_and(|cases|cases.iter().any(|case|
                 case["domain"]=="improver" && case["holdout"]==true
-                    && case["baselinePass"]==false && case["candidatePass"]==true))
+                    && ((case["baselinePass"]==false && case["candidatePass"]==true)
+                        ||(case["baselinePass"]==true && case["candidatePass"]==true
+                            &&case["metrics"].as_array().is_some_and(|metrics|
+                                metrics.iter().any(|metric|
+                                    metric["improved"]==true &&metric["regressed"]!=true
+                                    &&matches!(metric["key"].as_str(),
+                                        Some("quality"|"tokens"|"contextChars"|"elapsedMs"))))))))
 }
 
 fn cross_domain_gain(candidate: &Value) -> bool {

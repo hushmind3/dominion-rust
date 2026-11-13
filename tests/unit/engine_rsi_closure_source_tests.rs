@@ -64,3 +64,17 @@ fn frozen_improver_transition_is_required_even_for_a_method_only_patch() {
     candidate["evaluation"]["metrics"]["metaHoldoutGains"]=json!(0);
     assert!(!method_gain(&candidate));
 }
+
+#[test]
+fn independently_measured_cost_gain_remains_a_method_gain_after_accuracy_saturates(){
+    let mut candidate=measured(&["src/engine/rsi/learning/methods.rs"]);
+    candidate["evaluation"]["metrics"]["measurements"][0]["baselinePass"]=json!(true);
+    candidate["evaluation"]["metrics"]["measurements"][0]["candidatePass"]=json!(true);
+    candidate["evaluation"]["metrics"]["measurements"][0]["metrics"]=json!([
+        {"key":"contextChars","baseline":12000.0,"candidate":8000.0,
+         "improved":true,"regressed":false}
+    ]);
+    assert!(method_gain(&candidate));
+    candidate["evaluation"]["metrics"]["measurements"][0]["metrics"][0]["improved"]=json!(false);
+    assert!(!method_gain(&candidate));
+}

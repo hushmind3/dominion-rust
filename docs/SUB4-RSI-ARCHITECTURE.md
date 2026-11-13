@@ -165,3 +165,13 @@ demonstration, although actual successful candidates and controls are
 not supplied or simulated by this change. The two method-off trials are
 independent nonrandomized model interactions, not a claim of
 generalized randomized causal superiority.
+
+### Post-saturation improvement
+
+A binary improver holdout need not flip from failing to passing forever.
+`method_gain` now accepts independently measured, non-regressing cost
+or quality changes on a passing improver holdout, still requiring a
+verified positive meta holdout metric. The matched B/B2 controls compare
+either newly passing previously failing tasks or frozen measured quality
+improvement with numerically identical original baseline; mere
+preservation of an already passing guard cannot count as improvement.

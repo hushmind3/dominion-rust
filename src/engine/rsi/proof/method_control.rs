@@ -80,6 +80,26 @@ fn verified_control(state:&AppState,g:&Value,pre:&Value)->Option<(Value,Value)>{
     Some((candidate,job))
 }
 
+/// Compare same frozen quality metrics as a second supported capability
+/// signal when binary pass/fail accuracy is saturated. Baselines must match
+/// in actual floating-point measurements, not only in a summary flag.
+fn matched_quality(treated:&Value,control:&Value)->Option<(bool,bool)>{
+    let t=treated["metrics"].as_array()?.iter()
+        .find(|m|m["key"]=="quality");
+    let c=control["metrics"].as_array()?.iter()
+        .find(|m|m["key"]=="quality");
+    let (Some(t),Some(c))=(t,c) else{
+        return (t.is_none()&&c.is_none()).then_some((false,false));
+    };
+    let (tb,cb,tv,cv)=(t["baseline"].as_f64()?,c["baseline"].as_f64()?,
+        t["candidate"].as_f64()?,c["candidate"].as_f64()?);
+    if ![tb,cb,tv,cv].iter().all(|v|v.is_finite())
+        ||(tb-cb).abs()>1e-9{return None;}
+    let favorable=t["improved"]==true &&tv>cv+1e-9;
+    let adverse=c["improved"]==true &&cv>tv+1e-9;
+    Some((favorable,adverse))
+}
+
 /// Compare model-produced candidate outcomes on identical original holdouts,
 /// including baseline outcomes. Neither reported gains nor wall-clock savings
 /// count as a downstream ability to solve a previously failing task.
@@ -100,10 +120,13 @@ fn contrast(treated:&Value,control:&Value)->Option<(usize,usize,usize)>{
             ||row["baselinePass"]!=old["baselinePass"] {return None;}
         if row["holdout"]!=true ||row["domain"]=="improver"{continue;}
         let new=row["candidatePass"].as_bool()?;
-        let old=old["candidatePass"].as_bool()?;
+        let old_pass=old["candidatePass"].as_bool()?;
+        let (quality_gain,quality_loss)=if new&&old_pass {
+            matched_quality(row,old)?
+        }else{(false,false)};
         count+=1;
-        if new&&!old && row["baselinePass"]==false {gains+=1;}
-        if !new&&old {losses+=1;}
+        if (new&&!old_pass &&row["baselinePass"]==false)||quality_gain {gains+=1;}
+        if (!new&&old_pass)||quality_loss {losses+=1;}
     }
     (seen.len()==before.len()&&count>=2).then_some((gains,losses,count))
 }

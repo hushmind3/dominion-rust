@@ -569,3 +569,10 @@ A2의 원본 B 피드백은 실제 모델 입력 프롬프트의 SHA-256과 함�
 `rsiMethodControlFeedbackExecuted`에 보존되며, 완료 검사기가 원래
 작업의 입력을 다시 해시합니다. 기존에 이미 통과했던 가드 사례의
 보존만으로는 신규 B 능력 개선이라고 인정하지 않습니다.
+
+정확도 포화 시에도 모델 개선이 정지하지 않도록
+`rsi/proof/closure.rs::method_gain`은 **같은 동결 개선기 holdout에서
+독립적으로 측정된 토큰·문맥·시간·품질 지표 개선**을 수용합니다.
+`method_control.rs::matched_quality`는 기존 pass/fail 능력 외에
+동일 baseline에서 측정된 실제 `quality` 차이를 검증하며,
+서로 다른 기준 성과를 대조군인 것처럼 합치지 않습니다.

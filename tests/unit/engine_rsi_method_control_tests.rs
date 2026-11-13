@@ -61,3 +61,22 @@ fn preserving_previously_passing_guard_is_not_novel_capability(){
     control["evaluation"]["metrics"]["measurements"][0]["candidatePass"]=json!(false);
     assert_eq!(contrast(&treated,&control),Some((1,0,2)));
 }
+
+#[test]
+fn identical_frozen_quality_baseline_can_measure_new_success_after_pass_saturation(){
+    let mut treated=measured(true,true);
+    let mut control=measured(true,true);
+    for pair in [&mut treated,&mut control]{
+        pair["evaluation"]["metrics"]["measurements"][0]["baselinePass"]=json!(true);
+        pair["evaluation"]["metrics"]["measurements"][0]["candidatePass"]=json!(true);
+    }
+    treated["evaluation"]["metrics"]["measurements"][0]["metrics"]=json!([
+        {"key":"quality","baseline":0.7,"candidate":0.9,"improved":true}
+    ]);
+    control["evaluation"]["metrics"]["measurements"][0]["metrics"]=json!([
+        {"key":"quality","baseline":0.7,"candidate":0.72,"improved":false}
+    ]);
+    assert_eq!(contrast(&treated,&control),Some((1,0,2)));
+    control["evaluation"]["metrics"]["measurements"][0]["metrics"][0]["baseline"]=json!(0.6);
+    assert!(contrast(&treated,&control).is_none());
+}
