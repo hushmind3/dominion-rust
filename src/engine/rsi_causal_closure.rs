@@ -15,7 +15,10 @@ fn meta_source(path:&str)->bool {
         |"src/engine/rsi/execution/compiled_planning.rs"
         |"src/engine/rsi/execution/generation_evidence.rs"
         |"src/engine/rsi/execution/generation_finalization.rs"
-        |"src/engine/rsi/execution/method_ablation.rs") {return false;}
+        |"src/engine/rsi/execution/method_ablation.rs"
+        |"src/engine/rsi.rs"
+        |"src/engine/rsi_evolve.rs"
+        |"src/engine/rsi_system.rs") {return false;}
     path=="src/engine/rsi_evolve.rs" ||
     path=="src/engine/rsi_meta_controller.rs" ||
     path=="src/engine/rsi_program_graph.rs" ||
