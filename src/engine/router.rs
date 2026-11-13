@@ -205,6 +205,13 @@ mod tests {
     }
 
     #[test]
+    fn owner_measured_quality_outranks_model_name_digit_guess() {
+        let rated=json!({"model":"small","capabilities":{"quality":0.85}});
+        let unnamed=json!({"model":"very-large-900"});
+        assert!(gateway::capability_score(&rated)>gateway::capability_score(&unnamed));
+    }
+
+    #[test]
     fn light_auto_route_uses_declared_price_only_when_both_are_known() {
         let (state, dir) = state();
         state.store.put("provider",&json!({"id":"expensive","baseUrl":"https://paid.example/v1",
