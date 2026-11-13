@@ -1,3 +1,4 @@
+import {GoalConsole} from './workflows/GoalConsole'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {StatusPill} from '../components/StatusPill'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
@@ -23,6 +24,7 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
  const start=async(f:Flow)=>{if(!f.id)return;try{await post('/api/workflows/'+f.id+'/run',{input:inputs[f.id]||''});setInfo(t('wf.queued',{name:f.name}));await jobs.reload()}catch(e){setError((e as Error).message)}};
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8"><Headline eyebrow={t('ui.eyebrow.workflows')} title={t('wf.title')} description={t('wf.description')} actions={<Action onClick={()=>{setError('');setEdit({name:t('wf.new'),description:'',steps:[emptyStep(agents.value[0]?.id||'')]})}}><Plus size={17}/> {t('wf.create')}</Action>}/>
  {error&&<Notice message={error}/>}
+ <GoalConsole openSession={openSession}/>
  <ExecutionMonitor/>
  {info&&<div className="my-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"><Check size={16}/>{info}</div>}
  <div className="mb-5 flex items-center gap-4 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-5"><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#F1DCCF] text-[#C96442]"><Workflow size={22}/></div><div><strong>{t('wf.badges')}</strong><p>{t('wf.note.input')}{"{{input}}"}{t('wf.note.mid')}{"{{previous}}"}{t('wf.note.end')}</p></div></div>
