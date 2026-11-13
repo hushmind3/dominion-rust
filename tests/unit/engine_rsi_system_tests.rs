@@ -74,11 +74,14 @@ use super::*;
             "factorialExperiment":plan});
         let mut candidate=json!({"baseCommit":commit,
             "paths":["src/engine/memory.rs"],
-            "evaluation":{"metrics":{"measurements":[]}}});
+            "evaluation":{"metrics":{"measurements":[{"id":"case-one",
+                "holdout":true,"baselinePass":false,"candidatePass":true}]}}});
         let (receipt,eligible)=verified_factorial_receipt(
             &generation,&candidate,&job);
         assert!(eligible);
         assert_eq!(receipt["eligibleForFactorial"],true);
+        candidate["evaluation"]["metrics"]["measurements"]=json!([]);
+        assert!(!verified_factorial_receipt(&generation,&candidate,&job).1);
         candidate["evaluation"]["metrics"]["measurements"]=Value::Null;
         assert!(!verified_factorial_receipt(&generation,&candidate,&job).1);
         let mut foreign=job;
