@@ -168,23 +168,43 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     }
     context.checkpoint(json!({"sessionId":session_id}))?;
 
-    let mut plan = match goal.get("plan").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-        Some(plan) => plan.to_string(),
-        None => control.complete(&plan_provider,&plan_model,
-            "You are the planner of an autonomous agent. Ground the plan in the real repository inventory and project guidance supplied. Identify relevant files, ordered actions, and an independent verification step. Avoid inventing paths. No tool calls.",
-            &format!("목표: {text}\n검증 조건: {criteria}\n프로젝트 탐색 정보:\n{project_context}"))
-            .await.unwrap_or_else(|_| format!("1. 목표를 수행한다.\n2. 실제 결과와 검증 조건을 확인한다.\n목표: {text}"))
-            .chars().take(1500).collect()
+    let checkpoint = job.get("goalState").cloned().unwrap_or_else(|| json!({}));
+    let mut applied_plan_revision=checkpoint["appliedPlanRevision"].as_u64().unwrap_or(0);
+    let mut plan=if let Some((revision,owner))=
+        crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
+        applied_plan_revision=revision;
+        owner
+    } else {
+        match goal.get("plan").and_then(Value::as_str).filter(|s|!s.trim().is_empty()) {
+            Some(saved)=>saved.to_string(),
+            None=>control.complete(&plan_provider,&plan_model,
+                "You are the planner of an autonomous agent. Ground the plan in the real repository inventory and project guidance supplied. Identify relevant files, ordered actions, and an independent verification step. Avoid inventing paths. No tool calls.",
+                &format!("목표: {text}\n검증 조건: {criteria}\n프로젝트 탐색 정보:\n{project_context}"))
+                .await.unwrap_or_else(|_|format!("1. 대상 파일과 작업 요건을 조사한다.\n2. 실제 작업을 수행한다.\n3. 변경 내용과 증거를 검증한다."))
+                .chars().take(3000).collect()
+        }
     };
-    if plan_history.is_empty() {
-        plan_history.push(json!({"version":0,"plan":plan,"reason":"initial","at":chrono::Utc::now().to_rfc3339()}));
+    // A newer owner edit arriving while the planner ran wins before tools.
+    if let Some((revision,owner))=
+        crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
+        applied_plan_revision=revision;
+        plan=owner;
+    }
+    if plan_history.is_empty(){
+        plan_history.push(json!({"version":0,"plan":plan,"reason":"initial",
+            "ownerRevision":applied_plan_revision,"at":chrono::Utc::now().to_rfc3339()}));
+    } else if applied_plan_revision>0 &&
+        !plan_history.iter().any(|row|row["ownerRevision"].as_u64()==Some(applied_plan_revision)){
+        plan_history.push(json!({"version":plan_history.len(),"plan":plan,
+            "reason":"owner_steer","ownerRevision":applied_plan_revision,
+            "at":chrono::Utc::now().to_rfc3339()}));
     }
     patch_goal(
         state,
         goal_id,
-        json!({"plan":plan,"planHistory":plan_history,"replans":replans,"phase":"execute"}),
+        json!({"plan":plan,"planHistory":plan_history,"replans":replans,
+            "appliedPlanRevision":applied_plan_revision,"phase":"execute"}),
     );
-    let checkpoint = job.get("goalState").cloned().unwrap_or_else(|| json!({}));
     let mut evidence = checkpoint
         .get("evidence")
         .and_then(Value::as_array)
@@ -207,10 +227,27 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or(0) as usize;
 
     for index in start..max_iterations {
+        if let Some((revision,owner))=
+            crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
+            plan=owner;
+            applied_plan_revision=revision;
+            stalled=0;
+            if !plan_history.iter().any(|row|row["ownerRevision"].as_u64()==Some(revision)){
+                plan_history.push(json!({"version":plan_history.len(),"plan":plan,
+                    "reason":"owner_steer","ownerRevision":revision,
+                    "at":chrono::Utc::now().to_rfc3339()}));
+            }
+            patch_goal(state,goal_id,json!({"plan":plan,
+                "planHistory":plan_history,"appliedPlanRevision":revision,"phase":"execute"}));
+            context.emit(json!({"type":"goal_plan_steered","goalId":goal_id,
+                "revision":revision}));
+        }
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
+        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,
+            "inFlight":true,"appliedPlanRevision":applied_plan_revision,
+            "evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
             input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
@@ -296,13 +333,20 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         patch_goal(state, goal_id, json!({"reviewHistory":review_history}));
         gaps.sort();
         gaps.dedup();
+        // The owner may have steered while a model/tool/reviewer was running.
+        // A completion based on the obsolete plan cannot end that goal.
+        if crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision).is_some() {
+            gaps.push("사용자가 수정한 계획을 다음 실행 단계에 반영해야 합니다.".into());
+        }
         let complete = complete && gaps.is_empty();
         patch_goal(
             state,
             goal_id,
             json!({"phase":if complete {"complete"} else {"repair"},"gaps":gaps,"evidence":evidence}),
         );
-        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
+        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,
+            "inFlight":false,"appliedPlanRevision":applied_plan_revision,
+            "evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         context.emit(json!({"type":"goal_progress","goalId":goal_id,"iteration":index+1,"evidenceCount":evidence.len(),"gaps":gaps}));
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
@@ -311,7 +355,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Ok(finish(context, goal_id, "completed", vec![], None));
         }
         stalled += 1;
-        if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
+        if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans
+            && crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision).is_none() {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
             let revised=control.complete(&plan_provider,&plan_model,
@@ -337,7 +382,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 Err(error) => gaps.push(format!("재계획 실패: {error}")),
             }
         }
-        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"reviewPending":false,"evidence":evidence,"transcript":transcript,"gaps":gaps,"stalled":stalled,"replans":replans,"plan":plan}}))?;
+        context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,
+            "inFlight":false,"reviewPending":false,
+            "appliedPlanRevision":applied_plan_revision,"evidence":evidence,
+            "transcript":transcript,"gaps":gaps,"stalled":stalled,
+            "replans":replans,"plan":plan}}))?;
     }
     Ok(finish(context, goal_id, "needs_review", gaps, None))
 }

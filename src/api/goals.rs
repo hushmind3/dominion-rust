@@ -59,7 +59,8 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
             "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
             "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
-            "replans":0,"planHistory":[],"reviewHistory":[],
+            "replans":0,"planRevision":0,"appliedPlanRevision":0,"ownerPlan":null,
+            "planHistory":[],"reviewHistory":[],"artifacts":[],
             "status": "queued",
             "iterations": 0,
             "maxIterations": max_iterations,
@@ -87,4 +88,56 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     let mut payload = record.clone();
     payload["jobId"] = job_id;
     Json(payload).into_response()
+}
+
+
+/// Versioned steering; edits become effective at a safe executor turn boundary.
+pub async fn steer_goal(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response {
+    if body.as_object().is_none_or(|fields|fields.len()!=2||
+        !fields.contains_key("expectedRevision")||!fields.contains_key("plan")){
+        return error(StatusCode::BAD_REQUEST,"plan과 expectedRevision만 지정하세요.");
+    }
+    let Some(revision)=body["expectedRevision"].as_u64() else{
+        return error(StatusCode::BAD_REQUEST,"expectedRevision은 정수여야 합니다.");
+    };
+    let Some(plan)=body["plan"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"plan은 문자열이어야 합니다.");
+    };
+    use crate::engine::goal_steering::{submit,SteeringError};
+    match submit(&state,&id,revision,plan){
+        Ok(value)=>Json(value).into_response(),
+        Err(SteeringError::Missing)=>error(StatusCode::NOT_FOUND,"목표가 없습니다."),
+        Err(SteeringError::Immutable)=>error(StatusCode::CONFLICT,"종료된 목표는 수정할 수 없습니다."),
+        Err(SteeringError::Conflict)=>error(StatusCode::CONFLICT,"계획 버전이 달라졌습니다. 최신 내용을 불러오세요."),
+        Err(SteeringError::Invalid)=>error(StatusCode::BAD_REQUEST,"계획은 1~6000자여야 합니다."),
+    }
+}
+
+/// Stop the durable job, not only the browser view. The goal controller
+/// checks the cancellation epoch while awaiting independent model completion.
+pub async fn cancel_goal(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표가 없습니다.");
+    };
+    if matches!(goal["status"].as_str(),Some("completed"|"cancelled"|"failed"|"needs_review")){
+        return Json(json!({"id":id,"status":goal["status"]})).into_response();
+    }
+    if let Some(session)=goal["sessionId"].as_str(){state.cancel_session(session);}
+    for job in state.store.all("job").into_iter().filter(|job|
+        job["kind"]=="goal"&&job["input"]["goalId"]==id&&
+        matches!(job["status"].as_str(),Some("queued"|"running"))) {
+        let Some(job_id)=job["id"].as_str() else{continue};
+        if let Some(saved)=state.store.patch_if("job",job_id,"status",&job["status"],
+            &json!({"cancelRequested":true,"status":"cancelled",
+                "finishedAt":chrono::Utc::now().to_rfc3339()})){
+            state.bus.record("job",&saved);
+        }
+    }
+    if let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"status":"cancelled","phase":"cancelled",
+            "finishedAt":chrono::Utc::now().to_rfc3339()})){
+        state.bus.record("goal",&saved);
+    }
+    Json(json!({"id":id,"status":"cancelled"})).into_response()
 }

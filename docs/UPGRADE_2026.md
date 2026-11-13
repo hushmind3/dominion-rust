@@ -34,3 +34,5 @@
 - `run_quiet_outcome` uses existing `code_search`, workspace edits, delegation, browser, GitHub and MCP tools; `verification::acceptance_gaps` and the independent reviewer gate completion.
 - `goal_artifacts.rs::collect` returns hashes of actual workspace files written through recorded successful tools. `goals.rs::finish` returns the artifact manifest and history; artifact hashes are not a substitute for test success.
 - No compile, benchmark or model run performed for this patch.
+
+- `POST /api/goals/:id/steer` uses a compare-and-swap `planRevision` and applies owner edits only before the next executor turn; a new edit arriving during review prevents completion on an obsolete plan. `POST /api/goals/:id/cancel` marks queued/running jobs and goal records cancelled.
