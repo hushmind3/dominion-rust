@@ -10,6 +10,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+#[path = "rsi/proof/campaign_verdict.rs"]
+mod campaign_verdict;
+pub(crate) use campaign_verdict::{apply as apply_campaign_verdict, evaluate as campaign_verdict};
+
 pub const MIN_PAIRED_CASES: usize = 8;
 const MAX_PATCH_BYTES: usize = 256 * 1024;
 
@@ -691,13 +695,17 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
             "reason":reason,
         }));
     }
+    let verdict=campaign_verdict(state,campaign);
     json!({
         "campaignId":campaign["id"],
-        "sourceEvolutionDemonstrated":campaign_capability_proven(state,campaign),
-        "capabilityDemonstrated":campaign_recursive_method_closure_proven(state,campaign),
-        "recursiveMethodClosureProven":campaign_recursive_method_closure_proven(state,campaign),
-        "modelDrivenCapabilityDemonstrated":
-            campaign_model_driven_capability_proven(state,campaign),
+        "sourceEvolutionDemonstrated":verdict["sourceEvolutionDemonstrated"],
+        "capabilityDemonstrated":verdict["capabilityDemonstrated"],
+        "recursiveMethodClosureProven":verdict["recursiveMethodClosureProven"],
+        "actualCompletion":verdict["actualCompletion"],
+        "modelDrivenCapabilityDemonstrated":verdict["modelDrivenCapabilityDemonstrated"],
+        "systemicHandoffProven":verdict["systemicHandoffProven"],
+        "maxVerifiedStreak":verdict["maxVerifiedStreak"],
+        "capabilityVerdict":verdict,
         "verifiedStreak":verified_best,
         "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
             "executedMethodInChild":true,"downstreamPairedGain":true,
