@@ -47,7 +47,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .unwrap_or_else(|| json!(16));
 
     for key in ["executor","reviewer","planner"] { if body.get(key).is_some_and(|v|!v.is_object()){return error(StatusCode::BAD_REQUEST,"실행자·검토자·계획자는 객체로 지정하세요.");} }
-    for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
+    for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8),("maxExecutorTokens",5000,2000000)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
     let Some(record) = state.store.put(
         "goal",
         &json!({
@@ -63,6 +63,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "status": "queued",
             "iterations": 0,
             "maxIterations": max_iterations,
+            "maxExecutorTokens":body["maxExecutorTokens"].as_u64().unwrap_or(80000),
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }),
     ) else {

@@ -22,6 +22,10 @@ pub(super) fn record(ctx:&JobContext,id:&str,status:&str,goal:&Value,evidence:&[
         "successfulEvidenceCount":evidence.len(),"actionEvidenceCount":action_count,
         "artifactCount":artifact_count,
         "iterations":goal["iterations"],"replans":goal["replans"],
+        "maxExecutorTokens":goal["maxExecutorTokens"],
+        "reviewerCallsAvoided":goal["reviewHistory"].as_array()
+            .map(|rows|rows.iter().filter(|row|row["skippedForDeterministicGap"]==true).count())
+            .unwrap_or(0),
         "planScore":goal["planScore"],"usage":usage,
         "start":goal["startedAt"],
         "at":chrono::Utc::now().to_rfc3339(),

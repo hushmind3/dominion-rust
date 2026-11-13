@@ -21,6 +21,7 @@ export function GoalConsole(){
  const [goalText,setGoalText]=useState('')
  const [agentId,setAgentId]=useState('')
  const [checkPath,setCheckPath]=useState('')
+ const [maxTokens,setMaxTokens]=useState(80000)
  const [selected,setSelected]=useState('')
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState(''),[notice,setNotice]=useState('')
@@ -37,7 +38,7 @@ export function GoalConsole(){
   try{
    const criteria=checkPath.trim()?[{type:'file_exists',path:checkPath.trim()}]:[]
    const result=await post<Goal>('/api/goals',{goal:goalText.trim(),executor:{agentId:executor},
-    maxIterations:16,maxReplans:6,replanAfter:2,successCriteria:criteria})
+    maxIterations:16,maxReplans:6,replanAfter:2,maxExecutorTokens:maxTokens,successCriteria:criteria})
    setSelected(result.id);setGoalText('');setCheckPath('');setNotice('목표를 자율 실행 대기열에 등록했습니다.')
    await reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
@@ -87,6 +88,10 @@ export function GoalConsole(){
      <TextInput aria-label="결과 검증할 파일(선택)" value={checkPath} onChange={e=>setCheckPath(e.target.value)}
       placeholder="산출물 파일 경로 · 선택"/>
     </div>
+    <label className="block text-xs text-[#7C7469]">실행 모델 토큰 예산 (다음 턴 진입 제한)
+     <TextInput type="number" min={5000} max={2000000} value={maxTokens}
+      onChange={e=>setMaxTokens(Math.max(5000,Math.min(2000000,Number(e.target.value)||80000)))}/>
+    </label>
     <Button variant="primary" disabled={!executor||!goalText.trim()||busy} onClick={()=>void start()}>
      <Play size={15}/> 자율 작업 시작
     </Button>
