@@ -1,5 +1,8 @@
 //! Objective-aware domain choice and search-policy evaluation.
-use super::*;
+use super::{
+    AppState, Value, BTreeMap, json, experience,
+    rsi, tools, DOMAINS, worker,
+};
 
 pub(super) fn objective_matches(domain: &str, objective: &str) -> bool {
     let text = objective.to_lowercase();
