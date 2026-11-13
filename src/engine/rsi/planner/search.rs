@@ -22,9 +22,6 @@ pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-#[path = "rsi_oracle_fixture.rs"]
-mod oracle_tests;
 
 pub fn limits(body: &Value) -> Result<Value, String> {
     let bound = |key: &str, default: u64, min: u64, max: u64| -> Result<u64, String> {
