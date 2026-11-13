@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>An open-source, local-first AI agent workspace powered by a native Rust execution engine.</strong><br/>
-  Use your own API keys or local LLMs. Give agents tools, memory, tasks, and a place to collaborate.
+  Connect your own cloud or local LLMs. Run tool-using agents, collaborate across multiple agents, generate videos, and explore experimental recursive self-improvement.
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
 
 **DOMINION is an AI agent tool, not another AI model or a token-reselling service.**
 
-Connect a model you already have access to — including supported cloud APIs and locally hosted models — and use it inside an agent workspace. DOMINION's Rust harness handles model interactions, tool execution, permissions, durable tasks, memory, and multi-agent coordination.
+Connect a model you already have access to — including supported cloud APIs and locally hosted models — and use it inside an agent workspace. DOMINION's Rust harness handles tool execution, permissions, durable tasks, long-term memory, and multi-agent coordination. The workspace also includes AI video generation workflows and experimental recursive self-improvement (RSI).
 
 You choose the models. You control the credentials. You run the workspace.
 
@@ -80,8 +80,9 @@ You choose the models. You control the credentials. You run the workspace.
 | **Persistent memory** | Store conversation context, verified experience, corrections, and execution history locally. |
 | **Multi-agent rooms** | Give agents separate roles, run shared discussions, and coordinate workflows with multiple participants. |
 | **Durable jobs** | Track tasks, approvals, execution evidence, cancellation, and recovery in SQLite. |
+| **AI video creation** | A dedicated video workspace for prompt-based generation jobs with native/ComfyUI backends, output management, and YouTube upload integration. Requires appropriate local backends and account setup. |
 | **Messaging channels** | Native Telegram and Discord adapters; currently require bot credentials and manual configuration. |
-| **Experimental self-improvement** | Research paths for proposing source changes, evaluating candidates, and recording evidence. Not a proven self-improving AGI system. |
+| **Recursive self-improvement (RSI) research** | Experiment with source-editing campaigns, independent evaluations, candidate selection, evidence records, and controlled adoption. This does **not** claim proven general recursive intelligence gains. |
 
 ### Why a separate agent workspace?
 
@@ -106,7 +107,7 @@ Open **http://127.0.0.1:4317** in your browser.
 
 1. Add your own API provider, or configure a compatible local-model runtime in **Models**.
 2. Select a model in **Chat** and try a task.
-3. Explore **Agents**, **Multi-Agent Rooms**, **Memory**, **Workflows**, and **MCP / Skills**.
+3. Explore **Agents**, **Multi-Agent Rooms**, **Memory**, **Workflows**, **Video**, **Self-Improvement**, and **MCP / Skills**.
 4. To use Telegram or Discord, configure your bot credentials and destination IDs in **Connections**.
 
 Cloud-model usage is billed by your provider. Local models use your own hardware. **Prebuilt release downloads are not yet available** — follow the source build above.
@@ -126,6 +127,8 @@ Native Rust agent harness
        ├── Chat / streaming / tool calls / approvals
        ├── Memory / experience / workflows / multi-agent rooms
        ├── Skills / MCP / Telegram / Discord
+       ├── Video generation jobs (native / ComfyUI) and YouTube integration
+       ├── Experimental self-improvement and evaluation campaigns
        ├── User-configured model APIs
        └── Local inference (GGUF / llama.cpp and other configured runtimes)
 ```
@@ -142,6 +145,7 @@ DOMINION is an **active developer preview**, not a managed SaaS or a fully valid
 - Multi-agent behavior includes mocked-model tests; long-running real-model reliability is still an area to validate.
 - Telegram and Discord integration currently require manual bot setup rather than one-click provisioning.
 - Cache and context-management code exists, but no fixed token-saving percentage is guaranteed.
+- Video generation requires a configured native engine or compatible ComfyUI environment; YouTube upload requires account authorization.
 - Recursive source-improvement mechanisms are **experimental**. The project does not claim demonstrated, indefinitely compounding intelligence gains.
 - Check the [CI results](https://github.com/hushmind3/dominion-rust/actions) for the status of a particular commit.
 
