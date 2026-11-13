@@ -108,3 +108,22 @@ Actual GitHub Actions `CI` was executed. The first completed release test run ha
 The new head's CI final result must be obtained from GitHub Actions. No passing claim is made from the earlier partial 803/806 outcome. No training/fine-tuning/model-weight adaptation is added to RSI.
 
 The dynamic architecture frontier now keeps `src/engine/rsi/meta/experiment_policy.rs` as an individually addressable experimental-design method even when another source is chosen as the representative file. Without this invariant, an experiment-designer failure could produce a redesign proposal with **no reachable code target**. The new entry uses the current code-indexed source SHA and the existing frozen adoption gate; adding a file name alone does not prove improvement.
+
+## 8. 20:24+ KST follow-up — CI-enabled coordinator boundary decomposition
+
+The owner explicitly requested remaining work and CI. Source-only boundary refactors now provide a chain of **actual registered Rust modules**, rather than advisory files:
+
+1. `rsi/execution/generator_build.rs::ensure_compiled_generator` owns release-mode source revision compilation and executable identity validation. The resident campaign loop still enforces budgets and persists the exact binary SHA, but does not implement shell/build internals.
+2. `rsi/execution/observation.rs::collect_generation_observation` (previously factored) provides typed `GenerationObservation` from the original model session and tool receipts.
+3. `rsi/execution/generation_receipt.rs::assemble` owns the bounded generation JSON compatibility layer. This phase **does not select or accept** a candidate.
+4. `rsi/evaluation/candidate_selection.rs::compare_and_adopt` exclusively owns original frozen paired comparison, candidate-vs-baseline selection, experiment commit and saved adoption receipts. It cannot infer quality from generated policy.
+5. `rsi/execution/campaign.rs::run_loop` orchestrates these phase boundaries; it no longer directly constructs the large receipt, invokes compiler internals, or implements the comparison/adoption branch.
+6. Each phase is registered at `rsi_evolve.rs` and shares existing public Rust entrypoints. No CI shortcuts or source equivalence guesses were introduced.
+
+As a result the single coordinator went from about **1,282 lines to about 910**. This is meaningful separation of compilation, observation, persistence, frozen selection and control-flow duties, although `AppState`/legacy `Value` adapters remain.
+
+### CI execution scope
+
+`.github/workflows/ci.yml` runs Node setup, web `npm ci`, web typecheck, frontend build, script Bash syntax check, and `cargo test --release`. The push on `dominion-champion` triggers actual GitHub Actions CI. The source changes listed above have their own subsequent workflow run and cannot inherit a predecessor commit's success result. The independent live-model workflow, if triggered, has a different scope from CI and is not counted as RSI completion without real report evidence.
+
+Actual outcome should be read from the Actions run associated with **the latest HEAD**, not from historical CI success.
