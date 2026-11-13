@@ -110,3 +110,9 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 - 이미 실행된 job의 `economyKernel`은 후속 모델/알고리즘 설정이 변해도 다시 해석하지 않는다.
 - 평가 버튼은 사용자 **선호**를 뜻한다. 독립 검증이나 RSI 성공 판정의 oracle로 계산하지 않는다.
 - 성능과 실제 절감률은 모델 호출 전후 관측을 비교해야 한다. 테스트·실제 청구는 이 변경에서 실행하지 않았다.
+
+## 8. 운영 체크포인트와 RSI 개선 가능 소스 경계 (2026-11-14)
+
+- `JobContext::checkpoint`는 **중첩 JSON을 얕게 덮어쓰는** 저장 API다. `video/runway.rs::merge_video_state`와 `checkpoint_video`는 유료 원격 작업 중 변경하지 않은 `scenes`, `shotPlans`, `taskIds`, `completedClips`를 보존하면서 `inFlight`·`remoteTaskId`의 명시 변경을 적용한다. 해당 단계는 `tests/unit/video_checkpoint_merge_tests.rs`에 독립 단위 계약으로 작성했다(미실행). 이 수정은 SQLite의 전역 patch 동작을 변경하지 않는다.
+- `src/engine/rsi_system.rs::COMPONENTS`에 실제 사용 중인 `rooms/economy.rs`, `rooms/speakers.rs`, `router.rs`, `rooms.rs`, `chat/room_context.rs`를 알고리즘·하네스 소스로, `video/{runway,shot_plan,kling4,frame_anchor}.rs`를 도구 능력 소스로 반영했다. 실행 소스 검색에도 `video`와 `rooms` 책임 분류를 추가했다.
+- 이는 실제 모델 후손이 **제품 기능과 개선 방법을 함께 탐색할 수 있게 소스 지도를 확장한 변경**이다. 동결 평가를 통과한 실험 채택, 후손 빌드, 실제 영상 품질 증가의 완료 증거를 생성하거나 점수를 가산하지 않았다.
