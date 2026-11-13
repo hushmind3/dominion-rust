@@ -154,7 +154,9 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     resume["reviewPending"]=json!(false);
     resume["transcript"]=json!(transcript);
     resume["gaps"]=json!(gaps);
-    resume["evidence"]=goal["evidence"].clone();
+    resume["evidence"]=if goal["evidence"].is_array(){goal["evidence"].clone()}
+        else if old["evidence"].is_array(){old["evidence"].clone()}
+        else{json!([])};
     resume["stalled"]=json!(0);
     resume["replans"]=goal["replans"].clone();
     resume["plan"]=goal["plan"].clone();

@@ -7,7 +7,7 @@ import {Panel,useRemote} from './UI'
 type Agent={id:string;name:string;providerId?:string;model?:string}
 type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
- id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};
+ id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;
  jobId?:string;iterations?:number;maxIterations?:number;
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
@@ -27,7 +27,7 @@ export function GoalConsole(){
  const [reviewNote,setReviewNote]=useState('')
  const [acknowledged,setAcknowledged]=useState(false)
  const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
- const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>b.id.localeCompare(a.id))[0]
+ const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
  const available=agents.value.filter(a=>a.providerId&&a.model)
  const executor=available.find(a=>a.id===agentId)?.id||available[0]?.id||''
  const reload=async()=>{await goals.reload()}

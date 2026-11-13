@@ -6,6 +6,9 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[path = "jobs/goal_status.rs"]
+mod goal_status;
+
 const MAX_EVENTS: usize = 200;
 
 /// Shared handle a running job uses to report progress and persist its state.
@@ -483,6 +486,7 @@ async fn run_job(state: AppState, job: Value) {
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
                 "events": context.events.lock().unwrap().clone(),
             }));
+            goal_status::on_error(&state,&job,status,&error);
             state.store.audit(
                 "job.failed",
                 json!({ "jobId": job_id, "kind": kind, "error": error }),
