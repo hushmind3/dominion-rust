@@ -50,7 +50,7 @@ fn visit(
 }
 
 fn guess_stack(files: &[String]) -> Vec<&'static str> {
-    let has = |name: &str| files.iter().any(|path|path == name);
+    let has = |name: &str| files.iter().any(|path|path.as_str()==name);
     let mut labels=Vec::new();
     if has("Cargo.toml"){labels.push("rust");}
     if has("package.json"){labels.push("javascript/typescript");}
