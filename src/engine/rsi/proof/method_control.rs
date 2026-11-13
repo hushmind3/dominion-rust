@@ -84,10 +84,12 @@ fn verified_control(state:&AppState,g:&Value,pre:&Value)->Option<(Value,Value)>{
 /// signal when binary pass/fail accuracy is saturated. Baselines must match
 /// in actual floating-point measurements, not only in a summary flag.
 fn matched_quality(treated:&Value,control:&Value)->Option<(bool,bool)>{
-    let t=treated["metrics"].as_array()?.iter()
-        .find(|m|m["key"]=="quality");
-    let c=control["metrics"].as_array()?.iter()
-        .find(|m|m["key"]=="quality");
+    // A paired pass/fail holdout need not declare quality metrics.
+    // Absence on both arms is valid; asymmetry is not comparable.
+    let t=treated["metrics"].as_array()
+        .and_then(|rows|rows.iter().find(|m|m["key"]=="quality"));
+    let c=control["metrics"].as_array()
+        .and_then(|rows|rows.iter().find(|m|m["key"]=="quality"));
     let (Some(t),Some(c))=(t,c) else{
         return (t.is_none()&&c.is_none()).then_some((false,false));
     };
