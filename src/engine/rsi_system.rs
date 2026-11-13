@@ -6,7 +6,7 @@ use sha2::{Digest,Sha256};
 use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
-    ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi/planner/domain_selection.rs","src/engine/reasoning.rs"]),
+    ("algorithms",&["src/engine/algorithms.rs","src/engine/reasoning.rs"]),
     ("harness",&[
         "src/engine/jobs.rs", "src/engine/rsi_worktree.rs",
         "src/engine/chat/runtime.rs",
