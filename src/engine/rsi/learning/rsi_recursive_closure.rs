@@ -80,7 +80,15 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
         let first=crate::engine::rsi_evolve::measured_method_ablation(state,apply);
         let second=crate::engine::rsi_evolve::measured_method_ablation(state,apply2);
         let feedback=&rewrite["improvementDirective"]["methodFeedback"];
-        if first["methodAssociationObserved"]!=true
+        let rewrite_job=rewrite["jobId"].as_str()
+            .and_then(|id|state.store.get("job",id));
+        let directive_bound=rewrite_job.as_ref().is_some_and(|job|
+            job["input"]["rsiImprovementDirective"]==rewrite["improvementDirective"]
+            && job["input"]["rsiControllerPlan"]["improvementDirective"]
+                ==rewrite["improvementDirective"]
+            && job["rsiImprovementDirectiveVerified"]==true
+            && job["input"]["rsiGeneratorCommit"]==rewrite["generatorCommit"]);
+        if !directive_bound || first["methodAssociationObserved"]!=true
             || first["qualityProven"]!=true
             || second["methodAssociationObserved"]!=true
             || second["qualityProven"]!=true
