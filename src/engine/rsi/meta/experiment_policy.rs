@@ -96,10 +96,17 @@ fn observed_trials(history:&[Value])->BTreeMap<&'static str,(u64,u64,u64,u64)>{
         // can modify the next method/experiment-design search distribution.
         if g["pairedReceiptReplayed"]!=true{continue;}
         let control=&g["methodAblation"];
-        let key=if control["source"]=="compiled_method_on_off_real_worker_v1"
-            && control["sameOriginalSourceAndFrozenCases"]==true {
-            "method"
-        }else{"pair"};
+        // A failed/missing control is still a negative experiment-design
+        // observation IF the compiled ON worker actually selected the
+        // control protocol. The job replayer already binds that selection
+        // to the original worker and sealed evaluation profile.
+        let method_selected=g["experimentPolicyExecuted"]["source"]
+                =="running_compiled_descendant_experiment_designer_v1"
+            && g["experimentPolicyExecuted"]["protocol"]=="matched_method_control"
+            && g["experimentPolicyExecuted"]["policySha256"]
+                ==g["experimentPolicy"]["signatureSha256"]
+            && g["experimentPolicy"]["selectedProtocol"]=="matched_method_control";
+        let key=if method_selected{"method"}else{"pair"};
         let entry=map.entry(key).or_default();
         entry.0+=1;
         entry.3+=g["tokens"].as_u64().unwrap_or(0);
