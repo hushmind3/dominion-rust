@@ -1,3 +1,36 @@
+## 2026-11-13 — 후손 실행·채택·독립 증명의 실제 분해 및 CI
+
+다음은 **현재 커밋의 실제 호출 관계**다. 과거의 679줄 캠페인 구조나 ‘CI 미실행’ 언급은 그 당시 기록이고, 이 개편에서는 GitHub Actions를 실행해 컴파일 오류를 확인·교정한다.
+
+```text
+src/api/rsi.rs::start
+  → jobs::rsi_evolve → rsi/lineage/campaign.rs → rsi/execution/campaign.rs::run_loop
+  → rsi/execution/generation_preparation.rs::prepare_generation_input
+     → --rsi-plan-generation
+     → rsi/planner/descendant.rs::plan_generation_from_file
+     → rsi/meta/inputs.rs::prepare                 (AppState 조회)
+     → rsi/meta/composition.rs::compose_pure      (순수 알고리즘)
+     → rsi/meta/evolution.rs::compile             (타입 있는 진화 연산자)
+     → rsi/meta/transition_policy.rs::evaluate   (실측 전이 조건)
+     → rsi/meta/experiment_dispatch.rs::dispatch (실제 선택한 실험 범위)
+     → rsi/evaluation/contract.rs::bind          (동결된 경계의 서명)
+  → rsi/execution/generation_launch.rs::launch_generation_worker
+     → --rsi-worker-job → model/provider → tools/source editor
+  → rsi/execution/generation_selection.rs::evaluate_and_adopt_generation
+     → rsi_worktree::compare_at → rsi/lineage/adoption.rs::adopt
+  → rsi/learning/methods.rs::record_method_feedback
+  → rsi/execution/generation_finalization.rs::finalize_generation
+     → rsi/proof.rs::recursive_proof_report
+     → rsi/proof/{mutual_cycles,open_handoff,principle_replay}.rs
+     → rsi_causal_closure.rs::audit / rsi/proof/open_evolution.rs
+```
+
+**책임 이동:** `campaign.rs`는 679줄에서 약 255줄로, 초기 1,376줄을 기준으로 보면 약 81%가 감소했다. 호출만 쪼갠 것이 아니라 준비·워커 프로세스/예산·독립 후보 평가/선택·실험 채택이 분리돼 있고, 독립 원본 재생 코드는 `rsi/proof`에 있다. `rsi.rs::safe_path`는 분리한 검증·채택·감독 파일을 후손 변경으로부터 차단한다. 진화 가능한 `generation_preparation.rs`와 메타 계획기/선택기는 계속 일반 소스 최적화 대상이다.
+
+**CI 정책과 수정:** `.github/workflows/ci.yml`은 `push`로 실행되고 macOS/Linux/Windows에서 Rust release 테스트, Node 스크립트 검사, React 타입 검사와 빌드를 수행한다. 실제 CI 로그에서 이전 분해의 미수정 문서 주석·누락 함수 가시성·상대 경로·새 모듈의 `String` 비교·`Digest` 트레이트 누락을 발견해 수정했다. [브랜치별 최신 CI 결과](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3) 참조. CI 전체 통과 여부는 GitHub 작업의 최종 상태로만 표현한다.
+
+연구 배경: [GEPA (ICLR 2026)](https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html)는 실패 실행 흔적을 다음 제안에 사용하고, [AIDE² (2026-09)](https://arxiv.org/abs/2609.26457)는 실제 채택된 에이전트 소스와 다음 후손의 독립 성과를 비교한다. DOMINION 구현은 고정 모델 가중치와 동결 평가를 유지하고, RSI 전체 완성이나 온라인 성능 우위는 실측 전까지 주장하지 않는다.
+
 ## 2026-11-13 18시대 구조 재판정 대응 — 재귀 실험 정책과 경계
 
 구조 채점 결과: 서브4 49, 챔피온 48, 서브1 46, **서브3 45**. 이전 실행경로 점수 49와는 독립적인 **아키텍처** 평가이며, 추가 코드는 재채점 전이다.
