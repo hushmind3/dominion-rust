@@ -1,5 +1,6 @@
 //! Codex streaming and structured tool results.
 //! Active compiled child of provider.rs.
+use super::protocols::*;
 use super::*;
 
 pub(crate) async fn stream_codex_once(

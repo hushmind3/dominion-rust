@@ -1,4 +1,5 @@
-    use super::*;
+        use super::install::*;
+use super::*;
     use crate::config::Config;
     use crate::db::Store;
     use crate::vault::Vault;

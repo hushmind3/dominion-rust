@@ -1,5 +1,6 @@
 //! External GitHub and delegation boundaries.
 //! Active Rust execution paths imported by tools.rs.
+use super::workspace::*;
 use super::*;
 
 pub(crate) async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {

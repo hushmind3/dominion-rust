@@ -1,5 +1,6 @@
 //! Live turn orchestration executed by the running agent.
 //! Split from runtime.rs so the event loop stays an explicit, isolated subsystem.
+use super::{adaptation::*,program::*};
 use super::*;
 
 pub(super) async fn run_turn_body(

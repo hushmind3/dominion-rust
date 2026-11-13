@@ -1,5 +1,6 @@
 //! Native tool dispatcher: approval-aware tool execution.
 //! Active Rust execution paths imported by tools.rs.
+use super::{workspace::*,gateway::*,edit::*,process::*,network::*};
 use super::*;
 
 pub async fn execute(

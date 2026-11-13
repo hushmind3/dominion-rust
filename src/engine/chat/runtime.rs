@@ -43,6 +43,7 @@ pub(crate) use adaptation::*;
 mod tool_selection;
 pub(crate) use tool_selection::*;
 
+pub(crate) use program::run_program;
 #[path = "runtime/program.rs"]
 mod program;
 pub(crate) use program::*;

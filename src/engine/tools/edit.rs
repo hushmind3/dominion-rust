@@ -1,5 +1,6 @@
 //! Pinned source mutation, parse receipts and atomic file edits.
 //! Active Rust execution paths imported by tools.rs.
+use super::workspace::*;
 use super::*;
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1,5 +1,6 @@
 //! Active turn/room entrypoints and streaming orchestration.
 //! Active Rust subtree of chat::runtime.
+use super::adaptation::*;
 use super::*;
 
 pub async fn run_turn(

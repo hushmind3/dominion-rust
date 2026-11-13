@@ -1,4 +1,5 @@
-    use super::*;
+        use super::protocols::*;
+use super::*;
 
     #[test]
     fn isolated_rsi_range_editor_requires_a_real_native_tool_call() {

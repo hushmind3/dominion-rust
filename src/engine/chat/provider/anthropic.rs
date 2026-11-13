@@ -1,5 +1,6 @@
 //! Anthropic streaming and tool event integration.
 //! Active compiled child of provider.rs.
+use super::protocols::*;
 use super::*;
 
 pub(crate) async fn stream_anthropic_once(
