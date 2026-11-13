@@ -234,6 +234,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "maxTurns":max_turns,
         // Legacy room semantics stay unchanged until the owner enables economy.
         "adaptiveSpeakers":bool_field(body,previous,"adaptiveSpeakers",false)?,
+        "sparseDebate":bool_field(body,previous,"sparseDebate",false)?,
         "tokenBudget":number_field_allow_zero(body,previous,"tokenBudget",10_000_000)?,
         "contextBudgetTokens":number_field(body,previous,"contextBudgetTokens",2_000,1_000_000)?,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
