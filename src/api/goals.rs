@@ -84,7 +84,100 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .cloned()
         .unwrap_or(Value::Null);
 
+    if let Some(id)=job_id.as_str(){
+        if let Some(saved)=state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),&json!({"jobId":id})){
+            state.bus.record("goal",&saved);
+        }
+    }
     let mut payload = record.clone();
     payload["jobId"] = job_id;
     Json(payload).into_response()
+}
+
+/// Resume a completed checkpoint only after owner review of unknown effects.
+/// A new job means the prior execution remains immutable and auditable.
+pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>)->Response{
+    if !body.is_object(){return error(StatusCode::BAD_REQUEST,"복구 설정 객체가 필요합니다.");}
+    let lock_id=format!("goal-resume:{id}");
+    if !state.begin_session(&lock_id){return error(StatusCode::CONFLICT,"목표 복구가 진행 중입니다.");}
+    let _guard=state.session_guard(&lock_id);
+    let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");};
+    if !matches!(goal["status"].as_str(),Some("needs_review"|"failed")){
+        return error(StatusCode::CONFLICT,"검토 또는 실패한 목표만 이어서 실행할 수 있습니다.");
+    }
+    let previous=goal["jobId"].as_str().and_then(|key|state.store.get("job",key))
+        .or_else(||{
+            let mut jobs=state.store.all("job").into_iter().filter(|job|
+                job["kind"]=="goal" && job["input"]["goalId"]==id
+            ).collect::<Vec<_>>();
+            jobs.sort_by(|a,b|b["queuedAt"].as_str().cmp(&a["queuedAt"].as_str()));
+            jobs.into_iter().next()
+        });
+    let Some(previous)=previous else{return error(StatusCode::CONFLICT,"이전 실행의 체크포인트가 없습니다.");};
+    if matches!(previous["status"].as_str(),Some("running"|"queued")){
+        return error(StatusCode::CONFLICT,"이전 목표 작업이 아직 실행 중입니다.");
+    }
+    let old=&previous["goalState"];
+    let session=goal["sessionId"].as_str().unwrap_or("");
+    let unknown=old["inFlight"]==true || old["reviewPending"]==true
+        || (session.len()>0 && state.store.all("execution_operation").iter().any(|op|
+            op["outcomeUnknown"]==true && op["runId"].as_str()
+                .and_then(|key|state.store.get("execution",key))
+                .is_some_and(|execution|execution["sessionId"]==session)));
+    let note=body["resolutionNote"].as_str().unwrap_or("").trim();
+    if unknown && (body["acknowledgeExternalEffects"]!=true || note.chars().count()<10){
+        return error(StatusCode::BAD_REQUEST,"외부 작업 결과가 불확실합니다. 실행 기록을 직접 확인한 뒤 승인과 10자 이상의 처리 기록을 제출하세요.");
+    }
+    if note.chars().count()>2000{return error(StatusCode::BAD_REQUEST,"복구 기록은 2,000자 이하입니다.");}
+    // A side-effect-uncertain execution must not replay the same iteration.
+    // The owner reviews the environment, then the following iteration
+    // reconciles actual state against the original acceptance checks.
+    let prior_step=old["nextIteration"].as_u64().unwrap_or_else(||goal["iterations"].as_u64().unwrap_or(0));
+    let next_step=prior_step.saturating_add(u64::from(old["inFlight"]==true));
+    let configured=goal["maxIterations"].as_u64().unwrap_or(16);
+    let max=body["maxIterations"].as_u64().unwrap_or(configured);
+    if max==0 || max>64 || max<=next_step || max<configured{
+        return error(StatusCode::BAD_REQUEST,"총 반복 한도를 남은 실행 단계보다 크게 지정하세요(최대 64).");
+    }
+    let mut transcript=old["transcript"].as_str().unwrap_or("").to_string();
+    if !note.is_empty(){
+        transcript.push_str("\n[사용자 복구 확인] ");
+        transcript.extend(note.chars().take(2000));
+    }
+    let mut gaps=goal["gaps"].as_array().cloned().unwrap_or_default();
+    if unknown{gaps.push(json!("이전 도구의 외부 결과는 사용자가 확인했습니다. 이전 단계를 자동 재실행하지 않고 현 상태를 다시 검사하세요."));}
+    let mut resume=old.clone();
+    if !resume.is_object(){resume=json!({});}
+    resume["sessionId"]=goal["sessionId"].clone();
+    resume["nextIteration"]=json!(next_step);
+    resume["inFlight"]=json!(false);
+    resume["reviewPending"]=json!(false);
+    resume["transcript"]=json!(transcript);
+    resume["gaps"]=json!(gaps);
+    resume["evidence"]=goal["evidence"].clone();
+    resume["stalled"]=json!(0);
+    resume["replans"]=goal["replans"].clone();
+    resume["plan"]=goal["plan"].clone();
+    let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
+    history.push(json!({"previousJobId":previous["id"],"previousStatus":previous["status"],
+        "unknownEffectsAcknowledged":unknown,"resolutionNote":note,"nextIteration":next_step,
+        "at":chrono::Utc::now().to_rfc3339()}));
+    let saved=state.store.patch_if("goal",&id,"status",&goal["status"],&json!({
+        "status":"queued","phase":"queued","resumeState":resume,"resumeHistory":history,
+        "maxIterations":max,"error":Value::Null,"gaps":gaps,
+        "resumedAt":chrono::Utc::now().to_rfc3339()
+    }));
+    let Some(saved)=saved else{return error(StatusCode::CONFLICT,"목표 상태가 변경되었습니다.");};
+    state.bus.record("goal",&saved);
+    let Some(job)=crate::engine::jobs::enqueue(&state,"goal",json!({"goalId":id})) else{
+        let _=state.store.patch_if("goal",&id,"status",&json!("queued"),
+            &json!({"status":"needs_review","phase":"needs_review"}));
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    };
+    let _=state.store.patch_if("goal",&id,"status",&json!("queued"),
+        &json!({"jobId":job["id"]}));
+    state.store.audit("goal.resumed",json!({"goalId":id,"jobId":job["id"],
+        "previousJobId":previous["id"],"explicitReview":unknown}));
+    (StatusCode::ACCEPTED,Json(json!({"goalId":id,"jobId":job["id"],
+        "status":"queued","nextIteration":next_step,"reviewAcknowledged":unknown}))).into_response()
 }

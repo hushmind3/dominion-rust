@@ -188,7 +188,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         json!({"plan":plan,"planHistory":plan_history,"replans":replans,"phase":"execute",
             "planScore":crate::engine::plan_quality::score(&plan,&text)}),
     );
-    let checkpoint = job.get("goalState").cloned().unwrap_or_else(|| json!({}));
+    // A resumed job starts from the owner's durable reconciliation snapshot,
+    // never from an uncertain previous job or an unbounded transcript replay.
+    let checkpoint=job.get("goalState").filter(|value|value.is_object()).cloned()
+        .or_else(||goal.get("resumeState").filter(|value|value.is_object()).cloned())
+        .unwrap_or_else(||json!({}));
     let mut evidence = checkpoint
         .get("evidence")
         .and_then(Value::as_array)

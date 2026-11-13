@@ -232,6 +232,7 @@ pub fn router(state: AppState) -> Router {
             "/api/goals/:id",
             get(goals::get_goal).delete(goals::delete_goal),
         )
+        .route("/api/goals/:id/resume",post(goals::resume_goal))
         // approvals
         .route(
             "/api/approvals",
