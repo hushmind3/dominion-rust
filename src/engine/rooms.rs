@@ -5,6 +5,8 @@ use serde_json::{json, Value};
 
 #[path = "rooms/model_tiering.rs"]
 mod model_tiering;
+#[path = "rooms/usage_ledger.rs"]
+mod usage_ledger;
 use std::collections::{HashSet, VecDeque};
 
 pub const MAX_PARTICIPANTS: usize = 32;
@@ -719,6 +721,7 @@ async fn run_locked(
             "evidenceCount":evidence_count,
             "modelRoute":{"providerId":request.provider_id,"model":request.model,
                 "tier":tiered.as_ref().map(|(_,_,_,tier)|*tier).unwrap_or("manual")},
+            "usage":message["metadata"]["usage"].clone(),
             "toolCalls":message["tool_calls"].clone(),
         }));
         let resolution =
@@ -966,7 +969,8 @@ fn finish(
         room_id,
         json!({"status":if status=="cancelled" {"paused"} else {"idle"},"activeAgentId":null,"pauseReason":reason,"yieldedToMessageId":yielded}),
     );
-    context.state.store.audit("room.exchange_finished",json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"reason":reason}));
+    let usage=usage_ledger::summary(outputs);
+    context.state.store.audit("room.exchange_finished",json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"reason":reason,"usage":usage.clone()}));
     context.emit(json!({"type":"room_finished","roomId":room_id,"sessionId":session_id,"status":status,"reason":reason}));
     // One completed exchange is one learning unit. The job is content-
     // addressed by its last message, so retries and duplicate completion do
@@ -995,7 +999,7 @@ fn finish(
             }
         }
     }
-    json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"outputs":outputs,"pauseReason":reason,"yieldedToMessageId":yielded})
+    json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"outputs":outputs,"usage":usage,"pauseReason":reason,"yieldedToMessageId":yielded})
 }
 fn route_peers(
     pending: &mut VecDeque<String>,
