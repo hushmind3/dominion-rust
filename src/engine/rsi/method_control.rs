@@ -5,6 +5,10 @@
 //! planner itself stays intact, so this measures method use, not source causality.
 use super::*;
 
+#[cfg(test)]
+#[path = "method_control/tests.rs"]
+mod tests;
+
 fn input_fingerprint(input:&Value)->String {
     let fields=json!({
         "generatorCommit":input["rsiGeneratorCommit"],

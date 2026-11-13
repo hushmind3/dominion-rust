@@ -3,6 +3,10 @@
 //! original paired-run receipt, observed tool trace and matched task inputs.
 use super::*;
 
+#[cfg(test)]
+#[path = "method_contrast/tests.rs"]
+mod tests;
+
 fn actual_method_use(g:&Value)->bool {
     let verified_procedure=g["methodExecutions"].as_array().is_some_and(|rows|
         rows.iter().any(|row|row["result"]["verified"]==true
