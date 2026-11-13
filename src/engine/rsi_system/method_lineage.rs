@@ -8,12 +8,14 @@ use serde_json::{json,Value};
 pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
     "src/engine/rsi_meta_controller.rs",
     "src/engine/rsi_meta_controller/peer_transfer.rs",
+    "src/engine/rsi_meta_controller/observations.rs",
     "src/engine/rsi/planner/compiled.rs",
     "src/engine/rsi/planner/actions.rs",
     "src/engine/rsi/planner/edit_policy.rs",
     "src/engine/rsi/learning/selection.rs",
     "src/engine/rsi_recursive_discovery.rs",
     "src/engine/rsi_system/planning.rs",
+    "src/engine/rsi_system/method_lineage.rs",
 ];
 
 fn sha256(value:&str)->bool {
