@@ -1094,6 +1094,24 @@ pub(super) fn compiled_system_generation_plan(
     }))
 }
 
-/// Spawned by the earlier coordinator from the newly built binary, before
-/// any model call. Reads the shared read-only lineage, owns the actual next
-/// selection, and emits a plan bound to its embedded build SHA.
+#[cfg(test)]
+mod meta_repair_target_tests {
+    use super::*;
+
+    #[test]
+    fn observed_transfer_repair_edits_real_selector_not_its_old_facade() {
+        let mut plan=json!({
+            "metaRepairChosen":true,
+            "mode":"repair_own_transfer_method",
+            "target":{"path":crate::engine::rsi_meta_controller::TRANSFER_METHOD_SOURCE}
+        });
+        assert!(evidence_based_meta_repair_focus(&plan,&Value::Null,false));
+        assert!(!evidence_based_meta_repair_focus(&plan,&Value::Null,true));
+        assert!(!evidence_based_meta_repair_focus(&plan,&json!({"role":"learning"}),false));
+
+        plan["target"]["path"]=json!("src/engine/rsi_meta_controller.rs");
+        assert!(!evidence_based_meta_repair_focus(&plan,&Value::Null,false));
+        plan["mode"]=json!("repair_own_prediction_mechanism");
+        assert!(evidence_based_meta_repair_focus(&plan,&Value::Null,false));
+    }
+}
