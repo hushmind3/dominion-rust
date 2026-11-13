@@ -1,7 +1,7 @@
 import {useEffect,useMemo,useState} from 'react'
 import {Bot,CheckCircle2,FileCode2,ListChecks,Play,RefreshCw,Square,Workflow} from 'lucide-react'
 import {type Agent,post} from '../api'
-import {Button,SelectInput,TextArea} from './Primitives'
+import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {FormField,Notice,Panel,Subheading,useRemote} from './UI'
 import {StatusPill} from './StatusPill'
 
@@ -11,6 +11,7 @@ type Goal={
  iterations?:number;replans?:number;maxIterations?:number;error?:string;
  gaps?:string[];evidence?:{tool?:string;arguments?:{path?:string};result?:unknown}[];
  acceptanceChecks?:{type?:string;path?:string;tool?:string}[];
+ receipt?:{verified?:boolean;successfulToolEvidence?:number;tokenUsage?:{totalTokens?:number;calls?:number}};
  workspaceSnapshot?:{stack?:string[];manifests?:string[]};
 }
 type GoalJob={id:string;kind:string;status:string;input?:{goalId?:string}}
@@ -23,6 +24,7 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
  const goals=useRemote<Goal[]>('/api/goals',[],false)
  const [request,setRequest]=useState('')
  const [agentId,setAgentId]=useState('')
+ const [tokenBudget,setTokenBudget]=useState(0)
  const [selectedId,setSelectedId]=useState('')
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
@@ -39,7 +41,7 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
   setBusy(true);setError('')
   try{
    const goal=await post<Goal>('/api/goals',{
-    goal:request.trim(),
+    goal:request.trim(),tokenBudget,
     ...(agentId?{executor:{agentId}}:{})
    })
    setRequest('')
@@ -69,6 +71,12 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
      <option value="">자동 모델 라우팅</option>
      {agents.map(agent=><option key={agent.id} value={agent.id}>{agent.name}</option>)}
     </SelectInput>
+    <label className="flex items-center gap-2 text-[11px] text-[#7C7469]">실행 토큰 상한
+     <TextInput type="number" min={0} max={2000000} step={1000}
+      value={tokenBudget} onChange={event=>setTokenBudget(Math.max(0,Math.min(2000000,Number(event.target.value)||0)))}
+      className="!w-28" aria-label="목표 실행 토큰 상한"/>
+     <span>0 = 제한 없음</span>
+    </label>
     <Button disabled={busy||!request.trim()} onClick={()=>void create()}><Play size={14}/> {busy?'처리 중':'자율 작업 시작'}</Button>
    </div>
   </div>
@@ -94,6 +102,8 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
      <span>실행: {selected.iterations||0}/{selected.maxIterations||16}</span>
      <span>재계획: {selected.replans||0}</span>
      <span>도구 증거: {selected.evidence?.length||0}</span>
+     {selected.receipt?.tokenUsage?.totalTokens!==undefined&&
+      <span>실행 사용량: {selected.receipt.tokenUsage.totalTokens.toLocaleString()} 토큰</span>}
     </div>
     {selected.workspaceSnapshot?.stack?.length? <p className="mt-2 text-[11px] text-[#7C7469]">프로젝트: {selected.workspaceSnapshot.stack.join(', ')}</p>:null}
     <details open className="mt-3 border-t border-[#ECE4D8] pt-3">
