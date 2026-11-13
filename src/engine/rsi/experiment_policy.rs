@@ -25,6 +25,7 @@ fn score(row:&Value,history:&[Value],meta:&Value)->f64{
             && g["pairedRevalidated"]==true
             && g["evaluation"]["metrics"]["eligible"]==true
             && g["evaluation"]["verdict"]=="improved"
+            && g["experimentOutcome"]["verifiedQualityGain"]==true
             && g["experimentOutcome"]["sourceEditObserved"]==true
             && g["experimentOutcome"]["actualWorkerExecuted"]==true
             && g["experimentOutcome"]["policyRevision"]==

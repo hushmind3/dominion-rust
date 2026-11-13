@@ -528,3 +528,7 @@ After the first real GitHub Actions Rust compilation report, Sub1 restored cross
 ### Full-CI regression repair
 
 The frozen independent evaluator remains non-editable. Unit fixtures in `rsi.rs` now patch the live `rsi/selection.rs`, never the frozen `rsi.rs`. The native mutation improver selector has been updated to that actual compiled source module, with assertions against its current optimizer shape. The source model's expected component count includes the new `experiment_design` role. Two heavy, no-paid-model fixture generation campaigns now allow enough token context for newly expanded source planning while preserving their expected two/four-generation executable lineage checks.
+
+### Verified experiment-policy credit regression
+
+The editable experiment allocator now credits a prior source-policy revision only when the persisted generation carries independently adopted paired evidence, a matching source edit and executed worker, and a matching explicitly verified experiment outcome. Negative unit fixtures cover forged quality labels, missing paired revalidation, revision mismatch and rejected parent experiments. The regular push CI workflow executes these alongside the Rust suite; no RSI live-model jobs are triggered by push.
