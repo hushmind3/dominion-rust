@@ -77,3 +77,12 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 `verify_experiment_design` now receives actual persisted generation history (rather than a caller-supplied count alone), rejects an invented `parentExperimentRevision`, and does not import the parent's mutable domain selector. An experimental protocol requiring a real ON/OFF worker is selectable only when that control is enabled in the user's campaign request; supervisor and worker both reject mismatched plans. The frozen interface accepts future domain identifiers that are verified against the agenda by the existing orchestration layer instead of freezing today's domain taxonomy into the typed shared schema.
 
 **Child execution evidence boundary:** `src/engine/rsi/execution/evidence.rs::collect_generation_evidence` reads original child job/session events, method tool traces, model usage, elapsed time, and recorded source edits. The parent loop receives the same `generation` record, then performs independent frozen comparison and adoption. This separates observation from selection, proof and mutation policy. It changes no weights and has not been compiled or tested.
+
+## 2026 research informing this division
+
+- [MetaSkill-Evolve (2026-07-06)](https://arxiv.org/abs/2607.05297): improve task procedures and the procedure-improving policy on different timescales while retaining one frozen foundation model. DOMINION's experiment allocator is compiled editable source rather than a new weight-training component.
+- [Meta^n (2026-08-25)](https://arxiv.org/abs/2608.24735): meta-depth need not be a prescribed two-level chain. DOMINION's experiment target selection is not driven by its four-generation success-proof order.
+- [AIDE² (2026-09-22)](https://arxiv.org/abs/2609.26457): inherited accepted code becomes the next improving agent; independent holdouts remain the gate for adoption.
+- [Skill∞ (2026-10-26)](https://arxiv.org/abs/2610.35434): meta-procedures can be revised using execution traces and independent reviews. DOMINION's typed experiment decisions are source/revision-bound and auditable.
+
+These works inform the architecture rather than constituting evidence that a four-generation DOMINION campaign has succeeded.
