@@ -7,6 +7,8 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
 | Frozen paired A/B, detached source receipts | `src/engine/rsi/evaluation/worktree.rs`, `src/engine/rsi/evaluation/metrics.rs` |
 | Protected frozen verifier source boundary | `src/engine/rsi/proof/path_policy.rs`, `src/engine/rsi.rs::safe_path`, `src/engine/code_index.rs::is_source` |
+| Measured method-off vs method-on successor outcome | `src/engine/rsi/proof/method_control.rs` (original model-usage audit, matched frozen paired comparison), `src/engine/rsi/proof/closure.rs` (shared authoritative gate) |
+| Explicit method-off campaign execution | `src/api/rsi.rs::start` → `src/api/rsi/control_request.rs` → `src/engine/rsi/execution/start.rs` → `src/engine/rsi/execution/campaign.rs` → `src/engine/rsi/evaluation/worktree.rs` |
 | Method-source classification for independent A→B→A proof | `src/engine/rsi/proof/source_roles.rs` (classification), `src/engine/rsi/proof/closure.rs` (receipt replay), `tests/unit/engine_rsi_closure_source_tests.rs` |
 | Actual intelligence-role inventory, independent receipt replay | `src/engine/rsi_system.rs` |
 | Source index and bounded model navigation | `src/engine/code_index.rs` |
@@ -18,7 +20,7 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Live model/provider selection | `src/engine/rsi/meta/model_ecology.rs` |
 | Real-model execution receipt | `scripts/sub4-live-rsi.mjs` |
 | Explicit-dispatch live verification | `.github/workflows/sub4-system-live-rsi.yml` |
-| Unit tests extracted from production Rust files | `tests/unit/` (`engine_rsi_api_tests.rs`, `engine_rsi_closure_source_tests.rs`, `engine_rsi_path_policy_tests.rs`) |
+| Unit tests extracted from production Rust files | `tests/unit/` (`engine_rsi_api_tests.rs`, `engine_rsi_closure_source_tests.rs`, `engine_rsi_path_policy_tests.rs`, `engine_rsi_method_control_tests.rs`, `api_rsi_tests.rs`, `api_rsi_capability_tests.rs`, `api_rsi_control_request_tests.rs`) |
 | Integration tests (not model edit candidates) | `tests/e2e.rs` |
 
 Verification status and historical independently measured descendant evidence: [RSI completion](rsi-completion.md) and [Sub3 evidence record](../benchmark/sub3-rsi-completion-2026-11-12.json). Current Sub4 design: [architecture](SUB4-RSI-ARCHITECTURE.md), [source-bound prequential learning](SUB4-PREQUENTIAL-SOURCE-LEARNING-2026-11-13.md).
