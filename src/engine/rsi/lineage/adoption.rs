@@ -119,6 +119,7 @@ pub(super) fn compiled_system_target(
         || plan["successorStage"] != input["rsiSuccessorStage"]
         || plan["symbioticCurriculum"] != input["rsiSymbioticCurriculum"]
         || plan["factorialExperiment"] != input["rsiFactorialExperiment"]
+        || plan["negativeTransfer"] != input["rsiNegativeTransfer"]
         || plan["editPolicy"] != input["rsiEditPolicy"]
         || plan["systemBlueprint"]["generatorCommit"] != commit
         || input["rsiTargetPlan"] != expected
