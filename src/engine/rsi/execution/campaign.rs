@@ -384,7 +384,8 @@ pub(super) async fn run_loop(
             .put(
                 "job",
                 &json!({"kind":"rsi_generation","status":"running",
-            "input":child_input,"queuedAt":chrono::Utc::now().to_rfc3339(),"attempts":1}),
+            "input":child_input,"queuedAt":chrono::Utc::now().to_rfc3339(),"attempts":1,
+            "rsiMethodAblationInputSha256":child_input["rsiMethodAblationInputSha256"]}),
             )
             .ok_or("세대 작업 저장 실패")?;
         let child_id = child["id"].as_str().ok_or("세대 작업 ID 없음")?;
