@@ -580,6 +580,3 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     Ok(json!({"status":record["status"],"evolution":record}))
 }
 
-/// A model-budget error can happen after the model has already written a
-/// patch. If that patch was captured and passed independent checks, it is a
-/// real candidate even when the worker reports needs_review.
