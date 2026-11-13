@@ -53,6 +53,8 @@ pub mod rsi_intervention_lab;
 pub mod rsi_open_topology;
 #[path = "rsi/lineage/transfer.rs"]
 pub mod rsi_lineage_transfer;
+#[path = "rsi/lineage/history.rs"]
+pub mod rsi_history;
 #[path = "rsi/learning/edit_genome.rs"]
 pub mod rsi_edit_genome;
 #[path = "rsi/learning/edit_program.rs"]
