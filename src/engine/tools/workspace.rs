@@ -2,21 +2,21 @@
 //! Active Rust execution paths imported by tools.rs.
 use super::*;
 
-pub(super) fn required_arg(args: &Value, key: &str) -> Result<String, String> {
+pub(crate) fn required_arg(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
         .and_then(|value| value.as_str())
         .map(str::to_string)
         .ok_or_else(|| format!("Missing argument: {key}"))
 }
 
-pub(super) fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn string_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(|value| value.as_str())
 }
 
 pub const WORKSPACE_ESCAPE: &str = "Path escapes the workspace";
 
 /// Reject `..` traversal and symlink escapes for workspace-scoped tools.
-pub(in super::super) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<PathBuf, String> {
     let base = canonical_target(workspace).map_err(|error| error.to_string())?;
     let candidate = Path::new(relative);
     if candidate
@@ -38,7 +38,7 @@ pub(in super::super) fn resolve_workspace(workspace: &Path, relative: &str) -> R
 }
 
 /// Resolve existing ancestors even when the final file has not been created.
-pub(super) fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -59,7 +59,7 @@ pub(super) fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
-pub(super) async fn list_dir(path: &Path) -> Result<Value, String> {
+pub(crate) async fn list_dir(path: &Path) -> Result<Value, String> {
     let mut entries = Vec::new();
     let mut reader = tokio::fs::read_dir(path)
         .await
@@ -82,7 +82,7 @@ pub(super) async fn list_dir(path: &Path) -> Result<Value, String> {
     Ok(json!({ "path": path.to_string_lossy(), "entries": entries }))
 }
 
-pub(super) async fn read_text(path: &Path) -> Result<Value, String> {
+pub(crate) async fn read_text(path: &Path) -> Result<Value, String> {
     let metadata = tokio::fs::metadata(path)
         .await
         .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -98,7 +98,7 @@ pub(super) async fn read_text(path: &Path) -> Result<Value, String> {
     Ok(json!({ "path": path.to_string_lossy(), "content": text }))
 }
 
-pub(super) fn preflight_policy(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Option<Value> {
+pub(crate) fn preflight_policy(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Option<Value> {
     let run = ctx.store.get("execution", run_id)?;
     let policy = &run["preflightPolicy"];
     (crate::engine::policy::is_preflight_kernel(&policy["parameters"]["kernel"])
@@ -109,7 +109,7 @@ pub(super) fn preflight_policy(ctx: &ToolContext<'_>, path: &Path, run_id: &str)
         .then(|| policy.clone())
 }
 
-pub(super) async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Result<Value, String> {
+pub(crate) async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &str) -> Result<Value, String> {
     if preflight_policy(ctx, path, run_id).is_none() {
         return read_text(path).await;
     }
@@ -126,7 +126,7 @@ pub(super) async fn observed_read(ctx: &ToolContext<'_>, path: &Path, run_id: &s
     Ok(result)
 }
 
-pub(super) fn search_code_index(
+pub(crate) fn search_code_index(
     ctx: &ToolContext<'_>,
     query: &str,
     limit: usize,

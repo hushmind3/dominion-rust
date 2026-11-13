@@ -42,7 +42,7 @@ impl Drop for ToolProcessGroup {
     }
 }
 
-pub(super) async fn read_command_output(
+pub(crate) async fn read_command_output(
     mut stream: impl tokio::io::AsyncRead + Unpin,
 ) -> std::io::Result<Vec<u8>> {
     use tokio::io::AsyncReadExt;
@@ -112,7 +112,7 @@ pub(crate) async fn run_command(
     }
 }
 
-pub(super) async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
+pub(crate) async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
     use tokio::process::Command;
     #[cfg(windows)]
     let mut child = {
@@ -132,7 +132,7 @@ pub(super) async fn shell(command: &str, cwd: &Path) -> Result<Value, String> {
     Ok(output_payload(&output))
 }
 
-pub(super) async fn executable(command: &str, args: &[String], cwd: &Path) -> Result<Value, String> {
+pub(crate) async fn executable(command: &str, args: &[String], cwd: &Path) -> Result<Value, String> {
     use tokio::process::Command;
     if !command
         .chars()
@@ -146,7 +146,7 @@ pub(super) async fn executable(command: &str, args: &[String], cwd: &Path) -> Re
     Ok(output_payload(&output))
 }
 
-pub(super) fn output_payload(output: &std::process::Output) -> Value {
+pub(crate) fn output_payload(output: &std::process::Output) -> Value {
     let clip = |bytes: &[u8]| {
         let text = String::from_utf8_lossy(bytes).to_string();
         if text.chars().count() > 20_000 {

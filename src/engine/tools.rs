@@ -177,26 +177,26 @@ pub use dispatch::execute;
 
 #[path = "tools/gateway.rs"]
 mod gateway;
-use gateway::*;
+pub(crate) use gateway::*;
 
 #[path = "tools/workspace.rs"]
 mod workspace;
-use workspace::*;
+pub(crate) use workspace::*;
 pub use workspace::WORKSPACE_ESCAPE;
 pub(super) use workspace::resolve_workspace;
 
 #[path = "tools/edit.rs"]
 mod edit;
-use edit::*;
+pub(crate) use edit::*;
 
 #[path = "tools/process.rs"]
 mod process;
-use process::*;
+pub(crate) use process::*;
 pub(crate) use process::run_command;
 
 #[path = "tools/network.rs"]
 mod network;
-use network::*;
+pub(crate) use network::*;
 
 #[cfg(test)]
 #[path = "tools/tests.rs"]

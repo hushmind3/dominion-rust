@@ -2,7 +2,7 @@
 //! Active Rust execution paths imported by tools.rs.
 use super::*;
 
-pub(super) async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
+pub(crate) async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
     let token = crate::engine::oauth::access_token(ctx.state, "github")
         .ok_or("GitHub 계정이 연결되지 않았습니다. 설정 > 계정 연동에서 연결하세요.")?;
     let method = string_arg(args, "method").unwrap_or("GET").to_uppercase();
@@ -38,7 +38,7 @@ const MAX_DELEGATION_DEPTH: usize = 4;
 
 /// Number of delegated sessions between the owner-facing session and this one.
 /// A chain cannot loop forever, so a cycle is cut defensively.
-pub(super) fn delegation_depth(store: &Store, session_id: &str) -> usize {
+pub(crate) fn delegation_depth(store: &Store, session_id: &str) -> usize {
     let mut depth = 0;
     let mut seen = std::collections::HashSet::new();
     let mut current = Some(session_id.to_string());
@@ -57,7 +57,7 @@ pub(super) fn delegation_depth(store: &Store, session_id: &str) -> usize {
     depth
 }
 
-pub(super) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
+pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> {
     let agent_id = required_arg(args, "agentId")?;
     // A delegated worker cannot delegate beyond a bounded depth. This keeps a
     // runaway chain from consuming unbounded workers.
@@ -142,7 +142,7 @@ pub(super) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     }
 }
 
-pub(super) fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Result<Value, String> {
+pub(crate) fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Result<Value, String> {
     let job_id = required_arg(args, "jobId")?;
     let job = ctx
         .state

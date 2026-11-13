@@ -2,12 +2,13 @@
 //! Active Rust execution paths imported by tools.rs.
 use super::*;
 
-pub(super) enum RsiEditIntent {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RsiEditIntent {
     CompleteFunction(String),
     SingleLine(u64),
 }
 
-pub(super) fn rsi_line_number(args:&Value,key:&str)->Option<u64>{
+pub(crate) fn rsi_line_number(args:&Value,key:&str)->Option<u64>{
     args[key].as_u64().or_else(||args[key].as_str()?.parse::<u64>().ok())
 }
 
@@ -15,7 +16,7 @@ pub(super) fn rsi_line_number(args:&Value,key:&str)->Option<u64>{
 /// otherwise valid source modification because it omitted endLine. There
 /// is no guess about which part of the file is changed: the existing unique
 /// top-level function is resolved by the same version-checked editor.
-pub(super) fn rsi_unambiguous_edit_intent(args:&Value,new_text:&str)->Option<RsiEditIntent>{
+pub(crate) fn rsi_unambiguous_edit_intent(args:&Value,new_text:&str)->Option<RsiEditIntent>{
     if rsi_line_number(args,"endLine").is_some_and(|end|end>0){
         return None;
     }
@@ -32,7 +33,7 @@ pub(super) fn rsi_unambiguous_edit_intent(args:&Value,new_text:&str)->Option<Rsi
         .then_some(RsiEditIntent::SingleLine(start))
 }
 
-pub(super) fn rsi_pinned_source_sha(ctx:&ToolContext<'_>,path:&Path,args:&Value)->Option<String>{
+pub(crate) fn rsi_pinned_source_sha(ctx:&ToolContext<'_>,path:&Path,args:&Value)->Option<String>{
     if args["expectedSha256"].as_str().is_some() {return None;}
     let session=ctx.store.get("session",ctx.session_id)?;
     if session["rsiRun"]!=true {return None;}
@@ -45,7 +46,7 @@ pub(super) fn rsi_pinned_source_sha(ctx:&ToolContext<'_>,path:&Path,args:&Value)
     crate::engine::code_index::indexed_source_hash(ctx.state,index,relative)
 }
 
-pub(super) async fn replace_source_lines(
+pub(crate) async fn replace_source_lines(
     ctx:&ToolContext<'_>, path:&Path, start:u64, end:u64,
     new_text:&str, expected_sha256:&str, run_id:&str,
 ) -> Result<Value,String> {
@@ -110,7 +111,7 @@ pub(super) async fn replace_source_lines(
 /// file mutation lock; the original bytes survive every parse failure.
 /// Rustfmt is a syntax-only guard. Compiling and frozen paired evaluation
 /// remain independent requirements for adopting a candidate.
-pub(super) async fn rsi_rust_parse_preview(
+pub(crate) async fn rsi_rust_parse_preview(
     ctx: &ToolContext<'_>, path: &Path, content: &str,
 ) -> Result<(), String> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs")
@@ -159,7 +160,7 @@ pub(super) async fn rsi_rust_parse_preview(
 /// targets an existing top-level function, keep its sibling definitions
 /// unchanged. This is scoped to named-function RSI objectives only; the
 /// normal exploratory and multi-file improvement paths are unaffected.
-pub(super) fn rsi_top_level_functions(source: &str) -> Vec<(String, &str)> {
+pub(crate) fn rsi_top_level_functions(source: &str) -> Vec<(String, &str)> {
     let mut starts = Vec::<(String, usize)>::new();
     let mut offset = 0usize;
     for line in source.split_inclusive('\n') {
@@ -184,7 +185,7 @@ pub(super) fn rsi_top_level_functions(source: &str) -> Vec<(String, &str)> {
     }).collect()
 }
 
-pub(super) async fn rsi_rust_scope_preview(
+pub(crate) async fn rsi_rust_scope_preview(
     ctx: &ToolContext<'_>, path: &Path, updated: &str,
 ) -> Result<(), String> {
     if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
@@ -237,7 +238,7 @@ pub(super) async fn rsi_rust_scope_preview(
 ///
 /// Restrict to observed top-level Rust functions. All mutations still pass the
 /// standard atomic source SHA check, syntax gate, and sibling scope gate.
-pub(super) async fn replace_source_function(
+pub(crate) async fn replace_source_function(
     ctx: &ToolContext<'_>, path: &Path,
     function: &str, new_text: &str, expected_sha256: &str, run_id: &str,
 ) -> Result<Value, String> {
@@ -307,7 +308,7 @@ pub(super) async fn replace_source_function(
 
 /// Read-only Rust parser immediately after a model-authored source
 /// mutation. Same-turn feedback is not an independent quality verdict.
-pub(super) async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value> {
+pub(crate) async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Option<Value> {
     if path.extension().and_then(|ext|ext.to_str())!=Some("rs")
         || ctx.store.get("session",ctx.session_id)?["rsiRun"]!=true {
         return None;
@@ -339,7 +340,7 @@ pub(super) async fn rsi_rust_parse_receipt(ctx:&ToolContext<'_>,path:&Path)->Opt
         "diagnostic":diagnostic.chars().take(1800).collect::<String>()}))
 }
 
-pub(super) async fn replace_text(
+pub(crate) async fn replace_text(
     ctx: &ToolContext<'_>,
     path: &Path,
     old_text: &str,
@@ -384,7 +385,7 @@ pub(super) async fn replace_text(
     Ok(result)
 }
 
-pub(super) async fn checked_write(
+pub(crate) async fn checked_write(
     ctx: &ToolContext<'_>,
     path: &Path,
     content: &str,
@@ -604,7 +605,7 @@ pub(super) async fn checked_write(
     )
 }
 
-pub(super) async fn write_text(path: &Path, content: &str) -> Result<Value, String> {
+pub(crate) async fn write_text(path: &Path, content: &str) -> Result<Value, String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await

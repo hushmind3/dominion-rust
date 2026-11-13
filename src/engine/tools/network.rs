@@ -6,7 +6,7 @@ const MAX_HTTP_FETCH_BYTES: usize = 256 * 1024;
 
 /// Exclude local, reserved, routing infrastructure and non-public addresses.
 /// A request is pinned to the checked DNS answers to close rebinding gaps.
-pub(super) fn public_fetch_ip(ip: std::net::IpAddr) -> bool {
+pub(crate) fn public_fetch_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ip) => {
             let [a, b, c, _] = ip.octets();
@@ -32,7 +32,7 @@ pub(super) fn public_fetch_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
-pub(super) fn validated_http_target(url: &str) -> Result<(reqwest::Url, String, u16), String> {
+pub(crate) fn validated_http_target(url: &str) -> Result<(reqwest::Url, String, u16), String> {
     let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
     if !matches!(parsed.scheme(), "http" | "https")
         || !parsed.username().is_empty() || parsed.password().is_some() {
@@ -52,7 +52,7 @@ pub(super) fn validated_http_target(url: &str) -> Result<(reqwest::Url, String, 
     Ok((parsed,host,port))
 }
 
-pub(super) async fn http_fetch(url: &str) -> Result<Value, String> {
+pub(crate) async fn http_fetch(url: &str) -> Result<Value, String> {
     const MAX_REDIRECTS: usize = 3;
     let mut next=url.to_string();
     for hop in 0..=MAX_REDIRECTS {
@@ -108,7 +108,7 @@ pub(super) async fn http_fetch(url: &str) -> Result<Value, String> {
     }
     Err("HTTP fetch exceeded the redirect limit".into())
 }
-pub(super) async fn web_search(query: &str) -> Result<Value, String> {
+pub(crate) async fn web_search(query: &str) -> Result<Value, String> {
     let response = reqwest::Client::new()
         .post("https://html.duckduckgo.com/html/")
         .form(&[("q", query)])
@@ -146,7 +146,7 @@ pub(super) async fn web_search(query: &str) -> Result<Value, String> {
     Ok(json!({ "query": query, "results": results }))
 }
 
-pub(super) fn decode_ddg(raw: &str) -> String {
+pub(crate) fn decode_ddg(raw: &str) -> String {
     let href = raw
         .strip_prefix("//")
         .map(|rest| format!("https://{rest}"))
@@ -159,7 +159,7 @@ pub(super) fn decode_ddg(raw: &str) -> String {
     href
 }
 
-pub(super) fn percent_decode(value: &str) -> String {
+pub(crate) fn percent_decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -181,7 +181,7 @@ pub(super) fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
-pub(super) fn strip_html(html: &str) -> String {
+pub(crate) fn strip_html(html: &str) -> String {
     let mut out = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
     for ch in html.chars() {
