@@ -110,7 +110,8 @@ mod tests {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("src/engine")).unwrap();
         fs::write(root.join("src/engine/algorithms.rs"),"pub fn policy() {}").unwrap();
-        fs::write(root.join("src/engine/rsi_evolve.rs"),"pub fn evolve() {}").unwrap();
+        fs::create_dir_all(root.join("src/engine/rsi/planner")).unwrap();
+        fs::write(root.join("src/engine/rsi/planner/domain_selection.rs"),"pub fn evolve() {}").unwrap();
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
@@ -331,10 +332,11 @@ mod integration_contract_tests {
     #[test]
     fn source_portfolio_exposes_new_meta_mechanisms_to_descendants() {
         let (state,root)=state();
-        fs::write(root.join("src/engine/rsi_evolve.rs"),"pub fn parent() {}\n").unwrap();
+        fs::create_dir_all(root.join("src/engine/rsi/meta")).unwrap();
+        fs::write(root.join("src/engine/rsi/meta/evolution.rs"),"pub fn parent() {}\n").unwrap();
         fs::write(root.join("src/engine/rsi_meta_controller.rs"),
             "pub fn meta_improve() {}\n").unwrap();
-        fs::write(root.join("src/engine/rsi_system.rs"),"pub fn plan() {}\n").unwrap();
+        fs::write(root.join("src/engine/rsi/meta/controller_selection.rs"),"pub fn plan() {}\n").unwrap();
         let index=crate::engine::code_index::refresh(&state,&root).unwrap();
         let blueprint=blueprint(&root,"source-commit",&[]);
         let frontier=architecture_frontier(&state,&blueprint,&[],
