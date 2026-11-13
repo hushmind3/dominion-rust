@@ -43,6 +43,13 @@
 - `rsi_system.rs`는 변경 가능한 설계 진입점과 모듈 등록을 보존하되 엄격한 증명 함수는 별도 보호 모듈로 위임한다. `rsi_system.rs::COMPONENTS`는 이 보호 모듈을 후손의 편집 가능한 개선법 후보로 소개하지 않는다.
 - 새 경계에 대한 회귀 검사는 `tests/support/engine/rsi_system.tests.rs`, `rsi_causal_closure.tests.rs`, `tests/support/api/rsi.tests.rs`에 선언했으며 실행하지 않았다.
 
+## 재판정 이후 추가 보강: 검증기 불변성과 품질 대조
+
+- `src/engine/rsi/planner/domain_selection.rs`는 독립 모듈로 분리된 **실제 변경 가능한** 후손의 탐색 정책·비용 인지 도메인 선택·native 선택 실험 본체다. `rsi_evolve.rs`는 호출용 facade로 축소되었고, `rsi.rs`, `rsi_evolve.rs`, `rsi_system.rs`는 후보 편집에서 제외된다. 진화할 수 있는 알고리즘은 `rsi_system.rs::COMPONENTS`와 `rsi_worktree.rs::classify`에도 등록했다.
+- 검증 경계에 `src/engine/rsi_worktree.rs`(독립 페어 측정), `src/engine/rsi_metrics.rs`(측정 기준), `src/engine/rsi_archive.rs`(원본 보관), `src/api/rsi.rs`(권한·시작 옵션) 및 고정 `tests/support/engine/rsi_*`, `tests/support/api/rsi*`, `tests/unit/engine_rsi_*`를 추가했다. 후보가 자기 시험지를 고쳐 성공을 만드는 일을 차단한다.
+- 원본 `compare_at` 결과는 후보 전체 evaluation 객체가 아니라 ID/해시/지표를 포함한 요약이다. ON/OFF 재검산에서 후보 원본 평가 `id`, `metrics`, `evidenceSha256`, `source`를 이 요약과 정확히 비교하도록 수정했다. 컨트롤과 실험군의 입력 SHA는 작업기 실행 전 고정된 별도 job 메타필드로 저장한다.
+- `rsi_causal_closure.rs`는 frozen 홀드아웃의 실패→통과뿐 아니라 이미 통과한 사례의 `quality`/`discoveryScore` 독립 지표 향상도 확인한다. `method_ablation.rs::paired_quality_delta`는 OFF/ON 동일 평가 케이스의 품질만 대조하며 **응답 속도/토큰 감소는 지능 향상으로 계산하지 않는다.** 남은 실험 시간은 캠페인 단조시계로 계산한다.
+
 ## 새 실행 구조와 방법 대조실험의 실제 연결
 
 ```text
