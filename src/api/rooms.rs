@@ -168,6 +168,10 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     if !matches!(routing.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err(bad("지원하지 않는 발언 방식입니다."));
     }
+    let economy_mode = text_field(body,previous,"economyMode","adaptive",16)?;
+    if !matches!(economy_mode.as_str(),"adaptive"|"full") {
+        return Err(bad("대화 비용 정책은 adaptive 또는 full입니다."));
+    }
     // Owner-picked model pool. FreeLLMAPI exposes dozens of models; the owner
     // checks the ones they trust once and every turn rotates inside that list.
     let models_source = body
@@ -205,11 +209,14 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         if !valid_effort(effort) {
             return Err(bad("추론 강도 값이 올바르지 않습니다."));
         }
+        let tier = entry.get("tier").and_then(Value::as_str).unwrap_or("auto");
+        if !matches!(tier,"auto"|"economy"|"frontier") {
+            return Err(bad("모델 등급은 자동·저비용·고성능 중 선택하세요."));
+        }
         if seen_models.insert(format!("{provider_id}|{model}")) {
             let mut picked = json!({"providerId":provider_id,"model":model});
-            if !effort.is_empty() {
-                picked["reasoningEffort"] = json!(effort);
-            }
+            if !effort.is_empty() { picked["reasoningEffort"] = json!(effort); }
+            if tier != "auto" { picked["tier"] = json!(tier); }
             models.push(picked);
         }
     }
@@ -226,7 +233,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         return Err(bad("추론 강도 값이 올바르지 않습니다."));
     }
     Ok(json!({
-        "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,
+        "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,"economyMode":economy_mode,
         "description":text_field(body,previous,"description","",4000)?,
         "topic":text_field(body,previous,"topic","",16000)?,
         "ownerName":text_field(body,previous,"ownerName","나",100)?,

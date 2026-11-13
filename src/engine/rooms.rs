@@ -117,7 +117,8 @@ fn speaker_window(
 ) -> Vec<String> {
     // Small rooms are cheap enough to keep everyone; trimming them loses more
     // perspective than it saves.
-    if roster.len() <= 3 {
+    let adaptive = room["economyMode"] == "adaptive";
+    if roster.len() <= 3 && !adaptive {
         return roster.to_vec();
     }
     // An explicit total cap of at least one turn per participant is the
@@ -139,13 +140,17 @@ fn speaker_window(
     {
         return roster.to_vec();
     }
-    let count = if is_deep_request(input) {
-        6.min(roster.len())
+    // Adaptive mode avoids paying for an entire panel to answer a greeting.
+    // Explicit mentions, owner-picked speakers, and "everyone" above still win.
+    let count = if adaptive {
+        if is_deep_request(input) { 3 } else if input.chars().count() <= 60 { 1 } else { 2 }
+    } else if is_deep_request(input) {
+        6
     } else if input.chars().count() <= 60 {
-        2.min(roster.len())
+        2
     } else {
-        3.min(roster.len())
-    };
+        3
+    }.min(roster.len());
     if count >= roster.len() {
         return roster.to_vec();
     }
@@ -314,6 +319,25 @@ fn model_pool(state: &crate::state::AppState, room: &Value) -> Vec<(String, Stri
     pool
 }
 
+/// Never guess model prices from names. The owner labels low-cost and frontier
+/// routes; without labels we preserve the legacy stable rotation.
+fn tiered_model_pool(
+    room: &Value, owner_text: &str, pool: Vec<(String, String, Option<String>)>,
+) -> Vec<(String, String, Option<String>)> {
+    if room["economyMode"] != "adaptive" || pool.is_empty() {
+        return pool;
+    }
+    let desired = if is_deep_request(owner_text) { "frontier" } else { "economy" };
+    let eligible = room["models"].as_array().into_iter().flatten()
+        .filter(|entry| entry["tier"].as_str() == Some(desired))
+        .filter_map(|entry| Some((entry["providerId"].as_str()?,entry["model"].as_str()?)))
+        .collect::<HashSet<_>>();
+    let matched = pool.iter()
+        .filter(|(provider,model,_)|eligible.contains(&(provider.as_str(),model.as_str())))
+        .cloned().collect::<Vec<_>>();
+    if matched.is_empty() { pool } else { matched }
+}
+
 pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let input = job.get("input").cloned().unwrap_or_else(|| json!({}));
     let room_id = input["roomId"].as_str().ok_or("대화방 ID가 필요합니다.")?;
@@ -477,7 +501,13 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
+    let configured_rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
+    // Adaptive rounds are a default ceiling, not a reinterpretation of an
+    // explicit maxTurns value. Full mode retains the owner's original count.
+    let rounds = if mode == "discussion" && room["economyMode"] == "adaptive"
+        && room["maxTurns"].as_i64().unwrap_or(0) == 0 {
+        if is_deep_request(owner_text) { configured_rounds.min(2) } else { 1 }
+    } else { configured_rounds };
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.
     let budget = existing["turnBudget"]
@@ -567,6 +597,20 @@ async fn run_locked(
                 Some(&newer),
             ));
         }
+        // Stop before another provider call when the room is close to its
+        // chosen budget. This is a reserve, not a claim of exact token pricing.
+        if token_budget > 0 && !outputs.is_empty() {
+            let used = state.store.session_usage(session_id)["totalTokens"]
+                .as_u64().unwrap_or(0).saturating_sub(usage_baseline);
+            let reserve = room["contextBudgetTokens"].as_u64().unwrap_or(2_000)
+                .saturating_div(4).clamp(128,2_048).min(token_budget);
+            if used >= token_budget.saturating_sub(reserve) {
+                checkpoint(context, session_id, generation, source_id, &mode,
+                    &roster, &initial, &pending, &outputs, budget, false, None)?;
+                return Ok(finish(context,room_id,session_id,"completed",
+                    &outputs,"token_budget_reserve",None));
+            }
+        }
         let Some(agent_id) = pending.pop_front() else {
             break;
         };
@@ -613,7 +657,7 @@ async fn run_locked(
             .as_array()
             .is_some_and(|models| !models.is_empty());
         let pool = if explicit_pool || room["autoModels"].as_bool().unwrap_or(true) {
-            model_pool(state, &room)
+            tiered_model_pool(&room,owner_text,model_pool(state, &room))
         } else {
             Vec::new()
         };
