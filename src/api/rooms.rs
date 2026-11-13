@@ -168,6 +168,11 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     if !matches!(routing.as_str(), "discussion" | "round_robin" | "mentioned") {
         return Err(bad("지원하지 않는 발언 방식입니다."));
     }
+    let economy_default=if previous["id"].is_string() {"full"}else{"adaptive"};
+    let economy_mode=text_field(body,previous,"economyMode",economy_default,16)?;
+    if !matches!(economy_mode.as_str(),"full"|"adaptive") {
+        return Err(bad("그룹 대화 비용 정책은 적응형(adaptive) 또는 전체(full) 중 선택하세요."));
+    }
     // Owner-picked model pool. FreeLLMAPI exposes dozens of models; the owner
     // checks the ones they trust once and every turn rotates inside that list.
     let models_source = body
@@ -227,6 +232,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     }
     Ok(json!({
         "id":id,"name":name,"agentIds":agent_ids,"routingMode":routing,
+        "economyMode":economy_mode,
         "description":text_field(body,previous,"description","",4000)?,
         "topic":text_field(body,previous,"topic","",16000)?,
         "ownerName":text_field(body,previous,"ownerName","나",100)?,
@@ -452,6 +458,15 @@ pub(crate) fn submit_internal(
             json!({"id":job_id,"jobId":job_id,"status":existing["status"],"room":config,"sessionId":session_id,"message":message,"job":existing}),
         );
     }
+    // Persist the concrete selected algorithm version on this immutable job,
+    // rather than reselecting it after a provider/bandit update or restart.
+    if config["economyMode"]=="adaptive" && config["routingMode"]=="discussion"
+        && body.get("agentIds").is_none() {
+        if let Some(policy)=crate::engine::algorithms::choose_for_agent(
+            state,"multiagent.economy",None,None) {
+            config["economyKernel"]=policy;
+        }
+    }
     let speakers = rooms::plan_speakers(state, &config, text, body.get("agentIds")).map_err(bad)?;
     let generation = state.cancellation_generation(session_id);
     let acceptance=crate::engine::chat::prepare_owner_action(state,text).map(|(request,checks)|json!({"request":request,"checks":checks}));
@@ -482,6 +497,64 @@ pub(crate) fn submit_internal(
         json!({"id":job_id,"jobId":job_id,"status":"queued","room":room(state,id)?,"sessionId":session_id,"message":saved_message,"job":saved_job}),
     )
 }
+/// Subjective owner preference for an actually executed adaptive algorithm.
+/// Never turn a subjective vote into a claim that a model answer was correct.
+pub async fn feedback(
+    State(state):State<AppState>,
+    Path((id,job_id)):Path<(String,String)>,
+    Json(body):Json<Value>,
+)->Response {
+    response((|| {
+        room(&state,&id)?;
+        let positive=body.get("positive").and_then(Value::as_bool)
+            .ok_or_else(||bad("positive는 true 또는 false여야 합니다."))?;
+        if body.as_object().is_none_or(|fields| fields.len()!=1) {
+            return Err(bad("positive만 제출하세요."));
+        }
+        let job=state.store.get("job",&job_id)
+            .ok_or((StatusCode::NOT_FOUND,"평가할 완료 대화 작업이 없습니다.".into()))?;
+        if job["kind"]!="room"||job["input"]["roomId"]!=id||job["status"]!="completed" {
+            return Err(bad("완료된 해당 대화방 작업만 평가할 수 있습니다."));
+        }
+        let frozen=&job["input"]["roomSnapshot"];
+        let policy=&frozen["economyKernel"];
+        let revision=policy["revision"].as_str()
+            .ok_or_else(||bad("이 실행에는 피드백 대상 알고리즘 revision이 없습니다."))?;
+        if frozen["economyMode"]!="adaptive"
+            || job["input"]["routingMode"]!="discussion"
+            || job["input"]["explicitAgentIds"]==true
+            || policy["kind"]!="multiagent.economy"
+            || job["result"]["outputs"].as_array().is_none_or(|items|items.is_empty()) {
+            return Err(bad("정책을 자동 실행한 완료 토론만 평가할 수 있습니다."));
+        }
+        // Idempotency key is the durable job, not a session or reply text.
+        let record_id=format!("room-economy-feedback-{job_id}");
+        let candidate=json!({"id":record_id,"roomId":id,"jobId":job_id,
+            "revision":revision,"positive":positive,"source":"owner_preference",
+            "createdAt":chrono::Utc::now().to_rfc3339()});
+        let first=state.store.put_if_absent("room_feedback",&candidate);
+        let saved=first.clone().or_else(||state.store.get("room_feedback",&record_id))
+            .ok_or_else(||failed("그룹 비용·품질 평가 저장에 실패했습니다."))?;
+        if saved["revision"]!=revision||saved["positive"]!=positive {
+            return Err(conflict("이 작업의 피드백은 이미 다른 값으로 저장되었습니다."));
+        }
+        if first.is_some() {
+            let counted=crate::engine::algorithms::record_owner_feedback(
+                &state,"multiagent.economy",revision,positive);
+            state.store.audit("room.feedback",json!({
+                "roomId":id,"jobId":job_id,"revision":revision,
+                "positive":positive,"recordedBy":"owner","rated":counted,
+            }));
+        }
+        if let Some(saved_job)=state.store.patch_if(
+            "job",&job_id,"ownerFeedback",&Value::Null,
+            &json!({"ownerFeedback":saved})) {
+            state.bus.record("job",&saved_job);
+        }
+        Ok(saved)
+    })())
+}
+
 pub async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
