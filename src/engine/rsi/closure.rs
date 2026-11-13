@@ -81,7 +81,7 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
     // Re-play receipts, not stored success/failure flags, even when the
     // coordinator or API has copied a campaign into a display summary.
     let checked=rsi_system::revalidated_method_history(state,history);
-    for pair in checked.windows(3) {
+    for (index,pair) in checked.windows(3).enumerate() {
         let [a,b,c]=pair else{continue};
         let (Some((ca,_ja)),Some((cb,jb)),Some((cc,jc)))=(
             source_adoption(state,a),source_adoption(state,b),
@@ -110,8 +110,7 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
             continue;
         }
         let expected=rsi_system::next_method_return(
-            &checked[..checked.iter().position(|g|g["id"]==c["id"])
-                .unwrap_or(checked.len())],
+            &checked[..index+2],
             &c["descendantPlan"]["architectureFrontier"],
             c["generatorCommit"].as_str().unwrap_or(""));
         if expected.is_null()
