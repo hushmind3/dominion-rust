@@ -108,6 +108,106 @@ pub fn workflow_for(model: &str, steps: u64) -> Option<Value> {
     }))
 }
 
+/// Download sources for the built-in models. Kept out of the repository:
+/// weights are large and licensed separately from the source.
+pub fn model_files(id: &str) -> Option<Vec<(&'static str, &'static str)>> {
+    let files = match id {
+        "wan21-t2v-1.3b-q4" => vec![
+            ("unet/Wan2.1-T2V-1.3B-Q4_K_M.gguf",
+             "https://huggingface.co/samuelchristlie/Wan2.1-T2V-1.3B-GGUF/resolve/main/Wan2.1-T2V-1.3B-Q4_K_M.gguf"),
+            ("clip/umt5-xxl-encoder-Q4_K_M.gguf",
+             "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q4_K_M.gguf"),
+            ("vae/wan_2.1_vae.safetensors",
+             "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors"),
+        ],
+        "wan21-t2v-1.3b-fp16" => vec![
+            ("diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors",
+             "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors"),
+            ("text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+             "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+            ("vae/wan_2.1_vae.safetensors",
+             "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors"),
+        ],
+        _ => return None,
+    };
+    Some(files)
+}
+
+/// Start a background download and record real progress. The UI polls the
+/// record; nothing is marked installed until the file exists on disk.
+pub fn start_download(state: AppState, id: &str) -> Result<Value, String> {
+    let files = model_files(id).ok_or("알 수 없는 영상 모델입니다.")?;
+    let key = format!("video_model_download:{id}");
+    if state.store.get("video_model_download", &key)
+        .is_some_and(|row| row["status"] == "downloading")
+    {
+        return Err("이미 다운로드 중입니다.".into());
+    }
+    state.store.put("video_model_download", &json!({
+        "id": key, "model": id, "status": "downloading", "progress": 0,
+        "bytes": 0, "total": 0, "startedAt": chrono::Utc::now().to_rfc3339(),
+    })).ok_or("다운로드 기록을 저장할 수 없습니다.")?;
+    let base = models_dir(&state);
+    tokio::spawn(async move {
+        let outcome = download_files(&state, &key, &base, &files).await;
+        let mut record = state.store.get("video_model_download", &key).unwrap_or_else(|| json!({"id": key}));
+        match outcome {
+            Ok(()) => { record["status"] = json!("completed"); record["progress"] = json!(100); }
+            Err(error) => { record["status"] = json!("failed"); record["error"] = json!(error); }
+        }
+        record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        state.store.put("video_model_download", &record);
+    });
+    Ok(json!({"model": id, "status": "downloading"}))
+}
+
+async fn download_files(
+    state: &AppState, key: &str, base: &Path, files: &[(&'static str, &'static str)],
+) -> Result<(), String> {
+    let client = reqwest::Client::builder().build().map_err(|e| e.to_string())?;
+    let mut total = 0u64;
+    let mut done = 0u64;
+    for (relative, url) in files {
+        let target = base.join(relative);
+        if target.is_file() { continue; }
+        if let Some(parent) = target.parent() { let _ = std::fs::create_dir_all(parent); }
+        let response = client.get(*url).send().await.map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("다운로드 실패: HTTP {}", response.status()));
+        }
+        total += response.content_length().unwrap_or(0);
+        let part = target.with_extension("part");
+        let mut file = tokio::fs::File::create(&part).await.map_err(|e| e.to_string())?;
+        use futures_util::StreamExt;
+        use tokio::io::AsyncWriteExt;
+        let mut stream = response.bytes_stream();
+        let mut since_update = 0u64;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            done += chunk.len() as u64;
+            since_update += chunk.len() as u64;
+            if since_update >= 8 * 1024 * 1024 {
+                since_update = 0;
+                let mut record = state.store.get("video_model_download", key)
+                    .unwrap_or_else(|| json!({"id": key}));
+                record["bytes"] = json!(done);
+                record["total"] = json!(total.max(done));
+                record["progress"] = json!(((done * 100) / total.max(done)).min(99));
+                state.store.put("video_model_download", &record);
+            }
+        }
+        file.flush().await.map_err(|e| e.to_string())?;
+        drop(file);
+        tokio::fs::rename(&part, &target).await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn downloads(state: &AppState) -> Vec<Value> {
+    state.store.all("video_model_download")
+}
+
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
     ffmpeg_from_config(&config(state))
 }

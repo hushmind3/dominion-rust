@@ -25,6 +25,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const catalog=useRemote<{videoModels:VideoModel[]}>('/api/video/catalog',{videoModels:[]})
+ const downloads=useRemote<{downloads:{id:string;model:string;status:string;progress:number;bytes:number;total:number;error?:string}[]}>('/api/video/models/downloads',{downloads:[]})
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<'native'|'comfyui'>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [voice,setVoice]=useState('Yuna'),[narration,setNarration]=useState(true)
@@ -100,6 +101,22 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{await post('/api/video/config',patch);await video.reload();await catalog.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
+ const selectedModel=catalog.value.videoModels.find(model=>model.id===video.value.config.videoModel)
+ const downloadState=downloads.value.downloads.find(row=>row.model===video.value.config.videoModel)
+ useEffect(()=>{
+  if(downloadState?.status!=='downloading')return
+  const timer=window.setInterval(()=>void downloads.reload(),3000)
+  return()=>window.clearInterval(timer)
+ },[downloadState?.status,downloads.reload])
+ useEffect(()=>{
+  if(downloadState?.status==='completed')void catalog.reload()
+ },[downloadState?.status,catalog.reload])
+ const startDownload=async()=>{
+  if(!video.value.config.videoModel)return
+  setError('')
+  try{await post('/api/video/models/'+encodeURIComponent(video.value.config.videoModel)+'/download',{});await downloads.reload()}
+  catch(e){setError((e as Error).message)}
+ }
  const reveal=async(id:string)=>{
   try{await post('/api/video/jobs/'+id+'/reveal',{})}catch(e){setError((e as Error).message)}
  }
@@ -154,6 +171,13 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </SelectInput></FormField>
    </div>
    <p className="mt-2 text-[11px] text-[#8A8176]">{catalog.value.videoModels.find(model=>model.id===video.value.config.videoModel)?.hint||'모델을 선택하면 한 번에 생성됩니다.'}</p>
+   {selectedModel&&!selectedModel.available&&<div className="mt-3 flex flex-wrap items-center gap-2">
+    <Button variant="secondary" disabled={downloadState?.status==='downloading'} onClick={()=>void startDownload()}>
+     {downloadState?.status==='downloading'?`다운로드 중 ${downloadState.progress||0}%`:'모델 다운로드'}
+    </Button>
+    {downloadState?.status==='failed'&&<span className="text-[11px] text-rose-600">{downloadState.error||'다운로드 실패'}</span>}
+    {downloadState?.status==='completed'&&<span className="text-[11px] text-[#4E6B45]">설치 완료</span>}
+   </div>}
   </Panel>
   <Panel className="mb-4 p-4">
    <div className="flex flex-wrap items-center justify-between gap-3">

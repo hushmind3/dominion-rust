@@ -229,6 +229,19 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
     Json(json!(items))
 }
 
+pub async fn download_model(
+    State(state): State<AppState>, Path(id): Path<String>,
+) -> Response {
+    match video::start_download(state.clone(), &id) {
+        Ok(value) => (StatusCode::ACCEPTED, Json(value)).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, message),
+    }
+}
+
+pub async fn model_downloads(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"downloads": video::downloads(&state)}))
+}
+
 pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
     let cfg = video::config(&state);
     let native = video::ffmpeg(&state).is_some();
