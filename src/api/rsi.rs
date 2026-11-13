@@ -35,8 +35,13 @@ fn apply_capability(state:&AppState,record: &mut Value) {
     };
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max >= 3 &&
-        engine::campaign_capability_proven(state,record));
+    let closure=engine::campaign_recursive_evidence(state,record);
+    record["recursiveClosure"]=closure.clone();
+    record["capabilityDemonstrated"]=json!(closure["proven"]==true);
+    record["systemCapabilityDemonstrated"]=json!(
+        closure["proven"]==true
+        && crate::engine::rsi_system::system_capability_proven(
+            state,&record["history"]));
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -180,6 +185,7 @@ pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
         apply_capability(&state,&mut record);
         json!({"id":record["id"],"phase":record["phase"],
             "maxAcceptedStreak":record["maxAcceptedStreak"],"capabilityDemonstrated":record["capabilityDemonstrated"],
+            "recursiveClosure":record["recursiveClosure"],"systemCapabilityDemonstrated":record["systemCapabilityDemonstrated"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))

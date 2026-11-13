@@ -18,6 +18,12 @@ pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
     "src/engine/rsi_system/method_lineage.rs",
 ];
 
+/// The actual compiled sources the child can improve; receipt verification
+/// uses this SAME list, so source discovery and candidate admission agree.
+pub(crate) fn executable_method_source(path:&str)->bool{
+    EXECUTABLE_METHOD_SOURCES.contains(&path)
+}
+
 fn sha256(value:&str)->bool {
     value.len()==64 && value.bytes().all(|byte|byte.is_ascii_hexdigit())
 }

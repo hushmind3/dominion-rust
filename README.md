@@ -489,3 +489,34 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 검색 전략, 타기팅, 연구·예산, 독립 평가와 채택, 후손 실행,
 도구 수리, 학습 피드백, 방법 전이, 실험 대조군을 독립적으로 검토할 수 있습니다.
 테스트 본문과 상대 경로 fixture는 변경하지 않았습니다.
+
+
+## 2026-11-13 서브2: RSI 성공 판정 통합 · A→B→A 실제 실행 경로
+
+**단일 성공 판정:** `src/engine/rsi/closure.rs::evidence` → `rsi::campaign_recursive_evidence`를
+실제 캠페인 정지 조건(`rsi/execution.rs`)과 API(`api/rsi.rs::apply_capability`)가 공유합니다.
+단순 3연속 채택, 메타 도메인 이전, 저장된 `capabilityDemonstrated` 플래그는 완성 판정이 아닙니다.
+
+**재귀 개입 경로:** `rsi/planner/compiled.rs`가 검증된 B 후손 결과를
+`rsi_system/return_feedback.rs::next_method_return`에 전달합니다. A에서 채택된
+실제 개선 방법 소스 해시가 B 실행 원장에 상속되어 있고, B가 다른 영역에서
+독립 평가상 개선을 얻은 경우에만 다음 C 계획의 `downstreamMethodFeedback`을 생성합니다.
+현재 소스 인덱스가 일치하면 다음 C의 `metaPolicy`, source focus, 실행 정책,
+모델 지시가 동일한 A 모듈의 재개선 실험으로 연결됩니다.
+`rsi/worker.rs`는 원본 B 기록을 독립적으로 재생하고
+`rsiMetaReturnExecuted`를 남깁니다. C가 실제 코드를 수정하고 외부 frozen
+paired 평가에 통과·채택돼야 `closure::evidence`가 A→B→A를 인정합니다.
+
+**원본 증거 체인:** A/B/C 각각의 후보·실행 job·바이너리 revision·소스 SHA
+·원본 paired 평가를 재검증합니다. B가 A의 실제 메서드를 실행했고
+B의 평가 영수증이 C의 편집 계획에 사용됐으며 C가 같은 메서드 소스를
+다시 변경했는지 검사합니다. `rsi_worktree/validation.rs::classify`와
+`rsi.rs::propose`는 동일한 실제 실행 메서드 소스 목록으로
+improver 후보를 인정합니다. 증명기·원본 기록 재검증·frozen 평가 모듈은
+모델 패치에서 제외합니다.
+
+**근거·한계:** 신규 정적/회귀 테스트는 코드에 포함했습니다.
+빌드·테스트·CI·실제 모델 캠페인은 지침대로 실행하지 않았습니다.
+새 원장은 측정된 A→B→A를 *인정할 수 있는 구조*이며, 아직
+3세대 실측 완성과 개선법 변경의 무작위 대조 인과효과를 입증한 것은 아닙니다.
+`systemCapabilityDemonstrated`는 전체 지능 구성요소를 포괄하는 별도 엄격한 증명으로 유지합니다.

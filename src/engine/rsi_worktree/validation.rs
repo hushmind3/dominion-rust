@@ -2,15 +2,11 @@
 use super::*;
 
 pub(super) fn classify(patch:&str)->&'static str {
-    if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi.rs ")
-            || line.contains("src/engine/rsi_worktree.rs ")
-            || line.contains("src/engine/rsi_evolve.rs ")
-            || line.contains("src/engine/rsi_metrics.rs ")
-            || line.contains("src/engine/algorithms.rs ")
-            || line.contains("src/engine/algorithm_eval.rs ")
-            || line.contains("src/engine/policy_patch.rs ")
-            || line.contains("src/api/rsi.rs "))) {
+    if patch.lines().filter_map(|line|{
+        let pair=line.strip_prefix("diff --git a/")?;
+        let (left,right)=pair.split_once(" b/")?;
+        (left==right).then_some(left)
+    }).any(crate::engine::rsi::executable_improver_path) {
         "improver"
     } else if patch.lines().filter(|line|line.starts_with("diff --git "))
         .all(|line|line.contains("src/engine/memory")

@@ -606,6 +606,10 @@ pub(super) async fn run_loop(
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
         generation["metaMethodInheritance"]=
             current["rsiMetaMethodInheritance"].clone();
+        generation["downstreamMethodFeedback"]=
+            current["input"]["rsiDescendantPlan"]["downstreamMethodFeedback"].clone();
+        generation["returnMethodFeedbackExecuted"]=
+            current["rsiMetaReturnExecuted"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
@@ -985,26 +989,8 @@ pub(super) async fn run_loop(
             .unwrap_or(0)
             .max(accepted_streak);
         record["maxAcceptedStreak"] = json!(max_streak);
-        // Adoption count is descriptive; recursive capability requires verified
-        // meta improvement, lineage and measured transfer to a new domain.
-        let mut evidence_record=record.clone();
-        evidence_record["history"].as_array_mut()
-            .ok_or("세대 목록 손상")?.push(generation.clone());
-        // A native patch chain can prove LIMITED RSI, never whole-system
-        // intelligence replacement. Publish the stricter distinct verdict,
-        // requiring a descendant-authored architecture, implementation and
-        // independently adopted evidence across all six core components.
-        let system_proven=input["rsiSystemEvolution"]==true
-            && max_streak>=3
-            && crate::engine::rsi::campaign_capability_proven(
-                &context.state,&evidence_record)
-            && crate::engine::rsi_system::system_capability_proven(
-                &context.state,&evidence_record["history"]);
-        record["systemCapabilityDemonstrated"]=json!(system_proven);
-        record["capabilityDemonstrated"]=json!(max_streak>=3
-            && crate::engine::rsi::campaign_capability_proven(
-                &context.state,&evidence_record)
-            && (input["rsiSystemEvolution"]!=true || system_proven));
+        // Streaks are descriptive. Full method -> B -> method closure is
+        // verified only AFTER the generation is durably committed below.
         // Distinguish an actual independently adopted pair of source edits
         // from an A->B improvement HYPOTHESIS and from a verified B->A return.
         // This observation is persisted before the next compiled descendant
@@ -1166,6 +1152,18 @@ pub(super) async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
+        // One source-replayed verifier owns BOTH the campaign stop decision
+        // and every API completion field. The chain must actually return to
+        // editing the inherited improvement method with downstream evidence.
+        let closure=crate::engine::rsi::campaign_recursive_evidence(
+            &context.state,record);
+        record["recursiveClosure"]=closure.clone();
+        record["capabilityDemonstrated"]=json!(closure["proven"]==true);
+        record["systemCapabilityDemonstrated"]=json!(
+            closure["proven"]==true
+                && input["rsiSystemEvolution"]==true
+                && crate::engine::rsi_system::system_capability_proven(
+                    &context.state,&record["history"]));
         // Completed real descendants contribute evidence to NEXT-METHOD
         // productivity, never to an already frozen current generation.
         // The durable rsi_generation rows outlive campaigns and are replayed

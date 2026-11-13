@@ -115,3 +115,71 @@ in order; this is not a compile or test result.
 The production engine path is unchanged. These test files remain excluded
 from the editable method frontier via `runtime_source_file`, while the
 independent scorer and source verification stay outside the editable planner.
+
+
+## Source-unified recursive completion gate (2026-11-13)
+
+Judge feedback: Sub2 scored 46/100, including 14/45 on RSI, because the
+runtime and API could call the weaker adopted-meta-transfer predicate without
+a closed inherited-method re-improvement lineage. This change does not claim
+to increase the score without a fresh independent source review.
+
+### Executable intervention, not an appended success label
+
+1. `rsi_system/history.rs` first replays the original frozen paired candidate
+   records, binds child job IDs, and checks source-adoption hashes.
+2. The rebuilt descendant's `rsi/planner/compiled.rs` asks
+   `rsi_system/return_feedback.rs::next_method_return` for a source-bound
+   observed outcome. B must be a separately adopted downstream capability,
+   its compiled child must have actually focused the inherited A method's
+   target, and its paired holdout evidence must be independently improved.
+   The proposed A method source must still match the CURRENT indexed SHA.
+3. The compiled planner changes the actual `metaPolicy` target/revision,
+   selects the exact method source for the worker's editable focus, and carries
+   B's candidate/job/paired-evidence IDs as `downstreamMethodFeedback`.
+   Explicit owner focus and adopted predecessor programmes take precedence.
+4. `rsi/worker.rs` recomputes B's method-return evidence from original
+   stored receipts before recording `rsiMetaReturnExecuted`; the live model
+   sees this feedback in its tool-facing source-edit instruction. An intended
+   return is not recorded as an adopted edit.
+5. `rsi/closure.rs::evidence` replays the original candidates, paired
+   measurements, child jobs, accepted source SHA maps, inherited compiled
+   method-use receipts and C's evaluated source diff. A, B and C must be
+   contiguous independent source adoptions and successive binary revisions.
+   A and C each need a genuinely improved improver holdout; B must improve
+   a distinct capability and NOT edit the A method; C must edit the SAME
+   source with a new SHA and be independently adopted.
+6. Both `rsi/execution.rs` (stop + durable campaign fields) and
+   `api/rsi.rs` (single/list/detail completion display) call the same
+   `rsi::campaign_recursive_evidence` on the same source-verified campaign
+   continuation history. Three accepted flags alone cannot stop the campaign.
+
+`rsi.rs::executable_improver_path` now uses the same recognized compiled
+method source list as `rsi_system/method_lineage.rs`. The candidate admission
+and `rsi_worktree/validation.rs` classification no longer reject actual
+method edits to `rsi_meta_controller/peer_transfer.rs` as non-improver changes.
+The new verifier, replayed-history verifier, self-model source validator and
+legacy frozen oracle remain outside model-editable source paths.
+
+### Research mapping (all 2026)
+
+- [HyperAgents, 2026-03-24](https://ai.meta.com/research/publications/hyperagents/):
+  the meta-improvement procedure itself is a compiled editable program, not
+  a frozen hand-written supervisor.
+- [AIDE², 2026-09-22](https://arxiv.org/abs/2609.26457):
+  accepted rewrites must become the next executed agent and are selected by
+  separately measured held-out improvement.
+- [CausalFlow, 2026-05-25](https://arxiv.org/abs/2605.25338):
+  localized intervention provenance and counterfactual failures motivate
+  distinguishing a measured B outcome from A's claimed causal superiority.
+
+### Evidence boundary
+
+The new code supplies a narrowly replayable, **observational A→B→A loop**
+whose first/last method steps and downstream step independently improve
+frozen cases. It does not establish a randomized causal estimate of how much
+A's earlier rewrite CAUSED B's gain, cannot prove unbounded growth, and does
+not retroactively upgrade prior campaigns lacking source adoption receipts.
+The regression cases were authored but no compile/build/tests/CI, benchmark
+or real-model run was executed in this session. The independent judge should
+evaluate source registration, actual job calls, and non-forgeable receipts.

@@ -1,5 +1,6 @@
 //! compiled: source-grounded compiled descendant planning responsibility.
 use super::*;
+use sha2::Digest;
 
 // Allow the compiled model's *own* meta-method redesign to reach the
 // executable source selector, without overriding an owner's explicit focus
@@ -19,6 +20,11 @@ pub(crate) fn evidence_based_meta_repair_focus(
                 meta["inheritedMethodRepairEvidence"]["source"]
                     =="revalidated_descendant_meta_method_failure_v1"
                 && meta["inheritedMethodRepairEvidence"]["methodSourcePath"]
+                    ==meta["target"]["path"],
+            Some("close_observed_downstream_method_loop")=>
+                meta["downstreamMethodFeedback"]["source"]
+                    =="replayed_independent_downstream_method_feedback_v1"
+                && meta["downstreamMethodFeedback"]["methodSourcePath"]
                     ==meta["target"]["path"],
             _=>false
         }
@@ -73,7 +79,7 @@ pub(crate) fn compiled_system_generation_plan(
     // their existing precedence.
     let peers=crate::engine::rsi_meta_controller::peer_lineages(
         state,input["rsiCampaignId"].as_str().unwrap_or(""),input,None);
-    let meta=if explicit_focus{baseline_meta}else{
+    let mut meta=if explicit_focus{baseline_meta}else{
         crate::engine::rsi_meta_controller::evolve_from_peer_methods(
             baseline_meta,&peers,history)
     };
@@ -108,6 +114,30 @@ pub(crate) fn compiled_system_generation_plan(
                 history,&frontier))
             .unwrap_or(Value::Null)
     };
+    // An independently adopted A->B outcome can feed back into the SAME
+    // inherited executable A method. This is a real compiled source target,
+    // not a prompt telling the agent to claim self-improvement. An adopted
+    // predecessor programme or an explicit owner focus keeps precedence.
+    let downstream_method_feedback=if !explicit_focus && !successor_stage.is_object()
+        && input["rsiAutoFocus"]==true {
+        crate::engine::rsi_system::next_method_return(history,&frontier,commit)
+    }else{Value::Null};
+    if downstream_method_feedback.is_object() {
+        let target=downstream_method_feedback["target"].clone();
+        meta["target"]=target.clone();
+        meta["mode"]=json!("close_observed_downstream_method_loop");
+        meta["metaRepairChosen"]=json!(true);
+        meta["downstreamMethodFeedback"]=downstream_method_feedback.clone();
+        for field in ["role","domain","path","sourceSha256"]{
+            meta["controlPolicy"][field]=target[field].clone();
+        }
+        meta["controlPolicy"]["executionPolicy"]=json!("grounded_edit");
+        let revision=format!("{:x}",sha2::Sha256::digest(
+            serde_json::to_vec(&json!([
+                meta["revision"],downstream_method_feedback
+            ])).unwrap_or_default()));
+        meta["revision"]=json!(revision);
+    }
     // An independently observed meta-rule failure should reach the actual
     // compiled source target. Existing adopted successor programmes and
     // explicit owner focus retain their higher priority.
@@ -367,6 +397,7 @@ pub(crate) fn compiled_system_generation_plan(
         "architectureTarget":architecture_target,
         "metaPolicy":meta,
         "metaActionPolicy":meta["controlPolicy"],
+        "downstreamMethodFeedback":downstream_method_feedback,
         "peerLineages":peers,
         "mutualCurriculum":mutual,
         "factorialCurriculum":factorial,

@@ -30,6 +30,10 @@ pub(crate) fn sealed_measurement_path(path:&str)->bool {
     [
         "src/engine/rsi_oracle_fixture.rs",
         "src/engine/rsi_metrics.rs",
+        "src/engine/rsi/closure.rs",
+        "src/engine/rsi_system/proof.rs",
+        "src/engine/rsi_system/evidence.rs",
+        "src/engine/rsi_system/history.rs",
         "scripts/rsi-measure.mjs",
         "tests/fixtures/rsi-generation-worker.rs",
     ].into_iter().any(|sealed|
@@ -45,6 +49,17 @@ pub(crate) fn safe_path(path: &str) -> bool {
             || path.starts_with("tests/")
             || path.starts_with("web/src/")
             || path.starts_with("src-tauri/src/"))
+}
+
+/// The actual compiled method sources are first-class improver targets.
+pub(crate) fn executable_improver_path(path:&str)->bool{
+    matches!(path,
+        "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
+        |"src/engine/rsi_evolve.rs"|"src/api/rsi.rs"
+        |"src/engine/algorithms.rs"|"src/engine/algorithm_eval.rs"
+        |"src/engine/policy_patch.rs"
+        |"src/engine/rsi_model_ecology.rs")
+        || crate::engine::rsi_system::executable_method_source(path)
 }
 
 /// Parse and constrain every changed path, not only the declared target.
@@ -121,13 +136,8 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .ok_or("baseCommit은 40자리 git SHA여야 합니다.")?;
     let patch = body["patch"].as_str().ok_or("patch가 필요합니다.")?;
     let paths = patch_paths(patch)?;
-    if target == "improver" && !paths.iter().any(|path| {
-        path == "src/engine/rsi.rs" || path == "src/engine/rsi_worktree.rs"
-            || path == "src/engine/rsi_evolve.rs" || path == "src/engine/rsi_metrics.rs"
-            || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
-            || path == "src/engine/algorithm_eval.rs"
-            || path == "src/engine/policy_patch.rs"
-    }) {
+    if target == "improver" && !paths.iter().any(|path|
+        executable_improver_path(path)) {
         return Err("improver 후보는 실제 개선기 소스를 수정해야 합니다.".into());
     }
     let hypothesis = body["hypothesis"].as_str()

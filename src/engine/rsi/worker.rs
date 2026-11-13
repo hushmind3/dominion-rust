@@ -234,6 +234,30 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }else{Value::Null};
     job["input"]["rsiMetaMethodInheritance"]=
         job["rsiMetaMethodInheritance"].clone();
+    // The worker independently recomputes the downstream feedback target
+    // from the same receipt-replayed history AFTER applying its real source
+    // focus. This flag is source execution evidence, not a success verdict.
+    let feedback=job["input"]["rsiDescendantPlan"]["downstreamMethodFeedback"].clone();
+    let audited=crate::engine::rsi_system::revalidated_method_history(&state,&history);
+    let replayed=crate::engine::rsi_system::next_method_return(
+        &audited,&job["input"]["rsiDescendantPlan"]["architectureFrontier"],&commit);
+    let return_executed=feedback.is_object()
+        && replayed==feedback
+        && job["rsiSystemBlueprintVerified"]==true
+        && job["rsiMetaPolicyExecuted"]==true
+        && job["input"]["rsiMetaPolicy"]["mode"]
+            =="close_observed_downstream_method_loop"
+        && job["input"]["rsiMetaPolicy"]["target"]["path"]
+            ==feedback["methodSourcePath"]
+        && job["input"]["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.iter().any(|path|path==&feedback["methodSourcePath"]));
+    job["rsiMetaReturnExecuted"]=json!(return_executed);
+    if job["rsiMetaReturnExecuted"]==true {
+        state.store.audit("rsi.compiled_return_to_method",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "feedback":feedback,"causalSuperiorityProven":false
+        }));
+    }
     if job["rsiMetaMethodInheritance"]["rebuildConfirmed"]==true{
         state.store.audit("rsi.compiled_inherited_meta_method",json!({
             "jobId":job_id,"generatorCommit":commit,
@@ -385,6 +409,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
             job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
     };
+    if job["rsiMetaReturnExecuted"]==true {
+        instructions.push_str(&format!(
+            "\n\nRECURSIVE METHOD RETURN: {}. Independently assessed downstream              improvement B used the previously accepted A method source;              redesign THIS SAME executable A source using B's paired outcome              and the observed failure/success conditions. Produce a concrete              source edit; the frozen held-out evaluator must independently              improve and adopt it. This instruction is NOT evidence of gain.",
+            job["input"]["rsiDescendantPlan"]["downstreamMethodFeedback"]
+        ));
+    }
     if job["rsiMetaMethodInheritance"]["rebuildConfirmed"]==true {
         instructions.push_str(&format!(
             "\n\nINHERITED EDITABLE METHOD OBSERVATION (not quality proof): {}. \
