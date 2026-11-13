@@ -282,6 +282,7 @@ pub(super) async fn plan_compiled_descendant(
                 .filter(|task|!task.trim().is_empty() && task.len()<=3000)
                 .ok_or("실행 가능 개선법에 연결된 실제 후손 작업 목표가 없습니다.")?;
             child_input["rsiObjective"]=json!(objective);
+            child_input["rsiRequestedMethodId"]=plan["methodTransfer"]["methodId"].clone();
             child_input["rsiMethodTransferTaskSource"]=json!(
                 "compiled_adopted_procedure_applicability_contract");
         }
