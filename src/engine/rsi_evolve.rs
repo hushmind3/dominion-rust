@@ -58,6 +58,9 @@ pub use execution_guards::{diagnose_capabilities};
 mod method_ablation;
 use method_ablation::run_control;
 pub(crate) use method_ablation::measure as measured_method_ablation;
+#[path = "rsi/execution/observation.rs"]
+mod execution_observation;
+use execution_observation::{GenerationObservation,collect_generation_observation};
 #[path = "rsi/execution/campaign.rs"]
 mod execution_campaign;
 use execution_campaign::{run_loop};
