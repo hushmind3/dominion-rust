@@ -181,7 +181,9 @@ use generation_preparation::prepare_generation_input;
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};
-pub(crate) use campaign_execution::{adopt};
+#[path = "rsi/lineage/adoption.rs"]
+mod source_adoption;
+pub(crate) use source_adoption::adopt;
 
 #[path = "rsi/planner/descendant.rs"]
 mod descendant_planner;
