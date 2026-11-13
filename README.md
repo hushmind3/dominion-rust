@@ -510,3 +510,8 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 ### 2026-11-13 20시대 — 챔피온 CI 실행 및 조정기 책임 분해
 
 사용자의 요청에 따라 챔피온의 **GitHub Actions CI를 push 트리거로 실제 실행**했습니다. 세대별 후손 빌드 검증(`rsi/execution/generator_build.rs`), 모델·도구 원본 기록(`rsi/execution/observation.rs`), 세대 기록 구성(`rsi/execution/generation_receipt.rs`), 독립 평가·채택(`rsi/evaluation/candidate_selection.rs`)을 분리해 `campaign.rs`를 약 1,282→910줄로 줄였습니다. 최신 HEAD의 웹 타입 검사·빌드·Rust 릴리스 테스트 상태는 [챔피온 Actions](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-champion)에서 확인할 수 있습니다. 과거 커밋의 성공을 새 커밋의 성공으로 대신하지 않습니다.
+
+
+## Hosted cinematic video (2026)
+
+Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation requiring no local GPU or workflow import. Configure the LTX API key in Video Settings and select quality. The durable engine avoids paid resubmission on uncertain results. See [video architecture](docs/VIDEO-CINEMATIC-2026.md).

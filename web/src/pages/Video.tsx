@@ -8,8 +8,8 @@ import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
-type VideoEngine='native'|'comfyui'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoEngine='native'|'comfyui'|'ltx'
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasLtxKey?:boolean;videoModel?:string;videoQuality?:string};ltx?:{available:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -23,8 +23,9 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const youtube=useRemote<YoutubeStatus>('/api/youtube/status',{connected:false,uploadAllowed:false,account:null,uploads:[]})
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
- const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
- const [engineChoice,setEngine]=useState<'native'|'comfyui'>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
+ const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(8),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
+ const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
+ const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-pro'),[ltxQuality,setLtxQuality]=useState('1080p'),[ltxAudio,setLtxAudio]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -39,11 +40,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const selectedOutput=uploadFile
   ? outputs.value.find(item=>item.id===uploadFile)??(videoJob?.id===uploadFile&&videoJob.outputUrl?videoJob:undefined)
   : outputs.value[0]
- const engine=engineChoice??(video.value.config.engine==='native'?'native':'comfyui')
- const usingComfy=engine==='comfyui'
- const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
- const maxDuration=usingComfy?9:180
+ const engine=engineChoice??video.value.config.engine??'ltx'
+ const usingComfy=engine==='comfyui',usingLtx=engine==='ltx'
+ const ready=usingLtx?Boolean(video.value.ltx?.available):usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
+ const maxDuration=usingLtx?(ltxModel==='ltx-2-5-pro'?10:20):usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
+ useEffect(()=>{if(video.value.config.videoModel)setLtxModel(video.value.config.videoModel);if(video.value.config.videoQuality)setLtxQuality(video.value.config.videoQuality)},[video.value.config.videoModel,video.value.config.videoQuality])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
@@ -59,10 +61,16 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   setError('');
   try{await openOAuth('youtube')}catch(e){setError(t('vid.youtubeFailed',{error:(e as Error).message}))}
  }
- const changeEngine=async(next:'native'|'comfyui')=>{
+ const changeEngine=async(next:VideoEngine)=>{
   if(savingConfig)return;
-  setEngine(next);setSavingConfig(true);setError('');
+  setEngine(next);if(next==='ltx')setSeconds(8);setSavingConfig(true);setError('');
   try{await post('/api/video/config',{engine:next,comfyUrl:comfyUrl.trim()||video.value.config.comfyUrl});await video.reload()}
+  catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
+ const saveLtx=async()=>{
+  if(savingConfig||!ltxKey.trim())return;
+  setSavingConfig(true);setError('');
+  try{await post('/api/video/config',{engine:'ltx',ltxApiKey:ltxKey.trim(),videoModel:ltxModel,videoQuality:ltxQuality});setLtxKey('');await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
  const saveComfy=async()=>{
@@ -87,7 +95,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const generate=async()=>{
   if(!ready||!prompt.trim()||generating)return;
   const requestedSeed=Number(seed);
-  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||
+  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||(usingLtx&&(seconds%2!==0|| (ltxModel==='ltx-2-5-pro'&&![6,8,10].includes(seconds))))||
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
   }
@@ -96,6 +104,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
+     ...(usingLtx?{videoModel:ltxModel,videoQuality:ltxQuality,generateAudio:ltxAudio,fps:24}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
@@ -124,12 +133,17 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">{t('vid.engine')}</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as 'native'|'comfyui')} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option></SelectInput>
+     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="ltx">LTX 2.5 · 고품질 AI 영상</option></SelectInput>
     </div>
    </div>
   </Panel>
   <div className="mb-4 grid grid-cols-1 items-start gap-3 md:grid-cols-2">
-   {engine==='comfyui'&&<Panel className={'p-4 '+(video.value.comfy.reachable?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>
+   {engine==='ltx'&&<Panel className="border-[#E7D8C5] bg-[#FFFCF7] p-4">
+     <div className="flex items-center justify-between gap-3"><strong className="text-[13px]">🎬 LTX 2.5 · 원클릭 시네마틱 영상</strong><StateTag online={Boolean(video.value.ltx?.available)}>{video.value.ltx?.available?'연결됨':'API 키 필요'}</StateTag></div>
+     <p className="mt-2 text-[12px] leading-5">로컬 GPU·ComfyUI 워크플로 없이 고품질 영상과 오디오를 만듭니다. 외부 API 사용료가 발생합니다.</p>
+     <div className="mt-2 flex flex-wrap items-center gap-2"><TextInput type="password" aria-label="LTX API Key" value={ltxKey} onChange={e=>setLtxKey(e.target.value)} placeholder={video.value.config.hasLtxKey?'API 키 등록됨 · 교체 시 입력':'LTX API Key'}/><Button variant="secondary" disabled={savingConfig||!ltxKey.trim()} onClick={()=>void saveLtx()}>암호화 저장</Button></div>
+    </Panel>}
+    {engine==='comfyui'&&<Panel className={'p-4 '+(video.value.comfy.reachable?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>
     <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Clapperboard size={18} className={video.value.comfy.reachable?'text-emerald-700':'text-amber-700'}/><strong className="text-[13px] text-[#24211D]">{t('vid.comfyTitle')}</strong></div><StateTag online={video.value.comfy.reachable}>{video.value.comfy.reachable?t('vid.reachable'):t('vid.unreachable')}</StateTag></div>
     <p className="mt-2 text-sm text-[#5C544A]">{t('vid.comfyNote')}</p>
     <div className="mt-2 flex flex-wrap gap-2"><TextInput aria-label={t('vid.comfyUrl')} value={comfyUrl} onChange={e=>setComfyUrl(e.target.value)} placeholder="http://127.0.0.1:8188"/><Button variant="secondary" disabled={savingConfig||!comfyUrl.trim()} onClick={()=>void saveComfy()}>{savingConfig?t('agents.saving'):t('vid.save')}</Button></div>
@@ -154,14 +168,19 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):t('vid.ffmpegCard')}</span>}/>
+     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingLtx?'LTX V2 · 장면 연속성 + 오디오':usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):t('vid.ffmpegCard')}</span>}/>
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
-      {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      {usingLtx&&<div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <FormField label="모델"><SelectInput value={ltxModel} onChange={e=>{setLtxModel(e.target.value);setSeconds(8)}}><option value="ltx-2-5-pro">Pro · 고품질</option><option value="ltx-2-5-fast">Fast · 비용 절감</option></SelectInput></FormField>
+        <FormField label="화질"><SelectInput value={ltxQuality} onChange={e=>setLtxQuality(e.target.value)}><option value="720p">720p</option><option value="1080p">1080p</option><option value="1440p">1440p</option><option value="4k">4K</option></SelectInput></FormField>
+        <FormField label="사운드"><SelectInput value={ltxAudio?'on':'off'} onChange={e=>setLtxAudio(e.target.value==='on')}><option value="on">오디오 생성</option><option value="off">무음</option></SelectInput></FormField>
+       </div>}
+       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={usingLtx?ltxQuality:`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} step={usingLtx?2:1} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Pro 6/8/10초 · Fast 6~20초 짝수 · 24FPS':'설정에서 LTX API 키를 등록하세요.'}</p>:usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
