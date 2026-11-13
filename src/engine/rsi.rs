@@ -27,8 +27,15 @@ pub(crate) fn hidden_rsi_oracle_path(path:&str)->bool {
     std::path::Path::new(path).ends_with("src/engine/rsi_oracle_fixture.rs")
 }
 
+pub(crate) fn frozen_rsi_evaluator_path(path:&str)->bool {
+    matches!(path,
+        "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
+        |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
+        |"src/engine/rsi/proof.rs")
+}
 pub(crate) fn safe_path(path: &str) -> bool {
     !hidden_rsi_oracle_path(path)
+        && !frozen_rsi_evaluator_path(path)
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
@@ -557,6 +564,21 @@ mod tests {
         result["oracleVersion"]=json!("a-different-test");
         assert!(evaluate(&state,record["id"].as_str().unwrap(),&result).is_err());
         let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn recursive_proof_and_independent_evaluator_sources_are_not_editable_candidates(){
+        for source in [
+            "src/engine/rsi.rs",
+            "src/engine/rsi_worktree.rs",
+            "src/engine/rsi_metrics.rs",
+            "src/engine/rsi_profile.rs",
+            "src/engine/rsi/proof.rs",
+            "src/engine/rsi_oracle_fixture.rs"
+        ]{
+            assert!(!safe_path(source));
+        }
+        assert!(safe_path("src/engine/rsi/meta_controller/selection.rs"));
+        assert!(safe_path("src/engine/rsi/system/agenda.rs"));
     }
     #[test]
     fn frozen_oracle_source_is_not_exposed_as_a_candidate_patch() {

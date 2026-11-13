@@ -10,7 +10,8 @@ pub(crate) fn intelligence_editable_path(path:&str)->bool{
         && !crate::engine::rsi::hidden_rsi_oracle_path(path)
         && !matches!(path,
             "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
-            |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs")
+            |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
+            |"src/engine/rsi/proof.rs")
 }
 
 
