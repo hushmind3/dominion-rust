@@ -3591,7 +3591,9 @@ async fn run_loop(
         // mislabeled as a failure while training the next meta-generation.
         let checked=crate::engine::rsi_system::revalidated_history(
             &context.state,&[generation.clone()]);
-        let independently_checked=checked.first().unwrap_or(&generation);
+        let independently_checked=checked.first().cloned()
+            .unwrap_or_else(||generation.clone());
+        let independently_checked=&independently_checked;
         generation["pairedRevalidated"]=independently_checked["pairedRevalidated"].clone();
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],independently_checked);
@@ -4478,8 +4480,9 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     }
     let campaign = job["input"]["rsiCampaignId"]
         .as_str()
-        .ok_or("자동 개선 ID 없음")?;
-    if state.store.get("job", campaign).is_none_or(|p| {
+        .ok_or("자동 개선 ID 없음")?
+        .to_string();
+    if state.store.get("job", &campaign).is_none_or(|p| {
         p["kind"] != "rsi_evolve" || p["status"] != "running" || p["cancelRequested"] == true
     }) {
         return Err("자동 개선이 중단되었습니다.".into());
@@ -4607,7 +4610,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         if policy.is_object() {
             crate::engine::rsi_model_ecology::validate(
                 &state,policy,
-                &state.store.get("job",campaign)
+                &state.store.get("job",&campaign)
                     .ok_or("원본 자동 개선 작업 없음")?["input"],
                 &domain,&commit)?;
             if policy["active"]==true {

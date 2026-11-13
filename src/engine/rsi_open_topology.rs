@@ -132,8 +132,8 @@ pub(crate) fn derived_cycle_stages(design:&Value)->Vec<Value>{
         let mechanism=edge["mechanism"].as_str().unwrap_or("");
         let observable=edge["observable"].as_str().unwrap_or("");
         for (role,domain,path,goal) in [
-            (b,b_domain,b_path,format!("Evolve {b} in {path} using the adopted {a}->{b} mechanism: {mechanism}. Observe {observable}. Improve the ability to develop {a}.")),
-            (a,a_domain,a_path,format!("Use newly developed {b} methods to redesign {a} in {path}. Compare successor outcomes against the earlier source-grounded intervention. Observe {observable}."))
+            (b,b_domain,b_path,format!("Evolve {b} in {b_path} using the adopted {a}->{b} mechanism: {mechanism}. Observe {observable}. Improve the ability to develop {a}.")),
+            (a,a_domain,a_path,format!("Use newly developed {b} methods to redesign {a} in {a_path}. Compare successor outcomes against the earlier source-grounded intervention. Observe {observable}."))
         ] {
             agenda.push(json!({"role":role,"domain":domain,"path":path,
                 "objective":goal,"learningPolicy":"avoid_failed",
