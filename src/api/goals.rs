@@ -15,12 +15,69 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
-pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
-    state.store.remove("goal", &id);
-    state
-        .bus
-        .emit(json!({ "type": "record", "kind": "goal", "removed": id }));
-    Json(json!({ "ok": true }))
+pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if matches!(goal["status"].as_str(),Some("queued"|"running")) {
+        return error(StatusCode::CONFLICT,"실행 중인 목표는 먼저 중단하세요.");
+    }
+    state.store.remove("goal",&id);
+    state.bus.emit(json!({"type":"record","kind":"goal","removed":id}));
+    Json(json!({"ok":true})).into_response()
+}
+
+/// Owner changes are accepted only before the first agent/tool turn.
+pub async fn edit_plan(
+    State(state):State<AppState>, Path(id):Path<String>, Json(body):Json<Value>,
+)->Response {
+    let Some(plan)=body["plan"].as_str().map(str::trim)
+        .filter(|value|!value.is_empty()&&value.chars().count()<=6000) else {
+        return error(StatusCode::BAD_REQUEST,"계획은 1~6000자여야 합니다.");
+    };
+    if body.as_object().is_none_or(|map|map.len()!=1) {
+        return error(StatusCode::BAD_REQUEST,"plan만 변경할 수 있습니다.");
+    }
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if goal["status"]!="queued" {
+        return error(StatusCode::CONFLICT,"실행 시작 후에는 계획이 자동 검증·재계획으로 관리됩니다.");
+    }
+    match state.store.patch_if("goal",&id,"status",&json!("queued"),
+        &json!({"plan":plan,"planHistory":[],"planEditedAt":chrono::Utc::now().to_rfc3339()})) {
+        Some(saved)=>{state.bus.record("goal",&saved);Json(saved).into_response()},
+        None=>error(StatusCode::CONFLICT,"목표 실행 상태가 변경됐습니다.")
+    }
+}
+
+/// Cancels the durable root and its queued/running job, not merely its UI.
+pub async fn cancel_goal(State(state):State<AppState>,Path(id):Path<String>)->Response {
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(),Some("queued"|"running")) {
+        return error(StatusCode::CONFLICT,"이 목표는 이미 종료됐습니다.");
+    }
+    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"status":"cancelled","phase":"cancelled",
+            "finishedAt":chrono::Utc::now().to_rfc3339()})) else {
+        return error(StatusCode::CONFLICT,"목표 상태가 변경됐습니다.");
+    };
+    state.bus.record("goal",&saved);
+    if let Some(session)=saved["sessionId"].as_str() {state.cancel_session(session);}
+    let job=state.store.all("job").into_iter().find(|job|
+        job["kind"]=="goal" && job["input"]["goalId"]==id
+        && matches!(job["status"].as_str(),Some("queued"|"running")));
+    if let Some(job)=job {
+        let job_id=job["id"].as_str().unwrap_or("");
+        if let Some(cancelled)=state.store.patch_if("job",job_id,"status",&job["status"],
+            &json!({"status":"cancelled","cancelRequested":true,
+                "finishedAt":chrono::Utc::now().to_rfc3339()})) {
+            state.bus.record("job",&cancelled);
+        }
+    }
+    Json(saved).into_response()
 }
 
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -77,14 +134,22 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    let job = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id }));
+    let durable_id=format!("goal-job-{goal_id}");
+    let job = crate::engine::jobs::enqueue_once(&state,&durable_id,
+        "goal",json!({"goalId":goal_id}));
     let job_id = job
         .as_ref()
         .and_then(|job| job.get("id"))
         .cloned()
         .unwrap_or(Value::Null);
 
-    let mut payload = record.clone();
+    if job.is_none(){
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"목표 실행 작업을 등록하지 못했습니다.");
+    }
+    let saved=state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),
+        &json!({"jobId":job_id})).unwrap_or(record.clone());
+    state.bus.record("goal",&saved);
+    let mut payload = saved;
     payload["jobId"] = job_id;
     Json(payload).into_response()
 }
