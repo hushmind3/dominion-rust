@@ -293,13 +293,25 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         algebra["selected"]["intent"].as_str(),
         Some("evolve_measured_method_after_controlled_downstream_gain"
             |"run_revised_method_in_controlled_descendant"));
-    let mut negative_transfer_active=science_active && !controlled_transition
+    let predesign=crate::engine::rsi_evolve::meta_experiment_policy::synthesize(
+        &history,&frontier,&algebra,input,commit);
+    let redesign=crate::engine::rsi_evolve::meta_experiment_policy::design_target(
+        &predesign,commit,input);
+    let meta_redesign_target=redesign.as_ref().and_then(|target|
+        frontier.iter().find(|source|source["path"]==target["path"]
+            && source["sourceSha256"]==target["sourceSha256"])).cloned();
+    let meta_redesign_active=science_active && !controlled_transition
+        && meta_redesign_target.is_some();
+    let mut negative_transfer_active=science_active
+        && !controlled_transition && !meta_redesign_active
         && negative_transfer["selected"]["victim"].is_object()
         && negative_transfer["selected"]["source"].is_object();
-    let mut capability_active=science_active && !negative_transfer_active
+    let mut capability_active=science_active && !meta_redesign_active
+        && !negative_transfer_active
         && crate::engine::rsi_method_generalization::prefer_capability_target(
             &algebra,&method_learning);
-    let mut algebra_active=science_active && !negative_transfer_active
+    let mut algebra_active=science_active && !meta_redesign_active
+        && !negative_transfer_active
         && !capability_active && algebra["selected"]["target"].is_object();
     let raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,DOMAINS,
@@ -328,6 +340,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // actually try revising its prediction implementation before unrelated
     // exploratory curricula overwrite the chosen source.
     let predictor_repair_active=science_active && !controlled_transition
+        && !meta_redesign_active
         && meta_policy["predictionRuleRepair"]["repairRuleSourceSelected"]==true
         && meta_policy["target"]["path"]=="src/engine/rsi_prequential.rs";
     if predictor_repair_active {
@@ -357,7 +370,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&factorial,&coupled_portfolio,commit);
     // Independently adopted model-authored improvement operators can compose
     // across any number of roles; no fixed scientist stage is needed.
-    if predictor_repair_active {
+    if meta_redesign_active {
+        architecture_target=meta_redesign_target.clone().unwrap_or(Value::Null);
+    }else if predictor_repair_active {
         architecture_target=meta_policy["target"].clone();
     }else if negative_transfer_active {
         architecture_target=negative_transfer["selected"]["victim"].clone();
@@ -589,6 +604,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
                 source_revision,program["revision"],commit
             ])).unwrap_or_default())));
     }
+    // Decisions about the EXPERIMENT are now generated from the source-
+    // compiled policy. The closure proof only observes consequences and
+    // never chooses the next experiment or target.
+    let mut policy_input=input.clone();
+    policy_input["rsiMetaOperatorActive"]=json!(algebra_active);
+    policy_input["rsiFocusFiles"]=json!(&focus);
+    policy_input["rsiSelectedDomain"]=json!(domain);
+    policy_input["rsiArchitectureTarget"]=architecture_target.clone();
+    let experiment_policy=crate::engine::rsi_evolve::meta_experiment_policy::synthesize(
+        &history,&frontier,&algebra,&policy_input,commit);
     let comparative_mode=if peers["references"].as_array()
         .is_some_and(|rows|!rows.is_empty()) {"cross_lineage_hybrid_design"}
         else if meta_policy["counterexamples"].as_array()
@@ -612,6 +637,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "recursiveScientificProgram":science,
         "improvementAlgebra":algebra,
         "methodGeneralization":method_learning,
+        "experimentPolicy":experiment_policy,
+        "metaOperatorActive":algebra_active,
+        "metaRedesignTarget":meta_redesign_target,
         "modelEvolutionPlan":model_evolution,
         "successorStage":successor_stage,
         "peerLineages":peers,
