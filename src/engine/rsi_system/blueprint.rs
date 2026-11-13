@@ -17,7 +17,8 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             row["path"].as_str().is_some_and(|path|
                 source_role(path)==*role
                     && path!="src/engine/rsi.rs"
-                    && path!="src/engine/rsi_worktree.rs"))
+                    && path!="src/engine/rsi_worktree.rs"
+                    && !path.starts_with("src/engine/rsi_worktree/"))
             .cloned().collect::<Vec<_>>();
         components.push(json!({"role":role,
             "domain":architecture_role_domain(role).unwrap_or("improver"),
