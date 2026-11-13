@@ -550,3 +550,17 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 `rsiMethodControlFeedbackExecuted` 기록을 남깁니다.
 대조 작업이 늦게 완료돼도 차기 캠페인의 컴파일 후손은 최신 평가 기록을
 재사용합니다. 모델 가중치는 수정하지 않습니다.
+
+### 4세대 재귀 자기개선의 보수적 완성 기준
+
+최종 성공 판정은 단순 3회 채택이 아니라 **A(개선법) → B(새 능력)
+→ A2(후손이 B 피드백으로 개선법 재설계) → B2(A2가 만든 후손의 추가
+능력 향상)**로 강화했습니다. `rsi/proof/closure.rs::evidence`는
+각 4세대의 원본 채택 후보·개별 생성기 커밋·실제 컴파일 후손 작업을
+확인하고, **A-off/B와 A2-off/B2의 2개 독립 대조 실험**에서 모두
+정확히 일치하는 동결 holdout 능력 향상을 요구합니다.
+A2 워커는 B 후보의 원본 결과를 `methodControlFeedback`으로
+수신하고, `rsiMethodControlFeedbackExecuted` 실행 기록이 있어야 합니다.
+중간 보고서·요약 JSON만으로는 성공 조건을 만족하지 않습니다.
+실험은 비무작위이므로 관찰된 조건부 우위와 일반적 인과 증명은
+구분합니다.

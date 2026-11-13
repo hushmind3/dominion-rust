@@ -145,3 +145,23 @@ descendant worker records `rsiMethodControlFeedbackExecuted` and sends
 this concrete evidence to its actual source-writing model turn. The
 oracle continues to require independent source adoption and matched
 controls; mere feedback delivery earns no proof.
+
+## Four-generation authoritative closure
+
+`rsi/proof/closure.rs::evidence` now requires **four consecutive actual
+independently accepted revisions** A(method), B(capability), A2(revised
+method), B2(capability), all with the actual compiled descendant job and
+paired freeze-evaluator receipts. In addition, the A2 compiled worker
+must have received the ORIGINAL B candidate feedback through its
+content-addressed meta policy; a record merely claiming it did so does
+not count. Both B and B2 must independently beat the method-off controls
+from their respective pre-method generation revisions. The single
+`campaign_capability_proven` source is shared by runtime, termination
+and API. A three-generation chain or one favorable control remains
+`proven:false`.
+
+The default UI workload has enough generations for this 4-step
+demonstration, although actual successful candidates and controls are
+not supplied or simulated by this change. The two method-off trials are
+independent nonrandomized model interactions, not a claim of
+generalized randomized causal superiority.

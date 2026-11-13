@@ -31,7 +31,7 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    record["capabilityDemonstrated"] = json!(max>=3
+    record["capabilityDemonstrated"] = json!(max>=4
         && engine::campaign_capability_proven(state,record));
 }
 

@@ -32,8 +32,8 @@ type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStre
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
 const workloads={
- short:{label:'짧게',maxAttempts:3,tokenBudget:60000,timeBudgetSeconds:900},
- normal:{label:'보통',maxAttempts:6,tokenBudget:180000,timeBudgetSeconds:1800},
+ short:{label:'짧게',maxAttempts:4,tokenBudget:60000,timeBudgetSeconds:900},
+ normal:{label:'보통',maxAttempts:8,tokenBudget:180000,timeBudgetSeconds:1800},
  long:{label:'넉넉히',maxAttempts:12,tokenBudget:600000,timeBudgetSeconds:3600},
 } as const
 type Workload=keyof typeof workloads
@@ -243,7 +243,7 @@ export function SelfImprovementPage(){
     <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-[13px] font-semibold">채택 검증 시험</p><p className="mt-1 text-[11px] text-[#7C7469]">저장된 세대별 독립 평가 영수증과 계보를 다시 대조합니다. 새 모델 호출은 없습니다.</p></div>
      <Button variant="secondary" disabled={busy} onClick={()=>void runVerify()}>{busy?<LoaderCircle size={13} className="animate-spin"/>:<ShieldCheck size={13}/>}검증 시험</Button></div>
     {verify&&verify.campaignId===campaign.id&&<div className="mt-3">
-     <p className={verify.capabilityDemonstrated?'rounded-lg bg-[#F2F6EF] px-3 py-2 text-[12px] font-semibold text-[#4E6B45]':'rounded-lg bg-[#FAF7F1] px-3 py-2 text-[12px] font-semibold text-[#7C4A2E]'}>{verify.capabilityDemonstrated?'기준 충족 · 검증된 3세대 연속 채택과 전이 근거를 확인했습니다':`기준 미달 · 독립 검증 채택 ${verify.verifiedStreak}/3세대`}</p>
+     <p className={verify.capabilityDemonstrated?'rounded-lg bg-[#F2F6EF] px-3 py-2 text-[12px] font-semibold text-[#4E6B45]':'rounded-lg bg-[#FAF7F1] px-3 py-2 text-[12px] font-semibold text-[#7C4A2E]'}>{verify.capabilityDemonstrated?'기준 충족 · 4세대 A→B→A2→B2 독립 평가와 2회 방법 제거 대조를 확인했습니다':`기준 미달 · 독립 검증 채택 ${verify.verifiedStreak}/4세대`}</p>
      {verify.recursiveClosure?.methodControl?.matchedControlFound===true&&
       <p className="mt-2 text-[12px] text-[#5C544A]">개선법 A 사용/미사용 대조: {verify.recursiveClosure.methodControl.measuredAdvantage?'동일 동결 과제에서 후손 개선 우위 측정':'대조군이 실측되었으나 후손의 우위 부족'} · 비무작위 비교</p>}
      {!working&&!campaign.controlRun&&!verify.capabilityDemonstrated&&controlTarget

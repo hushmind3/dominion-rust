@@ -139,55 +139,94 @@ pub(crate) fn control_feedback(state:&AppState,treated:&Value)->Value{
     feedback
 }
 
+/// Authoritative bounded A(method)->B(capability)->A2(method)->B2(capability)
+/// closure. Each method revision must produce a *new*, independently paired
+/// successor capability advantage against its own pre-method code generation.
+/// A2 must have consumed the real B feedback in its compiled descendant plan;
+/// sequence alone is not proof of causal recurrence.
 pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
-    let mut pending_control=Value::Null;
-    for window in history.windows(3) {
-        let [first, second, third] = window else { continue };
-        let (Some((a, a_job)),Some((b,b_job)),Some((c,c_job))) = (
-            measured_step(state,first),measured_step(state,second),
-            measured_step(state,third)
+    let mut pending=Value::Null;
+    for window in history.windows(4) {
+        let [a_row,b_row,a2_row,b2_row] = window else {continue};
+        let (Some((a,a_job)),Some((b,b_job)),Some((a2,a2_job)),
+             Some((b2,b2_job)))=(
+            measured_step(state,a_row),measured_step(state,b_row),
+            measured_step(state,a2_row),measured_step(state,b2_row)
         ) else {continue};
-        if first["acceptedCommit"]!=second["generatorCommit"]
-            || second["acceptedCommit"]!=third["generatorCommit"]
-            || !method_gain(&a)
-            || !cross_domain_gain(&b)
-            || !method_gain(&c)
-            || !executed_descendant(&b_job,second)
-            || !executed_descendant(&c_job,third)
-            || b_job["input"]["rsiGeneratorCommit"]!=first["acceptedCommit"]
-            || c_job["input"]["rsiGeneratorCommit"]!=second["acceptedCommit"]
-            || a_job["input"]["rsiGeneratorCommit"]!=first["generatorCommit"]
-        {continue;}
-        let control=method_control::evidence(state,first,second,&b_job,&b);
-        if control["measuredAdvantage"]!=true {
-            pending_control=control;
+        if a_row["acceptedCommit"]!=b_row["generatorCommit"]
+            || b_row["acceptedCommit"]!=a2_row["generatorCommit"]
+            || a2_row["acceptedCommit"]!=b2_row["generatorCommit"]
+            || !method_gain(&a) || !method_gain(&a2)
+            || !cross_domain_gain(&b) || !cross_domain_gain(&b2)
+            || b_row["candidateOrigin"]!="model_driven_detached_worktree"
+            || b2_row["candidateOrigin"]!="model_driven_detached_worktree"
+            || !executed_descendant(&b_job,b_row)
+            || !executed_descendant(&a2_job,a2_row)
+            || !executed_descendant(&b2_job,b2_row)
+            || a_job["input"]["rsiGeneratorCommit"]!=a_row["generatorCommit"]
+            || b_job["input"]["rsiGeneratorCommit"]!=a_row["acceptedCommit"]
+            || a2_job["input"]["rsiGeneratorCommit"]!=b_row["acceptedCommit"]
+            || b2_job["input"]["rsiGeneratorCommit"]!=a2_row["acceptedCommit"] {
+            continue;
+        }
+        // The second method rewrite must have *received* B's original
+        // independently evaluated candidate as compiled policy feedback.
+        // Persisted claims in mutable generation rows cannot replace the
+        // actual worker job and meta-policy source provenance.
+        let observed=&a2_job["rsiMethodControlFeedbackExecuted"];
+        if observed["source"]!="compiled_descendant_method_feedback_delivery_v1"
+            || observed["treatedCandidateId"]!=b["id"]
+            || observed["generatorCommit"]!=a2_row["generatorCommit"]
+            || observed["metaRevision"]!=a2_job["rsiMetaPolicyExecuted"]["metaRevision"]
+            || a2_job["input"]["rsiMetaPolicy"]["methodControlFeedback"]["treatedCandidateId"]!=b["id"]{
+            continue;
+        }
+        let first_control=method_control::evidence(state,a_row,b_row,&b_job,&b);
+        let second_control=method_control::evidence(state,a2_row,b2_row,&b2_job,&b2);
+        let first_good=first_control["measuredAdvantage"]==true;
+        let second_good=second_control["measuredAdvantage"]==true;
+        if !(first_good && second_good){
+            pending=json!({
+                "candidateIds":[a["id"],b["id"],a2["id"],b2["id"]],
+                "initialMethodControl":first_control,
+                "revisedMethodControl":second_control,
+                "feedbackActuallyDelivered":true,
+                "controlsCompleted":first_control["matchedControlFound"]==true
+                    && second_control["matchedControlFound"]==true,
+                "proven":false
+            });
             continue;
         }
         return json!({
             "proven":true,
-            "methodControl":control,
-            "source":"replayed_method_capability_method_closed_loop_v1",
-            "shape":"improver_A -> different_capability_B -> improver_A",
-            "candidateIds":[a["id"],b["id"],c["id"]],
-            "generatorCommits":[first["generatorCommit"],second["generatorCommit"],third["generatorCommit"]],
-            "acceptedCommits":[first["acceptedCommit"],second["acceptedCommit"],third["acceptedCommit"]],
-            "improverMethodSources":[
+            "source":"replayed_four_generation_reflexive_method_closure_v1",
+            "shape":"method_A -> capability_B -> revised_method_A2 -> capability_B2",
+            "candidateIds":[a["id"],b["id"],a2["id"],b2["id"]],
+            "generatorCommits":[a_row["generatorCommit"],b_row["generatorCommit"],
+                a2_row["generatorCommit"],b2_row["generatorCommit"]],
+            "acceptedCommits":[a_row["acceptedCommit"],b_row["acceptedCommit"],
+                a2_row["acceptedCommit"],b2_row["acceptedCommit"]],
+            "methodSources":[
                 changed_paths(&a).into_iter().filter(|p|method_source(p)).collect::<Vec<_>>(),
-                changed_paths(&c).into_iter().filter(|p|method_source(p)).collect::<Vec<_>>()
+                changed_paths(&a2).into_iter().filter(|p|method_source(p)).collect::<Vec<_>>()
             ],
-            "descendantObservedDecisions":[
-                {"domain":b_job["rsiDomain"],"editPolicyRevision":b_job["rsiEditPolicyDecision"]["methodRevision"],"metaRevision":b_job["rsiMetaPolicyExecuted"]["metaRevision"]},
-                {"domain":c_job["rsiDomain"],"editPolicyRevision":c_job["rsiEditPolicyDecision"]["methodRevision"],"metaRevision":c_job["rsiMetaPolicyExecuted"]["metaRevision"]}
-            ],
+            "observedCompiledMethodFeedback":observed,
+            "methodControl":first_control,
+            "initialMethodControl":first_control,
+            "revisedMethodControl":second_control,
             "independentFrozenPairedEvaluation":true,
-            "unboundedSelfImprovementProven":false
+            "sourceLevelMethodRevisionsProven":true,
+            "unboundedSelfImprovementProven":false,
+            "causalEffectIsolatedByRandomization":false
         });
     }
     json!({
         "proven":false,
-        "methodControl":pending_control,
-        "source":"replayed_method_capability_method_closed_loop_v1",
-        "requires":"three contiguous independently accepted source revisions: method A, descendant B, descendant re-improvement of method A, with original jobs executing the compiled descendant policies AND a matched, independently replayed method-off control outperformable on frozen holdouts"
+        "methodControl":pending["initialMethodControl"],
+        "revisedMethodControl":pending["revisedMethodControl"],
+        "pendingClosure":pending,
+        "source":"replayed_four_generation_reflexive_method_closure_v1",
+        "requires":"four consecutive independently adopted source revisions A(method), B(capability), A2(method), B2(capability); A2 compiled worker consumes original B feedback; independently measured A-off vs B and A2-off vs B2 each show holdout gains without reverse failures"
     })
 }
 
