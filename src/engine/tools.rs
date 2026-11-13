@@ -498,6 +498,8 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
 }
 
 const MAX_DELEGATION_DEPTH: usize = 4;
+const MAX_DELEGATED_JOBS_PER_SESSION: usize = 24;
+const MAX_ACTIVE_DELEGATED_JOBS: usize = 4;
 
 /// Number of delegated sessions between the owner-facing session and this one.
 /// A chain cannot loop forever, so a cycle is cut defensively.
@@ -535,6 +537,21 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         .store
         .get("agent", &agent_id)
         .ok_or_else(|| format!("위임 대상 에이전트를 찾을 수 없습니다: {agent_id}"))?;
+    // Delegated work has a separate model context and therefore a separate
+    // token bill. Bound outstanding workers and lifetime fan-out per parent
+    // session before creating another child task.
+    let delegated=ctx.store.all("job").into_iter().filter(|job|{
+        job["kind"]=="prompt" && job["input"]["delegation"]==true
+            && job["input"]["parentSessionId"].as_str()==Some(ctx.session_id)
+    }).collect::<Vec<_>>();
+    if delegated.len()>=MAX_DELEGATED_JOBS_PER_SESSION {
+        return Err("이 세션의 위임 작업 한도에 도달했습니다. 기존 결과를 통합하세요.".into());
+    }
+    if delegated.iter().filter(|job|
+        matches!(job["status"].as_str(),Some("queued"|"running"))
+    ).count()>=MAX_ACTIVE_DELEGATED_JOBS {
+        return Err("동시 위임 4개가 실행 중입니다. task_result로 완료를 확인한 후 위임하세요.".into());
+    }
     let wait = args["wait"].as_bool().unwrap_or(true);
     let timeout = args["timeoutSeconds"]
         .as_u64()
