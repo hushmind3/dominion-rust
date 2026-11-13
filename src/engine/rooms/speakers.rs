@@ -6,7 +6,7 @@ use super::*;
 /// Choose initial responders. Discussion visits the roster, round robin picks
 /// the next member, and mentioned waits for a real @name/@id. Explicit owner
 /// selections override the initial routing, without changing room membership.
-fn is_deep_request(input: &str) -> bool {
+pub(super) fn is_deep_request(input: &str) -> bool {
     let lower = input.to_lowercase();
     input.chars().count() > 240
         || [
@@ -28,7 +28,7 @@ pub(super) fn speaker_window(
 ) -> Vec<String> {
     // Small rooms are cheap enough to keep everyone; trimming them loses more
     // perspective than it saves.
-    if roster.len() <= 3 {
+    if roster.len() <= 3 && !economy::active(room) {
         return roster.to_vec();
     }
     // An explicit total cap of at least one turn per participant is the
@@ -40,23 +40,18 @@ pub(super) fn speaker_window(
     {
         return roster.to_vec();
     }
-    let lower = input.to_lowercase();
-    if [
-        "다들", "다 같이", "다같이", "모두", "모든", "전원", "전부", "각자",
-        "나머지", "나머지도", "아홉", "9명", "인사", "everyone", "all agents",
-    ]
-        .iter()
-        .any(|term| lower.contains(term))
-    {
+    if economy::all_requested(input) {
         return roster.to_vec();
     }
-    let count = if is_deep_request(input) {
-        6.min(roster.len())
+    let count = (if economy::active(room) {
+        economy::target_speakers(room,is_deep_request(input),input.chars().count())
+    } else if is_deep_request(input) {
+        6
     } else if input.chars().count() <= 60 {
-        2.min(roster.len())
+        2
     } else {
-        3.min(roster.len())
-    };
+        3
+    }).min(roster.len());
     if count >= roster.len() {
         return roster.to_vec();
     }
