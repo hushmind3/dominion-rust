@@ -328,6 +328,10 @@ use generation_feedback::record_generation_feedback;
 mod generation_finalization;
 use generation_finalization::{finalize_generation,GenerationObservation};
 
+#[path = "rsi/execution/method_ablation.rs"]
+mod method_ablation;
+use method_ablation::{run_method_control,measured_method_ablation};
+
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};
