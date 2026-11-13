@@ -295,7 +295,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // method, that executable transfer outranks the old cost-only suggestion.
     let method_transfer=if explicit {Value::Null}
         else{crate::engine::rsi_system::method_transfer_target(&state,&history,input)};
-    let feedback_repair=history.last().is_some_and(|last|
+    let feedback_repair=history.iter().rev().find(|g|g["accepted"]==true)
+        .is_some_and(|last|
         input["rsiMethodAblation"]==true && input["rsiAutonomous"]==true
         && !explicit
         && last["accepted"]==true && last["domain"]!="improver"
