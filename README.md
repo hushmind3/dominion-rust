@@ -537,3 +537,16 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 대조 평가가 종료된 후, 캠페인 및 API가 같은 `rsi_closure::evidence`
 원본 비교를 다시 계산합니다. 원본 캠페인과 대조 캠페인은 개별
 작업 및 사용량으로 기록됩니다.
+
+### 대조 결과의 후손 개선법 재투입
+
+`rsi_closure::control_feedback`는 A→B의 저장된 원본 후보·모델 작업·
+독립 평가·대조 영수증을 **매번 다시 계산**합니다.
+`rsi/lineage/history.rs::revalidated_history`가 이 결과를
+`methodControlEvidence`로 재구성합니다.
+`planner/worker_plan.rs`는 피드백을 차세대의
+`metaPolicy.methodControlFeedback`와 새로운 메타 정책 revision에 포함하고,
+`execution/worker.rs`는 같은 증거를 실제 모델·편집 지시 문맥에 전달하여
+`rsiMethodControlFeedbackExecuted` 기록을 남깁니다.
+대조 작업이 늦게 완료돼도 차기 캠페인의 컴파일 후손은 최신 평가 기록을
+재사용합니다. 모델 가중치는 수정하지 않습니다.

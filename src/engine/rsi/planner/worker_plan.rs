@@ -45,8 +45,32 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let peers=crate::engine::rsi_lineage_transfer::peers(
         &state,campaign_id,&peer_input,
         campaign["planIndexId"].as_str().unwrap_or(""),None);
-    let raw_meta=crate::engine::rsi_meta_controller::synthesize(
+    let mut raw_meta=crate::engine::rsi_meta_controller::synthesize(
         &history,&frontier,&permitted,inherited.as_deref());
+    // The METHOD learner can inspect B's original frozen outcome and a
+    // replayed, possibly still-pending A-off control. This feedback becomes
+    // part of the child's compiled meta revision, not just report prose.
+    if let Some(previous)=history.iter().rev().find(|g|
+        g["pairedRevalidated"]==true
+            &&g["methodControlEvidence"]["treatedCandidateId"]==g["candidateId"]) {
+        let control=&previous["methodControlEvidence"];
+        let feedback=json!({
+            "source":"verified_descendant_method_control_feedback_v1",
+            "treatedCandidateId":previous["candidateId"],
+            "acceptedCommit":previous["acceptedCommit"],
+            "methodOffGeneratorCommit":control["methodOffGeneratorCommit"],
+            "methodOnGeneratorCommit":control["methodOnGeneratorCommit"],
+            "matchedControlFound":control["matchedControlFound"],
+            "measuredAdvantage":control["measuredAdvantage"],
+            "controlCandidateIds":control["controlCandidateIds"],
+            "evaluationVerdict":previous["evaluation"]["verdict"],
+            "improvedHoldouts":previous["evaluation"]["metrics"]["improvedHoldouts"]
+        });
+        let previous_revision=raw_meta["revision"].clone();
+        raw_meta["methodControlFeedback"]=feedback.clone();
+        raw_meta["revision"]=json!(format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&json!([previous_revision,feedback])).unwrap_or_default())));
+    }
     let transferred_meta=crate::engine::rsi_meta_controller::integrate_peer_evidence(
         raw_meta,&peers);
     let recursive_graph=crate::engine::rsi_symbiosis::transition_graph(&history);

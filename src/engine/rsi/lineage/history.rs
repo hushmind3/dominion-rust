@@ -108,6 +108,13 @@ pub(crate) fn revalidated_history(
             })
         }else{false};
         checked["pairedRevalidated"]=json!(valid);
+        // Every compiled successor observes the same replayable control that
+        // the fixed campaign/API oracle will later use. It is dynamic so a
+        // queued control can complete after an earlier generation was stored.
+        checked["methodControlEvidence"]=if valid
+            &&generation["candidateOrigin"]=="model_driven_detached_worktree" {
+            crate::engine::rsi_closure::control_feedback(state,generation)
+        }else{Value::Null};
         // Rewrite recorded prediction labels from the still-present original
         // paired receipt and executed plan on every history load. A stale or
         // hand-edited Brier label cannot change the next compiled planner.

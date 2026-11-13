@@ -131,3 +131,17 @@ Scheduling is asynchronous through the existing durable job queue:
 proof remains false until the control finishes and original receipts
 match. An automatic control consumes separately recorded model tokens;
 bounded campaign UI explicitly describes this additional call.
+
+### Feedback to the next compiled improver
+
+`rsi_closure::control_feedback(state,B)` independently reopens the
+A→B candidate, origin job and any persisted controls; the lineage
+revalidator injects `methodControlEvidence` dynamically, so there is
+no stale claimed "success" in the mutable generation JSON.
+`planner/worker_plan.rs` includes the measured B candidate and
+measured or pending method-off contrast in `metaPolicy.methodControlFeedback`
+and updates its content-addressed meta revision. The compiled
+descendant worker records `rsiMethodControlFeedbackExecuted` and sends
+this concrete evidence to its actual source-writing model turn. The
+oracle continues to require independent source adoption and matched
+controls; mere feedback delivery earns no proof.

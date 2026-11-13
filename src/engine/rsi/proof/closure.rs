@@ -123,6 +123,22 @@ pub(crate) fn control_anchor(state:&AppState,treated:&Value)->Option<Value>{
     }))
 }
 
+/// Dynamically replay a B descendant's independent A-off evidence. A
+/// mutable campaign flag cannot supply this feedback; every read resolves
+/// original accepted source receipts, the worker, and matched control jobs.
+pub(crate) fn control_feedback(state:&AppState,treated:&Value)->Value{
+    let Some(anchor)=control_anchor(state,treated) else{return Value::Null};
+    let Some((candidate,job))=measured_step(state,treated) else{return Value::Null};
+    let Some(predecessor)=state.store.all("rsi_generation").into_iter().find(|g|
+        g["campaignId"]==anchor["treatedCampaignId"]
+            &&g["acceptedCommit"]==anchor["methodOnGeneratorCommit"]
+            &&g["generatorCommit"]==anchor["methodOffGeneratorCommit"])
+        else{return Value::Null};
+    let feedback=method_control::evidence(state,&predecessor,treated,&job,&candidate);
+    if feedback["treatedCandidateId"]!=candidate["id"]{return Value::Null;}
+    feedback
+}
+
 pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
     let mut pending_control=Value::Null;
     for window in history.windows(3) {

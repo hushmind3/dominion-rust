@@ -414,6 +414,25 @@ pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value
             }
             text.push_str("- 이전 가설·변경을 그대로 반복하지 말고 실패 원인을 먼저 특정하세요. 수정 범위·가설·기대하는 작업 성능 지표를 바꾼 실험을 수행하세요. 조사 결과가 없다면 새 발견을 만들어내지 마세요.\n");
         }
+        // Include source-grounded feedback from a real A-off control if one
+        // has completed. A missing/pending control is never promoted to gain.
+        if let Some(latest)=history.iter().rev().find(|g|
+            g["accepted"]==true &&g["candidateId"].is_string()){
+            let control=crate::engine::rsi_closure::control_feedback(state,latest);
+            if control.is_object(){
+                text.push_str("\n### 개선법 A의 실제 후손 결과·대조 실험\n");
+                let report=json!({
+                    "treatedCandidateId":control["treatedCandidateId"],
+                    "methodOffCommit":control["methodOffGeneratorCommit"],
+                    "controlMeasured":control["matchedControlFound"],
+                    "downstreamAdvantage":control["measuredAdvantage"],
+                    "minimumHoldoutPassAdvantage":control["minimumHoldoutPassAdvantage"],
+                    "maximumHoldoutLoss":control["maximumHoldoutLoss"]
+                });
+                text.push_str(&report.to_string());
+                text.push_str("\n대조가 미완료이면 우월성을 주장하지 말고, 독립 비교가 완료된 후에야 개선법을 조정하세요. 단순 반복이 아닌 새로운 가설·방법 변경을 시험하세요.\n");
+            }
+        }
         let verified=history_with_verified_payoffs(state,history);
         let measured=verified.iter().rev().filter(|row|row["evidenceVerified"]==true)
             .take(3).map(|row|json!({"domain":row["domain"],

@@ -217,6 +217,21 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         let meta_directive=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
+        let control_feedback=&job["input"]["rsiMetaPolicy"]["methodControlFeedback"];
+        let method_control_directive=if control_feedback["source"]
+                =="verified_descendant_method_control_feedback_v1"{
+            // The plan was signed by the compiled successor and checked
+            // against the persisted job before the model/tool turn.
+            job["rsiMethodControlFeedbackExecuted"]=json!({
+                "source":"compiled_descendant_method_feedback_delivery_v1",
+                "generatorCommit":commit,
+                "treatedCandidateId":control_feedback["treatedCandidateId"],
+                "metaRevision":job["input"]["rsiMetaPolicy"]["revision"]
+            });
+            format!("\n[INDEPENDENT B-METHOD FEEDBACK] {}. The accepted B source patch and its frozen holdout results are real; method-off control found={} and downstream improvement observed={}. Choose a concrete further change to the improving method itself, not merely a new summary. A missing control is not a demonstrated causal benefit.\n",
+                control_feedback,control_feedback["matchedControlFound"],
+                control_feedback["measuredAdvantage"])
+        }else{String::new()};
         let recursive_directive=crate::engine::rsi_recursive_rewrite::instruction(
             &job["input"]["rsiMetaPolicy"]);
         let principle_directive=crate::engine::rsi_principle_learning::instruction(
@@ -236,7 +251,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
                 stage["path"],stage["sourceSha256"],stage["learningPolicy"],
                 stage["toolPolicy"],stage["executionPolicy"])
         }else{String::new()};
-        format!("{directive}\n{meta_directive}\n{recursive_directive}\n{principle_directive}\n{actor_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
+        format!("{directive}\n{meta_directive}\n{method_control_directive}\n{recursive_directive}\n{principle_directive}\n{actor_directive}\n{peer_context}\n{mutual_context}\n{factorial_context}\n{stage_context}\n{frontier_context}\n{}",job["input"]["prompt"].as_str().unwrap_or(""))
     }else{job["input"]["prompt"].as_str().unwrap_or("").to_string()};
     let prepared = fit_worker_prompt(
         &system_prompt, &domain, &capability,
