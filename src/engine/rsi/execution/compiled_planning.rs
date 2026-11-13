@@ -254,6 +254,14 @@ pub(super) async fn plan_compiled_descendant(
         child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
         child_input["rsiMethodTransfer"]=plan["methodTransfer"].clone();
         child_input["rsiFeedbackRepairSelected"]=plan["feedbackRepairSelected"].clone();
+        if plan["methodTransfer"].is_object() {
+            let objective=plan["methodTransfer"]["taskObjective"].as_str()
+                .filter(|task|!task.trim().is_empty() && task.len()<=3000)
+                .ok_or("실행 가능 개선법에 연결된 실제 후손 작업 목표가 없습니다.")?;
+            child_input["rsiObjective"]=json!(objective);
+            child_input["rsiMethodTransferTaskSource"]=json!(
+                "compiled_adopted_procedure_applicability_contract");
+        }
         child_input["rsiLineageCapsule"]=plan["lineageCapsule"].clone();
         child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
         child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
