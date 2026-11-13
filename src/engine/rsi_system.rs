@@ -960,6 +960,7 @@ pub(crate) fn revalidated_history(
                 && crate::engine::rsi::replayed_pair_metrics(state,candidate)
                     .is_some_and(|metrics|metrics==candidate["evaluation"]["metrics"]));
         checked["pairedMeasured"]=json!(measured);
+        checked["pairedReceiptReplayed"]=json!(measured);
         checked["changedSourcePaths"]=if measured {
             candidate.as_ref().map(|candidate|candidate["paths"].clone())
                 .unwrap_or(Value::Null)
@@ -975,6 +976,8 @@ pub(crate) fn revalidated_history(
         if checked["metaPolicy"]["source"]=="compiled_editable_meta_controller_v1" {
             checked["metaLearning"]=crate::engine::rsi_prequential::feedback(
                 &checked["metaPolicy"],&checked);
+            checked["predictionRepairEvidence"]=
+                crate::engine::rsi_prequential::repair_execution_evidence(&checked);
         }
         checked
     }).collect()
