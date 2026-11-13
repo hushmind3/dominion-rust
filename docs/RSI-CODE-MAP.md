@@ -54,3 +54,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 - `src/db.rs::session_usage` → `api/rooms.rs` → `Rooms.tsx`: 제공자가 실제 보고한 캐시 적중 입력을 측정 가능한 호출과 함께 노출, 미보고 호출은 비율 계산에서 제외합니다.
 - `api/video.rs` → `engine/video.rs` → `video/{shot_plan,kling4,runway,frame_anchor}.rs`: Kling 3.0 네이티브 멀티샷과 Kling 4.0 최대 30초 연속 생성의 별도 API 계약, 프레임 연속성 옵션, 원격 task ID·다운로드 후 FFmpeg 합성, UI의 유료 클립 수 안내.
 - 전체 변경 지침과 상태: [서브4 제품 통합 업그레이드](SUB4-PRODUCT-UPGRADE-2026-11-14.md). 테스트·컴파일·빌드·CI를 실행하지 않았습니다.
+
+### Versioned room-economy algorithm and feedback (2026-11-14)
+
+`api/rooms.rs::validated_config` (owner-specified adaptive/full, model tier validation) → `submit_internal` → `algorithms::choose_for_agent("multiagent.economy")` → immutable job `input.roomSnapshot.economyKernel` → `rooms/{speakers,economy}.rs` → `rooms.rs::run_locked` → provider/chat → durable outputs. Completed automatic runs expose `POST /api/rooms/:id/jobs/:job_id/feedback`; `room_feedback` stores an idempotent owner preference on that exact executed revision and `algorithms::record_owner_feedback` updates global bandit statistics. No generation-weight training. These subjective preferences are not independent evaluation receipts. Unit contracts: `tests/unit/engine_rooms_economy_tests.rs` and `tests/unit/engine_rooms_pool_tests.rs` (authored, not executed).
