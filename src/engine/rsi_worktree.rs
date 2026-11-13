@@ -282,7 +282,7 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
-#[path="capture.rs"]
+#[path="rsi_worktree/capture.rs"]
 mod capture;
 #[cfg(test)]
 use capture::classify;
