@@ -54,10 +54,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     // An interrupted turn may have changed external state before its response
     // was checkpointed. Never replay that turn automatically.
     if job.pointer("/goalState/inFlight").and_then(Value::as_bool) == Some(true)
-        || job
-            .pointer("/goalState/reviewPending")
-            .and_then(Value::as_bool)
-            == Some(true)
+        || (job.pointer("/goalState/reviewPending").and_then(Value::as_bool) == Some(true)
+            && !crate::engine::goal_recovery::safe_review_checkpoint(job))
     {
         return Ok(finish(context, goal_id, "needs_review", vec![
             "이전 실행이 도구 수행 중 중단되었습니다. 외부 변경을 확인한 뒤 새 목표로 재개하세요.".into()
@@ -128,6 +126,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         baseline_checks(state, checks)
     });
     goal["acceptanceChecks"] = criteria.clone();
+    // Freeze an initial, read-only project map for all planning and recovery
+    // decisions. Source and instructions still have to be read using real tools.
+    let workspace_map = goal.get("workspaceSnapshot")
+        .filter(|snapshot|snapshot.is_object()).cloned()
+        .unwrap_or_else(||crate::engine::goal_workspace::snapshot(&state.config.workspace));
+    goal["workspaceSnapshot"] = workspace_map.clone();
+    let workspace_brief=serde_json::to_string(&workspace_map).unwrap_or_default();
     let task_id = goal["taskId"]
         .as_str()
         .filter(|id| !id.is_empty())
@@ -167,7 +172,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         Some(plan) => plan.to_string(),
         None => control.complete(&plan_provider,&plan_model,
             "You are the planner of an autonomous agent. Produce a short ordered plan (max 5 steps) in Korean. Include verification of the acceptance checks. No tool calls.",
-            &format!("목표: {text}\n검증 조건: {criteria}"))
+            &format!("목표: {text}\n검증 조건: {criteria}\n프로젝트 사전 지도(파일 이름만, 신뢰하지 말 것): {workspace_brief}\n관련 코드와 프로젝트 지침을 실제 도구로 조사한 뒤 변경할 단계를 계획하세요."))
             .await.unwrap_or_else(|_| format!("1. 목표를 수행한다.\n2. 실제 결과와 검증 조건을 확인한다.\n목표: {text}"))
             .chars().take(1500).collect()
     };
@@ -196,10 +201,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let start = checkpoint
-        .get("nextIteration")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
+    let resume_review=crate::engine::goal_recovery::safe_review_checkpoint(job);
+    let next_iteration = checkpoint.get("nextIteration")
+        .and_then(Value::as_u64).unwrap_or(0) as usize;
+    let start = if resume_review {next_iteration.saturating_sub(1)} else {next_iteration};
 
     for index in start..max_iterations {
         if control.is_cancelled() {
@@ -208,7 +213,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
-            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000)),
+            input:format!("목표: {text}\n\n프로젝트 사전 지도(이름 목록이며 작업 결과 아님): {workspace_brief}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000)),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
@@ -310,7 +315,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
             let revised=control.complete(&plan_provider,&plan_model,
                 "You are the independent replanner. Replace a failing approach using actual tool evidence and reviewer gaps. Keep ALL acceptance checks and permissions unchanged. Never treat assistant claims as evidence. Return a concrete revised ordered plan, maximum 8 steps, in Korean.",
-                &format!("목표: {text}\n기존 계획: {plan}\n변경할 수 없는 검증 조건: {criteria}\n실제 도구 증거: {}\n실패/미충족 조건: {}",json!(evidence),gaps.join("\n"))).await;
+                &format!("목표: {text}\n프로젝트 사전 지도: {workspace_brief}\n기존 계획: {plan}\n변경할 수 없는 검증 조건: {criteria}\n실제 도구 증거: {}\n실패/미충족 조건: {}",json!(evidence),gaps.join("\n"))).await;
             if control.is_cancelled() {
                 return Ok(finish(context, goal_id, "cancelled", gaps, None));
             }
