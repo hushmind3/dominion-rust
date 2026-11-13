@@ -205,8 +205,9 @@ pub(crate) fn repair_execution_evidence(g:&Value)->Value{
     let changed=compiled && g["pairedMeasured"]==true
         && g["changedSourcePaths"].as_array().is_some_and(|paths|
             paths.iter().any(|path|path==target));
-    let adopted=changed && trusted_feedback(g)
-        .is_some_and(|row|row["actualTargetAdoption"]==true);
+    let adopted=changed && g["pairedReceiptReplayed"]==true
+        && trusted_feedback(g)
+            .is_some_and(|row|row["actualTargetAdoption"]==true);
     json!({"source":"replayed_prediction_repair_execution_v1",
         "planned":planned,
         "compiledControllerExecuted":compiled,
