@@ -512,6 +512,7 @@ pub(crate) async fn stream_completion_once_body(
         total_tokens,
         !completion.usage_exact,
     );
+    crate::engine::gateway::record_cache_usage(state, session_id, prompt_tokens, completion.cached_prompt_tokens, completion.usage_exact);
     Ok(completion)
 }
 
