@@ -1155,6 +1155,13 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         );
     }
 
+    if let Some(quality) = body.pointer("/capabilities/quality") {
+        if !quality.as_f64().is_some_and(|value| value.is_finite()
+            && (0.0..=1.0).contains(&value)) {
+            return error(StatusCode::BAD_REQUEST,
+                "자동 라우팅 품질 점수는 0~100 범위로 입력하세요.");
+        }
+    }
     // Cost metadata is owner-maintained and deliberately not guessed from a
     // model name or an out-of-date provider catalog. Units are KRW / 1M tokens.
     for field in ["costPerMillionInputKrw", "costPerMillionOutputKrw"] {
