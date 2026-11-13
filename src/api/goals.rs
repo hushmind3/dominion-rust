@@ -77,14 +77,20 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    let job = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id }));
-    let job_id = job
-        .as_ref()
-        .and_then(|job| job.get("id"))
-        .cloned()
-        .unwrap_or(Value::Null);
-
-    let mut payload = record.clone();
+    let Some(job) = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id })) else {
+        // Never report an autonomous goal as queued without a durable worker.
+        if let Some(saved) = state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),&json!({
+            "status":"failed","phase":"enqueue_failed","error":"목표 작업을 등록하지 못했습니다."
+        })) {state.bus.record("goal",&saved);}
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"목표 작업을 등록하지 못했습니다.");
+    };
+    // Persist the same worker identity that the UI uses for cancellation,
+    // progress and post-crash reconciliation.
+    let job_id = job["id"].clone();
+    let saved = state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),
+        &json!({"jobId":job_id})).unwrap_or(record);
+    state.bus.record("goal",&saved);
+    let mut payload = saved;
     payload["jobId"] = job_id;
     Json(payload).into_response()
 }
