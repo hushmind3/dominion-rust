@@ -31,6 +31,16 @@ fn independently_adopted(state:&AppState,g:&Value)->bool {
     }
     let Some(candidate)=g["candidateId"].as_str()
         .and_then(|id|state.store.get("rsi_candidate",id)) else{return false};
+    let Some(job)=g["jobId"].as_str().and_then(|id|state.store.get("job",id)) else{return false};
+    if job["kind"]!="rsi_generation"
+        || job["id"]!=g["jobId"]
+        || job["input"]["rsiGeneratorCommit"]!=g["generatorCommit"]
+        || job["input"]["rsiControllerPlan"]!=g["controllerPlan"]
+        || job["rsiCompiledPlanExecuted"]!=g["compiledPlanExecuted"]
+        || job["rsiDomain"]!=g["domain"]
+        || job["result"]["rsi"]["candidateId"]!=g["candidateId"] {
+        return false;
+    }
     candidate["status"]=="verified" && candidate["origin"]=="model_driven_detached_worktree"
         // Generation-level metrics are copied from compare_at. Bind each
         // claimed holdout gain to its independently stored candidate report.
@@ -87,9 +97,15 @@ fn improved_domain(g:&Value,domain:&str)->bool {
     g["evaluation"]["metrics"]["improvedHoldoutDomains"].as_array()
         .is_some_and(|rows|rows.iter().any(|row|row.as_str()==Some(domain)))
 }
+fn independent_quality_gain(g:&Value,domain:&str)->bool {
+    g["evaluation"]["metrics"]["measurements"].as_array().is_some_and(|cases|
+        cases.iter().any(|case|case["domain"]==domain && case["holdout"]==true
+            && case["baselinePass"]==false && case["candidatePass"]==true))
+}
 fn positive_meta(g:&Value)->bool {
     g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0 &&
-        improved_domain(g,"improver") && paths(g).iter().any(|p|meta_source(p))
+        improved_domain(g,"improver") && independent_quality_gain(g,"improver")
+            && paths(g).iter().any(|p|meta_source(p))
 }
 /// Revalidate the exact procedure proposed by the previous META generation,
 /// executed by this descendant and responsible for an accepted source byte.
@@ -100,7 +116,7 @@ fn executed_inherited_method(state:&AppState,parent:&Value,child:&Value)->Option
     let session=job["sessionId"].as_str()?;
     for method in parent["methodProposals"].as_array()?.iter() {
         if method["sourceGenerationJobId"]!=parent["jobId"]
-            || method["synthesis"].is_object()
+            || !method["synthesis"].is_null()
             || method["verification"]["type"]!="procedure"
             || method["domain"]!=child["domain"] {
             continue;
@@ -162,8 +178,12 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             !actually_changed_target(cap_b) || !actually_changed_target(cap_b2) {
             continue;
         }
-        if !improved_domain(cap_b,cap_b["domain"].as_str().unwrap_or("")) ||
-            !improved_domain(cap_b2,cap_b2["domain"].as_str().unwrap_or("")) {continue;}
+        if !improved_domain(cap_b,cap_b["domain"].as_str().unwrap_or(""))
+            || !independent_quality_gain(cap_b,cap_b["domain"].as_str().unwrap_or(""))
+            || !improved_domain(cap_b2,cap_b2["domain"].as_str().unwrap_or(""))
+            || !independent_quality_gain(cap_b2,cap_b2["domain"].as_str().unwrap_or("")) {
+            continue;
+        }
         // A1 produced a method used in B1; B1's measured outcome reached A2;
         // A2 produced a different executable revision and B2 used it to write
         // independently adopted bytes. A change in plan metadata is not enough.
