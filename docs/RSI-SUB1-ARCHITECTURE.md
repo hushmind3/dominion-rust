@@ -92,7 +92,9 @@ These works inform the architecture rather than constituting evidence that a fou
 
 - 도미니언 플랫폼의 새 심사 기준은 **엔진·하네스·알고리즘 연결/완성도**입니다. 전체 교차 모듈의 실호출 경로와 기능상 남은 경계는 [INTEGRATED-QUALITY-2026-11-14.md](INTEGRATED-QUALITY-2026-11-14.md)를 참조하세요.
 - RSI 진입/후손/원본 동결 평가/채택/계승 경로는 위 기존 표를 그대로 유지합니다. 이번 변경에서 `rsi_evolve`의 증명·선택 규칙을 영상 API의 임의 성과로 연결하지 않았으며, 동결 검증 경계의 신뢰성을 약화하지 않습니다.
-- 그룹 대화는 `src/api/rooms.rs`의 `costMode`에서 `src/engine/rooms.rs::effective_rounds`로 이어지는 **모델 호출 전** 정책을 추가했습니다. 이미 존재하는 `speaker_window`, `room_context::compile`, `chat/continuity::project`, 실제 provider 캐시 영수증은 유지합니다. 새로운 provider/model 로딩·가중치 학습은 발생하지 않습니다.
+- 그룹 대화는 `src/api/rooms.rs`의 `costMode`에서 `src/engine/rooms.rs::effective_rounds`로, 선택적 `tieredRouting/models[].tier`에서 `src/engine/rooms/model_tier.rs::select`로 이어지는 **모델 호출 전** 정책을 추가했습니다. 이미 존재하는 `speaker_window`, `room_context::compile`, `chat/continuity::project`, 실제 provider 캐시 영수증은 유지합니다. 새로운 provider/model 로딩·가중치 학습은 발생하지 않습니다.
 - 영상은 기존 `src/engine/video.rs::enqueue/run` 계약을 사용해 `video/runway.rs`의 2026-06 멀티샷과 `video/ltx.rs`의 2026 LTX-2.5 V2 공급자 런타임을 선택합니다. 두 구현은 `JobContext::checkpoint`와 MP4 결과 영수증에 연결되고, `api/video.rs`·`Video.tsx`에서 해당 모델·비율·샷·음향 선택이 노출됩니다.
 - 프로덕션 모듈과 분리된 `#[cfg(test)]` 하위 소스: `src/engine/rooms/{pool_tests,tests}.rs`, `src/engine/chat/room_context/tests.rs`, `src/engine/video/tests.rs`, `src/api/video/tests.rs`. 테스트를 실행한 증빙으로 해석하면 안 됩니다.
-- 계층형 모델 라우팅, 무효화 조건을 갖춘 시맨틱 응답 캐시, 실제 샷 품질 자동 판정, `chat/runtime/turn.rs`의 구조 개편은 여전히 후속 구현 경계입니다. 가중치 학습·LoRA·fine-tuning은 RSI 도구/후손 실행 경로와 계속 분리합니다.
+- 명시적 fast/deep 티어 라우팅은 연결했습니다. 가격 기반 품질-비용 최적화, 무효화 조건을 갖춘 시맨틱 응답 캐시, 실제 샷 품질 자동 판정, `chat/runtime/turn.rs`의 구조 개편은 여전히 후속 구현 경계입니다. 가중치 학습·LoRA·fine-tuning은 RSI 도구/후손 실행 경로와 계속 분리합니다.
+
+- 운영/알고리즘 테스트 분리: `src/engine/{algorithms,improve,learning,jobs}.rs` → 각각 `<module>/tests.rs`, `src/api/providers.rs` → `api/providers/tests.rs`, `src/db.rs` → `db/tests.rs`, `src/engine/memory.rs` → `memory/{tests,memory_algorithm_tests,per_agent_memory_learning_tests,regression_memory_visibility_tests}.rs`. 변경 전 테스트 본문을 유지하며 이번 세션에서 실행하지 않았습니다.
