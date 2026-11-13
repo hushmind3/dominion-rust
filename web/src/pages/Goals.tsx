@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useState} from 'react'
-import {ArrowRight,Check,FileCheck2,Play,RefreshCw,ShieldCheck,Square,Trash2,Wrench} from 'lucide-react'
+import {ArrowRight,Check,FileCheck2,Play,RefreshCw,RotateCw,ShieldCheck,Square,Trash2,Wrench} from 'lucide-react'
 import {get,post,del} from '../api'
 import {Button,SelectInput,TextArea,TextInput} from '../components/Primitives'
 import {StatusPill} from '../components/StatusPill'
@@ -73,6 +73,13 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
    await goals.reload();setNotice('목표와 연결된 작업에 중단을 요청했습니다.')
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const resume=async()=>{
+  if(!selected||busy||!confirm('이전 실행의 파일·원격 작업 결과를 직접 확인하셨습니까? 확인하지 않은 외부 작업은 자동으로 반복하지 않으며, 읽기 전용 재확인부터 시작합니다.'))return
+  setBusy(true);setError('')
+  try{await post('/api/goals/'+encodeURIComponent(selected.id)+'/resume',{acknowledgeUnknownEffects:true})
+   await goals.reload();setNotice('기존 증거·세션을 보존한 새 실행 작업을 등록했습니다.')
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const remove=async()=>{
   if(!selected||busy||!confirm('종료된 목표와 실행 요약을 목록에서 지우시겠습니까?'))return
   setBusy(true);setError('')
@@ -109,7 +116,9 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
      <Panel className="space-y-4 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-[11px] font-semibold text-[#8A8176]">실행 작업 · {selected.id.slice(0,10)}</p><h2 className="mt-1 text-lg font-bold">{selected.goal}</h2></div><StatusPill status={selected.status}>{selected.status}</StatusPill></div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-[#7C7469]"><span>단계: {selected.phase||'대기'}</span><span>반복 {selected.iterations||0}/{selected.maxIterations||16}</span><span>재계획 {selected.replans||0}회</span>{job?.status&&<span>작업: {job.status} ({job.stepIndex||0}/{job.stepTotal||16})</span>}</div>
-      <div className="flex flex-wrap gap-2">{selected.sessionId&&<Button variant="ghost" onClick={()=>openSession(selected.sessionId!)}>실제 실행 대화 보기 <ArrowRight size={14}/></Button>}{active&&<Button variant="ghost" disabled={busy} onClick={()=>void stop()}><Square size={13}/> 중단</Button>}{!active&&<Button variant="ghost" disabled={busy} onClick={()=>void remove()}><Trash2 size={14}/> 기록 삭제</Button>}</div>
+      <div className="flex flex-wrap gap-2">{selected.sessionId&&<Button variant="ghost" onClick={()=>openSession(selected.sessionId!)}>실제 실행 대화 보기 <ArrowRight size={14}/></Button>}{active&&<Button variant="ghost" disabled={busy} onClick={()=>void stop()}><Square size={13}/> 중단</Button>}
+       {(selected.status==='needs_review'||selected.status==='failed')&&<Button variant="ghost" disabled={busy} onClick={()=>void resume()}><RotateCw size={14}/> 외부 결과 확인 후 이어가기</Button>}
+       {!active&&<Button variant="ghost" disabled={busy} onClick={()=>void remove()}><Trash2 size={14}/> 기록 삭제</Button>}</div>
       {job?.error&&<Notice message={job.error}/>}
      </Panel>
      <Panel className="space-y-3 p-5"><h3 className="flex items-center gap-2 text-sm font-bold"><Wrench size={16}/> 작업 계획 · {selected.planHistory?.length||0}개 버전</h3>
