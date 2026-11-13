@@ -57,7 +57,8 @@ fn hash(value:&Value)->String{
     format!("{:x}",Sha256::digest(serde_json::to_vec(value).unwrap_or_default()))
 }
 fn observed(row:&Value)->Option<(Arm,Genome)>{
-    if row["pairedRevalidated"]!=true
+    if row["pairedMeasured"]!=true
+        ||(row["accepted"]==true &&row["pairedRevalidated"]!=true)
         ||row["experimentStrategyApplied"]["source"]
             !="running_compiled_descendant_experiment_strategy_v1"
         ||row["experimentStrategyApplied"]["generatorCommit"]!=row["generatorCommit"]

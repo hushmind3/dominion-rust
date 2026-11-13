@@ -628,3 +628,10 @@ CoCoEvolve(2026)의 전체 진화 기록을 통한 메타 반성에서
 - https://gepa-ai.github.io/gepa/blog/archive/2026/
 - https://github.com/canvas-org/meta-agent
 - https://arxiv.org/abs/2610.12794
+
+
+메타 유전체의 보상·실패 학습은 성공한 채택 세대뿐 아니라,
+`lineage/history.rs`가 실제 `replayed_pair_metrics`로 증명한
+**미채택·중립·퇴행 실험**에도 적용됩니다. 미실행·도구 호출만 있는
+가상 기록은 학습하지 않습니다. 실패에서 실험 선택법이 변하지 않는
+기존 성공 편향을 줄이기 위한 수정입니다.

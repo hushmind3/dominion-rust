@@ -17,7 +17,8 @@ fn contract_is_typed_and_executes_only_available_arms(){
 fn run(id:&str,method:&Value,accepted:bool,gains:u64,regressions:u64)->Value{
     json!({
         "jobId":id,"generatorCommit":method["generatorCommit"],
-        "pairedRevalidated":true,"accepted":accepted,"tokens":1000,
+        "pairedMeasured":true,"pairedRevalidated":accepted,
+        "accepted":accepted,"tokens":1000,
         "evaluation":{"metrics":{"improvedHoldouts":gains,"regressions":regressions}},
         "experimentStrategy":method,
         "experimentStrategyApplied":{
@@ -81,4 +82,18 @@ fn manually_altered_policy_revision_cannot_be_inherited(){
     p["genome"]["novelty_weight"]=json!(4);
     p["revision"]=json!("0".repeat(64));
     assert!(validate(&p,&"a".repeat(40)).is_err());
+}
+
+#[test]
+fn genuine_rejected_paired_experiment_changes_next_genome(){
+    let initial=propose(&[],&"a".repeat(40),false,false);
+    let row=run("measured-neutral",&initial,false,0,0);
+    let next=propose(&[row],&"b".repeat(40),false,false);
+    assert_eq!(next["observedTrials"],1);
+    assert_eq!(next["parentRevision"],initial["revision"]);
+    assert!(next["genome"]["novelty_weight"].as_u64().unwrap()>=
+        initial["genome"]["novelty_weight"].as_u64().unwrap());
+    let mut rejected=run("not-measured",&initial,false,0,0);
+    rejected["pairedMeasured"]=json!(false);
+    assert_eq!(propose(&[rejected],&"b".repeat(40),false,false)["observedTrials"],0);
 }
