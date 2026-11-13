@@ -168,3 +168,31 @@
         assert!(later["counterexamples"].as_array().unwrap().len()>0);
         assert_eq!(feedback(&later,&failures[0])["independentlyMeasured"],false);
     }
+
+    #[test]
+    fn accepted_meta_stage_rewrite_is_counted_but_test_only_rewrite_is_not() {
+        let mut generation=json!({
+            "accepted":true,"pairedRevalidated":true,
+            "evaluation":{"metrics":{"eligible":true}},
+            "candidateOrigin":"model_driven_detached_worktree",
+            "acceptedCommit":"a".repeat(40),
+            "generatorCommit":"b".repeat(40),"jobId":"child",
+            "systemDesign":{
+                "source":"model_authored_system_design",
+                "generatorCommit":"b".repeat(40),"generationJobId":"child",
+                "component":"improvement_methods",
+                "targetFiles":["src/engine/rsi/meta_controller/selection.rs"]
+            },
+            "acceptedSourceHashes":{
+                "src/engine/rsi/meta_controller/selection.rs":"c".repeat(64)
+            }
+        });
+        assert!(meta_source_changed(&generation));
+        generation["systemDesign"]["targetFiles"]=json!(["src/engine/rsi/meta_controller/tests.rs"]);
+        generation["acceptedSourceHashes"]=json!({
+            "src/engine/rsi/meta_controller/tests.rs":"c".repeat(64)
+        });
+        assert!(!meta_source_changed(&generation));
+        generation["accepted"]=json!(false);
+        assert!(!meta_source_changed(&generation));
+    }

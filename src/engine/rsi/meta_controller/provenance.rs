@@ -38,7 +38,12 @@ pub(crate) fn meta_source_changed(g:&Value)->bool{
     files.keys().any(|path|matches!(path.as_str(),
         "src/engine/rsi_meta_controller.rs"|"src/engine/rsi_system.rs"
         |"src/engine/rsi_evolve.rs"|"src/engine/rsi_mutation.rs"
-        |"src/engine/procedure.rs"|"src/engine/learning.rs"))
+        |"src/engine/procedure.rs"|"src/engine/learning.rs"
+        |"src/engine/rsi/meta_controller/provenance.rs"
+        |"src/engine/rsi/meta_controller/reciprocal.rs"
+        |"src/engine/rsi/meta_controller/selection.rs"
+        |"src/engine/rsi/meta_controller/transfer.rs"
+        |"src/engine/rsi/meta_controller/feedback.rs"))
 }
 
 pub(super) fn role_touched(g:&Value,role:&str)->bool{

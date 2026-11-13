@@ -24,7 +24,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/rsi_whole_agent.rs","src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_edit_genome.rs","src/engine/rsi_edit_program.rs","src/engine/rsi_rule_induction.rs","src/engine/rsi_rule_tournament.rs","src/engine/rsi_decision_rules.rs","src/engine/rsi_rule_rewrite.rs","src/engine/rsi_archive.rs","src/engine/rsi_principle_learner.rs","src/engine/rsi_recursive_laboratory.rs","src/engine/rsi_causal_ecology.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
+    ("improvement_methods",&["src/engine/rsi_edit_genome.rs","src/engine/rsi_edit_program.rs","src/engine/rsi_rule_induction.rs","src/engine/rsi_rule_tournament.rs","src/engine/rsi_decision_rules.rs","src/engine/rsi_rule_rewrite.rs","src/engine/rsi_archive.rs","src/engine/rsi_principle_learner.rs","src/engine/rsi_recursive_laboratory.rs","src/engine/rsi_causal_ecology.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi/meta_controller/provenance.rs","src/engine/rsi/meta_controller/reciprocal.rs","src/engine/rsi/meta_controller/selection.rs","src/engine/rsi/meta_controller/transfer.rs","src/engine/rsi/meta_controller/feedback.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs"]),
     ("models",&["src/engine/rsi_model_learning.rs","src/engine/router.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -299,6 +299,18 @@ pub(crate) fn blueprint(root:&Path,revision:&str,history:&[Value])->Value{
 /// A new or previously unlisted source module is still part of the
 /// intelligence system. This classification is a descendant-editable search
 /// heuristic, not an immutable scoring taxonomy.
+/// Only the runtime-compiled meta-controller can be a source for revising
+/// the improvement method. Test-only modules cannot establish that change.
+fn executable_meta_source(path:&str)->bool{
+    matches!(path,
+        "src/engine/rsi_meta_controller.rs"|"src/engine/rsi_system.rs"
+        |"src/engine/rsi/meta_controller/provenance.rs"
+        |"src/engine/rsi/meta_controller/reciprocal.rs"
+        |"src/engine/rsi/meta_controller/selection.rs"
+        |"src/engine/rsi/meta_controller/transfer.rs"
+        |"src/engine/rsi/meta_controller/feedback.rs")
+}
+
 fn source_role(path:&str)->&'static str{
     let lower=path.to_ascii_lowercase();
     if lower.starts_with("web/src/") || lower.starts_with("src-tauri/src/"){
@@ -312,6 +324,7 @@ fn source_role(path:&str)->&'static str{
         return "models";
     }
     if lower.starts_with("src/engine/rsi_")
+        || lower.starts_with("src/engine/rsi/")
         || lower.contains("/self_improv") || lower.contains("/evolution"){
         return "improvement_methods";
     }
@@ -501,8 +514,7 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
                 "role":role,"domain":domain,"path":path,
                 "sourceSha256":source["sha256"],"sourceBytes":source["bytes"],
                 "candidateRankWithinRole":source_rank,
-                "methodSource":path.ends_with("rsi_meta_controller.rs")
-                    || path.ends_with("rsi_system.rs"),
+                "methodSource":executable_meta_source(path),
                 "attempts":attempted.get(path).copied().unwrap_or(0),
                 "verifiedRedesigns":role_wins.get(role).copied().unwrap_or(0),
                 "latestFailure":recent_failure.get(path),
@@ -1468,5 +1480,21 @@ mod tests {
         let map=blueprint(&root,"pinned",&[]);
         assert_eq!(map["architecture"][0]["representativeSources"].as_array().unwrap().len(),0);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compiled_meta_stages_are_revisable_improvement_methods_not_generic_harness() {
+        for path in [
+            "src/engine/rsi/meta_controller/provenance.rs",
+            "src/engine/rsi/meta_controller/reciprocal.rs",
+            "src/engine/rsi/meta_controller/selection.rs",
+            "src/engine/rsi/meta_controller/transfer.rs",
+            "src/engine/rsi/meta_controller/feedback.rs",
+        ] {
+            assert_eq!(source_role(path),"improvement_methods");
+            assert!(executable_meta_source(path));
+        }
+        assert!(!executable_meta_source("src/engine/rsi/meta_controller/tests.rs"));
+        assert_eq!(source_role("src/engine/rsi/meta_controller/tests.rs"),"improvement_methods");
     }
 }
