@@ -545,3 +545,15 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - **RSI**: API→job→compiled 후손→소스 도구→worktree 동결 평가→채택→방법·전략 재계획의 기존 실행 경로를 유지했습니다. 가중치 학습·LoRA·파인튜닝을 RSI에 연결하지 않았습니다.
 
 **검증 범위:** 사용자 지침에 따라 이번 수정에서는 테스트/컴파일/빌드/벤치마크/CI/실유료 호출을 실행하지 않았습니다. 영상 품질 성능, 캐시 할인률, RSI 후손 성적은 추정치로 채우지 않습니다.
+
+
+### 2026-11-14: 자율 목표 에이전트의 제품 실행 및 복구 완결 경계
+
+새 통합심사 v3에서는 **자율 목표 에이전트 25점**을 최우선 기준으로 둡니다. [자율 작업 하네스의 실제 호출/영수증/복구 지도](docs/AUTONOMOUS-AGENT-2026-11-14.md)에서 UI → API → Job → 실제 도구 → 독립 검토 → 재계획 → 결과/기억 계승을 추적할 수 있습니다.
+
+- **목표 UX:** `WorkflowsPage` → `workflows/GoalConsole.tsx` → `POST /api/goals`. 실행자·선택적 저비용 Planner/Reviewer·완료조건·최대 실행단계 입력, 단계/검토/재계획/오류 조회, Session 기록 열기와 중단을 지원합니다.
+- **검증 단계 복구:** `goal_review::snapshot/replayable` → `jobs::recover` → `goals::run`. 도구가 완료되어 영속화된 검토 단계에서만 검토를 재개하며, 도구를 다시 실행하지 않습니다. 실행 중단·불완전 영수증은 `needs_review`. 이미 저장된 목표 최종 상태와 Job 상태도 재시작 시 일치시킵니다.
+- **테스트 완료 조건:** `goal_verification::inferred_checks`는 명시적으로 테스트가 요구된 프로젝트에서 Cargo/Go/Node/Python의 확인 가능한 테스트 명령을 최대 2개 성공 영수증 조건으로 추가합니다. 이 모듈은 테스트를 수행하지 않으며 실제 에이전트 도구 결과를 통해서만 완료가 가능합니다.
+- **등록·취소 정합성:** `api/goals.rs`가 `jobId`를 영속화하며 작업 등록 실패를 성공으로 포장하지 않습니다. `api/jobs.rs::cancel`은 실행 전 대기 중인 Goal까지 종료 상태로 전환합니다.
+
+**이번 변경에 없는 것:** 일반 Goal의 DAG 병렬 위임/합성, Git diff 승인·되돌리기 전 구간 UX, 독립 RSI 동결 평가에 의한 일반 Goal 후손 승률 증명. 이번 변경은 테스트/컴파일/CI/벤치마크/실모델 작업을 실행하지 않은 소스 단계입니다.
