@@ -19,3 +19,7 @@ This is an entry point to executable code, **not** an adoption receipt. The prev
 `scripts/sub4-live-rsi.mjs` emits real-model calls, original source writes and model-authored adoption evidence; `.github/workflows/sub4-system-live-rsi.yml` starts this resource-intensive test **only on explicit dispatch**. The last judge-confirmed score was 79. This document does not imply that current HEAD compiled, passed CI or completed a real-model successor chain.
 
 Unit suites live under `tests/unit/`; integration checks remain in `tests/e2e.rs`. Source indexing excludes the tests and frozen oracle. The original historical reports remain recoverable from Git history.
+
+## Fixed-weight-only RSI guarantee
+
+The local LoRA/PEFT training and promotion module, training/evaluation/server scripts, associated tool registration, generation inference sidecar, model-adapter receipts and weight-based principle reward were removed. No running RSI path writes model parameters. `rsi_model_ecology` still experiments with **configured inference routes** to fixed pretrained models, using descendant source-change outcomes. The recursive loop evolves code, policy, memory, tools, and model-routing logic, not model weights.

@@ -4,7 +4,7 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 
 | Concern | Live implementation |
 | --- | --- |
-| Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs` |
+| Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
 | Frozen paired A/B, detached source receipts | `src/engine/rsi_worktree.rs`, `src/engine/rsi_metrics.rs` |
 | Actual intelligence-role inventory, independent receipt replay | `src/engine/rsi_system.rs` |
 | Source index and bounded model navigation | `src/engine/code_index.rs` |
@@ -22,3 +22,14 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 Verification status and historical independently measured descendant evidence: [RSI completion](rsi-completion.md) and [Sub3 evidence record](../benchmark/sub3-rsi-completion-2026-11-12.json). Current Sub4 design: [architecture](SUB4-RSI-ARCHITECTURE.md), [source-bound prequential learning](SUB4-PREQUENTIAL-SOURCE-LEARNING-2026-11-13.md).
 
 **Scan boundary:** `code_index::collect_files` excludes `tests/` and test-only Rust files; `rsi_system::discovered_architecture_sources` skips test-only and frozen-oracle source. The native paired evaluator still runs its test corpus. None of these boundaries asserts performance gain.
+
+## Execution responsibility map
+
+The stable `rsi_evolve` public API dispatches into `src/engine/rsi/`:
+
+- `planner/focus.rs`, `planner/worker_plan.rs`: source choice and compiled descendant plan
+- `execution/start.rs`, `execution/context.rs`, `execution/campaign.rs`, `execution/worker.rs`: generation lifecycle and model tool turn
+- `learning/methods.rs`, `learning/trials.rs`, `learning/research.rs`: reusable methods, empirical trials, bounded research recall
+- `lineage/adoption.rs`: independently validated source adoption and next-generator target reconciliation
+
+The `select_domain()` source and native differential test hook remain in `rsi_evolve.rs` because the existing deterministic source mutator requires that exact owned function.
