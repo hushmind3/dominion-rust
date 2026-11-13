@@ -98,6 +98,8 @@ pub(crate) mod experiment_contract;
 
 #[path = "rsi/planner/domain_selection.rs"]
 mod domain_selection;
+#[cfg(test)]
+use domain_selection::{search_features,score_domain};
 pub(crate) use domain_selection::{objective_matches,candidate_domains,scored_domains,select_domain};
 pub(super) use domain_selection::fast_failure_domain;
 // The descendant stages are separate modules with explicit ownership.
