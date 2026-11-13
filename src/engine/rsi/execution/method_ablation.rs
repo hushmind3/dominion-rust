@@ -107,15 +107,23 @@ pub(super) async fn run_method_control(
 /// Bind treatment and control to independently saved candidate receipts.
 /// Comparison is honest about model sampling: a single paired run supports
 /// a task-quality observation, not an isolated causal effect estimate.
-pub(super) fn measured_method_ablation(state:&AppState,generation:&Value)->Value{
+pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value{
     let Some(treatment_job)=generation["jobId"].as_str()
         .and_then(|id|state.store.get("job",id)) else{return Value::Null};
     let Some(id)=treatment_job["input"]["rsiMethodAblationControlId"].as_str() else{return Value::Null};
     let Some(control)=state.store.get("rsi_method_ablation",id) else{return Value::Null};
     let Some(control_job)=control["controlJobId"].as_str()
         .and_then(|id|state.store.get("job",id)) else{return Value::Null};
+    let original_control_fingerprint=fingerprint(&control_job["input"]);
+    let control_session=control_job["sessionId"].as_str().unwrap_or("");
+    let disabled_at_runtime=!control_session.is_empty()
+        && !state.store.all("execution_operation").iter().any(|operation|
+            operation["sessionId"]==control_session && operation["origin"]=="procedure");
     let bound=control["source"]=="real_detached_method_disabled_worker_v1"
         && control["methodsActuallyDisabled"]==true
+        && disabled_at_runtime
+        && control["inputSha256"]==json!(original_control_fingerprint)
+        && control["candidateId"]==verified_candidate_id(&control_job["result"])
         && control["adopted"]==false
         && generation["accepted"]==true
         && control["generatorCommit"]==generation["generatorCommit"]
@@ -138,6 +146,7 @@ pub(super) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     if crate::engine::rsi::replayed_pair_metrics(state,&control_candidate).is_none()
         || !crate::engine::rsi::verified_pair_receipt(state,&treatment)
         || control_candidate["baseCommit"]!=treatment["baseCommit"]
+        || control_candidate["evaluation"]!=control["evaluation"]
         || control_candidate["cases"]!=treatment["cases"] {
         return json!({"status":"independent_receipts_or_case_plan_mismatch","qualityProven":false});
     }
