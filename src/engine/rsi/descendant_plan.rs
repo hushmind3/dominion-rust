@@ -308,6 +308,40 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
     let downstream_feedback=if system_mode {
         method_feedback::downstream_feedback(state,&history,binary_commit)
     }else{Value::Null};
+    // A verified B outcome can send a real A-method revision back into the
+    // executable source planner. Only a same-revision, indexed A source can
+    // redirect this child; a feedback label alone never earns adoption.
+    if automatic && downstream_feedback.is_object()
+        && agenda["inheritedStage"].is_null() {
+        if let Some(method_path)=downstream_feedback["methodPath"].as_str() {
+            let matching=agenda["frontier"].as_array().and_then(|rows|
+                rows.iter().find(|row|row["path"]==method_path
+                    && row["sourceSha256"]==downstream_feedback["methodSourceSha256"]
+                    && row["domain"]=="improver")).cloned();
+            let grounded=matching.or_else(||{
+                let sha=crate::engine::code_index::indexed_source_hash(
+                    state,campaign["planIndexId"].as_str().unwrap_or(""),method_path)?;
+                if downstream_feedback["methodSourceSha256"].as_str()!=Some(sha.as_str())
+                    || !crate::engine::rsi::safe_path(method_path) {return None;}
+                let bytes=std::fs::read(Path::new(lab).join(method_path)).ok()?;
+                if format!("{:x}",Sha256::digest(&bytes))!=sha{return None;}
+                Some(json!({"role":"improvement_methods","domain":"improver",
+                    "path":method_path,"sourceSha256":sha,"sourceBytes":bytes.len(),
+                    "attempts":0,"verifiedRedesigns":0,"reason":"measured_downstream_method_feedback",
+                    "qualityProven":false}))
+            });
+            if let Some(row)=grounded {
+                let frontier=agenda["frontier"].as_array_mut()
+                    .ok_or("후손 개선 소스 탐색 결과가 없습니다.")?;
+                if !frontier.contains(&row) {
+                    if frontier.len()>=64 {frontier.pop();}
+                    frontier.push(row.clone());
+                }
+                // Frontier must be finalized BEFORE meta-policy and factorial
+                // controllers synthesize their revisions from its bytes.
+            }
+        }
+    }
     let inherited=if automatic {
         crate::engine::rsi_system::inherited_domain(&history)
     }else{None};
@@ -399,35 +433,17 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
         crate::engine::rsi_meta_controller::compositional_hypothesis(
             &peers,&meta_policy)
     }else{Value::Null};
-    // A verified B outcome can send a real A-method revision back into the
-    // executable source planner. Only a same-revision, indexed A source can
-    // redirect this child; a feedback label alone never earns adoption.
+    // After all experiment planners have read the SAME source frontier,
+    // the independently paired task-feedback objective is the executable
+    // next-method edit. No post-policy frontier mutation is allowed.
     if automatic && downstream_feedback.is_object()
         && agenda["inheritedStage"].is_null() {
         if let Some(method_path)=downstream_feedback["methodPath"].as_str() {
-            let matching=agenda["frontier"].as_array().and_then(|rows|
+            let selected=agenda["frontier"].as_array().and_then(|rows|
                 rows.iter().find(|row|row["path"]==method_path
                     && row["sourceSha256"]==downstream_feedback["methodSourceSha256"]
                     && row["domain"]=="improver")).cloned();
-            let grounded=matching.or_else(||{
-                let sha=crate::engine::code_index::indexed_source_hash(
-                    state,campaign["planIndexId"].as_str().unwrap_or(""),method_path)?;
-                if downstream_feedback["methodSourceSha256"].as_str()!=Some(sha.as_str())
-                    || !crate::engine::rsi::safe_path(method_path) {return None;}
-                let bytes=std::fs::read(Path::new(lab).join(method_path)).ok()?;
-                if format!("{:x}",Sha256::digest(&bytes))!=sha{return None;}
-                Some(json!({"role":"improvement_methods","domain":"improver",
-                    "path":method_path,"sourceSha256":sha,"sourceBytes":bytes.len(),
-                    "attempts":0,"verifiedRedesigns":0,"reason":"measured_downstream_method_feedback",
-                    "qualityProven":false}))
-            });
-            if let Some(row)=grounded {
-                let frontier=agenda["frontier"].as_array_mut()
-                    .ok_or("후손 개선 소스 탐색 결과가 없습니다.")?;
-                if !frontier.contains(&row) {
-                    if frontier.len()>=64 {frontier.pop();}
-                    frontier.push(row.clone());
-                }
+            if let Some(row)=selected {
                 agenda["target"]=row.clone();
                 agenda["focus"]=json!([row]);
                 agenda["downstreamFeedbackFocus"]=downstream_feedback.clone();

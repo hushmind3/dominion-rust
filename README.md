@@ -579,3 +579,7 @@ Campaign completion (`rsi/execution.rs`) and all RSI API reads (`src/api/rsi.rs`
 ### Role mapping after refactoring
 
 The compiled `rsi/meta_controller/provenance.rs::meta_source_changed` and `rsi/system/discovery.rs::executable_meta_source` now recognize the split live RSI modules. `rsi/method_feedback.rs` excludes test-only sources as method witnesses, preventing a unit-test edit from masquerading as an executable improvement method. The historical accepted-source evidence and real CLI worker path remain the sole basis for future method claims.
+
+### Frontier/meta-policy consistent revision
+
+A validated downstream method path is inserted into the source-indexed frontier **before** compiled meta-selection, factorial experiments, laboratory and whole-intelligence proposals are computed. After those proposals, only the immutable selected target/focus change to the eligible A method path; the frontier no longer changes. The worker's independent meta-policy replay consequently receives the same frontier as the planning binary. No compilation or test execution was performed.
