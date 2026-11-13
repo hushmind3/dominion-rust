@@ -121,6 +121,21 @@ pub(super) async fn plan_compiled_descendant(
                     !=plan["principleLearning"]["sha256"]) {
             return Err("후손의 개선 원리 학습 증거가 독립 평가 이력과 다릅니다.".into());
         }
+        // The evaluator validates the typed, source-bound protocol but
+        // never recomputes the descendant's mutable operator scoring rule.
+        if !crate::engine::rsi_evolve::meta_evolution::valid(
+            &plan["metaEvolutionProgram"],&history,
+            plan["architectureFrontier"].as_array()
+                .ok_or("진화 프로토콜에 소스 후보가 없습니다.")?,&head)
+            || (plan["metaEvolutionProgram"].is_object()
+                && (plan["metaPolicy"]["selectionMode"]
+                        !="authored_recursive_evolution_protocol"
+                    || plan["metaPolicy"]["evolutionProtocolRevision"]
+                        !=plan["metaEvolutionProgram"]["revision"]
+                    || plan["metaPolicy"]["target"]
+                        !=plan["metaEvolutionProgram"]["target"])) {
+            return Err("후손 진화 프로토콜의 출처·정책·실행 대상이 불일치합니다.".into());
+        }
         if plan["openImprovementProgram"].is_object()
             && (!crate::engine::rsi_program_graph::valid(
                 &plan["openImprovementProgram"],&history,
@@ -296,6 +311,7 @@ pub(super) async fn plan_compiled_descendant(
         child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
         child_input["rsiReflexiveProgram"]=plan["reflexiveProgram"].clone();
         child_input["rsiOpenImprovementProgram"]=plan["openImprovementProgram"].clone();
+        child_input["rsiMetaEvolutionProgram"]=plan["metaEvolutionProgram"].clone();
         child_input["rsiPrincipleLearning"]=plan["principleLearning"].clone();
         child_input["rsiApiRoutePolicy"]=plan["apiRoutePolicy"].clone();
         if input["rsiAdaptiveApiRouting"]==true {
