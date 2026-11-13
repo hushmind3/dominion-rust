@@ -8,7 +8,7 @@
 
 **Rust 백엔드 + Rust 실행 엔진**과 React 프론트엔드를 사용합니다.
 
-**서브3 재귀 개선 경로(2026-11-13):** `src/engine/rsi/execution/campaign.rs`는 실제 후손 준비(`generation_preparation.rs`), 워커 실행(`generation_launch.rs`), 평가·채택(`generation_selection.rs`), 영속화(`generation_finalization.rs`)를 연결하는 경량 조정기입니다. `rsi/meta/{inputs,composition,evolution,transition_policy,experiment_dispatch}.rs`가 읽기 전용 자료 수집과 진화 가능한 실험 전략을 분리합니다. 독립 채택·재생 검증은 `rsi/evaluation/contract.rs`, `rsi/proof.rs`, `rsi_worktree.rs`가 소유합니다. [서브3 구조·CI 진행 기록](docs/RSI-SUB3-STRUCTURE-2026-11-13.md) · [GitHub CI](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3).
+**서브3 재귀 개선 경로(2026-11-13):** `src/engine/rsi/execution/campaign.rs`는 실제 후손 준비(`generation_preparation.rs`), 워커 실행(`generation_launch.rs`), 평가·채택(`generation_selection.rs`), 영속화(`generation_finalization.rs`)를 연결하는 경량 조정기입니다. `rsi/meta/{inputs,composition,evolution,transition_policy,experiment_dispatch}.rs`가 읽기 전용 자료 수집과 진화 가능한 실험 전략을 분리합니다. 독립 채택·재생 검증은 `rsi/evaluation/contract.rs`, `rsi/proof.rs`, `rsi_worktree.rs`가 소유합니다. [서브3 구조·CI 진행 기록](docs/RSI-SUB3-STRUCTURE-2026-11-13.md) · [GitHub CI](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3). **CI 범위:** Ubuntu/macOS에서 전체 릴리스 테스트를, Windows에서 전체 테스트 바이너리 컴파일과 RSI 계약 스모크를 실행합니다. 기존 전체 Windows 테스트는 활성 파일 핸들 정리·경로 차이로 일부 실패하며, 수동 `full_windows_suite` 옵션으로 별도 재현할 수 있습니다.
 
 - 프론트엔드: 기존 React UI 그대로 (`web/`)
 - 백엔드: Rust (axum)
