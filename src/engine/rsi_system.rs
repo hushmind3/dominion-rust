@@ -391,6 +391,8 @@ mod history;
 mod guidance;
 mod planning;
 mod proof;
+mod method_lineage;
+pub(crate) use method_lineage::{inherited_method_receipt,observed_method_outcome};
 pub(crate) use evidence::validate_plan_evidence;
 pub(crate) use blueprint::blueprint;
 pub(crate) use history::revalidated_method_history;
