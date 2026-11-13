@@ -12,7 +12,7 @@
 | 단일 클립의 촬영 플랜 | `src/engine/video/shot_plan.rs::shots` → `request` → `video/runway.rs::run` | **이번 변경**: 3~15초를 1~3개 카메라 샷으로 나누고 전체 길이 보존, 반복 인물·배경 앵커, `providerSettings.multiPrompt` 적용 |
 | 장편 클립 간 연속성 | `src/engine/video/frame_anchor.rs::first_frame_for_next` → `runway.rs::run` | **이번 변경**: 이전 클립 다운로드가 완료된 뒤 FFmpeg로 마지막 프레임을 JPEG로 추출하고 다음 `image_to_video`의 `promptImage`로 제공. 계정 키는 기존 vault 사용 |
 | 비용·상태 | `runway.rs` 원격 task ID 체크포인트 → 다운로드 → FFmpeg 합성 → `video::public_job` | 기존 유료 중복 제출 방지와 `needs_review` 유지, 신규 `shotCount`/`frameAnchoredClips` 결과 필드 |
-| 사용자 선택 | `Video.tsx`의 **클립 간 연속성** 옵션 → `/api/video/config` → `runwayContinuityFrames` | **이번 변경**: 설정 저장·입력 스냅샷 고정, 다른 장소로 의도적으로 장면을 바꾸면 옵션 해제 가능 |
+| 사용자 선택 | `Video.tsx`의 **클립 간 연속성** 옵션 → `/api/video/config` → `runwayContinuityFrames` | **이번 변경**: 설정 저장·입력 스냅샷 고정. 생성 버튼 앞에 유료 클립 개수를 표시하며, 장면 전환이 필요하면 연속성 옵션 해제 가능 |
 
 Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_to_video` 입력은 2026-10-26 Runway Dev 공식 문서에 근거한다. 이 구현은 비용을 늘리는 별도 샷 요청 대신 동일 요청 안의 네이티브 멀티샷을 활용한다. **시각·인물 일관성은 확률적인 모델 결과**이며 영상 전체 화질·오디오 정합성이 자동 보장되는 것은 아니다. 15초를 넘는 영상은 여러 개의 유료 task와 합성으로 완성되므로 요청 총 길이에 비례한 비용이 발생한다.
 
@@ -22,15 +22,15 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 
 | 경로 | 담당 | 상태 |
 | --- | --- | --- |
-| 참여자·발언 제한·모델 선택 | `src/engine/rooms.rs::{speaker_window,model_pool,run_locked}` | 기존: 명시적 지정 우선, 작은 응답 집단, 한 봇의 모델 안정 유지 |
+| 참여자·발언 제한·모델 선택 | `src/engine/rooms/speakers.rs::{speaker_window,plan_speakers,model_pool}` → `src/engine/rooms.rs::run_locked` | **이번 변경**: 발언자·모델 배정을 독립 모듈로 추출. 기존 명시적 지정 우선, 작은 응답 집단, 참가자별 안정 모델 계약 유지 |
 | 방별 컨텍스트 | `src/engine/chat/room_context.rs::compile` | 기존: 동결된 주인 원문, 발언자 귀속, BM25+비용 기준 발췌, 압축시 필수 증거 보존 |
 | 프롬프트 재사용 | `src/engine/chat/continuity.rs::{prepare,project,commit_projection}` | 기존: 참가자별 안정된 접두사·동적 프레임, 증거 변경 시 무효화 |
 | 제공자 실제 캐시 사용 | `chat/provider.rs::cached_prompt_tokens` → `gateway::record_usage_tokens_with_cache` → `db.rs::session_usage` | **이번 변경**: 캐시 적중·비교 가능한 총 입력 토큰·측정 회수 별도 SQL 집계. 미보고/추정 토큰을 캐시 실패로 간주하지 않음 |
 | 대화 UI | `src/api/rooms.rs`의 feed `usage` → `web/src/pages/Rooms.tsx` | **이번 변경**: 제공자 실제 보고가 있을 때만 방 헤더에 캐시 적중 비율 표시 |
 | 소형/대형 모델 자동 선택 | `src/engine/router.rs::{classify,estimated_krw_per_million,select_provider}` | **이번 변경**: 기존 능력·키 보유·난이도 우선 정책을 유지하면서, 원화 입력/출력 가격이 모두 알려진 쌍에서는 가격 비교 |
-| 가격 설정 | `web/src/pages/Models.tsx` → `POST /api/providers` → `src/api/providers.rs::save_provider` | **이번 변경**: ₩/100만 입력·출력 토큰 가격 저장, 입력 범위 검사. 자동 선택용이며 사용자가 고정한 모델은 건드리지 않음 |
+| 가격·품질 설정 | `web/src/pages/Models.tsx` → `POST /api/providers` → `src/api/providers.rs::save_provider` | **이번 변경**: ₩/100만 입력·출력 토큰 가격과 0~100 품질 등급(사용자 평가)을 검증·저장. 자동 선택용이며 사용자가 고정한 모델은 건드리지 않음 |
 
-**중요한 경계**: 원화 가격은 제공자가 자동 제공한 시세가 아니라 **사용자가 입력한 선언값**이며 최신 가격 반영과 환율 관리는 사용자가 책임진다. 캐시 적중률은 청구 비용 절감률이 아니다. 캐시 쓰기·읽기 단가, 제공자별 할인과 실제 청구액은 별도이며, 데이터가 없으면 추정 할인율을 표시하지 않는다. 새 가격 정보가 없는 모델은 **무료 모델로 간주하지 않는다**.
+**중요한 경계**: 원화 가격과 0~100 품질 점수는 제공자가 자동 제공한 확정된 수치가 아니라 **사용자가 입력한 선언값**이며 최신 가격 반영 및 품질 평가는 사용자 측정에 의존한다. 캐시 적중률은 청구 비용 절감률이 아니다. 캐시 쓰기·읽기 단가, 제공자별 할인과 실제 청구액은 별도이며, 데이터가 없으면 추정 할인율을 표시하지 않는다. 새 가격 정보가 없는 모델은 **무료 모델로 간주하지 않는다**.
 
 검사 소스: `tests/unit/db_room_cache_usage_tests.rs`, `src/engine/router.rs`의 명시가격 자동 선택 테스트. 실행하지 않음.
 
@@ -39,6 +39,7 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 ```text
 React (Rooms / Models / Video / Chat / SelfImprovement)
   ├── /api/rooms + /api/chat → engine::rooms → engine::chat
+  │                      ├── rooms/speakers (발언자·모델 배정, 작업 순서와 분리)
   │                      ├── room_context (선택·증거·토큰 예산)
   │                      ├── continuity (고정 접두사·모델별 대화 상태)
   │                      ├── provider (도구·cache telemetry·stream)
