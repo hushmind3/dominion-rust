@@ -191,6 +191,25 @@ async fn merge_clips(ctx: &JobContext, input: &Value, dir: &Path, count: usize) 
         .map_err(|e| e.to_string())
 }
 
+/// JobContext::checkpoint is intentionally a shallow top-level update.
+/// Video stages are a *single durable state machine* and must carry forward
+/// earlier fields such as storyboard, camera plans, paid task IDs and last
+/// completed download. Never discard an already paid remote receipt.
+fn merge_video_state(previous: &Value, patch: &mut Value) {
+    let Some(before)=previous["videoState"].as_object() else { return };
+    let Some(after)=patch.get_mut("videoState").and_then(Value::as_object_mut) else { return };
+    for (key,value) in before {
+        after.entry(key.clone()).or_insert_with(||value.clone());
+    }
+}
+
+fn checkpoint_video(ctx: &JobContext, mut patch: Value) -> Result<(),String> {
+    let original=ctx.state.store.get("job",&ctx.job_id)
+        .ok_or("유료 영상의 체크포인트 원본이 없습니다.")?;
+    merge_video_state(&original,&mut patch);
+    ctx.checkpoint(patch)
+}
+
 /// A remote charged task may finish downloading while a later clip has not
 /// been submitted. Re-running the whole plan is NOT a safe retry in this case.
 fn unsafe_to_resubmit(job: &Value) -> bool {
@@ -241,7 +260,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .collect::<Vec<_>>();
     // Freeze the complete creative plan before a remote credit is spent.
     // Its exact scene and camera decisions survive a needs_review restart.
-    ctx.checkpoint(json!({"videoState":{"scenes":scenes,"shotPlans":shot_plans,
+    checkpoint_video(ctx,json!({"videoState":{"scenes":scenes,"shotPlans":shot_plans,
         "inFlight":false,"completedClips":0},
         "phase":"storyboard","progress":5}))?;
     let client = reqwest::Client::builder()
@@ -271,7 +290,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
             "image_to_video"
         } else { "text_to_video" };
         let percent = 5 + 75 * index as u64 / clips.len() as u64;
-        ctx.checkpoint(json!({"phase":"submitting","progress":percent,
+        checkpoint_video(ctx,json!({"phase":"submitting","progress":percent,
             "videoState":{"inFlight":true,"clipIndex":index}}))?;
         let response = client.post(format!("{API}/{endpoint}"))
             .bearer_auth(&token).header("X-Runway-Version", API_VERSION)
@@ -288,13 +307,13 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
             .ok_or("needs_review: Runway 제출 작업 ID가 없습니다.")?.to_owned();
         uuid::Uuid::parse_str(&task_id).map_err(|_| "needs_review: Runway 작업 ID 형식 오류")?;
         task_ids.push(task_id.clone());
-        ctx.checkpoint(json!({"phase":"rendering","progress":percent + 3,
+        checkpoint_video(ctx,json!({"phase":"rendering","progress":percent + 3,
             "videoState":{"inFlight":true,"remoteTaskId":task_id,"taskIds":task_ids}}))?;
         let url = wait_for_task(ctx, &client, &token, &task_id).await?;
         let path = dir.join(format!("clip-{index:02}.mp4"));
         let bytes = download(ctx, &client, &url, &path).await
             .map_err(|e| format!("needs_review: 이미 생성된 Runway 영상 다운로드 실패: {e}"))?;
-        ctx.checkpoint(json!({"phase":"rendering","progress":5 + 75 * (index + 1) as u64 / clips.len() as u64,
+        checkpoint_video(ctx,json!({"phase":"rendering","progress":5 + 75 * (index + 1) as u64 / clips.len() as u64,
             "videoState":{"inFlight":false,"remoteTaskId":null,"completedClips":index+1,
                 "lastClipBytes":bytes,"taskIds":task_ids}}))?;
     }
@@ -316,3 +335,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
 #[cfg(test)]
 #[path = "../../../tests/unit/video_paid_resubmission_tests.rs"]
 mod paid_resubmission_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/video_checkpoint_merge_tests.rs"]
+mod checkpoint_tests;
