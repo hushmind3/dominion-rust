@@ -641,11 +641,19 @@ async fn run_locked(
         // the prompt prefix (provider caching) and make costs predictable;
         // rate limits are still spread because different agents hash to
         // different pool entries.
-        let rotated = if pool.is_empty() {
-            None
-        } else {
-            Some(pool[pool_slot(&roster, &agent_id, pool.len())].clone())
-        };
+        let tier_override = economy::select_tier(&room, owner_text, &roster, &agent_id);
+        let rotated = tier_override.as_ref().map(|(provider, model, effort, _)| {
+            (provider.clone(), model.clone(), effort.clone())
+        }).or_else(|| {
+            (!pool.is_empty()).then(||pool[pool_slot(&roster, &agent_id, pool.len())].clone())
+        });
+        if let Some((provider, model, _, tier)) = &tier_override {
+            state.store.audit("room.model_tier_selected", json!({
+                "roomId":room_id, "agentId":agent_id, "tier":tier,
+                "providerId":provider, "model":model, "source":"owner_labelled_pool",
+                "requestComplexity":if tier=="frontier" {"complex"} else {"routine"},
+            }));
+        }
         let resolved_provider=optional(input,"providerId").or_else(||rotated.as_ref().map(|(provider,_,_)| provider.clone())).or_else(||optional(&agent,"providerId"));
         let resolved_model=optional(input,"model").or_else(||rotated.as_ref().map(|(_,model,_)| model.clone())).or_else(||optional(&agent,"model"));
         let rotated_effort=rotated.as_ref().and_then(|(_,_,effort)| effort.clone());
