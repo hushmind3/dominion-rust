@@ -225,6 +225,21 @@ fn auto_reasoning_effort(input: &str) -> String {
     }
 }
 
+/// No LLM is used to choose a spend budget. Preserve the owner's explicit
+/// maxTurns override and the configured model-to-participant binding.
+fn effective_rounds(room: &Value, input: &str, requested: usize) -> usize {
+    if room["maxTurns"].as_i64().is_some_and(|turns| turns > 0) {
+        return requested;
+    }
+    let deep = is_deep_request(input);
+    let cap = match room["costMode"].as_str().unwrap_or("quality") {
+        "economy" => if deep { 2 } else { 1 },
+        "balanced" => if deep { requested } else if input.chars().count() <= 60 { 1 } else { 2 },
+        _ => requested,
+    };
+    requested.min(cap).max(1)
+}
+
 pub fn plan_speakers(
     state: &AppState,
     room: &Value,
@@ -477,7 +492,8 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
+    let configured_rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
+    let rounds = effective_rounds(&room, owner_text, configured_rounds);
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.
     let budget = existing["turnBudget"]
