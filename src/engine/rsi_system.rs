@@ -454,6 +454,26 @@ pub(crate) fn validate_plan_evidence(
         || meta["mode"]!="independently_matched_factorial_experiment_design"){
         return Err("요인별 실험이 실제 후손 메타 선택과 일치하지 않습니다.".into());
     }
+    let negative=&plan["negativeTransfer"];
+    if negative.is_object(){
+        let selected=&negative["selected"];
+        let source=&selected["source"];
+        let victim=&selected["victim"];
+        if source!=target
+            || meta["negativeTransfer"]["active"]!=true
+            || meta["negativeTransfer"]["selected"]!=*selected
+            || meta["negativeTransfer"]["evidenceSha256"]!=negative["sha256"]
+            || meta["mode"]!="replayed_cross_capability_negative_transfer_repair"
+            || ranked.len()!=2
+            || ranked[0]["path"]!=source["path"]
+            || ranked[0]["sourceHash"]!=source["sourceSha256"]
+            || ranked[1]["path"]!=victim["path"]
+            || ranked[1]["sourceHash"]!=victim["sourceSha256"] {
+            return Err("역전이 검증 계획이 실제 두 소스 편집 목표와 다릅니다.".into());
+        }
+    }else if !negative.is_null() || meta["negativeTransfer"]["active"]==true {
+        return Err("존재하지 않는 역전이 편집 근거가 지정됐습니다.".into());
+    }
     let stage=&plan["successorStage"];
     if stage.is_object() && (
         stage["source"]!="rebound_verified_model_successor_program_v1"
