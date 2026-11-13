@@ -43,9 +43,42 @@
 - `rsi_system.rs`는 변경 가능한 설계 진입점과 모듈 등록을 보존하되 엄격한 증명 함수는 별도 보호 모듈로 위임한다. `rsi_system.rs::COMPONENTS`는 이 보호 모듈을 후손의 편집 가능한 개선법 후보로 소개하지 않는다.
 - 새 경계에 대한 회귀 검사는 `tests/support/engine/rsi_system.tests.rs`, `rsi_causal_closure.tests.rs`, `tests/support/api/rsi.tests.rs`에 선언했으며 실행하지 않았다.
 
+## 새 실행 구조와 방법 대조실험의 실제 연결
+
+```text
+web/src/pages/SelfImprovement.tsx (methodAblation 별도 동의)
+  -> src/api/rsi.rs::start (rsiMethodAblation)
+  -> src/engine/rsi_evolve.rs::{campaign_execution,compiled_planning,generation_evidence,method_ablation,generation_finalization}
+  -> campaign.rs::run_loop
+       -> compiled_planning.rs::plan_compiled_descendant (실제 재컴파일된 후손 정책)
+       -> method_ablation.rs::run_method_control [ON/OFF 동의 + 해당 분야에 상속 절차가 있는 경우]
+            -> rsi_generation control job -> --rsi-worker-job
+            -> methods.rs::method_strategies (OFF 분기의 실제 절차 사용 거부)
+            -> rsi_worktree.rs::compare_at (동결 평가, 대조군 자동 채택 금지)
+            -> rsi_method_ablation 영구 저장 (서버 원본 사전입력 SHA + 후보 평가)
+       -> rsi_generation treatment job -> --rsi-worker-job (ON)
+       -> generation_evidence.rs::capture_generation_evidence (도구/계보/사용량)
+       -> rsi_worktree.rs::compare_at -> campaign.rs::adopt (독립 채택만)
+       -> methods.rs::record_method_feedback (실제 방법 실행 기록·채택 파일 기여)
+       -> method_ablation.rs::measured_method_ablation (대조군 vs ON 동일 홀드아웃)
+       -> generation_feedback.rs::record_generation_feedback (새 탐색식 시도·메타 피드백)
+       -> generation_finalization.rs::finalize_generation (영구 저장·공통 증명·다음 정책)
+  -> rsi/proof.rs::recursive_proof_report
+       -> rsi_system/handoff.rs::handoff_evidence
+       -> rsi_causal_closure.rs::audit
+            -> A→B→A→B + ON/OFF 독립 실측 + 새 방법 버전의 후손 실행
+  -> GET /api/rsi/campaigns/:id/verify 와 캠페인 목록/상세의 동일 결과
+```
+
+- **대조실험 자원:** 추가 모델 호출은 `methodAblation` 별도 선택이 있을 때만 실행합니다. 추가 실행은 세대 작업으로 기록하고 `campaign_model_tokens`에 포함해 treatment 시작 전 남은 토큰을 재검산합니다.
+- **대조군 영수증:** control job의 `rsiMethodAblationInputSha256`와 treatment job의 동명 필드는 worker가 도중에 입력 정책을 갱신해도 사전실행 동일성 검사를 유지합니다. `rsi_method_ablation` 레코드의 후보 ID/평가와 실제 작업 세션의 procedure 로그를 재조회하며, 구두 주장이나 제안서는 성과로 인정하지 않습니다.
+- **품질 차이:** `measured_method_ablation`은 동일 독립 평가 사례의 `baselinePass`를 대조한 다음, OFF 실패·ON 통과인 실제 홀드아웃이 1개 이상이고 역전 회귀가 없을 때만 측정상 이득을 기록합니다. 대조군 작업은 이후 모델 학습 데이터가 아닌 실행 증거로만 활용됩니다.
+- **증명 강화:** `rsi_causal_closure.rs::audit`는 이미 채택된 4세대 계보의 실제 방법 사용 2번 외에, 각 기능 세대에서 **저장된 ON/OFF 평가를 다시 재생한 결과**가 함께 일치할 것을 요구합니다. 대조군 옵션을 켜지 않은 캠페인은 이 엄격한 전체 RSI 완성 기준을 만족할 수 없습니다.
+- **가중치 고정:** 기반 모델은 동일 API/로컬 inference 경로를 재사용하며 LoRA/파인튜닝/가중치 업데이트는 RSI 실행에 연결하지 않았습니다.
+
 ## 남은 핵심 과제
 
-- 동일 과제·모델·예산에서 개선 절차를 실행한 조건과 끈 조건을 비교하는 **개선법별 인과 제거실험**이 필요하다. 현재 경로는 검증된 소스 쓰기·계보·홀드아웃 성과의 결합 증거이며, 개별 절차만의 기여량과 장기 일반화는 별도 측정 대상이다.
+- 이제 같은 소스/모델/고정 평가에서 실제 방법 OFF/ON 두 작업을 실행하는 경로가 연결돼 있다. 다음 단계는 **모델 난수·프롬프트/시간 차이와 공유 상태 효과를 통제한 여러 시드의 반복 실험**, 절차 단독의 인과 기여량 추정, 다른 과제군 일반화 측정이다. 현재의 `causalAblationProven`은 의도적으로 false를 유지한다.
 - 커밋·아카이브·실행기는 독립 검증과 작업공간 격리를 전제로 한다. OS 수준의 네트워크·프로세스 예산 강제는 현재 소스 검토에서 별도 검증이 필요하다.
 - 고정 평가로 채택된 후손이 일반 목적 기능과 그 개선법을 상호 발전시켰는지 실제 유료 모델 캠페인으로 측정해야 한다.
 
@@ -58,3 +91,6 @@
 
 - Srikanth et al., *Recursive self-improvement of AI research agents* (2026-09): 후손이 개선기가 되는 연속 버전과 숨겨진 평가의 경계. https://arxiv.org/abs/2609.26457
 - Xue et al., *PAST-Bench* (2026-08): 같은 조건에서 과거 경험을 켜고 끄는 경로별 효과 분리. https://arxiv.org/abs/2608.04003
+
+- Google Research et al., *RRSI* (2026-09-21): 편집 후보 수 제한·다른 분야의 홀드아웃 전이와 탐색 과정의 과적합 완화. https://arxiv.org/abs/2609.24972
+- Zhang et al., *Flex-RSI* (2026-11-06): 동일 초기 하네스와 자원 제약을 유지한 실제 개선기 개입 실험을 분리해 측정. https://arxiv.org/abs/2611.08946
