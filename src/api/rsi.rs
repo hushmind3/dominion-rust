@@ -422,6 +422,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         "rsiLocalOnly":body["localOnly"]==true,
         "rsiSystemEvolution": continuous && body["evolutionTarget"] != "product" && body["nativeInduction"] != true,
+        // Default live system RSI to a real ON/OFF descendant experiment.
+        // Owners can disable the extra model call explicitly; a disabled
+        // ablation can never earn causal-method completion credit.
+        "rsiMethodAblation": continuous && body["evolutionTarget"] != "product"
+            && body["nativeInduction"] != true && body["methodAblation"] != false,
         "rsiApplyWhenFinished": continuous && body["applyWhenFinished"] == true,
         // Only explicitly opted-in automatic campaigns may broaden the
         // source search after independent adoption of the original goal.
