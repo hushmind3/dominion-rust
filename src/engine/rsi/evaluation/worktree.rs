@@ -290,27 +290,29 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
     }
     Ok(Worktree{source,path,base:base.to_string()})
 }
+/// The physical RSI tree is open-ended; no new improvement method needs a
+/// hardcoded file-name addition to be recognized by the paired evaluator.
 fn classify(patch:&str)->&'static str {
-    if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi/") && line.contains(".rs ")
-            || line.contains("src/engine/rsi.rs ")
-            || line.contains("src/engine/rsi/evaluation/worktree.rs ")
-            || line.contains("src/engine/rsi_evolve.rs ")
-            || line.contains("src/engine/rsi/lineage/archive.rs ")
-            || line.contains("src/engine/rsi/execution/mutation.rs ")
-            || line.contains("src/engine/rsi/meta/domain_accumulator.rs ")
-            || line.contains("src/engine/rsi/evaluation/metrics.rs ")
-            || line.contains("src/engine/algorithms.rs ")
-            || line.contains("src/engine/algorithm_eval.rs ")
-            || line.contains("src/engine/policy_patch.rs ")
-            || line.contains("src/api/rsi.rs "))) {
+    let paths=patch.lines().filter_map(|line|
+        line.strip_prefix("diff --git a/")
+            .and_then(|row|row.split_once(" b/"))
+            .and_then(|(a,b)|(a==b).then_some(a))
+    ).collect::<Vec<_>>();
+    if paths.iter().any(|p|{
+        (p.starts_with("src/engine/rsi/")
+            && p.ends_with(".rs") && !p.ends_with("_tests.rs"))
+        || matches!(*p,
+            "src/engine/rsi.rs"|"src/engine/rsi_evolve.rs"
+            |"src/engine/algorithms.rs"|"src/engine/algorithm_eval.rs"
+            |"src/engine/policy_patch.rs"|"src/api/rsi.rs")
+    }) {
         "improver"
-    } else if patch.lines().filter(|line|line.starts_with("diff --git "))
-        .all(|line|line.contains("src/engine/memory")
-            || line.contains("src/engine/algorithms.rs")
-            || line.contains("src/engine/room_state.rs")) {
+    } else if !paths.is_empty() && paths.iter().all(|p|
+        p.starts_with("src/engine/memory")
+            || *p=="src/engine/algorithms.rs"
+            || *p=="src/engine/room_state.rs") {
         "algorithm"
-    } else {"harness"}
+    }else{"harness"}
 }
 /// Link edit proposals to their actual executable receipts. Merely seeing
 /// workspace_replace_range in a model response is not evidence that the

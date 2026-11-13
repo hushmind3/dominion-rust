@@ -5,15 +5,15 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Concern | Live implementation |
 | --- | --- |
 | Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
-| Frozen paired A/B, detached source receipts | `src/engine/rsi_worktree.rs`, `src/engine/rsi_metrics.rs` |
+| Frozen paired A/B, detached source receipts | `src/engine/rsi/evaluation/worktree.rs`, `src/engine/rsi/evaluation/metrics.rs` |
 | Actual intelligence-role inventory, independent receipt replay | `src/engine/rsi_system.rs` |
 | Source index and bounded model navigation | `src/engine/code_index.rs` |
 | Editable improvement strategy | `src/engine/rsi_meta_controller.rs` |
 | Target-bound forecast learning, self-repair arbiter and execution proof | `src/engine/rsi_prequential.rs` |
 | Recurrent method rewriting / new method principles | `src/engine/rsi_recursive_rewrite.rs`, `src/engine/rsi_principle_learning.rs` |
-| Measured contribution and experimental isolation | `src/engine/rsi_credit_assignment.rs`, `src/engine/rsi_intervention_lab.rs` |
-| Inherited source evidence and strategy archive | `src/engine/rsi_archive.rs`, `src/engine/rsi_lineage_transfer.rs` |
-| Live model/provider selection | `src/engine/rsi_model_ecology.rs` |
+| Measured contribution and experimental isolation | `src/engine/rsi/learning/credit_assignment.rs`, `src/engine/rsi/evaluation/intervention_lab.rs` |
+| Inherited source evidence and strategy archive | `src/engine/rsi/lineage/archive.rs`, `src/engine/rsi/lineage/transfer.rs` |
+| Live model/provider selection | `src/engine/rsi/meta/model_ecology.rs` |
 | Real-model execution receipt | `scripts/sub4-live-rsi.mjs` |
 | Explicit-dispatch live verification | `.github/workflows/sub4-system-live-rsi.yml` |
 | Unit tests extracted from production Rust files | `tests/unit/` |

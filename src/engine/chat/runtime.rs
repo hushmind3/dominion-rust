@@ -53,7 +53,7 @@ use self::finalization::{compliance_detail, compliance_summary, determine_task_o
 #[path = "runtime/evidence.rs"]
 mod evidence;
 use self::evidence::{record_selection_snapshot};
-pub(super) use self::evidence::{finish_attempt};
+pub(super) use self::evidence::{finalize_execution, finish_attempt};
 
 #[path = "runtime/housekeeping.rs"]
 mod housekeeping;

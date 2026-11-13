@@ -240,3 +240,14 @@ use super::*;
         assert!(unsafe_audit_for_patch(&root,"diff --git a/src/lib.rs b/src/lib.rs\n+let value = 1;\n").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn nested_source_operators_are_improver_changes_but_test_only_edits_are_not(){
+        let target="src/engine/rsi/meta/decision_rules.rs";
+        let patch=format!("diff --git a/{target} b/{target}\n");
+        assert_eq!(classify(&patch),"improver");
+        let fake="src/engine/rsi/meta/method_tests.rs";
+        let patch=format!("diff --git a/{fake} b/{fake}\n");
+        assert_eq!(classify(&patch),"harness");
+        assert_eq!(classify(""),"harness");
+    }

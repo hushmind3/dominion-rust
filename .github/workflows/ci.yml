@@ -28,5 +28,6 @@ jobs:
       - run: npm ci --prefix web
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
+      - run: node scripts/rsi-structure-audit.mjs
       - run: bash -n scripts/rsi-lab.sh
       - run: cargo test --release
