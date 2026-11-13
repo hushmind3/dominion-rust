@@ -316,6 +316,10 @@ pub(crate) use counterfactual_execution::action_hash;
 mod compiled_planning;
 use compiled_planning::plan_compiled_descendant;
 
+#[path = "rsi/execution/generation_evidence.rs"]
+mod generation_evidence;
+use generation_evidence::capture_generation_evidence;
+
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};
