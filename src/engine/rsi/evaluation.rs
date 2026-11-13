@@ -362,7 +362,7 @@ pub(super) fn comparable_trial_baseline(
 /// Evidence from the same frozen experiment under two search policies.
 /// A code-adoption flag or a cheaper failed generation cannot prove that the
 /// algorithm found a better target. Missing or mismatched reports are unknown.
-pub(super) fn paired_trial_effect(generation:&Value,baseline:&Value)->Option<(u64,u64,u64)> {
+fn paired_trial_effect(generation:&Value,baseline:&Value)->Option<(u64,u64,u64)> {
     for key in ["generatorCommit","campaignId","objectiveId","generatorModel","generatorProviderId"] {
         let expected=generation[key].as_str().filter(|v|!v.is_empty())?;
         if baseline[key].as_str()!=Some(expected){return None;}
