@@ -193,11 +193,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let owner_focus=matches!(
             job["input"]["rsiFocusSelection"]["source"].as_str(),
             Some("owner_selected"|"user_selected"));
+        let controlled_transition=matches!(
+            job["input"]["rsiImprovementAlgebra"]["selected"]["intent"].as_str(),
+            Some("evolve_measured_method_after_controlled_downstream_gain"
+                |"run_revised_method_in_controlled_descendant"));
         let predictor_repair_active=job["input"]["rsiAutonomous"]==true
+            && !controlled_transition
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiMetaPolicy"]["predictionRuleRepair"]["repairRuleSourceSelected"]==true
             && job["input"]["rsiMetaPolicy"]["target"]["path"]=="src/engine/rsi_prequential.rs";
         let negative_transfer_active=!predictor_repair_active
+            && !controlled_transition
             && job["input"]["rsiAutonomous"]==true
             && !owner_focus && !paired_descendant_target(&job["input"])
             && job["input"]["rsiNegativeTransferPlan"]["selected"]["victim"].is_object()
