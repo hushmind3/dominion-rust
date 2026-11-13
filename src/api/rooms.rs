@@ -205,8 +205,13 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         if !valid_effort(effort) {
             return Err(bad("추론 강도 값이 올바르지 않습니다."));
         }
+        let tier = entry.get("tier").and_then(Value::as_str).unwrap_or("");
+        if !matches!(tier,""|"fast"|"deep") {
+            return Err(bad("모델 역할은 fast 또는 deep 중 선택하세요."));
+        }
         if seen_models.insert(format!("{provider_id}|{model}")) {
             let mut picked = json!({"providerId":provider_id,"model":model});
+            if !tier.is_empty() { picked["tier"] = json!(tier); }
             if !effort.is_empty() {
                 picked["reasoningEffort"] = json!(effort);
             }
@@ -241,6 +246,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
+        "tieredRouting":bool_field(body,previous,"tieredRouting",false)?,
         "costMode":cost_mode,
         "reasoningEffort":reasoning_effort,
         "models":models,
