@@ -36,6 +36,7 @@ pub(super) fn seed<'a>(frontier:&'a [Value],allowed:&[&str])->Option<&'a Value> 
         "src/engine/rsi/meta/controller_selection.rs",
         "src/engine/rsi/meta/evolution.rs",
         "src/engine/rsi_meta_controller.rs",
+        "src/engine/rsi/meta/reflexive_design.rs",
         "src/engine/rsi_reflexive.rs",
         "src/engine/rsi_mutual_program.rs",
         "src/engine/rsi_factorial.rs",
