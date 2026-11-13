@@ -28,3 +28,21 @@ fn treatment_cannot_claim_improvement_without_original_control_receipt(){
     })).is_null());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn isolated_quality_credit_uses_frozen_task_metrics_not_faster_execution(){
+    let control=json!({"metrics":[{"key":"quality","direction":"higher",
+        "baseline":0.55,"candidate":0.65},
+        {"key":"elapsedMs","direction":"lower","baseline":130.0,"candidate":100.0}]});
+    let improved=json!({"metrics":[{"key":"quality","direction":"higher",
+        "baseline":0.55,"candidate":0.87},
+        {"key":"elapsedMs","direction":"lower","baseline":130.0,"candidate":140.0}]});
+    assert_eq!(paired_quality_delta(&control,&improved),(1,0));
+    let cheaper=json!({"metrics":[{"key":"quality","direction":"higher",
+        "baseline":0.55,"candidate":0.65},
+        {"key":"elapsedMs","direction":"lower","baseline":130.0,"candidate":25.0}]});
+    assert_eq!(paired_quality_delta(&control,&cheaper),(0,0));
+    let regressed=json!({"metrics":[{"key":"quality","direction":"higher",
+        "baseline":0.55,"candidate":0.52}]});
+    assert_eq!(paired_quality_delta(&control,&regressed),(0,1));
+}
