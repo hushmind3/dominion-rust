@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
 
 mod speakers;
+mod economy;
 pub use speakers::plan_speakers;
 use speakers::{auto_reasoning_effort, model_pool, pool_slot};
 #[cfg(test)]
@@ -262,7 +263,15 @@ async fn run_locked(
     if initial.iter().any(|id| !roster.contains(id)) {
         return Err("실행 체크포인트의 응답자가 대화방 참가자가 아닙니다.".into());
     }
-    let rounds = room["rounds"].as_i64().unwrap_or(3).clamp(1, max_turns_ceiling() as i64) as usize;
+    let requested_rounds = room["rounds"].as_i64().unwrap_or(3)
+        .clamp(1,max_turns_ceiling() as i64) as usize;
+    // The source job's owner/agent choice, not an inferred message flag,
+    // determines whether adaptive economy may reduce speaking rounds.
+    let owner_selected_speakers = input["explicitAgentIds"] == true
+        || input["requestedAgentIds"].as_array().is_some_and(|ids| !ids.is_empty());
+    let rounds = economy::effective_rounds(
+        &room, owner_text, owner_selected_speakers, requested_rounds,
+        speakers::is_deep_request(owner_text));
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.
     let budget = existing["turnBudget"]
