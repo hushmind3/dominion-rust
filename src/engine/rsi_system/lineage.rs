@@ -144,10 +144,13 @@ pub(crate) fn method_transfer_target(
 )->Value {
     if input["rsiSystemEvolution"]!=true || input["rsiMethodAblation"]!=true
         || input["rsiAutonomous"]!=true {return Value::Null;}
-    let Some(meta)=history.last().filter(|g|g["accepted"]==true
-        && g["domain"]=="improver"
-        && g["evaluation"]["metrics"]["eligible"]==true
-        && g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0)
+    // The selected source persists across unsuccessful worker attempts.
+    // Continue from the last adopted meta revision, not history.last(),
+    // which may be an unadopted retry on the SAME generator commit.
+    let Some(meta)=history.iter().rev().find(|g|g["accepted"]==true)
+        .filter(|g|g["domain"]=="improver"
+            && g["evaluation"]["metrics"]["eligible"]==true
+            && g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0)
     else {return Value::Null;};
     let frozen=input["rsiFrozenCases"].as_array();
     let earlier_method=history.iter().rev().skip(1).find_map(|g|
