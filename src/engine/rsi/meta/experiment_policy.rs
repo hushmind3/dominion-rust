@@ -146,7 +146,7 @@ fn target_options(history:&[Value],frontier:&[Value])->Vec<TargetOption>{
             // exploration pressure, never the observed improvement count.
             if row["pairedReceiptReplayed"]!=true{continue;}
             if row["accepted"]==true && row["pairedRevalidated"]==true
-                && row["acceptedSourceHashes"][&target.path]==target.source_sha256{
+                && row["acceptedSourceHashes"][target.path.as_str()]==target.source_sha256{
                 adopted+=1;
             }else if row["evaluation"]["metrics"].is_object() {rejected+=1}
         }
