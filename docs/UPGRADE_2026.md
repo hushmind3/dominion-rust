@@ -4,14 +4,15 @@
 
 - 진입점: `src/main.rs` → `src/api/rooms.rs` / `src/api/chat.rs` / `src/api/video.rs` / `src/api/rsi.rs`
 - 공통 소유권·실행: `src/engine/jobs.rs`, `src/engine/chat/runtime/turn.rs`, `src/engine/chat/continuity.rs`
-- 그룹: `rooms.rs::plan_speakers` → `speaker_window` → `run_locked` → `tiered_model_pool` → `run_room_quiet` → `gateway::record_usage_tokens`. 정책은 저장된 방 스냅샷에서 읽고, 사용자의 명시적 선택이 모든 계층 라우팅보다 우선합니다.
+- 그룹: `rooms/routing.rs::plan_speakers` → `speaker_window` → `rooms.rs::run_locked` → `routing::tiered_model_pool` → `run_room_quiet` → `gateway::record_usage_tokens`. 정책은 저장된 방 스냅샷에서 읽고, 사용자의 명시적 선택이 모든 계층 라우팅보다 우선합니다.
 - 영상: `video.rs::enqueue` → `video/film.rs::spec` / `video/director.rs::shot_prompt` → `jobs::enqueue` → `video.rs::run` → `video/film.rs::run` → `video/ltx.rs::run` → `FFmpeg`. 요청별 과금 횟수 확인, 개별 제출 불확실성 기록, 완료 클립 재사용.
 - RSI: `api/rsi.rs` → `jobs.rs` → `rsi/execution/campaign.rs` → `rsi/planner/descendant.rs` → `rsi/execution/worker.rs` → `rsi_worktree.rs` → `rsi_method_generalization.rs`, 채택된 소스와 개선법을 다음 세대가 재사용합니다. 모델 가중치를 학습시키지 않습니다.
 
 ## 2026년 근거 및 차이
 
 - LTX 공식 2026년 8~11월 Changelog: https://docs.ltx.io/api-changelog
-- LTX 2.5 고화질·네이티브 멀티쇼트: https://docs.ltx.io/models/ltx-2-5/
+- LTX 2.5 고화질·네이티브 멀티쇼트·프레임별 지원 길이: https://docs.ltx.io/models/ltx-2-5/
+- `video/ltx.rs::maximum_duration` 규칙을 `video/film.rs::spec`와 단일 클립 경로에서 같이 참조해 24/25/48/50FPS의 720p~4K 공식 제한을 실행 전 확인합니다.
 - ICML 2026 LASE 선택적 에이전트 논의: https://proceedings.mlr.press/v306/yoa26a.html
 - ICML 2026 SALE 소형/대형 모델 전략 경매: https://proceedings.mlr.press/v306/alazraki26a.html
 - 2026년 프롬프트 캐시 운영 지침: https://developers.openai.com/api/docs/guides/prompt-caching

@@ -12,7 +12,7 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 
 - `web/src/pages/Video.tsx` → `src/api/video.rs::create` → `src/engine/video.rs::enqueue`: LTX 2.5 Pro/Fast 시네마틱 연출·장면별 지시·긴 영상의 유료 호출 횟수 확인을 하나의 생성 폼으로 제공합니다.
 - `src/engine/video/director.rs::shot_prompt`: 인물·의상·조명·카메라의 공통 연출 지시를 원래 프롬프트와 결합합니다. LTX 2.5의 네이티브 멀티쇼트는 추가 계획용 LLM 호출 없이 사용합니다.
-- `src/engine/video/film.rs::spec`: 장편은 Pro 최대 60초 / Fast 최대 120초를 지원되는 6~10초 또는 6~20초 클립으로 동결하고, 2~6회 유료 호출을 명시적으로 승인받습니다. 각 클립의 프롬프트·길이를 작업 등록 시 고정합니다.
+- `src/engine/video/film.rs::spec`: 장편은 Pro 최대 60초 / Fast 저해상도 24·25FPS 최대 120초이며, 1440p·4K 또는 고FPS는 최대 60초입니다. `video/ltx.rs::maximum_duration`의 2026년 공식 모델·해상도·FPS 매트릭스로 6~20초 클립을 동결하고 2~6회 유료 호출을 명시적으로 승인받습니다. 각 클립의 프롬프트·길이를 작업 등록 시 고정합니다.
 - `src/engine/video.rs::run` → `video/film.rs::run` → `video/ltx.rs::run` → FFmpeg: 유료 제출·작업 ID·결과 다운로드의 체크포인트를 유지하고, 검증된 완료 클립만 재사용하여 중복 과금을 줄입니다. 마지막에 비디오·오디오 스트림을 재인코딩 없이 결합합니다.
 - 짧은 영상은 기존 1회 LTX 작업을 계속 사용하며, 기존 네이티브·ComfyUI 엔진·출력/업로드 API는 유지합니다. 영상의 실제 품질 상승·공급자 과금은 연결 뒤 확인해야 합니다.
 - 모델 가중치 업데이트, LoRA, 재학습 및 사용자 PC 필수 대형 로컬 추론은 RSI에 연결하지 않습니다. 테스트·빌드·벤치마크는 이번 소스 검토에서 실행하지 않았습니다.
@@ -20,9 +20,9 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 ## 챔피온 2026-11-14: 적응형 그룹 토론·모델 계층 라우팅
 
 - `web/src/pages/Rooms.tsx` → `src/api/rooms.rs::validated_config` → `src/engine/rooms.rs::plan_speakers`: 새 방은 적응형 비용·품질 정책을 기본값으로 제공합니다. 기존 방에서 정책을 지정하지 않았으면 이전 전체 토론 방식을 유지합니다.
-- `rooms.rs::speaker_window`: 짧은 요청은 대표 응답 1명, 복잡한 요청은 최대 3명을 선택합니다. 직접 응답자 지정·@멘션·전원 발언·전체 모드는 우선권을 유지합니다.
+- `rooms/routing.rs::speaker_window`: 짧은 요청은 대표 응답 1명, 복잡한 요청은 최대 3명을 선택합니다. 직접 응답자 지정·@멘션·전원 발언·전체 모드는 우선권을 유지합니다.
 - `rooms.rs::run_locked`: 적응형 토론은 일반 질문 1라운드, 복잡한 질문 최대 2라운드로 제한하며, 명시적 최대 발언 수 또는 전체 모드를 선택하면 기존 설정을 따릅니다.
-- `rooms.rs::tiered_model_pool`: 사용자가 모델별로 `economy` / `frontier`를 표시한 경우에만 요청 난도에 따라 선택합니다. 모델명만 보고 가격을 추측하지 않으며 제공자 ID·사용자 직접 지정·도구 승인 경로는 유지합니다.
+- `rooms/routing.rs::tiered_model_pool`: 사용자가 모델별로 `economy` / `frontier`를 표시한 경우에만 요청 난도에 따라 선택합니다. 모델명만 보고 가격을 추측하지 않으며 제공자 ID·사용자 직접 지정·도구 승인 경로는 유지합니다.
 - `rooms.rs::run_locked`의 다음 발언 이전 예산 여유 검사로 반복 모델 호출을 조기에 종료합니다. 정확한 사용량은 기존 provider usage를 계속 기록합니다.
 - 공개 2026년 ICML LASE(선택적 토론)·SALE(전략적 소형 모델 라우팅)을 설계 참고로 삼았습니다. 제시된 논문 절감률은 이 저장소의 실측치가 아닙니다.
 

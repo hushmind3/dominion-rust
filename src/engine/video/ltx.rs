@@ -12,9 +12,20 @@ pub(super) fn ready(state: &AppState) -> bool {
     state.store.has_secret("video:ltx:api")
 }
 
-fn supported_duration(model: &str, duration: u64) -> bool {
-    if model == "ltx-2-5-pro" { matches!(duration, 6 | 8 | 10) }
-    else { (6..=20).contains(&duration) && duration % 2 == 0 }
+/// One authoritative 2026 LTX 2.5 model/resolution/frame-rate matrix.
+pub(super) fn maximum_duration(model:&str,quality:&str,fps:u64)->Result<u64,String> {
+    if !matches!(fps,24|25|48|50) {
+        return Err("LTX 2.5는 24·25·48·50 FPS만 지원합니다.".into());
+    }
+    if !matches!(quality,"720p"|"1080p"|"1440p"|"4k") {
+        return Err("LTX 해상도를 확인하세요.".into());
+    }
+    match model {
+        "ltx-2-5-pro" => Ok(10),
+        "ltx-2-5-fast" if matches!(quality,"1440p"|"4k") || fps>=48 => Ok(10),
+        "ltx-2-5-fast" => Ok(20),
+        _ => Err("지원하지 않는 LTX 모델입니다.".into()),
+    }
 }
 
 /// Exact model capabilities and dimensions as published in November 2026.
@@ -26,9 +37,6 @@ pub(super) fn spec(input: &Value, cfg: &Value) -> Result<Value, String> {
     }
     let duration = input["duration"].as_u64()
         .or(cfg["duration"].as_u64()).unwrap_or(8);
-    if !supported_duration(model, duration) {
-        return Err("LTX Pro는 6·8·10초, Fast는 6~20초 짝수 길이를 지원합니다.".into());
-    }
     let aspect = input["aspectRatio"].as_str()
         .or(cfg["aspectRatio"].as_str()).unwrap_or("9:16");
     let quality = input["videoQuality"].as_str()
@@ -47,8 +55,11 @@ pub(super) fn spec(input: &Value, cfg: &Value) -> Result<Value, String> {
         _ => return Err("지원하지 않는 영상 비율입니다.".into()),
     };
     let fps = input["fps"].as_u64().unwrap_or(24);
-    if !matches!(fps, 24 | 48) {
-        return Err("LTX 2.5 FPS는 24 또는 48로 설정하세요.".into());
+    let max_duration = maximum_duration(model,quality,fps)?;
+    if duration < 6 || duration > max_duration || duration % 2 != 0 {
+        return Err(format!(
+            "선택한 LTX 모델·해상도·FPS 조합은 6~{max_duration}초의 짝수 길이를 지원합니다."
+        ));
     }
     let generate_audio = input["generateAudio"].as_bool().unwrap_or(true);
     let prompt = input["brief"].as_str().unwrap_or("").trim();
@@ -206,6 +217,12 @@ mod tests {
         assert!(spec(&json!({"brief":"x","duration":20}),&cfg).is_err());
         assert!(spec(&json!({"brief":"x","duration":10,"videoModel":"ltx-2-5-fast"}),&cfg).is_ok());
         assert!(spec(&json!({"brief":"x","duration":8,"videoQuality":"5k"}),&cfg).is_err());
+        assert_eq!(maximum_duration("ltx-2-5-fast","1080p",24).unwrap(),20);
+        assert_eq!(maximum_duration("ltx-2-5-fast","4k",24).unwrap(),10);
+        assert_eq!(maximum_duration("ltx-2-5-fast","720p",48).unwrap(),10);
+        assert_eq!(maximum_duration("ltx-2-5-pro","4k",50).unwrap(),10);
+        assert!(spec(&json!({"brief":"x","duration":20,"videoModel":"ltx-2-5-fast",
+            "videoQuality":"4k"}),&cfg).is_err());
     }
     #[test]
     fn reject_local_or_non_tls_download_hosts() {

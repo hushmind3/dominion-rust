@@ -32,11 +32,10 @@ fn split_duration(total: u64, maximum: u64) -> Result<Vec<u64>, String> {
 pub(super) fn spec(body: &Value, cfg: &Value, total: u64) -> Result<Value, String> {
     let model = body["videoModel"].as_str()
         .or(cfg["videoModel"].as_str()).unwrap_or("ltx-2-5-pro");
-    let max_duration = match model {
-        "ltx-2-5-pro" => 10,
-        "ltx-2-5-fast" => 20,
-        _ => return Err("지원하지 않는 LTX 모델입니다.".into()),
-    };
+    let quality=body["videoQuality"].as_str().or(cfg["videoQuality"].as_str())
+        .unwrap_or("1080p");
+    let fps=body["fps"].as_u64().unwrap_or(24);
+    let max_duration=ltx::maximum_duration(model,quality,fps)?;
     let parts = split_duration(total, max_duration)?;
     if parts.len() > 1 && body["confirmPaidMultiShot"] != true {
         return Err(format!("LTX 유료 영상 생성 {}회에 동의해야 합니다.",parts.len()));
