@@ -81,6 +81,12 @@ fn source_role(path:&str)->&'static str {
     if path.starts_with("web/src/") || path.starts_with("src-tauri/src/") {
         return "frontend";
     }
+    // The executable RSI is no longer a flat list of rsi_*.rs files.
+    // Deep planner / executor / evaluator / learner code remains an
+    // improvement-method target in every rebuilt descendant's source map.
+    if path.starts_with("src/engine/rsi/") {
+        return "improvement_methods";
+    }
     let name=path.rsplit('/').next().unwrap_or(path);
     if name.starts_with("model_") || name.starts_with("training")
         || matches!(name,"models.rs"|"cli_model.rs"|"router.rs"|"gateway.rs") {

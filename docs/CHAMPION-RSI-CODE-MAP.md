@@ -5,7 +5,12 @@ This file is a short routing index, not proof of performance. Source code is the
 
 ## Follow the actual runtime
 
-1. `src/engine/rsi_evolve.rs` — campaign coordinator, compiled descendant plan, worker, independent candidate adoption. Rust unit tests are in `rsi_evolve_tests.rs`.
+1. `src/engine/rsi_evolve.rs` — **small compatibility facade**, preserved external entry points. Full implementation follows explicit submodules:
+   - `src/engine/rsi/planner/` — strategy search, source-grounded context and compiled child plan
+   - `src/engine/rsi/execution/` — campaign loop, generation worker, source/worktree and budget guards
+   - `src/engine/rsi/evaluation/` — original-paired adoption and success criteria
+   - `src/engine/rsi/learning/` — verified edit methods, transfer trials and research reuse
+   - `src/engine/rsi_evolve_tests.rs` — separated Rust unit tests
 2. `src/engine/rsi_system.rs` — source-grounded architecture, selected-target validation and independently replayed history. Tests: `rsi_system_tests.rs`.
 3. `src/engine/rsi_meta_controller.rs` — editable source-target ranking and prediction-repair priority.
 4. `src/engine/rsi_prequential.rs` — source-bound prequential predictions. Invalid/missing original paired receipts are not learning labels; only actual changed target source can be a target success.
@@ -24,3 +29,7 @@ This file is a short routing index, not proof of performance. Source code is the
 ## Readability rule
 
 Production Rust modules contain runtime logic; their large inline test modules were moved to sibling `*_tests.rs` files without changing test cases. Don't reintroduce historical handoffs or generated evidence dumps into source-reading context. Preserve frozen oracle receipts and actual accepted descendants.
+
+## Pruned source files
+
+Three historical unregistered implementations (`rsi_action_program.rs`, `rsi_judgement.rs`, `rsi_success_ablation.rs`) were not part of the engine module registry or executable dependency chain, so they were removed from the active tree. Git history retains them. The dynamic frozen oracle (`rsi_oracle_fixture.rs`) and native mutation template (`rsi_domain_accumulator.rs`) are **not** dead: the actual runtime loads their bytes with `include_str!`. The facade now `include!`s that native template instead of storing a second copy.

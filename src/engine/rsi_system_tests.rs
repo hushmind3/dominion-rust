@@ -1,3 +1,18 @@
+#[test]
+fn nested_rsi_source_is_indexed_as_an_improvement_method() {
+    for path in [
+        "src/engine/rsi/planner/search.rs",
+        "src/engine/rsi/planner/descendant.rs",
+        "src/engine/rsi/execution/campaign.rs",
+        "src/engine/rsi/execution/worker.rs",
+        "src/engine/rsi/evaluation/adoption.rs",
+        "src/engine/rsi/learning/edit_policy.rs",
+    ] {
+        assert_eq!(source_role(path),"improvement_methods",
+            "extracted RSI code must remain in descendant self-model: {path}");
+    }
+}
+
 use super::*;
     #[test]
     fn forged_prediction_history_without_original_job_and_pair_is_censored() {
