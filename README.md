@@ -535,3 +535,9 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 ## Hosted cinematic video (2026)
 
 Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation requiring no local GPU or workflow import. Configure the LTX API key in Video Settings and select quality. The durable engine avoids paid resubmission on uncertain results. See [video architecture](docs/VIDEO-CINEMATIC-2026.md).
+
+
+### Autonomous goal grounding / delivery (2026-11-14)
+- `api/goals.rs::create_goal` → `jobs::enqueue` → `goals.rs::run` → `goal_context::snapshot` (bounded code tree + root guidance) → planner → `run_quiet_outcome` (real tools) → `verification::acceptance_gaps` + independent reviewer → replan/repair → `goal_artifacts::collect` (actual file SHA-256) → `episode::set_root_outcome`. Real tool observations, not model assertions, ground completion.
+- `verification::is_action_evidence` now recognizes `workspace_replace` and `workspace_replace_range`; explicit exact-replacement contracts are validated. Repository discovery excludes generated directories and `.env` files; no local model or weights training is required.
+- Source change only: tests, build, CI, and paid-model evaluations have not run.

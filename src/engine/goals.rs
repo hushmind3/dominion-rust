@@ -153,10 +153,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .as_ref()
         .and_then(crate::engine::episode::contract_revision)
         .map(str::to_string);
-    state
-        .store
-        .put("goal", &goal)
-        .ok_or("목표 체크포인트를 저장할 수 없습니다.")?;
+    // Only patch runtime fields. A concurrent owner instruction must not
+    // be lost to a stale full-record rewrite.
+    patch_goal(state,goal_id,json!({"sessionId":session_id,"status":"running",
+        "phase":"plan","startedAt":goal["startedAt"],
+        "acceptanceChecks":criteria,"taskId":task_id}));
+    let project_context=state.store.get("goal",goal_id)
+        .and_then(|row|row["projectContext"].as_str().map(str::to_string))
+        .unwrap_or_else(||crate::engine::goal_context::snapshot(state));
+    patch_goal(state,goal_id,json!({"projectContext":project_context}));
     context.emit(json!({"type":"goal_started","goalId":goal_id,"sessionId":session_id}));
     if control.is_cancelled() {
         return Ok(finish(context, goal_id, "cancelled", vec![], None));
@@ -166,8 +171,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let mut plan = match goal.get("plan").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
         Some(plan) => plan.to_string(),
         None => control.complete(&plan_provider,&plan_model,
-            "You are the planner of an autonomous agent. Produce a short ordered plan (max 5 steps) in Korean. Include verification of the acceptance checks. No tool calls.",
-            &format!("목표: {text}\n검증 조건: {criteria}"))
+            "You are the planner of an autonomous agent. Ground the plan in the real repository inventory and project guidance supplied. Identify relevant files, ordered actions, and an independent verification step. Avoid inventing paths. No tool calls.",
+            &format!("목표: {text}\n검증 조건: {criteria}\n프로젝트 탐색 정보:\n{project_context}"))
             .await.unwrap_or_else(|_| format!("1. 목표를 수행한다.\n2. 실제 결과와 검증 조건을 확인한다.\n목표: {text}"))
             .chars().take(1500).collect()
     };
@@ -208,7 +213,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
-            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000)),
+            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
@@ -250,10 +255,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if evidence.len() > 120 {
             evidence.drain(..evidence.len() - 120);
         }
+        let artifacts=crate::engine::goal_artifacts::collect(state,&evidence);
         patch_goal(
             state,
             goal_id,
-            json!({"phase":"review","iterations":index+1,"evidence":evidence,"sessionId":session_id}),
+            json!({"phase":"review","iterations":index+1,"evidence":evidence,"artifacts":artifacts,"sessionId":session_id}),
         );
         context.checkpoint(json!({"stepIndex":index+1,"stepTotal":max_iterations,"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"reviewPending":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         if control.is_cancelled() {
@@ -460,7 +466,10 @@ fn finish(
         }
     }
     context.emit(json!({"type":"goal_finished","goalId":id,"status":status}));
-    json!({"goalId":id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":gaps})
+    json!({"goalId":id,"status":status,"sessionId":goal.get("sessionId"),
+        "iterations":goal.get("iterations"),"artifacts":goal.get("artifacts"),
+        "planHistory":goal.get("planHistory"),"reviewHistory":goal.get("reviewHistory"),
+        "evidence":goal.get("evidence"),"gaps":gaps})
 }
 
 pub fn parse_review(text: &str) -> (bool, Vec<String>) {

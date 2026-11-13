@@ -34,6 +34,7 @@ pub fn validate_criteria(criteria: &Value) -> Result<(), String> {
         let required: &[&str] = match kind {
             "file_exists" | "file_absent" | "file_changed" => &["path"],
             "file_contains" => &["path", "contains"],
+            "file_replace_exact" => &["path","old","new"],
             "file_equals" => &["path", "content"],
             "tool_succeeded" => &["tool"],
             "command_succeeded" => &["command"],
@@ -342,7 +343,8 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
         return false;
     }
     match tool_name(item) {
-        "workspace_write" | "file_write" => true,
+        "workspace_write" | "workspace_replace" |
+        "workspace_replace_range" | "file_write" => true,
         "shell_exec" | "terminal_exec" => {
             let args = item
                 .get("arguments")

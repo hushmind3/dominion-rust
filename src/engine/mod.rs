@@ -1,4 +1,6 @@
 pub mod goal_control;
+pub mod goal_context;
+pub mod goal_artifacts;
 pub mod adaptation_loop;
 pub mod distill;
 pub mod effect;

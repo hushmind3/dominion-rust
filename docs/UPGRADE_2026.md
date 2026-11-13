@@ -27,3 +27,10 @@
 5. 영상 장편 제작의 쇼트 간 인물/조명 일관성은 프롬프트 유도이며 프레임 참조 기반의 완전 보장이 아닙니다.
 
 이번 변경은 구조와 실제 호출 경로의 소스 통합입니다. CI·빌드·실모델·영상 벤치마크는 실행하지 않았으며, 절감률·품질 상승을 실측 성과로 주장하지 않습니다.
+
+
+## Agent execution integration 2026-11-14
+- `goal_context.rs::snapshot` freezes a small project file inventory and selected root docs before the planner. `goals.rs::run` passes the same bounded context to the executor without another API call.
+- `run_quiet_outcome` uses existing `code_search`, workspace edits, delegation, browser, GitHub and MCP tools; `verification::acceptance_gaps` and the independent reviewer gate completion.
+- `goal_artifacts.rs::collect` returns hashes of actual workspace files written through recorded successful tools. `goals.rs::finish` returns the artifact manifest and history; artifact hashes are not a substitute for test success.
+- No compile, benchmark or model run performed for this patch.
