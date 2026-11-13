@@ -207,6 +207,7 @@ mod tests {
         let task="src/engine/memory.rs";
         let initial=json!({
             "id":"b","candidateId":"candidate-b",
+            "candidateOrigin":"model_driven_detached_worktree",
             "accepted":true,"pairedRevalidated":true,
             "sourceLineageVerified":true,
             "acceptedCommit":"c".repeat(40),

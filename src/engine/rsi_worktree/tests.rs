@@ -259,6 +259,7 @@ use super::*;
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source.to_str().unwrap()}));
         let input=json!({
             "rsiBaseCommit":base,"rsiSourceDir":source.to_str().unwrap(),
+            "rsiSourceBranch":"dominion-sub",
             "rsiObjective":"DOMINION 화면 렌더링 검증 대상 소스를 수정한다",
             "model":"test-model",
             "rsiFrozenCases":[

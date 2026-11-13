@@ -66,7 +66,7 @@ use super::*;
         assert!(peer_instruction(&peer,&original).is_empty());
         let single_peer=peer_instruction(&peer,&evolved);
         assert!(single_peer.contains("ISOLATED PEER METHOD REFERENCE"));
-        assert!(single_peer.contains("peer=other") || single_peer.contains("donor=other"));
+        assert!(single_peer.contains("single assigned donor=other"));
         let mut second_peer=peer.clone();
         second_peer["references"].as_array_mut().unwrap().push(json!({
             "campaignId":"unassigned","candidateId":"other-candidate",

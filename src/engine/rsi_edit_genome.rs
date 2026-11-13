@@ -546,9 +546,20 @@ mod tests {
             item["objectiveId"]=json!("goal-1");
             item["knowledgePartition"]=json!("partition-1");
             item["candidateId"]=json!(format!("candidate-{job}"));
+            item["sourceBranch"]=json!("dominion-sub2");
+            item["comparisonProfileSha256"]=json!("frozen-paired-suite");
+            item["domain"]=json!("improver");
+            item["pairedRevalidated"]=json!(true);
+            item["candidateOrigin"]=json!("model_driven_detached_worktree");
+            item["nativeMutation"]=Value::Null;
+            item["tokenUsage"]=json!({"calls":1});
+            item["modelAttributionConsistent"]=json!(true);
             item["accepted"]=json!(success);
             item["evidenceVerified"]=json!(success);
-            item["evaluation"]=json!({"source":"server_invoked_local_paired_git_worktrees",
+            item["evaluation"]=json!({
+                "candidateId":format!("candidate-{job}"),
+                "evidenceSha256":"a".repeat(64),
+                "source":"server_invoked_local_paired_git_worktrees",
                 "metrics":{"eligible":success}});
             item
         };

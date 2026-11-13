@@ -13,6 +13,7 @@
         let output = command(&context, lock, Duration::from_secs(30)).await.unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         git(&context, &source, &["init", "-q"]).await.unwrap();
+        git(&context, &source, &["checkout","-b","dominion-sub2"]).await.unwrap();
         git(&context, &source, &["add", "."]).await.unwrap();
         git(&context, &source, &["-c","user.name=Test","-c","user.email=test@localhost","commit","-qm","controlled worker"]).await.unwrap();
         let base = git(&context, &source, &["rev-parse", "HEAD"]).await.unwrap();
@@ -77,9 +78,10 @@
         // The same accepted chain can reach the real test branch through an
         // explicit product action. Untracked research and main are preserved.
         git(&context,&source,&["update-ref","refs/heads/main",&base]).await.unwrap();
+        git(&context,&source,&["checkout","main"]).await.unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         assert!(rsi_worktree::apply_campaign_to_sub(&state,"campaign",accepted_commit).await.unwrap_err().contains("dominion-sub"),"main must never be an application target");
-        git(&context,&source,&["checkout","-b","dominion-sub2"]).await.unwrap();
+        git(&context,&source,&["checkout","dominion-sub2"]).await.unwrap();
         std::fs::write(source.join("my-research.txt"),"keep my unrelated research").unwrap();
         crate::engine::dev::save_config(&state,&json!({"sourceDir":source}));
         context.checkpoint(json!({"status":"completed"})).unwrap();

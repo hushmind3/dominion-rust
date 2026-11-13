@@ -183,11 +183,14 @@ pub(crate) fn plan(history: &[Value], frontier: &[Value], commit: &str) -> Value
         // Failed AND successful source-authored hypotheses enter the
         // empirical archive. Ignoring rejected theories would manufacture
         // a perfect prior and teach nothing about discovery failure.
-        if let Some(p) = principle(g) {
+        if g["pairedRevalidated"]==true
+            && g["evaluation"]["metrics"]["eligible"].is_boolean() {
+            if let Some(p) = principle(g) {
             let family_id=p["id"].as_str().map(str::to_owned)
                 .unwrap_or_else(||revision(&json!([
                     p["name"],p["taskRole"],p["mechanism"]])));
             family.entry(family_id).or_default().push(g);
+            }
         }
     }
     let mut principles = Vec::<Value>::new();

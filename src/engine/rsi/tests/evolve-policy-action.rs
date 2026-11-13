@@ -1,7 +1,7 @@
     #[test]
     fn observed_meta_method_failure_reaches_compiled_focus_without_owner_override() {
         let repair=json!({
-            "metaRepairChosen":true,"mode":"repair_own_transfer_method",
+            "metaRepairChosen":true,"mode":"repair_own_prediction_mechanism",
             "target":{"role":"improvement_methods","domain":"improver",
                 "path":"src/engine/rsi_meta_controller.rs",
                 "sourceSha256":"a".repeat(64)}
@@ -21,9 +21,12 @@
         wrong=repair.clone();
         wrong["mode"]=json!("test_cross_role_portable_method");
         assert!(!evidence_based_meta_repair_focus(&wrong,&Value::Null,false));
-        wrong["mode"]=json!("repair_own_prediction_mechanism");
-        assert!(evidence_based_meta_repair_focus(&wrong,&Value::Null,false),
-            "forecast-driven self-repair uses the same executable focus path");
+        wrong["mode"]=json!("repair_own_transfer_method");
+        assert!(!evidence_based_meta_repair_focus(&wrong,&Value::Null,false),
+            "the transfer-method focus must be the compiled peer-transfer algorithm");
+        wrong["target"]["path"]=json!(
+            crate::engine::rsi_meta_controller::TRANSFER_METHOD_SOURCE);
+        assert!(evidence_based_meta_repair_focus(&wrong,&Value::Null,false));
     }
 
     #[test]
@@ -119,6 +122,11 @@
             "rsiSystemEvolution":true,
             "rsiSourceDir":source,
             "rsiGeneratorCommit":commit,
+            "rsiCampaignId":"compiled-source-scan-fixture",
+            "rsiFrozenCases":(0..8).map(|i|
+                json!({"id":format!("frozen-{i}"),"domain":"improver",
+                    "holdout":i<3,"filter":format!("test::{i}")}))
+                .collect::<Vec<_>>(),
             "rsiIndexId":index["id"],
             "rsiObjective":"기억 및 자기개선 소스의 실행 방식을 바꿔라",
             "rsiSelectedDomain":"memory",

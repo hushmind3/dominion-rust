@@ -97,7 +97,7 @@ fn stream_search_policy_statistics(source: &str) -> Option<String> {
     }
     let old_tie = "let mut best=(f64::NEG_INFINITY,eligible_domains(objective)[0]);";
     if source.matches(old_tie).count() != 1 { return None; }
-    let optimized = r#"fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {
+    let optimized = r#"pub(super) fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {
     // One witnessed generation produces all features for its domain in one
     // traversal; no temporary Vec or repeated history scans.
     let mut attempts = 0.0_f64;
@@ -301,7 +301,7 @@ fn inductive_target_path(input: &Value) -> Option<&str> {
     }
     match input["rsiTargetDomain"].as_str() {
         Some("memory") => Some("src/engine/room_state.rs"),
-        Some("improver") => Some("src/engine/rsi_evolve.rs"),
+        Some("improver") => Some("src/engine/rsi/search.rs"),
         _ => selected,
     }
 }
@@ -480,7 +480,7 @@ mod tests {
             "rsiTargetDomain":"memory","rsiFocusFiles":["src/engine/other.rs"]});
         assert_eq!(inductive_target_path(&request),Some("src/engine/room_state.rs"));
         request["rsiTargetDomain"]=json!("improver");
-        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi_evolve.rs"));
+        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi/search.rs"));
         request["rsiTargetDomain"]=json!("tools");
         assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
         request["rsiAutoFocus"]=json!(false);
@@ -491,7 +491,9 @@ mod tests {
 
     #[test]
     fn meta_improver_evolves_streamed_policy_statistics_without_changing_rules() {
-        let source = include_str!("rsi_evolve.rs");
+        // The editable algorithm moved into rsi/search.rs when the
+        // coordinator was split; native RSI must target executable code.
+        let source = include_str!("rsi/search.rs");
         let candidate = stream_search_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
