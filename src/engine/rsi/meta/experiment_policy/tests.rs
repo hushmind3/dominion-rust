@@ -70,6 +70,23 @@ fn failed_control_design_reselects_protocol_and_source_of_experiment_designer(){
     assert_eq!(next["redesignTrigger"],"measured_method_control_design_failure");
 }
 #[test]
+fn open_ended_topology_targets_are_selected_without_a_fixed_role_list(){
+    let mut frontier=frontier();
+    frontier.push(json!({"role":"invented_perception","domain":"improver",
+        "path":"src/engine/perception.rs","sourceSha256":"e".repeat(64)}));
+    let explored=(0..5).map(|i|json!({"id":i,
+        "focusFiles":["src/engine/rsi/meta/experiment_policy.rs"],
+        "pairedReceiptReplayed":false})).collect::<Vec<_>>();
+    let policy=synthesize(&explored,&frontier,&algebra(),&request(),&commit());
+    assert_eq!(policy["preferredFocus"]["path"],"src/engine/perception.rs",
+        "source-compiled target selection must accept newly invented roles");
+    assert!(decode(&policy,&commit(),&request()).is_some());
+    let mut forged=policy;
+    forged["rankedTargets"][0]["priority"]=json!(999999999);
+    assert!(decode(&forged,&commit(),&request()).is_none());
+}
+
+#[test]
 fn a_source_revision_cannot_reuse_its_predecessor_policy_envelope(){
     let decision=synthesize(&[],&frontier(),&algebra(),&request(),&commit());
     assert!(decode(&decision,&"e".repeat(40),&request()).is_none());
