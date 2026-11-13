@@ -29,13 +29,11 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    if record["systemEvolution"]==true {
-        let history=record["history"].as_array().cloned().unwrap_or_default();
-        record["systemEvidence"]=crate::engine::rsi_system::handoff_evidence(state,&history);
-        record["capabilityDemonstrated"]=record["systemEvidence"]["demonstrated"].clone();
-    }else{
-        record["capabilityDemonstrated"] = json!(max>=3 && engine::campaign_capability_proven(state,record));
-    }
+    let proof=engine::recursive_proof_report(state,record);
+    record["recursiveProof"]=proof.clone();
+    record["systemEvidence"]=proof["systemEvidence"].clone();
+    record["generationCapabilityProven"]=proof["generationCapabilityProven"].clone();
+    record["capabilityDemonstrated"]=proof["demonstrated"].clone();
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
@@ -98,9 +96,16 @@ pub async fn evaluation_profiles(State(state):State<AppState>)->Response {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
+    let campaigns=state.store.all("rsi_campaign").into_iter().take(20)
+        .map(|mut campaign| {
+            if let Some(job)=campaign["id"].as_str().and_then(|id|state.store.get("job",id)) {
+                campaign["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
+            }
+            apply_capability(&state,&mut campaign);
+            campaign
+        }).collect::<Vec<_>>();
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
-        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
-        "minPairedCases":engine::MIN_PAIRED_CASES}))
+        "campaigns":campaigns,"minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
 pub async fn signals(State(state): State<AppState>) -> Json<Value> {
@@ -274,23 +279,25 @@ pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Respons
     let Some(campaign)=state.store.get("rsi_campaign",&id) else {
         return error("캠페인 기록을 찾을 수 없습니다.".into());
     };
-    let mut report=engine::capability_audit(&state,&campaign);
-    if campaign["systemEvolution"]==true || state.store.get("job",&id)
-        .is_some_and(|job|job["input"]["rsiSystemEvolution"]==true) {
-        let history=campaign["history"].as_array().cloned().unwrap_or_default();
-        report["systemEvidence"]=crate::engine::rsi_system::handoff_evidence(&state,&history);
-        report["capabilityDemonstrated"]=report["systemEvidence"]["demonstrated"].clone();
+    let mut authoritative=campaign;
+    if let Some(job)=state.store.get("job",&id) {
+        authoritative["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
     }
-    Json(report).into_response()
+    Json(engine::capability_audit(&state,&authoritative)).into_response()
 }
 
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("job").into_iter().filter(|job|job["kind"]=="rsi_evolve")
         .take(20).map(|job| {
             let record=state.store.get("rsi_campaign",job["id"].as_str().unwrap_or("")).unwrap_or(Value::Null);
-            json!({"id":job["id"],"status":job["status"],"phase":record["phase"],
+            let mut view=record;
+            view["systemEvolution"]=job["input"]["rsiSystemEvolution"].clone();
+            apply_capability(&state,&mut view);
+            json!({"id":job["id"],"status":job["status"],"phase":view["phase"],
                 "model":job["input"]["model"],"providerId":job["input"]["providerId"],
-                "createdAt":job["queuedAt"],"acceptedGenerations":record["acceptedGenerations"]})
+                "createdAt":job["queuedAt"],"acceptedGenerations":view["acceptedGenerations"],
+                "capabilityDemonstrated":view["capabilityDemonstrated"],
+                "generationCapabilityProven":view["generationCapabilityProven"]})
         }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
 }
