@@ -79,7 +79,7 @@ fn experiments(s:&str)->bool {
 }
 fn outcomes(s:&str)->bool {
     matches!(s,"adopted"|"quality_gain"|"regressed"|"rejected"
-        |"inconclusive"|"meta_gain"|"method_gain")
+        |"inconclusive"|"meta_gain"|"method_gain"|"measured")
 }
 fn valid_protocol(p:&Protocol)->bool {
     if p.source!=AUTHOR || p.quality_proven
@@ -103,6 +103,7 @@ fn valid_protocol(p:&Protocol)->bool {
     for edge in &p.transitions {
         if !ids.contains(edge.from.as_str()) || !ids.contains(edge.to.as_str())
             || !outcomes(&edge.when)
+            || (edge.when=="measured" && edge.guard.is_none())
             || edge.guard.as_ref().is_some_and(|guard|
                 !super::meta_transition_policy::valid(guard))
             || !transitions.insert((&edge.from,&edge.to,&edge.when)) {return false;}
@@ -148,6 +149,17 @@ fn outcome(g:&Value)->&'static str {
     else if g["pairedMeasured"]==true {"rejected"}
     else {"inconclusive"}
 }
+/// A typed metric predicate can drive a transition with no hard-coded
+/// A/B stage or named qualitative success state. The 'measured' trigger
+/// requires a real paired episode and a model-authored, validated guard.
+fn transition_matches(edge:&Transition,episode:&Value)->bool {
+    let relevant=if edge.when=="measured" {
+        edge.guard.is_some()
+            && (episode["pairedRevalidated"]==true || episode["pairedMeasured"]==true)
+    }else{edge.when==outcome(episode)};
+    relevant && edge.guard.as_ref().is_none_or(|guard|
+        super::meta_transition_policy::evaluate(guard,episode))
+}
 fn target(frontier:&[Value],operator:&Operator,allowed:&[&str])->Option<Value>{
     if !allowed.contains(&operator.domain.as_str()){return None;}
     frontier.iter().find(|row|
@@ -180,9 +192,8 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],allowed:&[&str],commit:
     }else{return Value::Null};
     let Ok(p)=serde_json::from_value::<Protocol>(protocol.clone()) else{return Value::Null;};
     let choices:Vec<&Operator>=if let Some(prior)=prior_id.as_deref(){
-        p.transitions.iter().filter(|edge|edge.from==prior && edge.when==outcome(ancestor)
-            && edge.guard.as_ref().is_none_or(|guard|
-                super::meta_transition_policy::evaluate(guard,ancestor)))
+        p.transitions.iter().filter(|edge|
+            edge.from==prior && transition_matches(edge,ancestor))
             .filter_map(|edge|p.operators.iter().find(|op|op.id==edge.to))
             .collect()
     }else{p.operators.iter().filter(|op|op.id==p.entry).collect()};
@@ -252,9 +263,7 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],commit:&str)-
             && p.previous_operator_id.as_deref()==prev["operatorId"].as_str()
             && p.protocol.transitions.iter().any(|edge|
                 Some(edge.from.as_str())==p.previous_operator_id.as_deref()
-                    && edge.to==p.operator_id && edge.when==outcome(ancestor)
-                    && edge.guard.as_ref().is_none_or(|guard|
-                        super::meta_transition_policy::evaluate(guard,ancestor)))
+                    && edge.to==p.operator_id && transition_matches(edge,ancestor))
     }
 }
 pub(crate) fn instruction(plan:&Value)->String {
