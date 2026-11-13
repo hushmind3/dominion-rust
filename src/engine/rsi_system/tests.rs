@@ -57,6 +57,9 @@ use super::*;
             "src/engine/fixtures/mock.rs",
             "src/engine/rsi_meta_controller/tests.rs",
             "src/engine/rsi_system/tests.rs",
+            "src/engine/rsi_worktree/tests.rs",
+            "src/engine/chat/runtime/outcome_tests.rs",
+            "src/engine/chat/runtime/harness_tool_selection_tests.rs",
         ] {
             assert!(!runtime_source_file(artifact), "{artifact} is not a release capability");
         }
@@ -326,3 +329,27 @@ use super::*;
         fs::remove_dir_all(root).unwrap();
     }
 
+
+#[test]
+fn detached_evaluator_sources_remain_fingerprinted_but_not_editable_frontier() {
+    let root=std::env::temp_dir().join(format!(
+        "rsi-frozen-worktree-boundary-{}",uuid::Uuid::new_v4()));
+    let frozen="src/engine/rsi_worktree/comparison.rs";
+    let editable="src/engine/rsi_meta_controller/peer_transfer.rs";
+    for source in [frozen,editable] {
+        let full=root.join(source);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        fs::write(full,"pub fn example() {}\n").unwrap();
+    }
+    let map=blueprint(&root,"pinned",&[]);
+    let inventory=map["sourceInventory"].as_array().unwrap();
+    assert!(inventory.iter().any(|item|item["path"]==frozen));
+    let published=map["architecture"].as_array().unwrap().iter()
+        .flat_map(|role|role["representativeSources"].as_array()
+            .into_iter().flatten())
+        .filter_map(|source|source["path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(!published.contains(&frozen));
+    assert!(published.contains(&editable));
+    fs::remove_dir_all(root).unwrap();
+}

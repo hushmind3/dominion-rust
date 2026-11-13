@@ -23,3 +23,11 @@ Frozen source receipts and paired evaluation are still required; source placemen
 ## Verification status
 
 The tree/branch and function-preservation checks were performed against GitHub content. **No compile, build, CI, real-model test or full RSI generational proof was performed** for these commits. The focused Rust tests in the source are proposed regression coverage until actually executed. No model-weight learning, LoRA or fine-tuning path was added.
+
+## Runtime and detached worktree boundary cleanup
+
+- `src/engine/chat/runtime.rs` was structurally reduced from 6,984 to about 647 lines. The large live-turn function remains intact in `runtime/turn.rs`; adaptation, durable program execution, tool catalog, tool gateway, semantic finalization, session signals and tests are now separate child modules. Static checks matched all 73 non-test top-level declarations and original function bodies after visibility normalization.
+- `src/engine/rsi_worktree.rs` now delegates to `rsi_worktree/{metrics,checkout,validation,candidate,feedback,promotion,comparison}.rs` while preserving the original entry-point names. Paired comparison and operator-controlled source promotion reside in separate modules. Tests were moved out of the runtime implementation.
+- Worktree integrity and paired evaluation modules remain in the descendant's full source-inventory fingerprint, but do **not** appear as editable architecture targets. This maintains an independently held verification boundary after the file split. A source-level regression test asserts this distinction.
+
+GitHub source commits use `[skip ci]`; static equivalence checks are not Rust compilation, external CI results, or a verified model-generated descendant success.
