@@ -199,6 +199,8 @@ pub(super) async fn plan_compiled_descendant(
             }
         }
         let frozen=crate::engine::rsi_profile::from_input(&child_input)?;
+        let experiment_contract=crate::engine::rsi_evolve::experiment_contract::bind(
+            &plan,frozen["sha256"].as_str().ok_or("동결 평가 해시 없음")?)?;
         crate::engine::rsi_system::validate_peer_references(
             &context.state,&plan["peerLineages"],frozen["sha256"].as_str().unwrap_or(""))?;
         // The resident supervisor replays the transfer from immutable
@@ -338,6 +340,7 @@ pub(super) async fn plan_compiled_descendant(
         child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
         child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
         child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
+        child_input["rsiExperimentContract"]=experiment_contract;
         child_input["rsiControllerPlan"]=plan.clone();
         context.state.store.audit("rsi.descendant_controller_plan",json!({
             "campaignId":context.job_id,"attempt":attempt,
