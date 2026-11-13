@@ -30,10 +30,7 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
     let proof=engine::recursive_proof_report(state,record);
-    record["recursiveProof"]=proof.clone();
-    record["systemEvidence"]=proof["systemEvidence"].clone();
-    record["generationCapabilityProven"]=proof["generationCapabilityProven"].clone();
-    record["capabilityDemonstrated"]=proof["demonstrated"].clone();
+    engine::attach_recursive_proof(record,&proof);
 }
 
 async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
