@@ -24,10 +24,10 @@ pub(super) fn collect_generation_observation<'a>(
 )->GenerationObservation<'a> {
     let session=current["sessionId"].as_str();
     let tools_used = session
-        .map(|session_id| session_tool_usage(&state, session_id))
+        .map(|session_id| session_tool_usage(state, session_id))
         .unwrap_or_default();
     let research_fingerprint = session
-        .map(|session_id| session_research_fingerprint(&state, session_id))
+        .map(|session_id| session_research_fingerprint(state, session_id))
         .unwrap_or_default();
     let capabilities_used = tools_used
         .iter()
