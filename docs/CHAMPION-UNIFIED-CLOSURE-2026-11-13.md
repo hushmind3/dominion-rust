@@ -53,3 +53,7 @@ No Rust compilation, tests, build, CI, benchmark or paid model campaign ran duri
 - [AIDE², Sep 22 2026](https://arxiv.org/abs/2609.26457) distinguishes source evolution from an improved research agent's effectiveness on independently held-out tasks.
 - [TRUST, Nov 7 2026](https://arxiv.org/abs/2611.10787) identifies false acceptance from greedy update gates and motivates preserving independent receipts before advancing an incumbent.
 - These are design references only. This branch has not reproduced their results, nor implemented TRUST's statistical error-control procedure.
+
+## Subsequent 2026-11-13 stricter gate
+
+The A→B→A gate documented above has been superseded by an actual **A→B→A→B live OFF/ON method ablation** requirement in [the newer implementation and execution trace](CHAMPION-METHOD-ABLATION-2026-11-13.md). The canonical verdict is unchanged as the common runtime/API/audit entry point, but its complete proof now requires four generations and two independently evaluated OFF/ON descendants. Previously described three-generation observations are partial method-lineage evidence, never a present-day full-RSI completion.
