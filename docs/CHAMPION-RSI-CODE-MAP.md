@@ -33,3 +33,7 @@ Production Rust modules contain runtime logic; their large inline test modules w
 ## Pruned source files
 
 Three historical unregistered implementations (`rsi_action_program.rs`, `rsi_judgement.rs`, `rsi_success_ablation.rs`) were not part of the engine module registry or executable dependency chain, so they were removed from the active tree. Git history retains them. The dynamic frozen oracle (`rsi_oracle_fixture.rs`) and native mutation template (`rsi_domain_accumulator.rs`) are **not** dead: the actual runtime loads their bytes with `include_str!`. The facade now `include!`s that native template instead of storing a second copy.
+
+## Flat-module cleanup (2026-11-13)
+
+The runtime module names and call interfaces are unchanged. Fourteen independently compiled RSI files moved via the exact same Git blobs into `rsi/planner`, `rsi/execution`, `rsi/evaluation`, `rsi/lineage` and `rsi/learning`. The `src/engine/mod.rs` registry uses explicit `#[path]` entries, preserving existing `crate::engine::rsi_*` references. The source-grounded system blueprint pins the moved module identities. The frozen oracle and native mutation template remain at their original referenced paths.

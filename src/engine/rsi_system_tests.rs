@@ -7,6 +7,10 @@ fn nested_rsi_source_is_indexed_as_an_improvement_method() {
         "src/engine/rsi/execution/worker.rs",
         "src/engine/rsi/evaluation/adoption.rs",
         "src/engine/rsi/learning/edit_policy.rs",
+        "src/engine/rsi/learning/rsi_rule_induction.rs",
+        "src/engine/rsi/learning/rsi_peer_transfer.rs",
+        "src/engine/rsi/evaluation/rsi_factorial.rs",
+        "src/engine/rsi/lineage/rsi_model_lineage.rs",
     ] {
         assert_eq!(source_role(path),"improvement_methods",
             "extracted RSI code must remain in descendant self-model: {path}");
