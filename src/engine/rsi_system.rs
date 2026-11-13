@@ -7,7 +7,19 @@ use std::{path::Path,fs,collections::{BTreeMap,BTreeSet}};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat/runtime.rs","src/engine/decompose.rs"]),
+    ("harness",&[
+        "src/engine/jobs.rs", "src/engine/rsi_worktree.rs",
+        "src/engine/chat/runtime.rs",
+        "src/engine/chat/runtime/intent.rs",
+        "src/engine/chat/runtime/turn.rs",
+        "src/engine/chat/runtime/adaptation.rs",
+        "src/engine/chat/runtime/tool_catalog.rs",
+        "src/engine/chat/runtime/execution_program.rs",
+        "src/engine/chat/runtime/dispatch.rs",
+        "src/engine/chat/runtime/planning.rs",
+        "src/engine/chat/runtime/finalization.rs",
+        "src/engine/decompose.rs",
+    ]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),

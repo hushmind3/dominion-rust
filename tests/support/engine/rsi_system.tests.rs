@@ -2,6 +2,36 @@
 mod tests {
     use super::*;
     #[test]
+    fn compiled_blueprint_exposes_each_runtime_boundary_to_descendant_planning() {
+        let root=std::env::temp_dir().join(format!("rsi-harness-modules-{}",uuid::Uuid::new_v4()));
+        let module_dir=root.join("src/engine/chat/runtime");
+        fs::create_dir_all(&module_dir).unwrap();
+        fs::write(root.join("src/engine/chat/runtime.rs"),"mod intent;").unwrap();
+        let modules=[
+            "intent.rs","turn.rs","adaptation.rs","tool_catalog.rs",
+            "execution_program.rs","dispatch.rs","planning.rs","finalization.rs"
+        ];
+        for module in modules {
+            fs::write(module_dir.join(module),format!("// {module}: mutable harness source")).unwrap();
+        }
+        let model=blueprint(&root,"modular-descendant",&[]);
+        let harness=model["architecture"].as_array().unwrap().iter()
+            .find(|entry|entry["role"]=="harness").unwrap();
+        let representatives=harness["representativeSources"].as_array().unwrap();
+        assert_eq!(harness["discoveredSourceCount"],9);
+        for module in modules {
+            let expected=format!("src/engine/chat/runtime/{module}");
+            assert!(representatives.iter().any(|item|item["path"]==expected),
+                "mutable module {expected} must be visible to the compiled descendant");
+        }
+        let prior=model["sourceTreeSha256"].clone();
+        fs::write(module_dir.join("execution_program.rs"),"// revised executor").unwrap();
+        let next=blueprint(&root,"new-descendant",&[]);
+        assert_ne!(prior,next["sourceTreeSha256"],
+            "changes to a moved execution module must affect lineage identity");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("src/engine")).unwrap();
