@@ -232,6 +232,8 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "ownerName":text_field(body,previous,"ownerName","나",100)?,
         "rounds":number_field(body,previous,"rounds",3,100_000)?,
         "maxTurns":max_turns,
+        // Legacy room semantics stay unchanged until the owner enables economy.
+        "adaptiveSpeakers":bool_field(body,previous,"adaptiveSpeakers",false)?,
         "tokenBudget":number_field_allow_zero(body,previous,"tokenBudget",10_000_000)?,
         "contextBudgetTokens":number_field(body,previous,"contextBudgetTokens",2_000,1_000_000)?,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
