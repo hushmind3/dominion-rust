@@ -465,6 +465,9 @@ pub(super) async fn run_loop(
                         .ok_or("후보 소실")?;
                     let paths=candidate["paths"].as_array().cloned().unwrap_or_default();
                     generation["changedSourcePaths"]=json!(paths);
+                    let scope_valid=crate::engine::rsi_evolve::experiment_contract::observed_scope(
+                        &current["input"],&paths);
+                    generation["experimentScopeVerified"]=json!(scope_valid);
                     // Finish mutating the journal before borrowing its design.
                     let design=&generation["systemDesign"];
                     let design_complete=input["rsiSystemEvolution"]!=true || (
@@ -486,7 +489,8 @@ pub(super) async fn run_loop(
                         crate::engine::rsi::verified_pair_receipt(&context.state,&candidate));
                     let eligible = candidate["status"] == "verified"
                         && candidate["evaluation"]["metrics"]["eligible"] == true
-                        && generation["pairedRevalidated"]==true && design_complete;
+                        && generation["pairedRevalidated"]==true
+                        && design_complete && scope_valid;
                     let winner = if eligible {
                         "candidate"
                     } else if candidate["status"] == "rejected" {
