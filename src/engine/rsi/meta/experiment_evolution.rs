@@ -66,6 +66,9 @@ fn observed(row:&Value)->Option<(Arm,Genome)>{
         ||row["experimentStrategyApplied"]["workerApplied"]!=true {
         return None;
     }
+    if validate(&row["experimentStrategy"],row["generatorCommit"].as_str()?).is_err(){
+        return None;
+    }
     let c:Contract=serde_json::from_value(row["experimentStrategy"].clone()).ok()?;
     if c.source!="compiled_descendant_experiment_strategy_v1"
         ||c.generator_commit!=row["generatorCommit"]
@@ -161,12 +164,21 @@ pub(crate) fn validate(policy:&Value,revision:&str)->Result<(),String>{
         ||contract.revision.len()!=64
         ||!contract.revision.bytes().all(|x|x.is_ascii_hexdigit())
         ||contract.effect_proven
+        ||hash(&json!([
+            "rsi.experiment.genome.v1",revision,contract.parent_revision,
+            contract.arm,&contract.genome,&contract.evidence_job_ids
+        ]))!=contract.revision
         ||contract.evidence_job_ids.len()>16
         ||contract.genome.payoff_weight==0||contract.genome.payoff_weight>8
         ||contract.genome.novelty_weight==0||contract.genome.novelty_weight>8
         ||contract.genome.cost_weight==0||contract.genome.cost_weight>8
         ||contract.genome.recovery_weight==0||contract.genome.recovery_weight>8 {
         return Err("후손 실험 정책 출처·범위·가중치 계약 위반".into());
+    }
+    if contract.evidence_job_ids.iter().any(|id|id.is_empty())
+        ||contract.evidence_job_ids.iter().collect::<std::collections::BTreeSet<_>>().len()
+            !=contract.evidence_job_ids.len() {
+        return Err("실험 정책 학습에 사용한 작업 영수증 중복·공백".into());
     }
     Ok(())
 }
