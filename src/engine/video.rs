@@ -14,6 +14,8 @@ mod runway;
 mod shot_plan;
 #[path = "video/frame_anchor.rs"]
 mod frame_anchor;
+#[path = "video/kling4.rs"]
+mod kling4;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
