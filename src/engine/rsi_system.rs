@@ -507,7 +507,17 @@ pub(crate) fn improvement_directive(history:&[Value])->Value {
     let failed_build=previous["evaluation"]["verdict"]=="build_failed"
         || previous["error"].as_str().is_some_and(|s|
             s.contains("build") || s.contains("compiler") || s.contains("compile"));
-    let mode=if previous["accepted"]==true && observed {
+    let matched_control=previous["accepted"]==true && observed
+        && previous["methodAblation"]["source"]
+            =="compiled_method_on_off_real_worker_v1"
+        && previous["methodAblation"]["methodAssociationObserved"]==true
+        && previous["methodAblation"]["qualityProven"]==true
+        && previous["methodAblation"]["controlEvidenceSha256"].is_string()
+        && previous["methodAblation"]["treatmentEvidenceSha256"]
+            ==previous["evaluation"]["evidenceSha256"];
+    let mode=if matched_control {
+        "evolve_executed_method_from_feedback"
+    }else if previous["accepted"]==true && observed {
         "extend_verified_capability"
     }else if failed_build {
         if prior=="repair_counterexample"{"change_approach"}else{"repair_counterexample"}
@@ -522,6 +532,20 @@ pub(crate) fn improvement_directive(history:&[Value])->Value {
         "previousAccepted":previous["accepted"]==true && observed,
         "previousVerdict":previous["evaluation"]["verdict"],
         "previousCandidateId":previous["candidateId"],
+        "methodFeedback":if matched_control{json!({
+            "source":"replayed_real_method_control_v1",
+            "sourceGenerationId":previous["id"],
+            "methodFamilyId":previous["methodAblation"]["methodFamilyId"],
+            "originalMethodSourceSha256":previous["methodAblation"]["methodSourceSha256"],
+            "controlId":previous["methodAblation"]["controlId"],
+            "controlEvaluationId":previous["methodAblation"]["controlEvaluationId"],
+            "treatmentEvaluationId":previous["methodAblation"]["treatmentEvaluationId"],
+            "controlEvidenceSha256":previous["methodAblation"]["controlEvidenceSha256"],
+            "treatmentEvidenceSha256":previous["methodAblation"]["treatmentEvidenceSha256"],
+            "treatmentOnlyWins":previous["methodAblation"]["treatmentOnlyWins"],
+            "treatmentQualityWins":previous["methodAblation"]["treatmentQualityWins"],
+            "requiresNewRevisionAndSuccessorExecution":true
+        })}else{Value::Null},
         "previousFocusFiles":previous["focusFiles"].as_array()
             .map(|a|a.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "previousError":previous["error"].as_str().unwrap_or("")
