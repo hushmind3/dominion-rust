@@ -191,12 +191,22 @@ async fn merge_clips(ctx: &JobContext, input: &Value, dir: &Path, count: usize) 
         .map_err(|e| e.to_string())
 }
 
+/// A remote charged task may finish downloading while a later clip has not
+/// been submitted. Re-running the whole plan is NOT a safe retry in this case.
+fn unsafe_to_resubmit(job: &Value) -> bool {
+    let previous = &job["videoState"];
+    previous["inFlight"] == true
+        || previous["completedClips"].as_u64().unwrap_or(0) > 0
+        || previous["taskIds"].as_array().is_some_and(|ids| !ids.is_empty())
+}
+
 pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, String> {
-    // A previous submission with uncertain outcome must never auto-submit.
+    // A previously charged or ambiguous clip must never be silently submitted
+    // again after a crash, cancellation or worker retry.
     if ctx.state.store.get("job", &ctx.job_id)
-        .is_some_and(|job| job["videoState"]["inFlight"] == true)
+        .is_some_and(|job| unsafe_to_resubmit(&job))
     {
-        return Err("needs_review: 이전 Runway 원격 작업의 상태를 확인해야 합니다.".into());
+        return Err("needs_review: 이전 Runway 유료 작업의 ID·생성된 클립을 확인한 뒤 수동 복구해야 합니다. 중복 과금을 막기 위해 자동 재제출하지 않습니다.".into());
     }
     let token = ctx.state.read_secret("video:api")
         .or_else(|| std::env::var("RUNWAYML_API_SECRET").ok())
@@ -302,3 +312,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
     }))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/video_paid_resubmission_tests.rs"]
+mod paid_resubmission_tests;
