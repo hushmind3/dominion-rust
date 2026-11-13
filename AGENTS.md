@@ -85,3 +85,5 @@ Use the original chat-visible provider function re-exports.
 runtime state and delegates to `models/{installed,install,runtimes,storage,load,catalog,download}.rs`.
 Read this actual module chain before touching the HF catalog or process lifecycles.
 Tests live separately in `models/tests.rs`.
+
+**Immutable method adjudication:** `rsi/proof/method_lineage.rs` belongs to the frozen proof subtree, blocked from RSI edits by `rsi::safe_path`. `rsi/method_feedback.rs` is the editable planner-side adapter to independently replayed B receipts, never the authority for successful closure.

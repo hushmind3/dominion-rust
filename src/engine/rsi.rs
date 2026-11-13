@@ -31,6 +31,7 @@ pub(crate) fn frozen_rsi_evaluator_path(path:&str)->bool {
     // Immutable source boundary must follow modules when an evaluator is split.
     // Otherwise a compiled descendant could rewrite the paired-run verifier.
     path.starts_with("src/engine/rsi/worktree/")
+        || path.starts_with("src/engine/rsi/proof/")
         || matches!(path,
             "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
             |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
@@ -584,6 +585,7 @@ mod tests {
             "src/engine/rsi/worktree/promotion.rs",
             "src/engine/rsi/worktree/evaluation.rs",
             "src/engine/rsi/worktree/tests.rs",
+            "src/engine/rsi/proof/method_lineage.rs",
             "src/engine/rsi_metrics.rs",
             "src/engine/rsi_profile.rs",
             "src/engine/rsi/proof.rs",

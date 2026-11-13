@@ -639,3 +639,7 @@ installation), `models/runtimes.rs` (available engine selection),
 and `models/download.rs` (durable transfer/progress). Original local
 model and cloud API paths remain separate; no training route was added.
 Tests were moved into `models/tests.rs` without running them.
+
+### Proof cannot be rewritten by the tested agent
+
+The canonical source/receipt replay has moved to the **frozen** `rsi/proof/method_lineage.rs` and is called by `rsi/proof.rs`, never through the descendant-editable method learner. The editable `rsi/method_feedback.rs` obtains replayed receipts and may evolve how it schedules and exploits them; it cannot redefine what counts as a verified inherited method. The `rsi::safe_path` guard excludes `src/engine/rsi/proof/` from source mutations and editable source indexing. Only actual compiled planner/worker method modules count as A source evidence; test-only, disconnected and named-only source claims do not. No test or compile was executed.

@@ -2,6 +2,14 @@
 //! The API must revalidate stored paired receipts before calling these functions.
 use super::*;
 
+#[path = "proof/method_lineage.rs"]
+mod method_lineage;
+pub(crate) use method_lineage::{
+    method_snapshot as inherited_method_snapshot,
+    downstream_feedback as verified_downstream_feedback,
+};
+
+
 /// Empty strings are not model errors; a research-only generation sets the
 /// field to "" and must not abort the whole campaign.
 /// A verified generation is an adopted one whose paired comparison was
@@ -213,7 +221,7 @@ fn verified_feedback_reuse(state:&AppState,chain:&[Value])->bool{
         || c["candidateOrigin"]!="model_driven_detached_worktree" {
         return false;
     }
-    let feedback=super::method_feedback::downstream_feedback(
+    let feedback=method_lineage::downstream_feedback(
         state,&chain[..2],c["generatorCommit"].as_str().unwrap_or(""));
     if !feedback.is_object(){return false;}
     let Some(method)=feedback["methodPath"].as_str() else{return false};
@@ -272,8 +280,8 @@ fn closing_triplet(history:&[Value])->Option<[&Value;3]> {
             || grandchild["domain"]!="improver"
             || parent["candidateTarget"]!="improver"
             || grandchild["candidateTarget"]!="improver"
-            || !crate::engine::rsi_meta_controller::meta_source_changed(parent)
-            || !crate::engine::rsi_meta_controller::meta_source_changed(grandchild)
+            || !method_lineage::recorded_method_edit(parent)
+            || !method_lineage::recorded_method_edit(grandchild)
             || child["generatorCommit"]!=parent["acceptedCommit"]
             || grandchild["generatorCommit"]!=child["acceptedCommit"]
             || parent["generatorCommit"]==parent["acceptedCommit"]
