@@ -84,6 +84,80 @@ pub(crate) fn next_method_return(history:&[Value],frontier:&Value,commit:&str)->
     Value::Null
 }
 
+/// After A -> B -> A', require a *new compiled child* to put A' back
+/// to work on the SAME downstream capability. A' is an adopted executable
+/// source revision, not a declarative policy name.
+pub(crate) fn next_capability_reapplication(
+    checked:&[Value],frontier:&Value,commit:&str
+)->Value {
+    let Some(c)=checked.last().filter(|row|
+        row["accepted"]==true
+            && row["sourceLineageVerified"]==true
+            && row["pairedRevalidated"]==true
+            && row["acceptedCommit"]==commit
+            && row["metaPolicy"]["mode"]=="close_observed_downstream_method_loop"
+            && row["returnMethodFeedbackExecuted"]==true
+            && row["evaluation"]["metrics"]["metaHoldoutGains"]
+                .as_u64().unwrap_or(0)>0)else{return Value::Null;};
+    let Some(b)=checked[..checked.len()-1].last().filter(|row|
+        row["accepted"]==true && row["sourceLineageVerified"]==true
+            && row["pairedRevalidated"]==true
+            && row["acceptedCommit"]==c["generatorCommit"]
+            && row["id"]==c["downstreamMethodFeedback"]["downstreamGenerationId"]
+            && row["candidateId"]==c["downstreamMethodFeedback"]["downstreamCandidateId"]
+            && row["evaluation"]["evidenceSha256"]
+                ==c["downstreamMethodFeedback"]["downstreamEvidenceSha256"]
+            && row["domain"]!="improver")else{return Value::Null;};
+    let revalidated=next_method_return(&checked[..checked.len()-1],
+        &c["descendantPlan"]["architectureFrontier"],
+        c["generatorCommit"].as_str().unwrap_or(""));
+    if revalidated.is_null()
+        || c["downstreamMethodFeedback"]!=revalidated
+        || c["descendantPlan"]["downstreamMethodFeedback"]!=revalidated {
+        return Value::Null;
+    }
+    let Some(method_path)=revalidated["methodSourcePath"].as_str()else{
+        return Value::Null;
+    };
+    let new_method=&c["acceptedSourceHashes"][method_path];
+    if !sha(new_method,64) || new_method==&revalidated["methodSourceSha256"]
+        || !c["systemDesign"]["targetFiles"].as_array().is_some_and(|files|
+            files.iter().any(|file|file.as_str()==Some(method_path))) {
+        return Value::Null;
+    }
+    let Some(options)=frontier.as_array()else{return Value::Null;};
+    let Some(targets)=b["systemDesign"]["targetFiles"].as_array()else{
+        return Value::Null;
+    };
+    for target in options {
+        let Some(path)=target["path"].as_str()else{continue};
+        if target["domain"]!=b["domain"]
+            || target["role"]=="improvement_methods"
+            || !targets.iter().any(|t|t.as_str()==Some(path))
+            || target["sourceSha256"]!=b["acceptedSourceHashes"][path]
+            || !sha(&target["sourceSha256"],64) {
+            continue;
+        }
+        return json!({
+            "source":"replayed_revised_method_capability_reapplication_v1",
+            "target":target,
+            "originalDownstreamDomain":b["domain"],
+            "originalDownstreamGenerationId":b["id"],
+            "originalDownstreamCandidateId":b["candidateId"],
+            "originalDownstreamEvidenceSha256":b["evaluation"]["evidenceSha256"],
+            "revisedMethodGenerationId":c["id"],
+            "revisedMethodCandidateId":c["candidateId"],
+            "revisedMethodCommit":c["acceptedCommit"],
+            "revisedMethodSourcePath":method_path,
+            "revisedMethodSourceSha256":new_method,
+            "originalMethodSourceSha256":revalidated["methodSourceSha256"],
+            "originalDownstreamTargetSourceSha256":target["sourceSha256"],
+            "causalImprovementProven":false
+        });
+    }
+    Value::Null
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

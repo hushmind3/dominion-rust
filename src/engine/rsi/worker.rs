@@ -252,6 +252,33 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         && job["input"]["rsiFocusFiles"].as_array().is_some_and(|files|
             files.iter().any(|path|path==&feedback["methodSourcePath"]));
     job["rsiMetaReturnExecuted"]=json!(return_executed);
+    // The fourth generation MUST actually consume the revised A' source and
+    // pick B's original task path. Do not trust the coordinator's JSON claim.
+    let reapplication=job["input"]["rsiDescendantPlan"]["methodReapplication"].clone();
+    let expected_reapplication=crate::engine::rsi_system::next_capability_reapplication(
+        &audited,&job["input"]["rsiDescendantPlan"]["architectureFrontier"],&commit);
+    job["rsiMetaReapplicationExecuted"]=json!(
+        reapplication.is_object()
+        && reapplication==expected_reapplication
+        && job["input"]["rsiMetaPolicy"]["mode"]
+            =="reapply_revised_method_to_capability"
+        && job["rsiSystemBlueprintVerified"]==true
+        && job["rsiMetaPolicyExecuted"]==true
+        && job["input"]["rsiMetaPolicy"]["target"]==reapplication["target"]
+        && job["input"]["rsiTargetDomain"]==reapplication["originalDownstreamDomain"]
+        && job["rsiMetaMethodInheritance"]["parentAcceptedCommit"]
+            ==reapplication["revisedMethodCommit"]
+        && job["rsiMetaMethodInheritance"]["observedPlanDifference"]==true
+        && job["rsiMetaMethodInheritance"]["chosenTargetActuallyFocused"]==true
+        && job["input"]["rsiFocusFiles"].as_array().is_some_and(|files|
+            files.iter().any(|path|path==&reapplication["target"]["path"])));
+    if job["rsiMetaReapplicationExecuted"]==true {
+        state.store.audit("rsi.compiled_revised_method_reapplied",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "reapplication":reapplication,
+            "causalSuperiorityProven":false
+        }));
+    }
     if job["rsiMetaReturnExecuted"]==true {
         state.store.audit("rsi.compiled_return_to_method",json!({
             "jobId":job_id,"generatorCommit":commit,
@@ -409,6 +436,12 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
             job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
     };
+    if job["rsiMetaReapplicationExecuted"]==true {
+        instructions.push_str(&format!(
+            "\n\nREVISED METHOD REAPPLICATION: {}. This running descendant              inherits a second independently adopted version of the A method.              Apply it to the SAME source-backed downstream task family B.              Produce a concrete source change; only a fresh independent              paired evaluation can establish the next capability gain.",
+            job["input"]["rsiDescendantPlan"]["methodReapplication"]
+        ));
+    }
     if job["rsiMetaReturnExecuted"]==true {
         instructions.push_str(&format!(
             "\n\nRECURSIVE METHOD RETURN: {}. Independently assessed downstream              improvement B used the previously accepted A method source;              redesign THIS SAME executable A source using B's paired outcome              and the observed failure/success conditions. Produce a concrete              source edit; the frozen held-out evaluator must independently              improve and adopt it. This instruction is NOT evidence of gain.",

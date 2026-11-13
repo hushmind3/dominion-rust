@@ -21,14 +21,16 @@ fn adopted_source_lineage_matches(candidate:&Value,generation:&Value)->bool {
     let Some(summary)=generation["acceptedSourceHashes"].as_object()
         else{return false;};
     let Some(paths)=candidate["paths"].as_array()else{return false;};
-    !sealed.is_empty() && sealed==summary
+    !sealed.is_empty() && sealed.len()==paths.len() && sealed==summary
         && candidate["experimentAdoption"]["commit"]==generation["acceptedCommit"]
         && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
-        && sealed.iter().all(|(path,hash)|
+        // Sealing only ONE file of a multi-file source edit is not lineage.
+        // Every captured candidate path must have a matching adopted blob SHA.
+        && paths.iter().all(|entry|entry.as_str().is_some_and(|path|
             crate::engine::rsi::safe_path(path)
-                && paths.iter().any(|item|item.as_str()==Some(path))
-                && hash.as_str().is_some_and(|sha|
-                    sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))
+                && sealed.get(path).is_some_and(|hash|
+                    hash.as_str().is_some_and(|sha|
+                        sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 
 /// Rebuild experimental learning labels from original immutable paired
@@ -149,5 +151,12 @@ mod tests {
         extra["experimentAdoption"]["acceptedSourceHashes"]
             ["src/engine/memory.rs"]=json!("e".repeat(64));
         assert!(!adopted_source_lineage_matches(&extra,&generation));
+        let partial=json!({"id":"c","rsiJobId":"child-1",
+            "origin":"model_driven_detached_worktree",
+            "baseCommit":"a".repeat(40),
+            "paths":[path,"src/engine/learning.rs"],
+            "experimentAdoption":candidate["experimentAdoption"]});
+        assert!(!adopted_source_lineage_matches(&partial,&generation),
+            "each independently adopted source file must be sealed");
     }
 }

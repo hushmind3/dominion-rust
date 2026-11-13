@@ -610,6 +610,10 @@ pub(super) async fn run_loop(
             current["input"]["rsiDescendantPlan"]["downstreamMethodFeedback"].clone();
         generation["returnMethodFeedbackExecuted"]=
             current["rsiMetaReturnExecuted"].clone();
+        generation["methodReapplication"]=
+            current["input"]["rsiDescendantPlan"]["methodReapplication"].clone();
+        generation["methodReapplicationExecuted"]=
+            current["rsiMetaReapplicationExecuted"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();

@@ -73,28 +73,42 @@ fn changed(candidate:&Value,path:&str)->bool{
         files.iter().any(|row|row.as_str()==Some(path)))
 }
 
-/// Three CONSECUTIVE improved and adopted source revisions, with a rebuilt
-/// A method actually used to improve a different B subsystem, followed by
-/// another rebuilt child which consumed B's measured result and produced an
-/// independently improved revision of that SAME executable A method.
+/// Four CONSECUTIVE improved and adopted source revisions: A edits a
+/// compiled method, B uses A for a new task, A' rewrites the SAME method
+/// from B's real measured outcome, and B' must run the revised A' policy
+/// to improve the original downstream task family again.
 pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
     // Re-play receipts, not stored success/failure flags, even when the
     // coordinator or API has copied a campaign into a display summary.
     let checked=rsi_system::revalidated_method_history(state,history);
-    for (index,pair) in checked.windows(3).enumerate() {
-        let [a,b,c]=pair else{continue};
-        let (Some((ca,_ja)),Some((cb,jb)),Some((cc,jc)))=(
+    for (index,group) in checked.windows(4).enumerate() {
+        let [a,b,c,d]=group else{continue};
+        let (Some((ca,_ja)),Some((cb,jb)),Some((cc,jc)),Some((cd,jd)))=(
             source_adoption(state,a),source_adoption(state,b),
-            source_adoption(state,c))else{continue};
+            source_adoption(state,c),source_adoption(state,d))else{continue};
         if a["acceptedCommit"]!=b["generatorCommit"]
             || b["acceptedCommit"]!=c["generatorCommit"]
+            || c["acceptedCommit"]!=d["generatorCommit"]
             || a["generatorBinarySha256"]==b["generatorBinarySha256"]
             || b["generatorBinarySha256"]==c["generatorBinarySha256"]
+            || c["generatorBinarySha256"]==d["generatorBinarySha256"]
             || ca["target"]!="improver" || cb["target"]=="improver"
-            || cc["target"]!="improver"
+            || cc["target"]!="improver" || cd["target"]=="improver"
             || !holdout_gain(&ca,"improver")
             || !holdout_gain(&cb,"other")
             || !holdout_gain(&cc,"improver")
+            || !holdout_gain(&cd,"other")
+            || d["domain"]!=b["domain"]
+            || d["metaPolicy"]["mode"]!="reapply_revised_method_to_capability"
+            || d["methodReapplicationExecuted"]!=true
+            || jd["rsiMetaReapplicationExecuted"]!=true
+            || jd["input"]["rsiMetaPolicy"]!=d["metaPolicy"]
+            || d["metaMethodInheritance"]["parentAcceptedCommit"]
+                !=c["acceptedCommit"]
+            || d["metaMethodInheritance"]["observedPlanDifference"]!=true
+            || d["metaMethodInheritance"]["chosenTargetActuallyFocused"]!=true
+            || d["metaMethodOutcome"]["independentCandidateAdopted"]!=true
+            || jd["rsiMetaMethodInheritance"]!=d["metaMethodInheritance"]
             || b["metaMethodInheritance"]["source"]
                 !="source_bound_compiled_meta_method_inheritance_v1"
             || b["metaMethodInheritance"]["parentAcceptedCommit"]!=a["acceptedCommit"]
@@ -130,25 +144,54 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Value {
                 .is_some_and(|paths|paths.iter().any(|row|row.as_str()==Some(path))) {
             continue;
         }
+        let expected_reapplication=rsi_system::next_capability_reapplication(
+            &checked[..index+3],
+            &d["descendantPlan"]["architectureFrontier"],
+            d["generatorCommit"].as_str().unwrap_or(""));
+        let Some(target)=expected_reapplication["target"]["path"].as_str()else{
+            continue;
+        };
+        if expected_reapplication.is_null()
+            || d["methodReapplication"]!=expected_reapplication
+            || d["descendantPlan"]["methodReapplication"]!=expected_reapplication
+            || jd["input"]["rsiDescendantPlan"]["methodReapplication"]
+                !=expected_reapplication
+            || d["metaPolicy"]["target"]!=expected_reapplication["target"]
+            || !changed(&cb,target) || !changed(&cd,target)
+            || changed(&cc,target)
+            || expected_reapplication["originalDownstreamEvidenceSha256"]
+                !=b["evaluation"]["evidenceSha256"]
+            || &expected_reapplication["revisedMethodSourceSha256"]!=after
+            || b["acceptedSourceHashes"][target]
+                !=expected_reapplication["originalDownstreamTargetSourceSha256"]
+            || d["acceptedSourceHashes"][target]
+                ==b["acceptedSourceHashes"][target]
+            || jd["input"]["rsiFocusFiles"].as_array().is_none_or(|files|
+                !files.iter().any(|f|f.as_str()==Some(target))) {
+            continue;
+        }
         return json!({
-            "source":"replayed_executed_method_capability_method_closure_v1",
+            "source":"replayed_executed_method_capability_method_capability_closure_v2",
             "proven":true,
-            "shape":"improvement_method_A -> different_capability_B -> reimproved_method_A",
-            "candidateIds":[ca["id"],cb["id"],cc["id"]],
-            "jobIds":[a["jobId"],b["jobId"],c["jobId"]],
-            "acceptedCommits":[a["acceptedCommit"],b["acceptedCommit"],c["acceptedCommit"]],
+            "shape":"method_A -> capability_B -> improved_method_A -> improved_capability_B",
+            "candidateIds":[ca["id"],cb["id"],cc["id"],cd["id"]],
+            "jobIds":[a["jobId"],b["jobId"],c["jobId"],d["jobId"]],
+            "acceptedCommits":[a["acceptedCommit"],b["acceptedCommit"],c["acceptedCommit"],d["acceptedCommit"]],
             "methodSourcePath":path,
             "methodSourceBeforeSha256":before,
             "methodSourceAfterSha256":after,
             "downstreamIndependentReceipt":b["evaluation"]["evidenceSha256"],
+            "reapplicationIndependentReceipt":d["evaluation"]["evidenceSha256"],
+            "reappliedCapabilitySourcePath":target,
             "actualCompiledReturnExecution":true,
+            "actualCompiledReapplicationExecution":true,
             "independentPairedRevalidation":true,
             "causalMethodSuperiorityProven":false,
             "unboundedGrowthProven":false
         });
     }
-    json!({"source":"replayed_executed_method_capability_method_closure_v1",
-        "proven":false,"requires":"accepted method A -> rebuilt descendant's independently improved B -> rebuilt return to the SAME executable method A, using B's replayed feedback and a second independent improved frozen evaluation"})
+    json!({"source":"replayed_executed_method_capability_method_capability_closure_v2",
+        "proven":false,"requires":"four contiguous independently adopted revisions: method A -> assessed B using A -> measured revision A' using B evidence -> assessed B' running revised A' and improving B's capability again"})
 }
 
 #[cfg(test)]

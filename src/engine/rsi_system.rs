@@ -394,7 +394,7 @@ mod method_lineage;
 // Revalidate the observed B outcome and propose the EXACT executable method
 // source as the next C editing target in the compiled descendant.
 mod return_feedback;
-pub(crate) use return_feedback::next_method_return;
+pub(crate) use return_feedback::{next_method_return,next_capability_reapplication};
 pub(crate) use method_lineage::{
     inherited_method_receipt,observed_method_outcome,executable_method_source
 };

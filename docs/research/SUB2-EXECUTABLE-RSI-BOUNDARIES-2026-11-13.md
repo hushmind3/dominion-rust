@@ -183,3 +183,11 @@ not retroactively upgrade prior campaigns lacking source adoption receipts.
 The regression cases were authored but no compile/build/tests/CI, benchmark
 or real-model run was executed in this session. The independent judge should
 evaluate source registration, actual job calls, and non-forgeable receipts.
+
+## 2026-11-13 추가 폐회로 강화 — 실제 B′ 재적용
+
+앞선 점검에서 원본 `rsi.rs::campaign_recursive_evidence` 및 `rsi_system::next_method_return` 선언이 최종 파일 조합에서 누락된 상태를 발견해 수정했습니다. `rsi_evolve.rs`가 `rsi/closure.rs`를 직접 모듈로 소유하고, `rsi_system.rs`가 `return_feedback.rs`를 등록합니다. 이로써 실행·API·후손 정책의 심볼 경계가 연결됩니다.
+
+이제 A→B→A′의 3번 독립 채택은 성공이 아닙니다. `next_capability_reapplication`은 검증된 A′의 소스 해시, B의 원래 목표 파일·분야·평가 영수증을 결합하여 **B′가 실행할 실제 코드 대상**을 반환합니다. `compiled_system_generation_plan`이 그 대상을 정책·소스 focus·도메인에 반영하고, 워커가 `rsiMetaReapplicationExecuted`를 원본 재생 증거로 기록합니다. 최종 `rsi/closure.rs`는 4연속 채택 A/B/A′/B′와 B′의 재평가 개선, 동일 B 태스크 소스의 실제 편집, 바뀐 A′ 방법의 계보를 확인합니다. 채택된 파일이 하나라도 해시로 결속되지 않으면 `rsi_system/history.rs`가 그 출처를 거부합니다.
+
+이것은 **관찰 기반 4세대 전체 폐회로**를 증명할 수 있는 연결입니다. 비활성 대조군과 활성 실행군의 독립 결과 비교는 아직 구현되지 않았으며, 4세대 실측 성공·CI/빌드/테스트 또한 실행하지 않았습니다. 별도 심판 재채점 전에는 기존 점수를 유지합니다.

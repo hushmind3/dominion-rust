@@ -26,6 +26,11 @@ pub(crate) fn evidence_based_meta_repair_focus(
                     =="replayed_independent_downstream_method_feedback_v1"
                 && meta["downstreamMethodFeedback"]["methodSourcePath"]
                     ==meta["target"]["path"],
+            Some("reapply_revised_method_to_capability")=>
+                meta["methodReapplication"]["source"]
+                    =="replayed_revised_method_capability_reapplication_v1"
+                && meta["methodReapplication"]["target"]["path"]
+                    ==meta["target"]["path"],
             _=>false
         }
 }
@@ -138,9 +143,33 @@ pub(crate) fn compiled_system_generation_plan(
             ])).unwrap_or_default()));
         meta["revision"]=json!(revision);
     }
-    // An independently observed meta-rule failure should reach the actual
-    // compiled source target. Existing adopted successor programmes and
-    // explicit owner focus retain their higher priority.
+    // A -> B -> A' is not enough. Reapply the adopted A' compiled method
+    // to B's original task family. D must independently improve the SAME
+    // downstream domain and its own source bytes to earn closure credit.
+    let method_reapplication=if !explicit_focus
+        && !successor_stage.is_object()
+        && input["rsiAutoFocus"]==true
+        && downstream_method_feedback.is_null() {
+        crate::engine::rsi_system::next_capability_reapplication(
+            history,&frontier,commit)
+    }else{Value::Null};
+    if method_reapplication.is_object() {
+        let target=method_reapplication["target"].clone();
+        meta["target"]=target.clone();
+        meta["mode"]=json!("reapply_revised_method_to_capability");
+        meta["metaRepairChosen"]=json!(true);
+        meta["methodReapplication"]=method_reapplication.clone();
+        for field in ["role","domain","path","sourceSha256"]{
+            meta["controlPolicy"][field]=target[field].clone();
+        }
+        meta["controlPolicy"]["executionPolicy"]=json!("grounded_edit");
+        meta["revision"]=json!(format!("{:x}",sha2::Sha256::digest(
+            serde_json::to_vec(&json!([
+                meta["revision"],method_reapplication
+            ])).unwrap_or_default())));
+    }
+    // Evidence-grounded method repair or method reapplication must reach the
+    // actual compiled source target, without overriding an owner's focus.
     let enforce_meta_repair=evidence_based_meta_repair_focus(
         &meta,&successor_stage,explicit_focus);
     if enforce_meta_repair{
@@ -398,6 +427,7 @@ pub(crate) fn compiled_system_generation_plan(
         "metaPolicy":meta,
         "metaActionPolicy":meta["controlPolicy"],
         "downstreamMethodFeedback":downstream_method_feedback,
+        "methodReapplication":method_reapplication,
         "peerLineages":peers,
         "mutualCurriculum":mutual,
         "factorialCurriculum":factorial,
