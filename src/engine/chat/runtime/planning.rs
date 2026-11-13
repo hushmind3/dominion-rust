@@ -1,6 +1,11 @@
 //! Action planning, review and tool result classification.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    TurnRequest,
+    llm,
+    AppState,
+    Value,
+};
 
 pub(super) struct ActionReview {
     pub(super) gaps: Vec<String>,

@@ -1,6 +1,12 @@
 //! RSI guardrails, verified edit routing and bounded intent.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    MAX_TOKENS,
+    tools,
+    json,
+    Value,
+    tool_name,
+};
 
 /// Task contracts bound intent to 4096 characters. Keep the full model prompt
 /// intact but derive a bounded, content-unique value for the contract.

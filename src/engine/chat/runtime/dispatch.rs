@@ -1,6 +1,24 @@
 //! Deterministic replacements and audited tool dispatch.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    request_approval,
+    history,
+    Metrics,
+    ToolCall,
+    TurnRequest,
+    mcp,
+    tools,
+    ToolContext,
+    AppState,
+    json,
+    Value,
+    Sha256,
+    UnboundedSender,
+    normalize_tool_arguments,
+    tool_succeeded,
+    record_tool_stat,
+    Digest,
+};
 
 /// A fully specified replacement is executable without a model only when every
 /// acceptance requirement is the same deterministic operation and its expected

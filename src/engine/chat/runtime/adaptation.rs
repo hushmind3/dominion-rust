@@ -1,6 +1,18 @@
 //! Harness execution, adaptation and checkpoint restoration.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    Metrics,
+    ToolCall,
+    TurnRequest,
+    MAX_TOOL_CALLS,
+    llm,
+    AppState,
+    json,
+    Value,
+    UnboundedSender,
+    dispatch_tool_call,
+    tool_succeeded,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_harness_nodes(

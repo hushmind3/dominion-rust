@@ -1,6 +1,21 @@
 //! Durable execution-program interpreter.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    history,
+    Metrics,
+    ToolCall,
+    TurnRequest,
+    llm,
+    tools,
+    AppState,
+    json,
+    Value,
+    UnboundedSender,
+    failure_observation,
+    record_adaptation_error,
+    dispatch_tool_call,
+    tool_succeeded,
+};
 
 pub(super) fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Value) {
     if let Some(mut execution) = state.store.get("execution", execution_id) {

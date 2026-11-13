@@ -1,6 +1,16 @@
 //! Evidence-bound attempt finalization and learning records.
 //! Extracted without changing the execution algorithms or stored evidence schema.
-use super::*;
+use super::{
+    Metrics,
+    TurnRequest,
+    evidence_for_source,
+    TaskOutcome,
+    goals,
+    tools,
+    AppState,
+    json,
+    Value,
+};
 
 /// Overall compliance for an attempt. A single violated standing strategy must
 /// not be masked by another followed strategy in the same bundle.
