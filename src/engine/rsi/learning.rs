@@ -1,6 +1,10 @@
 //! Model-authored method selection, reuse, source-grounded repairs and execution feedback.
 //! Private to the RSI coordinator; no frozen evaluator or model weight changes.
-use super::*;
+use super::{
+    Digest, AppState, Value, BTreeSet, Path,
+    Sha256, json, experience, rsi, tools,
+    DOMAINS, limits, run, research_scope, focus_domain_hint,
+};
 
 pub(super) fn method_session_running(state: &AppState, session: &Value) -> bool {
     let Some(campaign)=session["rsiCampaignId"].as_str() else {return false};
