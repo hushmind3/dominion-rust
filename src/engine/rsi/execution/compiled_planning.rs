@@ -186,6 +186,17 @@ pub(super) async fn plan_compiled_descendant(
         let frozen=crate::engine::rsi_profile::from_input(&child_input)?;
         crate::engine::rsi_system::validate_peer_references(
             &context.state,&plan["peerLineages"],frozen["sha256"].as_str().unwrap_or(""))?;
+        // The resident supervisor replays the transfer from immutable
+        // adopted job/method/case receipts. No fabricated controller flag
+        // may select a method, and the worker must execute the EXACT target.
+        let expected_transfer=crate::engine::rsi_system::method_transfer_target(
+            &context.state,history,child_input);
+        if plan["methodTransfer"]!=expected_transfer
+            || (expected_transfer.is_object()
+                && plan["domain"]!=expected_transfer["domain"])
+            || (plan["feedbackRepairSelected"]==true && plan["domain"]!="improver") {
+            return Err("후손의 방법 전이·피드백 목표가 실제 채택 기록과 다릅니다.".into());
+        }
         let domain=plan["domain"].as_str()
             .filter(|d|DOMAINS.contains(d)).ok_or("후손이 유효하지 않은 개선 영역을 선택했습니다.")?;
         let focus=plan["focusFiles"].as_array()
@@ -241,6 +252,8 @@ pub(super) async fn plan_compiled_descendant(
         child_input["rsiArchitectureTarget"]=plan["architectureTarget"].clone();
         child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
         child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
+        child_input["rsiMethodTransfer"]=plan["methodTransfer"].clone();
+        child_input["rsiFeedbackRepairSelected"]=plan["feedbackRepairSelected"].clone();
         child_input["rsiLineageCapsule"]=plan["lineageCapsule"].clone();
         child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
         child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
