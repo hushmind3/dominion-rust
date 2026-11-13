@@ -208,9 +208,11 @@ pub(super) async fn plan_compiled_descendant(
         // may select a method, and the worker must execute the EXACT target.
         let expected_transfer=crate::engine::rsi_system::method_transfer_target(
             &context.state,history,child_input);
-        if plan["methodTransfer"]!=expected_transfer
-            || (expected_transfer.is_object()
-                && plan["domain"]!=expected_transfer["domain"])
+        let open_protocol_overrides_method=plan["metaEvolutionProgram"].is_object()
+            && plan["methodTransfer"].is_null();
+        if ((!open_protocol_overrides_method && plan["methodTransfer"]!=expected_transfer)
+            || (!open_protocol_overrides_method && expected_transfer.is_object()
+                && plan["domain"]!=expected_transfer["domain"]))
             || (plan["feedbackRepairSelected"]==true && plan["domain"]!="improver") {
             return Err("후손의 방법 전이·피드백 목표가 실제 채택 기록과 다릅니다.".into());
         }
