@@ -2,6 +2,10 @@
 //! Video providers are isolated behind frozen, recoverable job inputs.
 #[path = "video/ltx.rs"]
 mod ltx;
+#[path = "video/director.rs"]
+mod director;
+#[path = "video/film.rs"]
+mod film;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -91,7 +95,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["input"]["render"]["film"]["clips"],"filmCompleted":job["videoState"]["filmCompleted"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -155,7 +159,14 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
-    let ltx_spec = if engine == "ltx" { Some(ltx::spec(body, &cfg)?) } else { None };
+    let ltx_spec = if engine == "ltx" {
+        let validated = film::spec(body, &cfg, duration)?;
+        let clip_count = validated["film"]["clips"].as_array().map(Vec::len).unwrap_or(1);
+        if clip_count > 1 && ffmpeg_from_config(&cfg).is_none() {
+            return Err("장편 AI 영상 합성에 FFmpeg가 필요합니다.".into());
+        }
+        Some(validated)
+    } else { None };
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
@@ -508,6 +519,8 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let input = &job["input"];
     let result = match input["engine"].as_str() {
         Some("comfyui") => comfy(ctx, input, &dir).await,
+        Some("ltx") if input["render"]["film"]["clips"].as_array()
+            .is_some_and(|clips|clips.len()>1) => film::run(ctx,input,&dir).await,
         Some("ltx") => ltx::run(ctx, input, &dir).await,
         _ => native(ctx, input, &dir).await,
     };

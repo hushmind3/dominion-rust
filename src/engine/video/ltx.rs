@@ -47,8 +47,8 @@ pub(super) fn spec(input: &Value, cfg: &Value) -> Result<Value, String> {
         _ => return Err("지원하지 않는 영상 비율입니다.".into()),
     };
     let fps = input["fps"].as_u64().unwrap_or(24);
-    if !matches!(fps, 24 | 25) {
-        return Err("LTX 영상 FPS는 24 또는 25로 설정하세요.".into());
+    if !matches!(fps, 24 | 48) {
+        return Err("LTX 2.5 FPS는 24 또는 48로 설정하세요.".into());
     }
     let generate_audio = input["generateAudio"].as_bool().unwrap_or(true);
     let prompt = input["brief"].as_str().unwrap_or("").trim();
