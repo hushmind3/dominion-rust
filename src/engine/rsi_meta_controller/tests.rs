@@ -253,3 +253,28 @@ use super::*;
         assert_eq!(feedback(&later,&failures[0])["independentlyMeasured"],false);
     }
 
+
+
+    #[test]
+    fn executable_transfer_method_survives_top_six_alternative_truncation(){
+        let mut frontier=(0..12).map(|i|json!({
+            "role":format!("other_role_{i}"),"domain":"improver",
+            "path":format!("src/engine/agent_{i}.rs"),
+            "sourceSha256":"a".repeat(64),"sourceBytes":100
+        })).collect::<Vec<_>>();
+        for path in [
+            "src/engine/rsi_meta_controller.rs",
+            TRANSFER_METHOD_SOURCE,
+        ]{
+            frontier.push(json!({
+                "role":"improvement_methods","domain":"improver","path":path,
+                "sourceSha256":"b".repeat(64),"sourceBytes":900000
+            }));
+        }
+        let policy=synthesize(&[],&frontier,&["improver"],None);
+        assert!(policy["alternatives"].as_array().is_some_and(|list|
+            list.iter().any(|row|row["target"]["path"]==TRANSFER_METHOD_SOURCE)));
+        assert!(policy["alternatives"].as_array().is_some_and(|list|
+            list.iter().any(|row|row["target"]["path"]
+                =="src/engine/rsi_meta_controller.rs")));
+    }

@@ -261,14 +261,17 @@ pub(crate) fn synthesize(
         else{"open_ended_mechanism_discovery"};
     let mut alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
-    // Guarantee that the method-learning source itself is reachable when
-    // enough independent transfer counterexamples require a new policy.
-    // This is still a source-indexed frontier option, not a forced win.
-    if !alternatives.iter().any(|row|
-        row["target"]["path"]=="src/engine/rsi_meta_controller.rs") {
-        if let Some((method,_))=ranked.iter().find(|(row,_)|
-            row["target"]["path"]=="src/engine/rsi_meta_controller.rs"){
-            alternatives.push(method.clone());
+    // The learning methods must remain reachable when a 6-item shortlist
+    // truncates a larger architecture frontier. Without this, confirmed
+    // negative-transfer observations cannot schedule repair of the actual
+    // executable donor selector after it moved into a child module.
+    // These are OPTIONS, never automatic adoption credit or a forced winner.
+    for source in ["src/engine/rsi_meta_controller.rs", TRANSFER_METHOD_SOURCE] {
+        if !alternatives.iter().any(|row|row["target"]["path"]==source) {
+            if let Some((method,_))=ranked.iter().find(|(row,_)|
+                row["target"]["path"]==source) {
+                alternatives.push(method.clone());
+            }
         }
     }
     // This native successor policy changes source focus, execution mode,

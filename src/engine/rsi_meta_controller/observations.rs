@@ -1,5 +1,6 @@
 //! Independently observed outcomes used to calibrate later meta-policy.
 use super::{independent_adoption,failure_kind};
+use super::peer_transfer::{executed_recipient_context,recipient_source_adopted};
 use serde_json::{json,Value};
 
 /// New prediction errors are durable observations available to later compiled

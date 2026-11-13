@@ -12,7 +12,7 @@ fn measured_recipient(g:&Value)->bool{
     g["evaluation"]["verdict"].is_string()
         && g["evaluation"]["metrics"]["eligible"].is_boolean()
 }
-fn executed_recipient_context(
+pub(super) fn executed_recipient_context(
     g:&Value,role:&str,path:&str,source_sha:&str,profile:&Value
 )->bool{
     g["metaPolicyExecuted"]==true
@@ -23,7 +23,7 @@ fn executed_recipient_context(
         && g["focusFiles"].as_array().is_some_and(|files|
             files.iter().any(|file|file.as_str()==Some(path)))
 }
-fn recipient_source_adopted(g:&Value,path:&str,previous_sha:&str)->bool{
+pub(super) fn recipient_source_adopted(g:&Value,path:&str,previous_sha:&str)->bool{
     independent_adoption(g)
         && g["systemDesign"]["targetFiles"].as_array().is_some_and(|files|
             files.iter().any(|file|file.as_str()==Some(path)))
