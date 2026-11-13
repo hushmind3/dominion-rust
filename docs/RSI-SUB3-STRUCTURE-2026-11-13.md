@@ -50,6 +50,14 @@
 - 원본 `compare_at` 결과는 후보 전체 evaluation 객체가 아니라 ID/해시/지표를 포함한 요약이다. ON/OFF 재검산에서 후보 원본 평가 `id`, `metrics`, `evidenceSha256`, `source`를 이 요약과 정확히 비교하도록 수정했다. 컨트롤과 실험군의 입력 SHA는 작업기 실행 전 고정된 별도 job 메타필드로 저장한다.
 - `rsi_causal_closure.rs`는 frozen 홀드아웃의 실패→통과뿐 아니라 이미 통과한 사례의 `quality`/`discoveryScore` 독립 지표 향상도 확인한다. `method_ablation.rs::paired_quality_delta`는 OFF/ON 동일 평가 케이스의 품질만 대조하며 **응답 속도/토큰 감소는 지능 향상으로 계산하지 않는다.** 남은 실험 시간은 캠페인 단조시계로 계산한다.
 
+### B→A2 방법 재설계의 관측 가능한 근거
+
+1. B 후손에서 모델이 도구로 실제 사용한 절차 ID·revision과 독립 paired evaluation, 동일 소스에서 절차만 끈 대조군을 기록한다.
+2. `rsi_system.rs::blueprint`와 `rsi_system/lineage.rs::lineage_capsule`은 평가·절차를 별도 provenance로 보존하고, A2 컴파일 후손은 기존 바이너리의 기억이 아닌 이 저장 기록을 다시 로딩한다.
+3. `rsi_system/guidance.rs::improvement_directive`는 B에 실제 향상이 있을 때 `evolve_executed_method_from_feedback`을 선택하고, B의 control/treatment 평가 ID와 실제 홀드아웃 성과를 방법 피드백에 넣는다. 후손 지시는 같은 이름·분야의 새로운 실행 DAG 수정과 후속 실행을 명시한다.
+4. `rsi_causal_closure.rs::revised_method_after_feedback`는 A2가 B의 원본 피드백에 연결된 제안인지 검증하고, B2에서 그 새 절차가 실제 채택된 소스를 작성했는지 원본 operation receipt와 독립 ON/OFF 실험으로 재검산한다.
+5. 동결 개별 비교에서 단지 빠르고 저렴한 실행은 지능 이득이 아니다. 기존 테스트를 통과하고 답변의 `quality`/`discoveryScore`가 높아진 사례도 원본 지표·동일 기준과 독립 평가 출처가 확인될 때만 품질 향상에 포함한다.
+
 ## 새 실행 구조와 방법 대조실험의 실제 연결
 
 ```text
