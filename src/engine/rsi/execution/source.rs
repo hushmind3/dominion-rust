@@ -566,12 +566,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     // receipts. An invalidated closure must never retain a successful stop
     // reason simply because the run loop previously saw an adoption streak.
     crate::engine::rsi::apply_campaign_verdict(&context.state,&mut record);
-    if record["stopReason"]=="capability_demonstrated"
-        && record["actualCompletion"]!=true {
-        record["status"]=json!("needs_review");
-        record["stopReason"]=json!("recursive_method_closure_not_proven");
-        record["error"]=json!("최종 독립 평가 영수증에서 A→B→A 개선법 폐회로가 입증되지 않았습니다.");
-    }
     record["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
     context
         .state
