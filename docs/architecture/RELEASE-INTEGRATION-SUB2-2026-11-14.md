@@ -20,6 +20,7 @@ Branch: `dominion-sub2` · Evaluation basis: **entire engine–harness–algorit
 - `video/ltx.rs` sends `POST https://api.ltx.io/v2/text-to-video`, stores the returned ID in the original durable job and polls `GET .../{id}`. An ambiguous submission/network failure enters a `needs_review` state rather than blindly re-submitting a billable job.
 - Explicit model+resolution+duration matrix: 2.5 Pro 6–10 s; Fast 6–20 s at 720p/1080p, 6–10 s at 1440p/4K. Actual model output is MP4 with generated audio, not a subtitle-card fallback. 24 fps; 9:16, 16:9, 1:1.
 - Generated MP4 is downloaded from HTTPS provider-backed domains without following redirects, capped to 256 MiB, checked for MP4 header, then atomically renamed. User remains in control of any later YouTube upload.
+- `video/ltx.rs::cinematic_prompt` composes optional cinematic/product/social guidance while preserving the user scene and checking the complete 5,000-character provider budget; an explicit `original` mode sends the user's prompt unchanged. This avoids adding an auxiliary model call. It is **prompt packaging**, not independently proven visual improvement.
 - **Limit:** no fully automatic episode-length stitching, video QA judge or continuity scoring yet. A single request can produce multiple native LTX shots only within the supported clip length. Source wiring ≠ measured output quality.
 
 ### Multi-agent cost and quality boundary
