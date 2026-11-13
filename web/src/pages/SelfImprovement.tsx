@@ -20,7 +20,7 @@ type SystemControllerPlan={source?:string;generatorCommit?:string;domain?:string
 type SystemEvidence={verifiedLineageLength?:number;rebuiltHandoffs?:number;sourceChangedComponents?:string[];missingComponents?:string[];metaImprovementObserved?:boolean;inventedMethodTransferred?:boolean;demonstrated?:boolean}
 type EvaluationProfile={id:string;name:string;taskCount:number;requiredComponents:string[];sha256?:string}
 type Campaign={id:string;evaluationProfile?:EvaluationProfile;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
- systemEvolution?:boolean;systemEvidence?:SystemEvidence;systemSourceWrites?:number;evaluationEpisodes?:number;metaEvaluationProgress?:{arm?:string;task?:number};
+ systemEvolution?:boolean;systemEvidence?:SystemEvidence;generationCapabilityProven?:boolean;capabilityDemonstrated?:boolean;systemSourceWrites?:number;evaluationEpisodes?:number;metaEvaluationProgress?:{arm?:string;task?:number};
  reusedArtifacts?:number;preservedFailureAttempts?:number;modelCalls?:number;verifiedSourceWrites?:number;candidateCount?:number;applicationError?:string;applyWhenFinished?:boolean;
  activeWorker?:{phase?:string;generatorCommit?:string;focusFiles?:string[]};diagnosis?:{failed?:number};
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
@@ -31,7 +31,7 @@ type Campaign={id:string;evaluationProfile?:EvaluationProfile;status:string;phas
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
  history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection;
  architectureTarget?:ArchitectureTarget;systemBlueprintVerified?:boolean;systemBlueprint?:SystemBlueprint;systemDesign?:SystemDesign;
- improvementDirective?:{mode?:string;sourceGenerationId?:string};
+ improvementDirective?:{mode?:string;sourceGenerationId?:string};methodAblation?:{methodAssociationObserved?:boolean;qualityProven?:boolean;pairedHoldoutCases?:number;treatmentOnlyWins?:number;controlOnlyWins?:number;status?:string};
  controllerPlan?:SystemControllerPlan;metaEvaluation?:{tasks?:number;domains?:string[];perEpisodeTokenLimit?:number;measurement?:{metrics?:{quality?:{baseline:number;candidate:number}}};episodes?:{arm:string;task:number;quality:number;usage?:{calls?:number;totalTokens?:number}}[]}}[]}
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
@@ -59,7 +59,7 @@ const stops:Record<string,string>={capability_demonstrated:'설정한 자기개�
  no_progress:'새로운 근거나 변경이 없어 반복 호출을 멈췄습니다.'}
 const terminal=(status:string)=>['completed','failed','cancelled','needs_review'].includes(status)
 const phases:Record<string,string>={preparing_lab:'개선 준비 중',building_generator:'선택한 버전 준비 중',
- diagnosing_and_editing:'문제를 찾고 개선하는 중',planning_next_generator:'개선된 후손이 다음 세대 구조를 계획하는 중',measuring:'기존 버전과 개선 버전 비교 중',
+ diagnosing_and_editing:'문제를 찾고 개선하는 중',planning_next_generator:'개선된 후손이 다음 세대 구조를 계획하는 중',measuring:'기존 버전과 개선 버전 비교 중',evaluating_method_control:'개선법 사용 OFF 대조군을 실제 평가하는 중',
  waiting_for_choice:'어느 버전을 사용할지 선택해 주세요',selecting:'선택한 버전으로 이어가는 중',model_editing:'선택한 모델이 실제 소스를 수정하는 중',compiling_candidate:'수정한 코드 컴파일 검사 중',review:'수정 증거 수집 완료',paired_experiment:'독립 비교 실행 중',meta_evaluating:'이전 개선기와 수정된 개선기의 후속 코딩 성과 비교 중'}
 const winners={candidate:'개선 버전이 우세합니다',baseline:'기존 버전이 우세합니다',inconclusive:'아직 우열을 확인하지 못했습니다'}
 function Results({comparison,waiting,busy,onChoose}:{comparison:Comparison;waiting:boolean;busy:boolean;onChoose:(side:'baseline'|'candidate')=>void}){
@@ -113,6 +113,7 @@ export function SelfImprovementPage(){
  const [workload,setWorkload]=useState<Workload>(()=>preferences().workload)
  const budget=workloads[workload]
  const [localOnly,setLocalOnly]=useState(()=>preferences().workload==='night')
+ const [methodAblation,setMethodAblation]=useState(false)
  const issueId=new URLSearchParams(window.location.hash.split('?')[1]||'').get('issue')||''
  const [reportedIssue,setReportedIssue]=useState<{id:string;title?:string;detail?:string;suggestedRequest?:string}|null>(null)
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>('automatic')
@@ -182,7 +183,7 @@ export function SelfImprovementPage(){
   try{
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
     providerId,model,...(!continuing&&reportedIssue?{issueId:reportedIssue.id}:{}),evaluationProfileId:continuing?campaign?.evaluationProfile?.id||'default':evaluationProfileId,localOnly:localOnly||workload==='night',...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,evolutionTarget:'system',applyWhenFinished:true,expandAfterGain:true,nativeInduction:false,reasoningEffort:'low',maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
+    selectionPolicy:selection,evolutionTarget:'system',applyWhenFinished:true,expandAfterGain:true,nativeInduction:false,methodAblation,reasoningEffort:'low',maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
    setSetupMode(false);setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
@@ -250,6 +251,7 @@ export function SelfImprovementPage(){
    <div className="mt-5"><FormField label="개선 능력을 확인할 평가"><SelectInput value={evaluationProfileId} disabled={working||busy} onChange={e=>setEvaluationProfileId(e.target.value)}>
     {(evaluationProfiles.value.profiles.length?evaluationProfiles.value.profiles:[{id:'default',name:'범용 에이전트 기본 평가',taskCount:4}]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.taskCount}개 과제</option>)}
    </SelectInput></FormField><p className="mt-2 text-[11px] text-[#8A8176]">평가는 시작할 때 고정합니다. 각 과제를 기존·개선 버전으로 한 번씩 실행하며 같은 모델과 예산을 사용합니다.</p></div>
+   <label className="mt-5 flex items-start gap-2 text-[12px] text-[#5C544A]"><input type="checkbox" checked={methodAblation} disabled={working||busy} onChange={e=>setMethodAblation(e.target.checked)}/><span>실제 개선법 ON/OFF 대조실험 실행 <span className="block text-[11px] text-[#8A8176]">같은 소스·모델·동결 평가에서 추가 대조군 작업기를 실행합니다. 모델 호출과 토큰 사용이 늘어납니다. 대조군 변경은 채택하지 않습니다.</span></span></label>
    <div className="mt-5"><FormField label="한 번에 진행할 작업량"><SelectInput value={workload} disabled={working||busy||installing} onChange={e=>setWorkload(e.target.value as Workload)}>{Object.entries(workloads).map(([key,value])=><option key={key} value={key}>{value.label} · 최대 {value.maxAttempts}단계 · {value.tokenBudget?(value.tokenBudget/10000).toLocaleString()+'만 토큰':'토큰 상한 없음'} · {value.timeBudgetSeconds?value.timeBudgetSeconds/60+'분':'시간 상한 없음'}</option>)}</SelectInput></FormField></div>
    <p className="mt-4 text-[11px] leading-5 text-[#8A8176]">시작하면 선택한 모델로 실제 소스를 수정합니다. 검증된 변경은 원본 소스 브랜치에 반영합니다. 자동 재시작을 지원하는 소스 설치에서는 실행 중인 프로그램도 교체합니다. 실행 중에는 중단할 수 있습니다.</p>
   </Panel>}
@@ -305,6 +307,7 @@ export function SelfImprovementPage(){
      <div className="mt-2 grid grid-cols-2 gap-2">{(['baseline','candidate'] as const).map(arm=><div key={arm}><strong>{arm==='baseline'?'이전 개선기':'수정된 개선기'}</strong>
       {item.metaEvaluation?.episodes?.filter(row=>row.arm===arm).map(row=><p key={row.task} className="mt-1 text-[11px] text-[#7C7469]">과제 {row.task+1}: {(row.quality*100).toFixed(1)}% · {row.usage?.calls||0}회 호출 · {(row.usage?.totalTokens||0).toLocaleString()}토큰</p>)}</div>)}</div>
      <p className="mt-2 text-[11px] text-[#7C7469]">같은 모델·원본 소스·과제별 예산으로 실제 패치를 생성하고 동결된 검사로 평가했습니다.{item.metaEvaluation.perEpisodeTokenLimit?` 각 비교군 최대 ${item.metaEvaluation.perEpisodeTokenLimit.toLocaleString()}토큰`:''} 과제별 실제 측정이며, 전체 지능 향상이나 무한 재귀를 증명하지는 않습니다.</p></div>:null}
+    {item.methodAblation&&<p className="mt-2 text-[11px] text-[#7C7469]">개선법 ON/OFF 독립 대조: {item.methodAblation.methodAssociationObserved?`방법 사용 ON에서 홀드아웃 ${item.methodAblation.treatmentOnlyWins||0}개 추가 개선`:'대조 실측 개선 미확인'}{item.methodAblation.pairedHoldoutCases!=null?` · 비교 사례 ${item.methodAblation.pairedHoldoutCases}개`:''}{item.methodAblation.controlOnlyWins?` · 대조군 우세 ${item.methodAblation.controlOnlyWins}개`:''}</p>}
     {item.generatorCommit&&<p className="mt-2 text-[#81786B]">실행기 {item.generatorCommit.slice(0,10)}{item.acceptedCommit?` · 채택 ${item.acceptedCommit.slice(0,10)}`:''}</p>}
    </div>)}</div></details>}
   </Panel>}
