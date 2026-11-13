@@ -5,7 +5,7 @@ use serde_json::{json,Value};
 
 /// Methods on the real child execution path. Merely creating a Rust file, or
 /// adding an uncalled helper, is insufficient evidence of inherited control.
-const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
+pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
     "src/engine/rsi_meta_controller.rs",
     "src/engine/rsi_meta_controller/peer_transfer.rs",
     "src/engine/rsi/planner/compiled.rs",

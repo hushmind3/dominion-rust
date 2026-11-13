@@ -338,12 +338,11 @@ pub(crate) fn architecture_frontier(
             // evaluator-error learning law or the program-discovery method.
             // Both are ordinary editable source targets, never privileged
             // for independent adoption or scoring.
-            for anchor in [
-                "src/engine/rsi_recursive_discovery.rs",
-                "src/engine/rsi_meta_controller.rs",
-                "src/engine/rsi_meta_controller/peer_transfer.rs",
-                "src/engine/rsi_system/planning.rs",
-            ] {
+            // A source-level method that can be inherited must also remain
+            // discoverable after the per-role limit. Share one source list
+            // with the actual lineage verifier, never maintain stale copies.
+            for anchor in method_lineage::EXECUTABLE_METHOD_SOURCES
+                .iter().rev().copied() {
                 if let Some(pos)=available.iter().position(|(path,_,_)|
                     *path==anchor) {
                     let method=available.remove(pos);

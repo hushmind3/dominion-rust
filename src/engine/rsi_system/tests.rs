@@ -214,9 +214,10 @@ use super::*;
             fs::write(root.join(format!("src/engine/rsi_minor_{i}.rs")),
                 format!("pub fn minor_{i}() {{}}")).unwrap();
         }
-        for source in ["rsi_meta_controller.rs","rsi_recursive_discovery.rs"] {
-            fs::write(root.join("src/engine").join(source),
-                "pub fn method() { let _source = 123456789; }".repeat(512))
+        for &source in method_lineage::EXECUTABLE_METHOD_SOURCES {
+            let file=root.join(source);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file,"pub fn method() { let _source = 123456789; }".repeat(512))
                 .unwrap();
         }
         let config=crate::config::Config{port:0,data_dir:root.join("data"),
@@ -228,12 +229,11 @@ use super::*;
         let model=blueprint(&root,&"a".repeat(40),&[]);
         let frontier=architecture_frontier(&state,&model,&[],
             index["id"].as_str().unwrap(),&root);
-        for source in ["rsi_meta_controller.rs","rsi_recursive_discovery.rs"] {
-            let path=format!("src/engine/{source}");
-            assert!(frontier.iter().any(|row|row["path"]==path
+        for &source in method_lineage::EXECUTABLE_METHOD_SOURCES {
+            assert!(frontier.iter().any(|row|row["path"]==source
                 && row["role"]=="improvement_methods"
                 && row["qualityProven"]==false),
-                "method rewriter must remain discoverable: {path}");
+                "inheritable executable method must remain discoverable: {source}");
         }
         let _=fs::remove_dir_all(root);
     }
