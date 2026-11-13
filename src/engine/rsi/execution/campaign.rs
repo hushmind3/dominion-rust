@@ -1136,33 +1136,9 @@ pub(super) async fn run_loop(
             && stopped==Some("token_budget") {
             None
         } else {stopped};
-        let accepted_streak = if generation_accepted {
-            record["acceptedStreak"].as_u64().unwrap_or(0) + 1
-        } else {
-            // Research-only or failed generations interrupt a consecutive
-            // adoption chain, even when no evaluation was produced.
-            0
-        };
-        record["acceptedStreak"] = json!(accepted_streak);
-        let max_streak = record["maxAcceptedStreak"]
-            .as_u64()
-            .unwrap_or(0)
-            .max(accepted_streak);
-        record["maxAcceptedStreak"] = json!(max_streak);
-        // Three consecutive adopted generations are the documented threshold
-        // for calling the capability demonstrated, not a single lucky patch.
-        let mut evidence_record=record.clone();
-        evidence_record["history"].as_array_mut()
-            .ok_or("세대 이력 손상")?.push(generation.clone());
-        let bounded_proof=max_streak >= 3
-            && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record);
-        record["capabilityDemonstrated"]=json!(bounded_proof);
-        record["modelDrivenCapabilityDemonstrated"]=json!(
-            crate::engine::rsi::campaign_model_driven_capability_proven(
-                &context.state,&evidence_record));
-        record["systemicHandoffProven"]=json!(bounded_proof
-            && crate::engine::rsi_system::verified_handoff(
-                evidence_record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])));
+        // Do not calculate a weaker 3-adoption success flag here. The
+        // authoritative receipt-backed A→B→A verdict is recomputed after the
+        // generation, its candidate and original comparison are persisted.
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
@@ -1185,6 +1161,10 @@ pub(super) async fn run_loop(
             .as_array_mut()
             .ok_or("세대 목록 손상")?
             .push(generation);
+        // Stored history is authoritative; the same audit function is used by
+        // the UI and by the stop gate. Source evolution and completed recursive
+        // METHOD improvement remain different claims.
+        crate::engine::rsi::apply_campaign_verdict(&context.state,record);
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
         let no_edit = candidate_id.is_none()
