@@ -5416,7 +5416,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             "Approved, actually executed model={}, provider={}, original_owner={},              frozen downstream model-lineage decision={},              external_API_weights_retrained=false.              The improvement-agent model can be changed only among approved              routes by this self-editable compiled policy; selection is not              evidence that its underlying weights or general inference improved.",
             job["input"]["model"],job["input"]["providerId"],
             job["input"]["rsiModelOrigin"],
-            capsule(&job["input"]["rsiModelEvolutionPlan"],1600));
+            capsule(job["input"]["rsiModelEvolutionPlan"].as_str().unwrap_or(""),1600));
         let peer_context=format!(
             "DESCENDANT MODEL SELECTION / MODEL-IMPROVEMENT EXPERIMENT: {}\n            DOWNSTREAM METHOD EFFECTIVENESS (replayed independent holdouts): {}\n            OPEN MODEL-AUTHORED IMPROVEMENT ALGEBRA (executed current source): {}\n            RECURSIVE SCIENTIFIC DISCOVERY (descendant-owned): {}\n            FACTORIAL HOLDOUT EXPERIMENT: {}\nCOMPARATIVE METHOD: {}\nINDEPENDENT OTHER-LINEAGE DESIGN REFERENCES (source evidence only, never automatic patches):\n{}\n            CROSS-SUBSYSTEM HOLDOUT OBSERVATIONS (changed source paths, isolated versus joint edits; hypotheses not causal proof):\n{}\n            NEXT SOURCE-BOUND CO-DESIGN PORTFOLIO (edit and independently evaluate actual implementations):\n{}",
             model_lineage_instruction,method_learning_instruction,

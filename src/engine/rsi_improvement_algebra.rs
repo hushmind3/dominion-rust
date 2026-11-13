@@ -210,7 +210,7 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],commit:&str)->Value{
                 "betaMean":(accepted as f64+1.0)/(trials.len() as f64+2.0),
                 "declaredClaimsNeverCountAsObservations":true});
             let cycle_member=best_cycle.iter().any(|e|e["ruleId"]==id
-                && e["to"]==product.as_str().unwrap_or(""));
+                && e["to"].as_str()==Some(product));
             let score=(if cycle_member{500}else{0})
                 + (if revise{1100}else{0})
                 + (if fresh_activation && premise_observed{900}else{0})
