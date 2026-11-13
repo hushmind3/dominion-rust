@@ -139,6 +139,10 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&interaction_graph,DOMAINS,commit);
     let science=crate::engine::rsi_recursive_scientist::plan(
         &history,&frontier,&factorial,&coupled_portfolio,commit);
+    let open_focus_active=science_active && !meta_redesign_active
+        && !negative_transfer_active && !algebra_active && !capability_active
+        && science["phase"]=="discover_new_mechanism"
+        && open_source_focus.is_some();
     // Independently adopted model-authored improvement operators can compose
     // across any number of roles; no fixed scientist stage is needed.
     if meta_redesign_active {
@@ -151,8 +155,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         architecture_target=algebra["selected"]["target"].clone();
     }else if capability_active {
         architecture_target=method_learning["suggestedCapabilityTarget"].clone();
-    }else if science_active && science["phase"]=="discover_new_mechanism"
-        && open_source_focus.is_some() {
+    }else if open_focus_active {
         // The policy may change source targets with ANY role in the current
         // actual topology. A self-improving experimental designer changes
         // this exploration algorithm in its own next compiled revision.
@@ -336,7 +339,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             }));
         }
     }
-    let focus=if meta_redesign_active {
+    let focus=if meta_redesign_active || open_focus_active {
         ranked.iter().take(1).filter_map(|row|row["path"].as_str())
             .collect::<Vec<_>>()
     }else if negative_transfer_active {
