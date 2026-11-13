@@ -1025,12 +1025,12 @@ use super::*;
         std::fs::write(&plan_file, plan.to_string()).unwrap();
         std::fs::write(
             fixtures.join("rsi-lab.sh"),
-            include_str!("../../scripts/rsi-lab.sh"),
+            include_str!("../../../../scripts/rsi-lab.sh"),
         )
         .unwrap();
         std::fs::write(
             fixtures.join("rsi-measure.mjs"),
-            include_str!("../../scripts/rsi-measure.mjs"),
+            include_str!("../../../../scripts/rsi-measure.mjs"),
         )
         .unwrap();
         let report_file = fixtures.join("report.json");
@@ -1203,7 +1203,7 @@ use super::*;
         std::fs::write(source.join(".gitignore"), "/target\n").unwrap();
         std::fs::write(
             source.join("src/main.rs"),
-            include_str!("../../tests/fixtures/rsi-generation-worker.rs"),
+            include_str!("../../../../tests/fixtures/rsi-generation-worker.rs"),
         )
         .unwrap();
         std::fs::write(source.join("build.rs"),r#"fn main(){let out=std::process::Command::new("git").args(["rev-parse","HEAD"]).output().unwrap();println!("cargo:rustc-env=FIXTURE_COMMIT={}",String::from_utf8_lossy(&out.stdout).trim());println!("cargo:rerun-if-env-changed=DOMINION_RSI_BUILD_COMMIT");}"#).unwrap();
@@ -1305,7 +1305,7 @@ use super::*;
         std::fs::create_dir_all(source.join("src")).unwrap();
         std::fs::write(source.join("Cargo.toml"),"[package]\nname=\"dominion-rust\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\nserde_json=\"1\"\nsha2=\"0.10\"\nrusqlite={version=\"0.32\",features=[\"bundled\"]}\n").unwrap();
         std::fs::write(source.join(".gitignore"), "/target\n").unwrap();
-        std::fs::write(source.join("src/main.rs"), include_str!("../../tests/fixtures/rsi-generation-worker.rs")).unwrap();
+        std::fs::write(source.join("src/main.rs"), include_str!("../../../../tests/fixtures/rsi-generation-worker.rs")).unwrap();
         std::fs::write(source.join("build.rs"),r#"fn main(){let out=std::process::Command::new("git").args(["rev-parse","HEAD"]).output().unwrap();println!("cargo:rustc-env=FIXTURE_COMMIT={}",String::from_utf8_lossy(&out.stdout).trim());println!("cargo:rerun-if-env-changed=DOMINION_RSI_BUILD_COMMIT");}"#).unwrap();
         let mut lock = Command::new("cargo");
         lock.current_dir(&source).args(["generate-lockfile", "--offline"]);

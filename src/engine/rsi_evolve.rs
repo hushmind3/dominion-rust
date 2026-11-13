@@ -70,7 +70,7 @@ mod execution_worker;
 pub use execution_worker::{worker};
 
 #[cfg(test)]
-#[path = "rsi_evolve_tests.rs"]
+#[path = "rsi/tests/evolve.rs"]
 mod tests;
 
 // Exactly one native search rule: the same template is compiled for

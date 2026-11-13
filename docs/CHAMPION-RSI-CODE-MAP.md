@@ -11,7 +11,7 @@ This file is a short routing index, not proof of performance. Source code is the
    - `src/engine/rsi/evaluation/` — original-paired adoption and success criteria
    - `src/engine/rsi/learning/` — verified edit methods, transfer trials and research reuse
    - `src/engine/rsi_evolve_tests.rs` — separated Rust unit tests
-2. `src/engine/rsi_system.rs` — source-grounded architecture, selected-target validation and independently replayed history. Tests: `rsi_system_tests.rs`.
+2. `src/engine/rsi_system.rs` — source-grounded architecture, selected-target validation and independently replayed history. Tests: `rsi/tests/system.rs`.
 3. `src/engine/rsi_meta_controller.rs` — editable source-target ranking and prediction-repair priority.
 4. `src/engine/rsi_prequential.rs` — source-bound prequential predictions. Invalid/missing original paired receipts are not learning labels; only actual changed target source can be a target success.
 5. `src/engine/rsi_peer_transfer.rs` — one donor method hypothesis, matched source/frozen-profile control, negative transfer suppression; never auto-apply a peer patch.

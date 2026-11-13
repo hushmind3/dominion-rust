@@ -2827,6 +2827,6 @@ pub fn cancel_job(state: &AppState, id: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "models_tests.rs"]
+#[path = "tests/models.rs"]
 mod tests;
 

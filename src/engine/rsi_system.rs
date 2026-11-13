@@ -1133,6 +1133,6 @@ pub(crate) fn verified_handoff(history:&[Value])->bool {
 }
 
 #[cfg(test)]
-#[path = "rsi_system_tests.rs"]
+#[path = "rsi/tests/system.rs"]
 mod tests;
 
