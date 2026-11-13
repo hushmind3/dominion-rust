@@ -355,7 +355,7 @@ fn inductive_target_path(input: &Value) -> Option<&str> {
     }
     match input["rsiTargetDomain"].as_str() {
         Some("memory") => Some("src/engine/room_state.rs"),
-        Some("improver") => Some("src/engine/rsi_evolve.rs"),
+        Some("improver") => Some("src/engine/rsi/planner/domain_selection.rs"),
         _ => selected,
     }
 }
@@ -460,7 +460,7 @@ mod tests {
                     "the compiled descendant must execute the same verified selector");
             }
         }
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("rsi/planner/domain_selection.rs");
         let evolved=stream_verified_domain_selection(source).unwrap_or_else(||source.to_string());
         assert!(evolved.contains("return fast_failure_domain(history"));
         assert!(evolved.contains("\"expression\"|\"counterexample-first\""));
@@ -485,7 +485,7 @@ mod tests {
     }
     #[test]
     fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("rsi/planner/domain_selection.rs");
         let output=stream_verified_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(output.contains("gainPer10kTokens"));
@@ -540,7 +540,7 @@ mod tests {
             "rsiTargetDomain":"memory","rsiFocusFiles":["src/engine/other.rs"]});
         assert_eq!(inductive_target_path(&request),Some("src/engine/room_state.rs"));
         request["rsiTargetDomain"]=json!("improver");
-        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi_evolve.rs"));
+        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi/planner/domain_selection.rs"));
         request["rsiTargetDomain"]=json!("tools");
         assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
         request["rsiAutoFocus"]=json!(false);
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
-        let source = include_str!("rsi_evolve.rs");
+        let source = include_str!("rsi/planner/domain_selection.rs");
         // The first adopted child already carries the streamed optimizer.
         // Descendant CI must verify the preserved behavior instead of
         // requiring the old, unoptimized source to still exist.
