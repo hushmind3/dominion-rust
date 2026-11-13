@@ -108,7 +108,7 @@ mod tests {
                 "path":"src/engine/memory.rs","sourceBytes":50,
                 "sourceSha256":"e".repeat(64)}),
             json!({"role":"improvement_methods","domain":"improver",
-                "path":"src/engine/rsi_meta_controller.rs",
+                "path":"src/engine/rsi/meta/controller_selection.rs",
                 "sourceSha256":"f".repeat(64),"sourceBytes":100})
         ];
         let base=synthesize(&history,&frontier,&["memory","improver"],
@@ -117,7 +117,7 @@ mod tests {
         let repaired=steer_quality_predictor_repair(
             base,&history,&frontier,&["memory","improver"]);
         assert_eq!(repaired["selectionMode"],"prequential_task_quality_predictor_repair");
-        assert_eq!(repaired["target"]["path"],"src/engine/rsi_meta_controller.rs");
+        assert_eq!(repaired["target"]["path"],"src/engine/rsi/meta/controller_selection.rs");
         assert_eq!(repaired["qualityCalibration"]["observations"],4);
         assert_eq!(repaired["qualityCalibration"]["measuredCandidates"],4);
         assert_eq!(repaired["qualityCalibration"]["independentMetaABProven"],false);
