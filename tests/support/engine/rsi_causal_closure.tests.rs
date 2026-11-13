@@ -5,11 +5,14 @@ mod tests {
     fn arbitrary_file_is_not_meta_improvement() {
         assert!(meta_source("src/engine/rsi/planner/descendant.rs"));
         assert!(meta_source("src/engine/rsi_system/lineage.rs"));
-        assert!(meta_source("src/engine/rsi_system/handoff.rs"));
         assert!(!meta_source("src/engine/memory.rs"));
         assert!(!meta_source("README.md"));
         assert!(!meta_source("src/engine/rsi/proof.rs"));
         assert!(!meta_source("src/engine/rsi_system/handoff.rs"));
+        assert!(!meta_source("src/engine/rsi/execution/compiled_planning.rs"));
+        assert!(!meta_source("src/engine/rsi/execution/generation_evidence.rs"));
+        assert!(!meta_source("src/engine/rsi/execution/generation_finalization.rs"));
+        assert!(meta_source("src/engine/rsi/learning/generation_feedback.rs"));
         assert!(meta_source("src/engine/rsi_system/guidance.rs"));
     }
     #[test]
