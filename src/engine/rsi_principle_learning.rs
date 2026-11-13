@@ -416,7 +416,7 @@ mod tests{
                 "improvedHoldouts":if accepted{1}else{0},
                 "regressions":0}},
             "metaPolicy":{"principleLearning":{"active":true,
-                "selectedPrincipleId":"p_a"}},"domain":"memory"});
+                "selectedPrincipleId":"p_aa"}},"domain":"memory"});
         if accepted {
             g["acceptedCommit"]=json!("f".repeat(40));
             g["systemDesign"]=json!({"source":"model_authored_system_design",
@@ -428,14 +428,14 @@ mod tests{
     }
     #[test]
     fn never_credit_unedited_or_unmeasured_method_claims(){
-        let mut g=born("p_a",&"b".repeat(40));
+        let mut g=born("p_aa",&"b".repeat(40));
         assert_eq!(archive(&[g.clone()]).len(),1);
         g["acceptedSourceHashes"]=json!({});
         assert!(archive(&[g]).is_empty());
     }
     #[test]
     fn measured_downstream_success_and_failure_train_a_principle(){
-        let g=born("p_a",&"b".repeat(40));
+        let g=born("p_aa",&"b".repeat(40));
         let ok=child(&"b".repeat(40),true);
         let later=child(&"f".repeat(40),false);
         let a=archive(&[g,ok,later]);
@@ -445,14 +445,14 @@ mod tests{
     }
     #[test]
     fn unconnected_branch_cannot_train_an_inherited_principle(){
-        let g=born("p_a",&"b".repeat(40));
+        let g=born("p_aa",&"b".repeat(40));
         let other=child(&"d".repeat(40),true);
         let a=archive(&[g,other]);
         assert_eq!(a[0]["descendantEvidence"]["measuredTrials"],0);
     }
     #[test]
     fn empirical_target_reaches_model_memory_tools_when_supported(){
-        let g=born("p_a",&"b".repeat(40));
+        let g=born("p_aa",&"b".repeat(40));
         let frontier=vec![json!({"role":"memory","domain":"memory",
             "path":"src/engine/memory.rs","sourceSha256":"a".repeat(64)})];
         let policy=json!({"revision":"a".repeat(64),
@@ -466,7 +466,7 @@ mod tests{
     }
     #[test]
     fn explicit_owner_goal_prevents_automatic_override(){
-        let g=born("p_a",&"b".repeat(40));
+        let g=born("p_aa",&"b".repeat(40));
         let original=json!({"revision":"a".repeat(64),"alternatives":[]});
         let result=recompose(&[g],&[],original,&["memory"],false,false);
         assert_eq!(result["principleLearning"]["active"],false);

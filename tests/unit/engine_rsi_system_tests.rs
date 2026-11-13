@@ -45,7 +45,8 @@ use super::*;
             "factorialCompliance":{"eligibleForFactorial":true}});
         let candidate=json!({"baseCommit":commit,
             "paths":["src/engine/tools.rs"],
-            "evaluation":{"metrics":{"measurements":[{"id":"case-one"}]}}});
+            "evaluation":{"metrics":{"measurements":[{"id":"case-one",
+                "holdout":true,"baselinePass":true,"candidatePass":true}]}}});
         let (receipt,eligible)=verified_factorial_receipt(
             &generation,&candidate,&job);
         assert!(!eligible);
@@ -191,6 +192,10 @@ use super::*;
         coupled["component"]=json!("system");
         coupled["components"]=json!(["algorithms","learning"]);
         coupled["targetFiles"]=json!(["src/engine/algorithms.rs","src/engine/learning.rs"]);
+        coupled["componentFiles"]=json!({
+            "algorithms":["src/engine/algorithms.rs"],
+            "learning":["src/engine/learning.rs"]
+        });
         let whole=propose(&state,"session",&coupled).unwrap();
         assert_eq!(whole["proposal"]["components"][1],"learning");
         assert_eq!(whole["proposal"]["targetFiles"].as_array().unwrap().len(),2);

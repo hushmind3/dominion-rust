@@ -379,7 +379,9 @@ mod tests {
             "old failures cannot force a joint edit after source code changed");
         // One untrusted self-reported damaged case cannot unlock a new
         // two-source edit objective; only the replayed original pair does.
-        history[1]["evaluation"]["metrics"]["measurements"][0]["candidatePass"]
+        // Trial 1 damaged holdout 1, not holdout 0. Forge the real
+        // failure and ensure revalidation rejects the changed claim.
+        history[1]["evaluation"]["metrics"]["measurements"][1]["candidatePass"]
             =json!(true);
         let forged=plan(&state,&history,&frontier,&head);
         assert!(forged["selected"].is_null());

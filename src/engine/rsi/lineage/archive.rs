@@ -233,7 +233,7 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         let Some((id,scores)) = candidate_scores(state,&candidate,base,&plan,&oracle) else {
             continue;
         };
-        if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
+        if !seen.insert(candidate["patchSha256"].as_str().unwrap_or("").to_string()) {continue;}
         let persisted=remember(state,&identity,&candidate);
         entries.push((id, candidate["patchSha256"].clone(), scores,persisted));
     }

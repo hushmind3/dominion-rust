@@ -120,7 +120,8 @@ use super::*;
         assert_eq!(campaign["input"]["limits"]["maxAttempts"], 1);
         assert!(campaign["input"]["limits"]["tokenBudget"].is_null());
         assert!(campaign["input"]["limits"]["timeBudgetSeconds"].is_null());
-        assert!(campaign["input"]["rsiIndexFiles"].as_u64().unwrap_or(0) >= 3);
+        // The independent protected verifier is not an editable source file.
+        assert!(campaign["input"]["rsiIndexFiles"].as_u64().unwrap_or(0) >= 2);
         assert_eq!(campaign["input"]["rsiFocusFiles"][0], "src/engine/rsi_evolve.rs");
         let prompt = campaign["input"]["prompt"].as_str().unwrap();
         assert!(prompt.contains("저장된 코드 인덱스"));

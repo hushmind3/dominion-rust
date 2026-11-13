@@ -15,7 +15,11 @@ use super::*;
             "filter":format!("engine::rsi::tests::case_{i}")})).collect()
     }
     fn proposal(target: &str) -> Value {
-        json!({"target":target,"baseCommit":base(),"patch":patch(),
+        // A self-improver hypothesis must actually edit the improver.
+        let diff=if target=="improver"{
+            patch().replace("src/engine/memory.rs","src/engine/rsi_evolve.rs")
+        }else{patch()};
+        json!({"target":target,"baseCommit":base(),"patch":diff,
             "hypothesis":"반복되는 개선 후보를 보다 정확하게 평가하도록 변경한다.",
             "cases":cases("memory"),"oracleVersion":"frozen-v1","generatorModel":"manual"})
     }
