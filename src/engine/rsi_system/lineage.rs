@@ -181,7 +181,22 @@ pub(crate) fn method_transfer_target(
             || method["verification"]["type"]!="procedure"
             || !frozen.is_some_and(|cases|cases.iter().any(|case|
                 case["domain"]==domain && case["holdout"]==true)) {continue;}
-        let eligible=crate::engine::rsi_evolve::method_reuse_decision(state,input,domain);
+        // Executable procedures declare their applicability to task text.
+        // Reusing a generic residual-cost objective can hide every method
+        // behind a requestContains mismatch. A real successor task uses the
+        // proposed procedure's own bounded request contract, not a fabricated
+        // successful tool result or a change to the frozen oracle.
+        let intent=method["verification"]["appliesTo"]["requestContains"]
+            .as_array().into_iter().flatten().filter_map(Value::as_str)
+            .map(str::trim).filter(|part|!part.is_empty())
+            .take(12).collect::<Vec<_>>().join(" ");
+        if intent.is_empty(){continue;}
+        let task_objective=format!(
+            "DOMINION 자율 RSI 후손 작업: {domain} 실제 소스에서 {} 과제를 해결하고, 계승된 실행 절차를 사용해 독립 평가의 기존 실패/비효율을 개선한다. 모델과 동결 평가 계약은 그대로 유지한다.",intent);
+        let mut transfer_input=input.clone();
+        transfer_input["rsiObjective"]=json!(task_objective);
+        let eligible=crate::engine::rsi_evolve::method_reuse_decision(
+            state,&transfer_input,domain);
         if eligible["action"]!="execute_methods"
             || !eligible["methodIds"].as_array().is_some_and(|methods|
                 methods.contains(&method["id"])) {continue;}
@@ -204,6 +219,7 @@ pub(crate) fn method_transfer_target(
             "acceptedMetaCommit":meta["acceptedCommit"],
             "methodId":method["id"],"revision":method["revision"],
             "name":method["name"],"domain":domain,
+            "taskObjective":task_objective,
             "feedbackSourceGenerationId":meta["improvementDirective"]["sourceGenerationId"],
             "methodExecutionRequired":true,
             "ablationRequired":true
