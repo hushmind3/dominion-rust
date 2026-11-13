@@ -73,7 +73,7 @@ fn observed(row:&Value)->Option<(Arm,Genome)>{
     }
     let c:Contract=serde_json::from_value(row["experimentStrategy"].clone()).ok()?;
     if c.source!="compiled_descendant_experiment_strategy_v1"
-        ||c.generator_commit!=row["generatorCommit"]
+        ||row["generatorCommit"].as_str()!=Some(c.generator_commit.as_str())
         ||c.effect_proven {return None;}
     Some((c.arm,c.genome))
 }
