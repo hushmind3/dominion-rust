@@ -11,7 +11,10 @@ fn meta_source(path:&str)->bool {
         |"src/engine/rsi_system/design.rs"
         |"src/engine/rsi_system/proposal.rs"
         |"src/engine/rsi_system/handoff.rs"
-        |"src/engine/rsi_system/peer_verifier.rs") {return false;}
+        |"src/engine/rsi_system/peer_verifier.rs"
+        |"src/engine/rsi/execution/compiled_planning.rs"
+        |"src/engine/rsi/execution/generation_evidence.rs"
+        |"src/engine/rsi/execution/generation_finalization.rs") {return false;}
     path=="src/engine/rsi_evolve.rs" ||
     path=="src/engine/rsi_meta_controller.rs" ||
     path=="src/engine/rsi_program_graph.rs" ||
