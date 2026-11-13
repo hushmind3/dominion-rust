@@ -76,6 +76,9 @@ fn source_role(path:&str)->&'static str {
         return "frontend";
     }
     let lower=path.to_ascii_lowercase();
+    // Submodules owned by the RSI coordinator are policy machinery, not
+    // generic "learning" or "algorithms" merely because of their basename.
+    if lower.starts_with("src/engine/rsi/"){return "improvement_methods";}
     let name=lower.rsplit('/').next().unwrap_or(&lower);
     if name.starts_with("model_")||name.starts_with("train_")
         || name.starts_with("training")||name.starts_with("trainable")
@@ -1300,6 +1303,19 @@ mod tests {
             assert_eq!(generation["metaLearning"],Value::Null);
         }
         let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn nested_rsi_modules_remain_editable_improvement_methods() {
+        for module in [
+            "src/engine/rsi/learning.rs",
+            "src/engine/rsi/evaluation.rs",
+            "src/engine/rsi/planner.rs",
+            "src/engine/rsi/execution.rs",
+        ] {
+            assert_eq!(source_role(module),"improvement_methods");
+            assert!(runtime_source_file(module));
+        }
+        assert_eq!(source_role("src/engine/learning.rs"),"learning");
     }
     #[test]
     fn descendant_source_inventory_excludes_test_only_artifacts() {
