@@ -1,6 +1,20 @@
 //! Durable multi-generation RSI orchestration and recorded source-edit execution.
 //! Private to the RSI coordinator; no frozen evaluator or model weight changes.
-use super::*;
+use super::{
+    Value, JobContext, Duration, Instant, Path,
+    PathBuf, Command, Digest, Sha256, json,
+    experience, rsi, rsi_worktree, tools, DOMAINS,
+    limits, select_domain_for_state, command, git, save,
+    elapsed, select, run, verified_candidate_id, allowed_trial_campaigns,
+    trial_owned_by, research_digest, focus_excerpt_has_source, bind_action_to_source, choose_focus_files,
+    focus_file_context, generation_context, research_scope, selection_objective, research_artifacts,
+    remember_research, session_research_fingerprint, generation_stop_reason, generation_fits_remaining_budget, should_stop_no_progress,
+    new_research_findings, session_tool_usage, previous_autonomous_failures, retry_learned_model_failure, generation_model_error,
+    adopt, worker, method_reuse_decision, is_synthesized_source_repair, record_method_feedback,
+    proposed_algorithms, queue_search_trial, propose_autonomous_search_trial, pending_trial_candidate, record_trial_outcome,
+    observed_edit_outcome, observed_action_value, evolved_execution_action, research_continuation, generation_target_plan,
+    pending_failed_patch_domain, pending_method_recovery_domain, select_generation_strategy, sub2_edit_policy_reward,
+};
 
 pub(super) async fn run_loop(
     context: &JobContext,
