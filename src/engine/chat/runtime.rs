@@ -2,8 +2,8 @@
 /// A single campaign generation may explore further than an ordinary chat
 /// turn, but not without bound: the campaign budget must survive several
 /// generations, otherwise a barren run burns everything in one attempt.
-const CAMPAIGN_GENERATION_ROUNDS: usize = 24;
-const CAMPAIGN_GENERATION_TOOLS: usize = 80;
+const CAMPAIGN_GENERATION_ROUNDS: usize = 8;
+const CAMPAIGN_GENERATION_TOOLS: usize = 24;
 
 use super::{
     approval::{close_pending_approvals, request_approval},
@@ -741,8 +741,8 @@ async fn run_turn_body(
         // The campaign owns tokens and time, but one generation must still be
         // bounded. Unlimited rounds let a barren generation loop until the whole
         // campaign budget is gone before it ever produces a candidate.
-        max_rounds = max_rounds.clamp(16, CAMPAIGN_GENERATION_ROUNDS);
-        max_tools = max_tools.clamp(24, CAMPAIGN_GENERATION_TOOLS);
+        max_rounds = CAMPAIGN_GENERATION_ROUNDS;
+        max_tools = CAMPAIGN_GENERATION_TOOLS;
     }
     let elapsed_limit=if campaign_budgeted {
         session["rsiCampaignId"].as_str().and_then(|id|state.store.get("job",id))
