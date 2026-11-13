@@ -9,6 +9,7 @@ fn meta_source(path:&str)->bool {
     // A source candidate must never earn a META gain by editing the judge.
     if matches!(path,"src/engine/rsi/proof.rs"
         |"src/engine/rsi/proof/open_evolution.rs"
+        |"src/engine/rsi/evaluation/contract.rs"
         |"src/engine/rsi_system/design.rs"
         |"src/engine/rsi_system/proposal.rs"
         |"src/engine/rsi_system/handoff.rs"
