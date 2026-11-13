@@ -98,6 +98,12 @@ fn source_role(path:&str)->&'static str {
         || lower.starts_with("src/engine/rooms/")
         || lower.starts_with("src/engine/room_context/")
         || lower.starts_with("src/engine/chat/room_context/") {return "multiagent";}
+    // Model installers, downloaders and protocol adapters remain the MODEL
+    // capability after being split into runtime submodules. Do not silently
+    // mis-credit them as generic algorithms or chat-UI changes.
+    if lower.starts_with("src/engine/models/")
+        || lower=="src/engine/chat/provider.rs"
+        || lower.starts_with("src/engine/chat/provider/"){return "models";}
     let name=lower.rsplit('/').next().unwrap_or(&lower);
     if name.starts_with("model_")||name.starts_with("train_")
         || name.starts_with("training")||name.starts_with("trainable")

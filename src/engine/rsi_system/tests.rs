@@ -47,6 +47,9 @@ use super::*;
             assert!(runtime_source_file(module));
         }
         assert_eq!(source_role("src/engine/learning.rs"),"learning");
+        assert_eq!(source_role("src/engine/models/installer.rs"),"models");
+        assert_eq!(source_role("src/engine/models/loader.rs"),"models");
+        assert_eq!(source_role("src/engine/chat/provider/openai.rs"),"models");
         assert_eq!(source_role("src/engine/video.rs"),"video");
         assert_eq!(source_role("src/engine/video/ltx.rs"),"video");
         assert_eq!(source_role("src/api/video.rs"),"video");
