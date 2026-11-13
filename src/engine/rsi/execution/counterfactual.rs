@@ -56,6 +56,12 @@ pub(crate) fn effective_action(plan:&Value)->Value{
         "openTarget":plan["openImprovementProgram"]["target"]["path"],
         "editMethod":plan["editPolicy"]["method"],
         "editStrategy":plan["editPolicy"]["strategy"],
+        // A new compiled planner selecting an executable method revision
+        // changes its future source-editing behaviour even when the task
+        // domain stays the same. This is verified against live worker use.
+        "inheritedMethodId":plan["methodTransfer"]["methodId"],
+        "inheritedMethodRevision":plan["methodTransfer"]["revision"],
+        "feedbackDrivenMetaRevision":plan["feedbackRepairSelected"],
         "provider":plan["apiRoutePolicy"]["chosen"]["providerId"],
         "model":plan["apiRoutePolicy"]["chosen"]["model"]})
 }
