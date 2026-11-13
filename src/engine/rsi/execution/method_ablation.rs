@@ -103,6 +103,7 @@ pub(super) async fn run_method_control(
     }));
     child_input["rsiMethodAblationArm"]=json!("with_methods");
     child_input["rsiMethodAblationControlId"]=saved["id"].clone();
+    child_input["rsiMethodAblationInputSha256"]=json!(fp);
     save(context,record)?;
     Ok(())
 }
@@ -117,7 +118,6 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     let Some(control)=state.store.get("rsi_method_ablation",id) else{return Value::Null};
     let Some(control_job)=control["controlJobId"].as_str()
         .and_then(|id|state.store.get("job",id)) else{return Value::Null};
-    let original_control_fingerprint=&control_job["rsiMethodAblationInputSha256"];
     let control_session=control_job["sessionId"].as_str().unwrap_or("");
     let disabled_at_runtime=!control_session.is_empty()
         && !state.store.all("execution_operation").iter().any(|operation|
@@ -125,7 +125,7 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     let bound=control["source"]=="real_detached_method_disabled_worker_v1"
         && control["methodsActuallyDisabled"]==true
         && disabled_at_runtime
-        && control["inputSha256"]==*original_control_fingerprint
+        && control["inputSha256"]==control_job["rsiMethodAblationInputSha256"]
         && control["inputSha256"]==treatment_job["rsiMethodAblationInputSha256"]
         && control["candidateId"].as_str()==verified_candidate_id(&control_job["result"])
         && control["adopted"]==false
