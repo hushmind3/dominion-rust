@@ -285,7 +285,7 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 #[path="rsi_worktree/capture.rs"]
 mod capture;
 #[cfg(test)]
-use capture::classify;
+use capture::{classify, focused_verifier_stderr};
 pub use capture::finish;
 
 pub(crate) fn unsafe_audit_for_patch(workspace:&Path,patch:&str)->Option<Value>{
