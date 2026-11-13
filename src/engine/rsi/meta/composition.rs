@@ -53,8 +53,10 @@ pub(super) fn compose(
     let factorial=crate::engine::rsi_factorial::design(
         &history,&frontier,&influence,&allowed,commit);
     // Real model-authored meta operators, free of a fixed A/B/A/B stage list.
-    let evolution_program=if explicit || paired_descendant_target(input)
-        || input["rsiAutonomous"]!=true {Value::Null}
+    // An old supervisor's post-adoption cost target is a suggestion,
+    // NOT an owner constraint. The genuinely adopted successor program
+    // may supersede it while preserving the frozen evaluation profile.
+    let evolution_program=if explicit || input["rsiAutonomous"]!=true {Value::Null}
         else {crate::engine::rsi_evolve::meta_evolution::compile(
             &history,&frontier,&allowed,commit)};
     // A later independently adopted, freely authored protocol may supersede
@@ -149,7 +151,8 @@ pub(super) fn compose(
         || evolution_program.is_object() {
         Value::Null
     }else{mutual_program};
-    let architecture_target=if explicit || paired_descendant_target(input) {
+    let architecture_target=if explicit
+        || (paired_descendant_target(input) && evolution_program.is_null()) {
         Value::Null
     }else if meta_policy["target"].is_object() {
         meta_policy["target"].clone()
