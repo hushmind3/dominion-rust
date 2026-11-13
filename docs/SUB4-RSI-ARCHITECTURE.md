@@ -236,3 +236,7 @@ The product-wide source changes are mapped in [SUB4-PRODUCT-UPGRADE-2026-11-14.m
 ### Video-contract integration (2026-11-14)
 
 `video/kling4.rs` implements the current Kling 4.0 request contract and 30-second native segment timing, alongside the separate Kling 3.0 native multi-shot contract in `video/shot_plan.rs`. Both are explicitly invoked by `video/runway.rs` from the paid video queue; the previous paid task's downloaded final JPEG becomes the next task's `promptImage` if the owner enables continuity. Native sound on Kling 4.0 is a model contract, not an optional field. This is product-level code evolution, not an RSI holdout result. Source inspection only, no tests or paid models executed.
+
+### Adaptive multi-agent economic self-improvement (2026-11-14)
+
+The connected `multiagent.economy` algorithm runs through `api/rooms.rs` → `algorithms::choose_for_agent` → immutable job roomSnapshot → compiled `rooms/economy.rs` and `rooms/speakers.rs` → chat provider tools. Completed automatic room jobs accept idempotent owner preference feedback for the exact selected source revision, reusing `algorithm_stat` for future policy selection. This closes a domain-level preference adaptation loop without changing model weights. It is not accepted as independent RSI evidence or a measured answer-quality improvement. See [product integration map](SUB4-PRODUCT-UPGRADE-2026-11-14.md).
