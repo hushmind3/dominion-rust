@@ -286,6 +286,18 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         DOMAINS.to_vec()
     }else{candidate_domains(&objective)};
     let lineage=crate::engine::rsi_system::lineage_capsule(&history);
+    // Source-adopted META methods are actionable only if the exact method
+    // is still executable for this domain and frozen held-out cases exist.
+    // The recompilable descendant selects the real capability transfer task;
+    // the resident supervisor never writes this target for it.
+    let method_transfer=if explicit || paired_descendant_target(input) {Value::Null}
+        else{crate::engine::rsi_system::method_transfer_target(&state,&history,input)};
+    let feedback_repair=history.last().is_some_and(|last|
+        input["rsiMethodAblation"]==true && input["rsiAutonomous"]==true
+        && !explicit && !paired_descendant_target(input)
+        && last["accepted"]==true && last["domain"]!="improver"
+        && last["methodAblation"]["methodAssociationObserved"]==true
+        && last["methodAblation"]["qualityProven"]==true);
     let influence=crate::engine::rsi_interaction::influence_graph(&history,&frontier);
     // Independent task-quality and descendant capability measurements.
     let principle_learning=crate::engine::rsi_principle_learning::study(&history);
@@ -411,11 +423,15 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }else{Value::Null};
     let successor_hint=if explicit || paired_descendant_target(input) {
         system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
+    }else if let Some(domain)=method_transfer["domain"].as_str(){
+        Some(domain.to_owned())
+    }else if feedback_repair {
+        Some("improver".to_owned())
     }else{architecture_target["domain"].as_str().map(str::to_string).or(inherited)};
     // A verified ancestor's reciprocal program takes priority over an
     // unrelated pending search trial. Otherwise the source chooser can silently
     // move to another domain and the A->B->A stage never actually executes.
-    let trial=if paired_descendant_target(input)
+    let trial=if paired_descendant_target(input) || method_transfer.is_object() || feedback_repair
         || reflexive_program.is_object() || open_program.is_object()
         || (!explicit && matches!(mutual_program["phase"].as_str(),
             Some("complement"|"return"))) {None} else {
@@ -511,6 +527,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "usageEvidence":crate::engine::rsi_system::usage_evidence(&state),
         "systemBlueprint":system_blueprint,
         "improvementDirective":directive,
+        "methodTransfer":method_transfer,
+        "feedbackRepairSelected":feedback_repair,
         "lineageCapsule":lineage,
         "peerLineages":peers,"comparativeMode":comparative_mode,
         "metaPolicy":meta_policy,"successorStage":successor_stage,
