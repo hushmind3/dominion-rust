@@ -540,8 +540,8 @@ The editable experiment allocator now credits a prior source-policy revision onl
 현재 브랜치의 전체 기능별 진입점/실행/계승 관계는 [2026 통합 품질 지도](docs/INTEGRATED-QUALITY-2026-11-14.md), RSI 후손 폐회로의 원본 증거 경계는 [Sub1 구조](docs/RSI-SUB1-ARCHITECTURE.md)에 정리했습니다.
 
 - **턴키 영상 생성**: `web/src/pages/Video.tsx` → `src/api/video.rs` → `src/engine/video.rs::enqueue/run` → `video/{runway,ltx}.rs` → durable job·provider task·MP4. 2026년 Runway 720/1080p 자동·3~5컷 직접 연출/오디오 및 LTX-2.5 Fast/Pro 최대 4K·오디오를 선택할 수 있습니다. 오직 API 키와 비용 승인이 필요하고 대규모 로컬 추론은 강제하지 않습니다. `video::enqueue`가 결제 전에 조합을 검증하고, 원격 제출이 불확실하면 자동 중복 결제를 피하도록 `needs_review`를 유지합니다.
-- **그룹 토큰 예산**: `Rooms.tsx::RoomSettings` → `api/rooms.rs` → `engine/rooms.rs::effective_rounds` → `run_room_quiet`. 신규 방 `balanced`, 기존 방 `quality` 유지. `economy`는 반복 발언을 더 제한하고, 사용자가 직접 지정한 `maxTurns`·멘션·참가자 모델 선택은 우선합니다. 제공자 캐시 측정은 기존 `gateway.rs::record_cache_usage`의 원본 보고 값으로만 표시합니다.
-- **구조/테스트 분리**: `rooms/{pool_tests,tests}.rs`, `chat/room_context/tests.rs`, `engine/video/tests.rs`, `api/video/tests.rs`로 inline 테스트를 이동했습니다. 새 LTX 실행기는 별도 `video/ltx.rs`입니다.
+- **그룹 토큰 예산·모델 티어링**: `Rooms.tsx::RoomSettings/RoomModelPicker` → `api/rooms.rs` → `engine/rooms.rs::effective_rounds` + `rooms/model_tier.rs::select` → `run_room_quiet`. 신규 방 `balanced`, 기존 방 `quality` 유지. fast/deep 모델 라우팅은 사용자가 공급자 모델에 직접 역할을 지정하고 켰을 때만 작동합니다. `economy`는 반복 발언을 더 제한하고, 사용자가 직접 지정한 `maxTurns`·멘션·참가자 모델 선택은 우선합니다. 제공자 캐시 측정은 기존 `gateway.rs::record_cache_usage`의 원본 보고 값으로만 표시합니다.
+- **구조/테스트 분리**: `rooms/{pool_tests,tests}.rs`, `chat/room_context/tests.rs`, `engine/video/tests.rs`, `api/video/tests.rs`와 memory/learning/algorithms/improve/jobs/db/providers의 inline 테스트를 전용 모듈로 이동했습니다. 새 LTX 실행기는 별도 `video/ltx.rs`입니다.
 - **RSI**: API→job→compiled 후손→소스 도구→worktree 동결 평가→채택→방법·전략 재계획의 기존 실행 경로를 유지했습니다. 가중치 학습·LoRA·파인튜닝을 RSI에 연결하지 않았습니다.
 
 **검증 범위:** 사용자 지침에 따라 이번 수정에서는 테스트/컴파일/빌드/벤치마크/CI/실유료 호출을 실행하지 않았습니다. 영상 품질 성능, 캐시 할인률, RSI 후손 성적은 추정치로 채우지 않습니다.
