@@ -133,6 +133,15 @@ pub fn recover(state: &AppState) {
             .unwrap_or(0);
         let mut updated = job.clone();
         updated["recovered"] = json!(true);
+        let review_replayable = job["kind"] == "goal"
+            && crate::engine::goal_review::replayable(&job);
+        // When the final goal decision was saved before the worker's terminal
+        // job update, reconcile its immutable outcome without another LLM call.
+        let terminal_goal = job.pointer("/input/goalId").and_then(Value::as_str)
+            .filter(|_| job["kind"] == "goal")
+            .and_then(|id| state.store.get("goal", id))
+            .filter(|goal| matches!(goal["status"].as_str(),
+                Some("completed" | "cancelled" | "failed" | "needs_review")));
         let flagged = [
             "/inFlight",
             "/promptState/inFlight",
@@ -147,6 +156,9 @@ pub fn recover(state: &AppState) {
         ]
         .iter()
         .any(|path| {
+            if *path == "/goalState/reviewPending" && review_replayable {
+                return false;
+            }
             job.pointer(path)
                 .is_some_and(|value| !value.is_null() && value != &json!(false))
         });
@@ -174,12 +186,26 @@ pub fn recover(state: &AppState) {
                     !matches!(parent["status"].as_str(), Some("running" | "queued"))
                 })
             });
-        updated["status"] = json!(if orphan_child || attempts >= 3 || uncertain {
-            "needs_review"
+        updated["status"] = if let Some(ref completed) = terminal_goal {
+            completed["status"].clone()
+        } else if orphan_child || attempts >= 3 || uncertain {
+            json!("needs_review")
         } else {
-            "queued"
-        });
-        if orphan_child {
+            json!("queued")
+        };
+        if let Some(ref completed) = terminal_goal {
+            updated["result"] = json!({
+                "goalId":completed["id"],"status":completed["status"],
+                "sessionId":completed["sessionId"],"iterations":completed["iterations"],
+                "evidence":completed["evidence"],"gaps":completed["gaps"],
+            });
+            updated["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        }
+        if terminal_goal.is_some() {
+            // The committed goal result is authoritative; don't manufacture
+            // an interruption error after a successful completion.
+            updated["error"] = Value::Null;
+        } else if orphan_child {
             updated["error"] =
                 json!("부모 캠페인이 종료되어 고아 세대 작업을 정리했습니다.");
         } else if uncertain {
