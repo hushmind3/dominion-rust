@@ -8,13 +8,15 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+#[path = "video/runway.rs"]
+mod runway;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayModel":"kling3.0_pro","runwayAudio":true});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -24,9 +26,14 @@ pub fn config(state: &AppState) -> Value {
             }
         }
     }
-    value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
+    value["hasVideoKey"] = json!(runway_ready(state));
     value
 }
+pub fn runway_ready(state: &AppState) -> bool {
+    state.read_secret("video:api").is_some()
+        || std::env::var("RUNWAYML_API_SECRET").ok().is_some_and(|s| !s.trim().is_empty())
+}
+
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
     ffmpeg_from_config(&config(state))
 }
@@ -100,8 +107,11 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui") {
+    if !matches!(engine, "native" | "comfyui" | "runway") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
+    }
+    if engine == "runway" && !runway_ready(state) {
+        return Err("Runway Dev 키를 영상 설정에 등록하세요.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
         return Err("FFmpeg가 필요합니다. 고급 설정에서 실행 파일을 지정하세요.".into());
@@ -149,8 +159,13 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
+    let supplied_scenes = body["scenes"].as_array().cloned().unwrap_or_default();
+    if !supplied_scenes.is_empty() && (supplied_scenes.len() > 12
+        || supplied_scenes.iter().any(|scene| scene.as_str().is_none_or(|s| s.trim().is_empty() || s.chars().count() > 1500))) {
+        return Err("장면은 최대 12개이며 각 장면은 1~1500자여야 합니다.".into());
+    }
     let input = json!({
-        "brief":brief, "title":title, "engine":engine, "duration":duration,
+        "brief":brief, "title":title, "engine":engine, "duration":duration, "scenes":supplied_scenes,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
@@ -495,10 +510,10 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "comfyui" {
-        comfy(ctx, input, &dir).await
-    } else {
-        native(ctx, input, &dir).await
+    let result = match input["engine"].as_str() {
+        Some("comfyui") => comfy(ctx, input, &dir).await,
+        Some("runway") => runway::run(ctx, input, &dir).await,
+        _ => native(ctx, input, &dir).await,
     };
     match result {
         Ok(mut value) => {
