@@ -2,7 +2,7 @@
 //! Only campaign_execution owns these implementations. Other RSI stages use explicit
 //! names imported through the stable rsi_evolve facade.
 use super::{
-    AppState, Command, Duration, GenerationObservation, Instant,
+    AppState, Command, Digest, Duration, GenerationObservation, Instant,
     JobContext, PathBuf, Sha256, Value, campaign_model_tokens,
     capture_generation_evidence, command, edit_method_reward, elapsed, evaluate_and_adopt_generation,
     finalize_generation, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants,
