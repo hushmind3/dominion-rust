@@ -65,15 +65,10 @@ fn next_generation_productivity(history:&[Value],generation:&Value)->usize{
     ).count()
 }
 fn confidence_adjustment(history:&[Value])->f64{
-    let errors=history.iter().filter_map(|row|
-        (row["metaLearning"]["source"]=="source_bound_prequential_feedback_v1"
-            && row["metaLearning"]["nextPolicyCanTrainFromObservation"]==true
-            && row["pairedMeasured"]==true)
-            .then(||row["metaLearning"]["brierError"].as_f64()).flatten()
-            .filter(|value|value.is_finite() && *value>=0.0 && *value<=1.0))
-        .rev().take(12).collect::<Vec<_>>();
-    if errors.is_empty(){return 1.0;}
-    let mean=errors.iter().sum::<f64>()/errors.len() as f64;
+    // Both source ranking AND forecast repair must use the same replayable
+    // observations. A fabricated summary cannot dampen exploration.
+    let observed=crate::engine::rsi_prequential::drift(history,12);
+    let Some(mean)=observed["meanBrierError"].as_f64() else{return 1.0};
     (1.0-0.6*mean).clamp(0.4,1.0)
 }
 
