@@ -553,3 +553,18 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 ### 2026-11-13: 새 개선법 소스 계보 자동 등록
 
 `rsi_system/method_lineage.rs::executable_method_source`는 실제 런타임에서 사용되는 `rsi/search.rs`, `rsi_edit_genome.rs`, `rsi_decision_rules.rs`, `rsi_open_program.rs` 등 개선법 소스를 포함하며, 새 후손이 만들고 실제 컴파일한 `rsi/planner/`, `rsi/learning/` 하위 소스도 안전 경로·런타임 파일 조건을 통과하면 개선법 수정 대상으로 인정합니다. `inherited_method_receipt`는 고정 소스 목록 대신 **독립 평가를 거쳐 채택된 시스템 설계의 실제 변경 파일들**에서 계보를 검증합니다. 원본 소스 SHA·채택 SHA·후손 블루프린트 SHA 검사는 유지되며, 동결된 `rsi/closure.rs`와 `rsi/contract.rs`는 개선법 대상에서 제외됩니다.
+
+
+## 2026-11-14 · Sub2 공개 출시 후 엔진·하네스·알고리즘 통합 개편
+
+이 절은 `dominion-sub2` 브랜치의 **소스 구조 변경**을 기록합니다. 실제 API 키 기반 생성·비용 절감률·CI 통과를 증명하는 기록은 아닙니다.
+
+- **턴키 영상:** `src/api/video.rs`에서 암호화 API 키 및 엔진 가용성을 제공하고 `web/src/pages/Video.tsx`에서 LTX 2.5 Pro/Fast·720p~4K·화면비·길이를 설정합니다. `src/engine/video.rs::enqueue/run`의 기존 내구성 있는 비디오 작업 경로가 `src/engine/video/ltx.rs::render`의 **V2 비동기 POST → 원격 ID 보관 → GET 상태 조회 → 안전한 MP4 다운로드**로 연결됩니다. Pro 및 고해상도 Fast는 최대 10초, 720p/1080p Fast는 24fps 기준 최대 20초입니다. 기존 ComfyUI·FFmpeg 카드 생성 및 YouTube 업로드는 유지합니다.
+- **그룹 대화 맥락:** `src/engine/chat/room_context.rs::compile`은 기존의 주인 지시·참가자별 응답·도구 실행 증거를 보존하면서 `chat/room_context/role_routing.rs`의 역할 연관도를 **질문과 연관된 증거에만** 추가 가중합니다. 모델 호출을 늘리지 않으며 예상 미선택 토큰 수는 `room_context.accounting`에 기록합니다.
+- **사용자 선택 모델 계층:** `src/api/rooms.rs::validated_config`가 `tierRoutingEnabled/tierRoutes`를 등록 공급자 기준으로 검증·저장합니다. `src/engine/rooms/model_tiering.rs::select`는 복잡한 요청과 가벼운 요청을 구분하고 `rooms.rs::run_locked`에서 실제 모델·제공자·추론 강도에 반영합니다. `web/src/pages/Rooms.tsx`에서 명시적으로 켜고 **선택한 모델만** 사용합니다. 수동 모델 지정은 항상 우선합니다. 공급자 요금·성능을 자동 추정하거나 미등록 키를 쓰지 않습니다.
+- **RSI의 전체 시스템 인식:** `src/engine/rsi_system.rs::source_role/architecture_role_domain`에 영상과 그룹 대화 실행 소스의 `video/multiagent` 역할을 연결했습니다. 이 소스는 재빌드된 후손의 `source_inventory → blueprint → architecture_frontier`에서 개선 후보로 검토될 수 있습니다. 기존 원본 paired 평가와 채택 게이트는 동일하며 새로운 품질 개선의 증명으로 간주하지 않습니다.
+- **유지보수:** `src/engine/video.rs`를 `video/{native,comfy,ltx,upload}.rs`로 분리했습니다. 그룹 실행·프롬프트 컴파일·지식 추출·모델 공급자·모델 라이브러리·알고리즘·컨텍스트·방 상태의 **회귀 테스트는 각각 production 모듈 밖 `*/tests.rs`**로 분리했습니다. 분리된 파일은 원래 진입점으로부터 `#[cfg(test)]`에 등록됩니다.
+
+코드 호출도·편집 경계·2026 연구 및 남은 핵심 결함은 [Sub2 출시 후 통합 아키텍처](docs/architecture/RELEASE-INTEGRATION-SUB2-2026-11-14.md)에 있습니다.
+
+> **검증 경계:** 이 변경 동안 테스트·컴파일·빌드·벤치마크·유료 공급자 호출·CI를 실행하지 않았습니다. LTX 출력 품질과 토큰/비용 절감은 실측되지 않았으며, 모델 가중치 변경·LoRA·파인튜닝을 RSI 실행 경로에 추가하지 않았습니다.
