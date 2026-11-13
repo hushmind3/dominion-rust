@@ -507,6 +507,26 @@ pub fn record_usage(
     );
 }
 
+/// Record only provider-reported cache reads, never inferred savings.
+/// Keep these separate from model.usage so older unknown calls remain unknown
+/// and total billed tokens are not counted twice.
+pub fn record_cache_usage(
+    state: &AppState,
+    session_id: &str,
+    prompt_tokens: u64,
+    cached_prompt_tokens: Option<u64>,
+    usage_exact: bool,
+) {
+    let Some(cached) = cached_prompt_tokens.filter(|_| usage_exact && prompt_tokens > 0) else {
+        return;
+    };
+    state.store.audit("model.cache_usage", json!({
+        "sessionId": session_id,
+        "promptTokens": prompt_tokens,
+        "cachedPromptTokens": cached.min(prompt_tokens),
+    }));
+}
+
 /// Usage for a streaming call where the breakdown may be estimated.
 #[allow(clippy::too_many_arguments)]
 pub fn record_usage_tokens(
