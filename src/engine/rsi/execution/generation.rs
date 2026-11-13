@@ -12,6 +12,11 @@ pub(super) fn generation_stop_reason(job:&Value,worker_error:Option<&str>)->Opti
 }
 
 pub(super) fn generation_fits_remaining_budget(record:&Value,input:&Value)->bool {
+    // A fixture/native source worker with no configured model cannot spend
+    // API tokens. Its source task should not be blocked by an estimated
+    // language-model prompt it never sends to a provider.
+    if input["providerId"].as_str().is_none_or(str::is_empty)
+        || input["model"].as_str().is_none_or(str::is_empty) {return true;}
     record["limits"]["tokenBudget"].as_u64().is_none_or(|budget|{
         let minimum=crate::engine::chat::estimate_text_tokens(input["prompt"].as_str().unwrap_or(""))+256;
         budget.saturating_sub(record["tokens"].as_u64().unwrap_or(0))>=minimum
