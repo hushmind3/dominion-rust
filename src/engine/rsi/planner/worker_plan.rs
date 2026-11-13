@@ -147,6 +147,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         && meta["predictionRuleRepair"]["active"]!=true
         && meta["recursiveProgram"]["active"]!=true
         && negative_evidence["selected"]["supportedForPairedInvestigation"]==true
+        && negative_evidence["selected"]["frozenProfileSha256"].as_str()==profile.as_deref()
         && negative_source["domain"].as_str().is_some_and(|d|permitted.contains(&d))
         && negative_victim["domain"].as_str().is_some_and(|d|permitted.contains(&d))
         && matched_target.is_some()
