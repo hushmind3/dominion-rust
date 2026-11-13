@@ -288,7 +288,13 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 }
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi.rs ")
+        && (line.contains("src/engine/rsi/")
+            || line.contains("src/engine/rsi_system/")
+            || line.contains("src/engine/rsi_meta_controller.rs ")
+            || line.contains("src/engine/rsi_principle_learning.rs ")
+            || line.contains("src/engine/rsi_api_route_learning.rs ")
+            || line.contains("src/engine/rsi_program_graph.rs ")
+            || line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi/planner/domain_selection.rs ")
             || line.contains("src/engine/rsi/learning/generation_feedback.rs ")
