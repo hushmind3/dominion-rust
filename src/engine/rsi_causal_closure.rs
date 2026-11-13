@@ -10,6 +10,7 @@ fn meta_source(path:&str)->bool {
     path=="src/engine/rsi_meta_controller.rs" ||
     path=="src/engine/rsi_program_graph.rs" ||
     path=="src/engine/rsi_system.rs" ||
+    path.starts_with("src/engine/rsi_system/") ||
     path=="src/engine/algorithms.rs" ||
     path.starts_with("src/engine/rsi/") ||
     path=="src/engine/rsi_reflexive.rs" ||
