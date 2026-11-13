@@ -524,6 +524,7 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
 }
 
 const MAX_DELEGATION_DEPTH: usize = 4;
+const MAX_ACTIVE_DELEGATES_PER_SESSION: usize = 6;
 
 /// Number of delegated sessions between the owner-facing session and this one.
 /// A chain cannot loop forever, so a cycle is cut defensively.
@@ -556,6 +557,17 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         ));
     }
     let prompt = required_arg(args, "prompt")?;
+    if prompt.len()>16_000 {return Err("위임 프롬프트는 16000바이트 이하로 제한됩니다.".into());}
+    // Parallel workers are useful, unbounded fan-out is not. Count durable
+    // queued/running children in the SAME parent session before spawning.
+    let active_children=ctx.state.store.all("job").into_iter().filter(|job| {
+        job["kind"]=="prompt" && job["input"]["delegation"]==true
+            && job["input"]["parentSessionId"]==ctx.session_id
+            && matches!(job["status"].as_str(),Some("queued"|"running"))
+    }).count();
+    if active_children>=MAX_ACTIVE_DELEGATES_PER_SESSION {
+        return Err(format!("병렬 위임 한도({MAX_ACTIVE_DELEGATES_PER_SESSION})에 도달했습니다. 실행 중인 하위 작업을 수집한 후 새 작업을 시작하세요."));
+    }
     let agent = ctx
         .state
         .store
