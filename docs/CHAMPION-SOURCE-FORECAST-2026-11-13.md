@@ -32,5 +32,7 @@
 ## 책임 분해 (기존 API 유지)
 
 - `src/engine/rsi_worktree.rs`는 워크트리 준비·후보 캡처·검사·감사에 집중한다. `rsi_worktree/adoption.rs`는 owner 승인 이후 명시적 소스 적용만, `rsi_worktree/comparison.rs`는 동결된 paired A/B 비교와 원본 후보 평가 영수증만 담당한다. `rsi_worktree::{apply_to_sub,apply_campaign_to_sub,compare,compare_at}` 경로는 재노출되어 기존 엔진 호출부가 유지된다.
-- `src/engine/rsi_system.rs`는 소스 인벤토리·구조 모델·설계 근거에 집중한다. `rsi_system/replay.rs`는 평가 영수증 복원과 출처 결속 학습 라벨, `rsi_system/lineage.rs`는 후속 단계·계승 대상·A→B 상호개선 관측을 담당한다. `rsi_system::{revalidated_history,inherited_stage,inherited_domain,verified_handoff}`는 이전 경로 그대로 재노출된다.
-- 라인 수 기준 정적 책임 분리: `rsi_worktree.rs` 1106→754줄(새 하위 모듈 179·190줄), `rsi_system.rs` 1142→941줄(새 하위 모듈 61·156줄). 성능이나 빌드 성공 수치를 뜻하지 않는다.
+- `src/engine/rsi_system.rs`는 소스 인벤토리·구조 모델·설계 근거에 집중한다. `rsi_system/design.rs`는 모델 작성 시스템 설계 제안과 출처 결속된 수정 지시를 처리한다. `rsi_system/replay.rs`는 평가 영수증 복원과 출처 결속 학습 라벨, `rsi_system/lineage.rs`는 후속 단계·계승 대상·A→B 상호개선 관측을 담당한다. `rsi_system::{propose,revalidated_history,inherited_stage,inherited_domain,verified_handoff}`는 이전 경로 그대로 재노출된다.
+- 라인 수 기준 정적 책임 분리: `rsi_worktree.rs` 1106→754줄(새 하위 모듈 179·190줄), `rsi_system.rs` 1142→612줄(새 하위 모듈 338·61·156줄). 성능이나 빌드 성공 수치를 뜻하지 않는다.
+
+- `rsi_meta_controller::confidence_adjustment`도 이제 `rsi_prequential::drift(history,12)`의 원본 재검증 오차를 사용한다. 예측기 수리 조건만 아니라 일반 소스 탐색의 탐색/신뢰도 가중치 역시 조작 가능한 과거 예측 오차 JSON 값에서 분리했다.
