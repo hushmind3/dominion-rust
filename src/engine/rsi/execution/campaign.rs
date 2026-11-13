@@ -582,6 +582,13 @@ pub(super) async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        // Run a separate method-disabled descendant against the SAME sealed
+        // input BEFORE queuing the treatment. Real model and evaluation
+        // receipts belong to this campaign and count against its budgets.
+        run_control(context,record,input,&mut child_input,&lab,&binary,started).await?;
+        if !generation_fits_remaining_budget(record,input) {
+            return Ok("token_budget".into());
+        }
         let child = context
             .state
             .store
@@ -1008,6 +1015,9 @@ pub(super) async fn run_loop(
         // Provenance is independently re-read from worker and tool receipts.
         generation["operatorExecution"]=crate::engine::rsi_operator_provenance::observe(
             &context.state,&generation);
+        // Actual OFF/ON source-task quality difference, recalculated later by
+        // the independent closure evaluator from durable paired receipts.
+        generation["methodAblation"]=measured_method_ablation(&context.state,&generation);
         generation["proofCategory"]=json!(if proven_model_edit && replayed_adoption {
             "independently_adopted_model_invoked_source_edit"
         }else if generation["candidateOrigin"]=="native_inductive_source_mutation"
