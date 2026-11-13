@@ -1,3 +1,42 @@
+## 18시대 구조 재판정(서브3 45점) 이후 실제 설계 변경
+
+### 개선 방법 자체를 개선하는 개방형 메타 아키텍처
+
+- 기준 판정은 **서브3 45점 / 4위**. 이 변경 이후의 신규 채점은 받지 않았다. 4세대 성공 실적을 주장하지 않는다.
+- `rsi/meta/evolution.rs`: **Serde typed** 연산자 `Operator`, 조건부 `Transition`, `Protocol`, 컴파일된 `Compiled` 버전 계약. 모델은 `rsi_system_plan.evolutionProtocol`로 반복·분기·자기수정 가능한 개선법·실험법을 설계한다. 고정 A→B→A→B 순서는 더 이상 유일한 성공 구조가 아니다.
+- `rsi/meta/composition.rs`: 컴파일된 후손의 모든 실험 정책·경로·개선 원리·메타 제어·다중 구성요소 판단을 하나의 명시적 `MetaComposition` 인터페이스에서 생성한다. 기존 후손 계획기는 이 계약을 소비한다.
+- `rsi/meta/policy_dispatch.rs`: 학습된 메타 연산자 → 실제 선택 정책 연결. `rsi/meta/experiment_dispatch.rs`: 연산자의 실험 종류 → 실질적인 도구 쓰기 범위와 대조 조건으로 컴파일. `paired_source`, `isolated_source`, `meta_policy_rewrite`, `method_control`, `factorial_source`(현재 단일 요인 격리), `cross_component`(공동 소스 관찰)가 서로 다른 실행 계약을 만든다. **단일 요인 격리를 완성된 A/B/A+B 요인 실험으로 주장하지 않는다.**
+- `rsi/evaluation/contract.rs`: 변경 불가능한 평가·채택 경계. 원본 소스 해시, 독립 평가 프로필, 계획 정책, 메타 프로토콜, 실제 수정 범위의 SHA 서명을 담은 `FrozenExperiment` 계약을 감독자가 생성한다. 워커가 호출 전에 같은 계약을 재구성한다.
+- 실제 `tools.rs`는 격리 실험에서 승인 범위 밖의 파일 쓰기·교체를 거부한다. `rsi/execution/campaign.rs`도 실제 후보 patch 경로가 범위를 벗어나면 독립 평가 성공이라도 채택 불가로 처리한다. 실행 범위 검증 결과는 세대 장부에 기록한다.
+- `rsi/proof/open_evolution.rs`는 독립 후보 평가 영수증·소스 바이트·실행된 메타 연산자·후손 작업 품질·후속 프로토콜 개정을 다시 읽는다. 기존 `rsi_causal_closure.rs`의 고정 실험 증명은 보존하고, `rsi/proof.rs`에 독립적 개방형 증명 경로를 추가했다. 두 증명 경로 모두 성공을 추정하지 않는다.
+
+### 실제 코드 분해와 소유 경계
+
+```text
+src/engine/rsi/
+  meta/
+    evolution.rs           // 새 개선 연산자와 전이: 모델 저작 가능
+    composition.rs         // 실험·메타·학습 목표 결합
+    policy_dispatch.rs     // 메타 정책 실제 반영
+    experiment_dispatch.rs // 실험 종류별 실제 도구 행동 제약
+    controller_evidence.rs // 기존 메타 정책의 실측 신호
+    controller_selection.rs// 기존 메타 목표 선택과 탐색 알고리즘
+    controller_policy.rs   // 예측·정책 재구성
+    controller_feedback.rs // 독립 결과를 다음 세대로 계승
+    reflexive_design.rs    // 기존 재귀 실험 계획
+  planner/descendant.rs    // 명시적 MetaComposition을 소비
+  execution/campaign.rs   // 격리 작업공간과 후보 운영
+  evaluation/contract.rs  // 독립 동결 작업계약; 모델 편집 금지
+  proof/
+    open_evolution.rs      // 다양한 프로토콜의 실제 결과 감사
+    reflexive_evidence.rs // 기존 재귀 실험 영수증 검증
+    (기존 proof.rs 경로 유지)
+```
+
+기존 최상위 `rsi_meta_controller.rs`는 799줄 → 31줄 실행 인터페이스로, `rsi_reflexive.rs`는 ~660줄 → ~190줄 인터페이스/기존 테스트 포함으로 줄였다. 원본 평가기 `rsi.rs`, 신규 독립 `proof/`, `evaluation/contract.rs`는 개선 후보의 수정 대상에서 제외한다.
+
+**아직 완료가 아닌 것:** 재컴파일 후손이 이 열린 프로토콜의 연속 2세대 독립 품질 개선을 실제로 달성한 기록 없음. 실험 방식 종류 중 `factorial_source`는 하나의 요인 격리까지만 연결했으며 3개 대조 변형을 모두 자동 실행하지 않는다. 장기적인 평가자 자체의 업그레이드는 별도 승인·평가 버전 승격 계약이 필요하다. **테스트 작성·실행, 컴파일, 빌드, CI, 모델 호출 없음.**
+
 # 서브3: 재귀 시스템 자기개선의 책임 경계 (2026-11-13)
 
 대상: `dominion-sub3`. 근거: 현재 브랜치 소스의 실제 호출과 필드 흐름. 빌드·테스트·실모델 캠페인을 수행하지 않았다.
