@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
 #[cfg(test)]
-#[path = "rsi_domain_accumulator.rs"]
+#[path = "../../rsi_domain_accumulator.rs"]
 mod accumulator;
 
 fn digest(text: &str) -> String {
@@ -41,7 +41,7 @@ fn stream_verified_domain_selection(source: &str) -> Option<String> {
     let dispatch=format!("{entry}\n    let implementation=algorithm[\"implementation\"].as_str()\n        .or_else(||algorithm[\"variant\"].as_str()).unwrap_or(\"failure-clusters\");\n    if !matches!(implementation,\"expression\"|\"counterexample-first\") {{\n        return fast_failure_domain(history,&candidate_domains(objective),\n            |domain|objective_matches(domain,objective));\n    }}");
     let mut next=source.replacen(entry,&dispatch,1);
     next.push('\n');
-    next.push_str(include_str!("rsi_domain_accumulator.rs"));
+    next.push_str(include_str!("../../rsi_domain_accumulator.rs"));
     Some(next)
 }
 
@@ -460,7 +460,7 @@ mod tests {
                     "the compiled descendant must execute the same verified selector");
             }
         }
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("../../rsi_evolve.rs");
         let evolved=stream_verified_domain_selection(source).unwrap_or_else(||source.to_string());
         assert!(evolved.contains("return fast_failure_domain(history"));
         assert!(evolved.contains("\"expression\"|\"counterexample-first\""));
@@ -476,7 +476,7 @@ mod tests {
     }
     #[test]
     fn a_rejected_applicable_operator_does_not_starve_other_source_hypotheses() {
-        let source=include_str!("room_state.rs");
+        let source=include_str!("../../room_state.rs");
         let first=choose_transformation(source, |_|false).unwrap();
         let second=choose_transformation(source, |name|name==first.0).unwrap();
         assert_ne!(first.0,second.0);
@@ -485,7 +485,7 @@ mod tests {
     }
     #[test]
     fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("../../rsi_evolve.rs");
         let output=stream_verified_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(output.contains("gainPer10kTokens"));
@@ -502,7 +502,7 @@ mod tests {
     fn verified_owner_origin_cache_keeps_legacy_validation() {
         // The compiled descendant may already contain these mutations. A
         // source-evolution regression test must survive actual adoption.
-        let original=include_str!("room_state.rs");
+        let original=include_str!("../../room_state.rs");
         let first=materialize_verified_owner_provenance(original)
             .unwrap_or_else(||original.to_string());
         assert!(first.contains("\"verifiedLocalOwner\": true"));
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn current_engine_has_two_distinct_source_generations() {
-        let original=include_str!("room_state.rs");
+        let original=include_str!("../../room_state.rs");
         let first=hoist_invariant_query_terms(original)
             .unwrap_or_else(||original.to_string());
         assert!(first.contains("let query_tokens = memory::terms(query);\n    let mut ranked = facts"));
@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
-        let source = include_str!("rsi_evolve.rs");
+        let source = include_str!("../../rsi_evolve.rs");
         // The first adopted child already carries the streamed optimizer.
         // Descendant CI must verify the preserved behavior instead of
         // requiring the old, unoptimized source to still exist.
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn recursive_fact_cache_preserves_legacy_fallback_and_original_ranking() {
-        let source = include_str!("room_state.rs");
+        let source = include_str!("../../room_state.rs");
         let hoisted = hoist_invariant_query_terms(source)
             .unwrap_or_else(||source.to_string());
         let cached = cache_invariant_fact_terms(&hoisted)

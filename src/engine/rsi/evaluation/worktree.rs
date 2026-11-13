@@ -293,10 +293,10 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
         && (line.contains("src/engine/rsi.rs ")
-            || line.contains("src/engine/rsi_worktree.rs ")
+            || line.contains("src/engine/rsi/evaluation/worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi/lineage/archive.rs ")
-            || line.contains("src/engine/rsi_mutation.rs ")
+            || line.contains("src/engine/rsi/execution/mutation.rs ")
             || line.contains("src/engine/rsi_domain_accumulator.rs ")
             || line.contains("src/engine/rsi/evaluation/metrics.rs ")
             || line.contains("src/engine/algorithms.rs ")
@@ -955,11 +955,11 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     let report_file=output_dir.join("report.json");
     std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
     let runner=output_dir.join("rsi-lab.sh");
-    std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
-    std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
+    std::fs::write(&runner,include_str!("../../../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
+    std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
     let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
     if candidate["cases"].as_array().into_iter().flatten().any(|c|c["filter"].as_str().is_some_and(|f|f.starts_with("rsi_frozen_oracle::"))){
-        let oracle=include_str!("rsi_oracle_fixture.rs");
+        let oracle=include_str!("../../rsi_oracle_fixture.rs");
         let file=std::fs::canonicalize(&output_dir).map_err(|e|e.to_string())?.join("frozen-oracle.rs");
         std::fs::write(&file,oracle).map_err(|e|e.to_string())?;
         plan["oracleFixture"]=json!(file);plan["oracleSha256"]=json!(digest(oracle));
@@ -1079,5 +1079,5 @@ pub async fn cleanup(worktree:&Worktree)->Result<(),String>{
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/engine_rsi_worktree_tests.rs"]
+#[path = "../../../../tests/unit/engine_rsi_worktree_tests.rs"]
 mod tests;

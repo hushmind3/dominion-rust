@@ -24,7 +24,7 @@ fn grounded(row:&Value)->bool{
 /// experiment planner module has to be in the separately adopted patch.
 pub(crate) fn inherited_method(history:&[Value])->Value{
     for row in history.iter().rev(){
-        let path="src/engine/rsi_intervention_lab.rs";
+        let path="src/engine/rsi/evaluation/intervention_lab.rs";
         if row["accepted"]!=true || row["pairedRevalidated"]!=true
             || row["candidateOrigin"]!="model_driven_detached_worktree"
             || row["evaluation"]["metrics"]["eligible"]!=true

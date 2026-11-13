@@ -7,11 +7,11 @@ use std::{path::Path,fs};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/rsi/evaluation/worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_symbiosis.rs","src/engine/rsi_intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs","src/engine/rsi_model_ecology.rs","src/engine/rsi_prequential.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi/execution/mutation.rs","src/engine/rsi_system.rs","src/engine/rsi/meta/symbiosis.rs","src/engine/rsi/evaluation/intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs","src/engine/rsi/meta/model_ecology.rs","src/engine/rsi_prequential.rs"]),
     ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -518,7 +518,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         source files, objectives and learning/tool/execution policies. After \
         independent adoption your new descendant will execute that program, \
         not merely display it in a report. \
-        You may rewrite src/engine/rsi_intervention_lab.rs and propose \
+        You may rewrite src/engine/rsi/evaluation/intervention_lab.rs and propose \
         experimentalPolicy (mode, explorationWeight, interactionWeight,maxPairs). \
         Only a new independently adopted experiment-planner source revision \
         may pass its model-authored policy to the next compiled child. \
@@ -867,7 +867,7 @@ pub(crate) fn propose(
     // until the planner module source is independently measured and adopted.
     let experiment_policy=if body["experimentalPolicy"].is_object(){
         if !components.contains(&"improvement_methods")
-            || !unique.contains("src/engine/rsi_intervention_lab.rs"){
+            || !unique.contains("src/engine/rsi/evaluation/intervention_lab.rs"){
             return Err("실험 정책을 계승하려면 실제 개선기 소스를 수정해야 합니다.".into());
         }
         let policy=&body["experimentalPolicy"];

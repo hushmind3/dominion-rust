@@ -40,7 +40,7 @@ fn job_targets(kind: &str) -> Vec<&'static str> {
     match kind {
         "room" | "room_turn" => vec!["src/engine/rooms.rs", "src/engine/chat/runtime.rs"],
         "prompt" | "chat" | "chat_turn" => vec!["src/engine/chat/runtime.rs"],
-        "rsi_compare" => vec!["src/engine/rsi_worktree.rs"],
+        "rsi_compare" => vec!["src/engine/rsi/evaluation/worktree.rs"],
         "workflow" => vec!["src/engine/workflows.rs"],
         "goal" => vec!["src/engine/goals.rs"],
         "learning" => vec!["src/engine/learning.rs", "src/engine/memory.rs"],
@@ -138,7 +138,7 @@ pub fn report(state: &AppState) -> Value {
                 "캠페인이 모델 호출 전에 실행 환경 오류로 끝났습니다.".into(),
                 vec![json!({"campaignId": campaign_id, "error": campaign["error"]})],
                 "RSI 작업이 사용하는 cargo/npm 실행 경로를 확인하고, 서비스 환경에서도 동작하도록 고치세요.".into(),
-                &["src/engine/rsi_worktree.rs"],
+                &["src/engine/rsi/evaluation/worktree.rs"],
             ));
         }
     }
@@ -175,7 +175,7 @@ pub fn report(state: &AppState) -> Value {
                 })
                 .collect(),
             "모델이 조사만 하다 끝나지 않도록, 대상 파일과 실패 증거를 좁혀 한 번에 수정하는 개선을 수행하세요.".into(),
-            &["src/api/rsi.rs", "src/engine/rsi_worktree.rs"],
+            &["src/api/rsi.rs", "src/engine/rsi/evaluation/worktree.rs"],
         ));
     }
 
@@ -301,7 +301,7 @@ pub fn report(state: &AppState) -> Value {
             "캠페인은 기록됐지만 검증 가능한 후보가 없습니다.".into(),
             vec![json!({"campaigns": campaigns.len(), "candidates": candidates})],
             "RSI가 후보를 만들지 못하는 원인을 확인하고, 한 번의 실행으로 검증 가능한 작은 변경을 제안하세요.".into(),
-            &["src/engine/rsi_evolve.rs", "src/engine/rsi_worktree.rs"],
+            &["src/engine/rsi_evolve.rs", "src/engine/rsi/evaluation/worktree.rs"],
         ));
     }
 

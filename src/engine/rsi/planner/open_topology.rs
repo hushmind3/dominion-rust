@@ -175,7 +175,7 @@ mod tests{
         let d=json!({"interactionEdges":[{
             "fromRole":"memory","toRole":"improvement_methods",
             "fromPath":"src/engine/memory.rs",
-            "toPath":"src/engine/rsi_symbiosis.rs",
+            "toPath":"src/engine/rsi/meta/symbiosis.rs",
             "mechanism":"Memory-aware search improves downstream source selection",
             "observable":"improved next-generation holdouts"}]});
         let cycle=derived_cycle_stages(&d);

@@ -520,5 +520,5 @@ pub(crate) fn instruction(policy:&Value)->String{
         selected["providerId"],selected["model"])
 }
 #[cfg(test)]
-#[path = "../../tests/unit/engine_rsi_model_ecology_tests.rs"]
+#[path = "../../../../tests/unit/engine_rsi_model_ecology_tests.rs"]
 mod tests;
