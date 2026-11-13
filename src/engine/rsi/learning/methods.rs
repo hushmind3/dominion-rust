@@ -87,7 +87,7 @@ pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str
     methods
 }
 
-pub(super) fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
+pub(crate) fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
     let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
         input["rsiObjective"].as_str().unwrap_or(""));
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
