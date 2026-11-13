@@ -38,7 +38,10 @@ pub(super) async fn run_control(
     context:&JobContext,record:&mut Value,input:&Value,child_input:&mut Value,
     lab:&Path,binary:&Path,started:Instant,
 )->Result<(),String>{
-    if input["rsiMethodAblation"]!=true || !method_selected(child_input){
+    let commit=child_input["rsiGeneratorCommit"].as_str().unwrap_or("");
+    if input["rsiMethodAblation"]!=true || !method_selected(child_input)
+        || !crate::engine::rsi_evolve::meta_experiment_policy::policy_controls_method(
+            &child_input["rsiExperimentPolicy"],commit,child_input) {
         return Ok(());
     }
     let original=child_input.clone();
@@ -172,10 +175,22 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         "rsiCampaignId","rsiGeneratorCommit","rsiSourceDir",
         "rsiFrozenCases","rsiEvaluationConfig","rsiMetaCases",
         "rsiControllerPlan","rsiImprovementAlgebra","rsiMetaPolicy",
+        "rsiExperimentPolicy","rsiMetaOperatorActive",
         "rsiIndexFingerprint","rsiSystemBlueprint","rsiTargetDomain",
         "providerId","model"
     ];
     let matched=saved["source"]==SOURCE
+        && crate::engine::rsi_evolve::meta_experiment_policy::policy_controls_method(
+            &on["input"]["rsiExperimentPolicy"],
+            g["generatorCommit"].as_str().unwrap_or(""),&on["input"])
+        && on["rsiExperimentPolicyExecuted"]["source"]
+            =="running_compiled_descendant_experiment_designer_v1"
+        && off["rsiExperimentPolicyExecuted"]["source"]
+            =="running_compiled_descendant_experiment_designer_v1"
+        && on["rsiExperimentPolicyExecuted"]["policySha256"]
+            ==on["input"]["rsiExperimentPolicy"]["signatureSha256"]
+        && off["rsiExperimentPolicyExecuted"]["policySha256"]
+            ==on["rsiExperimentPolicyExecuted"]["policySha256"]
         && saved["inputSha256"]==digest(sealed)
         && saved["inputSha256"]==on["input"]["rsiMethodAblationInputSha256"]
         && saved["inputSha256"]==off["rsiMethodAblationInputSha256"]
