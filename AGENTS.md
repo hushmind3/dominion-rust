@@ -56,3 +56,5 @@ The compiled worker uses the original `rsi_evolve` method exports.
 `rsi/selection.rs`, `rsi/descendant_plan.rs`, `rsi/programs/*`
 and other safe compiled improvement modules. Keep these independent:
 an editable method must never become the verifier of its own success.
+
+**Observed method feedback:** `rsi/method_feedback.rs` checks authentic predecessor source and compiled B job before the next meta rewrite is proposed. Only `rsi/proof.rs` certifies source adoption.

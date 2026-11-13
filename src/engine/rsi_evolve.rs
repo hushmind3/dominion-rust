@@ -74,6 +74,10 @@ pub(crate) use adoption::adopt;
 mod descendant_plan;
 use descendant_plan::*;
 
+#[path = "rsi/method_feedback.rs"]
+mod method_feedback;
+use method_feedback::*;
+
 
 pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "improver"];
 

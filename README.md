@@ -561,3 +561,7 @@ improvement candidates. Thus source-level recursion can change its method
 without silently changing the judging instrument.
 
 The corresponding source assertions were updated. No test was executed.
+
+### Source-attested meta → task → meta feedback (Sub1, 2026-11-13)
+
+`rsi/method_feedback.rs` binds one independently accepted improvement-method source revision to the immediate rebuilt binary, then replays the next task generation's original job, actual compiled meta execution and independent paired receipt before it can propose feedback for rewriting the *same* method. An unobserved or unaccepted task gain does not become feedback. The feedback is an experimental hypothesis, not evidence of causal ablation or RSI completion. `rsi/proof.rs` is the independent frozen closure verifier.
