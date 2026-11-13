@@ -90,7 +90,7 @@ pub(super) async fn attempt_model_adaptation(
     arguments: &Value,
     error: &str,
     metrics: &std::sync::Mutex<Metrics>,
-    budget: &mut super::budget::BudgetLedger,
+    budget: &mut super::super::budget::BudgetLedger,
     op_seq: &mut u64,
     environment_version: u64,
 ) -> Result<Value, String> {

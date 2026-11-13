@@ -33,7 +33,7 @@ pub(super) fn execute_nodes<'a>(
     nodes: Vec<Value>,
     mut resolved: Value,
     mut checkpoint: Value,
-    mut budget: super::budget::BudgetLedger,
+    mut budget: super::super::budget::BudgetLedger,
     mut op_seq: u64,
     depth: usize,
     persist: bool,
@@ -583,7 +583,7 @@ pub(super) async fn propose_program_revision(
     program: &Value,
     checkpoint: &Value,
     failure: &Value,
-    budget: &mut super::budget::BudgetLedger,
+    budget: &mut super::super::budget::BudgetLedger,
 ) -> Result<Option<Value>, String> {
     let provider_id = ctx
         .request
@@ -643,7 +643,7 @@ pub(super) async fn run_program(
     execution_id: &str,
     program: &Value,
     metrics: &std::sync::Mutex<Metrics>,
-    budget: &mut super::budget::BudgetLedger,
+    budget: &mut super::super::budget::BudgetLedger,
     op_seq: &mut u64,
     generation: u64,
 ) -> Result<Vec<Value>, String> {

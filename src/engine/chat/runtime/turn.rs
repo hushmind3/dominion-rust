@@ -243,7 +243,7 @@ pub(super) async fn run_turn_body(
     }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
-        let compiled = super::room_context::compile(
+        let compiled = super::super::room_context::compile(
             state, request, session_id, source, &tool_definitions, &strategy_candidates,
         )?;
         // A tool task needs room for its applicable procedures and evidence.
@@ -276,7 +276,7 @@ pub(super) async fn run_turn_body(
         }
         (compiled.system, compiled.history)
     } else {
-        let prompt_context = super::context::system_prompt_with_manifest_at(
+        let prompt_context = super::super::context::system_prompt_with_manifest_at(
             state,
             request,
             session_id,
@@ -304,21 +304,21 @@ pub(super) async fn run_turn_body(
         history_messages.clear();
     }
     let mut messages = vec![json!({"role":"system","content":prompt_context.prompt,"_dominion_source":reply_to,
-        "_dominion_dependencies":super::continuity::dependencies(state,&prompt_context.items)})];
+        "_dominion_dependencies":super::super::continuity::dependencies(state,&prompt_context.items)})];
     if is_room {
         if let Some(mut execution) = state.store.get("execution", execution_id) {
             if execution["inputContext"].is_null() {
                 let persona = request.agent_id.as_deref().and_then(|id| state.store.get("agent", id));
-                let persona_tokens = super::room_context::estimate(persona.as_ref().and_then(|agent|agent["systemPrompt"].as_str()).unwrap_or(""));
+                let persona_tokens = super::super::room_context::estimate(persona.as_ref().and_then(|agent|agent["systemPrompt"].as_str()).unwrap_or(""));
                 let mut prepared = messages.clone();
                 prepared.extend(history_messages.clone());
                 execution["inputContext"] = json!({
                     "policy":"native-work-context", "estimated":true, "contextModelCalls":0,
                     "personaTokens":persona_tokens, "memoryTokens":null,
-                    "historyTokens":super::room_context::estimate(&json!(history_messages).to_string()),
-                    "systemTokens":super::room_context::estimate(&prompt_context.prompt).saturating_sub(persona_tokens),
-                    "toolSchemaTokens":super::room_context::estimate(&json!(tool_definitions).to_string()),
-                    "totalInputTokens":super::room_context::input_estimate(&prepared,&tool_definitions),
+                    "historyTokens":super::super::room_context::estimate(&json!(history_messages).to_string()),
+                    "systemTokens":super::super::room_context::estimate(&prompt_context.prompt).saturating_sub(persona_tokens),
+                    "toolSchemaTokens":super::super::room_context::estimate(&json!(tool_definitions).to_string()),
+                    "totalInputTokens":super::super::room_context::input_estimate(&prepared,&tool_definitions),
                     "note":"legacy work prompt does not expose memory as a separate component"
                 });
                 state.store.put("execution", &execution);
@@ -631,7 +631,7 @@ pub(super) async fn run_turn_body(
     let mut adaptation_attempts = 0usize;
     let mut adaptation_failures = 0usize;
     let mut acceptance_passed = false;
-    let mut budget = super::budget::BudgetLedger::new(max_rounds, max_tools, elapsed_limit);
+    let mut budget = super::super::budget::BudgetLedger::new(max_rounds, max_tools, elapsed_limit);
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
@@ -963,19 +963,19 @@ pub(super) async fn run_turn_body(
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
         if session["rsiRun"]==true && !session["rsiCampaignId"].is_string() {
-            let input=super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
+            let input=super::super::room_context::input_estimate(&wire_messages,&round_tools) as u64;
             let limit=rsi_output_allowance(total_tokens,input)?;
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
         if is_room {
             if let Some(mut execution) = state.store.get("execution", execution_id) {
-                execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::room_context::input_estimate(&wire_messages,&round_tools));
+                execution["inputContext"]["preparedInputTokensEstimate"] = json!(super::super::room_context::input_estimate(&wire_messages,&round_tools));
                 execution["inputContext"]["preProviderDigest"] = json!(crate::engine::memory::stable_id(&[&json!({"messages":wire_messages,"tools":round_tools}).to_string()]));
                 state.store.put("execution", &execution);
             }
         }
         if let Some(limit)=crate::engine::rsi_evolve::remaining_output_tokens(
-            state,session_id,super::room_context::input_estimate(&wire_messages,&round_tools) as u64,
+            state,session_id,super::super::room_context::input_estimate(&wire_messages,&round_tools) as u64,
         )?{
             provider.max_output_tokens=Some(provider.max_output_tokens.unwrap_or(8192).min(limit));
         }
@@ -1060,8 +1060,8 @@ pub(super) async fn run_turn_body(
             usage_estimated = true;
             (
                 metadata["continuity"]["workingView"]["estimatedInputTokens"].as_u64()
-                    .unwrap_or_else(||super::room_context::input_estimate(&wire_messages, &round_tools) as u64),
-                super::room_context::estimate(&format!("{}{}", completion.content, completion.reasoning)).max(1) as u64,
+                    .unwrap_or_else(||super::super::room_context::input_estimate(&wire_messages, &round_tools) as u64),
+                super::super::room_context::estimate(&format!("{}{}", completion.content, completion.reasoning)).max(1) as u64,
             )
         };
         prompt_tokens_total += call_prompt;
@@ -1125,7 +1125,7 @@ pub(super) async fn run_turn_body(
                 .map(str::to_string)
                 .collect::<std::collections::HashSet<_>>();
             let (parsed, cleaned) =
-                super::protocol::parse_text_tool_calls_known(&completion.content, &known);
+                super::super::protocol::parse_text_tool_calls_known(&completion.content, &known);
             if !parsed.is_empty() {
                 completion.content = cleaned;
                 completion.tool_calls = parsed
@@ -2005,9 +2005,9 @@ pub(super) async fn run_turn_body(
         }))
         .ok_or("최종 응답을 저장할 수 없습니다.")?;
     state.bus.message(&saved);
-    super::continuity::commit(state, &metadata["continuity"], &saved);
+    super::super::continuity::commit(state, &metadata["continuity"], &saved);
     if let Some(projection) = continuation_projection {
-        super::continuity::commit_projection(state, &metadata["continuity"], &saved, projection);
+        super::super::continuity::commit_projection(state, &metadata["continuity"], &saved, projection);
     }
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["finalMessageId"] = saved["id"].clone();
