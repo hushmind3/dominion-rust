@@ -1,5 +1,9 @@
 //! Source-hash-grounded focus, goal context and model input shaping.
-use super::*;
+use super::{
+    AppState, Value, MemoryScope, BTreeMap, BTreeSet,
+    Path, json, experience, rsi, tools,
+    run, matching_prior_campaign, pending_method_recovery_domain,
+};
 
 pub(super) fn research_digest(state: &AppState, input: &Value, record: &Value) -> String {
     let mut reads = BTreeSet::new();
