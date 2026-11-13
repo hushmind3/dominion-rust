@@ -237,7 +237,7 @@ pub(super) fn system_evolution_target_hint(input:&Value, attempt:u64)->Option<St
     } else {None}
 }
 
-#[path = "controller.rs"]
+#[path = "descendant/controller.rs"]
 mod controller;
 pub use controller::plan_generation_from_file;
 
