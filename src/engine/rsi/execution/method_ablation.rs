@@ -143,6 +143,19 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         && !state.store.all("execution_operation").iter().any(|op|
             op["sessionId"]==session && op["origin"]=="procedure")
         && off["rsiOperatorDispatch"].is_null();
+    let provider=off["input"]["providerId"].as_str().unwrap_or("");
+    let model=off["input"]["model"].as_str().unwrap_or("");
+    let actual_usage=state.store.api_route_usage(session,provider,model);
+    let control_model_verified=!session.is_empty() && !provider.is_empty()
+        && !model.is_empty()
+        && actual_usage["matchedExactProviderModelSession"]==true
+        && state.store.session_model_routes(session).is_ok_and(|routes|
+            routes.len()==1 && routes[0]["providerId"]==provider
+                && routes[0]["model"]==model)
+        && off["result"]["rsi"]["modelRouteVerified"]==true
+        && off["result"]["rsi"]["modelSessionId"]==session
+        && off["result"]["rsi"]["actualModelRoute"]["providerId"]==provider
+        && off["result"]["rsi"]["actualModelRoute"]["model"]==model;
     let sealed=&saved["originalInput"];
     let stable=[
         "rsiCampaignId","rsiGeneratorCommit","rsiSourceDir",
@@ -156,6 +169,7 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         && saved["inputSha256"]==on["input"]["rsiMethodAblationInputSha256"]
         && saved["inputSha256"]==off["rsiMethodAblationInputSha256"]
         && saved["controlMethodDisabled"]==true && methods_disabled
+        && control_model_verified
         && saved["controlAdopted"]==false
         && off["input"]["rsiMethodAblationArm"]=="without_methods"
         && on["input"]["rsiMethodAblationArm"]=="with_methods"
@@ -196,6 +210,8 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         || ctrl_eval["metrics"]!=saved["evaluation"]["metrics"]
         || control["baseCommit"]!=treatment["baseCommit"]
         || control["rsiJobId"]!=off["id"]
+        || control["origin"]!="model_driven_detached_worktree"
+        || control["modelSessionId"]!=session
         || treatment["rsiJobId"]!=on["id"]
         || g["evaluation"]["evidenceSha256"]!=on_eval["evidenceSha256"]
         || g["evaluation"]["metrics"]!=on_eval["metrics"]
@@ -238,6 +254,7 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         "methodFamilyId":g["operatorExecution"]["methodFamilyId"],
         "methodSourceSha256":g["operatorExecution"]["methodSourceSha256"],
         "methodActuallyExecuted":operator,
+        "controlModelRouteVerified":control_model_verified,
         "sameOriginalSourceAndFrozenCases":true,
         "pairedHoldoutCases":cases,"treatmentOnlyWins":gains,
         "controlOnlyWins":losses,"treatmentQualityWins":quality_gains,
