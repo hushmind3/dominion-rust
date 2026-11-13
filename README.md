@@ -627,3 +627,15 @@ The original chat-visible `select_provider`, `stream_completion`,
 `apply_reasoning_options` and Codex parse helpers remain exported.
 The runtime still uses actual provider HTTPS requests and the same tool loop;
 no tests, compile, build or real-model execution took place.
+
+### Model runtime responsibility boundaries (Sub1, 2026-11-13)
+
+`src/engine/models.rs` keeps shared runtime identity and state and re-exports
+all original public functions. Its compiled submodules are
+`models/installed.rs` (MLX/GGUF discovery), `models/install.rs` (runtime
+installation), `models/runtimes.rs` (available engine selection),
+`models/storage.rs` (import/registration), `models/load.rs`
+(loaded-process lifecycle), `models/catalog.rs` (Hugging Face search),
+and `models/download.rs` (durable transfer/progress). Original local
+model and cloud API paths remain separate; no training route was added.
+Tests were moved into `models/tests.rs` without running them.

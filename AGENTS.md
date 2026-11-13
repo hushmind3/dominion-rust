@@ -80,3 +80,8 @@ The public `run_turn*` and evidence finalization API remain re-exported.
 `provider/protocols.rs`, `provider/codex.rs`,
 `provider/anthropic.rs`; tests in `provider/tests.rs`.
 Use the original chat-visible provider function re-exports.
+
+**Model execution boundaries:** `engine/models.rs` owns shared
+runtime state and delegates to `models/{installed,install,runtimes,storage,load,catalog,download}.rs`.
+Read this actual module chain before touching the HF catalog or process lifecycles.
+Tests live separately in `models/tests.rs`.
