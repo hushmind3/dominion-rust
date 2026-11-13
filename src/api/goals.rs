@@ -48,6 +48,9 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
 
     for key in ["executor","reviewer","planner"] { if body.get(key).is_some_and(|v|!v.is_object()){return error(StatusCode::BAD_REQUEST,"실행자·검토자·계획자는 객체로 지정하세요.");} }
     for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
+    if body.get("tokenBudget").is_some_and(|v|v.as_u64().is_none_or(|n|n>2_000_000)) {
+        return error(StatusCode::BAD_REQUEST,"목표 실행 토큰 상한은 0~2000000 사이여야 합니다.");
+    }
     let Some(record) = state.store.put(
         "goal",
         &json!({
@@ -57,6 +60,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "executor": executor,
             "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
+            "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(0),
             "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
             "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
             "replans":0,"planHistory":[],"reviewHistory":[],
