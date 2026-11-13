@@ -2,14 +2,11 @@
 use super::*;
 
 pub(super) fn proof_goal_reached(state:&AppState,input:&Value,record:&Value)->bool {
-    let bounded=input["rsiStopAfterProof"]==true
-        && record["maxAcceptedStreak"].as_u64().unwrap_or(0)>=3
-        && crate::engine::rsi::campaign_capability_proven(state,record);
-    // Model-driven whole-system campaigns must not stop at an unrelated
-    // three-generation native optimization streak.
-    bounded && (input["rsiSystemEvolution"]!=true
-        || crate::engine::rsi_system::verified_handoff(
-            record["history"].as_array().map(Vec::as_slice).unwrap_or(&[])))
+    // Stopping and displaying completion must use the EXACT same verified
+    // model-authored A→B→A method closure. Three adopted patches alone never
+    // end a campaign with a successful RSI verdict.
+    input["rsiStopAfterProof"]==true
+        && crate::engine::rsi::campaign_verdict(state,record)["actualCompletion"]==true
 }
 
 /// Empty strings are not model errors; a research-only generation sets the
