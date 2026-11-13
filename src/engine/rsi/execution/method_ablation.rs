@@ -123,7 +123,7 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         && control["methodsActuallyDisabled"]==true
         && disabled_at_runtime
         && control["inputSha256"]==json!(original_control_fingerprint)
-        && control["candidateId"]==verified_candidate_id(&control_job["result"])
+        && control["candidateId"].as_str()==verified_candidate_id(&control_job["result"])
         && control["adopted"]==false
         && generation["accepted"]==true
         && control["generatorCommit"]==generation["generatorCommit"]
