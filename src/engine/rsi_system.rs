@@ -45,6 +45,14 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/models/session.rs",
         "src/engine/models/catalog.rs",
         "src/engine/models/downloads.rs",
+        "src/api/providers.rs",
+        "src/api/providers/auth_sources.rs",
+        "src/api/providers/discovery.rs",
+        "src/api/providers/cli_credentials.rs",
+        "src/api/providers/codex_login.rs",
+        "src/api/providers/provider_store.rs",
+        "src/api/providers/connection_test.rs",
+        "src/api/providers/model_list.rs",
         "src/engine/cli_model.rs", "src/engine/router.rs", "src/engine/gateway.rs",
     ]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
@@ -108,6 +116,9 @@ fn source_role(path:&str)->&'static str {
         return "improvement_methods";
     }
     if path.starts_with("src/engine/models/") {
+        return "models";
+    }
+    if path=="src/api/providers.rs" || path.starts_with("src/api/providers/") {
         return "models";
     }
     let name=path.rsplit('/').next().unwrap_or(path);
@@ -537,7 +548,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
             entry["path"].as_str().is_some_and(|path|source_role(path)==*role)).count();
         for entry in all_files.iter().filter(|entry|
             entry["path"].as_str().is_some_and(|path|source_role(path)==*role)) {
-            if inventory.len()>=16 {break;}
+            if inventory.len()>=24 {break;}
             if !inventory.iter().any(|item|item["path"]==entry["path"]) {
                 inventory.push(entry.clone());
             }

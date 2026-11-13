@@ -59,6 +59,32 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn provider_api_modules_retain_model_ownership_after_refactoring() {
+        let root=std::env::temp_dir().join(format!("rsi-provider-modules-{}",uuid::Uuid::new_v4()));
+        let dir=root.join("src/api/providers");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(root.join("src/api/providers.rs"),"mod auth_sources;").unwrap();
+        let modules=["auth_sources.rs","discovery.rs","cli_credentials.rs",
+            "codex_login.rs","provider_store.rs","connection_test.rs","model_list.rs"];
+        for module in modules {
+            fs::write(dir.join(module),format!("// {module}")).unwrap();
+            assert_eq!(source_role(&format!("src/api/providers/{module}")),"models");
+        }
+        let model=blueprint(&root,"provider-registry",&[]);
+        let frontier=model["architecture"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="models").unwrap();
+        assert_eq!(frontier["discoveredSourceCount"],8);
+        for module in modules {
+            let path=format!("src/api/providers/{module}");
+            assert!(frontier["representativeSources"].as_array().unwrap().iter()
+                .any(|row|row["path"]==path),"provider source {path} was omitted");
+        }
+        let original=model["sourceTreeSha256"].clone();
+        fs::write(dir.join("model_list.rs"),"// changed provider discovery").unwrap();
+        assert_ne!(original,blueprint(&root,"new-provider",&[])["sourceTreeSha256"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("src/engine")).unwrap();
