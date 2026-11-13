@@ -542,3 +542,7 @@ mod inference_tests {
         assert_eq!(checks.len(), 2, "{checks:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/agent_delegation_proof_tests.rs"]
+mod delegated_proof_tests;
