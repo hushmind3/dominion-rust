@@ -232,3 +232,7 @@ Only actual model-driven candidate receipts count.
 ## Product-wide 2026-11-14 integration (separate from RSI proof)
 
 The product-wide source changes are mapped in [SUB4-PRODUCT-UPGRADE-2026-11-14.md](SUB4-PRODUCT-UPGRADE-2026-11-14.md): native multi-shot video execution and prior-frame conditioning, measured room prompt cache usage, and owner-declared KRW price-aware provider auto routing. They use the existing Rust job, tool, SQLite and vault boundaries and do not train, LoRA-adapt or alter base model weights. These product enhancements are **not** evidence that independent four-generation RSI closure passed. Source-only review; no tests/build/paid generation executed.
+
+### Video-contract integration (2026-11-14)
+
+`video/kling4.rs` implements the current Kling 4.0 request contract and 30-second native segment timing, alongside the separate Kling 3.0 native multi-shot contract in `video/shot_plan.rs`. Both are explicitly invoked by `video/runway.rs` from the paid video queue; the previous paid task's downloaded final JPEG becomes the next task's `promptImage` if the owner enables continuity. Native sound on Kling 4.0 is a model contract, not an optional field. This is product-level code evolution, not an RSI holdout result. Source inspection only, no tests or paid models executed.
