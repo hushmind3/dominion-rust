@@ -85,6 +85,8 @@ pub(crate) mod meta_evolution;
 pub(crate) mod meta_dispatch;
 #[path = "rsi/meta/composition.rs"]
 mod meta_composition;
+#[path = "rsi/proof/open_evolution.rs"]
+pub(crate) mod open_evolution_proof;
 
 #[path = "rsi/planner/domain_selection.rs"]
 mod domain_selection;
