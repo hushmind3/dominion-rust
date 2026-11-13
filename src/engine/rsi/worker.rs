@@ -214,11 +214,11 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiNativePlan"]["downstreamFeedback"]!=expected_feedback {
             return Err("후손이 실행한 개선법 소스 또는 독립 측정 피드백이 원본과 다릅니다.".into());
         }
-        let experiment=&job["input"]["rsiExperimentDesign"];
-        if experiment!=&job["input"]["rsiNativePlan"]["experimentDesign"] {
+        let experiment=job["input"]["rsiExperimentDesign"].clone();
+        if experiment!=job["input"]["rsiNativePlan"]["experimentDesign"] {
             return Err("재컴파일된 실험 계약이 실제 세대 계획과 다릅니다.".into());
         }
-        verify_experiment_design(experiment,&commit,history.len(),
+        verify_experiment_design(&experiment,&commit,history.len(),
             &job["input"]["rsiSystemAgenda"],Path::new(source),
             &expected_snapshot)?;
         job["rsiExperimentDesignExecuted"]=experiment.clone();

@@ -33,3 +33,13 @@
 `docs/RSI-SUB1-ARCHITECTURE.md`를 현재 단일 구조 기준으로 읽습니다. 실제 API·캠페인·후손 계획·독립 OFF/ON 실험·A→B→A2→B2 증명 경로가 함수별로 정리되어 있습니다.
 
 `rsi/proof/full_cycle.rs`는 캠페인·API의 공통 성공 판정기입니다. `rsi/proof/method_lineage.rs`는 대조 평가가 증명된 B만 A2의 방법 재수정 지시로 전달합니다. `rsi/method_control.rs`는 별도 실워커로 OFF를 실행하지만 control source를 채택하지 않습니다. `rsi::safe_path`는 proof/worktree 평가기 영역을 후손 편집에서 막습니다. 보고서 상의 주장과 실제 테스트/빌드/실모델 실행을 구분합니다.
+
+**Experiment architecture:** `rsi/experiment_policy.rs` is the *editable*
+compiled algorithm that selects experiments and targets. It has its own
+non-overlapping `experiment_design` source role, and receives only original
+generation outcome observations. `rsi/proof/experiment_contract.rs` is the
+*frozen typed envelope* that binds those choices to actual indexed source
+bytes and a bounded available intervention. The campaign and the worker
+validate this contract and act on its target/protocol. Improvement methods
+and experiment design can improve each other without prescribing the
+A→B→A2→B2 proof order as the next action.

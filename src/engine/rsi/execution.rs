@@ -327,8 +327,8 @@ pub(super) async fn run_loop(
             // Normal API opts in to control experiments; the newly compiled
             // policy chooses which generation needs that measured protocol.
             if child_input["rsiMethodAblation"]==true {
-                child_input["rsiMethodAblation"]=json!(
-                    child_input["rsiExperimentDesign"]["protocol"]=="method_on_off");
+                let use_control=child_input["rsiExperimentDesign"]["protocol"]=="method_on_off";
+                child_input["rsiMethodAblation"]=json!(use_control);
             }
             child_input["rsiFactorialExperiment"]=factorial.clone();
             child_input["rsiRecursiveLaboratory"]=laboratory.clone();
@@ -933,7 +933,7 @@ pub(super) async fn run_loop(
             .unwrap_or(0)
             .max(verified_streak);
         record["maxVerifiedStreak"] = json!(verified_max);
-        let design=&generation["experimentDesign"];
+        let design=generation["experimentDesign"].clone();
         let edited=design["target"]["path"].as_str().is_some_and(|path|
             generation["changedSourcePaths"].as_array()
                 .is_some_and(|paths|paths.iter().any(|row|row==path)));

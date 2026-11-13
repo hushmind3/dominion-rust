@@ -21,9 +21,14 @@ fn score(row:&Value,history:&[Value],meta:&Value)->f64{
     let relevant=history.iter().filter(|g|touched(g,path)).collect::<Vec<_>>();
     let attempts=relevant.len() as f64;
     let successes=relevant.iter().filter(|g|
-        g["experimentOutcome"]["verifiedQualityGain"]==true
-            || g["accepted"]==true && g["pairedRevalidated"]==true
-                && g["evaluation"]["metrics"]["eligible"]==true).count() as f64;
+        g["accepted"]==true
+            && g["pairedRevalidated"]==true
+            && g["evaluation"]["metrics"]["eligible"]==true
+            && g["evaluation"]["verdict"]=="improved"
+            && g["experimentOutcome"]["sourceEditObserved"]==true
+            && g["experimentOutcome"]["actualWorkerExecuted"]==true
+            && g["experimentOutcome"]["policyRevision"]==
+                g["experimentDesign"]["policyRevision"]).count() as f64;
     let regressions=relevant.iter().filter(|g|
         g["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0)>0).count() as f64;
     let novelty=(2.0*(history.len() as f64+2.0).ln()/(attempts+1.0)).sqrt();
@@ -45,7 +50,11 @@ fn score(row:&Value,history:&[Value],meta:&Value)->f64{
 fn parent_revision(history:&[Value])->Option<String>{
     history.iter().rev().find(|g|
         g["accepted"]==true && g["pairedRevalidated"]==true
-        && g["experimentOutcome"]["verifiedQualityGain"]==true)
+        && g["experimentOutcome"]["sourceEditObserved"]==true
+        && g["experimentOutcome"]["actualWorkerExecuted"]==true
+        && g["experimentOutcome"]["verifiedQualityGain"]==true
+        && g["experimentOutcome"]["policyRevision"]==
+            g["experimentDesign"]["policyRevision"])
         .and_then(|g|g["experimentDesign"]["policyRevision"].as_str())
         .map(str::to_string)
 }
