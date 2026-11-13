@@ -170,6 +170,10 @@ mod method_ablation;
 use method_ablation::run_method_control;
 pub(crate) use method_ablation::measured_method_ablation;
 
+#[path = "rsi/execution/generation_selection.rs"]
+mod generation_selection;
+use generation_selection::evaluate_and_adopt_generation;
+
 #[path = "rsi/execution/generation_preparation.rs"]
 mod generation_preparation;
 use generation_preparation::prepare_generation_input;
