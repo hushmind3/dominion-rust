@@ -102,13 +102,33 @@ fn handoff(parent:&Value,child:&Value,require_behavior_change:bool)->bool {
             .and_then(|n|n.checked_sub(1))
 }
 fn actually_changed_target(g:&Value)->bool {
-    let earlier=g["behaviorCounterfactual"]["previousAction"]["focusFiles"].as_array();
+    let earlier_action=&g["behaviorCounterfactual"]["previousAction"];
+    let earlier=earlier_action["focusFiles"].as_array();
     let current=g["controllerPlan"]["focusFiles"].as_array();
     let changed=paths(g);
     let (Some(earlier),Some(current))=(earlier,current) else{return false};
-    current.iter().filter_map(Value::as_str).any(|selected|
-        changed.contains(&selected) &&
-            !earlier.iter().any(|old|old.as_str()==Some(selected)))
+    let used_focus=current.iter().filter_map(Value::as_str).filter(|selected|
+        changed.contains(selected)).collect::<Vec<_>>();
+    if used_focus.is_empty(){return false;}
+    let new_file=used_focus.iter().any(|selected|
+        !earlier.iter().any(|old|old.as_str()==Some(selected)));
+    let transfer=&g["methodTransfer"];
+    // An improved reusable procedure frequently rewrites the SAME source
+    // component. Source-path novelty is not the only real behavioural change:
+    // verify the compiled method/revision changed AND its receipt actually
+    // ran in the worker. The final checker separately requires its operation
+    // to have produced independently adopted source bytes.
+    let new_executed_method=g["methodTransferVerified"]==true
+        && transfer["source"]=="compiled_inherited_executable_method_transfer_v1"
+        && transfer["methodId"].is_string() && transfer["revision"].is_string()
+        && (earlier_action["inheritedMethodId"]!=transfer["methodId"]
+            || earlier_action["inheritedMethodRevision"]!=transfer["revision"])
+        && g["methodExecutions"].as_array().is_some_and(|uses|uses.iter().any(|used|
+            used["methodId"]==transfer["methodId"]
+                && used["revision"]==transfer["revision"]
+                && used["result"]["verified"]==true
+                && used["result"]["followed"]==true));
+    new_file || new_executed_method
 }
 fn improved_domain(g:&Value,domain:&str)->bool {
     g["evaluation"]["metrics"]["improvedHoldoutDomains"].as_array()
@@ -158,7 +178,7 @@ fn executed_inherited_method(state:&AppState,parent:&Value,child:&Value)->Option
             || transfer["methodId"]!=method["id"]
             || transfer["revision"]!=method["revision"]
             || transfer["domain"]!=child["domain"]
-            || child["controllerPlan"]["methodTransfer"]!=*transfer {
+            || child["controllerPlan"]["methodTransfer"]!=child["methodTransfer"] {
             continue;
         }
         for execution in child["methodExecutions"].as_array()?.iter() {
