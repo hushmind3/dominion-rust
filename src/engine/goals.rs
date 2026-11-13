@@ -247,6 +247,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let (outcome, stats) = run_quiet_outcome(state, &request).await;
         let turn_error = outcome.as_ref().err().cloned();
         let message = outcome.ok().flatten();
+        // Successful tool effects can precede a later model failure or
+        // cancellation. Save those receipts BEFORE any early exit so the
+        // owner sees what was actually changed and recovery never invents it.
+        evidence.extend(stats.evidence.iter().filter(|item|successful_evidence(item)).cloned());
+        if evidence.len()>120{evidence.drain(..evidence.len()-120);}
+        patch_goal(state,goal_id,json!({"evidence":evidence,"iterations":index+1,
+            "deliverables":artifacts::collect(state,&evidence)}));
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
@@ -275,10 +282,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 string(&message, "content")
             ));
             transcript = tail(&transcript, 12_000);
-        }
-        evidence.extend(stats.evidence.into_iter().filter(successful_evidence));
-        if evidence.len() > 120 {
-            evidence.drain(..evidence.len() - 120);
         }
         patch_goal(
             state,
