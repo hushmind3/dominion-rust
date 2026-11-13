@@ -214,7 +214,7 @@ pub async fn install_runtime(state: AppState, engine: &str) -> Result<Value, Str
     }))
 }
 
-pub(super) fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+pub(crate) fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > 4 {
         return;
     }

@@ -29,7 +29,7 @@ pub async fn catalog(query: &str, limit: usize, format: &str) -> Result<Vec<Valu
     catalog_filtered(query, limit, format).await
 }
 
-pub(super) async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
+pub(crate) async fn catalog_filtered(query: &str, limit: usize, format: &str) -> Result<Vec<Value>, String> {
     let mut url = reqwest::Url::parse("https://huggingface.co/api/models")
         .map_err(|error| error.to_string())?;
     {

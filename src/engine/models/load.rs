@@ -2,7 +2,7 @@
 //! Runtime implementations connected by engine::models.
 use super::*;
 
-pub(super) fn total_memory() -> u64 {
+pub(crate) fn total_memory() -> u64 {
     // Cheapest portable-enough source; unknown stays 0 rather than guessing.
     #[cfg(target_os = "macos")]
     {
@@ -80,7 +80,7 @@ pub fn runtime_snapshot(state: &AppState) -> Value {
     })
 }
 
-pub(super) async fn load_mlx_standalone(
+pub(crate) async fn load_mlx_standalone(
     state: &AppState,
     id: &str,
     repo: &str,
@@ -92,7 +92,7 @@ pub(super) async fn load_mlx_standalone(
     load_mlx_from_dir(state, id, name, &dir, context).await
 }
 
-pub(super) async fn load_mlx_from_dir(
+pub(crate) async fn load_mlx_from_dir(
     state: &AppState,
     id: &str,
     name: &str,
@@ -362,7 +362,7 @@ pub async fn load(state: &AppState, id: &str, context: u64) -> Result<Value, Str
     Err(guard.error.clone())
 }
 
-pub(super) async fn load_lmstudio(
+pub(crate) async fn load_lmstudio(
     state: &AppState,
     id: &str,
     key: &str,
@@ -469,7 +469,7 @@ pub(super) async fn load_lmstudio(
     Err("요청한 LM Studio 모델이 API 목록에서 확인되지 않았습니다.".into())
 }
 
-pub(super) fn push_log(line: String) {
+pub(crate) fn push_log(line: String) {
     let mut guard = runtime().lock().unwrap();
     guard.logs.push(line);
     if guard.logs.len() > 200 {

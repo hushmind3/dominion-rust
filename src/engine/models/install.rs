@@ -2,7 +2,7 @@
 //! Runtime implementations connected by engine::models.
 use super::*;
 
-pub(super) async fn install_mlx_runtime(state: &AppState) -> Result<Value, String> {
+pub(crate) async fn install_mlx_runtime(state: &AppState) -> Result<Value, String> {
     let dir = mlx_runtime_dir(state);
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let _ = std::fs::remove_file(dir.join(".ready"));
@@ -95,7 +95,7 @@ pub(super) async fn install_mlx_runtime(state: &AppState) -> Result<Value, Strin
     }))
 }
 
-pub(super) fn brew_bin() -> Option<PathBuf> {
+pub(crate) fn brew_bin() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DOMINION_BREW_BIN") {
         let path = PathBuf::from(path);
         if path.is_file() {
@@ -108,7 +108,7 @@ pub(super) fn brew_bin() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub(super) fn verify_llama_server(path: &Path) -> Result<String, String> {
+pub(crate) fn verify_llama_server(path: &Path) -> Result<String, String> {
     for argument in ["--version", "--help"] {
         let output = std::process::Command::new(path)
             .arg(argument)
@@ -130,7 +130,7 @@ pub(super) fn verify_llama_server(path: &Path) -> Result<String, String> {
     Err("llama-server가 설치되었지만 실행 확인에 실패했습니다.".into())
 }
 
-pub(super) fn llama_release_suffix() -> &'static str {
+pub(crate) fn llama_release_suffix() -> &'static str {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "bin-macos-arm64.zip",
         ("macos", "x86_64") => "bin-macos-x64.zip",
@@ -140,9 +140,9 @@ pub(super) fn llama_release_suffix() -> &'static str {
     }
 }
 
-pub(super) static INSTALL_STATE: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
+pub(crate) static INSTALL_STATE: OnceLock<Mutex<Option<Value>>> = OnceLock::new();
 
-pub(super) fn install_state() -> &'static Mutex<Option<Value>> {
+pub(crate) fn install_state() -> &'static Mutex<Option<Value>> {
     INSTALL_STATE.get_or_init(|| Mutex::new(None))
 }
 
@@ -154,13 +154,13 @@ pub fn install_snapshot() -> Value {
         .unwrap_or(Value::Null)
 }
 
-pub(super) fn set_install(value: Value) {
+pub(crate) fn set_install(value: Value) {
     if let Ok(mut guard) = install_state().lock() {
         *guard = Some(value);
     }
 }
 
-pub(super) fn install_active() -> bool {
+pub(crate) fn install_active() -> bool {
     install_state()
         .lock()
         .ok()
@@ -177,7 +177,7 @@ pub(super) fn install_active() -> bool {
         })
 }
 
-pub(super) fn install_progress(
+pub(crate) fn install_progress(
     status: &str,
     backend: &str,
     tag: &str,
@@ -197,7 +197,7 @@ pub(super) fn install_progress(
     })
 }
 
-pub(super) async fn install_from_release(state: &AppState) -> Result<(PathBuf, String), String> {
+pub(crate) async fn install_from_release(state: &AppState) -> Result<(PathBuf, String), String> {
     let suffix = llama_release_suffix();
     if suffix.is_empty() {
         return Err("이 플랫폼의 llama.cpp 자동 설치 자산이 없습니다.".into());
@@ -341,7 +341,7 @@ pub(super) async fn install_from_release(state: &AppState) -> Result<(PathBuf, S
     Ok((installed, asset_name))
 }
 
-pub(super) async fn run_llama_install(state: &AppState) -> Result<Value, String> {
+pub(crate) async fn run_llama_install(state: &AppState) -> Result<Value, String> {
     let prefer_brew = cfg!(target_os = "macos") && brew_bin().is_some();
     set_install(install_progress(
         "checking",

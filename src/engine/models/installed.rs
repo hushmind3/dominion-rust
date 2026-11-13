@@ -59,7 +59,7 @@ pub fn installed(state: &AppState) -> Vec<Value> {
 /// MLX repositories downloaded directly from Hugging Face. LM Studio indexes
 /// them from its own model directory; until it does, they are still visible in
 /// the library so the download is not silently lost.
-pub(super) fn local_mlx_models(state: &AppState) -> Vec<Value> {
+pub(crate) fn local_mlx_models(state: &AppState) -> Vec<Value> {
     let mut models = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for root in mlx_search_roots(state) {
@@ -76,7 +76,7 @@ pub(super) fn local_mlx_models(state: &AppState) -> Vec<Value> {
     models
 }
 
-pub(super) fn mlx_model_from_dir(dir: &Path, root: &Path) -> Option<Value> {
+pub(crate) fn mlx_model_from_dir(dir: &Path, root: &Path) -> Option<Value> {
             let config = dir.join("config.json");
             if !config.is_file() || !mlx_dir_complete(&dir) {
                 return None;
@@ -112,7 +112,7 @@ pub(super) fn mlx_model_from_dir(dir: &Path, root: &Path) -> Option<Value> {
             }))
 }
 
-pub(super) fn walk_dirs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+pub(crate) fn walk_dirs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > 4 {
         return;
     }
@@ -129,7 +129,7 @@ pub(super) fn walk_dirs(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
 }
 
 /// Models already managed by LM Studio (including its native MLX runtime).
-pub(super) fn lmstudio_models() -> Vec<Value> {
+pub(crate) fn lmstudio_models() -> Vec<Value> {
     let Some(lms) = lms_bin() else {
         return Vec::new();
     };
@@ -173,7 +173,7 @@ pub(super) fn lmstudio_models() -> Vec<Value> {
         .collect()
 }
 
-pub(super) fn lms_bin() -> Option<PathBuf> {
+pub(crate) fn lms_bin() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DOMINION_LMS_BIN") {
         let path = PathBuf::from(path);
         if path.is_file() {
@@ -187,7 +187,7 @@ pub(super) fn lms_bin() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-pub(super) fn llama_server_bin() -> Option<PathBuf> {
+pub(crate) fn llama_server_bin() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join(if cfg!(windows) { "llama-server.exe" } else { "llama-server" }))
         .chain(
@@ -198,11 +198,11 @@ pub(super) fn llama_server_bin() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-pub(super) fn llama_available() -> bool {
+pub(crate) fn llama_available() -> bool {
     llama_server_bin().is_some()
 }
 
-pub(super) fn llama_server_bin_for(state: &AppState) -> Option<PathBuf> {
+pub(crate) fn llama_server_bin_for(state: &AppState) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DOMINION_LLAMA_SERVER") {
         let path = PathBuf::from(path);
         if path.is_file() {
@@ -226,30 +226,30 @@ pub(super) fn llama_server_bin_for(state: &AppState) -> Option<PathBuf> {
 
 /// Automatic installation is limited to platforms where the official
 /// llama.cpp release assets are known to run. Homebrew is preferred on macOS.
-pub(super) fn llama_installable(state: &AppState) -> bool {
+pub(crate) fn llama_installable(state: &AppState) -> bool {
     llama_server_bin_for(state).is_none()
         && matches!(std::env::consts::OS, "macos" | "linux")
         && matches!(std::env::consts::ARCH, "aarch64" | "x86_64")
 }
 
-pub(super) fn mlx_runtime_dir(state: &AppState) -> PathBuf {
+pub(crate) fn mlx_runtime_dir(state: &AppState) -> PathBuf {
     state.config.data_dir.join("mlx-runtime")
 }
 
-pub(super) fn mlx_runtime_python(state: &AppState) -> Option<PathBuf> {
+pub(crate) fn mlx_runtime_python(state: &AppState) -> Option<PathBuf> {
     let dir = mlx_runtime_dir(state);
     let python = dir.join(if cfg!(windows) { "Scripts/python.exe" } else { "bin/python" });
     (python.is_file() && dir.join(".ready").is_file()).then_some(python)
 }
 
-pub(super) fn mlx_installable(state: &AppState) -> bool {
+pub(crate) fn mlx_installable(state: &AppState) -> bool {
     mlx_runtime_python(state).is_none()
         && cfg!(target_os = "macos")
         && cfg!(target_arch = "aarch64")
 }
 
 /// Resolve a downloaded MLX repository below the managed models root.
-pub(super) fn mlx_dir_complete(dir: &Path) -> bool {
+pub(crate) fn mlx_dir_complete(dir: &Path) -> bool {
     if !dir.join("config.json").is_file() {
         return false;
     }
@@ -269,14 +269,14 @@ pub(super) fn mlx_dir_complete(dir: &Path) -> bool {
     has_weights && has_tokenizer
 }
 
-pub(super) fn mlx_model_dir(state: &AppState, repo: &str) -> Option<PathBuf> {
+pub(crate) fn mlx_model_dir(state: &AppState, repo: &str) -> Option<PathBuf> {
     mlx_search_roots(state)
         .iter()
         .find_map(|root| managed_model_dir(root, repo))
         .filter(|dir| mlx_dir_complete(dir))
 }
 
-pub(super) fn mlx_runtime_snapshot(state: &AppState) -> Value {
+pub(crate) fn mlx_runtime_snapshot(state: &AppState) -> Value {
     let standalone = mlx_runtime_python(state);
     json!({
         "available": standalone.is_some() || lms_bin().is_some(),

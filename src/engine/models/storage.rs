@@ -31,7 +31,7 @@ pub fn import_local(state: &AppState, file_path: &str) -> Result<Value, String> 
         .unwrap_or_else(|| json!({ "id": name })))
 }
 
-pub(super) fn external_model(id: &str, path: &Path) -> Option<Value> {
+pub(crate) fn external_model(id: &str, path: &Path) -> Option<Value> {
     let label = path.file_name()?.to_str()?;
     let metadata = path.metadata().ok()?;
     if metadata.is_file() && label.to_ascii_lowercase().ends_with(".gguf") {
@@ -76,7 +76,7 @@ pub fn register_local(state: &AppState, file_path: &str) -> Result<Value, String
     Ok(model)
 }
 
-pub(super) fn managed_model_path(state: &AppState, id: &str) -> Option<PathBuf> {
+pub(crate) fn managed_model_path(state: &AppState, id: &str) -> Option<PathBuf> {
     let root = models_dir(state).canonicalize().ok()?;
     let relative = Path::new(id);
     if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
@@ -95,7 +95,7 @@ pub(super) fn managed_model_path(state: &AppState, id: &str) -> Option<PathBuf> 
 /// Lexical `starts_with` is not enough: `root/a/../../b` still starts with
 /// `root` component-wise. Canonicalize and re-check the final directory, and
 /// reject symlinks that escape the root.
-pub(super) fn managed_model_dir(root: &Path, repo: &str) -> Option<PathBuf> {
+pub(crate) fn managed_model_dir(root: &Path, repo: &str) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let relative = Path::new(repo);
     if relative.as_os_str().is_empty()

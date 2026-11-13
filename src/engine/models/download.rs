@@ -94,7 +94,7 @@ pub fn start_download_with(
     Ok(job)
 }
 
-pub(super) fn job_status(state: &AppState, id: &str) -> String {
+pub(crate) fn job_status(state: &AppState, id: &str) -> String {
     state
         .store
         .get(MODEL_KIND, id)
@@ -102,7 +102,7 @@ pub(super) fn job_status(state: &AppState, id: &str) -> String {
         .unwrap_or_default()
 }
 
-pub(super) fn patch_download(state: &AppState, id: &str, patch: Value) {
+pub(crate) fn patch_download(state: &AppState, id: &str, patch: Value) {
     if let Some(saved) = state.store.patch_if(
         MODEL_KIND,
         id,
@@ -114,14 +114,14 @@ pub(super) fn patch_download(state: &AppState, id: &str, patch: Value) {
     }
 }
 
-pub(super) fn downloaded_total(files: &[Value]) -> u64 {
+pub(crate) fn downloaded_total(files: &[Value]) -> u64 {
     files
         .iter()
         .map(|file| file["downloaded"].as_u64().unwrap_or(0))
         .sum()
 }
 
-pub(super) fn declared_total(files: &[Value]) -> u64 {
+pub(crate) fn declared_total(files: &[Value]) -> u64 {
     files
         .iter()
         .map(|file| {
@@ -133,7 +133,7 @@ pub(super) fn declared_total(files: &[Value]) -> u64 {
         .sum()
 }
 
-pub(super) fn file_sha256(path: &Path) -> Result<String, String> {
+pub(crate) fn file_sha256(path: &Path) -> Result<String, String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
@@ -148,7 +148,7 @@ pub(super) fn file_sha256(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-pub(super) async fn hf_blob_metadata(
+pub(crate) async fn hf_blob_metadata(
     client: &reqwest::Client,
     repo: &str,
 ) -> std::collections::HashMap<String, (u64, Option<String>)> {
@@ -175,7 +175,7 @@ pub(super) async fn hf_blob_metadata(
     map
 }
 
-pub(super) async fn download_worker(state: AppState, job_id: String) {
+pub(crate) async fn download_worker(state: AppState, job_id: String) {
     use futures_util::StreamExt;
     if !active_downloads()
         .lock()
