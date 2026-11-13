@@ -267,7 +267,11 @@ async fn run_locked(
     // explicit maxTurns value. Full mode retains the owner's original count.
     let rounds = if mode == "discussion" && room["economyMode"] == "adaptive"
         && room["maxTurns"].as_i64().unwrap_or(0) == 0 {
-        if is_deep_request(owner_text) { configured_rounds.min(2) } else { 1 }
+        if is_deep_request(owner_text) {
+            let proposed=room["economyKernel"]["parameters"]["deepRounds"]
+                .as_u64().unwrap_or(2).clamp(1,5) as usize;
+            configured_rounds.min(proposed)
+        } else { 1 }
     } else { configured_rounds };
     // rounds is the primary control: one round means every participant
     // speaks once. maxTurns > 0 is an explicit total cap; 0 means automatic.

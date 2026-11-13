@@ -133,6 +133,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "cancelRequested",
         "ownerId",
         "partitionKey",
+        "economyKernel",
     ] {
         if body.get(reserved).is_some() {
             return Err(bad(format!("{reserved}는 서버가 관리하는 상태입니다.")));
@@ -459,6 +460,14 @@ pub(crate) fn submit_internal(
             json!({"id":job_id,"jobId":job_id,"status":existing["status"],"room":config,"sessionId":session_id,"message":message,"job":existing}),
         );
     }
+    // Freeze the executable policy revision with the owner's submitted job.
+    // The algorithm bandit may evolve later without reinterpreting a queued turn.
+    if config["economyMode"] == "adaptive" && config["routingMode"] == "discussion" {
+        if let Some(policy)=crate::engine::algorithms::choose_for_agent(
+            state,"multiagent.economy",None,None) {
+            config["economyKernel"]=policy;
+        }
+    }
     let speakers = rooms::plan_speakers(state, &config, text, body.get("agentIds")).map_err(bad)?;
     let generation = state.cancellation_generation(session_id);
     let acceptance=crate::engine::chat::prepare_owner_action(state,text).map(|(request,checks)|json!({"request":request,"checks":checks}));
@@ -489,6 +498,62 @@ pub(crate) fn submit_internal(
         json!({"id":job_id,"jobId":job_id,"status":"queued","room":room(state,id)?,"sessionId":session_id,"message":saved_message,"job":saved_job}),
     )
 }
+/// Explicit owner approval is a subjective preference signal, not a test pass.
+/// Only completed adaptive jobs, never owner-forced speaker jobs, are eligible.
+pub async fn feedback(
+    State(state):State<AppState>,
+    Path((id,job_id)):Path<(String,String)>,
+    Json(body):Json<Value>,
+)->Response {
+    response((|| {
+        room(&state,&id)?;
+        let positive=body.get("positive").and_then(Value::as_bool)
+            .ok_or_else(||bad("positive는 true 또는 false여야 합니다."))?;
+        if body.as_object().is_none_or(|fields| fields.len()!=1) {
+            return Err(bad("positive만 제출하세요."));
+        }
+        let job=state.store.get("job",&job_id)
+            .ok_or((StatusCode::NOT_FOUND,"평가할 대화 작업이 없습니다.".into()))?;
+        if job["kind"]!="room" || job["input"]["roomId"]!=id || job["status"]!="completed" {
+            return Err(bad("완료된 해당 방의 대화 작업만 평가할 수 있습니다."));
+        }
+        let input=&job["input"];
+        let policy=&input["roomSnapshot"]["economyKernel"];
+        let revision=policy["revision"].as_str()
+            .ok_or_else(||bad("이 작업에는 평가할 비용 알고리즘이 없습니다."))?;
+        if input["roomSnapshot"]["economyMode"]!="adaptive"
+            || input["routingMode"]!="discussion"
+            || input["explicitAgentIds"]==true
+            || policy["kind"]!="multiagent.economy"
+            || job["result"]["outputs"].as_array().is_none_or(|outputs|outputs.is_empty()) {
+            return Err(bad("자동 발언 정책이 실행된 완료 대화만 평가할 수 있습니다."));
+        }
+        let record_id=format!("room-feedback-{job_id}");
+        let candidate=json!({"id":record_id,"roomId":id,"jobId":job_id,
+            "revision":revision,"positive":positive,"source":"owner_preference",
+            "recordedAt":chrono::Utc::now().to_rfc3339()});
+        let added=state.store.put_if_absent("room_feedback",&candidate);
+        let current=added.as_ref().cloned().or_else(||state.store.get("room_feedback",&record_id))
+            .ok_or_else(||failed("평가를 저장할 수 없습니다."))?;
+        if current["positive"]!=positive || current["revision"]!=revision {
+            return Err(conflict("이 작업의 평가는 이미 기록되어 변경할 수 없습니다."));
+        }
+        if added.is_some() {
+            if !crate::engine::algorithms::record_owner_feedback(
+                &state,"multiagent.economy",revision,positive) {
+                state.store.audit("room.feedback_unrated",json!({"jobId":job_id,"revision":revision}));
+            }
+            state.store.audit("room.feedback",json!({"roomId":id,"jobId":job_id,
+                "revision":revision,"positive":positive,"source":"owner_preference"}));
+        }
+        if let Some(updated)=state.store.patch_if("job",&job_id,"ownerFeedback",&Value::Null,
+            &json!({"ownerFeedback":current})) {
+            state.bus.record("job",&updated);
+        }
+        Ok(current)
+    })())
+}
+
 pub async fn send_message(
     State(state): State<AppState>,
     Path(id): Path<String>,

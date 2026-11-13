@@ -29,6 +29,7 @@ pub const KINDS: &[&str] = &[
     "multiagent.sharing",
     "multiagent.roles",
     "multiagent.conflict",
+    "multiagent.economy",
     "execution.ordering",
     "execution.parallelism",
     "selfimprove.search",
@@ -61,6 +62,7 @@ pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
         "multiagent.sharing" => &["two-agents", "three-agents", "never"],
         "multiagent.roles" => &["discussion", "round-robin", "mentioned"],
         "multiagent.conflict" => &["evidence-first", "owner-authority", "latest-speaker"],
+        "multiagent.economy" => &["balanced", "lean", "quality"],
         "execution.ordering" => &["as-written", "read-first"],
         "execution.parallelism" => &["concurrent", "sequential"],
         "selfimprove.search" => &["failure-clusters", "counterexample-first", "expression"],
@@ -144,6 +146,7 @@ pub fn kind_label(kind: &str) -> &str {
         "multiagent.sharing" => "에이전트 지식 공유",
         "multiagent.roles" => "에이전트 역할·발언 방식",
         "multiagent.conflict" => "멀티에이전트 충돌 해결",
+        "multiagent.economy" => "그룹대화 발언량·비용 정책",
         "execution.ordering" => "도구 실행 순서",
         "execution.parallelism" => "병렬 실행",
         "selfimprove.search" => "개선 후보 탐색",
@@ -668,6 +671,27 @@ pub fn builtins() -> Vec<Value> {
             "mentioned",
             "멘션된 참가자 중심으로 발언시킨다.",
             json!({}),
+        ),
+        builtin(
+            "multiagent.economy",
+            "balanced",
+            "balanced",
+            "단순 요청 1명, 일반 2명, 심층 3명의 적응형 선택을 적용한다.",
+            json!({"casualSpeakers":1,"mediumSpeakers":2,"deepSpeakers":3,"deepRounds":2}),
+        ),
+        builtin(
+            "multiagent.economy",
+            "lean",
+            "lean",
+            "비용 예산이 중요한 작업에 소수 발언자를 유지한다.",
+            json!({"casualSpeakers":1,"mediumSpeakers":1,"deepSpeakers":2,"deepRounds":1}),
+        ),
+        builtin(
+            "multiagent.economy",
+            "quality",
+            "quality",
+            "심층 대화에 더 많은 독립적 관점을 확보한다.",
+            json!({"casualSpeakers":2,"mediumSpeakers":3,"deepSpeakers":5,"deepRounds":3}),
         ),
         builtin(
             "multiagent.conflict",
@@ -1212,6 +1236,20 @@ pub fn record_domain_outcome(
         return;
     };
     apply_stat(state, &agent, kind, &revision, ok);
+}
+
+/// Apply a user-authored outcome to the exact policy revision that ran.
+/// Unlike an implementation-name match, this cannot credit a sibling revision.
+pub fn record_owner_feedback(state:&AppState,kind:&str,revision:&str,positive:bool)->bool {
+    seed(state);
+    let valid=state.store.all("algorithm").into_iter().any(|algorithm| {
+        algorithm["kind"].as_str()==Some(kind)
+            && algorithm["revision"].as_str()==Some(revision)
+            && algorithm["implementation"].as_str()
+                .is_some_and(|kernel| kernel_exists(kind,kernel))
+    });
+    if valid { apply_stat(state,"global",kind,revision,positive); }
+    valid
 }
 
 fn apply_stat(state: &AppState, agent: &str, kind: &str, revision: &str, success: bool) {

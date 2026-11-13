@@ -4,7 +4,8 @@
 
 - 진입점: `src/main.rs` → `src/api/rooms.rs` / `src/api/chat.rs` / `src/api/video.rs` / `src/api/rsi.rs`
 - 공통 소유권·실행: `src/engine/jobs.rs`, `src/engine/chat/runtime/turn.rs`, `src/engine/chat/continuity.rs`
-- 그룹: `rooms/routing.rs::plan_speakers` → `speaker_window` → `rooms.rs::run_locked` → `routing::tiered_model_pool` → `run_room_quiet` → `gateway::record_usage_tokens`. 정책은 저장된 방 스냅샷에서 읽고, 사용자의 명시적 선택이 모든 계층 라우팅보다 우선합니다.
+- 그룹: `api/rooms.rs::submit_internal` → `algorithms::choose_for_agent("multiagent.economy")` → 동결 `roomSnapshot.economyKernel` → `rooms/routing.rs::speaker_window` → `rooms.rs::run_locked` → `routing::tiered_model_pool` → `run_room_quiet` → `gateway::record_usage_tokens`.
+- 사용자 결과 평가: `Rooms.tsx::rate` → `POST /api/rooms/:id/jobs/:job_id/feedback` → `api/rooms.rs::feedback` → 멱등 `room_feedback` → `algorithms::record_owner_feedback` → 전역 `algorithm_stat` → 다음 `choose_for_agent` 결정. 주관적 피드백은 독립적 검증 성공으로 취급하지 않습니다. 정책은 저장된 방 스냅샷에서 읽고, 사용자의 명시적 선택이 모든 계층 라우팅보다 우선합니다.
 - 영상: `video.rs::enqueue` → `video/film.rs::spec` / `video/director.rs::shot_prompt` → `jobs::enqueue` → `video.rs::run` → `video/film.rs::run` → `video/ltx.rs::run` → `FFmpeg`. 요청별 과금 횟수 확인, 개별 제출 불확실성 기록, 완료 클립 재사용.
 - RSI: `api/rsi.rs` → `jobs.rs` → `rsi/execution/campaign.rs` → `rsi/planner/descendant.rs` → `rsi/execution/worker.rs` → `rsi_worktree.rs` → `rsi_method_generalization.rs`, 채택된 소스와 개선법을 다음 세대가 재사용합니다. 모델 가중치를 학습시키지 않습니다.
 

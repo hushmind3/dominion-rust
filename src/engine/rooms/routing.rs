@@ -53,7 +53,12 @@ pub(super) fn speaker_window(
     // Adaptive mode avoids paying for an entire panel to answer a greeting.
     // Explicit mentions, owner-picked speakers, and "everyone" above still win.
     let count = (if adaptive {
-        if is_deep_request(input) { 3 } else if input.chars().count() <= 60 { 1 } else { 2 }
+        let key = if is_deep_request(input) { "deepSpeakers" }
+            else if input.chars().count()<=60 { "casualSpeakers" }
+            else { "mediumSpeakers" };
+        let default = match key { "deepSpeakers"=>3,"casualSpeakers"=>1,_=>2 };
+        room["economyKernel"]["parameters"][key].as_u64()
+            .unwrap_or(default).clamp(1,32) as usize
     } else if is_deep_request(input) {
         6
     } else if input.chars().count() <= 60 {

@@ -23,6 +23,8 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - `rooms/routing.rs::speaker_window`: 짧은 요청은 대표 응답 1명, 복잡한 요청은 최대 3명을 선택합니다. 직접 응답자 지정·@멘션·전원 발언·전체 모드는 우선권을 유지합니다.
 - `rooms.rs::run_locked`: 적응형 토론은 일반 질문 1라운드, 복잡한 질문 최대 2라운드로 제한하며, 명시적 최대 발언 수 또는 전체 모드를 선택하면 기존 설정을 따릅니다.
 - `rooms/routing.rs::tiered_model_pool`: 사용자가 모델별로 `economy` / `frontier`를 표시한 경우에만 요청 난도에 따라 선택합니다. 모델명만 보고 가격을 추측하지 않으며 제공자 ID·사용자 직접 지정·도구 승인 경로는 유지합니다.
+- `api/rooms.rs::submit_internal`에서 실제 `algorithms::choose_for_agent("multiagent.economy")`가 버전 있는 저비용·균형·품질 정책을 선택하고 이를 방 스냅샷에 동결합니다. `rooms/routing.rs`와 `rooms.rs`가 정책 매개변수를 실제 발언 수·토론 깊이에 적용합니다. 사용자의 직접 설정은 우선합니다.
+- `Rooms.tsx`의 만족/불만족 → `api/rooms.rs::feedback` → `room_feedback` 멱등 저장 → `algorithms::record_owner_feedback` → `algorithm_stat` → 다음 그룹 발언 전략 선택으로 **모델 가중치 변경 없는 개선 루프**를 연결합니다. 사용자 평가는 선호 신호이지 독립적인 사실 검증이 아닙니다.
 - `rooms.rs::run_locked`의 다음 발언 이전 예산 여유 검사로 반복 모델 호출을 조기에 종료합니다. 정확한 사용량은 기존 provider usage를 계속 기록합니다.
 - 공개 2026년 ICML LASE(선택적 토론)·SALE(전략적 소형 모델 라우팅)을 설계 참고로 삼았습니다. 제시된 논문 절감률은 이 저장소의 실측치가 아닙니다.
 

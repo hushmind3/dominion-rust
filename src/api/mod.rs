@@ -201,6 +201,7 @@ pub fn router(state: AppState) -> Router {
             get(rooms::messages).post(rooms::send_message),
         )
         .route("/api/rooms/:id/state", get(rooms::state))
+        .route("/api/rooms/:id/jobs/:job_id/feedback",post(rooms::feedback))
         .route("/api/rooms/:id/knowledge", get(rooms::knowledge))
         .route("/api/rooms/:id/system-prompt", get(rooms::system_prompt))
         .route("/api/rooms/:id/knowledge/learn", post(rooms::learn))
