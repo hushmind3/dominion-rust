@@ -170,6 +170,10 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
         let edited_role=rule["methodRole"].as_str().unwrap_or("");
         let mut trials=BTreeSet::new();
         let mut cases=BTreeSet::new();
+        let mut verified_method_controls=0u64;
+        let mut method_control_quality_wins=0u64;
+        let mut method_control_quality_losses=0u64;
+        let mut control_receipt_ids=BTreeSet::<String>::new();
         let mut gains=0u64;let mut regressions=0u64;let mut neutral=0u64;
         let mut cross_gains=0u64;let mut cross_regressions=0u64;
         let mut adopted=0u64;
@@ -203,6 +207,27 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
                 receipt_ids.insert(evidence.to_owned());
             }
             adopted+=u64::from(actual_adoption(g,&candidate,&metrics));
+            // The original OFF worker and ON worker must have matched,
+            // independent candidate receipts. The descendant learner
+            // consumes this intervention, not a stored success label.
+            let intervention=crate::engine::rsi_evolve::measured_method_ablation(state,g);
+            if actual_adoption(g,&candidate,&metrics)
+                && intervention["qualityProven"]==true
+                && intervention["methodAssociationObserved"]==true
+                && g["methodAblation"]==intervention
+                && intervention["methodFamilyId"]==
+                    crate::engine::rsi_improvement_algebra::method_family_id(rule) {
+                verified_method_controls+=1;
+                method_control_quality_wins+=
+                    intervention["treatmentOnlyWins"].as_u64().unwrap_or(0)
+                    +intervention["treatmentQualityWins"].as_u64().unwrap_or(0);
+                method_control_quality_losses+=
+                    intervention["controlOnlyWins"].as_u64().unwrap_or(0)
+                    +intervention["controlQualityWins"].as_u64().unwrap_or(0);
+                if let Some(id)=intervention["controlEvidenceSha256"].as_str(){
+                    control_receipt_ids.insert(id.to_owned());
+                }
+            }
             for m in metrics["measurements"].as_array().into_iter().flatten() {
                 if m["holdout"]!=true {continue}
                 let (Some(case),Some(domain),Some(effect))=(
@@ -273,6 +298,10 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
             "frozenProfileDigests":profiles.into_iter().take(12).collect::<Vec<_>>(),
             "generatorCommits":commits.into_iter().take(12).collect::<Vec<_>>(),
             "independentReceiptSha256":receipt_ids.into_iter().take(12).collect::<Vec<_>>(),
+            "verifiedMethodControlTrials":verified_method_controls,
+            "methodControlQualityWins":method_control_quality_wins,
+            "methodControlQualityLosses":method_control_quality_losses,
+            "methodControlEvidenceSha256":control_receipt_ids.into_iter().take(12).collect::<Vec<_>>(),
             "transferScore":transferable,
             "currentMethodSourceSha256":current_method,
             "previousMethodSourceSha256":predecessor,
@@ -349,15 +378,40 @@ pub(crate) fn adapt(mut algebra:Value,feedback:&Value)->Value{
                 (revision_support as f64/(revision_support as f64+6.0))
                 *300.0
         }else{0.0};
+        let control_trials=evidence["verifiedMethodControlTrials"]
+            .as_u64().unwrap_or(0);
+        let control_wins=evidence["methodControlQualityWins"]
+            .as_u64().unwrap_or(0);
+        let control_losses=evidence["methodControlQualityLosses"]
+            .as_u64().unwrap_or(0);
+        // A real same-source intervention can influence WHICH next method
+        // is rebuilt. A plain accepted source patch gets no intervention
+        // credit. Sparse controls receive a bounded, conservative bonus.
+        let control_weight=if control_trials>0 && control_wins>0 && control_losses==0 {
+            (control_wins.min(4)*120) as i64
+        }else if control_losses>0 {
+            -(control_losses.min(4) as i64)*180
+        }else {0};
         let adjusted=((transfer*600.0)+revision_weight).round() as i64
-            + (if cross>0 && reg==0 {240}else{0});
+            + (if cross>0 && reg==0 {240}else{0}) + control_weight;
         let base=row["selectionPriority"].as_i64().unwrap_or(0);
         row["selectionPriority"]=json!(base.saturating_add(adjusted));
         row["generalizationEvidence"]=evidence.clone();
         // When the method was actually used and consistently hurt external
         // heldouts, prefer editing that method rather than repeating the same
         // target. NO reward from rejected self-reported candidate output.
-        if trials>=2 && reg>=2 && reg>gain {
+        if control_trials>0 && control_wins>0 && control_losses==0 {
+            let method=row["rule"]["method"].clone();
+            if method["path"].as_str().is_some_and(rsi::safe_path)
+                && method["sourceSha256"].as_str().is_some_and(|s|hash_ok(s,64)) {
+                // A2 must be a REAL edit of the measured method bytes, not
+                // another ordinary capability patch. The subsequent B2
+                // still has to execute and outperform its own OFF worker.
+                row["target"]=method;
+                row["intent"]=json!("evolve_measured_method_after_controlled_downstream_gain");
+                row["feedbackControlReceipts"]=evidence["methodControlEvidenceSha256"].clone();
+            }
+        } else if trials>=2 && reg>=2 && reg>gain {
             let method=row["rule"]["method"].clone();
             row["target"]=method;
             row["intent"]=json!("rewrite_method_after_replayed_transfer_regression");
@@ -391,6 +445,10 @@ pub(crate) fn prefer_capability_target(algebra:&Value,learning:&Value)->bool {
     // let the executable improvement rule operate rather than bypass it.
     if selected["target"]["role"]==gap["role"]{return false;}
     let evidence=&selected["generalizationEvidence"];
+    if evidence["verifiedMethodControlTrials"].as_u64().unwrap_or(0)>0
+        && selected["intent"]=="evolve_measured_method_after_controlled_downstream_gain" {
+        return false;
+    }
     let independent=evidence["independentReplayedTrials"]
         .as_u64().unwrap_or(0);
     let cross=evidence["crossCapabilityGains"].as_u64().unwrap_or(0);
