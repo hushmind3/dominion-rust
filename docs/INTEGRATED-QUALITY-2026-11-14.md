@@ -7,7 +7,7 @@
 | 사용자 능력 | 엔진/실제 호출 경로 | 하네스·정책 | 개선 알고리즘/경계 | 현 상태 |
 |---|---|---|---|---|
 | 채팅·모델·도구 | `src/api/chat.rs` → `src/engine/chat/runtime/turn.rs` → `chat/provider/stream.rs` → provider | 승인·취소·실행 기록·사용량은 기존 `runtime/`과 `gateway.rs`; 도구 실행 `tools/{dispatch,workspace,edit,network,process}.rs` | `tool_selection.rs`의 도구 스키마 선별; `continuity.rs`에서 대화 참여자/모델별 prefix 재사용 | 기존 실행 경로 유지 |
-| 그룹 대화 | `src/api/rooms.rs` → `jobs.rs` → `src/engine/rooms.rs::run_locked` → `run_room_quiet` → chat/runtime | owner 메시지 1개/공통 대화 기록·참가자별 상태·명시적 권한·사용량 | `rooms.rs::effective_rounds`의 신규 비용 모드, `speaker_window`과 `room_context.rs::compile`의 관련성 기반 선택 | 이번 변경에서 비용 모드 API/UI/실행 연결 |
+| 그룹 대화 | `src/api/rooms.rs` → `jobs.rs` → `src/engine/rooms.rs::run_locked` → `run_room_quiet` → chat/runtime | owner 메시지 1개/공통 대화 기록·참가자별 상태·명시적 권한·사용량 | `rooms.rs::effective_rounds`의 신규 비용 모드, `speaker_window`과 `room_context.rs::compile`의 관련성 기반 선택 | 이번 변경에서 비용 모드와 fast/deep 모델 티어링 API/UI/실행 연결 |
 | 그룹 캐시 | `chat/room_context.rs` → `continuity.rs::prepare/project` → `provider/stream.rs` | provider별 지원 힌트 협상, 원문 영수증, 참가자별 working view | stable prefix/프레임 ID·변경된 evidence 재조립 | 기존 경로 활용; 캐시 할인률 미측정 |
 | Runway 영상 | `web/src/pages/Video.tsx` → `src/api/video.rs::create_job` → `src/engine/video.rs::enqueue` → `jobs.rs` → `video/runway.rs::render` | Vault에 API 키, frozen job, 원격 task ID, 재제출 불확실 시 `needs_review`, MP4 저장 | 2026-06 multi-shot 레시피, 720/1080p, 자동 5컷 또는 3~5컷 사용자 샷, 오디오 설정 및 무료 사전 검증 | 이번 변경에서 완결 경로 연결 |
 | LTX 영상 | 동일 진입점 → `video.rs::enqueue` → `video/ltx.rs::spec/run` | Vault `video:ltx:api`, 비동기 작업/상태/다운로드, 비용 발생 전 사양 검증 | 2026 LTX-2.5 Fast/Pro, 720p~4K, 네이티브 오디오, 모델별 허용 길이 | 챔피온 소스 비교 후 호스팅 엔진으로 통합 |
@@ -20,10 +20,11 @@
 - `web/src/pages/Rooms.tsx::RoomSettings`: 비용 모드 선택 UI. **신규** 대화방은 `balanced`, 변경 전 방은 `quality` 기본값으로 유지합니다.
 - `src/engine/rooms.rs::effective_rounds`: 사용자 메시지가 짧고 단순한 경우 반복 라운드를 줄이고 분석·구현 요청은 더 많이 유지합니다. `maxTurns > 0` 직접 지정 시 정책이 덮어쓰지 않습니다.
 - 기존 `speaker_window`는 명시적 전체 호출·멘션·선택을 우선하며, `room_context.rs`의 owner 상태·실제 도구 결과·참가자별 메시지 경계는 비용 절감을 위해 삭제하지 않습니다.
-- 새 정책은 **유료 모델 추가 호출 없이** Rust에서 결정합니다. 이것은 라운드 수 감소 기능이며 **입력/출력 토큰의 실제 40~80% 절감이라는 주장과 다릅니다**.
+- `src/engine/rooms/model_tier.rs::select`는 `api/rooms.rs`의 `tieredRouting` 및 모델별 `tier: fast | deep` 명시 태그를 읽습니다. 사용자가 켰을 때만 질문의 난이도에 따라 해당 제공자 모델을 선택합니다. 지정 태그가 없으면 기존 풀을 그대로 사용하고, 실제 모델 이름/가격을 추측하지 않습니다. `roomSnapshot`에 고정된 모델 정책을 실행합니다.
+- 새 정책은 **유료 모델 추가 호출 없이** Rust에서 결정합니다. 이것은 라운드 수 감소와 명시적 모델 라우팅 기능이며 **입력/출력 토큰의 실제 40~80% 절감이라는 주장과 다릅니다**.
 - 기존 `gateway::record_cache_usage`는 제공자 응답에서 실제 보고된 cached prompt token만 기록하며, UI의 캐시 적중률은 측정된 요청에 대해서만 나타납니다. Provider TTL·미지원 캐시 키는 공급자별로 다릅니다.
 
-**상호작용**: `RoomSettings` → `rooms normalize` → `job roomSnapshot` → `effective_rounds` → `run_room_quiet` → `room_context::compile` → `continuity::project` → provider wire. 코스트 모드는 참가자별 identity prefix와 provider 선택 규칙을 바꾸지 않습니다.
+**상호작용**: `RoomSettings/RoomModelPicker` → `api/rooms.rs` 정규화 → `job roomSnapshot` → `effective_rounds` + `model_tier::select` → `run_room_quiet` → `room_context::compile` → `continuity::project` → provider wire. 비용 모드만 바뀔 때는 provider 선택을 건드리지 않습니다. 티어 라우팅을 명시적으로 켜면 다른 모델로 전환하는 요청의 기존 prefix 캐시가 재사용되지 않을 수 있습니다.
 
 ## 2. 영상 턴키 방식: 실제 API 계약
 
@@ -43,7 +44,7 @@
 
 ## 4. 다음 핵심 개선 경계 (이번 변경에 아직 구현되지 않은 부분)
 
-1. **동적 모델 티어링**: 사용자 지정 모델 가격표·품질 하한·세션별 스위치 비용과 캐시 손실을 반영하는 실제 모델 라우트 선택이 더 필요합니다. 현재 그룹 `model_pool`은 참가자별 안정적 provider binding을 우선합니다.
+1. **가격·품질 자동 티어 점수**: fast/deep 명시적 티어링은 `rooms/model_tier.rs`에 연결했으나, 모델별 현재 가격·품질 하한·세션 스위치에 따른 캐시 손실을 수치로 최적화하는 선택은 추가 구현 대상입니다. 현재는 사용자가 표시한 티어만 사용합니다.
 2. **시맨틱 캐시**: 민감 정보·개별 대화/시간 의존 상태를 포함하지 않는 검증된 불변 조회에 한정해 versioned TTL과 무효화, 증거 hash를 붙일 때만 안전합니다. 자유 대화 응답을 유사 문장 하나로 건너뛰는 경로는 구현하지 않았습니다.
 3. **컨텍스트 압축**: `room_context::compile`은 BM25+비용 선택과 필수 원문 보존을 사용하며, 로컬 모델 요약을 **필수**로 요구하지 않습니다. 동적 요약이 cache prefix를 깨는 비용을 함께 평가해야 합니다.
 4. **동영상 품질 보증**: 현재 생성물 MP4 유효성 검사는 있지만 인물 일관성, 컷간 움직임, 음향 동기, 실제 프레임 품질 자동 판정과 수동 승인/재생성 UX는 별도 개발 과제입니다.
