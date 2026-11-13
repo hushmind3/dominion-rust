@@ -255,5 +255,3 @@ pub(super) fn search_strategy(algorithm: &Value, mode: &str) -> Value {
     })
 }
 
-/// An improvement method, not a model: each executable strategy changes how
-/// DOMINION allocates the source-observation budget and which editing tool it
