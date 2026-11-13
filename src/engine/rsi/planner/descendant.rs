@@ -314,6 +314,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &lineage,inherited.as_deref(),inherited_stage.as_ref(),explicit)?;
     let successor_hint=if explicit {
         system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
+    }else if let Some(domain)=evolution_program["target"]["domain"].as_str(){
+        Some(domain.to_owned())
     }else if let Some(domain)=method_transfer["domain"].as_str(){
         Some(domain.to_owned())
     }else if feedback_repair {
