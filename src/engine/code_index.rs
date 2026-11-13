@@ -40,7 +40,9 @@ fn is_source(path: &Path) -> bool {
         .unwrap_or("");
     // The coordinator's evaluation corpus is not source-edit context. Keep
     // it out of discovery, target selection and automatically inlined excerpts.
-    if name.ends_with("_tests.rs") || name == "rsi_oracle_fixture.rs"
+    if name.ends_with("_tests.rs")
+        || name == "dominion-benchmark.rs"
+        || name == "rsi_oracle_fixture.rs"
         || name.ends_with(".min.js") || name.ends_with(".lock") || name.starts_with('.') {
         return false;
     }

@@ -18,3 +18,10 @@ __pycache__/
 /benchmark/*.tmp
 /benchmark/.tmp/
 /reports/
+
+# Generated experiment outputs are not source or frozen proof.
+/benchmark/BASELINE-*.json
+/benchmark/ADAPTATION-TRACE-*.json
+/benchmark/sub3-first-gain-output/
+/benchmark/sub3-live-campaign-result.json
+/benchmark/sub4-live-rsi-result.json
