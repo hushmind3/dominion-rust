@@ -439,7 +439,8 @@ mod tests {
     fn independent_graders_cannot_be_candidate_source_targets() {
         assert!(!super::super::rsi::safe_path("src/engine/rsi_meta.rs"));
         assert!(!super::super::rsi::safe_path("src/engine/rsi_oracle_fixture.rs"));
-        for file in ["src/engine/rsi_evolve.rs","src/engine/chat/runtime.rs","src/engine/algorithms.rs",
+        assert!(!super::super::rsi::safe_path("src/engine/rsi_evolve.rs"));
+        for file in ["src/engine/rsi/planner/domain_selection.rs","src/engine/chat/runtime.rs","src/engine/algorithms.rs",
             "src/engine/memory.rs","src/engine/learning.rs","src/engine/tools.rs","web/src/pages/SelfImprovement.tsx"] {
             assert!(super::super::rsi::safe_path(file),"algorithm, harness and system source must be evolvable: {file}");
         }
