@@ -31,6 +31,12 @@ fn independently_adopted(state:&AppState,g:&Value)->bool {
     let Some(candidate)=g["candidateId"].as_str()
         .and_then(|id|state.store.get("rsi_candidate",id)) else{return false};
     candidate["status"]=="verified" && candidate["origin"]=="model_driven_detached_worktree"
+        // Generation-level metrics are copied from compare_at. Bind each
+        // claimed holdout gain to its independently stored candidate report.
+        && g["evaluation"]["candidateId"]==candidate["id"]
+        && g["evaluation"]["evaluationId"]==candidate["evaluation"]["id"]
+        && g["evaluation"]["evidenceSha256"]==candidate["evaluation"]["evidenceSha256"]
+        && g["evaluation"]["metrics"]==candidate["evaluation"]["metrics"]
         && candidate["baseCommit"]==g["generatorCommit"]
         && candidate["experimentAdoption"]["commit"]==g["acceptedCommit"]
         && candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
