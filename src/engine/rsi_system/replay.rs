@@ -48,6 +48,32 @@ pub(crate) fn revalidated_history(
                 && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
                 && candidate["experimentAdoption"]["productionDeployed"]==false);
         checked["pairedRevalidated"]=json!(adopted);
+        // Rebuild the meta experimental-choice provenance from the ORIGINAL
+        // compiled worker. Never train a source-mutating policy on a copied
+        // generation field that claims a control arm ran.
+        let original=generation["jobId"].as_str()
+            .and_then(|id|state.store.get("job",id));
+        let policy_bound=job_matches && original.as_ref().is_some_and(|job|
+            crate::engine::rsi_evolve::meta_experiment_policy::decode(
+                &job["input"]["rsiExperimentPolicy"],
+                job["input"]["rsiGeneratorCommit"].as_str().unwrap_or(""),
+                &job["input"]).is_some()
+            && job["rsiExperimentPolicyExecuted"]["source"]
+                =="running_compiled_descendant_experiment_designer_v1"
+            && job["rsiExperimentPolicyExecuted"]["generatorCommit"]
+                ==generation["generatorCommit"]
+            && job["rsiExperimentPolicyExecuted"]["policySha256"]
+                ==job["input"]["rsiExperimentPolicy"]["signatureSha256"]
+            && job["rsiExperimentPolicyExecuted"]["protocol"]
+                ==job["input"]["rsiExperimentPolicy"]["selectedProtocol"]);
+        checked["experimentPolicy"]=if policy_bound {
+            original.as_ref().map(|job|job["input"]["rsiExperimentPolicy"].clone())
+                .unwrap_or(Value::Null)
+        }else{Value::Null};
+        checked["experimentPolicyExecuted"]=if policy_bound {
+            original.as_ref().map(|job|job["rsiExperimentPolicyExecuted"].clone())
+                .unwrap_or(Value::Null)
+        }else{Value::Null};
         // Always reconstruct controlled-method labels from the original OFF
         // job and BOTH independent paired candidate receipts. Descendant
         // learning must never trust a copied methodAblation JSON claim.
