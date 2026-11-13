@@ -110,7 +110,7 @@ pub(super) fn observed_action_value(row:&Value)->f64 {
 /// live campaign. Only matching repository/owner partitions and the exact
 /// objective participate. Do not accidentally learn from other owners, goals
 /// or an earlier generation twice.
-pub(super) fn action_learning_history(
+fn action_learning_history(
     state:&AppState,input:&Value,current:&[Value],
 )->Vec<Value> {
     let partition=research_scope(input).partition_key;
@@ -669,7 +669,7 @@ pub(super) fn sub2_edit_policy_reward(g:&Value)->f64 {
 /// The old supervisor does not synthesize source-edit rules. The current
 /// compiled child learns from its own executed receipts AND persisted earlier
 /// campaigns with the same branch, objective, partition and model identity.
-pub(super) fn inherited_edit_policy(
+fn inherited_edit_policy(
     state:&AppState,input:&Value,history:&[Value],
     selected_model:&Value,domain:&str,
 )->Value{
