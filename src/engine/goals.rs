@@ -449,7 +449,7 @@ fn finish(
         "goal.finished",
         json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
     );
-    if status == "completed" {
+    if goal["status"] == "completed" {
         if let Some(session_id) = goal["sessionId"].as_str().filter(|id| !id.is_empty()) {
             let executor = goal.get("executor").cloned().unwrap_or_else(|| json!({}));
             let agent_id = executor["agentId"].as_str().filter(|id| !id.is_empty());
@@ -480,7 +480,7 @@ fn finish(
             }
         }
     }
-    context.emit(json!({"type":"goal_finished","goalId":id,"status":status}));
+    context.emit(json!({"type":"goal_finished","goalId":id,"status":goal["status"]}));
     json!({"goalId":id,"status":goal["status"],"sessionId":goal.get("sessionId"),
         "iterations":goal.get("iterations"),"evidence":goal.get("evidence"),
         "gaps":gaps,"finalReport":goal.get("finalReport")})
