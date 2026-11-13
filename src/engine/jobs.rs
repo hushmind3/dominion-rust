@@ -830,8 +830,15 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
         let candidate_id=finished.as_ref().ok().map(|result|result["rsi"]["candidateId"].clone()).unwrap_or(Value::Null);
         let hypothesis=finished.as_ref().ok().map(|result|result["rsi"]["modelMessageId"].clone()).unwrap_or(Value::Null);
         let generation=json!({"jobId":context.job_id,"candidateId":candidate_id,"accepted":false,"domain":job["rsiDomain"],"hypothesisMessageId":hypothesis});
-        crate::engine::rsi_evolve::remember_research(&context.state,&input,&generation,&session_id);
-        crate::engine::rsi_evolve::collect_method_executions(&context.state,&session_id,&worktree.path);
+        // OFF experiments are counterfactual observations, not new
+        // production experience or executable-method promotions. Only ON
+        // generations may add knowledge or method execution feedback.
+        if job["rsiControlExperiment"]!=true {
+            crate::engine::rsi_evolve::remember_research(
+                &context.state,&input,&generation,&session_id);
+            crate::engine::rsi_evolve::collect_method_executions(
+                &context.state,&session_id,&worktree.path);
+        }
         if let Err(error)=crate::engine::rsi_worktree::cleanup(worktree).await {
             context.state.store.audit("rsi.worktree_cleanup_failed",
                 json!({"jobId":context.job_id,"error":error}));

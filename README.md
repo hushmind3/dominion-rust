@@ -675,3 +675,7 @@ The normal `rsi_evolve::run_loop` calls `rsi/method_control.rs::run_method_contr
 ### Treatment/control isolation beyond worktree source bytes
 
 The control session in `jobs::run_prompt` now records `rsiControlExperiment=true`. `chat/runtime/finalization.rs` persists its tool/model execution evidence while excluding it from durable agent growth, strategy-signal learning, principles, experience acquisition and algorithm finalization. This prevents OFF-first execution from training the ON run on control outcomes. With finite campaign quotas both arms receive the same half-budget token allowance; wall-time is capped for the control to avoid exhausting the normal generation. A failed control checkout produces an unproven contrast rather than cancelling normal source evolution. Source only; no tests or compilation performed.
+
+### Method control cannot enter normal research memory
+
+`jobs::run_prompt` keeps the control's original prompt, detached edit, candidate and evaluator receipts, but excludes OFF-arm runs from `remember_research` and persistent executable-method feedback. Together with finalization's learning guard, the OFF arm has no authorized path to teach the subsequent ON generation through those durable learning stores.
