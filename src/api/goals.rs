@@ -228,3 +228,7 @@ pub async fn edit_plan(State(state):State<AppState>,Path(id):Path<String>,
     state.store.audit("goal.plan_owner_revision",json!({"goalId":id,"revision":revision}));
     Json(updated).into_response()
 }
+
+#[cfg(test)]
+#[path = "goals/tests.rs"]
+mod tests;
