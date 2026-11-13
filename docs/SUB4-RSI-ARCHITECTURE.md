@@ -28,11 +28,12 @@ The local LoRA/PEFT training and promotion module, training/evaluation/server sc
 
 `rsi_evolve.rs` is now a small API surface plus native selector template. Generation planning, model execution, research, empirical method trials, and adopted-source lineage logic live in `src/engine/rsi/`. Worktree evaluation, archived source evidence, fixed-weight model ecology, credit assignment, and method rewriting helpers are also grouped physically. The frozen evaluator remains outside the model's source-edit index.
 
-## Source-role isolation and planning boundary (2026-11-13)
+## Method-source proof boundary (2026-11-13)
 
-- `rsi/planner/domain.rs` now owns UCB/expression domain scoring, while `rsi_evolve::select_domain` stays at its historically required native source-mutation hook. The extracted module is used in both original coordinator selection and compiled descendant calls, not a parallel example implementation.
-- The independent `rsi/proof/closure.rs` accepts a method step only if **all** candidate paths are source-editing/planning/learning/meta/execution/lineage methods. Frozen evaluation and proof modules and application capabilities never count as method edits. A capability step accepts only non-method paths.
-- This eliminates a blind spot where valid recompiled improvements to `rsi/execution/` and `rsi/lineage/` could not qualify as an A step, and avoids accepting a mixed application patch as proof of method-only growth.
-- Tests were authored in `tests/unit/engine_rsi_closure_source_tests.rs`; no tests, compilation, CI or live model runs were invoked here.
+- `src/engine/rsi/proof/source_roles.rs` owns source-role classification; `rsi/proof/closure.rs` replays original candidate/job/paired receipts and calls that classifier, not model-authored method labels.
+- A method A can include actual compiled planning, learning, meta-control, execution and lineage source (`rsi/{planner,learning,meta,execution,lineage}/`). This closes the blind spot for genuine modifications to the execution and inheritance methods.
+- Method A/C must alter **only** improvement-method source; B must alter **only** a separate capability. Frozen evaluator (`rsi/evaluation/`) and independent proof (`rsi/proof/`) cannot earn method credit. Mixed application+method patches cannot satisfy a pure A step.
+- The original `rsi_evolve.rs` source-scoring functions remain co-located with the native source-mutation selector. The source mutator in `rsi/execution/mutation.rs` hashes/rewrites that exact source layout; moving them without rewriting the mutator disconnects a real recursive edit path.
+- Independent source-contract tests are authored in `tests/unit/engine_rsi_closure_source_tests.rs`. No tests, compilation, CI or live model campaign was executed in this pass.
 
-Research design context (not reproduced claims): 2026-10-11 *SpecForge* (arXiv:2610.15708) identifies cross-entity output coupling; 2026-09-22 *AIDE²* (arXiv:2609.26457) distinguishes accepted self-edits from hidden held-out gains; 2026-07-06 *MetaSkill-Evolve* (arXiv:2607.05297) distinguishes task skills from evolving improvement methods. The implementation stays frozen-weight and enforces source-category separation for proof.
+2026 research context (not reproduced results): [SpecForge, Oct 11](https://arxiv.org/abs/2610.15708) on output coupling; [AIDE², Sep 22](https://arxiv.org/abs/2609.26457) on independently selected self-edits; [MetaSkill-Evolve, Jul 6](https://arxiv.org/abs/2607.05297) on task skills versus meta-improvement procedures.
