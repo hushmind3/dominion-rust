@@ -219,7 +219,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // Check before opening another potentially expensive executor turn.
         // Planner/reviewer costs are recorded separately; this guard limits
         // the agent's session model usage rather than claiming exact billing.
-        if token_budget>0
+        if token_budget>0 && !(resume_review && index == start)
             && state.store.session_usage(&session_id)["totalTokens"].as_u64()
                 .unwrap_or(0)>=token_budget
         {
