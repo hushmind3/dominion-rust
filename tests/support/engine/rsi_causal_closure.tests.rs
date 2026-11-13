@@ -12,6 +12,7 @@ mod tests {
         assert!(!meta_source("src/engine/rsi/execution/compiled_planning.rs"));
         assert!(!meta_source("src/engine/rsi/execution/generation_evidence.rs"));
         assert!(!meta_source("src/engine/rsi/execution/generation_finalization.rs"));
+        assert!(!meta_source("src/engine/rsi/execution/method_ablation.rs"));
         assert!(meta_source("src/engine/rsi/learning/generation_feedback.rs"));
         assert!(meta_source("src/engine/rsi_system/guidance.rs"));
     }
