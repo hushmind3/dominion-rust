@@ -8,6 +8,7 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+mod cinematic;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -111,12 +112,17 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     {
         return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
     }
+    let cinematic = engine == "comfyui" && body["cinematic"] == true;
+    if cinematic && ffmpeg(state).is_none() {
+        return Err("시네마틱 멀티샷 제작에는 FFmpeg가 필요합니다.".into());
+    }
     let duration = body["duration"]
         .as_u64()
         .or(cfg["duration"].as_u64())
         .unwrap_or(15);
-    if !(3..=180).contains(&duration) {
-        return Err("영상 길이는 3~180초입니다.".into());
+    if !(3..=if cinematic {120} else {180}).contains(&duration) {
+        return Err(if cinematic {"시네마틱 영상은 3~120초를 지원합니다."}
+            else {"영상 길이는 3~180초입니다."}.into());
     }
     let aspect = body["aspectRatio"]
         .as_str()
@@ -151,6 +157,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     };
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
+        "cinematic":cinematic,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
@@ -495,7 +502,9 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "comfyui" {
+    let result = if input["engine"] == "comfyui" && input["cinematic"] == true {
+        cinematic::render(ctx, input, &dir).await
+    } else if input["engine"] == "comfyui" {
         comfy(ctx, input, &dir).await
     } else {
         native(ctx, input, &dir).await
