@@ -80,6 +80,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "useModel",
         "runwayModel",
         "runwayAudio",
+        "runwayContinuityFrames",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
@@ -89,7 +90,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         return error(StatusCode::BAD_REQUEST,"지원하지 않는 영상 엔진입니다.");
     }
     if !matches!(cfg["runwayModel"].as_str(),Some("kling3.0_pro"|"kling3.0_standard"|"kling3.0_4k"))
-        || !cfg["runwayAudio"].is_boolean() {
+        || !cfg["runwayAudio"].is_boolean() || !cfg["runwayContinuityFrames"].is_boolean() {
         return error(StatusCode::BAD_REQUEST,"Runway 모델 또는 오디오 설정 오류");
     }
     if let Some(key) = body["videoApiKey"].as_str() {
