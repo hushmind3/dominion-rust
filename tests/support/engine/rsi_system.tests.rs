@@ -522,15 +522,22 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi/lineage/campaign.rs",
             "src/engine/rsi/learning/methods.rs",
             "src/engine/rsi/learning/research.rs",
-            "src/engine/rsi_system/design.rs",
             "src/engine/rsi_system/lineage.rs",
-            "src/engine/rsi_system/guidance.rs",
-            "src/engine/rsi_system/proposal.rs",
-            "src/engine/rsi_system/handoff.rs"
+            "src/engine/rsi_system/guidance.rs"
         ];
         let listed = COMPONENTS.iter()
             .find(|(role,_)|*role=="improvement_methods")
             .expect("an independently editable improvement-method role").1;
+        for path in [
+            "src/engine/rsi/proof.rs",
+            "src/engine/rsi_system/design.rs",
+            "src/engine/rsi_system/proposal.rs",
+            "src/engine/rsi_system/handoff.rs",
+            "src/engine/rsi_system/peer_verifier.rs"
+        ] {
+            assert!(!crate::engine::rsi::safe_path(path),
+                "a descendant candidate cannot modify its own final judge: {path}");
+        }
         for path in modules {
             assert_eq!(source_role(path),"improvement_methods",
                 "modular RSI descendants must not be mistaken for task algorithms");
