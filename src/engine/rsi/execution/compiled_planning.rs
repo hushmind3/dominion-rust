@@ -252,14 +252,19 @@ pub(super) async fn plan_compiled_descendant(
         // The previous resident coordinator's cost-only suggestion is not
         // an owner constraint. Rebind it ONLY after independently checking
         // the compiled method transfer or the B-feedback meta-rewrite.
-        if plan["methodTransfer"].is_object() || plan["feedbackRepairSelected"]==true {
+        if plan["methodTransfer"].is_object() || plan["feedbackRepairSelected"]==true
+            || plan["metaEvolutionProgram"].is_object() {
             let superseded=child_input["rsiDecisionInput"].clone();
             child_input["rsiDecisionInput"]=json!({
-                "basis":"verified_compiled_recursive_method_target",
+                "basis":if plan["metaEvolutionProgram"].is_object() {
+                    "verified_compiled_recursive_meta_program"
+                }else{"verified_compiled_recursive_method_target"},
                 "targetDomain":domain,
                 "supersededSupervisorTarget":superseded["targetDomain"],
                 "supersededDecisionBasis":superseded["basis"],
                 "methodTransfer":plan["methodTransfer"],
+                "metaEvolutionProgramRevision":plan["metaEvolutionProgram"]["revision"],
+                "metaEvolutionOperatorId":plan["metaEvolutionProgram"]["operatorId"],
                 "feedbackRepairSelected":plan["feedbackRepairSelected"],
                 "sourceGeneratorCommit":head,
                 "previousAcceptedGeneration":history.iter().rev()
