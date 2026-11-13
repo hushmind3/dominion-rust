@@ -14,7 +14,7 @@ use std::{
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"narration":true,"voice":"Yuna","rate":170});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"narration":true,"voice":"Yuna","rate":170,"videoModel":"","resolution":"480x832","steps":20,"comfyModelsDir":""});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -27,6 +27,87 @@ pub fn config(state: &AppState) -> Value {
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
     value
 }
+/// Where ComfyUI keeps downloaded model files.
+pub fn models_dir(state: &AppState) -> PathBuf {
+    let cfg = config(state);
+    match cfg["comfyModelsDir"].as_str().filter(|value| !value.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => std::env::var("HOME").map(|home| PathBuf::from(home).join("ComfyUI/models"))
+            .unwrap_or_else(|_| PathBuf::from("models")),
+    }
+}
+
+fn present(state: &AppState, relative: &str) -> bool {
+    models_dir(state).join(relative).is_file()
+}
+
+/// Built-in one-click models. Availability is a real file check, not a claim.
+pub fn video_models(state: &AppState) -> Vec<Value> {
+    let entries = [
+        ("wan21-t2v-1.3b-q4", "Wan2.1 T2V 1.3B · 4비트", "gguf",
+            ["unet/Wan2.1-T2V-1.3B-Q4_K_M.gguf",
+             "clip/umt5-xxl-encoder-Q4_K_M.gguf",
+             "vae/wan_2.1_vae.safetensors"]),
+        ("wan21-t2v-1.3b-fp16", "Wan2.1 T2V 1.3B · fp16", "fp16",
+            ["diffusion_models/wan2.1_t2v_1.3B_fp16.safetensors",
+             "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+             "vae/wan_2.1_vae.safetensors"]),
+    ];
+    entries.iter().map(|(id, name, kind, files)| {
+        let missing = files.iter().filter(|file| !present(state, file)).count();
+        json!({
+            "id": id, "name": name, "kind": kind, "files": files,
+            "available": missing == 0,
+            "missingFiles": missing,
+            "hint": if missing == 0 { "설치됨".to_string() } else { format!("파일 {missing}개 없음") },
+        })
+    }).collect()
+}
+
+/// Workflow used when no imported workflow is set. Four-bit and fp16 loaders
+/// differ only in the loader node; the sampler graph is identical.
+pub fn workflow_for(model: &str, steps: u64) -> Option<Value> {
+    let (unet, clip, vae, loader) = match model {
+        "wan21-t2v-1.3b-q4" => (
+            "Wan2.1-T2V-1.3B-Q4_K_M.gguf",
+            "umt5-xxl-encoder-Q4_K_M.gguf",
+            "wan_2.1_vae.safetensors",
+            "gguf",
+        ),
+        "wan21-t2v-1.3b-fp16" => (
+            "wan2.1_t2v_1.3B_fp16.safetensors",
+            "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+            "wan_2.1_vae.safetensors",
+            "fp16",
+        ),
+        _ => return None,
+    };
+    let (unet_node, clip_node) = if loader == "gguf" {
+        (json!({"class_type":"UnetLoaderGGUF","inputs":{"unet_name":unet}}),
+         json!({"class_type":"CLIPLoaderGGUF","inputs":{"clip_name":clip,"type":"wan"}}))
+    } else {
+        (json!({"class_type":"UNETLoader","inputs":{"unet_name":unet,"weight_dtype":"default"}}),
+         json!({"class_type":"CLIPLoader","inputs":{"clip_name":clip,"type":"wan"}}))
+    };
+    Some(json!({
+        "1": unet_node,
+        "2": clip_node,
+        "3": {"class_type":"VAELoader","inputs":{"vae_name":vae}},
+        "4": {"class_type":"CLIPTextEncode","inputs":{"text":"{{prompt}}","clip":["2",0]}},
+        "5": {"class_type":"CLIPTextEncode","inputs":{"text":"{{negative}}","clip":["2",0]}},
+        "6": {"class_type":"EmptyHunyuanLatentVideo","inputs":{
+            "width":"{{width}}","height":"{{height}}","length":"{{frames}}","batch_size":1}},
+        "7": {"class_type":"KSampler","inputs":{
+            "model":["1",0],"positive":["4",0],"negative":["5",0],"latent_image":["6",0],
+            "seed":"{{seed}}","steps":steps,"cfg":6.0,"sampler_name":"euler",
+            "scheduler":"simple","denoise":1.0}},
+        "8": {"class_type":"VAEDecode","inputs":{"samples":["7",0],"vae":["3",0]}},
+        "9": {"class_type":"CreateVideo","inputs":{"images":["8",0],"fps":"{{fps}}"}},
+        "10": {"class_type":"SaveVideo","inputs":{
+            "video":["9",0],"filename_prefix":"dominion/wan","format":"mp4","codec":"h264"}}
+    }))
+}
+
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
     ffmpeg_from_config(&config(state))
 }
@@ -138,11 +219,28 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if !(1..=60).contains(&fps) || seed < -1 || negative_prompt.len() > 16_000 {
         return Err("FPS, 시드, 네거티브 프롬프트 값을 확인하세요.".into());
     }
-    let (width, height) = match aspect {
+    // A caller that picked a concrete resolution keeps it. Only the engine
+    // that actually consumes width/height (ComfyUI) may override the ratio.
+    let configured_size = cfg["resolution"].as_str()
+        .and_then(|value| value.split_once('x'))
+        .and_then(|(width, height)| Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?)));
+    let requested_size = if engine == "comfyui" {
+        body["width"].as_u64().or(configured_size.map(|size| size.0))
+            .zip(body["height"].as_u64().or(configured_size.map(|size| size.1)))
+            .filter(|(width, height)| {
+                (128..=1024).contains(width)
+                    && (128..=1024).contains(height)
+                    && width % 16 == 0
+                    && height % 16 == 0
+            })
+    } else {
+        None
+    };
+    let (width, height) = requested_size.unwrap_or_else(|| match aspect {
         "16:9" => (640, 360),
         "1:1" => (480, 480),
         _ => (360, 640),
-    };
+    });
     let seed = if seed == -1 {
         // Freeze one seed for this job so a safe retry uses identical input.
         i64::from(u32::from_be_bytes(uuid::Uuid::new_v4().as_bytes()[..4].try_into().unwrap()))
@@ -432,7 +530,13 @@ async fn comfy(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, Str
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
-    let mut workflow = cfg["comfyWorkflow"].clone();
+    let mut workflow = if cfg["comfyWorkflow"].is_object() {
+        cfg["comfyWorkflow"].clone()
+    } else {
+        let steps = cfg["steps"].as_u64().unwrap_or(20).clamp(1, 60);
+        workflow_for(cfg["videoModel"].as_str().unwrap_or(""), steps)
+            .ok_or("영상 모델을 설정에서 선택하세요.")?
+    };
     let legacy = json!({"prompt":input["brief"],"duration":input["duration"]});
     substitute(&mut workflow, input.get("render").unwrap_or(&legacy));
     ctx.checkpoint(json!({"phase":"submitting","progress":10,"videoState":{"inFlight":true}}))?;

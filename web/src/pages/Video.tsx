@@ -9,7 +9,8 @@ import {t,useLocale} from '../i18n'
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
 type VideoEngine='native'|'comfyui'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;voice?:string;narration?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;voice?:string;narration?:boolean;videoModel?:string;resolution?:string;steps?:number};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoModel={id:string;name:string;kind:string;available:boolean;hint:string}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -23,6 +24,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const youtube=useRemote<YoutubeStatus>('/api/youtube/status',{connected:false,uploadAllowed:false,account:null,uploads:[]})
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
+ const catalog=useRemote<{videoModels:VideoModel[]}>('/api/video/catalog',{videoModels:[]})
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<'native'|'comfyui'>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [voice,setVoice]=useState('Yuna'),[narration,setNarration]=useState(true)
@@ -42,7 +44,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   : outputs.value[0]
  const engine=engineChoice??(video.value.config.engine==='native'?'native':'comfyui')
  const usingComfy=engine==='comfyui'
- const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
+ const ready=usingComfy?Boolean(video.value.comfy.available&&(workflow||video.value.config.videoModel)):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
@@ -93,6 +95,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{await post('/api/video/config',patch);await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
+ const saveModel=async(patch:{videoModel?:string;resolution?:string;steps?:number})=>{
+  setSavingConfig(true);setError('')
+  try{await post('/api/video/config',patch);await video.reload();await catalog.reload()}
+  catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
  const reveal=async(id:string)=>{
   try{await post('/api/video/jobs/'+id+'/reveal',{})}catch(e){setError((e as Error).message)}
  }
@@ -132,6 +139,22 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   {(error||video.error||outputs.error||activeVideo.error||activeUpload.error)&&<Notice message={error||video.error||outputs.error||activeVideo.error||activeUpload.error}/>}
   <div className="mb-3 flex flex-wrap items-center gap-2"><Button variant={tab==='create'?'primary':'ghost'} onClick={()=>setTab('create')}>{t('video.tab.create')}</Button><Button variant={tab==='settings'?'primary':'ghost'} onClick={()=>setTab('settings')}>{t('video.tab.settings')}</Button></div>
   {tab==='settings'&&<>
+  <Panel className="mb-4 p-4">
+   <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">영상 모델</strong></div>
+   <div className="mt-3 grid gap-3 sm:grid-cols-3">
+    <FormField label="모델"><SelectInput value={video.value.config.videoModel||''} disabled={savingConfig} onChange={e=>void saveModel({videoModel:e.target.value})}>
+     {!catalog.value.videoModels.length&&<option value="">모델 없음</option>}
+     {catalog.value.videoModels.map(model=><option key={model.id} value={model.id} disabled={!model.available}>{model.name}{model.available?'':' · 미설치'}</option>)}
+    </SelectInput></FormField>
+    <FormField label="해상도"><SelectInput value={video.value.config.resolution||'480x832'} disabled={savingConfig} onChange={e=>void saveModel({resolution:e.target.value})}>
+     {['256x448','384x672','480x832','832x480','448x448'].map(size=><option key={size} value={size}>{size}</option>)}
+    </SelectInput></FormField>
+    <FormField label="스텝"><SelectInput value={String(video.value.config.steps??20)} disabled={savingConfig} onChange={e=>void saveModel({steps:Number(e.target.value)})}>
+     {[4,8,12,20,30,40].map(step=><option key={step} value={step}>{step}</option>)}
+    </SelectInput></FormField>
+   </div>
+   <p className="mt-2 text-[11px] text-[#8A8176]">{catalog.value.videoModels.find(model=>model.id===video.value.config.videoModel)?.hint||'모델을 선택하면 한 번에 생성됩니다.'}</p>
+  </Panel>
   <Panel className="mb-4 p-4">
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">{t('vid.engine')}</strong></div>

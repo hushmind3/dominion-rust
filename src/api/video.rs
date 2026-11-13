@@ -35,7 +35,9 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let cfg = video::config(&state);
     let executable = video::ffmpeg(&state);
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
-    let comfy = reachable && cfg["comfyWorkflow"].is_object();
+    let built_in = video::video_models(&state).iter()
+        .any(|model| model["id"] == cfg["videoModel"] && model["available"] == true);
+    let comfy = reachable && (cfg["comfyWorkflow"].is_object() || built_in);
     let workflows = workflows_from_config(&cfg);
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
@@ -80,6 +82,10 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "rate",
         "narration",
         "subtitles",
+        "videoModel",
+        "resolution",
+        "steps",
+        "comfyModelsDir",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
@@ -233,6 +239,8 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
         ],
+        "videoModels": video::video_models(&state),
+        "selectedVideoModel": cfg["videoModel"],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
         "comfyUrl": cfg["comfyUrl"],
