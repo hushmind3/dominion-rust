@@ -7,7 +7,7 @@ use std::collections::{HashSet, VecDeque};
 mod speakers;
 mod economy;
 pub use speakers::plan_speakers;
-use speakers::{auto_reasoning_effort, model_pool, pool_slot};
+use speakers::{auto_reasoning_effort, model_pool, pool_slot, tiered_model_pool};
 #[cfg(test)]
 use speakers::speaker_window;
 
@@ -407,7 +407,7 @@ async fn run_locked(
             .as_array()
             .is_some_and(|models| !models.is_empty());
         let pool = if explicit_pool || room["autoModels"].as_bool().unwrap_or(true) {
-            model_pool(state, &room)
+            tiered_model_pool(&room,owner_text,model_pool(state, &room))
         } else {
             Vec::new()
         };
