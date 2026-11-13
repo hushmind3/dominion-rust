@@ -6,7 +6,7 @@ use super::{
     DOMAINS, limits, run, research_scope, focus_domain_hint,
 };
 
-pub(super) fn method_session_running(state: &AppState, session: &Value) -> bool {
+fn method_session_running(state: &AppState, session: &Value) -> bool {
     let Some(campaign)=session["rsiCampaignId"].as_str() else {return false};
     session["rsiRun"] == true
         && state.store.get("job",campaign).is_some_and(|job|job["kind"] == "rsi_evolve"
@@ -59,7 +59,7 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     Ok(json!({"method":method,"next":"다음 예정된 개발에서 실제 도구로 실행하고 후속 조건과 개발 결과를 확인합니다. 등록은 성과가 아닙니다."}))
 }
 
-pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str) -> Vec<Value> {
+fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str) -> Vec<Value> {
     let mut methods = Vec::new();
     let records = state.store.all("experience").into_iter()
         .filter(|record|record["partitionKey"] == partition && record["status"] == "active")
@@ -95,7 +95,7 @@ pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str
     methods
 }
 
-pub(super) fn repair_exploration_order(method:&Value)->u8 {
+fn repair_exploration_order(method:&Value)->u8 {
     match method["synthesis"]["kind"].as_str() {
         Some("stale_source_rebase")=>0,
         Some("existing_file_to_versioned_edit")=>1,
@@ -112,7 +112,7 @@ pub(super) fn repair_exploration_order(method:&Value)->u8 {
 /// one trial against its accepted parent's future performance, then an
 /// unadopted candidate relinquishes priority. Previous acceptance is not
 /// automatically transferred to its child.
-pub(super) fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
+fn pending_success_ablation(method:&Value, methods:&[Value])->bool {
     if !matches!(method["synthesis"]["kind"].as_str(),
         Some("successful_read_ablation"|"transferred_read_ablation"|"successful_observation_pruning"|"transferred_observation_pruning"))
         || method["applications"].as_array().is_some_and(|a|!a.is_empty())
@@ -598,7 +598,7 @@ pub(super) fn synthesize_indexed_path_repair(
 /// A generation can succeed because some *other* model/tool edited the source;
 /// that event must not train an unrelated method as a successful descendant.
 /// This is effect attribution, not yet causal paired evaluation of the method.
-pub(super) fn method_wrote_accepted_candidate(
+fn method_wrote_accepted_candidate(
     state:&AppState,generation:&Value,receipt:&Value,operations:&[Value]
 )->bool {
     if generation["accepted"]!=true {return false}
@@ -635,7 +635,7 @@ pub(super) fn method_wrote_accepted_candidate(
 /// belong to the same repository partition. This permits using a verified
 /// algorithmic transformation (read-node elimination) on a new capability
 /// without importing the donor's source text or claiming a target gain.
-pub(super) fn proven_read_ablation_donor(
+fn proven_read_ablation_donor(
     state:&AppState, generation_job:&Value, target_domain:&str
 )->Option<Value> {
     let partition=research_scope(&generation_job["input"]).partition_key;
@@ -797,7 +797,7 @@ pub(super) fn synthesize_successful_dag_ablation(
 /// capability domains, but only within the same repository partition and
 /// only after the donor itself was used in a verified adopted patch. This is
 /// operator inheritance, not an inference of target quality improvement.
-pub(super) fn adopted_pruning_donor(
+fn adopted_pruning_donor(
     state:&AppState, generation:&Value, target_domain:&str
 )->Option<Value>{
     let job=state.store.get("job",generation["jobId"].as_str()?)?;
