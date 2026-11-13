@@ -61,6 +61,7 @@ pub(crate) fn effective_action(plan:&Value)->Value{
         // domain stays the same. This is verified against live worker use.
         "inheritedMethodId":plan["methodTransfer"]["methodId"],
         "inheritedMethodRevision":plan["methodTransfer"]["revision"],
+        "inheritedMethodTask":plan["methodTransfer"]["taskObjective"],
         "feedbackDrivenMetaRevision":plan["feedbackRepairSelected"],
         "provider":plan["apiRoutePolicy"]["chosen"]["providerId"],
         "model":plan["apiRoutePolicy"]["chosen"]["model"]})
