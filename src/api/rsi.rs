@@ -734,11 +734,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("dominion-rsi-index-{}", uuid::Uuid::new_v4()));
         let checkout = root.join("checkout");
         let data = root.join("data");
-        std::fs::create_dir_all(checkout.join("src/engine")).unwrap();
+        std::fs::create_dir_all(checkout.join("src/engine/rsi/planner")).unwrap();
         std::fs::create_dir_all(&data).unwrap();
         std::fs::write(checkout.join("Cargo.toml"), "[package]\nname = \"dominion\"\nversion = \"0.1.0\"\n").unwrap();
         std::fs::write(checkout.join("src/engine/rsi.rs"), "// source\n").unwrap();
-        std::fs::write(checkout.join("src/engine/rsi_evolve.rs"),
+        std::fs::write(checkout.join("src/engine/rsi/planner/domain_selection.rs"),
             "pub fn run_loop() {\n    // TODO: reuse the index\n}\n").unwrap();
         git(&checkout, &["init", "-q"]);
         git(&checkout, &["checkout", "-b", "dominion-sub3"]);
@@ -751,7 +751,7 @@ mod tests {
             "kind":"openai","model":"sample-model","baseUrl":"http://127.0.0.1:1/v1"}));
         let body = json!({"providerId":"test-provider","model":"sample-model",
             "mode":"continuous","confirmation":"START_RSI_EVOLUTION","selectionPolicy":"manual",
-            "focusFiles":["src/engine/rsi_evolve.rs"],"maxAttempts":1});
+            "focusFiles":["src/engine/rsi/planner/domain_selection.rs"],"maxAttempts":1});
         let response = start(State(state.clone()), Json(body)).await;
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let jobs = state.store.all("job");
@@ -760,10 +760,10 @@ mod tests {
         assert!(campaign["input"]["limits"]["tokenBudget"].is_null());
         assert!(campaign["input"]["limits"]["timeBudgetSeconds"].is_null());
         assert!(campaign["input"]["rsiIndexFiles"].as_u64().unwrap_or(0) >= 3);
-        assert_eq!(campaign["input"]["rsiFocusFiles"][0], "src/engine/rsi_evolve.rs");
+        assert_eq!(campaign["input"]["rsiFocusFiles"][0], "src/engine/rsi/planner/domain_selection.rs");
         let prompt = campaign["input"]["prompt"].as_str().unwrap();
         assert!(prompt.contains("저장된 코드 인덱스"));
-        assert!(prompt.contains("src/engine/rsi_evolve.rs"));
+        assert!(prompt.contains("src/engine/rsi/planner/domain_selection.rs"));
         assert!(prompt.contains("run_loop") || prompt.contains("TODO"));
         assert!(!prompt.contains("// TODO: reuse the index"),"source belongs in indexed retrieval, not every prompt");
         assert!(prompt.chars().count()<6000);
