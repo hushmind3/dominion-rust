@@ -34,8 +34,13 @@ async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
+    let campaigns=state.store.all("rsi_campaign").into_iter().take(20)
+        .map(|mut campaign| {
+            apply_capability(&state,&mut campaign);
+            campaign
+        }).collect::<Vec<_>>();
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
-        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
+        "campaigns":campaigns,
         "minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
@@ -609,25 +614,33 @@ mod tests {
 #[cfg(test)]
 mod capability_tests {
     use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
 
     #[test]
-    fn capability_requires_three_consecutive_accepts() {
-        let partial = json!({"history":[
-            {"accepted":true,"evaluation":{}},
-            {"accepted":true,"evaluation":{}},
-            {"accepted":false,"evaluation":{}},
-            {"accepted":true,"evaluation":{}}
-        ]});
-        assert_eq!(accepted_streak(&partial), (1, 2));
-        let full = json!({"history":[
-            {"accepted":true},{"accepted":true},{"accepted":true}
-        ]});
-        assert_eq!(accepted_streak(&full),(3,3));
-        let research_break = json!({"history":[
-            {"accepted":true},{"accepted":false},{"accepted":true}
-        ]});
-        assert_eq!(accepted_streak(&research_break),(1,1));
-        // Three boolean flags only measure a streak; the independent lineage
-        // oracle is enforced by apply_capability and tested in engine::rsi.
+    fn api_and_campaign_verdict_reject_three_forged_accept_flags() {
+        let root=std::env::temp_dir().join(
+            format!("rsi-api-verdict-{}",uuid::Uuid::new_v4()));
+        let config=Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let mut campaign=json!({"id":"false-success","status":"completed",
+            "stopReason":"capability_demonstrated",
+            "maxAcceptedStreak":3,"capabilityDemonstrated":true,
+            "actualCompletion":true,"recursiveMethodClosureProven":true,
+            "history":[
+                {"accepted":true},{"accepted":true},{"accepted":true}
+            ]});
+        apply_capability(&state,&mut campaign);
+        let verdict=engine::campaign_verdict(&state,&campaign);
+        assert_eq!(campaign["maxAcceptedStreak"],3);
+        assert_eq!(verdict["maxVerifiedStreak"],0);
+        assert_eq!(verdict["sourceEvolutionDemonstrated"],false);
+        assert_eq!(campaign["recursiveMethodClosureProven"],false);
+        assert_eq!(campaign["capabilityDemonstrated"],false);
+        assert_eq!(campaign["actualCompletion"],false);
+        assert_eq!(campaign["capabilityVerdict"],verdict);
+        let _=std::fs::remove_dir_all(root);
     }
 }
