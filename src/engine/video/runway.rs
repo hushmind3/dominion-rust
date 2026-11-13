@@ -46,17 +46,6 @@ pub(super) fn clip_durations(seconds: u64) -> Result<Vec<u64>, String> {
     Ok((0..clips).map(|i| base + u64::from(i < extra)).collect())
 }
 
-fn cinematic_prompt(brief: &str, scene: &str, i: usize, count: usize) -> String {
-    // A repeated identity/style anchor helps separate native clips retain
-    // the same art direction. It does not guarantee identity consistency.
-    let anchor = brief.chars().take(1050).collect::<String>();
-    let direction = scene.chars().take(1000).collect::<String>();
-    format!(
-        "Cinematic film, natural motion, coherent anatomy, detailed lighting,          intentional camera movement, consistent characters and setting.          Visual continuity across the film. Overall creative brief: {anchor}.          Segment {}/{}: {direction}. Native synchronized sound and dialogue          matching the depicted scene, no overlays or subtitles unless requested.",
-        i + 1, count
-    )
-}
-
 async fn storyboard(ctx: &JobContext, input: &Value, count: usize) -> Vec<String> {
     let brief = input["brief"].as_str().unwrap_or("");
     let supplied = input["scenes"].as_array().map(|rows| rows.iter()
@@ -220,19 +209,24 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     let chosen_model = model(cfg);
     let chosen_ratio = ratio(chosen_model, input["aspectRatio"].as_str().unwrap_or("9:16"));
     let scenes = storyboard(ctx, input, clips.len()).await;
-    ctx.checkpoint(json!({"videoState":{"scenes":scenes,"inFlight":false,"completedClips":0},
+    let shot_plans = clips.iter().enumerate()
+        .map(|(index, seconds)| super::shot_plan::shots(
+            input["brief"].as_str().unwrap_or(""), &scenes[index], *seconds,
+            index, clips.len()))
+        .collect::<Vec<_>>();
+    // Freeze the complete creative plan before a remote credit is spent.
+    // Its exact scene and camera decisions survive a needs_review restart.
+    ctx.checkpoint(json!({"videoState":{"scenes":scenes,"shotPlans":shot_plans,
+        "inFlight":false,"completedClips":0},
         "phase":"storyboard","progress":5}))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e| e.to_string())?;
     let mut task_ids = Vec::<String>::new();
     for (index, seconds) in clips.iter().enumerate() {
-        let prompt = cinematic_prompt(input["brief"].as_str().unwrap_or(""), &scenes[index], index, clips.len());
-        let payload = json!({
-            "model":chosen_model, "ratio":chosen_ratio, "duration":seconds,
-            "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
-            "promptText":prompt,
-        });
+        let payload = super::shot_plan::request(
+            chosen_model, chosen_ratio, *seconds,
+            cfg["runwayAudio"].as_bool().unwrap_or(true), &shot_plans[index]);
         let percent = 5 + 75 * index as u64 / clips.len() as u64;
         ctx.checkpoint(json!({"phase":"submitting","progress":percent,
             "videoState":{"inFlight":true,"clipIndex":index}}))?;
@@ -266,6 +260,8 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     Ok(json!({
         "engine":"runway","provider":"Runway Dev","model":chosen_model,
         "description":"Kling 3.0 cinematic native-audio video","duration":input["duration"],
-        "scenes":scenes.len(),"taskIds":task_ids,"audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
+        "scenes":scenes.len(),"shotCount":shot_plans.iter().map(Vec::len).sum::<usize>(),
+        "shotMode":"kling_native_multishot","taskIds":task_ids,
+        "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
     }))
 }
