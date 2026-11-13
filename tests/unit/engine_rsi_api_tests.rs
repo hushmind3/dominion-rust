@@ -209,7 +209,7 @@ use super::*;
         decide(&state,id,&json!({"action":"approve","confirmation":"APPROVE",
             "baseCommit":base(),"patchSha256":parent["patchSha256"]})).unwrap();
         let mut child=proposal("improver");
-        child["patch"]=json!(patch().replace("+new","+newer"));
+        child["patch"]=json!(child["patch"].as_str().unwrap().replace("+new","+newer"));
         child["parentCandidateId"]=parent["id"].clone();
         assert!(propose(&state,&child).is_err(), "approval is not deployment");
         let deployed = "b".repeat(40);
