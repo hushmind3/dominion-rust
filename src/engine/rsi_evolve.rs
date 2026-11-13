@@ -295,7 +295,11 @@ pub(crate) use method_learning::{propose_method, configure_method_session, metho
 
 #[path = "rsi/learning/research.rs"]
 mod research_learning;
-use research_learning::{research_artifacts, proposed_algorithms, adaptive_search_expression, recovery_search_expression, queue_adaptive_search_trial, queue_search_trial, pending_trial_candidate, comparable_trial_baseline, trial_verdict, record_trial_outcome, numbered_source_range, unavailable_research_receipt, session_research_fingerprint};
+use research_learning::{research_artifacts, proposed_algorithms, adaptive_search_expression, recovery_search_expression, queue_adaptive_search_trial, queue_search_trial, pending_trial_candidate, numbered_source_range, unavailable_research_receipt, session_research_fingerprint};
+
+#[path = "rsi/evaluation/trials.rs"]
+mod evaluation_trials;
+use evaluation_trials::{comparable_trial_baseline, trial_verdict, record_trial_outcome};
 pub(crate) use research_learning::{preserve_failed_research, remember_research, reuse_research};
 
 #[path = "rsi/execution/generation.rs"]
