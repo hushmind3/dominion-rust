@@ -290,11 +290,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // is still executable for this domain and frozen held-out cases exist.
     // The recompilable descendant selects the real capability transfer task;
     // the resident supervisor never writes this target for it.
-    let method_transfer=if explicit || paired_descendant_target(input) {Value::Null}
+    // A frozen post-adoption *supervisor suggestion* is not an owner edit
+    // constraint. Once the compiled descendant observes a usable adopted
+    // method, that executable transfer outranks the old cost-only suggestion.
+    let method_transfer=if explicit {Value::Null}
         else{crate::engine::rsi_system::method_transfer_target(&state,&history,input)};
     let feedback_repair=history.last().is_some_and(|last|
         input["rsiMethodAblation"]==true && input["rsiAutonomous"]==true
-        && !explicit && !paired_descendant_target(input)
+        && !explicit
         && last["accepted"]==true && last["domain"]!="improver"
         && last["methodAblation"]["methodAssociationObserved"]==true
         && last["methodAblation"]["qualityProven"]==true);
@@ -421,12 +424,14 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             && stage["sourceSha256"]==architecture_target["sourceSha256"]) {
         inherited_stage.clone().unwrap_or(Value::Null)
     }else{Value::Null};
-    let successor_hint=if explicit || paired_descendant_target(input) {
+    let successor_hint=if explicit {
         system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
     }else if let Some(domain)=method_transfer["domain"].as_str(){
         Some(domain.to_owned())
     }else if feedback_repair {
         Some("improver".to_owned())
+    }else if paired_descendant_target(input) {
+        system_evolution_target_hint(input,snapshot["attempt"].as_u64().unwrap_or(0))
     }else{architecture_target["domain"].as_str().map(str::to_string).or(inherited)};
     // A verified ancestor's reciprocal program takes priority over an
     // unrelated pending search trial. Otherwise the source chooser can silently
