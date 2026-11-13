@@ -21,12 +21,22 @@ pub(super) async fn run_method_control(
     context:&JobContext,record:&mut Value,input:&Value,child_input:&mut Value,
     lab:&PathBuf,binary:&PathBuf,_attempt:u64,started:Instant,
 )->Result<(),String>{
-    if input["rsiMethodAblation"]!=true{return Ok(());}
+    // A method control is useful only for an independently verified
+    // meta-authored procedure being transferred to a real capability task.
+    // Do not spend a paid second model call for unrelated RSI generations.
+    if input["rsiMethodAblation"]!=true
+        || !child_input["rsiMethodTransfer"].is_object(){return Ok(());}
     // Own the domain before mutating child_input; retaining a borrowed str
     // across arm assignment would conflict with the treatment input update.
     let domain=child_input["rsiTargetDomain"].as_str().unwrap_or("").to_owned();
+    let transfer=&child_input["rsiMethodTransfer"];
     let choice=method_reuse_decision(&context.state,child_input,&domain);
-    if choice["action"]!="execute_methods"{return Ok(());}
+    if transfer["domain"]!=domain || transfer["methodId"].as_str().is_none()
+        || choice["action"]!="execute_methods"
+        || !choice["methodIds"].as_array().is_some_and(|ids|
+            ids.contains(&transfer["methodId"])) {
+        return Err("채택된 메타 개선법의 실제 실행 절차가 다음 후손에서 사라졌습니다.".into());
+    }
     let mut decision=child_input["rsiDecisionInput"].clone();
     if !decision.is_object(){decision=json!({});}
     decision["nextDomain"]=json!(domain);
@@ -92,6 +102,8 @@ pub(super) async fn run_method_control(
         "providerId":child_input["providerId"],"model":child_input["model"],
         "profileSha256":profile["sha256"],
         "inputSha256":fp,"disabledMethodIds":choice["methodIds"],
+        "selectedInheritedMethodId":transfer["methodId"],
+        "selectedInheritedMethodRevision":transfer["revision"],
         "methodsActuallyDisabled":!executed_procedures
             && observed["input"]["rsiMethodAblationArm"]=="without_methods",
         "workerStatus":observed["status"],
@@ -158,6 +170,8 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         && generation["accepted"]==true
         && control["generatorCommit"]==generation["generatorCommit"]
         && control_job["input"]["rsiGeneratorCommit"]==generation["generatorCommit"]
+        && control["selectedInheritedMethodId"]==generation["methodTransfer"]["methodId"]
+        && control["selectedInheritedMethodRevision"]==generation["methodTransfer"]["revision"]
         && control["sourceDir"]==treatment_job["input"]["rsiSourceDir"]
         && control["domain"]==generation["domain"]
         && control["providerId"]==treatment_job["input"]["providerId"]
