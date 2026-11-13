@@ -43,13 +43,15 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy,
+        "available": executable.is_some() || comfy || video::runway_ready(&state),
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
+        "runway": {"available":video::runway_ready(&state),"model":cfg["runwayModel"],"nativeAudio":cfg["runwayAudio"]},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
-            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}}
+            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
+            {"id":"runway","name":"시네마틱 영상 · Kling 3.0 (유료)","available":video::runway_ready(&state),"reason":if video::runway_ready(&state){""}else{"Runway Dev API 키 필요"}}
         ],
         "jobs": jobs,
         "models": [],
@@ -76,10 +78,25 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "providerId",
         "model",
         "useModel",
+        "runwayModel",
+        "runwayAudio",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
         }
+    }
+    if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"runway")) {
+        return error(StatusCode::BAD_REQUEST,"지원하지 않는 영상 엔진입니다.");
+    }
+    if !matches!(cfg["runwayModel"].as_str(),Some("kling3.0_pro"|"kling3.0_standard"|"kling3.0_4k"))
+        || !cfg["runwayAudio"].is_boolean() {
+        return error(StatusCode::BAD_REQUEST,"Runway 모델 또는 오디오 설정 오류");
+    }
+    if let Some(key) = body["videoApiKey"].as_str() {
+        if key.trim().len() < 8 || key.len() > 4096 {
+            return error(StatusCode::BAD_REQUEST,"Runway API 키 길이를 확인하세요.");
+        }
+        state.save_secret("video:api",key.trim());
     }
     if let Some(url) = cfg["comfyUrl"].as_str().filter(|s| !s.is_empty()) {
         if !reqwest::Url::parse(url).is_ok_and(|u| {
@@ -207,6 +224,11 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         "available": native,
         "hint": if native { "로컬 ffmpeg으로 장면과 자막을 합성합니다." } else { "ffmpeg를 찾을 수 없습니다. 설정에서 경로를 지정하세요." },
     })];
+    items.push(json!({
+        "id":"runway", "name":"Kling 3.0 cinematic (Runway Dev)",
+        "kind":"runway", "available":video::runway_ready(&state),
+        "hint":"Native sound · 1080p/4K tier · paid per-second API. 15초 초과 FFmpeg 병합 필요",
+    }));
     if comfy {
         items.push(json!({
             "id": "comfyui",
@@ -228,6 +250,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
         "models": [
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
+            {"id":"runway","name":"Kling 3.0 (Runway Dev)","kind":"runway","available":video::runway_ready(&state)},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
