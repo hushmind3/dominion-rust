@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 fn grams(value: &str) -> BTreeSet<String> {
     let clean: Vec<char> = value.to_lowercase().chars()
         .filter(|ch| ch.is_alphanumeric()).collect();
-    clean.windows(3).map(|window|window.iter().collect()).collect()
+    clean.windows(3).map(|window|window.iter().copied().collect::<String>()).collect()
 }
 
 fn redundant(a: &str,b: &str) -> bool {
