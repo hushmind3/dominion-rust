@@ -262,9 +262,41 @@ OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolM
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
 
+## 서브3: RSI 책임 경계 재구축 및 CI (2026-11-13 최신)
+
+현재 `dominion-sub3`의 **실제 실행 경로**입니다. 변경은 `src/engine/rsi_evolve.rs`의 기존 호출 지점에 등록됐으며, 새로운 독립 데모나 미연결 예제가 아닙니다.
+
+```text
+/api/rsi/start → jobs/rsi_evolve → rsi/lineage/campaign.rs
+  → rsi/execution/campaign.rs::run_loop (679줄 → 약 255줄)
+    → rsi/execution/generation_preparation.rs  : 세대 입력·지속 연구·후손 원본 계획
+       → rebuilt descendant --rsi-plan-generation
+       → rsi/meta/inputs.rs                   : 상태/경험/독립 계보 입력 어댑터
+       → rsi/meta/composition.rs::compose_pure : 순수 개선 실험 설계
+       → rsi/meta/evolution.rs                : 모델 작성 연산자·실측 전이 조건
+       → rsi/meta/transition_policy.rs        : 타입 있는 조건·임계값 검증
+       → rsi/meta/experiment_dispatch.rs      : 실제 편집 영역·실험 방식을 선택
+       → rsi/evaluation/contract.rs           : 동결된 타입 계약을 서명
+    → rsi/execution/generation_launch.rs      : 실행 작업·프로세스·시간 예산
+       → rebuilt descendant --rsi-worker-job → models/provider → tools/source edit
+    → rsi/execution/generation_selection.rs   : 원본 후보·격리 A/B·채택 결정
+       → rsi_worktree::compare_at             : 고정 평가·패치 리플레이
+       → rsi/lineage/adoption.rs              : 유효 패치·원본 커밋 검증 후 실험 채택
+    → rsi/execution/generation_finalization.rs: 증거·방법 계승·다음 세대 상태 저장
+       → rsi/proof.rs::recursive_proof_report : 전체 RSI의 단일 완료 판정
+       → rsi/proof/{mutual_cycles,open_handoff,principle_replay}.rs
+       → rsi_causal_closure.rs                : 독립 채택·후손 행동 및 개선법 감사
+```
+
+**계층 소유권:** `meta/composition.rs::compose_pure`는 `AppState`를 받지 않고, `meta/inputs.rs`만 상태 조회를 수행합니다. 동결 계약·독립 평가·채택·재검증 파일은 `rsi.rs::safe_path`에서 자기수정 대상에서 제외했습니다. 수정 가능한 알고리즘과 보호된 증명 권한을 구분합니다. 메타 프로토콜은 고정된 A→B→A→B 성공 순서가 아니라 실측 결과·실패한 실행의 원본 피드백을 사용한 분기 그래프입니다. 실측 없이 개선 품질이 증명됐다고 표시하지 않습니다.
+
+**CI:** `.github/workflows/ci.yml`은 `dominion-sub3` 푸시 시 Linux·macOS·Windows에서 프론트 타입 검사·빌드, Node 실험 스크립트, Rust `cargo test --release`를 실행합니다. 이전 CI에서 발견된 분리 모듈의 누락된 트레이트·잘못된 상대 테스트 경로·문자열 형식 오류를 실제 로그 기준으로 수정했습니다. 최종 성공/실패는 [Actions 실행 결과](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3)에 따릅니다.
+
+**학술적 연결 (2026):** [GEPA, ICLR 2026](https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html)의 실패 실행 추적 기반 개선과 [AIDE², 2026-09](https://arxiv.org/abs/2609.26457)의 채택 후손 재생성·독립 측정 원칙을 참고했습니다. 모델 가중치 변경·LoRA·재학습을 RSI 경로에 연결하지 않았습니다.
+
 ## 서브3: 실행 책임 분리와 동일 소스 개선법 ON/OFF 실험 (2026-11-13 추가)
 
-- `src/engine/rsi/execution/campaign.rs::run_loop`은 **1,376줄 → 679줄**로 축소했습니다. `compiled_planning.rs::plan_compiled_descendant`는 재빌드 후손의 계획 실행과 모든 출처·메타정책 유효성 검증, `generation_evidence.rs::capture_generation_evidence`는 실제 작업 도구·모델 호출·사용량·소스 편집 영수증, `generation_finalization.rs::finalize_generation`은 세대 기록 영속화·단일 RSI 증명·자동 종료/다음 선택을 담당합니다. `rsi/learning/generation_feedback.rs`가 실제 알고리즘 탐색 시행과 메타학습 피드백을 맡습니다. 모두 기존 캠페인 호출부에서 사용합니다.
+- `src/engine/rsi/execution/campaign.rs::run_loop`은 **초기 1,376줄 → 679줄 → 최신 약 255줄**로 분해했습니다. `compiled_planning.rs::plan_compiled_descendant`는 재빌드 후손의 계획 실행과 모든 출처·메타정책 유효성 검증, `generation_evidence.rs::capture_generation_evidence`는 실제 작업 도구·모델 호출·사용량·소스 편집 영수증, `generation_finalization.rs::finalize_generation`은 세대 기록 영속화·단일 RSI 증명·자동 종료/다음 선택을 담당합니다. `rsi/learning/generation_feedback.rs`가 실제 알고리즘 탐색 시행과 메타학습 피드백을 맡습니다. 모두 기존 캠페인 호출부에서 사용합니다.
 - `src/api/rsi.rs`와 `web/src/pages/SelfImprovement.tsx`에서 유료 추가 호출이 필요한 `methodAblation`을 **명시적으로 선택**할 수 있습니다. 켜면 `rsi/execution/method_ablation.rs::run_method_control`이 동일 소스 커밋·모델·작업 입력으로 **개선법 OFF 별도 후손 작업기**를 먼저 실행해 독립 동결 평가합니다. 그 소스는 채택하지 않습니다. 그 뒤 같은 입력으로 개선법 ON 작업기를 실행하고 일반 채택 절차를 수행합니다.
 - 후손의 변경 가능한 분야 선택기 `rsi/planner/domain_selection.rs`를 `rsi_evolve.rs`에서 독립시켜 `rsi.rs`, `rsi_evolve.rs`, `rsi_system.rs` 연결부를 **편집 금지 심판 경계**로 재분류했습니다. 새 알고리즘은 그 후손의 실제 소스 수정·재빌드·동결 평가를 거쳐 채택되며, 검증 경계는 후손 후보가 바꿀 수 없습니다. 평가기 `rsi_worktree.rs`, `rsi_metrics.rs`, 보관소 검증 `rsi_archive.rs`, `src/api/rsi.rs`, 관련 RSI 고정 테스트 경로도 변조 대상에서 제외했습니다.
 - 실제 A→B→A 재귀 인과 경로를 강화했습니다. `rsi_system.rs::blueprint`와 `rsi_system/lineage.rs::lineage_capsule`이 B 후손의 **저장된 ON/OFF 대조 실측**을 다음 컴파일된 A2 후손에 전달하며, `rsi_system/guidance.rs::improvement_directive`가 `evolve_executed_method_from_feedback` 모드와 대조·실험 평가 영수증 ID를 고정합니다. A2가 이전 B의 결과에서 새로운 실행 절차를 작성하고 B2가 그 절차를 실제 사용한 사실을 `rsi_causal_closure.rs::revised_method_after_feedback`가 원본 ID·결과와 대조합니다. 단순히 이전 방법 이름을 바꾸거나 오래된 영수증을 복사하는 것은 통과하지 못합니다.
