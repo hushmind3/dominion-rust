@@ -28,6 +28,23 @@ pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Respons
     if !matches!(job["status"].as_str(),Some("queued"|"running")){return error(StatusCode::CONFLICT,"진행 중인 작업만 중단할 수 있습니다.");}
     if let Some(session)=job["sessionId"].as_str(){state.cancel_session(session);}
     match state.store.patch_if("job",&id,"status",&job["status"],&json!({"status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339()})){
-        Some(saved)=>{state.bus.record("job",&saved);Json(saved).into_response()},None=>state.store.get("job",&id).map(|j|Json(j).into_response()).unwrap_or_else(||error(StatusCode::CONFLICT,"작업 상태가 변경되었습니다."))
+        Some(saved)=>{
+            state.bus.record("job",&saved);
+            // Queued goals never enter the worker, so cancellation must not
+            // leave a misleading permanently queued goal in the product UI.
+            if saved["kind"]=="goal" {
+                if let Some(goal_id)=saved["input"]["goalId"].as_str() {
+                    if let Some(goal)=state.store.get("goal",goal_id) {
+                        if matches!(goal["status"].as_str(),Some("queued"|"running")) {
+                            if let Some(cancelled)=state.store.patch_if("goal",goal_id,"status",&goal["status"],
+                                &json!({"status":"cancelled","phase":"cancelled","finishedAt":chrono::Utc::now().to_rfc3339()})) {
+                                state.bus.record("goal",&cancelled);
+                            }
+                        }
+                    }
+                }
+            }
+            Json(saved).into_response()
+        },None=>state.store.get("job",&id).map(|j|Json(j).into_response()).unwrap_or_else(||error(StatusCode::CONFLICT,"작업 상태가 변경되었습니다."))
     }
 }
