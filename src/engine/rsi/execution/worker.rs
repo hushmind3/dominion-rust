@@ -269,6 +269,18 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             return Err(error);
         }
     };
+    // Persist proof of the ACTUAL system prompt supplied to the model turn.
+    // A claimed meta-policy revision without delivered bytes is insufficient.
+    if job["rsiMethodControlFeedbackExecuted"].is_object(){
+        let candidate=job["rsiMethodControlFeedbackExecuted"]["treatedCandidateId"]
+            .as_str().ok_or("후손 개선법 피드백 대상 없음")?;
+        if !prompt.contains(candidate) {
+            return Err("후손 실제 모델 지시문에 원본 B 피드백이 없습니다.".into());
+        }
+        job["rsiMethodControlFeedbackExecuted"]["deliveredToModelTurn"]=json!(true);
+        job["rsiMethodControlFeedbackExecuted"]["promptSha256"]=json!(
+            format!("{:x}",Sha256::digest(prompt.as_bytes())));
+    }
     job["input"]["prompt"]=json!(prompt);
     job["rsiWorkerContextPlan"]=plan;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;

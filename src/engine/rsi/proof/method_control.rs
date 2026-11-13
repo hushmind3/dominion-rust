@@ -102,7 +102,7 @@ fn contrast(treated:&Value,control:&Value)->Option<(usize,usize,usize)>{
         let new=row["candidatePass"].as_bool()?;
         let old=old["candidatePass"].as_bool()?;
         count+=1;
-        if new&&!old {gains+=1;}
+        if new&&!old && row["baselinePass"]==false {gains+=1;}
         if !new&&old {losses+=1;}
     }
     (seen.len()==before.len()&&count>=2).then_some((gains,losses,count))

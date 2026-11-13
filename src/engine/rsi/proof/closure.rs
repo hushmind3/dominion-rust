@@ -4,6 +4,7 @@
 //! cannot prove that descendants actually used inherited improvements.
 use crate::{engine::rsi, state::AppState};
 use serde_json::{json, Value};
+use sha2::{Digest,Sha256};
 
 #[path = "source_roles.rs"]
 mod source_roles;
@@ -174,7 +175,12 @@ pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
         // Persisted claims in mutable generation rows cannot replace the
         // actual worker job and meta-policy source provenance.
         let observed=&a2_job["rsiMethodControlFeedbackExecuted"];
+        let observed_prompt=a2_job["input"]["prompt"].as_str().unwrap_or("");
+        let prompt_hash=format!("{:x}",Sha256::digest(observed_prompt.as_bytes()));
         if observed["source"]!="compiled_descendant_method_feedback_delivery_v1"
+            || observed["deliveredToModelTurn"]!=true
+            || observed["promptSha256"]!=prompt_hash
+            || !observed_prompt.contains(b["id"].as_str().unwrap_or(""))
             || observed["treatedCandidateId"]!=b["id"]
             || observed["generatorCommit"]!=a2_row["generatorCommit"]
             || observed["metaRevision"]!=a2_job["rsiMetaPolicyExecuted"]["metaRevision"]

@@ -52,3 +52,12 @@ fn policy_selected_domain_is_an_observed_outcome_not_a_matching_constraint(){
     pre["input"]["rsiObjective"]=json!("different task");
     assert!(!same_task(&pre,&on));
 }
+
+#[test]
+fn preserving_previously_passing_guard_is_not_novel_capability(){
+    let treated=measured(true,true);
+    let mut control=measured(true,false);
+    assert_eq!(contrast(&treated,&control),Some((0,0,2)));
+    control["evaluation"]["metrics"]["measurements"][0]["candidatePass"]=json!(false);
+    assert_eq!(contrast(&treated,&control),Some((1,0,2)));
+}
