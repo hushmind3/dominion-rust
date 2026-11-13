@@ -90,3 +90,21 @@
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+
+
+#[test]
+fn explicit_model_tiers_route_simple_and_deep_without_name_guessing() {
+    let pool=vec![
+        ("p".into(),"large".into(),None),
+        ("p".into(),"small".into(),Some("none".into())),
+    ];
+    let room=json!({"economyMode":"adaptive","routingMode":"discussion",
+        "models":[{"providerId":"p","model":"large","tier":"frontier"},
+            {"providerId":"p","model":"small","tier":"economy"}]});
+    assert_eq!(tiered_model_pool(&room,"안녕",pool.clone())[0].1,"small");
+    assert_eq!(tiered_model_pool(&room,"시스템 아키텍처를 분석해줘",pool.clone())[0].1,"large");
+    assert_eq!(tiered_model_pool(&room,"모두 분석해주세요",pool.clone()),pool);
+    let default=json!({"economyMode":"adaptive","routingMode":"discussion",
+        "models":[{"providerId":"p","model":"large"},{"providerId":"p","model":"small"}]});
+    assert_eq!(tiered_model_pool(&default,"안녕",pool.clone()),pool);
+}
