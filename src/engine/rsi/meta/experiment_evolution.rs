@@ -40,7 +40,7 @@ impl Genome {
     }
 }
 #[derive(Clone,Debug,Serialize,Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields,rename_all="camelCase")]
 struct Contract {
     source:String,
     generator_commit:String,
@@ -78,7 +78,7 @@ fn score(row:&Value,genome:&Genome)->i64{
     let tokens=row["tokens"].as_u64().unwrap_or(0);
     (genome.payoff_weight as i64)*((gain as i64)*3+(row["accepted"]==true) as i64*4)
         -(genome.recovery_weight as i64)*(regression as i64)*3
-        -(genome.cost_weight as i64)*(tokens/10000).min(12) as i64
+        -(genome.cost_weight as i64)*((tokens/10000).min(12) as i64)
 }
 
 /// A policy parent can be reused only if its original executed worker
