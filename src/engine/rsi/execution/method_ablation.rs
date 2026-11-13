@@ -37,7 +37,10 @@ pub(super) async fn run_method_control(
     let job=context.state.store.put("job",&json!({
         "kind":"rsi_generation","status":"running","input":control_input,
         "queuedAt":chrono::Utc::now().to_rfc3339(),"attempts":1,
-        "rsiControlExperiment":true
+        "rsiControlExperiment":true,
+        // Keep the immutable pre-worker pairing hash outside input; worker
+        // legitimately updates its own input with runtime-derived fields.
+        "rsiMethodAblationInputSha256":fp
     })).ok_or("개선법 대조군 작업 저장 실패")?;
     let control_id=job["id"].as_str().ok_or("개선법 대조군 ID 없음")?;
     record["phase"]=json!("evaluating_method_control");
@@ -114,7 +117,7 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     let Some(control)=state.store.get("rsi_method_ablation",id) else{return Value::Null};
     let Some(control_job)=control["controlJobId"].as_str()
         .and_then(|id|state.store.get("job",id)) else{return Value::Null};
-    let original_control_fingerprint=fingerprint(&control_job["input"]);
+    let original_control_fingerprint=&control_job["rsiMethodAblationInputSha256"];
     let control_session=control_job["sessionId"].as_str().unwrap_or("");
     let disabled_at_runtime=!control_session.is_empty()
         && !state.store.all("execution_operation").iter().any(|operation|
@@ -122,7 +125,8 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     let bound=control["source"]=="real_detached_method_disabled_worker_v1"
         && control["methodsActuallyDisabled"]==true
         && disabled_at_runtime
-        && control["inputSha256"]==json!(original_control_fingerprint)
+        && control["inputSha256"]==*original_control_fingerprint
+        && control["inputSha256"]==treatment_job["rsiMethodAblationInputSha256"]
         && control["candidateId"].as_str()==verified_candidate_id(&control_job["result"])
         && control["adopted"]==false
         && generation["accepted"]==true
@@ -132,7 +136,6 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         && control["domain"]==generation["domain"]
         && control["providerId"]==treatment_job["input"]["providerId"]
         && control["model"]==treatment_job["input"]["model"]
-        && control["inputSha256"]==json!(fingerprint(&treatment_job["input"]))
         && treatment_job["input"]["rsiMethodAblationArm"]=="with_methods"
         && crate::engine::rsi_profile::from_input(&treatment_job["input"])
             .is_ok_and(|profile|profile["sha256"]==control["profileSha256"]);
