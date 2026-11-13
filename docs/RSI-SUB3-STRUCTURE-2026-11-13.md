@@ -58,6 +58,45 @@
 4. `rsi_causal_closure.rs::revised_method_after_feedback`는 A2가 B의 원본 피드백에 연결된 제안인지 검증하고, B2에서 그 새 절차가 실제 채택된 소스를 작성했는지 원본 operation receipt와 독립 ON/OFF 실험으로 재검산한다.
 5. 동결 개별 비교에서 단지 빠르고 저렴한 실행은 지능 이득이 아니다. 기존 테스트를 통과하고 답변의 `quality`/`discoveryScore`가 높아진 사례도 원본 지표·동일 기준과 독립 평가 출처가 확인될 때만 품질 향상에 포함한다.
 
+## 최신 49점 판정 이후: 컴파일된 후손의 방법 선택과 재시도 폐회로
+
+2026-11-13 독립 심사: 서브3 **49점 / 1위**, RSI 전체 완성 **0개**. 아래 변경은 판정 이후의 추가 소스 구현이며 새 점수나 실제 4세대 실행 성공을 의미하지 않는다.
+
+실제 연결 흐름:
+
+```text
+POST /api/rsi/start (continuous system evolution, methodAblation 기본 on·옵션 off)
+  -> campaign.rs::run_loop
+  -> built descendant --rsi-plan-generation
+     -> rsi_system/lineage.rs::method_transfer_target
+        -> last independently adopted META candidate + original proposal session
+        -> selected exact executable procedure + frozen target-domain holdout
+        -> canonical actual successor task objective from method applicability
+     -> rsi/planner/descendant.rs
+        -> meta A -> capability B (selected adopted method)
+        -> measured B method ON/OFF -> meta A2 (feedback-driven method revision)
+        -> accepted A2 -> capability B2 (revised method)
+  -> compiled_planning.rs: independently replay transfer and rebind temporary
+     resident-supervisor cost hint, preserving original in audit
+  -> method_ablation.rs: execute detached method-OFF worker (selected method ID)
+  -> worker.rs: replay exact method transfer, select only chosen revision
+  -> method_ablation.rs: method-ON worker, independently paired frozen cases
+  -> generation_evidence.rs: actual method ID/source/worker receipt
+  -> methods.rs: actual procedure operations and adopted source-byte provenance
+  -> generation_finalization.rs: persist the complete result
+  -> rsi_causal_closure.rs: 4 successive *adopted revisions*, ON/OFF quality,
+     method A vs revised method A2, compiled action hashes, real source writes
+  -> proof.rs: one unified API/termination/success verdict
+```
+
+**실패 회복:** 채택되지 않은 중간 세대는 성공으로 세지 않으며, 마지막 실제 채택 커밋을 유지한다. 이전 바이너리와의 동일 소스 계획 비교(`counterfactual.rs`) 및 폐회로(`rsi_causal_closure.rs`)는 실패 시도가 끼어도 채택된 후손의 정확한 커밋 인계를 확인한다. `guidance.rs`는 B의 방법 ON/OFF 영수증을 A2 재시도 동안 보존하고, 최종 성공 판정은 여전히 새 모델 호출 없이 독립 영수증을 재조회한다.
+
+**실제 행동 변화:** 이전·후손 컴파일 계획의 동작 해시에 상속 방법 ID·revision·실제 작업 목표를 넣었다. 같은 파일을 수정해도 새 방법을 실제 실행하고 독립 채택 바이트에 기여했다면 방법 개선 행동으로 인정한다. 단순 파일 이동·메서드 이름 변경만으로는 재귀 증거가 되지 않는다.
+
+**예산:** RSI 캠페인을 명시적으로 시작하면 ON/OFF 비교를 기본 활성화하되 UI에서 끌 수 있다. 메타 세대에서 실제로 채택된 방법 전이 대상이 없는 동안 대조군 추가 모델 호출은 발생하지 않는다. 실험 토큰은 기존 캠페인 총량에 합산된다.
+
+**남은 실증:** 모델 샘플링 변동성은 단일 ON/OFF 실행에서 분리되지 않는다(`causalAblationProven:false`). 실모델 4세대 폐회로·반복 시드 비교·일반화 점수는 아직 측정하지 않았다. 테스트·컴파일·빌드·CI·유료 모델 실행은 수행하지 않았다.
+
 ## 새 실행 구조와 방법 대조실험의 실제 연결
 
 ```text
