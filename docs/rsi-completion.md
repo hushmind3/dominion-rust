@@ -1,5 +1,14 @@
 # RSI 완료 기준과 현재 상태
 
+## 2026-11-13 심판 기준 통합 — 최신 소스의 성공 의미
+
+현재 `dominion-champion`의 성공 판정은 [공통 폐회로 판정 구조](CHAMPION-UNIFIED-CLOSURE-2026-11-13.md)와 `src/engine/rsi/proof/campaign_verdict.rs`에 단일화했다. 다음의 **역사적 캠페인 로그는 실행 당시 출력한 원본값**으로 보존하며, 현재 API에서 동일 캠페인을 조회하면 독립 A→B→A 출처 증거를 재검증해 다시 판정한다.
+
+- 2026-11-12의 네이티브 3세대 기록은 **소스 진화 / 재컴파일 / 동결 평가 개선**의 실측이지, 모델이 개선법을 만들고 후손이 활용한 뒤 다시 그 방법을 수정한 **전체 RSI 완료** 실증이 아니다. 당시 출력된 `capabilityDemonstrated=true`와 `actualCompletion=true`는 현행 엄격 판정의 성공값으로 취급하지 않는다.
+- 현재 `sourceEvolutionDemonstrated`는 독립 평가를 통과한 3세대 소스 진화, `modelDrivenCapabilityDemonstrated`는 실제 모델/도구 출처 검증을 포함하는 부분적 진화다. `capabilityDemonstrated` / `recursiveMethodClosureProven` / `actualCompletion`은 원본 영수증에 연결된 **방법 A → 다른 능력 B → 방법 재수정 A**가 관찰된 경우에만 동일하게 참이다.
+- 원본 실행 증거와 주어진 평가 실적은 삭제하거나 수치 변경하지 않는다. 최신 성공 판정은 과거 저장 플래그보다 재검증한 증거가 우선한다. 이 소스 개선 자체에 대한 컴파일·테스트·CI·실모델 반복 개선은 아직 실행하지 않았다.
+
+
 이 문서는 "재귀적 자기개선이 완성됐다"를 판정하는 기준과, 그 기준에 대한 현재 측정값을 기록한다.
 주장은 저장된 캠페인 기록으로만 뒷받침한다.
 
