@@ -28,62 +28,8 @@
 - 테스트는 원래 호출 계약과 시나리오를 유지하며 이동한다. 상대 경로 `include_str!`는 이동한 실제 소스 위치에 맞춰 갱신한다.
 - 새 실행 로직을 다시 `rsi_evolve.rs`나 `chat/runtime.rs`에 몰아넣지 않는다. 기능 변경 시 기존 모듈을 먼저 수정한다.
 
-## Sub1 coordinator file map (2026-11-13)
+## 최신 Sub1 실경로
 
-In `src/engine/rsi_evolve.rs` the active compiled helpers are split into
-`rsi/selection.rs` (strategy), `rsi/source_control.rs` (source/budget/choice),
-`rsi/focus.rs` (evidence and source focus), `rsi/adoption.rs` (verified adoption),
-and `rsi/descendant_plan.rs` (rebuilt child planning). Follow the API →
-jobs → run → execution → compiled worker_plan → native_generation_plan →
-paired worktree → adoption → new executable → proof call path. External
-function exports and the original tests include remain at the parent level.
+`docs/RSI-SUB1-ARCHITECTURE.md`를 현재 단일 구조 기준으로 읽습니다. 실제 API·캠페인·후손 계획·독립 OFF/ON 실험·A→B→A2→B2 증명 경로가 함수별로 정리되어 있습니다.
 
-**Paired evaluator map:** `src/engine/rsi_worktree.rs` re-exports
-`rsi/worktree/candidate.rs` (worktree/checks/repair),
-`rsi/worktree/evaluation.rs` (paired evaluator/receipt), and
-`rsi/worktree/promotion.rs` (confirmed branch apply).
-Their tests are isolated in `rsi/worktree/tests.rs`.
-
-**Method evolution map:** `rsi/programs.rs` routes to
-`rsi/programs/action.rs` (tool traces and recovery plans),
-`rsi/programs/selection.rs` (observed execution and comparable programs),
-and `rsi/programs/transfer.rs` (evidence-backed mutation operator inheritance).
-The compiled worker uses the original `rsi_evolve` method exports.
-
-**Immutable instrumentation:** `rsi::safe_path` excludes
-`src/engine/rsi/worktree/` along with legacy evaluator sources.
-`rsi::improver_source_path` permits the evolvable
-`rsi/selection.rs`, `rsi/descendant_plan.rs`, `rsi/programs/*`
-and other safe compiled improvement modules. Keep these independent:
-an editable method must never become the verifier of its own success.
-
-**Observed method feedback:** `rsi/method_feedback.rs` checks authentic predecessor source and compiled B job before the next meta rewrite is proposed. Only `rsi/proof.rs` certifies source adoption.
-
-
-**Final verdict boundary:** `rsi/proof.rs::revalidated_history` overwrites self-reported feedback flags, replays the original C job and method source receipt from B, and stamps `recursiveFeedbackVerified` only for measured A→B→A. `recursive_closure_report` then gates campaign status and API results on that replayed proof.
-
-**Live tool execution:** `src/engine/tools.rs` re-exports the actual Rust dispatcher and
-its workspace mutation boundary from `tools/dispatch.rs`, `tools/edit.rs`,
-`tools/process.rs`, `tools/network.rs` and companion modules. Trace
-`tools::execute` → pinned write receipt → detached RSI candidate →
-original frozen paired evaluator. `tools/tests.rs` is test-only.
-
-**Chat runtime:** `chat/runtime.rs` composes active Rust modules
-`runtime/rsi_guard.rs`, `entry.rs`, `adaptation.rs`, `tool_selection.rs`,
-`program.rs`, `tool_dispatch.rs`, `evaluation.rs`,
-`finalization.rs`, `session.rs`, and the preexisting `turn.rs`.
-The public `run_turn*` and evidence finalization API remain re-exported.
-`tests/support/engine/chat_runtime.tests.rs` is still attached to the root.
-
-**Streaming provider modules:** `chat/provider.rs` composes
-`provider/resolve.rs` → `provider/stream.rs` →
-`provider/protocols.rs`, `provider/codex.rs`,
-`provider/anthropic.rs`; tests in `provider/tests.rs`.
-Use the original chat-visible provider function re-exports.
-
-**Model execution boundaries:** `engine/models.rs` owns shared
-runtime state and delegates to `models/{installed,install,runtimes,storage,load,catalog,download}.rs`.
-Read this actual module chain before touching the HF catalog or process lifecycles.
-Tests live separately in `models/tests.rs`.
-
-**Immutable method adjudication:** `rsi/proof/method_lineage.rs` belongs to the frozen proof subtree, blocked from RSI edits by `rsi::safe_path`. `rsi/method_feedback.rs` is the editable planner-side adapter to independently replayed B receipts, never the authority for successful closure.
+`rsi/proof/full_cycle.rs`는 캠페인·API의 공통 성공 판정기입니다. `rsi/proof/method_lineage.rs`는 대조 평가가 증명된 B만 A2의 방법 재수정 지시로 전달합니다. `rsi/method_control.rs`는 별도 실워커로 OFF를 실행하지만 control source를 채택하지 않습니다. `rsi::safe_path`는 proof/worktree 평가기 영역을 후손 편집에서 막습니다. 보고서 상의 주장과 실제 테스트/빌드/실모델 실행을 구분합니다.

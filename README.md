@@ -478,208 +478,23 @@ Copyright 2026 hushmind3.
 
 DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
 
-## Sub1: compiled RSI coordinator module boundaries (2026-11-13)
+## Sub1: 전체 RSI 구조와 실측 범위 (2026-11-13)
 
-The parent `src/engine/rsi_evolve.rs` owns `run`, limits and orchestration.
-The original public entrypoints remain exported. The actual functions now live
-in responsibility-focused compiled Rust modules:
+[현재 호출 흐름·컴파일 후손·대조 실험·동결 검증의 상세 구조](docs/RSI-SUB1-ARCHITECTURE.md)
 
-| Source module | Active responsibility |
-| --- | --- |
-| `src/engine/rsi/selection.rs` | Measured selection and domain search strategy |
-| `src/engine/rsi/source_control.rs` | Experiment source permissions, source fingerprint, quota and user choice |
-| `src/engine/rsi/focus.rs` | Versioned source focus, tool research history and next generation context |
-| `src/engine/rsi/adoption.rs` | Independently verified patch adoption and inheritable action directives |
-| `src/engine/rsi/descendant_plan.rs` | Recompiled successor's experiment strategy, system agenda and new plan |
-| `src/engine/rsi/execution.rs` | Spawn and advance the isolated compiled generation |
-| `src/engine/rsi/proof.rs` | Revalidation of the observed A→B→A lineage |
+**실제 연결:** `api/rsi.rs::start` → `jobs::run` →
+`rsi_evolve::run` → `rsi/execution.rs::run_loop` →
+재컴파일 `worker_plan` → 후손 `worker` → `tools::execute` →
+`rsi_worktree::compare_at` → `rsi::verify_paired_receipt` →
+`rsi/adoption.rs::adopt` → 차세대 계획 및 기억·방법 계승.
 
-**Live registered path:** `src/api/rsi.rs::start` →
-`src/engine/jobs.rs` → `rsi_evolve::run` →
-`rsi/execution.rs::run_loop` → rebuilt `rsi/worker.rs::worker_plan` →
-`rsi/descendant_plan.rs::native_generation_plan` →
-`rsi_worktree::compare_at` → `rsi/adoption.rs::adopt` →
-rebuilt successor → `rsi/proof.rs`.
-The built agent's improvement methods are editable source, not an
-unconnected report or a copied reference patch.
+독립 실측은 `rsi/method_control.rs`의 **비채택 대조군 워커**와
+`rsi/proof/method_contrast.rs`의 원본 평가 재검증을 사용합니다.
+`rsi/proof/method_lineage.rs`는 B의 검증된 대조 차이만 C의
+개선법 재수정 피드백으로 전달합니다. 캠페인·API의 성공 판정은 모두
+`rsi/proof/full_cycle.rs`의 A→B→A2→B2 동일 검사를 사용합니다.
 
-**Evidence boundary:** this source-level refactor itself does not demonstrate
-new performance gains or a completed 3-generation campaign. No compilation,
-tests, builds, CI, benchmarks or paid model requests were run.
-
-2026 design reading:
-[AIDE²](https://arxiv.org/abs/2609.26457) (September 2026),
-[MetaSkill-Evolve](https://arxiv.org/abs/2607.05297) (July 2026),
-[Predict Before You Modify](https://arxiv.org/abs/2610.13991) (September 2026).
-
-
-### Paired source evaluation boundaries (Sub1, 2026-11-13)
-
-`src/engine/rsi_worktree.rs` now exposes its unchanged public API from
-three compiled submodules: `rsi/worktree/candidate.rs` owns detached candidate
-creation, immutable source checks and compiler diagnostics;
-`rsi/worktree/evaluation.rs` owns frozen independent paired A/B measurements,
-receipts and cleanup; `rsi/worktree/promotion.rs` owns owner-confirmed
-branch application. Their unit tests live separately in
-`rsi/worktree/tests.rs`, attached with `#[cfg(test)]` to the same root module.
-
-Registered calls continue through `rsi_evolve::run` →
-`rsi/execution.rs` → `rsi_worktree::compare_at` → original
-`rsi::verify_paired_receipt` → `rsi/adoption.rs::adopt`. Independent
-proof precedes acceptance, and acceptance remains separate from
-owner-requested branch promotion. These are source changes only:
-no tests, compilation, CI, benchmarking or real model calls were run.
-
-
-### Inheritable executable method programs (Sub1, 2026-11-13)
-
-`src/engine/rsi/programs.rs` is now a thin compiled module coordinator.
-`rsi/programs/action.rs` tracks tool receipts and writes revised action
-programs after observed failures; `rsi/programs/selection.rs` binds an action
-program to later, actually executed tool operations and compares alternatives;
-`rsi/programs/transfer.rs` reuses independently measured mutation-operator
-evidence across generations and builds the next executable method plan.
-The existing `rsi_evolve` → `rsi/execution.rs` → rebuilt worker route still
-consumes these re-exported methods. A stored program without an executed tool
-and independent holdout win cannot be credited as RSI success.
-
-The split adds no model training dependency. No tests, compilation, CI,
-benchmark or real-model execution were performed during this edit.
-
-
-### Verified editing boundary after worktree modularization
-
-The frozen evaluation boundary is enforced at the **actual source paths**:
-`rsi::safe_path` rejects the entire
-`src/engine/rsi/worktree/` subtree (candidate creation, paired evaluator,
-promotion and its internal tests), in addition to the existing frozen
-`rsi.rs`, `rsi_worktree.rs`, metrics, profile, proof and oracle fixture.
-This exclusion also removes those files from the compiled descendant's source
-inventory. Conversely, `rsi::improver_source_path` recognizes the newly
-split, *editable* RSI planning and execution-method modules as legitimate
-improvement candidates. Thus source-level recursion can change its method
-without silently changing the judging instrument.
-
-The corresponding source assertions were updated. No test was executed.
-
-### Source-attested meta → task → meta feedback (Sub1, 2026-11-13)
-
-`rsi/method_feedback.rs` binds one independently accepted improvement-method source revision to the immediate rebuilt binary, then replays the next task generation's original job, actual compiled meta execution and independent paired receipt before it can propose feedback for rewriting the *same* method. An unobserved or unaccepted task gain does not become feedback. The feedback is an experimental hypothesis, not evidence of causal ablation or RSI completion. `rsi/proof.rs` is the independent frozen closure verifier.
-
-### Compiled A→B→A experimental execution path
-
-The rebuilt planner returns `methodSnapshot` and `downstreamFeedback`. The frozen coordinator independently recomputes them from original accepted candidate receipts and actual B generation jobs, then passes them into the child job. The rebuilt worker repeats verification before tool/model execution. The measured B feedback can redirect the actual source-indexed frontier to A's unchanged improvement method file, and is explicitly delivered in C's system instructions. C must still produce a new source edit and independently win its paired evaluation. The frozen proof has a separate final gate; these input records are not self-certifying.
-
-### Single success gate: replayed source, B execution, C feedback consumption
-
-Campaign completion (`rsi/execution.rs`) and all RSI API reads (`src/api/rsi.rs`) already use `revalidated_history` then `recursive_closure_report`. The frozen `rsi/proof.rs` now independently requires the exact A-method SHA to match B's stored compiled method snapshot and original B job, an independently accepted B task gain, a replayed B feedback object passed into the original C job and its *actual model prompt*, plus a new independently accepted C revision of the **same method source file**. It resets any caller-supplied `recursiveFeedbackVerified` before replay and only then may report `closedLoopObserved=true`. A→B→A observational provenance does not constitute causal ablation; `causalAblationProven=false` remains explicit. No tests/builds/CI were run during these edits.
-
-2026 methodological context: [PAST-Bench (Aug 2026)](https://arxiv.org/abs/2608.04003), [AIDE² (Sep 2026)](https://arxiv.org/abs/2609.26457), [Trustworthy Recursive Self-Improvement (Nov 2026)](https://arxiv.org/abs/2611.10787).
-
-### Role mapping after refactoring
-
-The compiled `rsi/meta_controller/provenance.rs::meta_source_changed` and `rsi/system/discovery.rs::executable_meta_source` now recognize the split live RSI modules. `rsi/method_feedback.rs` excludes test-only sources as method witnesses, preventing a unit-test edit from masquerading as an executable improvement method. The historical accepted-source evidence and real CLI worker path remain the sole basis for future method claims.
-
-### Frontier/meta-policy consistent revision
-
-A validated downstream method path is inserted into the source-indexed frontier **before** compiled meta-selection, factorial experiments, laboratory and whole-intelligence proposals are computed. After those proposals, only the immutable selected target/focus change to the eligible A method path; the frontier no longer changes. The worker's independent meta-policy replay consequently receives the same frontier as the planning binary. No compilation or test execution was performed.
-
-### Tool runtime module boundaries (Sub1, 2026-11-13)
-
-The real `tools::execute` API now delegates through `tools/dispatch.rs`.
-`tools/gateway.rs` handles account/delegation, `tools/workspace.rs` owns
-resolved paths and observed reads, `tools/edit.rs` handles the RSI source
-mutation and pinned receipts, `tools/process.rs` owns cancellable subprocess
-groups and `tools/network.rs` owns validated outbound HTTP/search requests.
-`tools/tests.rs` preserves the source unit scenarios in a `#[cfg(test)]`
-module. Existing public `tools::execute`, `run_command`,
-`WORKSPACE_ESCAPE` and `resolve_workspace` entrypoints are re-exported.
-The split changes no model weights or tool protocol. The source was moved,
-not tested or built.
-
-### Chat runtime module boundaries (Sub1, 2026-11-13)
-
-`src/engine/chat/runtime.rs` is now the Rust composition root for its
-unchanged public streaming turn APIs and the existing `runtime/turn.rs` turn
-implementation. `runtime/rsi_guard.rs` manages method/tool source checkpoints,
-`runtime/entry.rs` handles admission and streaming, `runtime/adaptation.rs`
-recovers failed tool action, `runtime/tool_selection.rs` applies tool context
-policies, `runtime/program.rs` runs checkpointed executable programs,
-`runtime/tool_dispatch.rs` executes deterministic and requested tools,
-`runtime/evaluation.rs` reviews outcomes, `runtime/finalization.rs`
-commits bounded evidence, and `runtime/session.rs` owns lifecycle/statistics.
-The original cross-module exports and `chat_runtime.tests.rs` include remain
-on the composition root. The RSI source-edit flow stays
-`run_turn` → `run_turn_body` → `tools::execute` → recorded source
-receipt → detached candidate. No tests, builds or benchmarks were executed.
-
-The original parent-visible `chat::runtime::{tool_succeeded,finish_attempt,finalize_execution}` and `engine::tools::resolve_workspace` visibility are restored through explicit grandparent-scope Rust imports after subdivision. Source-only correction; no compilation or tests run.
-
-### Provider runtime contract boundaries (Sub1, 2026-11-13)
-
-`src/engine/chat/provider.rs` now composes source-level real provider
-implementations: `provider/resolve.rs` (model/provider selection, reasoning
-settings, routing), `provider/stream.rs` (streaming and usage),
-`provider/protocols.rs` (Anthropic/Codex message transforms),
-`provider/codex.rs` (Codex stream), `provider/anthropic.rs`
-(Anthropic stream). Tests are isolated as `provider/tests.rs`.
-The original chat-visible `select_provider`, `stream_completion`,
-`apply_reasoning_options` and Codex parse helpers remain exported.
-The runtime still uses actual provider HTTPS requests and the same tool loop;
-no tests, compile, build or real-model execution took place.
-
-### Model runtime responsibility boundaries (Sub1, 2026-11-13)
-
-`src/engine/models.rs` keeps shared runtime identity and state and re-exports
-all original public functions. Its compiled submodules are
-`models/installed.rs` (MLX/GGUF discovery), `models/install.rs` (runtime
-installation), `models/runtimes.rs` (available engine selection),
-`models/storage.rs` (import/registration), `models/load.rs`
-(loaded-process lifecycle), `models/catalog.rs` (Hugging Face search),
-and `models/download.rs` (durable transfer/progress). Original local
-model and cloud API paths remain separate; no training route was added.
-Tests were moved into `models/tests.rs` without running them.
-
-### Proof cannot be rewritten by the tested agent
-
-The canonical source/receipt replay has moved to the **frozen** `rsi/proof/method_lineage.rs` and is called by `rsi/proof.rs`, never through the descendant-editable method learner. The editable `rsi/method_feedback.rs` obtains replayed receipts and may evolve how it schedules and exploits them; it cannot redefine what counts as a verified inherited method. The `rsi::safe_path` guard excludes `src/engine/rsi/proof/` from source mutations and editable source indexing. Only actual compiled planner/worker method modules count as A source evidence; test-only, disconnected and named-only source claims do not. No test or compile was executed.
-
-### Contiguous predecessor pair in ongoing campaigns
-
-`proof/method_lineage.rs::downstream_feedback` now reads the last **contiguous** A→B pair even when the campaign already includes failed or research-only generations. Only the actual two most recent adopted descendants, verified from their original immutable paired receipts and original B job, can propose C feedback. A nonadjacent historic success cannot be resurrected as if it belonged to the current executable. Source-only change; no tests or compilation were run.
-
-### Frozen runner source paths after module extraction
-
-`src/engine/rsi/worktree/evaluation.rs` uses repository-relative `include_str!` targets for `scripts/rsi-lab.sh`, `scripts/rsi-measure.mjs`, and `src/engine/rsi_oracle_fixture.rs` after its move under `rsi/worktree/`. This restores the actual frozen evaluation path used by `rsi_worktree::compare_at`. Source-only inspection, no compile/test/CI run.
-
-### Method-control experiment verification boundary
-
-`rsi::verify_control_receipt` independently replays original frozen local paired reports for an experimental control, including losing or inconclusive source candidates. Controls cannot be adopted by the coordinator; this verifier never authorizes source promotion. The executable control worker is registered through `rsi_evolve::method_control` and is evaluated separately from the ordinary worktree candidate. The next commit supplies the runtime module. No builds or tests executed.
-
-### Actual model-off method control
-
-The normal `rsi_evolve::run_loop` calls `rsi/method_control.rs::run_method_control` immediately before creating the actual ON worker. When an independently adopted method snapshot exists and `rsiMethodAblation` is enabled, a separate detached worktree at the exact same commit executes one OFF worker with the same initial prompt/provider/model/frozen cases; the control candidate goes through `rsi_worktree::compare_at` and is never adopted. Its original job, candidate, evaluation and cost are stored as `rsi_method_control`. The ON worker is then executed by the unchanged production campaign. The OFF arm must disable induced procedures inside the worker; proof is reported only if the original persisted OFF job documents it. This is a method-execution contrast, not a claim of isolated source-code causality. Source review only; no tests/builds run.
-
-### Control-arm runtime enforcement
-
-`api/rsi.rs::start` enables method contrast by default for continuous system evolution unless explicitly disabled by `methodAblation:false`. The source-matched OFF job enters `rsi/worker.rs::worker` with `rsiControlExperiment=true` and `rsiMethodAblationArm=without_methods`; the worker requires both markers before zeroing inherited execution/edit/action programs. `rsi/method.rs::method_strategies` also refuses learned-procedure injection for that session. `rsiMethodAblationDisabled` is recorded on the actual job. The compiled planner stays shared between arms, so this isolates induced runtime method assistance rather than all possible meta-source effects.
-
-### Original OFF/ON receipt replay
-
-`rsi/proof/method_contrast.rs::evidence` re-opens the original independently evaluated ON and OFF candidates, verifies frozen paired-run reports with `rsi::verify_paired_receipt` and `rsi::verify_control_receipt`, verifies the actual job's disabled-method marker and absence of procedure-origin operations, checks identical base commit/evaluator cases/provider/model/source objective and matches task-domain holdout outcomes. The ON job needs an observed induced method use and strictly more passed/quality cases without control wins. `rsi/execution.rs` attaches this to each real generation after collecting method tool receipts; `rsi/proof.rs::revalidated_history` replays it again, never trusting stored success flags. Paired stochastic single runs are labeled observational, not causal certainty. No test/compile/CI run.
-
-### Canonical RSI success: real four-generation evidence
-
-`rsi/proof/full_cycle.rs::report(state,history)` is the canonical success verdict for **both** `rsi/execution.rs::run_loop` (campaign status and stop-after-proof) and `api/rsi.rs::apply_verified_capability`. It replays the original paired candidate reports, two independently executed method-on/off experiments, exact compiled descendant policy/source identities and job records through four consecutive generations: A(method source) → B(other task) → A2(the same method source rewritten after B's feedback) → B2(the modified method inherited and used on the same task domain). A three-generation closure remains visible as `threeGenerationProof` but cannot set `capabilityDemonstrated`. Single-run contrasts are observational and cannot set `causalAblationProven`. No compile/test/CI or live-model campaign was run during this source change.
-
-### Treatment/control isolation beyond worktree source bytes
-
-The control session in `jobs::run_prompt` now records `rsiControlExperiment=true`. `chat/runtime/finalization.rs` persists its tool/model execution evidence while excluding it from durable agent growth, strategy-signal learning, principles, experience acquisition and algorithm finalization. This prevents OFF-first execution from training the ON run on control outcomes. With finite campaign quotas both arms receive the same half-budget token allowance; wall-time is capped for the control to avoid exhausting the normal generation. A failed control checkout produces an unproven contrast rather than cancelling normal source evolution. Source only; no tests or compilation performed.
-
-### Method control cannot enter normal research memory
-
-`jobs::run_prompt` keeps the control's original prompt, detached edit, candidate and evaluator receipts, but excludes OFF-arm runs from `remember_research` and persistent executable-method feedback. Together with finalization's learning guard, the OFF arm has no authorized path to teach the subsequent ON generation through those durable learning stores.
-
-### The independently measured B control is actual C-generation input
-
-`rsi/proof/method_lineage.rs::downstream_feedback` now calls the frozen `method_contrast::evidence(state,B)` on the original B job and refuses to construct any method-to-task-to-method feedback if B lacked a verified OFF/ON method-execution advantage. The resulting immutable B control candidate, control paired SHA-256, treatment paired SHA-256, winning task cases and A source bytes are included in the next compiled planner's `downstreamFeedback` and the C worker's **actual model system prompt**. C still must edit A's exact method path, pass the independent paired oracle and produce a B2 descendant with a second separately verified method contrast. This isolates the provenance and measured procedure contribution, without treating one run as a definitive causal estimate.
+**현 단계:** 코드 연결은 되었지만 실제 4세대 실모델 성공 및
+대조 결과의 통계적 인과 증명은 달성했다고 보고하지 않습니다.
+테스트·컴파일·빌드·CI·벤치마크는 이번 소스 작업에서 수행하지 않았습니다.
+기반 모델 가중치는 변경하지 않습니다.
