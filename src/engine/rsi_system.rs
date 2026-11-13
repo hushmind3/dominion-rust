@@ -8,7 +8,9 @@ use std::{path::Path,fs};
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
     ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
-    ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
+    ("memory",&["src/engine/memory.rs"]),
+    ("multiagent",&["src/engine/rooms.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs","src/engine/chat/room_context.rs"]),
+    ("video",&["src/engine/video.rs","src/api/video.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_meta_controller/peer_transfer.rs","src/engine/rsi_meta_controller/guidance.rs","src/engine/rsi_meta_controller/observations.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_successor_productivity.rs","src/engine/rsi_edit_genome.rs","src/engine/rsi_rule_tournament.rs"]),
@@ -85,6 +87,17 @@ fn source_role(path:&str)->&'static str {
     if lower.starts_with("src/engine/rsi_meta_controller/"){
         return "improvement_methods";
     }
+    // Full-system RSI includes the shipping media engine and room harness,
+    // not only the original chat/memory seed set. These are source targets,
+    // never permission to alter independent frozen quality evaluations.
+    if lower=="src/engine/video.rs" || lower=="src/api/video.rs"
+        || lower.starts_with("src/engine/video/"){return "video";}
+    if matches!(lower.as_str(), "src/engine/rooms.rs" | "src/api/rooms.rs"
+        | "src/engine/room_state.rs" | "src/engine/room_knowledge.rs"
+        | "src/engine/chat/room_context.rs")
+        || lower.starts_with("src/engine/rooms/")
+        || lower.starts_with("src/engine/room_context/")
+        || lower.starts_with("src/engine/chat/room_context/") {return "multiagent";}
     let name=lower.rsplit('/').next().unwrap_or(&lower);
     if name.starts_with("model_")||name.starts_with("train_")
         || name.starts_with("training")||name.starts_with("trainable")
@@ -240,6 +253,8 @@ fn architecture_role_domain(role:&str)->Option<&'static str>{
         "algorithms"|"improvement_methods"=>Some("improver"),
         "harness"=>Some("context"),
         "memory"=>Some("memory"),
+        "multiagent"=>Some("context"),
+        "video"=>Some("tools"),
         "learning"=>Some("learning"),
         "models"=>Some("learning"),
         "tools"=>Some("tools"),
