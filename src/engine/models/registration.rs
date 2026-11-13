@@ -1,5 +1,18 @@
 //! Local model import, registration and removal.
-use super::*;
+use super::{
+    AppState,
+    json,
+    Value,
+    Path,
+    PathBuf,
+    EXTERNAL_KIND,
+    runtime,
+    models_dir,
+    gguf_shard_parts,
+    local_gguf_parts,
+    installed,
+    mlx_model_dir,
+};
 
 pub(super) fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth > 4 {

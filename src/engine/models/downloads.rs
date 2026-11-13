@@ -1,5 +1,25 @@
 //! Resumable model downloads and durable transfer jobs.
-use super::*;
+use super::{
+    AppState,
+    json,
+    Value,
+    Path,
+    PathBuf,
+    Sha256,
+    Duration,
+    MODEL_KIND,
+    DOWNLOAD_COMMIT,
+    DOWNLOAD_START_LOCK,
+    active_downloads,
+    DownloadGuard,
+    safe_repo,
+    safe_relative,
+    target_root,
+    find_lms_key,
+    validated_gguf_files,
+    installed,
+    Digest,
+};
 
 pub fn jobs(state: &AppState) -> Vec<Value> {
     state.store.all(MODEL_KIND)

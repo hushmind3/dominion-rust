@@ -1,5 +1,12 @@
 //! Hugging Face catalog and model detail queries.
-use super::*;
+use super::{
+    json,
+    Value,
+    Duration,
+    safe_repo,
+    gguf_download_options,
+    mlx_download_files,
+};
 
 /// Hugging Face search, mapped to the shape the model explorer expects.
 

@@ -1,5 +1,18 @@
 //! Managed model paths, shard validation, installed-model discovery.
-use super::*;
+use super::{
+    AppState,
+    json,
+    Value,
+    Path,
+    PathBuf,
+    Command,
+    EXTERNAL_KIND,
+    runtime,
+    lms_bin,
+    mlx_dir_complete,
+    walk,
+    external_model,
+};
 
 pub fn models_dir(state: &AppState) -> PathBuf {
     state.config.data_dir.join("models")

@@ -1,5 +1,22 @@
 //! Local model runtime discovery and installation.
-use super::*;
+use super::{
+    AppState,
+    json,
+    Value,
+    Path,
+    PathBuf,
+    Mutex,
+    OnceLock,
+    Duration,
+    Command,
+    runtime,
+    mlx_search_roots,
+    installed,
+    walk,
+    managed_model_dir,
+    runtime_snapshot,
+    catalog,
+};
 
 pub(super) fn lms_bin() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("DOMINION_LMS_BIN") {
