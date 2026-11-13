@@ -15,10 +15,11 @@ import {translateError} from '../i18n/errors'
 const MAX_ROOM_PARTICIPANTS=32
 
 type RoutingMode='discussion'|'round_robin'|'mentioned'
+type EconomyMode='adaptive'|'full'
 type RoomModel={providerId:string;model:string;reasoningEffort?:string}
-type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;tokenBudget?:number;contextBudgetTokens?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];reasoningEffort?:string;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
-type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;tokenBudget:number;contextBudgetTokens:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[];reasoningEffort:string}
-type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
+type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;economyMode?:EconomyMode;rounds?:number;maxTurns?:number;tokenBudget?:number;contextBudgetTokens?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];reasoningEffort?:string;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
+type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;economyMode:EconomyMode;rounds:number;maxTurns:number;tokenBudget:number;contextBudgetTokens:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[];reasoningEffort:string}
+type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string;roomSnapshot?:{economyMode?:EconomyMode;economyKernel?:{revision?:string}};explicitAgentIds?:boolean};ownerFeedback?:{positive:boolean};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
 type Execution={id:string;status:string;agentId?:string;sessionId?:string;toolCalls?:number;tokens?:number;reason?:string}
 type Operation={id:string;runId?:string;tool?:string;toolName?:string;name?:string;status?:string;result?:unknown;error?:string;arguments?:unknown}
 type Approval={id:string;tool:string;args?:unknown;status:string}
@@ -33,7 +34,7 @@ const modes:Record<RoutingMode,{label:LocaleKey;description:LocaleKey}>={discuss
 const palette=['#668373','#9A745F','#6D7FA4','#967AA0','#B18C47','#6C9297','#AB7180','#7A8456','#8B7B69']
 const active=(status?:string)=>status==='queued'||status==='running'
 const stamp=(value?:string)=>{if(!value)return '';const normalized=value.includes('T')?value:value.replace(' ','T')+'Z';const date=new Date(normalized);return Number.isNaN(date.getTime())?'':date.toLocaleTimeString(getLocale()==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})}
-const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,tokenBudget:room?.tokenBudget??0,contextBudgetTokens:room?.contextBudgetTokens??2000,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false,models:room?.models||[],reasoningEffort:room?.reasoningEffort||''})
+const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',economyMode:room?.economyMode||(room?'full':'adaptive'),rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,tokenBudget:room?.tokenBudget??0,contextBudgetTokens:room?.contextBudgetTokens??2000,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false,models:room?.models||[],reasoningEffort:room?.reasoningEffort||''})
 const agentColor=(agent?:Agent,index=0)=>/^#[0-9a-f]{3,8}$/i.test(agent?.color||'')?agent!.color!:palette[index%palette.length]
 
 function Avatar({agent,name,owner=false,size='normal',index=0}:{agent?:Agent;name?:string;owner?:boolean;size?:'small'|'normal';index?:number}){
@@ -89,6 +90,12 @@ function RoomSettings({value,onChange,agents,providers,disabled=false}:{value:Ro
   <div className="room-roster-heading"><strong>{t('rooms.roster')}</strong><span>{t('rooms.rosterCount',{count:value.agentIds.length,max:MAX_ROOM_PARTICIPANTS})}</span></div>
   <div className="room-roster-options">{agents.map((agent,index)=>{const checked=value.agentIds.includes(agent.id);const unavailable=disabled||(!checked&&value.agentIds.length>=MAX_ROOM_PARTICIPANTS);return <label key={agent.id} className={'room-roster-option '+(checked?'checked':'')}><input type="checkbox" checked={checked} disabled={unavailable} onChange={()=>toggle(agent.id)}/><Avatar agent={agent} size="small" index={index}/><span><strong>{agent.name}</strong><small>{agent.model||t('rooms.defaultModel')}</small></span>{checked&&<Check size={14}/>}</label>})}{!agents.length&&<p className="room-note">{t('rooms.noAgents')}</p>}</div>
   <FormField label={t('rooms.mode')}><SelectInput value={value.routingMode} onChange={e=>onChange({...value,routingMode:e.target.value as RoutingMode})} disabled={disabled}>{Object.entries(modes).map(([key,item])=><option key={key} value={key}>{t(item.label)}</option>)}</SelectInput><small className="room-note">{t(modes[value.routingMode].description)}</small></FormField>
+  <FormField label="토론 비용·품질 자동 정책" hint="단순 질문은 대표 1~2명, 심층 질문은 여러 의견을 모읍니다. 전원 요청·직접 지목은 우선합니다. 기존 대화방의 전체 토론 설정은 유지됩니다.">
+   <SelectInput value={value.economyMode} onChange={e=>onChange({...value,economyMode:e.target.value as EconomyMode})} disabled={disabled}>
+    <option value="adaptive">⚡ 적응형 · 질문 난도에 맞춰 발언 조절</option>
+    <option value="full">🎯 전체 토론 · 기존 발언 범위 유지</option>
+   </SelectInput>
+  </FormField>
   <div className="room-settings-numbers"><FormField label={t('rooms.rounds')} hint={t('rooms.roundsHint')}><TextInput type="number" min={1} max={100000} value={value.rounds} onChange={e=>onChange({...value,rounds:Math.min(100000,Math.max(1,Number(e.target.value)||1))})} disabled={disabled||value.routingMode==='round_robin'}/></FormField><FormField label={t('rooms.maxTurns')} hint={t('rooms.maxTurnsHint')}><TextInput type="number" min={0} max={100000} value={value.maxTurns} onChange={e=>onChange({...value,maxTurns:Math.min(100000,Math.max(0,Number(e.target.value)||0))})} disabled={disabled}/></FormField></div>
   <FormField label={t('rooms.tokenBudget')} hint={t('rooms.tokenBudgetHint')}><TextInput type="number" min={0} max={10000000} value={value.tokenBudget} onChange={e=>onChange({...value,tokenBudget:Math.min(10000000,Math.max(0,Number(e.target.value)||0))})} disabled={disabled}/></FormField>
   <FormField label="대화 문맥 목표 (토큰)" hint="동적 대화·기억 선택의 목표값입니다. 페르소나·공통 지시는 압축하지 않으며 이 값보다 커질 수 있습니다."><TextInput type="number" min={2000} max={1000000} value={value.contextBudgetTokens} onChange={e=>onChange({...value,contextBudgetTokens:Math.min(1000000,Math.max(2000,Number(e.target.value)||2000))})} disabled={disabled}/></FormField>
@@ -151,6 +158,7 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
  const [inspector,setInspector]=useState(()=>window.innerWidth>=1450),[draft,setDraft]=useState<RoomDraft>(()=>draftOf(room)),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[saved,setSaved]=useState(false)
  const [knowledgeOpen,setKnowledgeOpen]=useState(false),[knowledge,setKnowledge]=useState<any[]>([]),[knowledgeBusy,setKnowledgeBusy]=useState(false),[knowledgeNotice,setKnowledgeNotice]=useState('')
  const [approvalBusy,setApprovalBusy]=useState('')
+ const [feedbackBusy,setFeedbackBusy]=useState(false)
  const [promptOpen,setPromptOpen]=useState(false),[promptAgent,setPromptAgent]=useState(''),[prompt,setPrompt]=useState<{prompt:string;chars:number;tokens:number;common:string;commonChars:number;commonTokens:number;persona:string;personaChars:number;personaTokens:number}|null>(null),[promptBusy,setPromptBusy]=useState(false),[promptError,setPromptError]=useState('')
  const [learningNotice,setLearningNotice]=useState('')
  const [showActivity,setShowActivity]=useState(false),[live,setLive]=useState<LiveDraft|null>(null),[moreBelow,setMoreBelow]=useState(false)
@@ -265,6 +273,15 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
   try{const result=await post<{room:RoomConfig;message:ChatMessage;job:Job;sessionId:string}>('/api/rooms/'+room.id+'/messages',{input:contents,...(recipients.length?{agentIds:recipients}:{}),clientMessageId:sendAttempt.current.id,reasoningLanguage:sendAttempt.current.reasoningLanguage});dataVersion.current+=1;setMessages(previous=>previous.some(message=>message.id===result.message.id)?previous:[...previous,result.message]);setFeed(previous=>({...previous,room:result.room,sessionId:result.sessionId,jobs:[result.job,...previous.jobs.filter(job=>job.id!==result.job.id)]}));setInput('');setTargets([]);sendAttempt.current=null;await load();await onSaved();inputRef.current?.focus({preventScroll:true})}
   catch(e){setError((e as Error).message)}finally{setSending(false)}
  }
+ const rateLatest=async(positive:boolean)=>{
+  if(!latestJob||feedbackBusy)return
+  setFeedbackBusy(true);setError('')
+  try{
+   await post('/api/rooms/'+room.id+'/jobs/'+latestJob.id+'/feedback',{positive})
+   await load()
+  }catch(e){setError((e as Error).message)}
+  finally{setFeedbackBusy(false)}
+ }
  const approve=async(id:string,allow:boolean)=>{if(approvalBusy)return;setApprovalBusy(id);setError('');try{await resolveApproval(id,allow);dataVersion.current+=1;setFeed(previous=>({...previous,approvals:previous.approvals.filter(approval=>approval.id!==id)}));refresh()}catch(e){setError((e as Error).message)}finally{await load();setApprovalBusy('')}}
  const stop=async()=>{if(stopping)return;setStopping(true);setError('');try{await post('/api/rooms/'+room.id+'/stop',{});dataVersion.current+=1;if(activeTurnId.current)terminalTurnIds.current.add(activeTurnId.current);setLive(null);await load();await onSaved()}catch(e){setError((e as Error).message)}finally{setStopping(false)}}
  const mention=(agent:Agent)=>{setTargets(previous=>previous.includes(agent.id)?previous.filter(id=>id!==agent.id):[...previous,agent.id]);inputRef.current?.focus({preventScroll:true})}
@@ -272,6 +289,19 @@ function RoomConversation({room,agents,providers,openList,showList,openSession,o
  return <div className={'room-conversation '+(inspector?'has-inspector':'')}>
   <section className="room-main" aria-label={t('rooms.headerAria',{name:current.name})}>
    <header className="room-header"><Button variant="bare" className="room-list-toggle" aria-label={showList?t('rooms.listCollapse'):t('rooms.listExpand')} onClick={openList}><MessageCircle size={18}/></Button><div className="room-header-icon"><Hash size={22}/></div><div className="room-header-copy"><h1>{current.name}</h1><p>{current.topic||t('rooms.topicFallback')}</p></div>{usageTotal>0&&<span className="room-header-usage" title="제공자 보고 기준: 캐시 적중 입력 토큰 / 캐시 기록이 있는 입력 토큰. 미보고 호출은 분모에서 제외합니다.">{t('usage.sessionTotal',{count:usageTotal.toLocaleString()})}{measuredCacheRate!==null&&<> · 캐시 {measuredCacheRate}%</>}</span>}<Button size="sm" variant="ghost" className="room-roster-toggle" onClick={()=>void openKnowledge()} aria-haspopup="dialog"><BookOpenText size={16}/><span>{t('rooms.sharedKnowledge')}</span><b>{knowledge.length||0}</b></Button><Button size="sm" variant="ghost" className="room-roster-toggle" title={t('rooms.systemPromptHint')} onClick={()=>void openPrompt()}><FileText size={16}/><span>{t('rooms.systemPrompt')}</span></Button><Button size="sm" variant="ghost" className="room-roster-toggle" title={t('rooms.resetHint')} onClick={()=>void reset()} disabled={stopping}><RotateCcw size={16}/><span>{t('rooms.reset')}</span></Button><Button size="sm" variant="ghost" className="room-roster-toggle" onClick={()=>setInspector(v=>!v)} aria-expanded={inspector}><UsersRound size={16}/><span>{t('rooms.participants')}</span><b>{current.agentIds.length+1}</b></Button></header>
+   {latestJob?.status==='completed'
+    &&latestJob.input?.roomSnapshot?.economyMode==='adaptive'
+    &&latestJob.input?.roomSnapshot?.economyKernel?.revision
+    &&latestJob.input?.explicitAgentIds!==true
+    &&<div className="flex items-center justify-end gap-2 border-b border-[#E7E0D5] px-4 py-2 text-xs text-[#7C7469]">
+     <span>{latestJob.ownerFeedback?'이번 자동 발언 선택 평가':'이번 자동 발언 선택은 어떠셨나요?'}</span>
+     {latestJob.ownerFeedback
+      ?<strong>{latestJob.ownerFeedback.positive?'도움 됨으로 기록':'더 개선 필요로 기록'}</strong>
+      :<>
+       <Button size="sm" variant="ghost" disabled={feedbackBusy} onClick={()=>void rateLatest(true)}>👍 도움 됨</Button>
+       <Button size="sm" variant="ghost" disabled={feedbackBusy} onClick={()=>void rateLatest(false)}>👎 개선 필요</Button>
+      </>}
+    </div>}
    <div className="room-presence"><div className="room-avatar-stack"><Avatar owner size="small"/>{roster.slice(0,6).map((agent,index)=><Avatar key={agent.id} agent={agent} size="small" index={index}/>)}</div><span><strong>{current.ownerName||t('rooms.me')}</strong>{t('rooms.withAgents',{count:roster.length})}</span><span className="room-presence-dot">·</span><span>{t(modes[mode].label)}</span><span className={'room-status '+(running?'is-running':'')}>{running&&<i/>}{labels[status]?t(labels[status]):status}</span></div>
    {(current.toolsEnabled||latestOperation||pendingApprovals.length>0)&&<div className="room-work-status"><span><ShieldCheck size={12}/>{current.toolsEnabled?t('rooms.toolsOn'):t('rooms.toolsOff')}</span>{pendingApprovals.length>0?<Button variant="bare" onClick={()=>approvalRef.current?.focus({preventScroll:true})}>{t('rooms.approvalsWaiting',{count:pendingApprovals.length})}</Button>:latestOperation?<Button variant="bare" onClick={()=>setShowActivity(true)}><TerminalSquare size={11}/>{latestOperation.tool||latestOperation.toolName||t('rooms.toolFallback')} · {labels[latestOperation.status||'']?t(labels[latestOperation.status||'']):latestOperation.status||t('rooms.recordFallback')}</Button>:<span>{t('rooms.toolsNote')}</span>}</div>}
    <div className="room-scroll" ref={scrollRef} onScroll={onScroll} role="log" aria-label={t('rooms.logAria')} aria-busy={loading}>
