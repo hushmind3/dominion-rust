@@ -13,18 +13,19 @@ fn hex(s:&str,n:usize)->bool {
     s.len()==n && s.bytes().all(|b|b.is_ascii_hexdigit())
 }
 
-/// Returns true ONLY for consecutive generations whose real source adoption,
-/// model/tool provenance and original frozen paired outcomes form a closed
-/// meta -> downstream -> meta improvement lineage.
+/// A (source method) -> B (controlled capability) -> A2 (method rewrite)
+/// -> B2 (revised method used again, and independently outperforming its own
+/// method-OFF worker). Failing to produce B2 is not full recursive closure.
 pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
-    for window in history.windows(3) {
-        let [invent,apply,rewrite]=window else {continue};
+    for window in history.windows(4) {
+        let [invent,apply,rewrite,apply2]=window else {continue};
         if !rsi::capability_proven(state,window)
             || !rsi::model_driven_capability_proven(state,window) {
             continue;
         }
         if invent["acceptedCommit"]!=apply["generatorCommit"]
-            || apply["acceptedCommit"]!=rewrite["generatorCommit"] {
+            || apply["acceptedCommit"]!=rewrite["generatorCommit"]
+            || rewrite["acceptedCommit"]!=apply2["generatorCommit"] {
             continue;
         }
         let selected=&apply["improvementAlgebraPlan"]["selected"];
@@ -60,6 +61,57 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
         let Some(next_candidate)=rewrite["candidateId"].as_str()
             .and_then(|id|state.store.get("rsi_candidate",id)) else{continue};
         if next_candidate["target"]!="improver" {continue;}
+        let second_rule=&apply2["improvementAlgebraPlan"]["selected"]["rule"];
+        let revised_sha=&rewrite["acceptedSourceHashes"][method_path];
+        if apply2["operatorExecution"]["targetPath"]==method_path
+            || apply2["operatorExecution"]["methodSourceSha256"]!=*revised_sha
+            || apply2["operatorExecution"]["methodFamilyId"]!=family
+            || !rsi_operator_provenance::verified(state,apply2,second_rule) {
+            continue;
+        }
+        let (Some(initial),Some(revised))=(
+            apply["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id)),
+            apply2["candidateId"].as_str()
+                .and_then(|id|state.store.get("rsi_candidate",id))
+        )else{continue};
+        // A2 must have received the original B1 ON/OFF paired receipts;
+        // B2 must use the revised method with a NEW real OFF worker.
+        let first=crate::engine::rsi_evolve::measured_method_ablation(state,apply);
+        let second=crate::engine::rsi_evolve::measured_method_ablation(state,apply2);
+        let feedback=&rewrite["improvementDirective"]["methodFeedback"];
+        if first["methodAssociationObserved"]!=true
+            || first["qualityProven"]!=true
+            || second["methodAssociationObserved"]!=true
+            || second["qualityProven"]!=true
+            || apply["methodAblation"]!=first || apply2["methodAblation"]!=second
+            || feedback["source"]!="replayed_real_method_control_v1"
+            || rewrite["improvementDirective"]["mode"]
+                !="evolve_executed_method_from_feedback"
+            || rewrite["improvementDirective"]["sourceGenerationId"]!=apply["id"]
+            || feedback["sourceGenerationId"]!=apply["id"]
+            || feedback["methodFamilyId"]!=family
+            || feedback["originalMethodSourceSha256"]!=method_hash
+            || feedback["controlId"]!=first["controlId"]
+            || feedback["controlEvaluationId"]!=first["controlEvaluationId"]
+            || feedback["treatmentEvaluationId"]!=first["treatmentEvaluationId"]
+            || feedback["controlEvidenceSha256"]!=first["controlEvidenceSha256"]
+            || feedback["treatmentEvidenceSha256"]!=first["treatmentEvidenceSha256"]
+            || feedback["requiresNewRevisionAndSuccessorExecution"]!=true
+            || initial["cases"]!=revised["cases"]
+            || apply["evaluationProfileSha256"]!=apply2["evaluationProfileSha256"]
+            || apply["requestedProviderId"]!=apply2["requestedProviderId"]
+            || apply["requestedModel"]!=apply2["requestedModel"]
+            || rewrite["improvementDirectiveVerified"]!=true {
+            continue;
+        }
+        let first_wins=first["treatmentOnlyWins"].as_u64().unwrap_or(0)
+            +first["treatmentQualityWins"].as_u64().unwrap_or(0);
+        let revised_wins=second["treatmentOnlyWins"].as_u64().unwrap_or(0)
+            +second["treatmentQualityWins"].as_u64().unwrap_or(0);
+        // Better than OFF is not sufficient: the NEW METHOD must also show
+        // stronger observed downstream advantage on the same frozen task.
+        if revised_wins<=first_wins {continue;}
         // This is the actual downstream evidence consumed by the compiled
         // successor's method learner. A successor that never USED the task
         // feedback did not recursively improve its improvement procedure.
@@ -69,13 +121,23 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
                 && row["independentReplayedTrials"].as_u64().unwrap_or(0)>0
                 && row["adoptedDescendantTrials"].as_u64().unwrap_or(0)>0
                 && row["independentReceiptSha256"].as_array()
-                    .is_some_and(|receipts|receipts.contains(receipt))));
+                    .is_some_and(|receipts|receipts.contains(receipt))
+                && row["verifiedMethodControlTrials"].as_u64().unwrap_or(0)>0
+                && row["methodControlEvidenceSha256"].as_array()
+                    .is_some_and(|receipts|receipts.contains(
+                        &first["controlEvidenceSha256"]))));
         if linked {
             // These are ORIGINAL source and paired-evaluation identifiers,
             // not a synthesis of the model's explanation or a count of plans.
             return Some(json!({
-                "source":"replayed_model_method_A_B_A_v1",
+                "source":"replayed_model_method_A_B_A_B_v2",
                 "observedClosure":true,
+                "matchedMethodAblation":true,
+                "revisedMethodAdvantageIncreased":true,
+                "originalMethodAdvantage":first_wins,
+                "revisedMethodAdvantage":revised_wins,
+                "initialMethodDisabledControl":first,
+                "revisedMethodDisabledControl":second,
                 "causalAblationProven":false,
                 "methodFamilyId":family,
                 "methodPath":method_path,
@@ -99,7 +161,14 @@ pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
                      "generatorCommit":rewrite["generatorCommit"],
                      "acceptedCommit":rewrite["acceptedCommit"],
                      "candidateId":rewrite["candidateId"],
-                     "feedbackMethodFamilyId":family}
+                     "feedbackMethodFamilyId":family},
+                    {"phase":"B2_revised_method_reused_with_controlled_gain",
+                     "jobId":apply2["jobId"],
+                     "generatorCommit":apply2["generatorCommit"],
+                     "acceptedCommit":apply2["acceptedCommit"],
+                     "candidateId":apply2["candidateId"],
+                     "targetPath":apply2["operatorExecution"]["targetPath"],
+                     "executedMethodSha256":revised_sha}
                 ]
             }));
         }
