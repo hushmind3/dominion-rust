@@ -1,0 +1,104 @@
+name: Publish community welcome (one time)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-community-welcome.yml"
+
+permissions:
+  discussions: write
+
+jobs:
+  post-welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the DOMINION welcome discussion
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          endpoint = "https://api.github.com/graphql"
+          token = os.environ["GH_TOKEN"]
+
+          def graphql(query, variables=None):
+              data = json.dumps({"query": query, "variables": variables or {}}).encode("utf-8")
+              req = urllib.request.Request(
+                  endpoint, data=data,
+                  headers={"Authorization": f"Bearer {token}",
+                           "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json",
+                           "User-Agent": "DOMINION-welcome-discussion"})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  result = json.load(response)
+              if result.get("errors"):
+                  raise RuntimeError(json.dumps(result["errors"]))
+              return result["data"]
+
+          query = """
+          query {
+            repository(owner:"hushmind3", name:"dominion-rust") {
+              id
+              discussionCategories(first:100) { nodes { id name } }
+              discussions(first:50, orderBy:{field:CREATED_AT,direction:DESC}) {
+                nodes { title url }
+              }
+            }
+          }
+          """
+
+          repo = graphql(query)["repository"]
+          title = "Welcome to DOMINION! 🚀 — Introductions, Feedback & Ideas"
+          for discussion in repo["discussions"]["nodes"]:
+              if discussion["title"] == title:
+                  print("Welcome discussion already exists:", discussion["url"])
+                  raise SystemExit(0)
+
+          categories = repo["discussionCategories"]["nodes"]
+          category = next((c for c in categories if c["name"].lower() == "general"), None)
+          if not category:
+              raise RuntimeError("No General discussion category. Available: " + ", ".join(c["name"] for c in categories))
+
+          body = """# Welcome to the DOMINION community! 🚀
+
+          **DOMINION is an open-source, local-first AI agent workspace with a Rust-native execution engine.** Bring your own API keys or connect compatible local LLMs, and build agents that use tools, retain memory, and work together.
+
+          **What's in the project?**
+          - **Tool-using agents** — file and shell tools, MCP, approval controls, persistent memory, and automation.
+          - **Multi-agent collaboration** — independent roles, shared rooms, and workflows.
+          - **AI video creation** — prompt-driven video jobs through configured native/ComfyUI backends, plus YouTube integration.
+          - **Recursive self-improvement (RSI) research** — experimental source-editing, evaluation, and controlled adoption; not a claim of proven autonomous intelligence growth.
+          - **Your models, your choice** — BYOK and local inference.
+
+          This is an **active developer preview**. Features are evolving, and real-world reliability varies by setup.
+
+          ## Say hello 👋
+
+          What would you like to build with DOMINION? Which local or cloud models do you run? What integrations or workflows should be improved next?
+
+          Questions, ideas, screenshots, bug reports, and pull requests are welcome.
+
+          - [Repository & screenshots](https://github.com/hushmind3/dominion-rust)
+          - [Report an issue](https://github.com/hushmind3/dominion-rust/issues)
+          - [Contribute code](https://github.com/hushmind3/dominion-rust/pulls)
+
+          **Thanks for joining — let's build something useful together!**
+          """
+          body = "\n".join(line.strip() for line in body.splitlines())
+          mutation = """
+          mutation($repo:ID!, $category:ID!, $title:String!, $body:String!) {
+            createDiscussion(input: {repositoryId:$repo, categoryId:$category, title:$title, body:$body}) {
+              discussion { number url }
+            }
+          }
+          """
+          result = graphql(mutation, {
+              "repo": repo["id"],
+              "category": category["id"],
+              "title": title,
+              "body": body
+          })
+          print("CREATED:", result["createDiscussion"]["discussion"]["url"])
+          PY
