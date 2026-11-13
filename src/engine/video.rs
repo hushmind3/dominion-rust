@@ -1,5 +1,7 @@
-//! DOMINION's durable media pipeline. Native cards are rendered by Rust; FFmpeg
-//! only encodes them. Optional ComfyUI is an explicit HTTP rendering connector.
+//! DOMINION's durable media pipeline: native cards, ComfyUI and hosted LTX.
+//! Video providers are isolated behind frozen, recoverable job inputs.
+#[path = "video/ltx.rs"]
+mod ltx;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -14,7 +16,7 @@ use std::{
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"videoModel":"ltx-2-5-pro","videoQuality":"1080p","generateAudio":true});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -25,6 +27,7 @@ pub fn config(state: &AppState) -> Value {
         }
     }
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
+    value["hasLtxKey"] = json!(ltx::ready(state));
     value
 }
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
@@ -88,7 +91,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -100,11 +103,14 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui") {
+    if !matches!(engine, "native" | "comfyui" | "ltx") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
         return Err("FFmpeg가 필요합니다. 고급 설정에서 실행 파일을 지정하세요.".into());
+    }
+    if engine == "ltx" && !ltx::ready(state) {
+        return Err("LTX API 키를 영상 설정에서 먼저 등록하세요.".into());
     }
     if engine == "comfyui"
         && (cfg["comfyUrl"].as_str().unwrap_or("").is_empty() || !cfg["comfyWorkflow"].is_object())
@@ -114,7 +120,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let duration = body["duration"]
         .as_u64()
         .or(cfg["duration"].as_u64())
-        .unwrap_or(15);
+        .unwrap_or(if engine == "ltx" {8} else {15});
     if !(3..=180).contains(&duration) {
         return Err("영상 길이는 3~180초입니다.".into());
     }
@@ -149,12 +155,17 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
+    let ltx_spec = if engine == "ltx" { Some(ltx::spec(body, &cfg)?) } else { None };
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
+    let mut input = input;
+    if let Some(spec) = ltx_spec {
+        input["render"] = spec;
+    }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -495,10 +506,10 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "comfyui" {
-        comfy(ctx, input, &dir).await
-    } else {
-        native(ctx, input, &dir).await
+    let result = match input["engine"].as_str() {
+        Some("comfyui") => comfy(ctx, input, &dir).await,
+        Some("ltx") => ltx::run(ctx, input, &dir).await,
+        _ => native(ctx, input, &dir).await,
     };
     match result {
         Ok(mut value) => {
