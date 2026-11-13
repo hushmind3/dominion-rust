@@ -1,7 +1,7 @@
 //! independent paired adoption loop and recovery.
 //! Only campaign_execution owns these implementations. Other RSI stages use explicit
 //! names imported through the stable rsi_evolve facade.
-use super::{AppState, Command, DOMAINS, Digest, Duration, Instant, JobContext, Path, PathBuf, Sha256, Value, bind_inherited_target, campaign_model_tokens, choose_focus_files, command, edit_method_reward, elapsed, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants, generation_stop_reason, git, history_with_verified_payoffs, identical_failed_patch, json, learned_edit_method, matching_prior_campaign, method_reuse_decision, new_research_findings, paired_descendant_target, pending_trial_candidate, post_adoption_objective, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_method_feedback, record_trial_outcome, remember_research, research_artifacts, research_digest, research_scope, rsi_worktree, save, select, select_domain_for_state, select_generation_strategy, selection_objective, session_research_fingerprint, session_tool_usage, should_stop_no_progress, target_focus_objective, verified_candidate_id, worker};
+use super::{AppState, Command, DOMAINS, Digest, Duration, Instant, JobContext, Path, PathBuf, Sha256, Value, bind_inherited_target, campaign_model_tokens, choose_focus_files, command, edit_method_reward, elapsed, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants, generation_stop_reason, git, history_with_verified_payoffs, identical_failed_patch, json, learned_edit_method, matching_prior_campaign, method_reuse_decision, new_research_findings, paired_descendant_target, pending_trial_candidate, post_adoption_objective, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_method_feedback, record_trial_outcome, remember_research, research_artifacts, research_digest, research_scope, rsi_worktree, save, select, select_domain_for_state, select_generation_strategy, selection_objective, session_research_fingerprint, session_tool_usage, should_stop_no_progress, target_focus_objective, verified_candidate_id, worker, retain_generator, matched_planner_intervention};
 pub(super) async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -95,6 +95,11 @@ pub(super) async fn run_loop(
                 Sha256::digest(std::fs::read(&binary).map_err(|e| e.to_string())?)
             ));
             record["actualGeneratorCommit"] = json!(head);
+            if input["rsiSystemEvolution"]==true {
+                retain_generator(&context.state.config.data_dir,&head,&binary,
+                    record["generatorBinarySha256"].as_str()
+                        .ok_or("compiled generator SHA unavailable")?)?;
+            }
             built_commit = head.clone();
         }
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
@@ -492,6 +497,28 @@ pub(super) async fn run_loop(
                         &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p).is_none())) {
                 return Err("후손이 허용되지 않은 소스 파일을 선택했습니다.".into());
             }
+            // Matched old/new compiled policy intervention does not call a model.
+            // The real worker always receives the CURRENT plan, never the shadow.
+            let intervention=match matched_planner_intervention(
+                context,&lab,&snapshot,&plan,
+                record["generatorBinarySha256"].as_str().unwrap_or(""),
+                &history).await {
+                Ok(value)=>value,
+                Err(reason)=>json!({
+                    "source":"matched_compiled_planner_intervention_v1",
+                    "status":"unavailable","reason":reason,"qualityProven":false
+                })
+            };
+            child_input["rsiBehaviorCounterfactual"]=intervention.clone();
+            if intervention.is_object() {
+                context.state.store.audit("rsi.matched_compiled_planner",json!({
+                    "campaignId":context.job_id,"attempt":attempt,
+                    "previousCommit":intervention["previousGeneratorCommit"],
+                    "descendantCommit":head,"status":intervention["status"],
+                    "previousActionSha256":intervention["previousActionSha256"],
+                    "descendantActionSha256":intervention["descendantActionSha256"]
+                }));
+            }
             child_input["rsiSelectedDomain"]=json!(domain);
             child_input["rsiTargetDomain"]=json!(domain);
             child_input["rsiTargetPlan"]=json!({
@@ -792,6 +819,7 @@ pub(super) async fn run_loop(
             }),
             json!({
                 "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
+                "behaviorCounterfactual":current["input"]["rsiBehaviorCounterfactual"],
                 "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
                     .as_array().map(|rows|rows.iter().filter_map(|row|
                         row["candidateId"].as_str()).take(4).collect::<Vec<_>>()).unwrap_or_default(),

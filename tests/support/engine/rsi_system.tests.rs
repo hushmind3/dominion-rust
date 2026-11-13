@@ -85,6 +85,27 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn adopted_flags_do_not_mint_causal_closed_loop() {
+        let dir=std::env::temp_dir().join(format!("rsi-closure-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config{port:0,data_dir:dir.join("data"),
+            web_dir:dir.join("web"),workspace:dir.join("workspace")};
+        let state=crate::state::AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        let fabricated=(0..4).map(|n|json!({"accepted":true,
+            "systemEvolution":true,"generatorCommit":format!("fake-{n}"),
+            "acceptedCommit":format!("fake-{}",n+1),
+            "behaviorCounterfactual":{"status":"behavior_changed"},
+            "evaluation":{"metrics":{"eligible":true,"metaHoldoutGains":3}}}))
+            .collect::<Vec<_>>();
+        let report=crate::engine::rsi_causal_closure::audit(&state,&fabricated);
+        assert_eq!(report["demonstrated"],false);
+        assert_eq!(report["closedLoopCount"],0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("src/engine")).unwrap();

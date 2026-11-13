@@ -307,6 +307,11 @@ mod generation_execution;
 use generation_execution::{generation_stop_reason, generation_fits_remaining_budget, unresolved_quality_case, fit_worker_prompt, post_adoption_objective, should_stop_no_progress, new_research_findings, session_tool_usage, generation_prompt_variants, bind_inherited_target};
 pub use generation_execution::{diagnose_capabilities};
 
+#[path = "rsi/execution/counterfactual.rs"]
+mod counterfactual_execution;
+use counterfactual_execution::{retain_generator, matched_planner_intervention};
+pub(crate) use counterfactual_execution::action_hash;
+
 #[path = "rsi/execution/campaign.rs"]
 mod campaign_execution;
 use campaign_execution::{run_loop, proof_goal_reached, generation_model_error};

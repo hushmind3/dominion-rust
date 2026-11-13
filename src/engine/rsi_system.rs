@@ -1177,6 +1177,11 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
         evidence.as_object_mut().expect("handoff evidence object")
             .extend(part.as_object().expect("evidence segment").clone());
     }
+    // Structural succession is not a measured recursive intelligence gain.
+    let causal=crate::engine::rsi_causal_closure::audit(state,history);
+    evidence["causalClosure"]=causal.clone();
+    evidence["demonstrated"]=json!(evidence["demonstrated"]==true &&
+        causal["demonstrated"]==true);
     evidence
 }
 

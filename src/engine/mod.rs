@@ -42,6 +42,7 @@ pub mod rsi_api_route_learning;
 pub mod rsi_component_birth;
 pub mod rsi_mutual_program;
 pub mod rsi_evolve;
+pub mod rsi_causal_closure;
 pub mod rsi_system;
 pub mod rsi_edit_genome;
 pub mod rsi_edit_program;

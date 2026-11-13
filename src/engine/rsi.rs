@@ -22,7 +22,14 @@ fn sha(value: &str) -> bool {
 }
 
 pub(crate) fn safe_path(path: &str) -> bool {
-    !matches!(path, "src/engine/rsi_meta.rs" | "src/engine/rsi_oracle_fixture.rs" | "src/engine/rsi_profile.rs")
+    // The supervisor's matched-intervention receipt and independent closure
+    // gate must not be rewritable by the candidate being evaluated.
+    !matches!(path,
+        "src/engine/rsi_meta.rs" |
+        "src/engine/rsi_oracle_fixture.rs" |
+        "src/engine/rsi_profile.rs" |
+        "src/engine/rsi_causal_closure.rs" |
+        "src/engine/rsi/execution/counterfactual.rs")
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
