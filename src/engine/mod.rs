@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod goal_recovery;
+pub mod goal_progress;
 pub mod goal_workspace;
 pub mod adaptation_loop;
 pub mod distill;
