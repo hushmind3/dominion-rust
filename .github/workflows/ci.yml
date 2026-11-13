@@ -3,6 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full_windows_suite:
+        description: 'Run the currently non-portable full Windows Rust fixture suite (may fail on file locks)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,3 +54,6 @@ jobs:
       - name: Execute RSI descendant contract smoke tests (Windows)
         if: runner.os == 'Windows'
         run: cargo test --release descendant_controller_contract_tests -- --test-threads=1
+      - name: Windows full fixture suite (manual compatibility audit)
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.full_windows_suite
+        run: cargo test --release
