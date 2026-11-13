@@ -54,6 +54,10 @@ struct Compiled {
     parent_accepted_commit:String,
     origin_generation_id:String,
     previous_operator_id:Option<String>,
+    // A rejected yet independently measured attempt can change the NEXT
+    // experiment without claiming an accepted source revision.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    feedback_generation_id:Option<String>,
     operator_id:String,
     operator:Operator,
     target:Value,
@@ -160,6 +164,21 @@ fn transition_matches(edge:&Transition,episode:&Value)->bool {
     relevant && edge.guard.as_ref().is_none_or(|guard|
         super::meta_transition_policy::evaluate(guard,episode))
 }
+/// This is an episode FEEDBACK selector, not an adoption selector. It may
+/// inspect only the attempted operator under the same compiled generator and
+/// identical adopted protocol. The adopted ancestor remains the source owner.
+fn measured_retry<'a>(history:&'a [Value],commit:&str,protocol:&Protocol)->Option<&'a Value>{
+    history.iter().rev().find(|g|
+        g["accepted"]!=true && g["generatorCommit"]==commit
+        && (g["pairedRevalidated"]==true || g["pairedMeasured"]==true)
+        && g["candidateId"].as_str().is_some_and(|id|!id.is_empty())
+        && g["evaluation"]["metrics"].is_object()
+        && g["controllerPlan"]["metaEvolutionProgram"]["source"]==COMPILED
+        && g["controllerPlan"]["metaEvolutionProgram"]["generatorCommit"]==commit
+        && g["controllerPlan"]["metaEvolutionProgram"]["protocol"]["revision"]==protocol.revision
+        && g["controllerPlan"]["metaEvolutionProgram"]["operatorId"].as_str()
+            .is_some_and(|id|protocol.operators.iter().any(|op|op.id==id)))
+}
 fn target(frontier:&[Value],operator:&Operator,allowed:&[&str])->Option<Value>{
     if !allowed.contains(&operator.domain.as_str()){return None;}
     frontier.iter().find(|row|
@@ -191,9 +210,13 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],allowed:&[&str],commit:
             previous["operatorId"].as_str().map(str::to_owned))
     }else{return Value::Null};
     let Ok(p)=serde_json::from_value::<Protocol>(protocol.clone()) else{return Value::Null;};
+    let retry=measured_retry(history,commit,&p);
+    let prior_id=retry.and_then(|g|g["controllerPlan"]["metaEvolutionProgram"]["operatorId"]
+        .as_str().map(str::to_owned)).or(prior_id);
+    let observation=retry.unwrap_or(ancestor);
     let choices:Vec<&Operator>=if let Some(prior)=prior_id.as_deref(){
         p.transitions.iter().filter(|edge|
-            edge.from==prior && transition_matches(edge,ancestor))
+            edge.from==prior && transition_matches(edge,observation))
             .filter_map(|edge|p.operators.iter().find(|op|op.id==edge.to))
             .collect()
     }else{p.operators.iter().filter(|op|op.id==p.entry).collect()};
@@ -219,7 +242,9 @@ pub(crate) fn compile(history:&[Value],frontier:&[Value],allowed:&[&str],commit:
         parent_generation_id:ancestor["id"].as_str().unwrap_or("").into(),
         parent_accepted_commit:commit.into(),
         origin_generation_id:origin.as_str().unwrap_or("").into(),
-        previous_operator_id:prior_id,operator_id:selected.id.clone(),
+        previous_operator_id:prior_id,
+        feedback_generation_id:retry.and_then(|g|g["id"].as_str().map(str::to_owned)),
+        operator_id:selected.id.clone(),
         operator:selected,target:source,protocol:p,
         evaluation_owner:"independent_supervisor".into(),quality_proven:false,
         revision:String::new()
@@ -250,21 +275,35 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],commit:&str)-
         || Some(p.operator.role.as_str())!=p.target["role"].as_str()
         || Some(p.operator.domain.as_str())!=p.target["domain"].as_str()
         || Some(p.operator.path.as_str())!=p.target["path"].as_str() {return false;}
-    if p.previous_operator_id.is_none() {
-        ancestor["systemDesign"]["evolutionProtocol"]==plan["protocol"]
-            && p.operator_id==p.protocol.entry
-            && Some(p.origin_generation_id.as_str())==ancestor["id"].as_str()
-    }else {
-        let prev=&ancestor["metaEvolutionProgram"];
-        prev["source"]==COMPILED
-            && ancestor["compiledPlanExecuted"]["evolutionProtocolRevision"]==prev["revision"]
-            && prev["protocol"]==plan["protocol"]
-            && Some(p.origin_generation_id.as_str())==prev["originGenerationId"].as_str()
-            && p.previous_operator_id.as_deref()==prev["operatorId"].as_str()
-            && p.protocol.transitions.iter().any(|edge|
-                Some(edge.from.as_str())==p.previous_operator_id.as_deref()
-                    && edge.to==p.operator_id && transition_matches(edge,ancestor))
+    // The supervisor/worker independently derive the source of the policy,
+    // measured retry, predecessor operator and exact traversed transition.
+    // Neither a failed attempt nor a mutable JSON flag can promote adoption.
+    let authored=ancestor["systemDesign"]["evolutionProtocol"]==plan["protocol"]
+        && valid_authored(&ancestor["systemDesign"]["evolutionProtocol"]);
+    let prev=&ancestor["metaEvolutionProgram"];
+    let inherited=!authored && prev["source"]==COMPILED
+        && prev["protocol"]==plan["protocol"]
+        && valid_authored(&prev["protocol"])
+        && prev["generatorCommit"]==ancestor["generatorCommit"]
+        && ancestor["compiledPlanExecuted"]["evolutionProtocolRevision"]==prev["revision"];
+    if !authored && !inherited {return false;}
+    let expected_origin=if authored {ancestor["id"].as_str()}
+        else {prev["originGenerationId"].as_str()};
+    if p.origin_generation_id.is_empty()
+        || Some(p.origin_generation_id.as_str())!=expected_origin{return false;}
+    let retry=measured_retry(history,commit,&p.protocol);
+    if p.feedback_generation_id.as_deref()!=retry.and_then(|g|g["id"].as_str()){
+        return false;
     }
+    let source=retry.unwrap_or(ancestor);
+    let prior=retry.and_then(|g|g["controllerPlan"]["metaEvolutionProgram"]["operatorId"].as_str())
+        .or_else(||if inherited{prev["operatorId"].as_str()}else{None});
+    if p.previous_operator_id.as_deref()!=prior{return false;}
+    if let Some(previous)=prior {
+        p.protocol.transitions.iter().any(|edge|
+            edge.from==previous && edge.to==p.operator_id
+                && transition_matches(edge,source))
+    }else{p.operator_id==p.protocol.entry}
 }
 pub(crate) fn instruction(plan:&Value)->String {
     if plan["source"]!=COMPILED{return String::new();}
