@@ -1,7 +1,5 @@
 use super::*;
 
-    use super::*;
-
     #[test]
     fn capability_requires_three_consecutive_accepts() {
         let partial = json!({"history":[
