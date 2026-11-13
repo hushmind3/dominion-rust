@@ -181,3 +181,13 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     (StatusCode::ACCEPTED,Json(json!({"goalId":id,"jobId":job["id"],
         "status":"queued","nextIteration":next_step,"reviewAcknowledged":unknown}))).into_response()
 }
+
+pub async fn goal_diff(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    if state.store.get("goal",&id).is_none(){
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    }
+    match engine::goals::diff_for_goal(&state,&id).await{
+        Ok(result)=>Json(result).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}

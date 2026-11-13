@@ -15,6 +15,13 @@ use serde_json::{json, Value};
 mod project;
 #[path = "goals/artifacts.rs"]
 mod artifacts;
+#[path = "goals/diff.rs"]
+mod diff;
+
+pub async fn diff_for_goal(state:&AppState,id:&str)->Result<Value,String>{
+    let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    diff::capture(state,&goal).await
+}
 
 /// The model proposes and reviews work; the Rust harness owns completion,
 /// checkpoints and the deterministic acceptance checks.

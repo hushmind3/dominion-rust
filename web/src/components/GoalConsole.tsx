@@ -113,7 +113,7 @@ export function GoalConsole(){
        {item.path} · {item.bytes.toLocaleString()}B {item.sha256&&<span className="text-[#8A8176]">SHA256 {item.sha256.slice(0,12)}…</span>}
       </div>)}</div>:<p className="mt-1 text-[#8A8176]">검증된 파일 수정 산출물 없음</p>}
      </div>
-     {chosen.gaps?.length>0&&<div><strong className="flex items-center gap-1 text-xs"><AlertTriangle size={14}/> 검증 보완사항</strong>
+     {(chosen.gaps?.length||0)>0&&<div><strong className="flex items-center gap-1 text-xs"><AlertTriangle size={14}/> 검증 보완사항</strong>
        <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-amber-800">{chosen.gaps.slice(0,5).map((gap,i)=><li key={i}>{gap}</li>)}</ul></div>}
      {['failed','needs_review'].includes(chosen.status)&&<div className="space-y-2 border-t border-[#E7E0D5] pt-3">
       <p className="text-xs font-semibold">수동 확인 후 안전하게 재개</p>
