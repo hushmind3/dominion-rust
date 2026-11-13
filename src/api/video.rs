@@ -51,7 +51,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
             {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
-            {"id":"runway","name":"시네마틱 영상 · Kling 3.0 (유료)","available":video::runway_ready(&state),"reason":if video::runway_ready(&state){""}else{"Runway Dev API 키 필요"}}
+            {"id":"runway","name":"시네마틱 영상 · Kling 3.0/4.0 (유료)","available":video::runway_ready(&state),"reason":if video::runway_ready(&state){""}else{"Runway Dev API 키 필요"}}
         ],
         "jobs": jobs,
         "models": [],
@@ -89,7 +89,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
     if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"runway")) {
         return error(StatusCode::BAD_REQUEST,"지원하지 않는 영상 엔진입니다.");
     }
-    if !matches!(cfg["runwayModel"].as_str(),Some("kling3.0_pro"|"kling3.0_standard"|"kling3.0_4k"))
+    if !matches!(cfg["runwayModel"].as_str(),Some("kling3.0_pro"|"kling3.0_standard"|"kling3.0_4k"|"kling_4"))
         || !cfg["runwayAudio"].is_boolean() || !cfg["runwayContinuityFrames"].is_boolean() {
         return error(StatusCode::BAD_REQUEST,"Runway 모델 또는 오디오 설정 오류");
     }
@@ -226,9 +226,9 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         "hint": if native { "로컬 ffmpeg으로 장면과 자막을 합성합니다." } else { "ffmpeg를 찾을 수 없습니다. 설정에서 경로를 지정하세요." },
     })];
     items.push(json!({
-        "id":"runway", "name":"Kling 3.0 cinematic (Runway Dev)",
+        "id":"runway", "name":"Kling 3.0 / 4.0 cinematic (Runway Dev)",
         "kind":"runway", "available":video::runway_ready(&state),
-        "hint":"Native sound · 1080p/4K tier · paid per-second API. 15초 초과 FFmpeg 병합 필요",
+        "hint":"Kling 3.0: 15초 멀티샷/4K · Kling 4.0: 30초 단일 클립/1080p · native audio · 유료 초당 청구",
     }));
     if comfy {
         items.push(json!({
@@ -251,7 +251,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
         "models": [
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
-            {"id":"runway","name":"Kling 3.0 (Runway Dev)","kind":"runway","available":video::runway_ready(&state)},
+            {"id":"runway","name":"Kling 3.0/4.0 (Runway Dev)","kind":"runway","available":video::runway_ready(&state)},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
