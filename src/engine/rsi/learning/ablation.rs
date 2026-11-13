@@ -340,4 +340,4 @@ pub(crate) fn synthesize_observed_dag_pruning(
     None
 }
 
-/// Bootstrap the self-improvement method pool from an *actual failed model
+// Bootstrap the self-improvement method pool from an *actual failed model

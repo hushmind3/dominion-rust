@@ -285,4 +285,4 @@ pub(crate) fn synthesize_indexed_path_repair(
             "oldPath":old,"targetPath":target,"changedReadNodeId":read_id}}))
 }
 
-/// A method is associated with an adopted source improvement only when its
+// A method is associated with an adopted source improvement only when its

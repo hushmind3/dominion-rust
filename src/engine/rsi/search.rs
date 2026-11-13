@@ -305,8 +305,8 @@ pub fn evaluate_search_algorithm(
     })
 }
 
-/// The source-improvement operation is already authorized by the owner
-/// when a continuous RSI campaign starts. A valid edit in its detached
-/// worktree must not wait for an interactive approval (the native child
-/// worker has no human approval UI). Conversely, invalid edits must return a
-/// concrete error to the model instead of consuming the 60s approval timeout.
+// The source-improvement operation is already authorized by the owner
+// when a continuous RSI campaign starts. A valid edit in its detached
+// worktree must not wait for an interactive approval (the native child
+// worker has no human approval UI). Conversely, invalid edits must return a
+// concrete error to the model instead of consuming the 60s approval timeout.

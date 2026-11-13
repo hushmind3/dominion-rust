@@ -59,5 +59,5 @@ async fn plan_generation_inner(path:&str,control_mode:bool)->Result<(),String>{
     Ok(())
 }
 
-/// Executes only one durable generation, without starting a server, scheduler,
-/// migrations or recovering another process's jobs in the shared ledger.
+// Executes only one durable generation, without starting a server, scheduler,
+// migrations or recovering another process's jobs in the shared ledger.

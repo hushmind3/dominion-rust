@@ -241,7 +241,7 @@ pub(crate) fn reconcile_descendant_target(
     Ok(true)
 }
 
-/// A model-authored edit rule earns credit ONLY if that exact rule fired
-/// before a verified source write to a file present in the independently
-/// adopted post-change source ledger. A neutral paired trial is a small
-/// feasibility observation, never a claimed capability gain.
+// A model-authored edit rule earns credit ONLY if that exact rule fired
+// before a verified source write to a file present in the independently
+// adopted post-change source ledger. A neutral paired trial is a small
+// feasibility observation, never a claimed capability gain.

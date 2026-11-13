@@ -1182,8 +1182,8 @@ pub(super) async fn run_loop(
     }
 }
 
-/// A terminal per-turn model timeout must not discard an executable source
-/// repair that DOMINION just induced from real tool failures. Permit at most
-/// one descendant attempt if there is still meaningful owner time and another
-/// generation slot. Provider outages and errors without observed failed edits
-/// remain terminal. Learning a method is not an independently measured gain.
+// A terminal per-turn model timeout must not discard an executable source
+// repair that DOMINION just induced from real tool failures. Permit at most
+// one descendant attempt if there is still meaningful owner time and another
+// generation slot. Provider outages and errors without observed failed edits
+// remain terminal. Learning a method is not an independently measured gain.

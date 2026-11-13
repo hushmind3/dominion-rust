@@ -89,5 +89,5 @@ pub(crate) async fn adopt(
     git(context, lab, &["rev-parse", "HEAD"]).await
 }
 
-/// Distinguish completed source-edit tool calls from model text and proposed
-/// candidates. A tool attempt alone does not prove an independently measured gain.
+// Distinguish completed source-edit tool calls from model text and proposed
+// candidates. A tool attempt alone does not prove an independently measured gain.

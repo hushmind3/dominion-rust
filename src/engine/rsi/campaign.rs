@@ -291,6 +291,6 @@ pub(super) fn trial_owned_by(candidate:&Value, allowed:&[String])->bool {
             Some("pending_trial"|"pending_second_trial"))
 }
 
-/// Collect the exact files, ranges and searches earlier generations already
-/// looked at. Without this, every generation starts from scratch and burns
-/// tokens re-reading the same source.
+// Collect the exact files, ranges and searches earlier generations already
+// looked at. Without this, every generation starts from scratch and burns
+// tokens re-reading the same source.

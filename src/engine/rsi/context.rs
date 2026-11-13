@@ -565,5 +565,5 @@ pub(super) fn selection_objective(input:&Value)->String {
     if hints.is_empty() { objective.to_string() } else { format!("{objective} {}",hints.join(" ")) }
 }
 
-/// A learned method is an existing procedure DAG, not a name or a prompt.
-/// It runs through the normal tool runtime (approvals, effects and budgets).
+// A learned method is an existing procedure DAG, not a name or a prompt.
+// It runs through the normal tool runtime (approvals, effects and budgets).

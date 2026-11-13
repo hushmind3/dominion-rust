@@ -677,5 +677,5 @@ pub(super) fn record_trial_outcome(
     })
 }
 
-/// Re-reads only the stored line range from the current source and formats it
-/// exactly like `workspace_read_range`. It does not fabricate a model read.
+// Re-reads only the stored line range from the current source and formats it
+// exactly like `workspace_read_range`. It does not fabricate a model read.
