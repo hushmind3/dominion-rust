@@ -35,6 +35,10 @@ fn measured(policy:&Value,g:&Value)->bool{
         && g["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
         && hex(&g["evaluation"]["evidenceSha256"],64)
         && g["evaluation"]["metrics"]["eligible"].is_boolean()
+        // An eligible edit not adopted by its owner is a censored choice,
+        // not evidence that the proposed prediction failed.
+        && !(g["evaluation"]["metrics"]["eligible"]==true
+            && g["accepted"]!=true)
         && (g["accepted"]!=true || g["pairedRevalidated"]==true)
 }
 
@@ -73,7 +77,9 @@ pub(crate) fn feedback(policy:&Value,g:&Value)->Value{
         "actualTargetAdoption":observed,
         "actualModelAuthoredAdoption":observed,
         "brierError":brier,
-        "attemptedSourceChange":g["candidateId"].is_string(),
+        "attemptedSourceChange":g["changedSourcePaths"].as_array()
+            .is_some_and(|paths|paths.iter()
+                .any(|path|path==&policy["target"]["path"])),
         "nextPolicyCanTrainFromObservation":assessed,
         "qualityProven":observed==Some(true),
         "observationScope":"selected_source_not_whole_patch",
@@ -86,10 +92,32 @@ pub(crate) fn feedback(policy:&Value,g:&Value)->Value{
     })
 }
 
-/// Use recent, source-matched observed outcomes to adjust a PRIOR from
-/// causal-credit accounting. Cross-revision observations remain hypotheses
-/// with reduced weight, rather than being treated as an unchanged source.
-/// This is a bounded, editable Bayesian updater, not an evaluation oracle.
+/// Historical summaries are inputs to the *display*, never training labels.
+/// Reconstruct a label from the policy and the independently replayed candidate;
+/// reject even a partially edited summary (forecast, outcome or source).
+fn trusted_feedback(g:&Value)->Option<Value>{
+    let fresh=feedback(&g["metaPolicy"],g);
+    let row=&g["metaLearning"];
+    if fresh["nextPolicyCanTrainFromObservation"]!=true
+        || row["source"]!=fresh["source"]
+        || row["nextPolicyCanTrainFromObservation"]!=true
+        || row["independentlyMeasured"]!=true
+        || row["policyRevision"]!=fresh["policyRevision"]
+        || row["targetRole"]!=fresh["targetRole"]
+        || row["targetPath"]!=fresh["targetPath"]
+        || row["targetSourceSha256"]!=fresh["targetSourceSha256"]
+        || row["predictedProbability"]!=fresh["predictedProbability"]
+        || row["actualTargetAdoption"]!=fresh["actualTargetAdoption"]
+        || row["brierError"]!=fresh["brierError"] {
+        return None;
+    }
+    Some(fresh)
+}
+
+/// The forecast controller learns only from its own actually measured outcomes.
+/// Different revisions of the *same path* transfer with a discount. Edits to
+/// a different file, even under the same broad role, cannot silently change
+/// this file's adoption probability.
 pub(crate) fn calibrate(
     history:&[Value],role:&str,path:&str,source_sha:&str,prior:f64
 )->Value{
@@ -102,21 +130,13 @@ pub(crate) fn calibrate(
     let mut observed_count=0u64;
     for g in history.iter().rev(){
         if observed_count>=32{break;}
-        let row=&g["metaLearning"];
-        if row["source"]!="source_bound_prequential_feedback_v1"
-            || row["nextPolicyCanTrainFromObservation"]!=true
-            || row["targetRole"]!=role
-            || row["policyRevision"]!=g["metaPolicy"]["revision"]
-            || row["targetRole"]!=g["metaPolicy"]["target"]["role"]
-            || row["targetPath"]!=g["metaPolicy"]["target"]["path"]
-            || row["targetSourceSha256"]!=g["metaPolicy"]["target"]["sourceSha256"]
-            || !measured(&g["metaPolicy"],g) {continue;}
+        let Some(row)=trusted_feedback(g) else{continue;};
+        if row["targetRole"]!=role || row["targetPath"]!=path {continue;}
         let Some(success)=row["actualTargetAdoption"].as_bool() else{continue;};
         let Some(p)=row["predictedProbability"].as_f64()
             .filter(|v|v.is_finite()&&(0.0..=1.0).contains(v))
             else{continue;};
-        let exact_source=row["targetPath"]==path
-            && row["targetSourceSha256"]==source_sha;
+        let exact_source=row["targetSourceSha256"]==source_sha;
         let similarity=if exact_source{1.0}else{0.25};
         let weight=similarity*0.96f64.powi(observed_count as i32);
         observed_count+=1;
@@ -130,7 +150,7 @@ pub(crate) fn calibrate(
     let estimate=(2.0*prior+successes)/(2.0+weight_sum);
     let uncertainty=(estimate*(1.0-estimate)/(3.0+weight_sum)).sqrt();
     json!({
-        "source":"source_bound_prequential_posterior_v1",
+        "source":"source_bound_prequential_posterior_v2",
         "probability":estimate,
         "uncertainty":uncertainty,
         "unadjustedPrior":prior,
@@ -144,6 +164,55 @@ pub(crate) fn calibrate(
         "sourceLocalLearning":exact>0,
         "crossSourceOutcomeIsNotAdoption":true
     })
+}
+
+/// Re-evaluate forecast drift from replayed outcomes, not mutable Brier
+/// summaries. A stopped, declined, unmeasured or substituted edit is censored.
+pub(crate) fn drift(history:&[Value],window:usize)->Value{
+    let mut losses=Vec::new();
+    for generation in history.iter().rev(){
+        if losses.len()>=window.min(32){break;}
+        let Some(row)=trusted_feedback(generation) else{continue;};
+        let Some(loss)=row["brierError"].as_f64()
+            .filter(|v|v.is_finite()&&(0.0..=1.0).contains(v))
+            else{continue;};
+        losses.push(loss);
+    }
+    let mean=(!losses.is_empty()).then(||
+        losses.iter().sum::<f64>()/losses.len() as f64);
+    json!({"source":"source_replayed_prequential_drift_v2",
+        "recentMeasuredPredictions":losses.len(),
+        "meanBrierError":mean,
+        "requiresSourceBoundReplay":true})
+}
+
+/// Distinguish the model's repair intention from executable source editing
+/// and independent adoption. This record is NOT itself an evaluation receipt.
+pub(crate) fn repair_execution_evidence(g:&Value)->Value{
+    let policy=&g["metaPolicy"];
+    let target="src/engine/rsi_prequential.rs";
+    let planned=policy["predictionRuleRepair"]["repairRuleSourceSelected"]==true
+        && policy["target"]["path"]==target;
+    let compiled=planned
+        && g["controllerPlan"]["metaPolicy"]==*policy
+        && g["controllerPlan"]["architectureTarget"]==policy["target"]
+        && g["controllerPlan"]["generatorCommit"]==g["generatorCommit"]
+        && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["metaPolicyExecuted"]["source"]=="running_compiled_descendant_binary"
+        && g["metaPolicyExecuted"]["metaRevision"]==policy["revision"]
+        && g["focusFiles"].as_array().is_some_and(|paths|
+            paths.iter().any(|path|path==target));
+    let changed=compiled && g["pairedMeasured"]==true
+        && g["changedSourcePaths"].as_array().is_some_and(|paths|
+            paths.iter().any(|path|path==target));
+    let adopted=changed && trusted_feedback(g)
+        .is_some_and(|row|row["actualTargetAdoption"]==true);
+    json!({"source":"replayed_prediction_repair_execution_v1",
+        "planned":planned,
+        "compiledControllerExecuted":compiled,
+        "evaluatedCandidateEditedSource":changed,
+        "sourceIndependentlyAdopted":adopted,
+        "causalAdvantageProven":false})
 }
 
 #[cfg(test)]
@@ -205,12 +274,17 @@ mod tests{
         g["metaLearning"]=feedback(&p,&g);
         let a=calibrate(&[g.clone()],"memory","src/engine/memory.rs",
             "b".repeat(64).as_str(),0.5);
-        let b=calibrate(&[g],"memory","src/engine/new_memory.rs",
+        let b=calibrate(&[g.clone()],"memory","src/engine/new_memory.rs",
+            "e".repeat(64).as_str(),0.5);
+        let c=calibrate(&[g],"memory","src/engine/memory.rs",
             "e".repeat(64).as_str(),0.5);
         assert!(a["probability"].as_f64().unwrap()>
+            c["probability"].as_f64().unwrap());
+        assert!(c["probability"].as_f64().unwrap()>
             b["probability"].as_f64().unwrap());
         assert_eq!(a["exactSourceTrials"],1);
-        assert_eq!(b["discountedTransferTrials"],1);
+        assert_eq!(b["observations"],0);
+        assert_eq!(c["discountedTransferTrials"],1);
     }
     #[test]
     fn unsigned_past_feedback_is_not_self_training_evidence(){
@@ -227,4 +301,42 @@ mod tests{
         assert_eq!(calibrate(&[g],"memory","src/engine/memory.rs",
             "b".repeat(64).as_str(),0.5)["observations"],0);
     }
+    #[test]
+    fn owner_declined_eligible_patch_is_censored(){
+        let p=policy("src/engine/memory.rs");
+        let mut g=observed(&p,false);
+        g["evaluation"]["metrics"]["eligible"]=json!(true);
+        g["metaLearning"]=feedback(&p,&g);
+        assert_eq!(g["metaLearning"]["independentlyMeasured"],false);
+        assert_eq!(drift(&[g.clone()],6)["recentMeasuredPredictions"],0);
+        assert_eq!(calibrate(&[g],"memory","src/engine/memory.rs",
+            "b".repeat(64).as_str(),0.4)["observations"],0);
+    }
+    #[test]
+    fn forged_prediction_and_outcome_cannot_retrain_controller(){
+        let p=policy("src/engine/memory.rs");
+        let mut g=observed(&p,true);
+        g["metaLearning"]=feedback(&p,&g);
+        assert_eq!(drift(&[g.clone()],6)["recentMeasuredPredictions"],1);
+        g["metaLearning"]["actualTargetAdoption"]=json!(false);
+        g["metaLearning"]["predictedProbability"]=json!(0.99);
+        g["metaLearning"]["brierError"]=json!(0.0);
+        assert_eq!(drift(&[g.clone()],6)["recentMeasuredPredictions"],0);
+        assert_eq!(calibrate(&[g],"memory","src/engine/memory.rs",
+            "b".repeat(64).as_str(),0.5)["observations"],0);
+    }
+    #[test]
+    fn repair_intent_is_not_an_adopted_repaired_predictor(){
+        let mut p=policy("src/engine/rsi_prequential.rs");
+        p["predictionRuleRepair"]=json!({"repairRuleSourceSelected":true});
+        let mut g=observed(&p,false);
+        g["changedSourcePaths"]=json!([]);
+        assert_eq!(repair_execution_evidence(&g)["planned"],true);
+        assert_eq!(repair_execution_evidence(&g)["compiledControllerExecuted"],true);
+        assert_eq!(repair_execution_evidence(&g)["evaluatedCandidateEditedSource"],false);
+        assert_eq!(repair_execution_evidence(&g)["sourceIndependentlyAdopted"],false);
+        g["changedSourcePaths"]=json!(["src/engine/rsi_prequential.rs"]);
+        assert_eq!(repair_execution_evidence(&g)["sourceIndependentlyAdopted"],false);
+    }
+
 }
