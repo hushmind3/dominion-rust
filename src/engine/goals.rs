@@ -100,6 +100,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .cloned()
         .unwrap_or_default();
     let mut stalled = job["goalState"]["stalled"].as_u64().unwrap_or(0) as usize;
+    let resumed_after_owner_review = job["input"]["resumeAfterReview"]==true;
     let max_iterations = goal
         .get("maxIterations")
         .and_then(Value::as_i64)
@@ -184,25 +185,21 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         json!({"plan":plan,"planHistory":plan_history,"replans":replans,"phase":"execute"}),
     );
     let checkpoint = job.get("goalState").cloned().unwrap_or_else(|| json!({}));
-    let mut evidence = checkpoint
-        .get("evidence")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut transcript = string(&checkpoint, "transcript");
-    let mut gaps = checkpoint
-        .get("gaps")
-        .and_then(Value::as_array)
-        .map(|xs| {
-            xs.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let start = checkpoint
-        .get("nextIteration")
-        .and_then(Value::as_u64)
+    let mut evidence = checkpoint["evidence"].as_array()
+        .or_else(||resumed_after_owner_review.then(||goal["evidence"].as_array()).flatten())
+        .cloned().unwrap_or_default();
+    let mut transcript = checkpoint["transcript"].as_str()
+        .or_else(||resumed_after_owner_review.then(||goal["transcript"].as_str()).flatten())
+        .unwrap_or("").to_string();
+    let mut gaps = checkpoint["gaps"].as_array()
+        .or_else(||resumed_after_owner_review.then(||goal["gaps"].as_array()).flatten())
+        .into_iter().flatten().filter_map(Value::as_str)
+        .map(str::to_string).collect::<Vec<_>>();
+    if resumed_after_owner_review {
+        gaps.push("중단 전 외부 결과를 이미 확인한 상태입니다. 기존 성공 기록을 재사용하되 파일·원격 상태를 읽기 전용으로 재확인하고 새 변경을 수행하세요. 불확실한 쓰기는 반복하지 마세요.".into());
+    }
+    let start = checkpoint["nextIteration"].as_u64()
+        .or_else(||resumed_after_owner_review.then(||goal["iterations"].as_u64()).flatten())
         .unwrap_or(0) as usize;
 
     for index in start..max_iterations {
@@ -216,7 +213,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
-            system_override:Some("You are executing a durable autonomous goal. Use real tools and verify actual results. Never claim a result that a tool did not produce. Acceptance checks are enforced by the Rust harness.".into()),
+            system_override:Some(if resumed_after_owner_review {
+                "You are continuing a human-reviewed durable goal after an uncertain external operation. Never replay a previous write blindly. First inspect existing files and remote tool state read-only; preserve prior successful evidence and act only on remaining verified gaps. The Rust harness checks final acceptance."
+            } else {
+                "You are executing a durable autonomous goal. Use real tools and verify actual results. Never claim a result that a tool did not produce. Acceptance checks are enforced by the Rust harness."
+            }.into()),
         };
         let (outcome, stats) = run_quiet_outcome(state, &request).await;
         let turn_error = outcome.as_ref().err().cloned();
@@ -257,7 +258,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         patch_goal(
             state,
             goal_id,
-            json!({"phase":"review","iterations":index+1,"evidence":evidence,"sessionId":session_id}),
+            json!({"phase":"review","iterations":index+1,"evidence":evidence,
+                "transcript":transcript,"sessionId":session_id}),
         );
         context.checkpoint(json!({"stepIndex":index+1,"stepTotal":max_iterations,"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"reviewPending":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         if control.is_cancelled() {
