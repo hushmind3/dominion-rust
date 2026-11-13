@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 #[path = "rsi/proof/campaign_verdict.rs"]
-mod campaign_verdict;
-pub(crate) use campaign_verdict::{apply as apply_campaign_verdict, evaluate as campaign_verdict};
+mod campaign_verdict_impl;
+pub(crate) use campaign_verdict_impl::{apply as apply_campaign_verdict, evaluate as campaign_verdict};
 
 pub const MIN_PAIRED_CASES: usize = 8;
 const MAX_PATCH_BYTES: usize = 256 * 1024;
