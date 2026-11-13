@@ -17,6 +17,12 @@
 
 현재 계보 참조의 선택은 `architecture_frontier` 등의 소스 구조를 이용하되, 다른 캠페인의 패치를 직접 채택하지 않는다. 이전 설계는 근거가 있는 참고 정보이며 새 소스 패치의 품질은 별도로 검증한다.
 
+## 재귀 실행기의 실제 소스 범위
+
+모듈 분리로 신규 생성된 `rsi_system/*.rs`도 `rsi_system.rs::COMPONENTS`의 개선 방법 목록, `source_role`의 `improvement_methods` 분류, `rsi_causal_closure.rs::meta_source`의 메타 변경 판정에 연결했다. 즉 새 코드가 **소스 목록 → 후손의 개선 표적 → 채택 후 메타 개선 감사**의 세 경로에서 누락되지 않는다.
+
+`rsi_causal_closure.rs::independently_adopted`는 세대에 복사된 평가 ID·메트릭·증거 SHA가 후보의 독립 A/B 원본과 일치하는지도 검증한다. `handoff.rs`는 방법 계승 검사 중 경험 레코드를 매번 다시 읽지 않고 한 번의 동일 시점 스냅샷을 이용한다.
+
 ## 남은 핵심 과제
 
 - 후손 행동 차이와 실제 A/B 개선 사이의 **세대 간 개입 인과성**을 여러 환경·과제로 실증해야 한다. 행동 해시만으로는 충분하지 않다.
