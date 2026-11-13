@@ -405,6 +405,16 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     if !explicit && evolution_program.is_object() {
         if let Some(path)=evolution_program["target"]["path"].as_str(){
             focus=vec![path];
+            if evolution_program["operator"]["experiment"]=="cross_component" {
+                for row in co_design["focus"].as_array().into_iter().flatten() {
+                    if let Some(other)=row["path"].as_str().filter(|candidate|
+                        crate::engine::rsi::safe_path(candidate)
+                        && *candidate!=path && !focus.contains(candidate)) {
+                        focus.push(other);
+                    }
+                    if focus.len()>=8 {break;}
+                }
+            }
         }
     }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
@@ -418,7 +428,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
             &state,&history,commit,&input["rsiFrozenCases"])
     }else{Value::Null};
     let edit_policy=learned_edit_method(&state,input,&history);
-    println!("{}",json!({
+    let mut plan=json!({
         "source":"compiled_descendant_system_controller_v2",
         "generatorCommit":commit,"historyCount":history.len(),
         "domain":domain,"selection":selection,"strategy":strategy,
@@ -442,7 +452,9 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "mutualProgram":mutual_program,
         "archiveSelection":archive,
         "editPolicy":edit_policy
-    }));
+    });
+    plan["metaExperimentDispatch"]=crate::engine::rsi_evolve::experiment_dispatch::dispatch(&plan)?;
+    println!("{}",plan);
     Ok(())
 }
 
