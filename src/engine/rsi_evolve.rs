@@ -2324,7 +2324,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[path = "rsi_evolve_tests.rs"]
+#[path = "rsi/tests/evolve.rs"]
 mod tests;
 
 #[cfg(test)]
