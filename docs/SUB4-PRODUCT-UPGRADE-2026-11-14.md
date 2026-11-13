@@ -23,7 +23,7 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 
 | 경로 | 담당 | 상태 |
 | --- | --- | --- |
-| 참여자·발언 제한·모델 선택 | `src/engine/rooms/speakers.rs::{speaker_window,plan_speakers,model_pool}` → `src/engine/rooms.rs::run_locked` | **이번 변경**: 발언자·모델 배정을 독립 모듈로 추출. 기존 명시적 지정 우선, 작은 응답 집단, 참가자별 안정 모델 계약 유지 |
+| 참여자·발언 제한·모델 선택 | `src/engine/rooms/speakers.rs::{speaker_window,plan_speakers,model_pool}` → `src/engine/rooms.rs::run_locked` | **이번 변경**: 발언자·모델 배정을 독립 모듈로 추출하고 기존 명시적 지정 우선·참가자별 모델 고정 계약 유지. 그룹 대화 런타임 파일 1,969줄 수준에서 979줄로 분리(발언자 코드 및 단위 테스트 별도) |
 | 방별 컨텍스트 | `src/engine/chat/room_context.rs::compile` | 기존: 동결된 주인 원문, 발언자 귀속, BM25+비용 기준 발췌, 압축시 필수 증거 보존 |
 | 프롬프트 재사용 | `src/engine/chat/continuity.rs::{prepare,project,commit_projection}` | 기존: 참가자별 안정된 접두사·동적 프레임, 증거 변경 시 무효화 |
 | 제공자 실제 캐시 사용 | `chat/provider.rs::cached_prompt_tokens` → `gateway::record_usage_tokens_with_cache` → `db.rs::session_usage` | **이번 변경**: 캐시 적중·비교 가능한 총 입력 토큰·측정 회수 별도 SQL 집계. 미보고/추정 토큰을 캐시 실패로 간주하지 않음 |
@@ -33,7 +33,7 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 
 **중요한 경계**: 원화 가격과 0~100 품질 점수는 제공자가 자동 제공한 확정된 수치가 아니라 **사용자가 입력한 선언값**이며 최신 가격 반영 및 품질 평가는 사용자 측정에 의존한다. 캐시 적중률은 청구 비용 절감률이 아니다. 캐시 쓰기·읽기 단가, 제공자별 할인과 실제 청구액은 별도이며, 데이터가 없으면 추정 할인율을 표시하지 않는다. 새 가격 정보가 없는 모델은 **무료 모델로 간주하지 않는다**.
 
-검사 소스: `tests/unit/db_room_cache_usage_tests.rs`, `src/engine/router.rs`의 명시가격 자동 선택 테스트. 실행하지 않음.
+검사 소스: `tests/unit/db_room_cache_usage_tests.rs`, `src/engine/router.rs`의 명시가격·품질 자동 선택 테스트, 추출된 `tests/unit/engine_rooms_{pool_tests,tests}.rs`. 실행하지 않음.
 
 ## 3. 통합 아키텍처 및 유지보수 지도
 
@@ -64,7 +64,7 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 2. **원가 관측**: provider usage + cached input + 요금표 revision + 실제 청구액 대조, 엔진/모델/룸별 비용 및 지연·품질 차트를 동결 비교. 현재는 토큰·캐시 계측과 선언 가격 기반 자동 선택까지.
 3. **행동 안전형 시맨틱 캐시**: 반복되는 무부작용·시점 불변·권한 동일 질의에만 캐시를 검토. 뉴스·주가·도구·개인정보·환경 상태 변경 질의는 저장값 재사용하면 오류나 누출이 생기므로 무조건적인 LLM 패스는 금지.
 4. **에이전트 역할 통합**: task/episode-root, 발언자 attribution, 실제 도구 결과, delegated child job, room state, 결과 검증과 비용 기록을 단일 실행 계보로 집계; 가짜 사용자 발언을 생성하지 않음.
-5. **대형 파일 분리**: `rooms.rs`, `tools.rs`, `chat/provider.rs`, `api/providers.rs`, `web/src/pages/Models.tsx`의 책임을 기능별 디렉터리로 점진 이관. 아직 일부 대형 파일이 남아 구조 점수의 병목.
+5. **대형 파일 분리**: 이번 변경에서 `rooms.rs`의 발언·모델 선택과 2개 단위 테스트 모듈을 분리해 런타임 파일을 979줄로 낮췄다. 이어서 `tools.rs`, `chat/provider.rs`, `api/providers.rs`, `web/src/pages/Models.tsx`의 책임을 기능별 디렉터리로 점진 이관. 아직 일부 대형 파일이 구조 점수의 병목.
 6. **RSI 본증명**: 실제 유료 모델·CI는 별도 운영 시점에 연결하고 frozen oracle을 통과한 원본 A→B→A 영수증 및 비용/성능 회귀 지표가 나올 때만 개선을 인정.
 
 ## 5. 근거 — 2026 확인
