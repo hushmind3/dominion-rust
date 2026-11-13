@@ -43,6 +43,8 @@ pub mod rsi_principle_learning;
 pub mod rsi_model_ecology;
 #[path = "rsi/learning/credit_assignment.rs"]
 pub mod rsi_credit_assignment;
+#[path = "rsi/learning/negative_transfer.rs"]
+pub mod rsi_negative_transfer;
 #[path = "rsi/meta/symbiosis.rs"]
 pub mod rsi_symbiosis;
 #[path = "rsi/evaluation/intervention_lab.rs"]
