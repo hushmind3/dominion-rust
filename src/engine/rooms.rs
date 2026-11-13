@@ -628,11 +628,14 @@ async fn run_locked(
         let explicit_pool = room["models"]
             .as_array()
             .is_some_and(|models| !models.is_empty());
-        let pool = if explicit_pool || room["autoModels"].as_bool().unwrap_or(true) {
+        let configured_pool = if explicit_pool || room["autoModels"].as_bool().unwrap_or(true) {
             model_pool(state, &room)
         } else {
             Vec::new()
         };
+        // Explicit per-model fast/deep tags are an opt-in routing contract.
+        // Keep the selected tier stable throughout this owner's room job.
+        let pool = model_tier::select(&room, configured_pool, owner_text);
         // Keep one model per agent for the whole room. Stable routes preserve
         // the prompt prefix (provider caching) and make costs predictable;
         // rate limits are still spread because different agents hash to
@@ -1199,6 +1202,9 @@ fn mentioned_agents(
         .filter_map(|(_, _, _, id, _)| seen.insert(id.clone()).then_some(id))
         .collect())
 }
+
+#[path = "rooms/model_tier.rs"]
+mod model_tier;
 
 #[cfg(test)]
 #[path = "rooms/pool_tests.rs"]
