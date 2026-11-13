@@ -369,12 +369,7 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         "rsiAutonomous": autonomous,
         "rsiSystemEvolution": continuous && body["nativeInduction"] != true
             && body["evolutionTarget"] != "product",
-        // Explicit owner opt-in; never inferred from model-authored design.
-        // Data must additionally be staged in the separately approved
-        // training area and independently hashed before any weight update.
-        "rsiAllowLocalAdapterTraining": continuous && body["allowLocalAdapterTraining"] == true,
-        // Automatic model/harness evolution is a distinct choice from
-        // opt-in LoRA weight training and does not alter API model weights.
+        // Model routes retain their existing fixed parameters.
         "rsiModelEvolution": continuous && body["selectionPolicy"] == "automatic"
             && body["modelEvolution"] == true,
         "rsiModelProviderAllowlist":body["modelProviderAllowlist"]

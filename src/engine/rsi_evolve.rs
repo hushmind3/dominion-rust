@@ -2892,12 +2892,6 @@ async fn run_loop(
         }
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
-        // This is a weight-adoption decision made by the previous,
-        // independently running campaign coordinator, not by the model
-        // that authored the adapter or by an unvalidated child prompt.
-        child_input["rsiSelectedAdapter"]=
-            crate::engine::rsi_model_weights::selected_for_child(
-                &context.state,&context.job_id);
         child_input["rsiSourceDir"] = json!(lab);
         child_input["rsiKnowledgeSource"]=record["sourceDir"].clone();
         child_input["rsiBaseCommit"] = json!(head);
@@ -3068,9 +3062,6 @@ async fn run_loop(
             if plan["modelPolicy"]["active"]==true {
                 child_input["providerId"]=plan["modelPolicy"]["selected"]["providerId"].clone();
                 child_input["model"]=plan["modelPolicy"]["selected"]["model"].clone();
-                // LoRA evaluated against its base model cannot silently
-                // replace an actual external API model actor.
-                child_input["rsiSelectedAdapter"]=Value::Null;
             }
             child_input["rsiDescendantPlan"]=plan.clone();
             record["nextGenerationPlan"]=plan.clone();
@@ -3093,7 +3084,7 @@ async fn run_loop(
         }
         child_input["rsiInheritedImplementations"]=json!(inherited_implementations);
         child_input["rsiAvailableTools"] =
-            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan", "rsi_train_local_adapter"]);
+            json!(["code_search", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "web_search", "http_fetch", "algorithm_propose", "unsafe_audit", "rsi_method_propose", "rsi_system_plan"]);
         let history=record["history"].as_array().cloned().unwrap_or_default();
         let target_objective=selection_objective(&child_input);
         let continuation=history.last()
@@ -3371,14 +3362,8 @@ async fn run_loop(
         generation.as_object_mut().expect("generation object")
             .extend(generation_details.as_object().expect("generation details object").clone());
         generation["requestedModel"]=input["model"].clone();
-        generation["adaptedModelActuallyUsed"]=current["rsiAdapterInferenceExecuted"].clone();
-        if generation["adaptedModelActuallyUsed"]["actuallyUsedInGeneration"]==true {
-            generation["generatorModel"]=json!("dominion-promoted-lora");
-            generation["generatorProviderId"]=json!("isolated-lora-inference");
-        }
         generation["modelEcologyPolicy"]=current["input"]["rsiModelEcologyPolicy"].clone();
         generation["modelEcologyExecuted"]=current["rsiModelEcologyExecuted"].clone();
-        generation["sourceModelSelection"]=current["input"]["rsiSelectedAdapter"].clone();
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
@@ -3398,13 +3383,6 @@ async fn run_loop(
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))
             .map(|row|row["rsiSystemDesign"].clone()).unwrap_or(Value::Null);
-        // A real learned weight artifact is a separate candidate capability.
-        // Persist its provenance for successors, without ever equating a
-        // training receipt with independently improved model quality.
-        generation["modelAdapterCandidate"]=context.state.store.all("rsi_adapter_candidate")
-            .into_iter().rev().find(|adapter|
-                adapter["generationJobId"].as_str()==Some(child_id))
-            .unwrap_or(Value::Null);
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         if generation["candidateOrigin"]=="native_inductive_source_mutation" {
             generation["generatorModel"]=json!(format!("dominion-native:{}",
@@ -3603,26 +3581,6 @@ async fn run_loop(
         generation["principleLearningFeedback"]=
             crate::engine::rsi_principle_learning::feedback(
                 &generation["metaPolicy"],independently_checked);
-        // The parent coordinator runs the private evaluator AFTER the
-        // candidate worker has exited. The child cannot inspect these
-        // evaluation cases or create its own promotion decision.
-        let adapter_evaluation=crate::engine::rsi_model_weights::evaluate_candidate(
-            &context.state,&context.job_id,&generation,
-            Path::new(record["sourceDir"].as_str().unwrap_or(""))
-        ).await;
-        generation["modelAdapterIndependentEvaluation"]=adapter_evaluation.clone();
-        generation["modelWeightLearning"]=json!({
-            "candidate":generation["modelAdapterCandidate"],
-            "actualInference":generation["adaptedModelActuallyUsed"],
-            "adapterWeightsActuallyCreated":generation["modelAdapterCandidate"]
-                ["adapterCreated"]==true,
-            "independentWeightGainMeasured":
-                adapter_evaluation["pairedModelImprovementMeasured"]==true,
-            "adapterPromoted":adapter_evaluation["status"]=="promoted",
-            "requiresPairedModelHarnessEvaluation":
-                adapter_evaluation.is_null() &&
-                generation["modelAdapterCandidate"]["adapterCreated"]==true
-        });
         let mut lineage=history.clone();
         lineage.push(independently_checked.clone());
         generation["reciprocalCycleEvidence"]=json!(
@@ -4708,22 +4666,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     job["rsiWorkerContextPlan"]=plan;
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());
-    // Actually switch the CHILD model route to independently adopted
-    // PEFT weights. A model path in the prompt never counts as applied.
-    // The sidecar is limited to this detached generation and removed after
-    // the model's full source-editing turn (including its tool calls).
-    let model_inference=crate::engine::rsi_model_weights::launch(&state,&job).await?;
-    if let Some(server)=&model_inference {
-        job["input"]["rsiAdapterRoute"]=json!({
-            "source":"isolated_promoted_peft_inference_route_v1",
-            "providerId":server.provider_id,
-            "baseUrl":server.endpoint,
-            "model":"dominion-promoted-lora",
-            "adapterSha256":server.evidence["adapterSha256"]
-        });
-        job["rsiAdapterInferenceExecuted"]=server.evidence.clone();
-        state.store.put("job",&job).ok_or("채택 모델 추론 경로 저장 실패")?;
-    }
     // Record the audit cursor just before the real child tool-using model
     // turn. A reused session or thousands of unrelated audit events may
     // neither add credit nor hide earlier competing generation calls.
@@ -4749,54 +4691,6 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         updated["rsiModelEcologyExecuted"]=receipt;
         state.store.put("job",&updated).ok_or("후손 모델 호출 증거 저장 실패")?;
     }
-    // A running HTTP server is not proof that the source-writing agent
-    // actually invoked its weights. Attribute only provider-specific,
-    // session-specific recorded inference calls after the turn ends.
-    if let Some(server)=&model_inference {
-        let mut finished=state.store.get("job",job_id)
-            .ok_or("후손 모델 추론 증거를 기록할 작업이 없습니다.")?;
-        let session=finished["sessionId"].as_str().unwrap_or("");
-        let cursor=finished["rsiAuditStartRowid"].as_i64().filter(|v|*v>=0)
-            .ok_or("후손 모델 추론의 감사 시작점 없음")?;
-        let end=finished["rsiAuditEndRowid"].as_i64().filter(|v|*v>=cursor)
-            .ok_or("후손 모델 추론의 감사 종료점 없음")?;
-        let audit=state.store.model_usage_for_session_in_window(session,cursor,end);
-        let complete=audit.is_ok();
-        let events=audit.unwrap_or_default();
-        let owned=!session.is_empty() &&state.store.get("session",session)
-            .is_some_and(|row|row["rsiRun"]==true
-                &&row["rsiGenerationJobId"]==job_id);
-        let calls=events.iter().filter(|event|{
-            event["detail"]["purpose"]=="chat"
-                &&event["detail"]["providerId"]==server.provider_id
-                &&event["detail"]["model"]=="dominion-promoted-lora"
-                &&event["detail"]["totalTokens"].as_u64().unwrap_or(0)>0
-        }).count();
-        let mixed=events.iter().filter(|event|{
-            event["detail"]["purpose"]=="chat"
-                &&event["detail"]["totalTokens"].as_u64().unwrap_or(0)>0
-                &&(event["detail"]["providerId"]!=server.provider_id
-                    ||event["detail"]["model"]!="dominion-promoted-lora")
-        }).count();
-        let exclusively_used=complete &&owned &&calls>0 &&mixed==0;
-        let mut evidence=server.evidence.clone();
-        evidence["source"]=json!(if exclusively_used{
-            "running_adapted_descendant_inference_v1"
-        }else{"promoted_adapter_ready_without_exclusive_model_evidence"});
-        evidence["actualModelCalls"]=json!(calls);
-        evidence["mixedChatModelCalls"]=json!(mixed);
-        evidence["sessionOwnedByGeneration"]=json!(owned);
-        evidence["auditWindowStartRowid"]=json!(cursor);
-        evidence["auditWindowEndRowid"]=json!(end);
-        evidence["auditComplete"]=json!(complete);
-        evidence["actuallyUsedInGeneration"]=json!(exclusively_used);
-        finished["rsiAdapterInferenceExecuted"]=evidence;
-        state.store.put("job",&finished)
-            .ok_or("실제 모델 제공자 사용 영수증 저장 실패")?;
-    }
-    // The inference sidecar is scoped by the Rust Child process Drop guard;
-    // its route was never registered in the application's global providers.
-    drop(model_inference);
     match result {
         Ok(value) => {
             context.checkpoint(json!({"status":"completed","result":value}))?;

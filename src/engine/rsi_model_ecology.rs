@@ -2,8 +2,7 @@
 //!
 //! External APIs are immutable teachers/actors: we evolve the agent around
 //! them and select real inference routes by subsequent source-adoption
-//! outcomes. Local learned weights are a *distinct* line, and cannot
-//! inherit API superiority from a LoRA-only token-loss comparison.
+//! outcomes. Selected providers retain their fixed model parameters.
 //!
 //! Ranking is an exploration policy, not a causal superiority claim. An
 //! accepted edit remains judged only by the frozen source-code evaluator.
@@ -517,7 +516,7 @@ pub(crate) fn instruction(policy:&Value)->String{
         Evolve executable memory, learning, tools, inference routing, and \
         the improvement program as a single system. Record failed experiments \
         and transfer the causal hypotheses to the next compiled child. \
-        Never infer whole-agent ability from LoRA perplexity alone.",
+        Never substitute provider reputation for measured code improvements.",
         selected["providerId"],selected["model"])
 }
 #[cfg(test)]
