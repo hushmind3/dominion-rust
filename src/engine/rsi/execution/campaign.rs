@@ -933,12 +933,13 @@ pub(super) async fn run_loop(
             .unwrap_or(0)
             .max(accepted_streak);
         record["maxAcceptedStreak"] = json!(max_streak);
-        // Three consecutive adopted generations are the documented threshold
-        // for calling the capability demonstrated, not a single lucky patch.
+        // Four consecutive adopted generations are necessary, but the same
+        // frozen A→B→A2→B2 evidence and BOTH independent A-off controls
+        // must still pass the shared authoritative oracle.
         let mut evidence_record=record.clone();
         evidence_record["history"].as_array_mut()
             .ok_or("세대 이력 손상")?.push(generation.clone());
-        record["capabilityDemonstrated"] = json!(max_streak >= 3
+        record["capabilityDemonstrated"] = json!(max_streak >= 4
             && crate::engine::rsi::campaign_capability_proven(&context.state,&evidence_record));
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();

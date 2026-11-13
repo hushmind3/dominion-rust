@@ -109,3 +109,12 @@
 완료 증거의 필수조건으로 요구합니다. `campaign_capability_proven`,
 `api::rsi::campaign`, `api::rsi::verify`는 동일한 판정을 사용합니다.
 실험 결과가 생성되기 전의 완성 판정은 **0개**입니다.
+
+
+### 2026-11-13 — 자동 시작/상태 기준 정합성
+
+`rsi_evolve::limits` 기본 시도 수, `execution/campaign.rs`
+`capabilityDemonstrated`, `api::rsi`, 화면 기본 작업량과
+`capability_audit.required.verifiedStreak`의 완성 조건을 모두
+**4세대 연속 실채택 + 2개 원본 대조** 기준으로 통일했습니다.
+한 세대 성공이나 단순 연속 3회 채택은 RSI 완료가 아닙니다.

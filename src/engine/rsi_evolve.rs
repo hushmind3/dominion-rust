@@ -141,7 +141,7 @@ pub fn limits(body: &Value) -> Result<Value, String> {
             }
         }
     };
-    Ok(json!({"maxAttempts":bound("maxAttempts",3,1,100)?,
+    Ok(json!({"maxAttempts":bound("maxAttempts",4,1,100)?,
         "tokenBudget":token_budget,
         "timeBudgetSeconds":time_budget}))
 }
