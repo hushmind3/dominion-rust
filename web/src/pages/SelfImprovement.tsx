@@ -20,11 +20,17 @@ type Campaign={id:string;status:string;phase:string;controlRun?:boolean;controlO
  application?:{commit?:string;requiresRebuild?:boolean;restartRequested?:boolean};
  tokensEstimated?:boolean;
  error?:string;stopReason?:string;selectionPolicy?:string;comparison?:Comparison;
- history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection}[]}
+ history?:{attempt:number;accepted:boolean;selection?:string;error?:string;domain:string;newFindings?:number;methodControlQueued?:{controlJobId?:string;status?:string};generatorCommit?:string;acceptedCommit?:string;methodExecutions?:{result?:{followed?:boolean;unknown?:boolean}}[];domainSelection?:string;searchStrategy?:{id?:string;name?:string;implementation?:string;mode?:string};trialOutcome?:{status?:string;verdict?:string};focusFiles?:string[];focusSelection?:FocusSelection}[]}
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
 type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStreak:number;
- recursiveClosure?:{proven?:boolean;methodControl?:{
+ recursiveClosure?:{proven?:boolean;initialMethodControl?:{
+  matchedControlFound?:boolean;measuredAdvantage?:boolean;
+  treatedGenerationId?:string;controlCount?:number};
+ revisedMethodControl?:{
+  matchedControlFound?:boolean;measuredAdvantage?:boolean;
+  treatedGenerationId?:string;controlCount?:number};
+ methodControl?:{
   matchedControlFound?:boolean;measuredAdvantage?:boolean;
   treatedGenerationId?:string;methodOffGeneratorCommit?:string;
   matchedTaskSha256?:string;taskSha256?:string}};
@@ -191,8 +197,13 @@ export function SelfImprovementPage(){
   try{setVerify(await get<VerifyReport>('/api/rsi/campaigns/'+encodeURIComponent(campaign.id)+'/verify'))}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- const controlTarget=verify?.campaignId===campaign?.id
-  ?verify.recursiveClosure?.methodControl?.treatedGenerationId:undefined
+ const closure=verify?.campaignId===campaign?.id?verify.recursiveClosure:undefined
+ const controlTarget=closure?.revisedMethodControl?.matchedControlFound!==true
+  ?closure?.revisedMethodControl?.treatedGenerationId
+  :closure?.initialMethodControl?.matchedControlFound!==true
+    ?closure?.initialMethodControl?.treatedGenerationId
+    :closure?.methodControl?.matchedControlFound!==true
+      ?closure?.methodControl?.treatedGenerationId:undefined
  const runMethodControl=async()=>{
   if(!controlTarget||busy||working||installing)return
   setBusy(true);setError('')
@@ -253,6 +264,10 @@ export function SelfImprovementPage(){
         <p className="mt-1 text-[11px] leading-5 text-[#7C7469]">A 수정 전 소스를 분리 실행하여 동일한 모델·동결 과제와 비교합니다. 채택·운영 반영은 하지 않으며 유료 모델 호출이 발생합니다.</p>
         <Button className="mt-2" variant="secondary" disabled={busy||installing} onClick={()=>void runMethodControl()}><Play size={13}/>대조군 1회 실행</Button>
        </div>}
+     {verify.recursiveClosure?.initialMethodControl?.matchedControlFound===true&&
+      <p className="mt-2 text-[12px] text-[#5C544A]">A→B 원본 대조: {verify.recursiveClosure.initialMethodControl.measuredAdvantage?'후손 능력 향상 측정':'동일 과제 우위 미달'} · 대조 {verify.recursiveClosure.initialMethodControl.controlCount||0}건</p>}
+     {verify.recursiveClosure?.revisedMethodControl?.matchedControlFound===true&&
+      <p className="mt-1 text-[12px] text-[#5C544A]">A2→B2 재귀 대조: {verify.recursiveClosure.revisedMethodControl.measuredAdvantage?'개선된 방법의 후속 능력 향상 측정':'동일 과제 우위 미달'} · 대조 {verify.recursiveClosure.revisedMethodControl.controlCount||0}건</p>}
      {verify.generations.length>0?<div className="mt-2 grid gap-1">{verify.generations.map(row=><div key={row.index} className="rounded-md bg-[#FAF7F1] px-2 py-1.5 text-[11px]">
       <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{row.index}. {row.attempt?row.attempt+'번째 시도':'세대'}{row.domain?' · '+row.domain:''}</span><span className={row.independentReceipt?'text-[#4E6B45]':'text-[#7C7469]'}>{row.accepted?(row.independentReceipt?'독립 검증 일치':'영수증 불일치'):'채택 안 됨'}</span></div>
       <p className="mt-0.5 text-[#81786B]">{row.improvedHoldoutDomains?.length?'개선 확인 분야: '+row.improvedHoldoutDomains.join(', '):'개선 확인 분야 없음'}{row.regressions!=null?' · 회귀 '+row.regressions:''}{row.metaTransfer?' · 전이 확인':''}{row.reason?' · '+row.reason:''}</p>
@@ -272,6 +287,7 @@ export function SelfImprovementPage(){
       <p className="mt-0.5 text-[#81786B]">{file.scoring==='expression'?'모델 생성 탐색식':'기본 근거 탐색'}{file.policyError?' · 탐색식 오류로 기본 방식 사용':''}{file.sourceHash?` · 원본 ${file.sourceHash.slice(0,10)}`:''}</p>
      </div>)}
     </div>:item.focusFiles?.length?<p className="mt-2 text-[#81786B]">대상 파일: {item.focusFiles.join(', ')}</p>:null}
+    {item.methodControlQueued?.controlJobId&&<p className="mt-1 text-[#81786B]">개선법 제거 대조 자동 등록 · 작업 ID {item.methodControlQueued.controlJobId} · {item.methodControlQueued.status||'대기'}</p>}
     {item.generatorCommit&&<p className="mt-2 text-[#81786B]">실행기 {item.generatorCommit.slice(0,10)}{item.acceptedCommit?` · 채택 ${item.acceptedCommit.slice(0,10)}`:''}</p>}
    </div>)}</div></details>}
   </Panel>}
