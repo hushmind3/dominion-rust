@@ -15,7 +15,7 @@ use std::{
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayQuality":"1080p"});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -90,7 +90,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":job["input"]["videoQuality"],"shotMode":job["input"]["shotMode"],"generateAudio":job["input"]["generateAudio"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -130,9 +130,6 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["aspectRatio"].as_str())
         .unwrap_or("9:16");
-    if engine == "runway" && aspect == "1:1" {
-        return Err("Runway 멀티샷은 9:16·16:9 비율만 지원합니다.".into());
-    }
     if !matches!(aspect, "9:16" | "16:9" | "1:1") {
         return Err("지원 비율은 9:16,16:9,1:1입니다.".into());
     }
@@ -143,6 +140,13 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .chars()
         .take(90)
         .collect::<String>();
+    // Freeze billable generation preferences before queueing. Every restart
+    // reads the same scene list, resolution and sound choice from the job.
+    let video_quality = body["videoQuality"].as_str()
+        .or(cfg["runwayQuality"].as_str()).unwrap_or("1080p");
+    let shot_mode = body["shotMode"].as_str().unwrap_or("auto");
+    let scenes = body["scenes"].as_array().cloned().unwrap_or_default();
+    let generate_audio = body["generateAudio"].as_bool().unwrap_or(true);
     let fps = body["fps"].as_u64().unwrap_or(16);
     let seed = body["seed"].as_i64().unwrap_or(-1);
     let negative_prompt = body["negativePrompt"].as_str().unwrap_or("");
@@ -163,9 +167,14 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
+        "videoQuality":video_quality, "shotMode":shot_mode,
+        "scenes":scenes, "generateAudio":generate_audio,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
+    // Validate against the dated provider contract before persisting a paid
+    // job; render() validates again before remote submission.
+    if engine == "runway" { runway::recipe_input(&input)?; }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
