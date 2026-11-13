@@ -959,6 +959,14 @@ pub(super) async fn run_loop(
         generation["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
         context.state.store.put("rsi_generation", &generation)
             .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
+        // Schedule the actual A-off worker from the ordinary campaign flow,
+        // not a user-click-only feature. Failure to form a valid A/B anchor
+        // simply leaves the independent proof false; it never invents gains.
+        let control_queue=queue_if_needed(&context.state,input,record,&generation);
+        if let Some(queue)=control_queue {
+            generation["methodControlQueued"]=queue.clone();
+            record["lastMethodControlQueued"]=queue;
+        }
         record["history"]
             .as_array_mut()
             .ok_or("세대 목록 손상")?

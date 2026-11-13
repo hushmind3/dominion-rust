@@ -109,3 +109,25 @@ pre-treatment matching variable. The original task, source branch,
 model-usage stratum, token budget and frozen case suite still match.
 The API capability tests are separate from the Unix-only API integration
 tests so the moved source retains its former test platform coverage.
+
+## Automatically scheduled source-ablation control (normal campaign entry)
+
+`api::rsi::start` sets `rsiAutoMethodControl` for approved, bounded
+continuous campaigns by default (owners may opt out). A committed
+A(method) followed by a committed B(capability) is replayed by
+`rsi_closure::control_anchor`. When the normal
+`execution/campaign.rs::run_loop` persists B's candidate evaluation
+and actual descendant work, it calls
+`lineage/auto_control.rs::queue_if_needed`. This generates an idempotent
+`rsi_evolve` job from the pre-A generator revision with the ORIGINAL B
+task prompt, provider/model, independent frozen cases and same budget.
+The original scheduler, normal planner, provider, workspace edit tools
+and fixed A/B evaluator handle the separate experiment, and the
+existing closure is reevaluated from durable receipts. No control can
+be promoted or alter the production source pointer. An owner does
+not need to issue a second API call after the ordinary campaign begins.
+
+Scheduling is asynchronous through the existing durable job queue:
+proof remains false until the control finishes and original receipts
+match. An automatic control consumes separately recorded model tokens;
+bounded campaign UI explicitly describes this additional call.

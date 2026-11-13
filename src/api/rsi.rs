@@ -393,6 +393,13 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             && body["selectionPolicy"] == "automatic",
         "rsiStopAfterProof": continuous && body["stopAfterProof"] == true
             && body["selectionPolicy"] == "automatic",
+        // A bounded automatic campaign is explicit consent to schedule one
+        // same-model, method-off control per independently accepted A->B
+        // pair. Owners can disable it. Unbounded usage needs explicit opt-in.
+        "rsiAutoMethodControl":continuous
+            &&body["autoMethodControl"]!=false
+            &&(body["tokenBudget"].as_u64().is_some_and(|n|n>=1000)
+                ||body["autoMethodControl"]==true),
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],

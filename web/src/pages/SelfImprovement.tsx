@@ -156,7 +156,7 @@ export function SelfImprovementPage(){
   try{
    const job=await post<{id:string;status:string}>('/api/rsi/start',{
     providerId,model,...(continuing&&campaign?{continueFrom:campaign.id}:{request}),mode:'continuous',confirmation:'START_RSI_EVOLUTION',
-    selectionPolicy:selection,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
+    selectionPolicy:selection,autoMethodControl:true,maxAttempts:budget.maxAttempts,tokenBudget:budget.tokenBudget,timeBudgetSeconds:budget.timeBudgetSeconds
    })
    setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab'});setInstall(null);setModelChanged(false);setSettingsOpen(false)
    try{localStorage.setItem(SAVED,job.id)}catch{}
@@ -226,7 +226,7 @@ export function SelfImprovementPage(){
    <div className="mt-5"><FormField label="중점적으로 나아졌으면 하는 점 (선택)"><TextArea rows={2} value={request} onChange={e=>setRequest(e.target.value)} disabled={working||busy} placeholder="예: 기억을 더 잘하고, 같은 일을 적은 비용으로 해 줘. 비워 두어도 됩니다."/></FormField></div>
    <div className="mt-5"><FormField label="한 번에 진행할 작업량"><SelectInput value={workload} disabled={working||busy||installing} onChange={e=>setWorkload(e.target.value as Workload)}>{Object.entries(workloads).map(([key,value])=><option key={key} value={key}>{value.label} · 최대 {value.maxAttempts}단계 · {(value.tokenBudget/10000).toLocaleString()}만 토큰 · {value.timeBudgetSeconds/60}분</option>)}</SelectInput></FormField></div>
    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] leading-5 text-[#8A8176]">연구만 한 단계도 다음 구현으로 이어집니다. 중단해도 지식은 남습니다.</p><Button variant="primary" onClick={()=>void start()} disabled={busy||working||installing||!providerId||!model.trim()}><Play size={15}/>발전 시작</Button></div>
-   <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 선택한 버전은 다음 개선에 사용됩니다. 완료 후 ‘검증본을 4317에 반영’을 누르면 작업 브랜치에 적용하고 서버를 다시 빌드합니다. 메인은 바뀌지 않습니다. 선택을 기다리는 시간은 제외하며, 사용량은 호출 전 추정치와 제공자 보고로 제한합니다.</p>
+   <p className="mt-3 text-[11px] leading-5 text-[#8A8176]">시작하면 프로그램 복사본에서 수정과 실제 비교를 실행합니다. 개선법 A의 후손 B가 채택되면 A 이전 생성기로 동일 과제를 수행하는 자동 대조 작업이 별도로 예약되므로 추가 모델 사용량이 발생할 수 있습니다. 선택한 버전은 다음 개선에 사용됩니다. 완료 후 ‘검증본을 4317에 반영’을 누르면 작업 브랜치에 적용하고 서버를 다시 빌드합니다. 메인은 바뀌지 않습니다. 선택을 기다리는 시간은 제외하며, 사용량은 호출 전 추정치와 제공자 보고로 제한합니다.</p>
   </Panel>}
   {campaign&&<Panel className="mt-4 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2">{working?<LoaderCircle size={16} className="animate-spin text-[#A94E30]"/>:<Check size={16}/>}<strong className="text-[14px]">{status}</strong></div>
    {working?<Button variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={13}/>중단</Button>:

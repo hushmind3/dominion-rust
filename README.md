@@ -521,3 +521,19 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 실제 대조군의 분야 선택은 개선 전후의 알고리즘이 달라질 수 있는 **결과 변수**이므로
 동일한 모델·작업·동결 사례를 사용하는 한 다른 분야를 선택했다는 이유로 제외하지
 않습니다. 평가 성과 자체는 같은 동결 사례별 성공·실패 전환으로 비교합니다.
+
+### 자동 후손 대조 실행 — 정상 RSI 작업 경로
+
+`POST /api/rsi/start`의 연속 캠페인에 `rsiAutoMethodControl`이
+활성화되면, `execution/campaign.rs`는 A(개선법) 채택 직후 B(다른 능력)가
+독립 채택된 원본 영수증을 `rsi_closure::control_anchor`에서 확인하고
+`lineage/auto_control.rs::queue_if_needed`로 **대조 작업을 자동 등록**합니다.
+사용자에게 B 세대 ID를 입력하도록 요구하지 않습니다.
+
+대조 작업은 `jobs::enqueue_once`로 B 세대당 정확히 한 번 생성되며
+기존 `rsi_evolve::run`의 분리 소스 worktree→A 이전 컴파일된 생성기→
+같은 provider/model→실제 도구 편집→고정 paired evaluator를 재사용합니다.
+`controlRun`은 채택을 무조건 막아 운영 커밋을 오염시키지 않습니다.
+대조 평가가 종료된 후, 캠페인 및 API가 같은 `rsi_closure::evidence`
+원본 비교를 다시 계산합니다. 원본 캠페인과 대조 캠페인은 개별
+작업 및 사용량으로 기록됩니다.

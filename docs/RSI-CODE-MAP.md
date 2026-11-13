@@ -16,6 +16,7 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Target-bound forecast learning, self-repair arbiter and execution proof | `src/engine/rsi_prequential.rs` |
 | Recurrent method rewriting / new method principles | `src/engine/rsi_recursive_rewrite.rs`, `src/engine/rsi_principle_learning.rs` |
 | Measured contribution and experimental isolation | `src/engine/rsi/learning/credit_assignment.rs`, `src/engine/rsi/evaluation/intervention_lab.rs` |
+| Automatic A-off control from normal adopted B | `src/engine/rsi/execution/campaign.rs` → `src/engine/rsi/lineage/auto_control.rs` → `jobs::enqueue_once` → `rsi_evolve::run` (no manual follow-up required) |
 | Inherited source evidence and strategy archive | `src/engine/rsi/lineage/archive.rs`, `src/engine/rsi/lineage/transfer.rs` |
 | Live model/provider selection | `src/engine/rsi/meta/model_ecology.rs` |
 | Real-model execution receipt | `scripts/sub4-live-rsi.mjs` |

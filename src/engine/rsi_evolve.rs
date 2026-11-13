@@ -50,6 +50,10 @@ use self::execution_context::{fit_worker_prompt, generation_fits_remaining_budge
 mod execution_campaign;
 use self::execution_campaign::{run_loop};
 
+#[path = "rsi/lineage/auto_control.rs"]
+mod lineage_auto_control;
+use self::lineage_auto_control::queue_if_needed;
+
 #[path = "rsi/lineage/adoption.rs"]
 mod lineage_adoption;
 use self::lineage_adoption::{compiled_system_target, generation_model_error, generation_target_plan, paired_descendant_target, proof_goal_reached, reconcile_descendant_target, select_generation_strategy};
