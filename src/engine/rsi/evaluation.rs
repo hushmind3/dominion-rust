@@ -1,6 +1,10 @@
 //! Search-policy trial proposals, comparisons and independent outcome accounting.
 //! Private to the RSI coordinator; no frozen evaluator or model weight changes.
-use super::*;
+use super::{
+    AppState, Value, BTreeMap, BTreeSet, json,
+    rsi, eligible_domains, valid_domain_scores, evaluate_search_algorithm, save,
+    elapsed, trial_owned_by,
+};
 
 pub(super) fn proposed_algorithms(state: &AppState, session: &str) -> Vec<Value> {
     let mut ids = Vec::new();
