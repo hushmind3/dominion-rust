@@ -68,3 +68,19 @@ The contrast is nonrandomized and is not universal causal proof.
 2026 evidence: [PAST-Bench](https://arxiv.org/abs/2608.04003) uses
 matched experience on/off conditions; [AIDE²](https://arxiv.org/abs/2609.26457)
 measures inherited source-level performance on hidden held-out tasks.
+
+## Executable control reproduction
+
+The existing `POST /api/rsi/start` accepts an explicitly approved
+`controlForGenerationId`. Its `rsi_closure::control_anchor` replays the A
+method and B capability adoption, retrieves B's original generation job,
+and replaces user-provided model/task settings with B's real immutable
+prompt, objective, frozen cases and actor. `rsi/execution/start.rs` creates
+a separate detached worktree from the pre-A generator commit (not the live
+branch head) and disables rsi_current lineage reuse and dirty snapshot
+application. The standard compiled planner, model worker and frozen paired
+evaluator execute one attempted control generation. `select()` always
+chooses baseline for controls, preventing adoption and rsi_current changes.
+`api::rsi::apply_campaign` rejects any control campaign. The independent
+proof verifier requires the resulting original control job to point to the
+exact treated B job and pre-A generator. No control costs were incurred here.

@@ -127,6 +127,9 @@ pub async fn choose(State(state):State<AppState>,Path(id):Path<String>,Json(body
 
 pub async fn apply_campaign(State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>)->Response{
     let Some(campaign)=state.store.get("rsi_campaign",&id) else {return error("개선 작업을 찾지 못했습니다.".into())};
+    if campaign["controlRun"]==true {
+        return error("대조 실행의 후보는 운영 브랜치에 승격할 수 없습니다.".into());
+    }
     if body["confirmation"]!="APPLY_VERIFIED_CAMPAIGN_TO_SUB" || body["commit"]!=campaign["headCommit"]
         || !matches!(campaign["status"].as_str(),Some("completed"|"cancelled"|"needs_review"|"failed"))
         || campaign["headCommit"]==campaign["baseCommit"] {
@@ -240,7 +243,48 @@ fn continued_request(state:&AppState,mut body:Value)->Result<Value,String>{
 
 pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     if crate::engine::dev::installation_running() {return error("버전 반영이 끝난 뒤 발전 작업을 시작하세요.".into());}
-    let body=match continued_request(&state,body){Ok(body)=>body,Err(message)=>return error(message)};
+    let mut body=match continued_request(&state,body){Ok(body)=>body,Err(message)=>return error(message)};
+    // An opt-in matched control is a REAL one-generation worker from the
+    // method's pre-A commit, not a simulated outcome or an operator-supplied
+    // source revision. Reuse the exact treated task and actual model actor.
+    let mut controlled=Value::Null;
+    let mut treated_input=Value::Null;
+    if let Some(id)=body["controlForGenerationId"].as_str(){
+        if body["mode"]!="continuous"
+            ||body["confirmation"]!="START_RSI_EVOLUTION"{
+            return error("대조 실행은 명시적으로 승인한 연속 실험이어야 합니다.".into());
+        }
+        let Some(g)=state.store.get("rsi_generation",id) else {
+            return error("대조할 실제 후손 세대가 없습니다.".into());
+        };
+        let Some(anchor)=crate::engine::rsi_closure::control_anchor(&state,&g) else{
+            return error("채택된 방법 A→실제 후손 능력 B의 원본 영수증을 찾지 못했습니다.".into());
+        };
+        let Some(treated)=anchor["treatedJobId"].as_str()
+            .and_then(|id|state.store.get("job",id)) else{
+            return error("후손 B의 실제 모델 작업을 찾지 못했습니다.".into());
+        };
+        if treated["input"]["rsiPromptBase"].as_str()
+            .is_none_or(|s|s.trim().is_empty())
+            ||treated["input"]["rsiFrozenCases"].as_array().is_none_or(Vec::is_empty) {
+            return error("동일 작업·동결 사례로 재실행할 증거가 부족합니다.".into());
+        }
+        body["providerId"]=treated["input"]["providerId"].clone();
+        body["model"]=treated["input"]["model"].clone();
+        body["request"]=treated["input"]["rsiObjective"].clone();
+        body["reasoningEffort"]=treated["input"]["reasoningEffort"].clone();
+        body["focusFiles"]=json!([]);
+        body["maxAttempts"]=json!(1);
+        body["tokenBudget"]=json!(0);
+        body["timeBudgetSeconds"]=json!(0);
+        body["selectionPolicy"]=json!("automatic");
+        body["expandAfterGain"]=json!(false);
+        body["nativeInduction"]=json!(false);
+        body["modelEvolution"]=json!(false);
+        body["stopAfterProof"]=json!(false);
+        controlled=anchor;
+        treated_input=treated["input"].clone();
+    }
     let continuous=body["mode"]=="continuous";
     let _start_guard=if continuous{
         if !state.begin_session("rsi-evolution-start"){return error("개선 시작을 처리 중입니다.".into());}
@@ -288,6 +332,16 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         Ok(path) => path,
         Err(_) => return error("연결된 소스 폴더에 접근할 수 없습니다.".into()),
     };
+    if controlled.is_object(){
+        let treated_campaign=state.store.get("rsi_campaign",
+            controlled["treatedCampaignId"].as_str().unwrap_or(""));
+        if treated_campaign.as_ref().is_none_or(|g|
+            g["sourceDir"]!=json!(source)
+                ||g["sourceBranch"]!=status["branch"])
+            ||status["dirty"].as_u64().unwrap_or(u64::MAX)!=0 {
+            return error("대조 실험은 동일한 깨끗한 DOMINION 소스·브랜치에서만 실행합니다.".into());
+        }
+    }
     if !source.join("Cargo.toml").is_file() || !source.join("src/engine/rsi.rs").is_file() {
         return error("DOMINION Rust 저장소가 아닌 소스 폴더입니다.".into());
     }
@@ -408,6 +462,15 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         ],
         "autoLearning": false
     });
+    if controlled.is_object(){
+        input["prompt"]=treated_input["rsiPromptBase"].clone();
+        input["rsiObjective"]=treated_input["rsiObjective"].clone();
+        input["rsiFrozenCases"]=treated_input["rsiFrozenCases"].clone();
+        input["rsiCausalControlOf"]=controlled["treatedJobId"].clone();
+        input["rsiCausalControlGeneration"]=controlled["treatedGenerationId"].clone();
+        input["rsiCausalControlCommit"]=controlled["methodOffGeneratorCommit"].clone();
+        input["rsiSystemEvolution"]=json!(true);
+    }
     if let Some(id)=body["continueFrom"].as_str() {
         input["rsiContinueFrom"]=json!(id);
         if let Some(prior)=state.store.get("rsi_campaign",id) {
@@ -432,7 +495,9 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         input["rsiNativeApproved"]=json!(true);
     }
     let mut cases=input["rsiFrozenCases"].as_array().cloned().unwrap_or_default();
-    cases.extend(crate::engine::rsi_worktree::metric_cases());
+    if !controlled.is_object(){
+        cases.extend(crate::engine::rsi_worktree::metric_cases());
+    }
     input["rsiFrozenCases"]=json!(cases);
     match crate::engine::jobs::enqueue(&state, if continuous{"rsi_evolve"}else{"prompt"}, input) {
         Some(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),

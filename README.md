@@ -493,3 +493,16 @@ cargo test --release
 Copyright 2026 hushmind3.
 
 DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
+
+### 실제 A-off 대조 실행 (선택적, 유료 모델 호출)
+
+`GET /api/rsi/campaigns/:id/verify`에서 `recursiveClosure.methodControl`이
+보여 주는 `treatedGenerationId`를 사용합니다.
+`POST /api/rsi/start`에 `mode:"continuous"`,
+`confirmation:"START_RSI_EVOLUTION"`, `controlForGenerationId`를 전달하면
+서버가 원본 A·B 영수증으로부터 **A 직전의 실제 생성기 커밋**을 복원합니다.
+사용자가 임의 기준 커밋·모델·과제를 입력하지 못하며, B 작업의
+`rsiPromptBase / rsiFrozenCases / objective / model`을 그대로 가져옵니다.
+기존 worktree 생성기·provider 모델·도구·동결 비교를 1회 실행하고,
+대조 후보를 채택·운영 반영하지 않습니다. 메인과 현재 브랜치는 건드리지 않습니다.
+모델 호출 비용은 별도로 발생하므로 명시적 시작 요청이 필요합니다.

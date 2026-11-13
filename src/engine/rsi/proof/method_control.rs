@@ -123,7 +123,7 @@ pub(super) fn evidence(
         "source":"source_ablation_matched_control_v1",
         "methodOffGeneratorCommit":first["generatorCommit"],
         "methodOnGeneratorCommit":first["acceptedCommit"],
-        "treatedJobId":b_job["id"],"treatedCandidateId":b_candidate["id"],
+        "treatedJobId":b_job["id"],"treatedGenerationId":second["id"],"treatedCandidateId":b_candidate["id"],
         "taskSha256":fingerprint,
         "matchedControlFound":false,"measuredAdvantage":false,
         "nonrandomized":true,"causalEffectProven":false
@@ -138,6 +138,10 @@ pub(super) fn evidence(
         if row["candidateId"]==b_candidate["id"]{continue;}
         let Some((c,j))=verified_control(state,&row,&first["generatorCommit"])
             else{continue};
+        if j["input"]["rsiCausalControlOf"]!=b_job["id"]
+            ||j["input"]["rsiCausalControlCommit"]!=first["generatorCommit"]{
+            continue;
+        }
         if c["target"]!=b_candidate["target"]
             ||c["cases"]!=b_candidate["cases"]
             ||c["oracleVersion"]!=b_candidate["oracleVersion"]
@@ -161,7 +165,7 @@ pub(super) fn evidence(
         "source":"source_ablation_matched_control_v1",
         "methodOffGeneratorCommit":first["generatorCommit"],
         "methodOnGeneratorCommit":first["acceptedCommit"],
-        "treatedJobId":b_job["id"],"treatedCandidateId":b_candidate["id"],
+        "treatedJobId":b_job["id"],"treatedGenerationId":second["id"],"treatedCandidateId":b_candidate["id"],
         "taskSha256":fingerprint,"auditedModelActor":actor,
         "matchedControlFound":true,"controlCount":matched.len(),
         "minimumHoldoutPassAdvantage":matched[0].0,

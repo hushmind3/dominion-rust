@@ -94,6 +94,35 @@ fn cross_domain_gain(candidate: &Value) -> bool {
 /// This demonstrates a bounded, replayable loop; it does not claim indefinite
 /// intelligence growth or that all changed behavior is causally attributable
 /// to the original source edit.
+/// Expose an immutable control target to the ordinary RSI start endpoint.
+/// A fake generation id cannot choose an arbitrary historical source commit.
+pub(crate) fn control_anchor(state:&AppState,treated:&Value)->Option<Value>{
+    let (b,b_job)=measured_step(state,treated)?;
+    if !cross_domain_gain(&b)
+        || !executed_descendant(&b_job,treated)
+        || treated["candidateOrigin"]!="model_driven_detached_worktree" {
+        return None;
+    }
+    let campaign=treated["campaignId"].as_str()?;
+    let attempt=treated["attempt"].as_u64()?;
+    let predecessor=state.store.all("rsi_generation").into_iter().find(|g|
+        g["campaignId"]==campaign
+        && g["attempt"].as_u64().is_some_and(|n|n.checked_add(1)==Some(attempt))
+        && g["acceptedCommit"]==treated["generatorCommit"])?;
+    let (a,_)=measured_step(state,&predecessor)?;
+    if !method_gain(&a){return None;}
+    Some(json!({
+        "source":"original_method_source_control_anchor_v1",
+        "treatedGenerationId":treated["id"],
+        "treatedCampaignId":campaign,
+        "treatedJobId":b_job["id"],
+        "treatedCandidateId":b["id"],
+        "methodCandidateId":a["id"],
+        "methodOffGeneratorCommit":predecessor["generatorCommit"],
+        "methodOnGeneratorCommit":predecessor["acceptedCommit"]
+    }))
+}
+
 pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
     let mut pending_control=Value::Null;
     for window in history.windows(3) {

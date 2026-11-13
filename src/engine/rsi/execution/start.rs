@@ -245,6 +245,12 @@ pub fn choose(state: &AppState, id: &str, body: &Value) -> Result<Value, String>
 }
 
 pub(super) async fn select(context: &JobContext, record: &mut Value) -> Result<String, String> {
+    if record["controlRun"]==true{
+        // Controls are evidence only. Even an eligible candidate must never
+        // mutate the selected RSI lineage or rsi_current production pointer.
+        record["comparison"]["selected"]=json!("baseline");
+        return Ok("baseline".into());
+    }
     if record["selectionPolicy"] == "automatic" {
         let choice = if record["comparison"]["canSelectCandidate"] == true {
             "candidate"
@@ -300,6 +306,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     if git(context, &source, &["rev-parse", "HEAD"]).await? != base {
         return Err("원본 소스가 시작 시점과 다릅니다. 다시 시작하세요.".into());
     }
+    let control_commit=input["rsiCausalControlCommit"].as_str();
+    if let Some(commit)=control_commit {
+        if commit.len()!=40||!commit.bytes().all(|b|b.is_ascii_hexdigit())
+            ||input["rsiCausalControlOf"].as_str().is_none()
+            ||git(context,&source,&["cat-file","-t",commit]).await?!="commit"
+            ||!git(context,&source,&["status","--porcelain"]).await?.is_empty(){
+            return Err("대조 기준 커밋·소스 격리·깨끗한 원본 검증 실패".into());
+        }
+    }
     if let Some(recorded_branch)=input["rsiSourceBranch"].as_str().filter(|value|!value.is_empty()) {
         let current_branch=git(context,&source,&["rev-parse","--abbrev-ref","HEAD"]).await?;
         if current_branch!=recorded_branch {
@@ -320,11 +335,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "add",
             "--detach",
             lab.to_str().ok_or("실험 경로 오류")?,
-            base,
+            control_commit.unwrap_or(base),
         ],
     )
     .await?;
-    let (snapshot, fingerprint) = snapshot_source(context, &source, &lab).await?;
+    // A method-off control must not absorb unstaged HEAD changes from the
+    // currently active method-on checkout.
+    let (snapshot, fingerprint)=if control_commit.is_some() {
+        let checkout=git(context,&lab,&["rev-parse","HEAD"]).await?;
+        let tree=git(context,&lab,&["rev-parse","HEAD^{tree}"]).await?;
+        (false,lineage_fingerprint(&checkout,&tree,&[],&[]))
+    }else{snapshot_source(context,&source,&lab).await?};
     let mut lineage = json!({
         "selectedCommit": Value::Null,
         "sameSource": false,
@@ -334,6 +355,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "fingerprintMatch": false,
         "reused": false
     });
+    if control_commit.is_none(){
     if let Some(selected) = context.state.store.get("rsi_current", "selected-engine") {
         let same_source = selected["sourceDir"].as_str() == source.to_str();
         let same_branch = selected["sourceBranch"] == input["rsiSourceBranch"]
@@ -360,6 +382,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 lineage["reused"] = json!(true);
             }
         }
+    }
     }
     let head = git(context, &lab, &["rev-parse", "HEAD"]).await?;
     #[cfg(unix)]
@@ -399,7 +422,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "selectionPolicy":input["selectionPolicy"],"waitingMs":0,
         "lineage":lineage,
         "acceptedStreak":accepted_streak_seed,"maxAcceptedStreak":max_streak_seed,"capabilityDemonstrated":false,
-        "productionChanged":false,"accelerationProven":false});
+        "productionChanged":false,"accelerationProven":false,
+        "controlRun":control_commit.is_some(),
+        "controlOf":input["rsiCausalControlOf"]});
     save(context, &record)?;
     let started = Instant::now();
     let result = run_loop(context, job, &mut record, started).await;
