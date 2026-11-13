@@ -130,6 +130,47 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         meta["recursiveProgram"]["active"]=json!(false);
         meta["recursiveProgram"]["deferredBy"]=json!("principle_generalization_trial");
     }
+    // Counterexamples from original frozen receipts identify cases where an
+    // attempted edit to A harmed a previously passing B capability. A paired
+    // cross-capability repair is a new hypothesis, not an inherited regression.
+    // It only takes precedence when no owner, successor or meta-method trial
+    // is already occupying the next source-edit slot.
+    let negative_evidence=crate::engine::rsi_negative_transfer::plan(
+        &state,&history,&frontier,revision);
+    let negative_source=negative_evidence["selected"]["source"].clone();
+    let negative_victim=negative_evidence["selected"]["victim"].clone();
+    let matched_target=meta["alternatives"].as_array().into_iter().flatten()
+        .find(|row|row["target"]==negative_source).cloned();
+    let negative_active=auto && stage.is_null() && !factorial_active
+        && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
+        && meta["principleLearning"]["active"]!=true
+        && meta["predictionRuleRepair"]["active"]!=true
+        && meta["recursiveProgram"]["active"]!=true
+        && negative_evidence["selected"]["supportedForPairedInvestigation"]==true
+        && negative_source["domain"].as_str().is_some_and(|d|permitted.contains(&d))
+        && negative_victim["domain"].as_str().is_some_and(|d|permitted.contains(&d))
+        && matched_target.is_some()
+        && crate::engine::rsi_negative_transfer::valid(
+            &negative_evidence,&frontier,revision,history.len());
+    let negative_transfer=if negative_active{negative_evidence}else{Value::Null};
+    if let (true,Some(winner))=(negative_active,matched_target){
+        let before=meta["revision"].clone();
+        meta["target"]=negative_source.clone();
+        meta["selectionEvidence"]=winner.clone();
+        meta["forecast"]["acceptanceProbability"]=
+            winner["predictedAdoptionProbability"].clone();
+        meta["forecast"]["uncertainty"]=winner["uncertainty"].clone();
+        meta["mode"]=json!("replayed_cross_capability_negative_transfer_repair");
+        meta["negativeTransfer"]=json!({
+            "selected":negative_transfer["selected"],
+            "evidenceSha256":negative_transfer["sha256"],
+            "active":true,"causalityProven":false,"qualityProven":false
+        });
+        meta["revision"]=json!(format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&json!([before,negative_source,
+                negative_transfer["sha256"],winner]))
+                .unwrap_or_default())));
+    }
     let architecture_target=meta["target"].clone();
     // The same compiled child can rewrite its coupling search algorithm.
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
@@ -211,7 +252,26 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             "sourceIndexId":campaign["planIndexId"]
         })).collect();
     }
+    // Feed the actual source-victim pair to the normal source editing worker.
+    // A model-authored patch still faces the external paired evaluator;
+    // merely targeting both files cannot count as completed improvement.
+    if negative_active && architecture_target["domain"]==domain
+        && focus["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
+        ranked=[&negative_transfer["selected"]["source"],
+            &negative_transfer["selected"]["victim"]].into_iter()
+            .map(|source|json!({
+                "path":source["path"],"role":source["role"],
+                "sourceHash":source["sourceSha256"],
+                "source":"replayed_cross_capability_repair_trial",
+                "sourceIndexId":campaign["planIndexId"]
+            })).collect();
+    }
     let mut descendant_policy=learned_edit_method(&state,&focus,&history);
+    if negative_active {
+        descendant_policy["crossCapabilityRepairEvidenceSha256"]=
+            negative_transfer["sha256"].clone();
+        descendant_policy["checkpointAfter"]=json!(2);
+    }
     if meta["predictionRuleRepair"]["active"]==true {
         descendant_policy["checkpointAfter"]=json!(2);
         descendant_policy["preferredTool"]=json!("workspace_replace_range");
@@ -251,6 +311,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "successorStage":stage,"editPolicy":descendant_policy,
         "symbioticCurriculum":symbiosis,
         "factorialExperiment":factorial,
+        "negativeTransfer":negative_transfer,
         "sourceTreeSha256":blueprint["sourceTree"]["sourceTreeSha256"],
         "decisionOwner":"rebuilt_compiled_descendant"
     });
