@@ -614,3 +614,16 @@ on the composition root. The RSI source-edit flow stays
 receipt → detached candidate. No tests, builds or benchmarks were executed.
 
 The original parent-visible `chat::runtime::{tool_succeeded,finish_attempt,finalize_execution}` and `engine::tools::resolve_workspace` visibility are restored through explicit grandparent-scope Rust imports after subdivision. Source-only correction; no compilation or tests run.
+
+### Provider runtime contract boundaries (Sub1, 2026-11-13)
+
+`src/engine/chat/provider.rs` now composes source-level real provider
+implementations: `provider/resolve.rs` (model/provider selection, reasoning
+settings, routing), `provider/stream.rs` (streaming and usage),
+`provider/protocols.rs` (Anthropic/Codex message transforms),
+`provider/codex.rs` (Codex stream), `provider/anthropic.rs`
+(Anthropic stream). Tests are isolated as `provider/tests.rs`.
+The original chat-visible `select_provider`, `stream_completion`,
+`apply_reasoning_options` and Codex parse helpers remain exported.
+The runtime still uses actual provider HTTPS requests and the same tool loop;
+no tests, compile, build or real-model execution took place.

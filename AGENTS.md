@@ -74,3 +74,9 @@ original frozen paired evaluator. `tools/tests.rs` is test-only.
 `finalization.rs`, `session.rs`, and the preexisting `turn.rs`.
 The public `run_turn*` and evidence finalization API remain re-exported.
 `tests/support/engine/chat_runtime.tests.rs` is still attached to the root.
+
+**Streaming provider modules:** `chat/provider.rs` composes
+`provider/resolve.rs` → `provider/stream.rs` →
+`provider/protocols.rs`, `provider/codex.rs`,
+`provider/anthropic.rs`; tests in `provider/tests.rs`.
+Use the original chat-visible provider function re-exports.
