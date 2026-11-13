@@ -15,6 +15,10 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
     let mut binaries=BTreeSet::new();let mut covered=BTreeSet::new();
     let mut methods=BTreeMap::<String,String>::new();let mut method_transfer=false;
     let mut meta_gain=false;let mut verified=0usize;
+    // The experience table is stable throughout this synchronous evidence
+    // calculation. Reuse one snapshot rather than rereading all experiences
+    // for every method execution in every generation.
+    let experiences=state.store.all("experience");
     for generation in history {
         if generation["accepted"]!=true {continue;}
         let Some(candidate)=generation["candidateId"].as_str().and_then(|id|state.store.get("rsi_candidate",id)) else{continue;};
@@ -54,7 +58,7 @@ pub(crate) fn handoff_evidence(state:&crate::state::AppState, history:&[Value])-
             if execution["result"]["verified"]!=true || execution["result"]["followed"]!=true {continue;}
             if let (Some(id),Some(revision))=(execution["methodId"].as_str(),execution["revision"].as_str()) {
                 if methods.get(id).is_some_and(|expected|expected==revision)
-                    && state.store.all("experience").iter().any(|record|
+                    && experiences.iter().any(|record|
                         record["executableMethods"].as_array().into_iter().flatten().any(|method|
                             method["id"]==id && method["revision"]==revision
                             && method["applications"].as_array().into_iter().flatten().any(|app|
