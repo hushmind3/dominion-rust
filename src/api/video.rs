@@ -36,6 +36,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let executable = video::ffmpeg(&state);
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
+    let ltx_ready = cfg["hasVideoKey"] == true;
     let workflows = workflows_from_config(&cfg);
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
@@ -43,17 +44,19 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy,
+        "available": executable.is_some() || comfy || ltx_ready,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
+        "ltx": {"available":ltx_ready,"models":["ltx-2-5-pro","ltx-2-5-fast"],"audio":true},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
-            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}}
+            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
+            {"id":"ltx","name":"LTX 2.5 생성형 영상 + 오디오","available":ltx_ready,"reason":if ltx_ready{""}else{"영상 설정에서 LTX API 키 등록 필요"}}
         ],
         "jobs": jobs,
-        "models": [],
-        "modelsReady": false,
+        "models": if ltx_ready {json!([{"id":"ltx-2-5-pro"},{"id":"ltx-2-5-fast"}])}else{json!([])},
+        "modelsReady": ltx_ready,
         "workflows": workflows,
         "installed": reachable
     }))
@@ -62,6 +65,15 @@ pub async fn get_config(State(state): State<AppState>) -> Json<Value> {
     Json(video::config(&state))
 }
 pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    if let Some(key) = body["videoApiKey"].as_str() {
+        if key.len() > 4096 {
+            return error(StatusCode::BAD_REQUEST,"LTX API 키가 너무 깁니다.");
+        }
+        if !key.trim().is_empty() {
+            state.save_secret("video:api",key.trim());
+            state.store.audit("video.credential_updated",json!({"provider":"ltx"}));
+        }
+    }
     let mut cfg = video::config(&state);
     for key in [
         "engine",
@@ -207,6 +219,12 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         "available": native,
         "hint": if native { "로컬 ffmpeg으로 장면과 자막을 합성합니다." } else { "ffmpeg를 찾을 수 없습니다. 설정에서 경로를 지정하세요." },
     })];
+    if cfg["hasVideoKey"] == true {
+        items.push(json!({"id":"ltx-2-5-pro","name":"LTX 2.5 Pro","kind":"ltx",
+            "available":true,"hint":"고화질 생성형 영상 + 동기화 오디오 (클라우드 API)"}));
+        items.push(json!({"id":"ltx-2-5-fast","name":"LTX 2.5 Fast","kind":"ltx",
+            "available":true,"hint":"빠른 생성형 영상 + 동기화 오디오 (클라우드 API)"}));
+    }
     if comfy {
         items.push(json!({
             "id": "comfyui",
@@ -228,6 +246,8 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
         "models": [
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
+            {"id":"ltx-2-5-pro","name":"LTX 2.5 Pro","kind":"ltx","available":cfg["hasVideoKey"] == true},
+            {"id":"ltx-2-5-fast","name":"LTX 2.5 Fast","kind":"ltx","available":cfg["hasVideoKey"] == true},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
