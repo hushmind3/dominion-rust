@@ -76,6 +76,10 @@ mod execution_worker;
 pub use execution_worker::{worker};
 
 #[cfg(test)]
+#[path = "rsi_oracle_fixture.rs"]
+mod oracle_tests;
+
+#[cfg(test)]
 #[path = "rsi/tests/evolve.rs"]
 mod tests;
 
