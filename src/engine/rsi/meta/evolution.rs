@@ -175,7 +175,8 @@ fn measured_retry<'a>(history:&'a [Value],commit:&str,protocol:&Protocol)->Optio
         && g["evaluation"]["metrics"].is_object()
         && g["controllerPlan"]["metaEvolutionProgram"]["source"]==COMPILED
         && g["controllerPlan"]["metaEvolutionProgram"]["generatorCommit"]==commit
-        && g["controllerPlan"]["metaEvolutionProgram"]["protocol"]["revision"]==protocol.revision
+        && g["controllerPlan"]["metaEvolutionProgram"]["protocol"]["revision"].as_str()
+            ==Some(protocol.revision.as_str())
         && g["controllerPlan"]["metaEvolutionProgram"]["operatorId"].as_str()
             .is_some_and(|id|protocol.operators.iter().any(|op|op.id==id)))
 }
