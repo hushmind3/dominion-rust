@@ -109,7 +109,7 @@ fn preceding_method(state:&AppState,treated:&Value)->Option<Value>{
     if attempt!=1 {return None;}
     let current=state.store.get("rsi_campaign",campaign_id)?;
     if current["lineage"]["reused"]!=true
-        ||current["headCommit"]!=treated["generatorCommit"]{return None;}
+        ||current["lineage"]["selectedCommit"]!=treated["generatorCommit"]{return None;}
     let previous=state.store.get("rsi_campaign",current["continuedFrom"].as_str()?)?;
     if previous["headCommit"]!=treated["generatorCommit"]
         ||previous["sourceDir"]!=current["sourceDir"]
@@ -119,7 +119,9 @@ fn preceding_method(state:&AppState,treated:&Value)->Option<Value>{
         ||current["lineage"]["selectedCommit"]!=previous["headCommit"]{
         return None;
     }
-    let row=previous["history"].as_array()?.last()?;
+    let row=previous["history"].as_array()?.iter().rev().find(|row|
+        row["accepted"]==true
+            &&row["acceptedCommit"]==treated["generatorCommit"])?;
     let id=row["id"].as_str()?;
     let original=state.store.get("rsi_generation",id)?;
     (original["candidateId"]==row["candidateId"]
