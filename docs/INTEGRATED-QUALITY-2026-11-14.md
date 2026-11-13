@@ -28,7 +28,7 @@
 ## 2. 영상 턴키 방식: 실제 API 계약
 
 - **Runway**: `video/runway.rs::recipe_input`에서 옵션 검증 및 사용자 정의 shot의 길이 합을 고정합니다. 지원: 5/10/15초, auto 5샷, custom 3~5샷, 720/1080p, 9:16·16:9·1:1, 선택적 audio. 공식 [2026-06 Multi-Shot 문서](https://docs.dev.runwayml.com/recipes/multi-shot-video/). 저장된 job 입력은 생성 설정의 단일 진실 공급원입니다.
-- **LTX**: `video/ltx.rs::spec`에서 모델·해상도·FPS·길이 조합을 확인하고 `ltx::run`이 비동기 유료 task를 한 번 제출합니다. `ltx-2-5-pro`는 6/8/10초; `ltx-2-5-fast`는 6~20초 짝수(긴 영상은 720/1080p·24fps). 최대 4K·native audio 제공. 공식 [LTX API](https://docs.ltx.video/) 및 [LTX API Portal](https://docs.ltx.video/api-reference).
+- **LTX**: `video/ltx.rs::spec`에서 모델·해상도·FPS·길이 조합을 확인하고 `ltx::run`이 비동기 유료 task를 한 번 제출합니다. `ltx-2-5-pro`는 6/8/10초; `ltx-2-5-fast`는 6~20초 짝수(긴 영상은 720/1080p·24fps). 최대 4K·native audio 제공. 공식 [LTX 2.5 지원표](https://docs.ltx.io/models/ltx-2-5/) 및 [LTX V2 Quick Start](https://docs.ltx.io/quickstart/).
 - 실행: `video::enqueue` **사전 계약 검증** → `jobs::enqueue` → `video::run` → provider 작업/상태 영수증 → 파일 크기·MP4 헤더 확인 → `public_job`·브라우저 미리보기. 원격 결제 결과가 불명확하면 중복 제출 대신 `needs_review` 상태입니다.
 - 영상은 제공자 API 비용이 발생합니다. 로컬 학습·고성능 GPU를 필수 의존성으로 요구하지 않습니다. 고품질 생성은 지정한 제공자가 수행합니다.
 
@@ -53,6 +53,7 @@
 ## 참고 (2026 공개/업데이트)
 
 - [Runway multi-shot 2026-06](https://docs.dev.runwayml.com/recipes/multi-shot-video/) — 버전 고정된 API 계약.
+- [LTX-2.5 2026 모델 지원표](https://docs.ltx.io/models/ltx-2-5/) 및 [2026 API 변경 로그](https://docs.ltx.io/api-changelog) — 유효한 해상도·FPS·길이, 10월 V1 은퇴.
 - [OpenAI API prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) — exact prefix, tool schema, provider hit telemetry.
 - [Don't Break the Cache (2026-01-09)](https://arxiv.org/abs/2601.06007) — 장기 에이전트 캐시 전략 측정.
 - [TOPAS (2026-08-26)](https://arxiv.org/abs/2608.25523) — multi-agent prefix-state scheduling과 공정성.
