@@ -258,6 +258,28 @@ OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolM
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
 
+## RSI 소스 폐회로: 후손 실행과 독립 증거 (dominion-sub4, 2026-11-13)
+
+이 경로는 **컴파일된 후손의 결정**과 **독립 평가기 영수증**을 분리한다. 3회 채택 자체는 완성 증거가 아니다.
+
+```text
+POST /api/rsi/... → src/engine/rsi_evolve.rs (job 등록·캠페인)
+→ src/engine/rsi/execution/campaign.rs (실험 worktree·후손 바이너리 구동)
+→ src/engine/rsi/planner/worker_plan.rs (후손 자기 소스로 계획 재구성)
+→ src/engine/rsi/execution/worker.rs (provider·모델·편집 정책 선택, 도구 실행)
+→ src/engine/rsi/evaluation/worktree.rs (고정 사례 paired 평가)
+→ src/engine/rsi/lineage/adoption.rs (유효 후보 채택·새 커밋)
+→ 재컴파일 후 새 generation 작업 (방법·기억·전략·소스 계승)
+→ src/engine/rsi/proof/closure.rs (원본 candidate, job, paired receipt 재열람)
+```
+
+- `rsi::capability_proven`: 연속 3세대의 원본 paired 평가와 개선기→다른 능력 전이에 관한 **기초 증거**만 확인.
+- `rsi::campaign_capability_proven`: 위 조건에 더해 **개선 방법 소스 수정 A → 실제 재빌드된 후손 실행 및 다른 능력 B의 독립 개선 → 후손의 개선 방법 재수정 A**를 원본 레코드로 검증해야 참. 모델의 주장·계획서·세대 요약 필드만으로 인정하지 않는다.
+- `rsi::capability_audit`의 `recursiveClosure`: 충족 여부, 원본 candidate ID, 생성·채택 커밋, 후손 바이너리가 선택한 편집·메타 정책 revision을 표시.
+- 변경된 모델 가중치·LoRA·파인튜닝을 사용하지 않는다. 실험의 개선은 **소스·경험·정책 선택의 변화**이며 격리 계보 채택과 운영 반영을 구분한다.
+
+**검증 경계:** 실제 신규 3세대 A→B→A 성공 기록은 이 커밋에서 실행·제출하지 않았다. 따라서 전체 지능의 RSI 완성이나 독립 심판의 인정 점수를 주장하지 않는다. 실행 증거가 생기면 `recursiveClosure.proven=true`의 원본 영수증과 이력을 비교해야 한다. 세부사항은 [RSI 완료 기준](docs/rsi-completion.md).
+
 ## 자기개선 루프
 
 모든 일반 대화는 다음 루프에 들어갑니다 (`autoLearning` 기본 켜짐).
