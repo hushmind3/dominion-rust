@@ -13,7 +13,7 @@
 
 ## 변경으로 강화한 경계
 
-`rsi_system/lineage.rs::validate_peer_references`는 기존의 후보 ID·채택 커밋·독립 평가 영수증 검증에 더해 다른 계보에서 가져온 **역할 구성·가설·설계 요약·성과 수치·출처 파일 집합**을 실제 저장된 채택 설계/후보와 대조한다. 이 정보는 후손이 읽는 모델 문맥에 들어가므로 ID만 맞고 설명이 변조된 참조를 허용하지 않는다.
+`rsi_system/peer_verifier.rs::validate_peer_references`는 기존의 후보 ID·채택 커밋·독립 평가 영수증 검증에 더해 다른 계보에서 가져온 **역할 구성·가설·설계 요약·성과 수치·출처 파일 집합**을 실제 저장된 채택 설계/후보와 대조한다. 이 정보는 후손이 읽는 모델 문맥에 들어가므로 ID만 맞고 설명이 변조된 참조를 허용하지 않는다.
 
 현재 계보 참조의 선택은 `architecture_frontier` 등의 소스 구조를 이용하되, 다른 캠페인의 패치를 직접 채택하지 않는다. 이전 설계는 근거가 있는 참고 정보이며 새 소스 패치의 품질은 별도로 검증한다.
 
@@ -29,12 +29,19 @@
 - 실행: `src/engine/rsi/execution/campaign.rs::run_loop`는 후보를 worktree에서 고정 페어 평가한 후 채택한다. 각 세대의 실제 편집 파일, 후보·평가 ID, 유료 모델 호출, 빌드 및 감독 계획 기록을 보존한다.
 - 후손: 채택 커밋의 재컴파일된 `--rsi-plan-generation`과 `--rsi-worker-job`가 다음 목표·도구·프롬프트·소스 변경을 결정한다. `matched_planner_intervention`은 모델 없이 이전/후손 계획 차이를 비교하되, 이 비교 단독으로 성과를 부여하지 않는다.
 - 독립 감사: `src/engine/rsi_causal_closure.rs::audit`는 4개의 연속 메타 A→능력 B→메타 A2→능력 B2를 검사한다. 채택된 소스의 SHA·원본 frozen pair 평가·기존 작업의 실제 컴파일 후손 실행 영수증과, A가 제안한 실행 절차를 B가 실제 소스 쓰기에 사용했는지, A2가 B의 피드백을 읽고 새 절차 버전을 냈는지, B2에서 그 새 버전이 사용됐는지를 확인한다. 모든 단계는 독립 홀드아웃에서 실제 실패→성공 사례가 있어야 한다.
-- 단일 성공 결정: `src/engine/rsi.rs::recursive_proof_report` → `rsi_system/handoff.rs::handoff_evidence` → `rsi_causal_closure.rs::audit`. `rsi::attach_recursive_proof`가 캠페인·API 표시 필드를 동일하게 채우며, `campaign.rs::proof_goal_reached`, `src/api/rsi.rs::verify`, `campaign_view`, `list`, `campaigns`가 동일 판정을 사용한다. `generationCapabilityProven`은 채택 기반 일반 능력 개선 참고 값일 뿐 전체 RSI 완성이 아니다.
+- 단일 성공 결정: `src/engine/rsi/proof.rs::recursive_proof_report` → `rsi_system/handoff.rs::handoff_evidence` → `rsi_causal_closure.rs::audit`. `rsi::attach_recursive_proof`가 캠페인·API 표시 필드를 동일하게 채우며, `campaign.rs::proof_goal_reached`, `src/api/rsi.rs::verify`, `campaign_view`, `list`, `campaigns`가 동일 판정을 사용한다. `generationCapabilityProven`은 채택 기반 일반 능력 개선 참고 값일 뿐 전체 RSI 완성이 아니다.
 - 메모리: `rsi_system/lineage.rs::lineage_capsule`은 모델 제안 절차 ID·revision과 실제 후손의 실행·성과 피드백을 제한된 계보에 담는다. 재컴파일된 후손의 `worker.rs`가 이를 현재 계획 문맥으로 재주입하고 독립 원본 검증을 거친다.
 
 ### 심판 규칙과 공개 상태
 
 2026-11-13 제공된 판정은 45점·4위, 완성 0개였다. 이후 구조·검증 통합을 수정했으나 재채점·실컴파일·실모델 완료를 주장하지 않는다. 고정 모델의 파라미터 학습, LoRA, 파인튜닝은 이번 RSI 경로에 연결하지 않았다. 교차 세대의 사용·피드백은 기술적으로 추적하지만 개선 절차를 끈 상태의 동일 조건 A/B **인과 제거실험**은 별도로 필요하다.
+
+## 고정 심판과 변경 가능한 후손의 경계
+
+- 수정 가능한 실제 지능: `rsi_system/lineage.rs`(과거 계보와 실제 방법 실행 기억), `rsi_system/guidance.rs`(후손 지시), `rsi/{planner,execution,learning}`(세대별 탐색·실행·개선법), `rsi_meta_controller.rs`(선택 메타정책).
+- 후보가 수정할 수 없는 독립 감독: `rsi/proof.rs`(공통 완성 판정), `rsi_causal_closure.rs`(A→B→A→B 실제 방법 계보 감사), `rsi/execution/counterfactual.rs`(이전·후손 재생 비교), `rsi_system/design.rs`(채택 설계 완결성), `rsi_system/proposal.rs`(설계 선언 유효성), `rsi_system/handoff.rs`(고정 계승 증거), `rsi_system/peer_verifier.rs`(다른 캠페인 원본 증명). 이 경계는 `rsi.rs::safe_path`의 실질적 편집 차단에 반영돼 있다.
+- `rsi_system.rs`는 변경 가능한 설계 진입점과 모듈 등록을 보존하되 엄격한 증명 함수는 별도 보호 모듈로 위임한다. `rsi_system.rs::COMPONENTS`는 이 보호 모듈을 후손의 편집 가능한 개선법 후보로 소개하지 않는다.
+- 새 경계에 대한 회귀 검사는 `tests/support/engine/rsi_system.tests.rs`, `rsi_causal_closure.tests.rs`, `tests/support/api/rsi.tests.rs`에 선언했으며 실행하지 않았다.
 
 ## 남은 핵심 과제
 
