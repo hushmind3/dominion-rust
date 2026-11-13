@@ -271,6 +271,13 @@ POST /api/rsi/... → src/engine/rsi_evolve.rs (job 등록·캠페인)
 → src/engine/rsi/lineage/adoption.rs (유효 후보 채택·새 커밋)
 → 재컴파일 후 새 generation 작업 (방법·기억·전략·소스 계승)
 → src/engine/rsi/proof/closure.rs (원본 candidate, job, paired receipt 재열람)
+
+탐색 특징·점수 계산은 `src/engine/rsi/planner/domain.rs`에 두고,
+`rsi_evolve.rs::select_domain`은 네이티브 소스 변형기가 사용하는 실제 진입점으로 유지한다.
+`rsi/proof/closure.rs::method_source`는 `planner / learning / meta / execution / lineage`의
+실행 가능한 개선 방법 소스까지 포괄한다. 동결 `evaluation`, 독립 `proof` 및 일반 능력 소스는
+방법 소스에서 제외한다. A와 마지막 A는 **방법 소스만 변경한 후보**이며,
+B는 **일반 능력 소스만 변경한 후보**일 때만 A→B→A로 증명한다.
 ```
 
 - `rsi::capability_proven`: 연속 3세대의 원본 paired 평가와 개선기→다른 능력 전이에 관한 **기초 증거**만 확인.

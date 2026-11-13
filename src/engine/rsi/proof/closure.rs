@@ -5,6 +5,9 @@
 use crate::{engine::rsi, state::AppState};
 use serde_json::{json, Value};
 
+// Code that changes how the next descendant plans, edits, learns, executes,
+// or transfers its improvement method is an improver source. The frozen
+// comparator and proof verifier are deliberately NOT improvement targets.
 fn method_source(path: &str) -> bool {
     matches!(path,
         "src/engine/rsi_evolve.rs"
@@ -14,10 +17,13 @@ fn method_source(path: &str) -> bool {
         | "src/engine/rsi_principle_learning.rs"
         | "src/engine/rsi_system.rs"
         | "src/engine/algorithms.rs"
-    ) || (path.starts_with("src/engine/rsi/planner/")
-        || path.starts_with("src/engine/rsi/learning/")
-        || path.starts_with("src/engine/rsi/meta/"))
-        && path.ends_with(".rs")
+    ) || [
+        "src/engine/rsi/planner/",
+        "src/engine/rsi/learning/",
+        "src/engine/rsi/meta/",
+        "src/engine/rsi/execution/",
+        "src/engine/rsi/lineage/",
+    ].iter().any(|prefix| path.starts_with(prefix) && path.ends_with(".rs"))
 }
 
 fn changed_paths<'a>(candidate: &'a Value) -> Vec<&'a str> {
@@ -73,7 +79,7 @@ fn executed_descendant(job: &Value, generation: &Value) -> bool {
 fn method_gain(candidate: &Value) -> bool {
     let paths=changed_paths(candidate);
     candidate["target"]=="improver"
-        && paths.iter().any(|path|method_source(path))
+        && !paths.is_empty() && paths.iter().all(|path|method_source(path))
         && candidate["evaluation"]["metrics"]["metaHoldoutGains"]
             .as_u64().unwrap_or(0)>0
         && candidate["evaluation"]["metrics"]["improvedHoldoutDomains"]
@@ -146,3 +152,7 @@ pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
         "requires":"three contiguous independently accepted source revisions: method A, descendant B, descendant re-improvement of method A, with original jobs executing the compiled descendant policies"
     })
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/unit/engine_rsi_closure_source_tests.rs"]
+mod source_tests;

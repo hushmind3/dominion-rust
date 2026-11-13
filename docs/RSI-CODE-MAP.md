@@ -4,6 +4,8 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 
 | Concern | Live implementation |
 | --- | --- |
+| Compiled source-domain search and scoring | `src/engine/rsi/planner/domain.rs` (features, formulas), `src/engine/rsi_evolve.rs::select_domain` (native mutation target) |
+| A→B→A source-role purity and independent proof | `src/engine/rsi/proof/closure.rs`, `tests/unit/engine_rsi_closure_source_tests.rs` |
 | Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
 | Frozen paired A/B, detached source receipts | `src/engine/rsi/evaluation/worktree.rs`, `src/engine/rsi/evaluation/metrics.rs` |
 | Actual intelligence-role inventory, independent receipt replay | `src/engine/rsi_system.rs` |

@@ -27,3 +27,12 @@ The local LoRA/PEFT training and promotion module, training/evaluation/server sc
 ## Physical module boundaries
 
 `rsi_evolve.rs` is now a small API surface plus native selector template. Generation planning, model execution, research, empirical method trials, and adopted-source lineage logic live in `src/engine/rsi/`. Worktree evaluation, archived source evidence, fixed-weight model ecology, credit assignment, and method rewriting helpers are also grouped physically. The frozen evaluator remains outside the model's source-edit index.
+
+## Source-role isolation and planning boundary (2026-11-13)
+
+- `rsi/planner/domain.rs` now owns UCB/expression domain scoring, while `rsi_evolve::select_domain` stays at its historically required native source-mutation hook. The extracted module is used in both original coordinator selection and compiled descendant calls, not a parallel example implementation.
+- The independent `rsi/proof/closure.rs` accepts a method step only if **all** candidate paths are source-editing/planning/learning/meta/execution/lineage methods. Frozen evaluation and proof modules and application capabilities never count as method edits. A capability step accepts only non-method paths.
+- This eliminates a blind spot where valid recompiled improvements to `rsi/execution/` and `rsi/lineage/` could not qualify as an A step, and avoids accepting a mixed application patch as proof of method-only growth.
+- Tests were authored in `tests/unit/engine_rsi_closure_source_tests.rs`; no tests, compilation, CI or live model runs were invoked here.
+
+Research design context (not reproduced claims): 2026-10-11 *SpecForge* (arXiv:2610.15708) identifies cross-entity output coupling; 2026-09-22 *AIDE²* (arXiv:2609.26457) distinguishes accepted self-edits from hidden held-out gains; 2026-07-06 *MetaSkill-Evolve* (arXiv:2607.05297) distinguishes task skills from evolving improvement methods. The implementation stays frozen-weight and enforces source-category separation for proof.
