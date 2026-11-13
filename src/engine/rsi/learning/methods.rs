@@ -57,7 +57,7 @@ pub(crate) fn propose_method(state: &AppState, session_id: &str, body: &Value) -
     Ok(json!({"method":method,"next":"다음 예정된 개발에서 실제 도구로 실행하고 후속 조건과 개발 결과를 확인합니다. 등록은 성과가 아닙니다."}))
 }
 
-pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str) -> Vec<Value> {
+pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str, objective: &str, preferred_id:Option<&str>) -> Vec<Value> {
     let mut methods = Vec::new();
     let records = state.store.all("experience").into_iter()
         .filter(|record|record["partitionKey"] == partition && record["status"] == "active")
@@ -83,13 +83,22 @@ pub(super) fn applicable_methods(state: &AppState, partition: &str, domain: &str
         .then(a["id"].as_str().cmp(&b["id"].as_str())));
     let mut ids = BTreeSet::new();
     methods.retain(|m| ids.insert(m["id"].as_str().unwrap_or("").to_string()));
-    methods.truncate(3);
+    // A source-adopted meta revision selects a concrete procedure ID.
+    // Keep that exact executable revision even when prior successful methods
+    // occupy the normal top-three ranking; never run an unrelated substitute.
+    if let Some(id)=preferred_id {
+        methods.retain(|method|method["id"]==id);
+    }else{
+        methods.truncate(3);
+    }
     methods
 }
 
 pub(crate) fn method_reuse_decision(state: &AppState, input: &Value, domain: &str) -> Value {
+    let preferred=input["rsiMethodTransfer"]["methodId"].as_str()
+        .or_else(||input["rsiRequestedMethodId"].as_str());
     let methods = applicable_methods(state, &research_scope(input).partition_key, domain,
-        input["rsiObjective"].as_str().unwrap_or(""));
+        input["rsiObjective"].as_str().unwrap_or(""),preferred);
     json!({"action":if methods.is_empty(){"research_only"}else{"execute_methods"},
         "methodIds":methods.iter().map(|m|m["id"].clone()).collect::<Vec<_>>()})
 }
@@ -101,6 +110,7 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     // The matched control changes ONLY inherited procedure availability.
     // Ordinary model tools, provider and source remain unchanged.
     session["rsiMethodAblationArm"] = input["rsiMethodAblationArm"].clone();
+    session["rsiMethodTransfer"] = input["rsiMethodTransfer"].clone();
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
@@ -120,7 +130,8 @@ pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value>
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
     let prior = state.store.all("execution_operation");
     applicable_methods(state, session["rsiResearchPartition"].as_str().unwrap_or(""),
-        session["rsiDomain"].as_str().unwrap_or(""), session["rsiObjective"].as_str().unwrap_or(""))
+        session["rsiDomain"].as_str().unwrap_or(""), session["rsiObjective"].as_str().unwrap_or(""),
+        session["rsiMethodTransfer"]["methodId"].as_str())
         .into_iter().filter(|m| ids.contains(&m["id"]) && !prior.iter().any(|op|
             op["sessionId"] == session["id"] && op["origin"] == "procedure"
                 && op["procedureStrategyId"] == m["id"]))
