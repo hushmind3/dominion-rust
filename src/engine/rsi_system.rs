@@ -371,6 +371,7 @@ pub(crate) fn blueprint(root:&Path, revision:&str, history:&[Value])->Value {
         "improvedHoldouts":generation["evaluation"]["metrics"]["improvedHoldouts"],
         "metaHoldoutGains":generation["evaluation"]["metrics"]["metaHoldoutGains"],
         "regressions":generation["evaluation"]["metrics"]["regressions"],
+        "methodAblation":generation["methodAblation"],
         "candidateOrigin":generation["candidateOrigin"]
     })).collect::<Vec<_>>();
     let files=all_files;
