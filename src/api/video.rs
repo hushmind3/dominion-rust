@@ -36,7 +36,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let executable = video::ffmpeg(&state);
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
-    let veo = cfg["hasVideoKey"] == true;
+    let omni = cfg["hasVideoKey"] == true;
     let workflows = workflows_from_config(&cfg);
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
@@ -44,15 +44,15 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy || veo,
+        "available": executable.is_some() || comfy || omni,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
-        "veo": {"available": veo, "model":cfg["veoModel"], "durationSeconds":8},
+        "omni": {"available": omni, "model":cfg["omniModel"], "targetDurationSeconds":8},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
             {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
-            {"id":"veo","name":"Google Veo 3.1 · 음성 포함 고화질","available":veo,"reason":if veo{""}else{"Gemini API 키 등록 필요"}}
+            {"id":"omni","name":"Google Gemini Omni Flash · 음성 포함 고화질","available":omni,"reason":if omni{""}else{"Gemini API 키 등록 필요"}}
         ],
         "jobs": jobs,
         "models": [],
@@ -79,8 +79,8 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "providerId",
         "model",
         "useModel",
-        "veoModel",
-        "veoResolution",
+        "omniModel",
+        "omniResolution",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
@@ -115,12 +115,12 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
             "워크플로는 1MiB 이하로 저장하세요.",
         );
     }
-    if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"veo")) {
+    if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"omni")) {
         return error(StatusCode::BAD_REQUEST,"영상 엔진 선택 오류");
     }
-    if !matches!(cfg["veoModel"].as_str(),Some("veo-3.1-generate-preview"|"veo-3.1-fast-generate-preview"))
-        || !matches!(cfg["veoResolution"].as_str(),Some("720p"|"1080p"|"4k")) {
-        return error(StatusCode::BAD_REQUEST,"Veo 모델 또는 출력 화질 오류");
+    if !matches!(cfg["omniModel"].as_str(),Some("gemini-omni-1.2-flash"|"gemini-omni-1.1-flash"))
+        || !matches!(cfg["omniResolution"].as_str(),Some("360p"|"720p"|"1080p"|"4k")) {
+        return error(StatusCode::BAD_REQUEST,"Omni 모델 또는 출력 화질 오류");
     }
     let new_key=body["videoApiKey"].as_str().map(str::trim).filter(|v|!v.is_empty());
     if new_key.is_some_and(|key| key.len()>512 || key.chars().any(char::is_whitespace)) {
@@ -235,8 +235,8 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         }));
     }
     items.push(json!({
-        "id":"veo", "name":"Google Veo 3.1 (8초, 사운드 포함)",
-        "kind":"veo","available":cfg["hasVideoKey"]==true,
+        "id":"omni", "name":"Google Gemini Omni Flash (고화질·사운드)",
+        "kind":"omni","available":cfg["hasVideoKey"]==true,
         "hint":"Gemini API 키 하나로 고화질 영상 직접 생성. 유료 API 호출입니다."
     }));
     Json(json!(items))
@@ -251,7 +251,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
         "models": [
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
-            {"id":"veo","name":"Google Veo 3.1","kind":"veo","available":cfg["hasVideoKey"]==true},
+            {"id":"omni","name":"Gemini Omni Flash","kind":"omni","available":cfg["hasVideoKey"]==true},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
