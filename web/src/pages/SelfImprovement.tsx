@@ -113,7 +113,7 @@ export function SelfImprovementPage(){
  const [workload,setWorkload]=useState<Workload>(()=>preferences().workload)
  const budget=workloads[workload]
  const [localOnly,setLocalOnly]=useState(()=>preferences().workload==='night')
- const [methodAblation,setMethodAblation]=useState(false)
+ const [methodAblation,setMethodAblation]=useState(true)
  const issueId=new URLSearchParams(window.location.hash.split('?')[1]||'').get('issue')||''
  const [reportedIssue,setReportedIssue]=useState<{id:string;title?:string;detail?:string;suggestedRequest?:string}|null>(null)
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>('automatic')
@@ -236,6 +236,7 @@ export function SelfImprovementPage(){
    </SelectInput></FormField><FormField label="개선을 맡길 모델"><ModelPicker providerId={providerId} value={model} onChange={value=>{setModel(value)}} disabled={working||busy}/></FormField></div>
    <div className="mt-3 flex flex-wrap items-center gap-3 text-[12px]"><label className="flex items-center gap-2"><input type="checkbox" checked={localOnly} disabled={working||busy} onChange={e=>setLocalOnly(e.target.checked)}/>로컬 전용 · 유료 API로 전환 금지</label>
     <Button variant="secondary" disabled={working||busy||installing} onClick={()=>{const local=enabledAll.find(p=>p.local||p.kind==='ollama');if(local){setProviderId(local.id);setModel(local.model||'');setLocalOnly(true);setWorkload('night')}else{setError('모델 관리에서 로컬 제공자를 먼저 연결해 주세요.')}}}>로컬 야간 설정</Button></div>
+   <label className="mt-3 flex items-start gap-2 text-[12px] text-[#5C544A]"><input type="checkbox" checked={methodAblation} disabled={working||busy} onChange={e=>setMethodAblation(e.target.checked)}/><span>개선법 ON/OFF 실측 자동 연결 <span className="block text-[11px] text-[#8A8176]">채택된 개선법을 계승할 때 원본 소스·모델이 같은 별도 OFF 대조 작업을 실행합니다. 유료 API를 선택했다면 추가 호출과 토큰이 발생합니다. 체크 해제 시 대조군을 생성하지 않습니다.</span></span></label>
    <p className="mt-3 text-[12px] text-[#5C544A]">수정 범위: 알고리즘 · 자기개선기 · 도구/문맥 하네스 · 기억/학습 · 백엔드 · 프론트 전체. 등록된 API·로컬 모델을 선택할 수 있고, 비싼 모델을 자동 우선 선택하지 않습니다.</p>
    <div className="mt-4 flex flex-wrap items-center justify-between gap-3"><p className="text-[11px] text-[#7C7469]">최대 {budget.maxAttempts}회 · {budget.tokenBudget?(budget.tokenBudget/10000).toLocaleString()+'만 토큰':'토큰 상한 없음'} · {budget.timeBudgetSeconds?budget.timeBudgetSeconds/60+'분':'시간 상한 없음'}. 개선을 확인하지 못하면 기존 버전을 유지합니다.</p>
     <Button variant="ghost" disabled={working||installing} onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'고급 설정'}</Button></div>
@@ -251,7 +252,6 @@ export function SelfImprovementPage(){
    <div className="mt-5"><FormField label="개선 능력을 확인할 평가"><SelectInput value={evaluationProfileId} disabled={working||busy} onChange={e=>setEvaluationProfileId(e.target.value)}>
     {(evaluationProfiles.value.profiles.length?evaluationProfiles.value.profiles:[{id:'default',name:'범용 에이전트 기본 평가',taskCount:4}]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.taskCount}개 과제</option>)}
    </SelectInput></FormField><p className="mt-2 text-[11px] text-[#8A8176]">평가는 시작할 때 고정합니다. 각 과제를 기존·개선 버전으로 한 번씩 실행하며 같은 모델과 예산을 사용합니다.</p></div>
-   <label className="mt-5 flex items-start gap-2 text-[12px] text-[#5C544A]"><input type="checkbox" checked={methodAblation} disabled={working||busy} onChange={e=>setMethodAblation(e.target.checked)}/><span>실제 개선법 ON/OFF 대조실험 실행 <span className="block text-[11px] text-[#8A8176]">같은 소스·모델·동결 평가에서 추가 대조군 작업기를 실행합니다. 모델 호출과 토큰 사용이 늘어납니다. 대조군 변경은 채택하지 않습니다.</span></span></label>
    <div className="mt-5"><FormField label="한 번에 진행할 작업량"><SelectInput value={workload} disabled={working||busy||installing} onChange={e=>setWorkload(e.target.value as Workload)}>{Object.entries(workloads).map(([key,value])=><option key={key} value={key}>{value.label} · 최대 {value.maxAttempts}단계 · {value.tokenBudget?(value.tokenBudget/10000).toLocaleString()+'만 토큰':'토큰 상한 없음'} · {value.timeBudgetSeconds?value.timeBudgetSeconds/60+'분':'시간 상한 없음'}</option>)}</SelectInput></FormField></div>
    <p className="mt-4 text-[11px] leading-5 text-[#8A8176]">시작하면 선택한 모델로 실제 소스를 수정합니다. 검증된 변경은 원본 소스 브랜치에 반영합니다. 자동 재시작을 지원하는 소스 설치에서는 실행 중인 프로그램도 교체합니다. 실행 중에는 중단할 수 있습니다.</p>
   </Panel>}
