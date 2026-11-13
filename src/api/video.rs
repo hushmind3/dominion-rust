@@ -37,23 +37,26 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
     let workflows = workflows_from_config(&cfg);
+    let runway = cfg["hasRunwayKey"] == true;
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
         .map(video::public_job).collect::<Vec<_>>();
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy,
+        "available": executable.is_some() || comfy || runway,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
+        "runway": {"available":runway,"recipe":"2026-06","audio":true,"durations":[5,10,15]},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
-            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}}
+            {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
+            {"id":"runway","name":"Runway 멀티샷 · 음성 포함","available":runway,"reason":if runway{""}else{"Runway API 키 등록 필요"}}
         ],
         "jobs": jobs,
         "models": [],
-        "modelsReady": false,
+        "modelsReady": runway || comfy,
         "workflows": workflows,
         "installed": reachable
     }))
@@ -109,6 +112,16 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
             StatusCode::BAD_REQUEST,
             "워크플로는 1MiB 이하로 저장하세요.",
         );
+    }
+    if body["clearRunwayKey"] == true {
+        state.store.remove_secret("video:runway");
+    } else if let Some(key) = body["runwayApiKey"].as_str() {
+        if key.len() > 300 {
+            return error(StatusCode::BAD_REQUEST, "Runway API 키가 너무 깁니다.");
+        }
+        if !key.trim().is_empty() {
+            state.save_secret("video:runway", key.trim());
+        }
     }
     if state.store.put("video_config", &cfg).is_none() {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "영상 설정을 저장할 수 없습니다.");
@@ -207,6 +220,10 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         "available": native,
         "hint": if native { "로컬 ffmpeg으로 장면과 자막을 합성합니다." } else { "ffmpeg를 찾을 수 없습니다. 설정에서 경로를 지정하세요." },
     })];
+    if cfg["hasRunwayKey"] == true {
+        items.push(json!({"id":"runway","name":"Runway Multi-Shot (2026-06)",
+            "kind":"runway","available":true,"hint":"API 키로 5개 샷·오디오 포함 영상을 생성합니다."}));
+    }
     if comfy {
         items.push(json!({
             "id": "comfyui",
@@ -228,6 +245,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
         "models": [
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
+            {"id":"runway","name":"Runway Multi-Shot 2026-06","kind":"runway","available":cfg["hasRunwayKey"] == true},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
