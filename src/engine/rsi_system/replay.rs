@@ -48,6 +48,12 @@ pub(crate) fn revalidated_history(
                 && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
                 && candidate["experimentAdoption"]["productionDeployed"]==false);
         checked["pairedRevalidated"]=json!(adopted);
+        // Always reconstruct controlled-method labels from the original OFF
+        // job and BOTH independent paired candidate receipts. Descendant
+        // learning must never trust a copied methodAblation JSON claim.
+        checked["methodAblation"]=if adopted {
+            crate::engine::rsi_evolve::measured_method_ablation(state,&checked)
+        } else {Value::Null};
         if checked["metaPolicy"]["source"]=="compiled_editable_meta_controller_v1" {
             checked["metaLearning"]=crate::engine::rsi_prequential::feedback(
                 &checked["metaPolicy"],&checked);
