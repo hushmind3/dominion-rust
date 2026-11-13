@@ -53,7 +53,9 @@ fn returns(history:&[Value],name:&str)->(u64,u64,u64){
     (trials,wins,regressions)
 }
 
-/// Four operator families share one reward/evidence interface. Their source
+/// Independently measured native edits must also be on the chosen target
+/// before history.rs attributes a result to this learning policy.
+/// Five operator families share one reward/evidence interface. Their source
 /// implementations (meta, authored programs, principles, frontier discovery)
 /// are independently editable and may be extended with new operators in this
 /// source module without adding another frozen campaign phase.

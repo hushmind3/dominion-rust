@@ -48,3 +48,7 @@ The experiment chooser is a compiled and editable algorithm whose recommendation
 - [MetaSkill-Evolve](https://arxiv.org/abs/2607.05297), 2026-07-06 — task and meta-skills evolve at two timescales with a fixed model backbone.
 - Microsoft Research, [Rethinking Self-Evolving Agents / Open-Ended Optimization](https://www.microsoft.com/en-us/research/publication/rethinking-self-evolving-agents-do-we-still-need-prescribed-optimization-pipelines/), 2026-08 — mutable optimizer controls the route, immutable evaluator/resources bound the experiment.
 - [RSIHub](https://arxiv.org/abs/2610.32253), 2026-10-23 — composable operator recipes, source lineage, frozen evaluations and independent selection.
+
+## CI 전 감사: 선택기 학습의 실제 실행 귀속
+
+실행 정책이 선택한 파일을 `worker`에서 단순 focus로 지정했다고 성과를 인정하면 실제 코드 편집 없이 정책을 강화할 수 있습니다. `rsi_system/history.rs::replayed_experiment_operator`가 **원본 `rsi_candidate`의 소속 세대, model-driven origin, 변경된 `paths`, 원본 도구 호출의 `written` 경로**를 요구하도록 강화했습니다. 이후에만 기존 원본 paired 평가 재생과 연결됩니다. `rsi/contract.rs` 단위 테스트는 변조된 동결 평가 및 누락된 소스 편집 대상의 실패도 다룹니다. 사용자 요청에 따라 `CI`는 GitHub Actions의 `push`로 실행하며 실제 상태는 실행 기록을 기준으로 표시합니다.

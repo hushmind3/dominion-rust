@@ -42,10 +42,29 @@ fn replayed_experiment_operator(
     let Some(job)=generation["jobId"].as_str()
         .and_then(|id|state.store.get("job",id)) else{return Value::Null};
     let choice=&generation["experimentOperator"];
+    // The worker choosing a target is not execution. Bind the proposed
+    // target to a real model-authored source diff, then to the paired result.
+    let Some(candidate)=generation["candidateId"].as_str()
+        .and_then(|id|state.store.get("rsi_candidate",id))
+        else{return Value::Null};
+    let target=choice["target"]["path"].as_str().unwrap_or("");
+    let candidate_edited=crate::engine::rsi::safe_path(target)
+        && candidate["id"]==generation["candidateId"]
+        && candidate["rsiJobId"]==generation["jobId"]
+        && candidate["origin"]=="model_driven_detached_worktree"
+        && candidate["paths"].as_array().is_some_and(|files|
+            files.iter().any(|path|path.as_str()==Some(target)));
+    let tool_edit_witness=generation["editActions"].as_array().is_some_and(|actions|
+        actions.iter().any(|action|action["written"]==true
+            && action["path"].as_str()==Some(target)));
+    if !candidate_edited || !tool_edit_witness {
+        return Value::Null;
+    }
     if choice["source"]!="compiled_replay_trained_experiment_operator_v1"
         || job["id"]!=generation["jobId"]
         || job["kind"]!="rsi_generation"
         || job["rsiExperimentOperatorExecuted"]!=true
+        || job["status"]!="completed"
         || job["input"]["rsiGeneratorCommit"]!=generation["generatorCommit"]
         || &job["input"]["rsiExperimentOperator"]!=choice
         || &job["input"]["rsiDescendantPlan"]["experimentOperator"]!=choice

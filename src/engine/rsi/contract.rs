@@ -197,5 +197,13 @@ mod tests{
         plan["metaPolicy"]["mode"]=json!("new_experiment_search");
         plan["systemBlueprint"]["sourceInventory"][0]["sha256"]=json!("c".repeat(64));
         assert!(validate(&plan,&input).is_err());
+        plan["systemBlueprint"]["sourceInventory"][0]["sha256"]=json!("b".repeat(64));
+        input["rsiFrozenCases"][0]["id"]=json!("altered-holdout");
+        assert!(validate(&plan,&input).is_err(),
+            "a previously pinned frozen suite must not be substituted");
+        input["rsiFrozenCases"][0]["id"]=json!(0);
+        plan["focusFiles"][0]=json!("src/engine/unknown.rs");
+        assert!(validate(&plan,&input).is_err(),
+            "an unindexed source edit must not satisfy the original contract");
     }
 }

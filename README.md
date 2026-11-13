@@ -537,3 +537,7 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 `rsi/contract.rs::ExperimentContract`는 캠페인·소스 커밋/트리·대상 파일별 SHA·개선법 리비전·동결 평가 지문을 결합한 버전 타입 계약입니다. 후손 계획 → 실행기 → 워커 → 증명기가 이 계약을 공유합니다. 대형 조정기의 컴파일·생성기 계보를 `rsi/execution/generator.rs`, 컴파일 계획 실행·검증을 `rsi/execution/compiled_plan.rs`, 별도 CLI 계획 실행을 `rsi/worker/planning.rs`로 분리했습니다.
 
 구체적 진입점과 파일 지도: [RSI 실행 계약/한계](docs/architecture/RSI-EDITABLE-EXPERIMENT-ENGINE-2026-11-13.md). 모델 가중치와 독립 동결 평가기는 수정하지 않습니다. **이 소스 개편에서는 빌드·테스트·CI·실모델 실행을 하지 않았고 완성 판정도 주장하지 않습니다.**
+
+### 2026-11-13 CI 검증 단계
+
+`rsi_system/history.rs::replayed_experiment_operator`는 실제 후손이 목표를 선택한 것만으로 실험 보상을 계산하지 않습니다. 동일 작업에서 생성된 모델 편집 후보가 **바로 그 목표 소스**를 변경했고 원본 도구 기록에 성공적인 쓰기가 있으며 동결 평가가 재생되는 경우에만 선택기 학습 근거로 인정합니다. `rsi/contract.rs` 회귀 검증에는 원본 동결 사례 대체와 소스 인벤토리 밖의 목표 편집이 계약을 통과하지 못하는 사례도 포함했습니다. GitHub Actions `CI` 워크플로에서 Rust release tests 및 웹 typecheck/build를 실행하도록 일반 푸시 커밋을 생성합니다. 결과는 별도 실행 링크로 기록합니다.
