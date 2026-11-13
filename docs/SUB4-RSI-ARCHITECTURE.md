@@ -43,3 +43,28 @@ The local LoRA/PEFT training and promotion module, training/evaluation/server sc
 The paired evaluator's own `rsi.rs`, `rsi/evaluation/{worktree,metrics}.rs`, `rsi/proof/`, the frozen oracle and test corpus are excluded at **both** the patch/changed-path gate (`rsi::safe_path`) and source-index discovery (`code_index::is_source`), using `rsi/proof/path_policy.rs`. Legitimate experimental work on `rsi/evaluation/intervention_lab.rs`, `rsi/evaluation/rule_tournament.rs`, actual execution, lineage and planner modules stays open. This blocks the trivial strategy of changing what counts as success instead of improving the successor. Bumping source-index parser version invalidates stale discovery records. The authored boundary tests were not executed.
 
 The RSI API candidate/paired-receipt unit corpus was physically moved from `src/engine/rsi.rs` into `tests/unit/engine_rsi_api_tests.rs`. Its mock patch points to editable `src/engine/memory.rs`, not the newly protected evaluator module. The production API file therefore no longer embeds the large unit fixture. Tests remain authored, unexecuted.
+
+## Matched source-ablation control gate (2026-11-13)
+
+`rsi/proof/method_control.rs` reads the original `rsi_generation`, `rsi_candidate`,
+`rsi_pair`, `job`, `session`, and `model.usage` records.  A descendant B must
+outperform actually run independent controls from A's **pre-method** source
+commit on the identical frozen case plan, unchanged baseline outcome, exact
+task prompt, objective, model reasoning setting and audited fixed-weight
+provider/model route. Control budget must be at least B's. All matched
+controls are considered, not a hand-picked weak result; at least one
+previously failing B holdout must pass under method-on and remain failing
+under all matching method-off controls, with no reverse transitions.
+
+The strict closure, the campaign stop decision and the API now consult this
+same verifier; absence of an independent controlled model run means proof
+remains false. `recursiveClosure.methodControl` supplies the pre-A source
+commit and frozen task hash required to organize a valid repeat. Existing
+campaigns are **not** relabeled. Control creation must use a separate,
+actual, source-isolated generation through the ordinary RSI evaluator;
+this change does not manufacture a control or execute a paid model call.
+The contrast is nonrandomized and is not universal causal proof.
+
+2026 evidence: [PAST-Bench](https://arxiv.org/abs/2608.04003) uses
+matched experience on/off conditions; [AIDE²](https://arxiv.org/abs/2609.26457)
+measures inherited source-level performance on hidden held-out tasks.

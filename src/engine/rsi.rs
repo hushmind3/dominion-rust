@@ -595,7 +595,7 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
         "verifiedStreak":verified_best,
         "recursiveClosure":crate::engine::rsi_closure::evidence(state,&history),
         "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
-            "compiledDescendantExecuted":true,"methodCapabilityMethodClosure":true},
+            "compiledDescendantExecuted":true,"methodCapabilityMethodClosure":true,"matchedMethodOffControl":true},
         "generations":rows,
     })
 }

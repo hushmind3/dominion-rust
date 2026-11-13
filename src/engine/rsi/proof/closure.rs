@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 #[path = "source_roles.rs"]
 mod source_roles;
 use self::source_roles::method_source;
+#[path = "method_control.rs"]
+mod method_control;
 
 fn changed_paths<'a>(candidate: &'a Value) -> Vec<&'a str> {
     candidate["paths"].as_array().into_iter().flatten()
@@ -93,6 +95,7 @@ fn cross_domain_gain(candidate: &Value) -> bool {
 /// intelligence growth or that all changed behavior is causally attributable
 /// to the original source edit.
 pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
+    let mut pending_control=Value::Null;
     for window in history.windows(3) {
         let [first, second, third] = window else { continue };
         let (Some((a, a_job)),Some((b,b_job)),Some((c,c_job))) = (
@@ -110,8 +113,13 @@ pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
             || c_job["input"]["rsiGeneratorCommit"]!=second["acceptedCommit"]
             || a_job["input"]["rsiGeneratorCommit"]!=first["generatorCommit"]
         {continue;}
+        let control=method_control::evidence(state,first,second,&b_job,&b);
+        if control["measuredAdvantage"]!=true {
+            pending_control=control;
+            continue;
+        }
         return json!({
-            "proven":true,
+            "methodControl":control,
             "source":"replayed_method_capability_method_closed_loop_v1",
             "shape":"improver_A -> different_capability_B -> improver_A",
             "candidateIds":[a["id"],b["id"],c["id"]],
@@ -131,8 +139,9 @@ pub(crate) fn evidence(state: &AppState, history: &[Value]) -> Value {
     }
     json!({
         "proven":false,
+        "methodControl":pending_control,
         "source":"replayed_method_capability_method_closed_loop_v1",
-        "requires":"three contiguous independently accepted source revisions: method A, descendant B, descendant re-improvement of method A, with original jobs executing the compiled descendant policies"
+        "requires":"three contiguous independently accepted source revisions: method A, descendant B, descendant re-improvement of method A, with original jobs executing the compiled descendant policies AND a matched, independently replayed method-off control outperformable on frozen holdouts"
     })
 }
 
