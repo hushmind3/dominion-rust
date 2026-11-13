@@ -26,7 +26,7 @@ fn grounded(row:&Value)->bool{
 /// An explicitly selected but unobserved model route is never treated as
 /// verified execution. Legacy non-ecology campaigns remain a separate,
 /// explicitly declared (weaker) stratum so they cannot borrow audited credit.
-fn source_actor(g:&Value)->Option<String>{
+pub(crate) fn source_actor(g:&Value)->Option<String>{
     let execution=&g["modelEcologyExecuted"];
     let (proven, provider, model)=if execution.is_object(){
         if execution["source"]!="real_descendant_model_usage_v1"
