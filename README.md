@@ -262,6 +262,13 @@ OpenAI 호환 네이티브 도구 호출과 텍스트 도구 프로토콜(`toolM
 JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적으로 승인
 대기이며, `policy.autoApproveMcp` 로 자동 승인할 수 있습니다.
 
+## 서브3: 구조·계보 검증 정리 (2026-11-13)
+
+- `src/engine/rsi_system.rs`의 소스 모델/프런티어와 `src/engine/rsi_system/{design,lineage,guidance,proposal,handoff}.rs`의 책임 경계를 분리했습니다. 모델이 선언한 설계와 독립 영수증이 검증하는 채택은 서로 다른 경계입니다.
+- `lineage::validate_peer_references`는 과거 캠페인의 후보 ID·패치 SHA뿐 아니라 실제 채택 기록에서 추출한 역할·설계 요약·품질 측정·대상 파일을 다시 비교합니다. 수정된 후손의 계획에는 검증 가능한 참조만 사용됩니다.
+- API/jobs → 캠페인 → 재빌드 후손 계획 → worker/도구 편집 → worktree 동결 페어 평가 → 채택 → 재빌드 → 계보·방법 계승 → 인과 폐루프 감사의 실제 경로와 한계는 [서브3 구조 설명](docs/RSI-SUB3-STRUCTURE-2026-11-13.md)에 정리했습니다.
+- 테스트·컴파일·빌드·벤치마크는 실행하지 않았으며, 성능 향상과 심판 점수를 선포하지 않습니다.
+
 ## 서브3: 재컴파일 자기개선 행동 비교 경로 (2026-11-13)
 
 - `src/engine/rsi/execution/campaign.rs::run_loop`에서 독립 채택된 소스로 다음 개선기를 빌드하고, `--rsi-plan-generation`과 `--rsi-worker-job`으로 실제 후손을 실행합니다.
