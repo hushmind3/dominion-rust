@@ -297,22 +297,33 @@ pub async fn restore_failed_candidate(
         "patchSha256":candidate["patchSha256"]})))
 }
 
+/// Classify actual changed source paths, not arbitrary diff-header substrings.
+/// A compiled meta-controller rewrite must be identifiable as improvement
+/// machinery in the next independently measured generation.
 fn classify(patch:&str)->&'static str {
-    if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi.rs ")
-            || line.contains("src/engine/rsi_worktree.rs ")
-            || line.contains("src/engine/rsi_evolve.rs ")
-            || line.contains("src/engine/rsi_mutation.rs ")
-            || line.contains("src/engine/rsi_domain_accumulator.rs ")
-            || line.contains("src/engine/rsi_metrics.rs ")
-            || line.contains("src/api/rsi.rs "))) {
-        "improver"
-    } else if patch.lines().filter(|line|line.starts_with("diff --git "))
-        .all(|line|line.contains("src/engine/memory")
-            || line.contains("src/engine/algorithms.rs")
-            || line.contains("src/engine/room_state.rs")) {
-        "algorithm"
-    } else {"harness"}
+    let mut changed=patch.lines().filter_map(|line|{
+        let header=line.strip_prefix("diff --git ")?;
+        let mut fields=header.split_whitespace();
+        let before=fields.next()?.strip_prefix("a/")?;
+        let after=fields.next()?.strip_prefix("b/")?;
+        (before==after && fields.next().is_none()).then_some(after)
+    }).peekable();
+    if changed.peek().is_none(){return "harness";}
+    let mut only_algorithms=true;
+    for path in changed{
+        if path=="src/api/rsi.rs"
+            || path.starts_with("src/engine/rsi_")
+            || path.starts_with("src/engine/rsi/")
+            || path=="src/engine/rsi.rs"
+        {
+            return "improver";
+        }
+        only_algorithms &= matches!(path,
+            "src/engine/memory.rs"|"src/engine/algorithms.rs"
+            |"src/engine/room_state.rs")
+            || path.starts_with("src/engine/memory/");
+    }
+    if only_algorithms {"algorithm"} else {"harness"}
 }
 /// Retain the FIRST actionable compiler diagnostic as well as its final
 /// summary. Cargo often prints several thousand bytes after the first
@@ -1058,6 +1069,13 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
+        assert_eq!(classify("diff --git a/src/engine/rsi/meta_controller/selection.rs b/src/engine/rsi/meta_controller/selection.rs\\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi/system/agenda.rs b/src/engine/rsi/system/agenda.rs\\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi_recursive_laboratory.rs b/src/engine/rsi_recursive_laboratory.rs\\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\\ndiff --git a/src/engine/rsi/meta_controller/transfer.rs b/src/engine/rsi/meta_controller/transfer.rs\\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\\ndiff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\\n"),"harness");
+        assert_eq!(classify("diff --git a/src/engine/memory.rs b/src/engine/memory.rs\\n"),"algorithm");
+        assert_eq!(classify(""),"harness");
     }
     #[test]
     fn failing_verification_never_completes_and_only_valid_failures_retry(){
