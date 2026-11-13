@@ -124,9 +124,6 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if !(3..=180).contains(&duration) {
         return Err("영상 길이는 3~180초입니다.".into());
     }
-    if engine == "ltx" && !matches!(duration, 6 | 8 | 10) {
-        return Err("LTX 2.5는 6초, 8초 또는 10초를 선택하세요.".into());
-    }
     let aspect = body["aspectRatio"]
         .as_str()
         .or(cfg["aspectRatio"].as_str())
@@ -141,6 +138,9 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
             return Err("지원하지 않는 LTX 모델입니다.".into());
         }
         ltx::resolution(aspect,ltx_quality)?;
+        if !ltx::valid_duration(ltx_model,ltx_quality,duration) {
+            return Err("LTX 2.5 모델·화질별 지원 영상 길이를 확인하세요.".into());
+        }
         if brief.chars().count() > 5_000 {
             return Err("LTX 프롬프트는 최대 5,000자입니다.".into());
         }

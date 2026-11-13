@@ -26,6 +26,13 @@ pub(super) fn resolution(aspect: &str, quality: &str) -> Result<&'static str, St
     }
 }
 
+/// LTX-2.5 Fast at 720p/1080p supports twenty-second clips at 24fps;
+/// Pro and higher-resolution Fast clips are limited to ten seconds.
+pub(super) fn valid_duration(model:&str,quality:&str,seconds:u64)->bool {
+    let max=if model=="ltx-2-5-fast" && matches!(quality,"720p"|"1080p") {20} else {10};
+    (6..=max).contains(&seconds) && seconds%2==0
+}
+
 /// Do not follow arbitrary URLs returned by a compromised video endpoint.
 fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(raw).map_err(|_| "영상 다운로드 주소 오류")?;
@@ -57,8 +64,8 @@ pub(super) async fn render(ctx: &JobContext, input: &Value, dir: &Path) -> Resul
     let aspect = input["aspectRatio"].as_str().unwrap_or("9:16");
     let size = resolution(aspect, quality)?;
     let duration = input["duration"].as_u64().ok_or("영상 길이가 없습니다.")?;
-    if !matches!(duration, 6 | 8 | 10) {
-        return Err("LTX 2.5 영상은 6초, 8초 또는 10초를 선택하세요.".into());
+    if !valid_duration(model,quality,duration) {
+        return Err("선택한 LTX 모델·화질에서 지원하지 않는 영상 길이입니다.".into());
     }
     let prompt = input["brief"].as_str().unwrap_or("").trim();
     if prompt.is_empty() || prompt.chars().count() > 5_000 {
@@ -180,6 +187,13 @@ mod tests {
         assert_eq!(resolution("9:16","1080p").unwrap(),"1080x1920");
         assert_eq!(resolution("1:1","4k").unwrap(),"2160x2160");
         assert!(resolution("2:1","1080p").is_err());
+    }
+    #[test]
+    fn fast_supports_twenty_seconds_only_at_lower_resolutions() {
+        assert!(valid_duration("ltx-2-5-fast","1080p",20));
+        assert!(!valid_duration("ltx-2-5-pro","1080p",20));
+        assert!(!valid_duration("ltx-2-5-fast","4k",20));
+        assert!(!valid_duration("ltx-2-5-fast","720p",7));
     }
     #[test]
     fn signed_media_urls_require_trusted_https_hosts() {
