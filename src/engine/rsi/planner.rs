@@ -1,6 +1,13 @@
 //! Source-grounded action policy, successor design and compiled descendant planning.
 //! Private to the RSI coordinator; no frozen evaluator or model weight changes.
-use super::*;
+use super::{
+    AppState, Value, BTreeMap, BTreeSet, Path,
+    PathBuf, json, jobs, rsi, tools,
+    DOMAINS, limits, valid_domain_scores, select_domain, search_strategy,
+    choose, select, run, focus_excerpt_has_source, bind_action_to_source,
+    choose_focus_files, focus_file_context, research_scope, focus_domain_hint, selection_objective,
+    generation_fits_remaining_budget, session_tool_usage, worker, comparable_trial_baseline,
+};
 
 pub(super) fn actual_edit_observation(tools:&[Value], candidate_created:bool)->Value {
     let calls=tools.iter()
