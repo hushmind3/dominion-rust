@@ -18,7 +18,11 @@ fn meta_source(path:&str)->bool {
         |"src/engine/rsi/execution/method_ablation.rs"
         |"src/engine/rsi.rs"
         |"src/engine/rsi_evolve.rs"
-        |"src/engine/rsi_system.rs") {return false;}
+        |"src/engine/rsi_system.rs"
+        |"src/engine/rsi_worktree.rs"
+        |"src/engine/rsi_metrics.rs"
+        |"src/engine/rsi_archive.rs"
+        |"src/api/rsi.rs") {return false;}
     path=="src/engine/rsi_evolve.rs" ||
     path=="src/engine/rsi_meta_controller.rs" ||
     path=="src/engine/rsi_program_graph.rs" ||
