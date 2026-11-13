@@ -79,9 +79,14 @@ fn method_eligible(algebra:&Value,request:&Value)->bool{
     let path=selected["target"]["path"].as_str();
     let method=selected["rule"]["method"]["path"].as_str();
     request["rsiMethodAblation"]==true && request["rsiAutonomous"]==true
+        && request["rsiMetaOperatorActive"]==true
         && path.zip(method).is_some_and(|(p,m)|p!=m
             && crate::engine::rsi::safe_path(p)
-            && crate::engine::rsi::safe_path(m))
+            && crate::engine::rsi::safe_path(m)
+            && request["rsiFocusFiles"].as_array()
+                .and_then(|a|a.first()).and_then(Value::as_str)==Some(p))
+        && request["rsiArchitectureTarget"]==selected["target"]
+        && request["rsiSelectedDomain"]==selected["target"]["domain"]
         && selected["target"].is_object()
 }
 fn observed_trials(history:&[Value])->BTreeMap<&'static str,(u64,u64,u64,u64)>{
