@@ -396,6 +396,7 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
                 _ => false,
             }
         }
+        "delegate_task" | "task_result" => delegated_action_evidence(result),
         "github_api" => item
             .pointer("/arguments/method")
             .or_else(|| item.pointer("/args/method"))
@@ -407,6 +408,29 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
         _ => false,
     }
 }
+/// Delegates run with isolated contexts. Their success is attributable to
+/// the parent only when the durable task result contains actual completed
+/// side-effect operations; a summary or a queued child is never evidence.
+fn delegated_action_evidence(result:&Value)->bool {
+    if result["status"]!="completed" {return false;}
+    let mut pending=result["operations"].as_array().into_iter().flatten()
+        .collect::<Vec<_>>();
+    let mut examined=0usize;
+    while let Some(operation)=pending.pop() {
+        examined+=1;
+        if examined>64 {return false;}
+        if matches!(tool_name(operation),"delegate_task"|"task_result") {
+            if operation["result"]["status"]=="completed" {
+                pending.extend(operation["result"]["operations"].as_array()
+                    .into_iter().flatten());
+            }
+        } else if is_action_evidence(operation) {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     if !matches!(tool_name(item), "shell_exec" | "terminal_exec") || !successful_evidence(item) {
         return false;
@@ -506,6 +530,21 @@ pub(crate) fn acceptance_gaps(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn delegated_action_needs_completed_child_and_real_operation(){
+        let action=json!({"tool":"workspace_replace","result":{"ok":true}});
+        assert!(is_action_evidence(&json!({"tool":"task_result",
+            "result":{"status":"completed","operations":[action]}})));
+        assert!(!is_action_evidence(&json!({"tool":"task_result",
+            "result":{"status":"running","operations":[
+                {"tool":"workspace_write","result":{"ok":true}}
+            ]}})));
+        assert!(!is_action_evidence(&json!({"tool":"task_result",
+            "result":{"status":"completed","operations":[
+                {"tool":"workspace_read","result":{"content":"unchanged"}}
+            ]}})));
+    }
 
     #[test]
     fn actual_range_and_exact_replacements_are_action_evidence() {
