@@ -1,5 +1,8 @@
 //! Candidate adoption boundary and failed-model lineage recovery.
-use super::*;
+use super::{
+    Digest, Value, JobContext, Path, Sha256,
+    rsi, git,
+};
 
 pub(super) fn retry_learned_model_failure(
     error:&str, generation:&Value, has_method:bool, recovery_count:u64,
