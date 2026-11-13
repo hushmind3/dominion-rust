@@ -226,6 +226,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             gaps.push(format!("목표 실행 토큰 상한({token_budget})에 도달했습니다. 추가 호출 없이 중단합니다."));
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
+        let before_evidence=evidence.clone();
+        let before_checks=acceptance_gaps(state,&text,&criteria,&evidence);
+        let mut step_progress=if resume_review && index==start {
+            checkpoint["stepMadeProgress"]==true
+        } else {false};
         // A fully checkpointed executor turn may resume at model-only review
         // without replaying tools, changing files or creating remote side effects.
         let (turn_error, tool_errors) = if resume_review && index == start {
@@ -280,6 +285,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if evidence.len() > 120 {
             evidence.drain(..evidence.len() - 120);
         }
+        let after_checks=acceptance_gaps(state,&text,&criteria,&evidence);
+        step_progress=crate::engine::goal_progress::advanced(
+            &before_evidence,&evidence,&before_checks,&after_checks);
         patch_goal(
             state,
             goal_id,
@@ -289,7 +297,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "goalState":{"sessionId":session_id,"nextIteration":index+1,
                 "inFlight":false,"reviewPending":true,"evidence":evidence,
                 "transcript":transcript,"gaps":gaps,
-                "toolErrors":&stats.tool_errors,"turnError":&turn_error}}))?;
+                "toolErrors":&stats.tool_errors,"turnError":&turn_error,
+                "stepMadeProgress":step_progress}}))?;
         (turn_error,stats.tool_errors)
         };
         if control.is_cancelled() {
@@ -328,14 +337,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             json!({"phase":if complete {"complete"} else {"repair"},"gaps":gaps,"evidence":evidence}),
         );
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
-        context.emit(json!({"type":"goal_progress","goalId":goal_id,"iteration":index+1,"evidenceCount":evidence.len(),"gaps":gaps}));
+        context.emit(json!({"type":"goal_progress","goalId":goal_id,"iteration":index+1,
+            "evidenceCount":evidence.len(),"madeProgress":step_progress,"gaps":gaps}));
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
         if complete {
             return Ok(finish(context, goal_id, "completed", vec![], None));
         }
-        stalled += 1;
+        stalled=if step_progress {0} else {stalled.saturating_add(1)};
         if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
