@@ -485,9 +485,9 @@ fn generation_proof(state:&AppState,generation:&Value)
     Some((commit.to_string(),meta,improved))
 }
 
-/// Three accepted patches alone do not demonstrate recursive intelligence.
-/// Require exact generator succession, independently measured holdout gains,
-/// a self-improver change, and subsequent transfer into another capability.
+/// The first gate is a replayed three-generation paired-evaluation chain.
+/// It is necessary but NOT a complete RSI proof: the campaign gate below also
+/// requires original compiled worker receipts for A -> B -> A re-improvement.
 pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
     let mut chain: Vec<(String, bool, BTreeSet<String>)> = Vec::new();
     for generation in history {
@@ -541,7 +541,9 @@ fn lineage_history(state:&AppState,campaign:&Value)->Vec<Value> {
 /// A continued campaign may inherit proof only from the same source snapshot,
 /// work branch and selected descendant. A reused goal label proves nothing.
 pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
-    capability_proven(state,&lineage_history(state,campaign))
+    let history=lineage_history(state,campaign);
+    capability_proven(state,&history)
+        && crate::engine::rsi_closure::evidence(state,&history)["proven"]==true
 }
 
 /// Re-run the capability gate over stored evidence and report every generation
@@ -590,7 +592,9 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
         "campaignId":campaign["id"],
         "capabilityDemonstrated":campaign_capability_proven(state,campaign),
         "verifiedStreak":verified_best,
-        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true},
+        "recursiveClosure":crate::engine::rsi_closure::evidence(state,&history),
+        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
+            "compiledDescendantExecuted":true,"methodCapabilityMethodClosure":true},
         "generations":rows,
     })
 }
