@@ -209,6 +209,7 @@ pub(crate) fn measure(state:&AppState,g:&Value)->Value {
         || ctrl_eval["evidenceSha256"]!=saved["evaluation"]["evidenceSha256"]
         || ctrl_eval["metrics"]!=saved["evaluation"]["metrics"]
         || control["baseCommit"]!=treatment["baseCommit"]
+        || !control["experimentAdoption"]["commit"].is_null()
         || control["rsiJobId"]!=off["id"]
         || control["origin"]!="model_driven_detached_worktree"
         || control["modelSessionId"]!=session
