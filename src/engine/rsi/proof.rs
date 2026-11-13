@@ -3,7 +3,10 @@
 //! Candidate-independent frozen evaluation is owned by rsi.rs. This module
 //! consumes its replayed receipts and provides ONE completion verdict for
 //! the coordinator, early-stop path, campaign API and verification endpoint.
-use super::*;
+use super::{sha, verified_pair_receipt, verified_holdout_domains};
+use crate::state::AppState;
+use serde_json::{json,Value};
+use std::collections::BTreeSet;
 
 /// One adopted generation holds proof only when its paired evaluation was
 /// replayed from the preserved receipt and matched the exact generator and
