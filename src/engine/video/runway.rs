@@ -12,18 +12,54 @@ const VERSION: &str = "2024-11-06";
 const RECIPE: &str = "2026-06";
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 
-fn recipe_input(input: &Value) -> Result<Value, String> {
+/// Builds the exact billable recipe before a job reaches the remote API.
+/// No model call, GPU, or user-maintained workflow is needed for auto mode.
+pub(super) fn recipe_input(input: &Value) -> Result<Value, String> {
     let duration = input["duration"].as_u64().unwrap_or(10);
-    if !matches!(duration, 5 | 10 | 15) { return Err("Runway 멀티샷은 5·10·15초를 지원합니다.".into()); }
-    let ratio = match input["aspectRatio"].as_str().unwrap_or("9:16") {
-        "9:16" => "720:1280", "16:9" => "1280:720",
-        _ => return Err("Runway 멀티샷 비율은 9:16 또는 16:9입니다.".into())
+    if !matches!(duration, 5 | 10 | 15) {
+        return Err("Runway 멀티샷은 5·10·15초를 지원합니다.".into());
+    }
+    let quality = input["videoQuality"].as_str().unwrap_or("1080p");
+    let aspect = input["aspectRatio"].as_str().unwrap_or("9:16");
+    let ratio = match (quality, aspect) {
+        ("720p", "9:16") => "720:1280",
+        ("720p", "16:9") => "1280:720",
+        ("720p", "1:1") => "960:960",
+        ("1080p", "9:16") => "1080:1920",
+        ("1080p", "16:9") => "1920:1080",
+        ("1080p", "1:1") => "1440:1440",
+        _ => return Err("Runway 해상도는 720p·1080p, 비율은 9:16·16:9·1:1입니다.".into()),
     };
+    let audio = input["generateAudio"].as_bool().unwrap_or(true);
+    let mode = input["shotMode"].as_str().unwrap_or("auto");
+    if mode == "custom" {
+        let scenes = input["scenes"].as_array().ok_or("샷 3~5개의 내용이 필요합니다.")?;
+        if !(3..=5).contains(&scenes.len()) || duration < scenes.len() as u64 {
+            return Err("Runway 커스텀 샷은 3~5개여야 합니다.".into());
+        }
+        let base = duration / scenes.len() as u64;
+        let extra = duration % scenes.len() as u64;
+        let mut shots = Vec::with_capacity(scenes.len());
+        for (index, scene) in scenes.iter().enumerate() {
+            let prompt = scene.as_str().ok_or("각 샷은 문자열이어야 합니다.")?.trim();
+            if !(3..=512).contains(&prompt.chars().count()) {
+                return Err(format!("{}번 샷은 3~512자로 입력하세요.", index + 1));
+            }
+            shots.push(json!({
+                "prompt":prompt,
+                "duration":base + u64::from((index as u64) < extra),
+            }));
+        }
+        return Ok(json!({"mode":"custom","version":RECIPE,"shots":shots,
+            "duration":duration,"ratio":ratio,"audio":audio}));
+    }
+    if mode != "auto" { return Err("지원하지 않는 Runway 제작 모드입니다.".into()); }
     let prompt = input["brief"].as_str().unwrap_or("").trim();
-    if prompt.is_empty() || prompt.encode_utf16().count() > 2500 {
+    if prompt.is_empty() || prompt.chars().count() > 2500 {
         return Err("Runway 영상 지시문은 1~2,500자입니다.".into());
     }
-    Ok(json!({"mode":"auto","version":RECIPE,"prompt":prompt,"duration":duration,"ratio":ratio,"audio":true}))
+    Ok(json!({"mode":"auto","version":RECIPE,"prompt":prompt,
+        "duration":duration,"ratio":ratio,"audio":audio}))
 }
 
 /// Key material stays encrypted in the vault, outside persisted job records.
@@ -34,8 +70,10 @@ pub(super) async fn render(ctx: &JobContext, input: &Value, dir: &Path) -> Resul
     let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(3)).build().map_err(|e|e.to_string())?;
     std::fs::write(dir.join("storyboard.json"),json!({
-        "title":input["title"],"engine":"runway","recipe":RECIPE,"mode":"auto",
-        "direction":payload["prompt"],"duration":payload["duration"],"ratio":payload["ratio"],"audio":true
+        "title":input["title"],"engine":"runway","recipe":RECIPE,"mode":payload["mode"],
+        "direction":payload["prompt"],"shots":payload["shots"],
+        "duration":payload["duration"],"ratio":payload["ratio"],"audio":payload["audio"],
+        "quality":input["videoQuality"]
     }).to_string()).map_err(|e|e.to_string())?;
     progress(ctx,"storyboard",5)?;
     ctx.checkpoint(json!({"videoState":{"inFlight":true,"remoteProvider":"runway","recipe":RECIPE},
@@ -118,15 +156,25 @@ pub(super) async fn render(ctx: &JobContext, input: &Value, dir: &Path) -> Resul
     }
     tokio::fs::rename(dir.join("output.part.mp4"),dir.join("output.mp4")).await.map_err(|e|e.to_string())?;
     ctx.checkpoint(json!({"videoState":{"inFlight":false,"taskId":task_id},"phase":"finalizing","progress":95}))?;
-    Ok(json!({"engine":"runway","recipe":RECIPE,"remoteTaskId":task_id,"audio":true,"duration":payload["duration"],"bytes":bytes}))
+    Ok(json!({"engine":"runway","recipe":RECIPE,"remoteTaskId":task_id,
+        "mode":payload["mode"],"quality":input["videoQuality"],
+        "ratio":payload["ratio"],"audio":payload["audio"],"duration":payload["duration"],"bytes":bytes}))
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn rejects_invalid_recipe_inputs() {
-        assert_eq!(recipe_input(&json!({"brief":"film","duration":10,"aspectRatio":"9:16"})).unwrap()["ratio"],"720:1280");
+        assert_eq!(recipe_input(&json!({"brief":"film","duration":10,"aspectRatio":"9:16"})).unwrap()["ratio"],"1080:1920");
+        assert_eq!(recipe_input(&json!({"brief":"film","duration":10,"videoQuality":"720p","aspectRatio":"1:1"})).unwrap()["ratio"],"960:960");
         assert!(recipe_input(&json!({"brief":"film","duration":13})).is_err());
-        assert!(recipe_input(&json!({"brief":"film","duration":10,"aspectRatio":"1:1"})).is_err());
+        let custom = recipe_input(&json!({"brief":"story","shotMode":"custom","duration":10,
+            "scenes":["First scene","Second scene","Third scene"]})).unwrap();
+        assert_eq!(custom["mode"],"custom");
+        assert_eq!(custom["shots"][0]["duration"],4);
+        assert_eq!(custom["shots"][1]["duration"],3);
+        assert_eq!(custom["shots"][2]["duration"],3);
+        assert!(recipe_input(&json!({"brief":"film","shotMode":"custom","duration":10,
+            "scenes":["Only one"]})).is_err());
     }
 }
