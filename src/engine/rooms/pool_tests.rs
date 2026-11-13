@@ -91,3 +91,17 @@ use super::*;
         );
         let _ = std::fs::remove_dir_all(dir);
     }
+
+
+#[test]
+fn spend_modes_bound_repetitive_rounds_but_never_override_explicit_caps() {
+    let quality = json!({"rounds":3,"costMode":"quality","maxTurns":0});
+    let balanced = json!({"rounds":3,"costMode":"balanced","maxTurns":0});
+    let economy = json!({"rounds":3,"costMode":"economy","maxTurns":0});
+    assert_eq!(effective_rounds(&quality, "안녕하세요", 3), 3);
+    assert_eq!(effective_rounds(&balanced, "안녕하세요", 3), 1);
+    assert_eq!(effective_rounds(&economy, "안녕하세요", 3), 1);
+    assert_eq!(effective_rounds(&balanced, "설계 검토와 구현 비교", 3), 3);
+    assert_eq!(effective_rounds(&economy, "설계 검토와 구현 비교", 3), 2);
+    assert_eq!(effective_rounds(&json!({"costMode":"economy","maxTurns":9}), "짧게", 3), 3);
+}
