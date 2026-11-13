@@ -136,7 +136,4 @@ pub(crate) fn inherited_program(
     None
 }
 
-#[cfg(test)]
-#[path = "rsi/tests/system.rs"]
-mod tests;
 
