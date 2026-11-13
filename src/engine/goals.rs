@@ -211,9 +211,20 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     }
     let start = if resume_review {next_iteration.saturating_sub(1)} else {next_iteration};
 
+    let token_budget=goal["tokenBudget"].as_u64().unwrap_or(0);
     for index in start..max_iterations {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
+        }
+        // Check before opening another potentially expensive executor turn.
+        // Planner/reviewer costs are recorded separately; this guard limits
+        // the agent's session model usage rather than claiming exact billing.
+        if token_budget>0
+            && state.store.session_usage(&session_id)["totalTokens"].as_u64()
+                .unwrap_or(0)>=token_budget
+        {
+            gaps.push(format!("목표 실행 토큰 상한({token_budget})에 도달했습니다. 추가 호출 없이 중단합니다."));
+            return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
         // A fully checkpointed executor turn may resume at model-only review
         // without replaying tools, changing files or creating remote side effects.
