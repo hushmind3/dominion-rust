@@ -41,3 +41,5 @@ The local LoRA/PEFT training and promotion module, training/evaluation/server sc
 ## Immutable independent-verifier gate
 
 The paired evaluator's own `rsi.rs`, `rsi/evaluation/{worktree,metrics}.rs`, `rsi/proof/`, the frozen oracle and test corpus are excluded at **both** the patch/changed-path gate (`rsi::safe_path`) and source-index discovery (`code_index::is_source`), using `rsi/proof/path_policy.rs`. Legitimate experimental work on `rsi/evaluation/intervention_lab.rs`, `rsi/evaluation/rule_tournament.rs`, actual execution, lineage and planner modules stays open. This blocks the trivial strategy of changing what counts as success instead of improving the successor. Bumping source-index parser version invalidates stale discovery records. The authored boundary tests were not executed.
+
+The RSI API candidate/paired-receipt unit corpus was physically moved from `src/engine/rsi.rs` into `tests/unit/engine_rsi_api_tests.rs`. Its mock patch points to editable `src/engine/memory.rs`, not the newly protected evaluator module. The production API file therefore no longer embeds the large unit fixture. Tests remain authored, unexecuted.

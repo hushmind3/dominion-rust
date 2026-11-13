@@ -18,7 +18,7 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Live model/provider selection | `src/engine/rsi/meta/model_ecology.rs` |
 | Real-model execution receipt | `scripts/sub4-live-rsi.mjs` |
 | Explicit-dispatch live verification | `.github/workflows/sub4-system-live-rsi.yml` |
-| Unit tests extracted from production Rust files | `tests/unit/` |
+| Unit tests extracted from production Rust files | `tests/unit/` (`engine_rsi_api_tests.rs`, `engine_rsi_closure_source_tests.rs`, `engine_rsi_path_policy_tests.rs`) |
 | Integration tests (not model edit candidates) | `tests/e2e.rs` |
 
 Verification status and historical independently measured descendant evidence: [RSI completion](rsi-completion.md) and [Sub3 evidence record](../benchmark/sub3-rsi-completion-2026-11-12.json). Current Sub4 design: [architecture](SUB4-RSI-ARCHITECTURE.md), [source-bound prequential learning](SUB4-PREQUENTIAL-SOURCE-LEARNING-2026-11-13.md).
