@@ -81,6 +81,8 @@ pub fn limits(body: &Value) -> Result<Value, String> {
 // Public RSI facade: executable domain selection is an evolvable child.
 #[path = "rsi/meta/evolution.rs"]
 pub(crate) mod meta_evolution;
+#[path = "rsi/meta/policy_dispatch.rs"]
+pub(crate) mod meta_dispatch;
 
 #[path = "rsi/planner/domain_selection.rs"]
 mod domain_selection;
