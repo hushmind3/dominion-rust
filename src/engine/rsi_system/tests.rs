@@ -47,6 +47,11 @@ use super::*;
             assert!(runtime_source_file(module));
         }
         assert_eq!(source_role("src/engine/learning.rs"),"learning");
+        assert_eq!(source_role("src/engine/goals.rs"),"agent_harness");
+        assert_eq!(source_role("src/engine/goals/project.rs"),"agent_harness");
+        assert_eq!(source_role("src/engine/goals/receipts.rs"),"agent_harness");
+        assert_eq!(architecture_role_domain("agent_harness"),Some("context"));
+        assert!(!runtime_source_file("src/engine/goals/tests.rs"));
         assert_eq!(source_role("src/engine/models/installer.rs"),"models");
         assert_eq!(source_role("src/engine/models/loader.rs"),"models");
         assert_eq!(source_role("src/engine/chat/provider/openai.rs"),"models");
@@ -163,7 +168,7 @@ use super::*;
         let history=vec![json!({"generatorCommit":"first","accepted":true,
             "evaluation":{"verdict":"improved","metrics":{"improvedHoldouts":1}}})];
         let first=blueprint(&root,"commit-one",&history);
-        assert_eq!(first["architecture"].as_array().unwrap().len(),10);
+        assert_eq!(first["architecture"].as_array().unwrap().len(),11);
         assert_eq!(first["generatorCommit"],"commit-one");
         assert_eq!(first["historyCount"],1);
         assert_eq!(first["sourceInventory"].as_array().unwrap().len(),2);

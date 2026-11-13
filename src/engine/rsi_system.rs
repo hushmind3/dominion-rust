@@ -8,6 +8,7 @@ use std::{path::Path,fs};
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
     ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
+    ("agent_harness",&["src/engine/goals.rs","src/engine/goal_control.rs","src/api/goals.rs","src/engine/goals/receipts.rs"]),
     ("memory",&["src/engine/memory.rs"]),
     ("multiagent",&["src/engine/rooms.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs","src/engine/chat/room_context.rs"]),
     ("video",&["src/engine/video.rs","src/api/video.rs"]),
@@ -87,6 +88,9 @@ fn source_role(path:&str)->&'static str {
     if lower.starts_with("src/engine/rsi_meta_controller/"){
         return "improvement_methods";
     }
+    if lower=="src/engine/goals.rs" || lower=="src/engine/goal_control.rs"
+        || lower=="src/api/goals.rs"
+        || lower.starts_with("src/engine/goals/"){return "agent_harness";}
     // Full-system RSI includes the shipping media engine and room harness,
     // not only the original chat/memory seed set. These are source targets,
     // never permission to alter independent frozen quality evaluations.
@@ -260,6 +264,7 @@ fn architecture_role_domain(role:&str)->Option<&'static str>{
         "harness"=>Some("context"),
         "memory"=>Some("memory"),
         "multiagent"=>Some("context"),
+        "agent_harness"=>Some("context"),
         "video"=>Some("tools"),
         "learning"=>Some("learning"),
         "models"=>Some("learning"),
