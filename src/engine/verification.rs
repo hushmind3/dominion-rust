@@ -396,7 +396,7 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
                 _ => false,
             }
         }
-        "delegate_task" | "task_result" => delegated_action_evidence(result),
+        "delegate_task" | "task_result" => delegated_action_evidence(&item["result"]),
         "github_api" => item
             .pointer("/arguments/method")
             .or_else(|| item.pointer("/args/method"))
