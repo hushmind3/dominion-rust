@@ -14,7 +14,7 @@ use std::{
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"narration":true,"voice":"Yuna","rate":170});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -237,6 +237,55 @@ fn make_cards(dir: &Path, title: &str, scenes: &[String], aspect: &str) -> Resul
     }
     Ok(())
 }
+/// Offline Korean narration. Each scene is spoken to its own file so the
+/// video length follows the audio, not a fixed duration.
+async fn say_scenes(
+    dir: &Path, scenes: &[String], cfg: &Value, encoder: &Path,
+) -> Option<(Vec<f64>, std::path::PathBuf)> {
+    if cfg["narration"] == false { return None; }
+    let voice = cfg["voice"].as_str().filter(|value| !value.is_empty()).unwrap_or("Yuna");
+    let rate = cfg["rate"].as_u64().unwrap_or(170).clamp(80, 320).to_string();
+    let ffprobe = encoder.with_file_name("ffprobe");
+    let mut durations = Vec::new();
+    let mut list = String::new();
+    for (index, scene) in scenes.iter().enumerate() {
+        let file = format!("narration-{index:02}.aiff");
+        let path = dir.join(&file);
+        let status = tokio::process::Command::new("say")
+            .args(["-v", voice, "-r", &rate, "-o"])
+            .arg(&path)
+            .arg("--")
+            .arg(scene)
+            .status()
+            .await
+            .ok()?;
+        if !status.success() { return None; }
+        let seconds = probe_duration(&ffprobe, &path).await?;
+        durations.push((seconds + 0.35).max(1.0));
+        list.push_str(&format!("file '{file}'\n"));
+    }
+    std::fs::write(dir.join("narration.txt"), list).ok()?;
+    let status = tokio::process::Command::new(encoder)
+        .current_dir(dir)
+        .args(["-hide_banner","-loglevel","error","-y","-f","concat","-safe","0",
+            "-i","narration.txt","-c:a","aac","-b:a","128k","narration.m4a"])
+        .status()
+        .await
+        .ok()?;
+    if !status.success() { return None; }
+    Some((durations, dir.join("narration.m4a")))
+}
+
+async fn probe_duration(ffprobe: &Path, file: &Path) -> Option<f64> {
+    let output = tokio::process::Command::new(ffprobe)
+        .args(["-v","error","-show_entries","format=duration","-of","default=nw=1:nk=1"])
+        .arg(file)
+        .output()
+        .await
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 async fn native(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, String> {
     progress(ctx, "storyboard", 5)?;
     let brief = input["brief"].as_str().unwrap_or("");
@@ -273,53 +322,47 @@ async fn native(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, St
         &scenes,
         input["aspectRatio"].as_str().unwrap_or("9:16"),
     )?;
-    let duration = input["duration"].as_u64().unwrap_or(15);
-    let seconds = duration as f64 / scenes.len() as f64;
+    let encoder = ffmpeg_from_config(&input["config"]).ok_or("FFmpeg를 찾을 수 없습니다.")?;
+    let requested = input["duration"].as_u64().unwrap_or(15);
+    // Turnkey: speak every scene first. Fall back to a silent slideshow when
+    // no voice engine is available, never failing the whole render for audio.
+    let narration = say_scenes(dir, &scenes, &input["config"], &encoder).await;
     let mut concat = String::new();
-    for i in 0..scenes.len() {
-        concat.push_str(&format!("file 'card-{i:02}.png'\nduration {seconds:.5}\n"));
+    let total_seconds;
+    if let Some((durations, _)) = &narration {
+        for (index, seconds) in durations.iter().enumerate() {
+            concat.push_str(&format!("file 'card-{index:02}.png'\nduration {seconds:.5}\n"));
+        }
+        concat.push_str(&format!("file 'card-{:02}.png'\n", scenes.len() - 1));
+        total_seconds = durations.iter().sum::<f64>();
+    } else {
+        let seconds = requested as f64 / scenes.len() as f64;
+        for index in 0..scenes.len() {
+            concat.push_str(&format!("file 'card-{index:02}.png'\nduration {seconds:.5}\n"));
+        }
+        concat.push_str(&format!("file 'card-{:02}.png'\n", scenes.len() - 1));
+        total_seconds = requested as f64;
     }
-    concat.push_str(&format!("file 'card-{:02}.png'\n", scenes.len() - 1));
     std::fs::write(dir.join("frames.txt"), concat).map_err(|e| e.to_string())?;
     std::fs::write(
         dir.join("storyboard.json"),
-        json!({"title":title,"scenes":scenes,"duration":duration,"audio":"silent"}).to_string(),
+        json!({"title":title,"scenes":scenes,"duration":total_seconds.round() as u64,
+            "audio":if narration.is_some() {"narration"} else {"silent"}}).to_string(),
     )
     .map_err(|e| e.to_string())?;
-    let encoder = ffmpeg_from_config(&input["config"]).ok_or("FFmpeg를 찾을 수 없습니다.")?;
-    let mut command = tokio::process::Command::new(encoder);
+    let mut command = tokio::process::Command::new(&encoder);
     command.current_dir(dir).args([
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "1",
-        "-i",
-        "frames.txt",
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=r=48000:cl=stereo",
-        "-t",
-        &duration.to_string(),
-        "-vf",
-        "fps=24,format=yuv420p",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "22",
-        "-c:a",
-        "aac",
-        "-movflags",
-        "+faststart",
-        "-shortest",
-        "output.part.mp4",
+        "-hide_banner","-loglevel","error","-nostdin","-y","-f","concat","-safe","1","-i","frames.txt",
+    ]);
+    if narration.is_some() {
+        command.args(["-i","narration.m4a","-map","0:v:0","-map","1:a:0"]);
+    } else {
+        command.args(["-f","lavfi","-i","anullsrc=r=48000:cl=stereo"]);
+    }
+    command.args([
+        "-t",&format!("{:.3}", total_seconds + 0.2),
+        "-vf","fps=24,format=yuv420p","-c:v","libx264","-preset","veryfast","-crf","22",
+        "-c:a","aac","-movflags","+faststart","-shortest","output.part.mp4",
     ]);
     progress(ctx, "encoding", 50)?;
     let process = tools::run_command(&mut command, Duration::from_secs(600));
@@ -330,18 +373,20 @@ async fn native(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, St
     if !output.status.success() {
         return Err(format!(
             "FFmpeg 인코딩 실패: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .take(1500)
-                .collect::<String>()
+            String::from_utf8_lossy(&output.stderr).chars().take(1500).collect::<String>()
         ));
     }
     std::fs::rename(dir.join("output.part.mp4"), dir.join("output.mp4"))
         .map_err(|e| e.to_string())?;
-    Ok(
-        json!({"engine":"native","description":"Rust 자막 카드 영상 · 무음","duration":duration,"scenes":scenes.len()}),
-    )
+    Ok(json!({
+        "engine":"native",
+        "description":if narration.is_some() {"한국어 내레이션 카드 영상"} else {"Rust 자막 카드 영상 · 무음"},
+        "duration":total_seconds.round() as u64,
+        "scenes":scenes.len(),
+        "narrated":narration.is_some(),
+    }))
 }
+
 fn substitute(value: &mut Value, variables: &Value) {
     match value {
         Value::String(text) => {
