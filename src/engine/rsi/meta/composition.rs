@@ -62,8 +62,15 @@ pub(super) fn compose(
     // A later independently adopted, freely authored protocol may supersede
     // the older fixed-order method curriculum. The two programs must not
     // assign mutually exclusive edit targets to one worker.
-    let method_transfer=if evolution_program.is_object(){Value::Null}
-        else{method_transfer};
+    // The new graph normally supersedes the legacy fixed curriculum.
+    // An explicit method_control operator is the exception: its experiment
+    // must execute the real inherited method and a separate disabled arm.
+    let uses_inherited_control=evolution_program["operator"]["experiment"]=="method_control"
+        && evolution_program["target"]["domain"]==method_transfer["domain"]
+        && method_transfer["methodId"].is_string();
+    let method_transfer=if evolution_program.is_object() && !uses_inherited_control {
+        Value::Null
+    }else{method_transfer};
     let feedback_repair=feedback_repair && evolution_program.is_null();
     let profile=crate::engine::rsi_profile::from_input(input)?;
     let peers=crate::engine::rsi_system::peer_lineage_references(
