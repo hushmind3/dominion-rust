@@ -221,6 +221,3 @@ pub(super) fn quality_forecast_calibration(history:&[Value])->Value {
         "qualityImproved":false,"independentMetaABProven":false})
 }
 
-/// Meta policy learns calibrated acceptance odds and, separately, how many
-/// independently adopted improvements each source revision produces later.
-/// Reproduction credit cannot be replaced by mere source-edit count.
