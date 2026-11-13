@@ -39,8 +39,8 @@
     },
     {
       "domain": "improver",
-      "file": "src/engine/rsi_evolve.rs",
-      "request": "Improve the source-improvement domain exploration algorithm in src/engine/rsi_evolve.rs without hardcoding a fixed answer sequence. Reduce actual search cost while preserving history-dependent exploration decisions and validated evidence.",
+      "file": "src/engine/rsi/planner/domain_selection.rs",
+      "request": "Improve the real self-improvement domain selection algorithm in src/engine/rsi/planner/domain_selection.rs. Preserve history-sensitive candidate domain ranking, independent holdout evidence and fallback selection; reduce measured exploration overhead without hardcoded task sequences.",
       "oracle": "rsi_frozen_oracle::improvement_search",
       "metric": "elapsedMs",
       "guard": "engine::rsi::tests::only_a_deployed_improver_can_seed_the_next_generation",
