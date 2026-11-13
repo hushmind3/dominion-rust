@@ -5,7 +5,7 @@
 //! against the *next* observed, separately verified outcome.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::collections::{BTreeMap,BTreeSet};
+use std::collections::BTreeMap;
 
 fn model_design_roles(g:&Value)->Vec<String>{
     let design=&g["systemDesign"];

@@ -1,5 +1,6 @@
 //! Independently observed outcomes used to calibrate later meta-policy.
-use super::*;
+use super::{independent_adoption,failure_kind};
+use serde_json::{json,Value};
 
 /// New prediction errors are durable observations available to later compiled
 /// meta-controllers. No model statement can turn a prediction into evidence.

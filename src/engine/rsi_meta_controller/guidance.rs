@@ -1,5 +1,5 @@
 //! Tool-facing instructions derived from the compiled descendant policy.
-use super::*;
+use serde_json::Value;
 
 /// The model—not this controller—authors the actual design, programs and
 /// reusable procedures. Comparative observations are bounded and source

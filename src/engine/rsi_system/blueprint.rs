@@ -1,5 +1,9 @@
 //! Descendant-owned source blueprint and provenance.
-use super::*;
+use super::{COMPONENTS,source_inventory,source_role,architecture_role_domain,
+    design_roles,design_role_files};
+use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
+use std::{fs,path::Path};
 
 /// Read only source assets under the experiment's pinned checkout. The
 /// coordinator cannot author or alter this blueprint without changing its

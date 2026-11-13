@@ -1,6 +1,9 @@
 //! Source-bound cross-lineage experimental method transfer.
 //! Observational controls are evidence for exploration, never adoption authority.
-use super::*;
+use super::{independent_adoption,model_design_roles,TRANSFER_METHOD_SOURCE};
+use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
+use std::collections::BTreeSet;
 
 // Attribution is to one executed donor method on one exact source version
 // and frozen comparison profile. A donor mentioned among several references

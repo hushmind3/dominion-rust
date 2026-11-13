@@ -1,5 +1,5 @@
 //! Instructions exposing editable capabilities to the model.
-use super::*;
+use serde_json::Value;
 
 /// A system-generation *model* chooses the actual design and edits. The
 /// descendant's source-grounded map is context, not a fixed list of allowed

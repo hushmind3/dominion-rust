@@ -1,5 +1,5 @@
 //! Receipt-revalidated learning history; no mutable success labels.
-use super::*;
+use serde_json::{json,Value};
 
 /// Rebuild experimental learning labels from original immutable paired
 /// receipts. A mutable generation JSON can report either a fabricated win

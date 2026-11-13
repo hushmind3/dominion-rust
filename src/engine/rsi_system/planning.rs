@@ -1,5 +1,8 @@
 //! Executable proposal lifecycle, failure response, and inherited domains.
-use super::*;
+use super::{valid_role,design_implemented};
+use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
+use std::fs;
 
 /// Behavioral successor instruction derived from *observed* episodes, not
 /// model optimism. The rebuilt descendant uses the outcome to choose whether

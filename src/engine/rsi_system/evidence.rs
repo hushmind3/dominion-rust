@@ -1,5 +1,8 @@
 //! Structural source/lineage validation outside the mutable planner.
-use super::*;
+use super::{source_inventory,valid_role};
+use serde_json::Value;
+use sha2::{Digest,Sha256};
+use std::{fs,path::Path};
 
 /// The resident supervisor validates MATERIAL facts, not the old
 /// generation's ranking, self-model taxonomy, or improvement equation.
