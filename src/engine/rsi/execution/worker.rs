@@ -318,8 +318,14 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             });
         }
         // Only the actually controlling compiled operator is dispatched.
-        let operator_dispatch=crate::engine::rsi_operator_provenance::dispatch(
-            &state,&job,&commit,algebra_active)?;
+        let operator_dispatch=if job["input"]["rsiMethodAblationArm"]=="without_methods" {
+            // A real compiled child still plans, edits, and is evaluated;
+            // only its executable inherited method is disabled.
+            Value::Null
+        }else{
+            crate::engine::rsi_operator_provenance::dispatch(
+                &state,&job,&commit,algebra_active)?
+        };
         job["rsiOperatorDispatch"]=operator_dispatch;
         job["rsiMetaPolicyExecuted"]=json!({
             "source":"running_compiled_descendant_binary",
@@ -419,7 +425,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             format!("MODEL-WRITTEN NEXT DESCENDANT DEVELOPMENT METHOD: {}. The source hash and stage index were rebound by the currently rebuilt child; the expected outcome remains an unmeasured hypothesis.",
                 job["input"]["rsiSuccessorStage"])
         }else{String::new()};
-        let inherited_method=if job["input"]["rsiInheritedMetaProgram"].is_object(){
+        let inherited_method=if job["input"]["rsiMethodAblationArm"]!="without_methods"
+            && job["input"]["rsiInheritedMetaProgram"].is_object(){
             format!("NEXT-GENERATION EXECUTABLE EDIT METHOD (inherited, still an unproven trial): {}. The runtime tool router uses this program, and observed stage receipts—not this text—establish execution.",
                 job["input"]["rsiInheritedMetaProgram"])
         }else{String::new()};
@@ -445,11 +452,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_factorial::instruction(
                 &job["input"]["rsiFactorialExperiment"])
         }else{String::new()};
-        let algebra_instruction=if science_enabled {
+        let algebra_instruction=if science_enabled
+            && job["input"]["rsiMethodAblationArm"]!="without_methods" {
             crate::engine::rsi_improvement_algebra::instruction(
                 &job["input"]["rsiImprovementAlgebra"])
         }else{String::new()};
-        let method_learning_instruction=if science_enabled {
+        let method_learning_instruction=if science_enabled
+            && job["input"]["rsiMethodAblationArm"]!="without_methods" {
             crate::engine::rsi_method_generalization::instruction(
                 &job["input"]["rsiMethodGeneralization"])
         }else{String::new()};
