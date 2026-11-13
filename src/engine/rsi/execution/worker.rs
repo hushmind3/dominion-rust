@@ -74,6 +74,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             crate::engine::rsi_lineage_transfer::profile(&job["input"]).as_deref())?;
         crate::engine::rsi_intervention_lab::validate_receipts(
             &state,&history,&plan["factorialExperiment"])?;
+        if !plan["negativeTransfer"].is_null(){
+            if !crate::engine::rsi_negative_transfer::valid(
+                &plan["negativeTransfer"],
+                plan["architectureFrontier"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                &commit,history.len()) {
+                return Err("후손 역전이 증거 또는 소스 revision 불일치".into());
+            }
+            crate::engine::rsi_negative_transfer::validate_receipts(
+                &state,&refreshed_history,&plan["negativeTransfer"])?;
+        }
         // The source blueprint still anchors this binary's exact inherited
         // revision, but source ranking and meta synthesis are intentionally
         // not replayed by an unmodified predecessor policy.
@@ -86,7 +96,8 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
             || job["input"]["rsiInheritedCandidateId"]!=plan["archiveSelection"]["candidateId"]
             || plan["successorStage"]!=job["input"]["rsiSuccessorStage"]
             || plan["symbioticCurriculum"]!=job["input"]["rsiSymbioticCurriculum"]
-            || plan["factorialExperiment"]!=job["input"]["rsiFactorialExperiment"]{
+            || plan["factorialExperiment"]!=job["input"]["rsiFactorialExperiment"]
+            || plan["negativeTransfer"]!=job["input"]["rsiNegativeTransfer"]{
             return Err("후손 바이너리·설계 revision·작업 입력이 다릅니다.".into());
         }
     }
