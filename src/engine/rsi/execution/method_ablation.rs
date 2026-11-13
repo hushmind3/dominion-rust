@@ -23,8 +23,8 @@ fn method_selected(input:&Value)->bool {
     // same binding rules are checked again during the real ON worker.
     input["rsiSystemEvolution"]==true && input["rsiAutonomous"]==true
         && path!=method
-        && input["rsiControllerPlan"]["improvementAlgebra"]==*algebra
-        && input["rsiArchitectureTarget"]==*target
+        && &input["rsiControllerPlan"]["improvementAlgebra"]==algebra
+        && &input["rsiArchitectureTarget"]==target
         && input["rsiSelectedDomain"]==target["domain"]
         && input["rsiFocusFiles"].as_array()
             .and_then(|a|a.first()).and_then(Value::as_str)==Some(path)
