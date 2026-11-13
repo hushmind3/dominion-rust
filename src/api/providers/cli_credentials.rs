@@ -1,5 +1,28 @@
 //! CLI authentication and credential import endpoints.
-use super::*;
+use super::{
+    AppState,
+    Path,
+    State,
+    StatusCode,
+    Response,
+    Json,
+    json,
+    Value,
+    Duration,
+    error,
+    home_file,
+    codex_auth,
+    opencode_auth,
+    local_opencode_go_key,
+    direct_opencode_go,
+    import_opencode_go,
+    opencode_api_entries,
+    opencode_target,
+    import_opencode,
+    save_codex_provider,
+    public_provider,
+    IntoResponse,
+};
 
 pub(super) async fn claude_cli_authenticated() -> bool {
     if home_file(".claude/.credentials.json").is_some_and(|path| path.exists()) {

@@ -1,5 +1,18 @@
 //! Provider account discovery and persistent configuration.
-use super::*;
+use super::{
+    AppState,
+    Path,
+    State,
+    StatusCode,
+    Response,
+    Json,
+    json,
+    Value,
+    Duration,
+    error,
+    official_opencode_go_url,
+    IntoResponse,
+};
 
 pub(super) fn needs_account_discovery(provider: &Value) -> bool {
     provider["accountId"].as_str().unwrap_or("").trim().is_empty()
