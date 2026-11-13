@@ -521,7 +521,12 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi/lineage/source.rs",
             "src/engine/rsi/lineage/campaign.rs",
             "src/engine/rsi/learning/methods.rs",
-            "src/engine/rsi/learning/research.rs"
+            "src/engine/rsi/learning/research.rs",
+            "src/engine/rsi_system/design.rs",
+            "src/engine/rsi_system/lineage.rs",
+            "src/engine/rsi_system/guidance.rs",
+            "src/engine/rsi_system/proposal.rs",
+            "src/engine/rsi_system/handoff.rs"
         ];
         let listed = COMPONENTS.iter()
             .find(|(role,_)|*role=="improvement_methods")
