@@ -70,6 +70,10 @@ pub(crate) fn observe(state:&AppState,g:&Value)->Value{
             !=d["methodSourceSha256"]
         || g["candidateOrigin"]!="model_driven_detached_worktree"
         || !rsi::model_route_audited(state,g){return Value::Null}
+    // Replay the source-index identity, rather than trusting a stored
+    // dispatch that could have been recorded before a superseding choice.
+    if dispatch(state,&job,g["generatorCommit"].as_str().unwrap_or(""),true)
+        .ok().as_ref()!=Some(d){return Value::Null}
     let Some(target)=d["targetPath"].as_str().filter(|p|rsi::safe_path(p))
         else{return Value::Null};
     let Some(candidate_id)=g["candidateId"].as_str()else{return Value::Null};
@@ -86,14 +90,23 @@ pub(crate) fn observe(state:&AppState,g:&Value)->Value{
         return Value::Null
     }
     // Search the complete durable tool ledger, not its truncated UI summary.
-    let operation=state.store.all("execution_operation").into_iter().find(|op|
+    let mut operations=state.store.all("execution_operation").into_iter().filter(|op|
         op["sessionId"]==session && op["origin"]=="model"
         && op["arguments"]["path"]==target && op["status"]=="completed"
         && op["result"]["written"]==true && op["toolReceipt"]["verified"]==true
         && op["result"]["postSha256"].as_str().is_some_and(|s|sha(s,64))
         && matches!(op["tool"].as_str(),
-            Some("workspace_replace"|"workspace_replace_range"|"workspace_write")));
-    let Some(op)=operation else{return Value::Null};
+            Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
+        .collect::<Vec<_>>();
+    operations.sort_by(|a,b|a["startedAt"].as_str().cmp(&b["startedAt"].as_str())
+        .then_with(||a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())));
+    let Some(op)=operations.last()else{return Value::Null};
+    // An adopted method must own the FINAL bytes, not merely an earlier edit
+    // later overwritten by a repair or unrelated tool.
+    if g["accepted"]==true
+        && g["acceptedSourceHashes"][target]!=op["result"]["postSha256"] {
+        return Value::Null;
+    }
     json!({"source":"verified_compiled_operator_tool_edit_v1",
         "generationJobId":job_id,"generatorCommit":g["generatorCommit"],
         "candidateId":candidate_id,"sessionId":session,

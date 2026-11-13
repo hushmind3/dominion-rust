@@ -91,7 +91,9 @@ fn changed_roles(g:&Value,frontier:&[Value])->BTreeSet<String> {
     }).collect()
 }
 fn record_trial(g:&Value,rule_id:&str,target:&Value)->bool {
-    g["candidateId"].as_str().is_some()
+    g["pairedMeasured"]==true
+        && g["evaluation"]["metrics"].is_object()
+        && g["candidateId"].as_str().is_some()
         && g["compiledPlanExecuted"]["source"]=="running_compiled_descendant_binary"
         && g["improvementAlgebraPlan"]["selected"]["ruleId"]==rule_id
         && g["improvementAlgebraPlan"]["selected"]["target"]["path"]==target["path"]
@@ -431,6 +433,7 @@ mod tests{
         let rule_id=original["selected"]["ruleId"].clone();
         let rejects=(0..2).map(|n|json!({
             "candidateId":format!("rejected-{n}"),"accepted":false,
+            "pairedMeasured":true,"evaluation":{"metrics":{"eligible":false}},
             "generatorCommit":a,
             "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
             "improvementAlgebraPlan":{
