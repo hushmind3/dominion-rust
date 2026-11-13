@@ -284,7 +284,12 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 }
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi/") 
+        && (line.contains("src/engine/rsi/")
+            // Include newly self-authored RSI policies such as
+            // rsi_meta_controller.rs, rsi_improvement_algebra.rs, and
+            // rsi_method_generalization/*. An A2 method rewrite must not
+            // be misclassified as an ordinary harness change.
+            || line.contains("src/engine/rsi_")
             || line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
