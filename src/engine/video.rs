@@ -9,14 +9,14 @@ use crate::{
 };
 use serde_json::{json, Value};
 mod cinematic;
-mod veo;
+mod omni;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"veoModel":"veo-3.1-generate-preview","veoResolution":"1080p"});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"omniModel":"gemini-omni-1.2-flash","omniResolution":"1080p"});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
@@ -26,6 +26,7 @@ pub fn config(state: &AppState) -> Value {
             }
         }
     }
+    if value["engine"]=="veo" {value["engine"]=json!("omni");}
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
     value
 }
@@ -102,7 +103,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui" | "veo") {
+    if !matches!(engine, "native" | "comfyui" | "omni") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
@@ -113,7 +114,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     {
         return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
     }
-    if engine == "veo" && !cfg["hasVideoKey"].as_bool().unwrap_or(false) {
+    if engine == "omni" && !cfg["hasVideoKey"].as_bool().unwrap_or(false) {
         return Err("Gemini API 키를 영상 설정에 등록하세요.".into());
     }
     let cinematic = engine == "comfyui" && body["cinematic"] == true;
@@ -124,8 +125,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_u64()
         .or(cfg["duration"].as_u64())
         .unwrap_or(15);
-    if engine == "veo" && duration != 8 {
-        return Err("Veo 3.1 영상은 8초로 생성합니다.".into());
+    if engine == "omni" && duration != 8 {
+        return Err("Omni 영상은 현재 8초를 목표로 생성합니다.".into());
     }
     if !(3..=if cinematic {120} else {180}).contains(&duration) {
         return Err(if cinematic {"시네마틱 영상은 3~120초를 지원합니다."}
@@ -138,8 +139,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if !matches!(aspect, "9:16" | "16:9" | "1:1") {
         return Err("지원 비율은 9:16,16:9,1:1입니다.".into());
     }
-    if engine == "veo" && aspect == "1:1" {
-        return Err("Veo는 9:16 또는 16:9 비율만 지원합니다.".into());
+    if engine == "omni" && aspect == "1:1" {
+        return Err("Omni는 9:16 또는 16:9 비율만 지원합니다.".into());
     }
     let title = body["title"]
         .as_str()
@@ -512,8 +513,10 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "veo" {
-        veo::render(ctx, job, &dir).await
+    let result = if input["engine"] == "omni" {
+        omni::render(ctx, job, &dir).await
+    } else if input["engine"] == "veo" {
+        Err("Veo Preview가 종료됐습니다. 새 Omni 작업으로 생성하세요.".into())
     } else if input["engine"] == "comfyui" && input["cinematic"] == true {
         cinematic::render(ctx, input, &dir).await
     } else if input["engine"] == "comfyui" {
