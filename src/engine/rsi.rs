@@ -380,6 +380,53 @@ pub(crate) fn verify_revisable_quality_receipt(state:&AppState,candidate:&Value)
     Ok(actual)
 }
 
+/// Replay the frozen paired report for a non-adopted experimental control.
+/// Unlike the candidate-adoption verifier this accepts a legitimate losing
+/// control, while never allowing that loser to authorize any source adoption.
+pub(crate) fn verify_control_receipt(state:&AppState,candidate:&Value)->Result<Value,String>{
+    let invalid=||"대조군 원본 paired-run 증거가 일치하지 않습니다.".to_string();
+    if !matches!(candidate["status"].as_str(),
+            Some("verified"|"inconclusive"|"rejected"))
+        || candidate["pairedComparisonComplete"]!=true
+        || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || candidate["evaluation"]["status"]!=candidate["status"]
+    {return Err(invalid());}
+    let id=candidate["id"].as_str().ok_or_else(invalid)?;
+    let evaluation_id=candidate["evaluation"]["id"].as_str().ok_or_else(invalid)?;
+    let evidence=candidate["evaluation"]["evidenceSha256"].as_str().ok_or_else(invalid)?;
+    if evidence.len()!=64||!evidence.bytes().all(|b|b.is_ascii_hexdigit())
+        || candidate["evaluation"]["reportSha256"]!=evidence
+        || candidate["patch"].as_str().is_none_or(|patch|digest(patch)!=candidate["patchSha256"])
+    {return Err(invalid());}
+    let pairs=state.store.all("rsi_pair").into_iter()
+        .filter(|pair|pair["candidateId"]==id&&pair["evaluationId"]==evaluation_id)
+        .collect::<Vec<_>>();
+    let [pair]=pairs.as_slice() else{return Err(invalid())};
+    if pair["runner"]!="local_gitrepo_not_os_sandbox"
+        || pair["report"]["baselineBuildOk"]!=true
+        || pair["report"]["candidateBuildOk"]!=true
+        || pair["evidenceSha256"]!=evidence
+        || pair["report"]["reportSha256"]!=evidence
+        || pair["report"]["baseCommit"]!=candidate["baseCommit"]
+        || pair["report"]["patchSha256"]!=candidate["patchSha256"]
+        || pair["report"]["oracleVersion"]!=candidate["oracleVersion"]
+    {return Err(invalid());}
+    let cases=candidate["cases"].as_array().ok_or_else(invalid)?;
+    let measured=pair["report"]["cases"].as_array().ok_or_else(invalid)?;
+    let replay=evaluate_cases(cases,measured,
+        candidate["target"].as_str().unwrap_or("")).map_err(|_|invalid())?;
+    let expected=if replay["verdict"]=="improved"{"verified"}
+        else if replay["verdict"]=="regressed"{"rejected"}
+        else{"inconclusive"};
+    if candidate["status"]!=expected
+        || candidate["evaluation"]["verdict"]!=replay["verdict"]
+        || pair["verdict"]!=replay["verdict"]
+        || pair["metrics"]!=replay
+        || candidate["evaluation"]["metrics"]!=replay
+    {return Err(invalid());}
+    Ok(replay)
+}
+
 pub fn evaluate(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     let mut record = state.store.get("rsi_candidate", id).ok_or("후보를 찾을 수 없습니다.")?;
     if record["status"] != "proposed" && record["status"] != "inconclusive" {

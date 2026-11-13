@@ -651,3 +651,7 @@ The canonical source/receipt replay has moved to the **frozen** `rsi/proof/metho
 ### Frozen runner source paths after module extraction
 
 `src/engine/rsi/worktree/evaluation.rs` uses repository-relative `include_str!` targets for `scripts/rsi-lab.sh`, `scripts/rsi-measure.mjs`, and `src/engine/rsi_oracle_fixture.rs` after its move under `rsi/worktree/`. This restores the actual frozen evaluation path used by `rsi_worktree::compare_at`. Source-only inspection, no compile/test/CI run.
+
+### Method-control experiment verification boundary
+
+`rsi::verify_control_receipt` independently replays original frozen local paired reports for an experimental control, including losing or inconclusive source candidates. Controls cannot be adopted by the coordinator; this verifier never authorizes source promotion. The executable control worker is registered through `rsi_evolve::method_control` and is evaluated separately from the ordinary worktree candidate. The next commit supplies the runtime module. No builds or tests executed.

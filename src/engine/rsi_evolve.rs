@@ -78,6 +78,11 @@ use descendant_plan::*;
 mod method_feedback;
 use method_feedback::*;
 
+#[path = "rsi/method_control.rs"]
+mod method_control;
+use method_control::*;
+
+
 
 pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "improver"];
 
