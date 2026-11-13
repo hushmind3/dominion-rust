@@ -46,7 +46,7 @@ pub(super) async fn prepare_generation_input(
             let output=command(context,probe,Duration::from_secs(10)).await?;
             if !output.status.success() { return Err("선택 버전의 능력 진단 실행 실패".into()); }
             let diagnosis:Value=serde_json::from_slice(&output.stdout).map_err(|e|e.to_string())?;
-            if diagnosis["generatorCommit"]!=head {return Err("진단 실행기 버전 불일치".into());}
+            if diagnosis["generatorCommit"]!=head.as_str() {return Err("진단 실행기 버전 불일치".into());}
             record["diagnosis"]=diagnosis.clone();
             if diagnosis["failed"].as_u64().unwrap_or(0)>0 {
                 child_input["rsiDiagnostic"]=diagnosis.clone();
