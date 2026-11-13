@@ -57,6 +57,12 @@ pub(super) fn compose(
         || input["rsiAutonomous"]!=true {Value::Null}
         else {crate::engine::rsi_evolve::meta_evolution::compile(
             &history,&frontier,&allowed,commit)};
+    // A later independently adopted, freely authored protocol may supersede
+    // the older fixed-order method curriculum. The two programs must not
+    // assign mutually exclusive edit targets to one worker.
+    let method_transfer=if evolution_program.is_object(){Value::Null}
+        else{method_transfer};
+    let feedback_repair=feedback_repair && evolution_program.is_null();
     let profile=crate::engine::rsi_profile::from_input(input)?;
     let peers=crate::engine::rsi_system::peer_lineage_references(
         &state,campaign,profile["sha256"].as_str().unwrap_or(""),
