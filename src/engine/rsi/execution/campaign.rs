@@ -14,7 +14,8 @@ pub(super) async fn run_loop(
         .config
         .data_dir
         .join("rsi-build")
-        .join("generator");
+        .join("generator")
+        .join(context.job_id.as_str());
     std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
     let target = std::fs::canonicalize(target).map_err(|e| e.to_string())?;
     let binary = target
