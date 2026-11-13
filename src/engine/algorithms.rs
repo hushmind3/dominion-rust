@@ -28,6 +28,7 @@ pub const KINDS: &[&str] = &[
     "recovery.strategy",
     "multiagent.sharing",
     "multiagent.roles",
+    "multiagent.economy",
     "multiagent.conflict",
     "execution.ordering",
     "execution.parallelism",
@@ -60,6 +61,7 @@ pub fn executable_kernels(kind: &str) -> &'static [&'static str] {
         "recovery.strategy" => &["fingerprint", "block-identical", "allow-all"],
         "multiagent.sharing" => &["two-agents", "three-agents", "never"],
         "multiagent.roles" => &["discussion", "round-robin", "mentioned"],
+        "multiagent.economy" => &["balanced", "lean", "quality"],
         "multiagent.conflict" => &["evidence-first", "owner-authority", "latest-speaker"],
         "execution.ordering" => &["as-written", "read-first"],
         "execution.parallelism" => &["concurrent", "sequential"],
@@ -670,6 +672,27 @@ pub fn builtins() -> Vec<Value> {
             json!({}),
         ),
         builtin(
+            "multiagent.economy",
+            "balanced",
+            "balanced",
+            "단순 요청 1명, 일반 2명, 심층 3명과 심층 최대 2라운드로 비용을 균형 조절한다.",
+            json!({"casualSpeakers":1,"mediumSpeakers":2,"deepSpeakers":3,"deepRounds":2}),
+        ),
+        builtin(
+            "multiagent.economy",
+            "lean",
+            "lean",
+            "반복 간단 발언을 줄이는 저비용 토론 정책이다.",
+            json!({"casualSpeakers":1,"mediumSpeakers":1,"deepSpeakers":2,"deepRounds":1}),
+        ),
+        builtin(
+            "multiagent.economy",
+            "quality",
+            "quality",
+            "심층 작업에서 더 많은 서로 다른 관점과 라운드를 배정한다.",
+            json!({"casualSpeakers":2,"mediumSpeakers":3,"deepSpeakers":5,"deepRounds":3}),
+        ),
+        builtin(
             "multiagent.conflict",
             "evidence-first",
             "evidence-first",
@@ -1212,6 +1235,28 @@ pub fn record_domain_outcome(
         return;
     };
     apply_stat(state, &agent, kind, &revision, ok);
+}
+
+/// Feedback is subjective owner preference for a *specific executed policy
+/// revision*, not proof of model correctness nor an RSI independent evaluation.
+pub fn record_owner_feedback(
+    state: &AppState, kind: &str, revision: &str, positive: bool,
+) -> bool {
+    if kind != "multiagent.economy" || revision.is_empty() {
+        return false;
+    }
+    seed(state);
+    let eligible=state.store.all("algorithm").into_iter().any(|policy| {
+        policy["kind"].as_str()==Some(kind)
+            && policy["revision"].as_str()==Some(revision)
+            && policy["status"]!="disabled"
+            && policy["implementation"].as_str().is_some_and(|name|
+                kernel_exists(kind,name))
+    });
+    if eligible {
+        apply_stat(state,"global",kind,revision,positive);
+    }
+    eligible
 }
 
 fn apply_stat(state: &AppState, agent: &str, kind: &str, revision: &str, success: bool) {
