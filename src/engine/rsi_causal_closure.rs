@@ -217,7 +217,11 @@ fn revised_method_after_feedback(previous:&Value,revised:&Value,prior_child:&Val
 
 pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
     let mut verified=Vec::new();
-    for rows in history.windows(4) {
+    // Four successive ADOPTED source revisions form a compiled lineage.
+    // Failed attempts remain in the ledger, cannot earn adoption, and cannot
+    // erase a valid descendant's proof of inheriting the same parent commit.
+    let adopted=history.iter().filter(|g|g["accepted"]==true).collect::<Vec<_>>();
+    for rows in adopted.windows(4) {
         let (meta_a,cap_b,meta_a2,cap_b2)=(&rows[0],&rows[1],&rows[2],&rows[3]);
         if rows.iter().any(|g|!independently_adopted(state,g)) ||
             meta_a["domain"]!="improver" || cap_b["domain"]=="improver" ||
@@ -267,6 +271,11 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             "initialInheritedMethod":first_method,
             "revisedInheritedMethod":revised_method,
             "feedbackGenerationId":cap_b["id"],
+            "acceptedSourceAncestryVerified":true,
+            "interveningUnadoptedAttempts":history.iter().filter(|row|
+                row["accepted"]!=true && row["attempt"].as_u64().is_some_and(|n|
+                    n>meta_a["attempt"].as_u64().unwrap_or(0)
+                        && n<cap_b2["attempt"].as_u64().unwrap_or(u64::MAX))).count(),
             "methodRevisionVerified":true,
             "initialMethodDisabledControl":first_ablation,
             "revisedMethodDisabledControl":revised_ablation,
