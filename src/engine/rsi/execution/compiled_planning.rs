@@ -321,6 +321,7 @@ pub(super) async fn plan_compiled_descendant(
         child_input["rsiReflexiveProgram"]=plan["reflexiveProgram"].clone();
         child_input["rsiOpenImprovementProgram"]=plan["openImprovementProgram"].clone();
         child_input["rsiMetaEvolutionProgram"]=plan["metaEvolutionProgram"].clone();
+        child_input["rsiMetaExperimentDispatch"]=plan["metaExperimentDispatch"].clone();
         child_input["rsiPrincipleLearning"]=plan["principleLearning"].clone();
         child_input["rsiApiRoutePolicy"]=plan["apiRoutePolicy"].clone();
         if input["rsiAdaptiveApiRouting"]==true {
