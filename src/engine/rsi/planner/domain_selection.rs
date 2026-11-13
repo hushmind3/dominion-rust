@@ -30,7 +30,7 @@ pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
 /// gains per unit cost. Failed and inconclusive attempts remain in the denominator.
 /// The active `selfimprove.search` algorithm decides the ranking rule; the
 /// default reproduces the original measured-cost UCB policy.
-fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {
+pub(super) fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {
     let rows = history
         .iter()
         .filter(|row| row["domain"] == domain)
@@ -110,7 +110,7 @@ fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap
     ])
 }
 
-fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f64> {
+pub(super) fn score_domain(algorithm: &Value, features: &BTreeMap<String, f64>) -> Option<f64> {
     let implementation = algorithm["implementation"]
         .as_str()
         .or_else(|| algorithm["variant"].as_str())
