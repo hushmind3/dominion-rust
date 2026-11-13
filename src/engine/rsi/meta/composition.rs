@@ -29,8 +29,21 @@ pub(super) fn compose(
     allowed:&[&str],commit:&str,campaign:&str,lineage:&Value,
     inherited:Option<&str>,inherited_stage:Option<&Value>,explicit:bool,
 )->Result<MetaComposition,String>{
-    let method_transfer=if explicit {Value::Null}
-        else{crate::engine::rsi_system::method_transfer_target(&state,&history,input)};
+    let inputs=super::meta_inputs::prepare(state,input,history,campaign,explicit)?;
+    Ok(compose_pure(input,history,frontier,allowed,commit,lineage,
+        inherited,inherited_stage,explicit,inputs))
+}
+
+/// This stage has no AppState, job store, filesystem access or evaluator.
+/// Descendants can replace its strategy and experiment scheduling without
+/// acquiring mutation authority over source adoption or frozen profiles.
+fn compose_pure(
+    input:&Value,history:&[Value],frontier:&[Value],allowed:&[&str],
+    commit:&str,lineage:&Value,inherited:Option<&str>,
+    inherited_stage:Option<&Value>,explicit:bool,
+    inputs:super::meta_inputs::PreparedMetaInputs,
+)->MetaComposition {
+    let method_transfer=inputs.method_transfer;
     let feedback_repair=history.iter().rev().find(|g|g["accepted"]==true)
         .is_some_and(|last|
         input["rsiMethodAblation"]==true && input["rsiAutonomous"]==true
@@ -72,10 +85,7 @@ pub(super) fn compose(
         Value::Null
     }else{method_transfer};
     let feedback_repair=feedback_repair && evolution_program.is_null();
-    let profile=crate::engine::rsi_profile::from_input(input)?;
-    let peers=crate::engine::rsi_system::peer_lineage_references(
-        &state,campaign,profile["sha256"].as_str().unwrap_or(""),
-        input["rsiIndexId"].as_str().unwrap_or(""),None);
+    let peers=inputs.peers;
     // Crucial: the *compiled descendant*, rather than the resident server,
     // scores possible meta-improvement targets and proposes its next experiment.
     let unsteered=crate::engine::rsi_meta_controller::synthesize(
@@ -186,7 +196,7 @@ pub(super) fn compose(
             && stage["sourceSha256"]==architecture_target["sourceSha256"]) {
         inherited_stage.cloned().unwrap_or(Value::Null)
     }else{Value::Null};
-    Ok(MetaComposition {
+    MetaComposition {
         method_transfer,
         feedback_repair,
         influence,
@@ -202,5 +212,5 @@ pub(super) fn compose(
         architecture_target,
         co_design,
         successor_stage,
-    })
+    }
 }
