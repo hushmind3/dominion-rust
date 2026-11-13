@@ -515,23 +515,40 @@ pub fn record_usage_tokens(
     total_tokens: u64,
     estimated: bool,
 ) {
-    if total_tokens == 0 {
-        return;
-    }
-    state.store.audit(
-        "model.usage",
-        json!({
-            "providerId": provider_id,
-            "model": model,
-            "local": local,
-            "purpose": purpose,
-            "sessionId": session_id,
-            "promptTokens": prompt_tokens,
-            "completionTokens": completion_tokens,
-            "totalTokens": total_tokens,
-            "estimated": estimated,
-        }),
+    record_usage_tokens_with_cache(
+        state, provider_id, model, local, purpose, session_id,
+        prompt_tokens, completion_tokens, total_tokens, estimated, None,
     );
+}
+
+/// Provider-reported cached input is a subset of billed prompt tokens, not a
+/// second cost to add to total tokens. Null means missing telemetry, whereas
+/// Some(0) means the provider positively reported no cache hit.
+#[allow(clippy::too_many_arguments)]
+pub fn record_usage_tokens_with_cache(
+    state: &AppState,
+    provider_id: &str,
+    model: &str,
+    local: bool,
+    purpose: &str,
+    session_id: Option<&str>,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    estimated: bool,
+    cached_prompt_tokens: Option<u64>,
+) {
+    if total_tokens == 0 { return; }
+    let cache = if estimated { None } else { cached_prompt_tokens };
+    // Never accept a provider adapter's double-counted cache figure.
+    let cache = cache.filter(|cached| *cached <= prompt_tokens);
+    state.store.audit("model.usage", json!({
+        "providerId": provider_id, "model": model, "local": local,
+        "purpose": purpose, "sessionId": session_id,
+        "promptTokens": prompt_tokens, "completionTokens": completion_tokens,
+        "totalTokens": total_tokens, "estimated": estimated,
+        "cachedPromptTokens": cache,
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
