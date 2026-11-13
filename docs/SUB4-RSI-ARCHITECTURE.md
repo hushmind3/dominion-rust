@@ -96,3 +96,8 @@ The normal 3-generation success response must set `proven:true` **only
 after** the replayed method-off comparison passes; the verifier returns an
 explicit pending control otherwise. Control campaigns retain their original
 treatment campaign ID so the UI can return to the correct proof record.
+
+The API control-request validation and task construction are now in
+`src/api/rsi/control_request.rs`; HTTP handlers only route and enqueue.
+Legacy API unit tests were moved to `tests/unit/api_rsi_tests.rs`.
+No Rust build or tests were executed.

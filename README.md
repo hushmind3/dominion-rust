@@ -513,3 +513,7 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 
 대조 캠페인을 종료한 뒤 **원래 RSI 캠페인으로 돌아가기**를 누르면 기존
 독립 검증 기록을 다시 읽어 동일한 폐회로 판정을 수행합니다.
+
+대조 입력·모델·원본 작업의 보안·재현 검사는
+`src/api/rsi/control_request.rs`에 분리했습니다. 원래 API 단위
+검사 코드는 `tests/unit/api_rsi_tests.rs`로 이동했습니다.
