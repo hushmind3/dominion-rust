@@ -56,3 +56,9 @@ The experiment chooser is a compiled and editable algorithm whose recommendation
 ## 실행기 결합도 추가 해소
 
 `rsi/execution.rs`에서 개선법·후손 선택 결과 분석을 `execution/learning_feedback.rs::assess`로, 영속화/원본 증명 통합을 `execution/proof_ledger.rs::persist`로 분리했습니다. 전자는 독립 평가와 실제 도구 영수증만 읽는 평가/학습 후처리이며 후자는 세대 기록 저장, 공통 증명기 호출, 다음 후손 생산성 결과 보관에 대한 경계입니다. 캠페인 실행기는 이 두 구체적인 모듈을 순서대로 호출합니다. 타입 계약과 독립 평가 자체는 여전히 구분되며, `execution.rs`가 다루는 보관/증명 책임이 줄었습니다.
+
+## 정적 도메인 enum 밖의 소스 기반 실험 후보 자동 발견
+
+`rsi/planner/operator_policy.rs::select`는 컴파일 후손의 `architectureFrontier` 중 유효한 소스 SHA와 안전 경로를 가진 항목을 전수 확인하고, `(role,path)`를 SHA-256으로 안정적으로 식별한 `source_graph_*` 후보를 동적으로 생성합니다. 그 후보는 다른 제안자와 동일한 원본 paired 평가·실행된 소스 편집 증명·퇴행 벌점을 받습니다. 모델이 별도 신규 지능 역할을 발명해 소스에 채택했을 때, 고정된 첫 8개 역할에 한정해 연구하지 않고 후속 세대가 그 새 역할을 개선 대상으로 선정할 수 있습니다. 각 후보에 보조 cold-start 우선순위를 부여하며 명시적 모델 작성 프로그램과 기존 메타 계승을 우회하지 않습니다.
+
+또한 `rsi_mutation.rs::stream_search_policy_statistics`가 이전 평면 모듈이 아닌 현재 실행 경로인 `rsi/search.rs`에서 전체 공개 범위(`pub(super)`)를 보존한 채 다음 개선 알고리즘을 생성하도록 소스 패턴을 다시 맞췄습니다. `rsi_principle_lab.rs::instruction`도 베이스 모델 학습이나 어댑터 변경을 요구하지 않고 고정 가중치의 추론·검색·도구 정책을 개선하도록 수정했습니다.

@@ -82,8 +82,11 @@ fn hoist_invariant_query_terms(source: &str) -> Option<String> {
 /// objective scope, and ordering semantics. The frozen improver holdout is
 /// still responsible for proving any execution-time gain.
 fn stream_search_policy_statistics(source: &str) -> Option<String> {
-    let first = "fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
-    let after = "\n}\n\nfn score_domain(";
+    // Match the complete visibility-bearing signature. Replacing only the
+    // inner "fn" previously produced "pub(super) pub(super) fn" after the
+    // source hierarchy was split into rsi/search.rs.
+    let first = "pub(super) fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
+    let after = "\n}\n\npub(super) fn score_domain(";
     let start = source.find(first)?;
     if source.matches(first).count() != 1 { return None; }
     let end = start + source[start..].find(after)? + 2;
@@ -497,6 +500,8 @@ mod tests {
         let candidate = stream_search_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(candidate.contains("let mut last_row: Option<&Value> = None"));
+        assert!(!candidate.contains("pub(super) pub(super) fn"),
+            "the compiled child must keep one and only one Rust visibility prefix");
         assert!(candidate.contains("fn fast_failure_cluster_domain("));
         assert!(candidate.contains("return fast_failure_cluster_domain(history,objective);"));
         assert!(candidate.contains("implementation!=\"expression\""));

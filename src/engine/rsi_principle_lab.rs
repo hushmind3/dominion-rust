@@ -481,9 +481,10 @@ pub(crate) fn instruction(programme: &Value) -> String {
         source AND method source in targetFiles, and improvementPrinciple: \
         {{name,taskRole,taskFile,methodFile,failureMode,mechanism,counterfactual,\
         transferPrediction,learningSignal}}. Then REALLY edit BOTH files. \
-        A model-learning proposal should connect trainable checkpoint/adapter \
-        updates, versioned training data, and inference binding instead of \
-        merely changing model routing prompts. Record a testable prediction \
+        A model-learning proposal must preserve fixed base model weights: \
+        improve inference choices, retrieval, context preparation or tool-use \
+        policies from independently evaluated experience, NEVER train adapters \
+        or checkpoints. Record a testable prediction \
         about task outcomes and the NEXT rebuilt descendant's ability to \
         invent another improvement. The frozen evaluator is independent; \
         do not read holdout identities or claim transfer from the proposal.\n\

@@ -20,6 +20,7 @@
         let cases=["zero_boundary","negative_one","negative_two","negative_three","positive_one","positive_two","positive_three","positive_four"]
             .into_iter().enumerate().map(|(i,name)|json!({"id":name,"domain":if i%2==0{"boundary"}else{"retention"},"holdout":i<2,"filter":format!("cases::{name}")})).collect::<Vec<_>>();
         context.checkpoint(json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
+            "rsiSourceBranch":"dominion-sub2",
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],

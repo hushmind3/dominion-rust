@@ -115,7 +115,8 @@ pub(crate) fn peer_instruction(peers:&Value,policy:&Value)->String {
         .take(1)
         .map(|row|format!(
             "single assigned donor={} roles={} hypothesis={} design={} aligned={}",
-            row["campaignId"],row["roles"],row["hypothesis"],
+            row["campaignId"].as_str().unwrap_or(""),
+            row["roles"],row["hypothesis"],
             row["designSummary"],row["alignedSourceFiles"]))
         .collect::<Vec<_>>();
     if lines.is_empty(){String::new()}else{

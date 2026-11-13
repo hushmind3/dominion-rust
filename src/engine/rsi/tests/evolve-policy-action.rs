@@ -139,7 +139,8 @@
         assert_eq!(first["source"],"compiled_descendant_system_controller_v3");
         assert_eq!(first["generatorCommit"],commit);
         assert_eq!(first["historyCount"],0);
-        assert_eq!(first["systemBlueprint"]["architecture"].as_array().unwrap().len(),7);
+        assert_eq!(first["systemBlueprint"]["architecture"].as_array().unwrap().len(),8,
+            "the source scanner has 8 seed roles: algorithms, harness, memory, learning, tools, improvement_methods, models and frontend");
         assert_eq!(first["systemBlueprint"]["sourceTreeSha256"],
             first["sourceTreeSha256"]);
         assert_eq!(first["decisionOwner"],"rebuilt_descendant_binary");
