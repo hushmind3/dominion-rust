@@ -66,7 +66,7 @@ fn edit_outcomes(state:&crate::state::AppState, session_id:&str)->Value {
 /// Preserve the first actionable compiler diagnostic, not only the end of
 /// cargo's stderr (which often contains warnings and "could not compile").
 /// Losing the real file:line:error makes every model repair a blind rewrite.
-fn focused_verifier_stderr(stderr:&str)->String {
+pub(super) fn focused_verifier_stderr(stderr:&str)->String {
     let lines=stderr.lines().collect::<Vec<_>>();
     let error_at=lines.iter().position(|line|{
         let trimmed=line.trim_start();
@@ -304,6 +304,3 @@ pub async fn finish(
     }))
 }
 
-/// Runs the shared audit only when the patch adds an unsafe construct. The
-/// automatic check is scoped to files the patch changed, so a pre-existing
-/// issue in an unrelated file cannot block the candidate.
