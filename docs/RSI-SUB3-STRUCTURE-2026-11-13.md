@@ -41,7 +41,7 @@
 - 수정 가능한 실제 지능: `rsi_system/lineage.rs`(과거 계보와 실제 방법 실행 기억), `rsi_system/guidance.rs`(후손 지시), `rsi/{planner,execution,learning}`(세대별 탐색·실행·개선법), `rsi_meta_controller.rs`(선택 메타정책).
 - 후보가 수정할 수 없는 독립 감독: `rsi/proof.rs`(공통 완성 판정), `rsi_causal_closure.rs`(A→B→A→B 실제 방법 계보 감사), `rsi/execution/counterfactual.rs`(이전·후손 재생 비교), `rsi_system/design.rs`(채택 설계 완결성), `rsi_system/proposal.rs`(설계 선언 유효성), `rsi_system/handoff.rs`(고정 계승 증거), `rsi_system/peer_verifier.rs`(다른 캠페인 원본 증명). 이 경계는 `rsi.rs::safe_path`의 실질적 편집 차단에 반영돼 있다.
 - `rsi_system.rs`는 변경 가능한 설계 진입점과 모듈 등록을 보존하되 엄격한 증명 함수는 별도 보호 모듈로 위임한다. `rsi_system.rs::COMPONENTS`는 이 보호 모듈을 후손의 편집 가능한 개선법 후보로 소개하지 않는다.
-- 새 경계에 대한 회귀 검사는 `tests/support/engine/rsi_system.tests.rs`, `rsi_causal_closure.tests.rs`, `tests/support/api/rsi.tests.rs`에 선언했으며 실행하지 않았다.
+- 이번 추가 개편의 테스트 파일 수정과 신규 테스트 파일은 사용자 지시대로 되돌렸다. 검증 대상은 RSI 실행 소스이며, 테스트·컴파일·빌드는 수행하지 않았다.
 
 ## 재판정 이후 추가 보강: 검증기 불변성과 품질 대조
 
