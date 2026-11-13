@@ -123,9 +123,9 @@ fn speaker_window(
     // An explicit total cap of at least one turn per participant is the
     // owner's instruction that everyone should speak. Do not silently trim
     // that room down to two casual responders.
-    if room["maxTurns"]
-        .as_u64()
-        .is_some_and(|turns| turns as usize >= roster.len())
+    if room["adaptiveSpeakers"] != true
+        && room["maxTurns"].as_u64()
+            .is_some_and(|turns| turns as usize >= roster.len())
     {
         return roster.to_vec();
     }
@@ -543,7 +543,13 @@ async fn run_locked(
                 }
             }
             let mentioned = mentioned_agents(state, &roster, &text).unwrap_or_default();
-            cohort = if mentioned.is_empty() { roster.clone() } else { mentioned };
+            cohort = if !mentioned.is_empty() {
+                mentioned
+            } else if room["adaptiveSpeakers"] == true {
+                speaker_window(state, &room, owner_text, &roster)
+            } else {
+                roster.clone()
+            };
         }
         if stopped(context, session_id, generation) {
             return Ok(finish(
@@ -566,6 +572,19 @@ async fn run_locked(
                 "new_owner_message",
                 Some(&newer),
             ));
+        }
+        // Do not start another paid participant when a resumed exchange has
+        // already consumed its budget. The post-turn check alone permits one
+        // unnecessary provider call on restart or on budget exhaustion.
+        if token_budget > 0 {
+            let consumed = state.store.session_usage(session_id)["totalTokens"]
+                .as_u64().unwrap_or(0).saturating_sub(usage_baseline);
+            if consumed >= token_budget {
+                checkpoint(context, session_id, generation, source_id, &mode,
+                    &roster, &initial, &pending, &outputs, budget, false, None)?;
+                return Ok(finish(context, room_id, session_id, "completed",
+                    &outputs, "token_budget", None));
+            }
         }
         let Some(agent_id) = pending.pop_front() else {
             break;
