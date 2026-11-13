@@ -266,7 +266,7 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 
 - `src/engine/rsi/execution/campaign.rs::run_loop`에서 독립 채택된 소스로 다음 개선기를 빌드하고, `--rsi-plan-generation`과 `--rsi-worker-job`으로 실제 후손을 실행합니다.
 - `src/engine/rsi/execution/counterfactual.rs`는 이전 개선기의 실행 바이너리를 SHA로 보존한 뒤, **동일 소스·작업·계보**를 이전/새 바이너리에 전달하는 무모델 계획 비교를 수행합니다. 버전 문자열이나 해시만 변경돼서는 행동 변화로 세지 않습니다. 비교 오류는 성공이 아닌 `unavailable`로 기록합니다.
-- `src/engine/rsi_causal_closure.rs::audit`는 **메타 → 기능 → 메타 → 기능** 4개 연속 독립 채택, 3개 행동 비교, 2개 메타 개선과 2개 기능 개선의 동결 홀드아웃 성과, 실제 편집 대상을 검사합니다. `src/engine/rsi_system.rs::handoff_evidence`는 이 검증을 `demonstrated`의 필요조건으로 적용합니다.
+- `src/engine/rsi_causal_closure.rs::audit`는 **메타 → 기능 → 메타 → 기능** 4개 연속 독립 채택, 3개 후손 계획 비교(메타개선 직후 2개 행동 변화), 2개 메타 개선과 2개 기능 개선의 동결 홀드아웃 성과, 실제 편집 대상을 검사합니다. `src/engine/rsi_system.rs::handoff_evidence`는 이 검증을 `demonstrated`의 필요조건으로 적용합니다.
 - 이 인과 영수증의 재검증 코드(`src/engine/rsi_causal_closure.rs`)와 비교기(`src/engine/rsi/execution/counterfactual.rs`)는 후손 후보가 변경할 수 없는 동결 감독 경계입니다.
 - 현재 공개 판정은 서브3 **36점(구조 36/55, RSI 0/45)**입니다. 이번 코드 변경만으로 RSI 작동이나 점수 상승을 주장하지 않습니다. 빌드·컴파일·테스트·실모델 캠페인은 진행하지 않았습니다.
 

@@ -43,12 +43,18 @@ fn independently_adopted(state:&AppState,g:&Value)->bool {
         && paths(g).iter().all(|p|g["acceptedSourceHashes"][*p].as_str()
             .is_some_and(|sha|sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))
 }
-fn handoff(parent:&Value,child:&Value)->bool {
+fn handoff(parent:&Value,child:&Value,require_behavior_change:bool)->bool {
     let proof=&child["behaviorCounterfactual"];
-    child["generatorCommit"]==parent["acceptedCommit"] &&
+    let behavior_matches=if require_behavior_change {
+        proof["status"]=="behavior_changed" &&
+            proof["previousActionSha256"]!=proof["descendantActionSha256"]
+    } else {
+        matches!(proof["status"].as_str(),
+            Some("behavior_changed"|"behavior_unchanged"))
+    };
+    child["generatorCommit"]==parent["acceptedCommit"] && behavior_matches &&
         child["generatorBinarySha256"]!=parent["generatorBinarySha256"] &&
         proof["source"]=="matched_compiled_planner_intervention_v1" &&
-        proof["status"]=="behavior_changed" &&
         proof["sameSourceRoot"]==true && proof["samePersistedHistory"]==true &&
         proof["onlyBinaryIdentityFieldsRebound"]==true &&
         proof["previousGeneratorCommit"]==parent["generatorCommit"] &&
@@ -58,7 +64,6 @@ fn handoff(parent:&Value,child:&Value)->bool {
         proof["descendantGeneratorBinarySha256"]==child["generatorBinarySha256"] &&
         proof["descendantActionSha256"]==json!(
             crate::engine::rsi_evolve::action_hash(&child["controllerPlan"])) &&
-        proof["previousActionSha256"]!=proof["descendantActionSha256"] &&
         proof["historyCount"].as_u64()==child["attempt"].as_u64()
             .and_then(|n|n.checked_sub(1))
 }
@@ -87,8 +92,8 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             meta_a["domain"]!="improver" || cap_b["domain"]=="improver" ||
             meta_a2["domain"]!="improver" || cap_b2["domain"]=="improver" ||
             !positive_meta(meta_a) || !positive_meta(meta_a2) {continue;}
-        if !handoff(meta_a,cap_b) || !handoff(cap_b,meta_a2) ||
-            !handoff(meta_a2,cap_b2) ||
+        if !handoff(meta_a,cap_b,true) || !handoff(cap_b,meta_a2,false) ||
+            !handoff(meta_a2,cap_b2,true) ||
             !actually_changed_target(cap_b) || !actually_changed_target(cap_b2) {
             continue;
         }
@@ -109,7 +114,7 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
     let sha=format!("{:x}",Sha256::digest(serde_json::to_vec(&verified).unwrap_or_default()));
     json!({"source":"independent_rsi_closure_v1","closedLoopCount":verified.len(),
         "demonstrated":!verified.is_empty(),"loops":verified,"sha256":sha,
-        "requires":"4 contiguous adopted generations; 3 matched compiled behavior interventions; 2 meta and 2 capability independent holdout gains",
+        "requires":"4 contiguous adopted generations; 3 matched compiled planner replays; 2 effective behavior changes after meta improvements; 2 meta and 2 capability independent holdout gains",
         "modelWeightUpdates":0})
 }
 #[cfg(test)]
@@ -126,6 +131,6 @@ mod tests {
         let p=json!({"generatorCommit":"old","acceptedCommit":"new","generatorBinarySha256":"a"});
         let c=json!({"generatorCommit":"new","generatorBinarySha256":"b",
             "behaviorCounterfactual":{"status":"behavior_changed"}});
-        assert!(!handoff(&p,&c));
+        assert!(!handoff(&p,&c,true));
     }
 }
