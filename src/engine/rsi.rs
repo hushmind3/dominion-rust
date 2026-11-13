@@ -41,7 +41,14 @@ pub(crate) fn safe_path(path: &str) -> bool {
         "src/engine/rsi/execution/method_ablation.rs" |
         "src/engine/rsi.rs" |
         "src/engine/rsi_evolve.rs" |
-        "src/engine/rsi_system.rs")
+        "src/engine/rsi_system.rs" |
+        "src/engine/rsi_worktree.rs" |
+        "src/engine/rsi_metrics.rs" |
+        "src/engine/rsi_archive.rs" |
+        "src/api/rsi.rs")
+        && !path.starts_with("tests/support/engine/rsi_")
+        && !path.starts_with("tests/support/api/rsi")
+        && !path.starts_with("tests/unit/engine_rsi_")
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
