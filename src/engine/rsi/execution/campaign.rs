@@ -586,6 +586,13 @@ pub(super) async fn run_loop(
         // input BEFORE queuing the treatment. Real model and evaluation
         // receipts belong to this campaign and count against its budgets.
         run_control(context,record,input,&mut child_input,&lab,&binary,started).await?;
+        // The OFF arm may exhaust the elapsed campaign time. Refuse to
+        // launch the treatment as an unaccounted extra worker.
+        if record["limits"]["timeBudgetSeconds"].as_u64().is_some_and(|budget|
+            started.elapsed().as_secs().saturating_sub(
+                record["waitingMs"].as_u64().unwrap_or(0)/1000)>=budget) {
+            return Ok("time_budget".into());
+        }
         // The OFF arm consumes real tokens; recompute the ON worker's budget
         // from the surviving campaign balance instead of the stale pre-OFF
         // estimate. The worker performs its own provider-aware preflight.
