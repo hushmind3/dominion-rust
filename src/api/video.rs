@@ -38,26 +38,30 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
     let workflows = workflows_from_config(&cfg);
     let runway = cfg["hasRunwayKey"] == true;
+    let ltx = cfg["hasLtxKey"] == true;
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
         .map(video::public_job).collect::<Vec<_>>();
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy || runway,
+        "available": executable.is_some() || comfy || runway || ltx,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "comfy": {"reachable": reachable, "available": comfy},
         "runway": {"available":runway,"recipe":"2026-06","audio":true,"durations":[5,10,15],
             "qualities":["720p","1080p"],"ratios":["9:16","16:9","1:1"],"shotModes":["auto","custom"]},
+        "ltx": {"available":ltx,"models":["ltx-2-5-pro","ltx-2-5-fast"],
+            "qualities":["720p","1080p","1440p","4k"],"audio":true,"apiVersion":"v2"},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
             {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
-            {"id":"runway","name":"Runway 멀티샷 · 음성 포함","available":runway,"reason":if runway{""}else{"Runway API 키 등록 필요"}}
+            {"id":"runway","name":"Runway 멀티샷 · 음성 포함","available":runway,"reason":if runway{""}else{"Runway API 키 등록 필요"}},
+            {"id":"ltx","name":"LTX-2.5 · 최대 4K 영상·오디오","available":ltx,"reason":if ltx{""}else{"LTX API 키 등록 필요"}}
         ],
         "jobs": jobs,
         "models": [],
-        "modelsReady": runway || comfy,
+        "modelsReady": runway || ltx || comfy,
         "workflows": workflows,
         "installed": reachable
     }))
@@ -81,6 +85,8 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         "model",
         "useModel",
         "runwayQuality",
+        "videoQuality",
+        "videoModel",
     ] {
         if let Some(v) = body.get(key) {
             cfg[key] = v.clone();
@@ -123,6 +129,16 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
         }
         if !key.trim().is_empty() {
             state.save_secret("video:runway", key.trim());
+        }
+    }
+    if body["clearLtxKey"] == true {
+        state.store.remove_secret("video:ltx:api");
+    } else if let Some(key) = body["ltxApiKey"].as_str() {
+        if key.len() > 300 {
+            return error(StatusCode::BAD_REQUEST, "LTX API 키가 너무 깁니다.");
+        }
+        if !key.trim().is_empty() {
+            state.save_secret("video:ltx:api", key.trim());
         }
     }
     if state.store.put("video_config", &cfg).is_none() {
@@ -226,6 +242,10 @@ pub async fn models(State(state): State<AppState>) -> Json<Value> {
         items.push(json!({"id":"runway","name":"Runway Multi-Shot (2026-06)",
             "kind":"runway","available":true,"hint":"자동 구성 또는 3~5개 샷, 720p·1080p·오디오를 지원합니다."}));
     }
+    if cfg["hasLtxKey"] == true {
+        items.push(json!({"id":"ltx","name":"LTX-2.5 (V2)",
+            "kind":"ltx","available":true,"hint":"Fast/Pro, 최대 4K·오디오, 클라우드 자동 생성"}));
+    }
     if comfy {
         items.push(json!({
             "id": "comfyui",
@@ -248,6 +268,7 @@ pub async fn catalog(State(state): State<AppState>) -> Json<Value> {
             {"id":"native","name":"DOMINION native (ffmpeg)","kind":"native","available":native},
             {"id":"comfyui","name":cfg["comfyWorkflowName"].as_str().unwrap_or("ComfyUI"),"kind":"comfyui","available":comfy},
             {"id":"runway","name":"Runway Multi-Shot 2026-06","kind":"runway","available":cfg["hasRunwayKey"] == true},
+            {"id":"ltx","name":"LTX-2.5 V2","kind":"ltx","available":cfg["hasLtxKey"] == true},
         ],
         "workflows": workflows_from_config(&cfg),
         "engine": cfg["engine"],
