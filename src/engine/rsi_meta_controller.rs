@@ -85,6 +85,57 @@ fn confidence_adjustment(history:&[Value])->f64{
     (1.0-0.6*mean).clamp(0.4,1.0)
 }
 
+/// Multiple independently assessed failed descendants of the SAME accepted
+/// meta-method rewrite may schedule a further rewrite of that exact executable
+/// method. The observations were reconstructed from original paired receipts
+/// by rsi_system::revalidated_method_history; they are not causal A/B proof.
+fn inherited_method_repair(history:&[Value],ranked:&[(Value,f64)])->Option<Value>{
+    let latest=history.iter().rev().take(12).find(|g|
+        g["metaMethodOutcome"]["source"]
+            =="observed_compiled_meta_method_successor_outcome_v1"
+            && g["metaMethodOutcome"]["independentlyAssessed"]==true
+            && g["metaMethodOutcome"]["observedPlanDifference"]==true)?;
+    let lineage=&latest["metaMethodOutcome"]["inheritedParentCommit"];
+    let revision=&latest["metaMethodOutcome"]["compiledPolicyRevision"];
+    if !lineage.is_string() || !revision.is_string(){return None;}
+    let matched=history.iter().rev().take(12).filter(|g|
+        g["metaMethodOutcome"]["source"]
+            =="observed_compiled_meta_method_successor_outcome_v1"
+            && g["metaMethodOutcome"]["independentlyAssessed"]==true
+            && g["metaMethodOutcome"]["inheritedParentCommit"]==*lineage
+            && g["metaMethodOutcome"]["compiledPolicyRevision"]==*revision
+            && g["metaMethodOutcome"]["actuallyFocused"]==true)
+        .collect::<Vec<_>>();
+    let failures=matched.iter().filter(|g|
+        g["metaMethodOutcome"]["independentCandidateAdopted"]==false).count();
+    let successes=matched.iter().filter(|g|
+        g["metaMethodOutcome"]["independentCandidateAdopted"]==true).count();
+    if failures<2 || successes>0 {return None;}
+    for change in latest["metaMethodInheritance"]["sourceChanges"]
+        .as_array().into_iter().flatten() {
+        let Some(source)=change["path"].as_str() else{continue};
+        let actual=ranked.iter().find(|(item,_)|
+            item["target"]["path"]==source
+                && item["target"]["role"]=="improvement_methods");
+        let Some((alternative,_))=actual else{continue};
+        let recent_retries=history.iter().rev().take(4).filter(|g|
+            g["focusFiles"].as_array().is_some_and(|files|
+                files.iter().any(|path|path==source))).count();
+        if recent_retries>=2 {continue;}
+        return Some(json!({
+            "source":"revalidated_descendant_meta_method_failure_v1",
+            "inheritedParentCommit":lineage,
+            "compiledPolicyRevision":revision,
+            "methodSourcePath":source,
+            "independentlyAssessedChildFailures":failures,
+            "independentlyAdoptedChildSuccesses":successes,
+            "target":alternative["target"],
+            "causalMethodSuperiorityProven":false
+        }));
+    }
+    None
+}
+
 /// Compare independent outcomes across generations, rather than choosing
 /// an arbitrary first unmodified module. Success counts only when a
 /// model-authored system design changed its declared source and the original
@@ -220,7 +271,13 @@ pub(crate) fn synthesize(
     let forecast_drift=recent_errors.len()>=3
         && recent_errors.iter().sum::<f64>()/recent_errors.len() as f64>0.30;
     let repair_predictor=forecast_drift && meta_recent<2;
-    if repair_predictor{
+    let inherited_repair=inherited_method_repair(history,&ranked);
+    if let Some(target)=inherited_repair.as_ref().map(|row|&row["target"]) {
+        if let Some(repair)=ranked.iter().find(|(row,_)|
+            row["target"]==*target) {
+            winner=repair.0.clone();
+        }
+    }else if repair_predictor{
         if let Some(repair)=ranked.iter().find(|(row,_)|
             row["target"]["path"]=="src/engine/rsi_meta_controller.rs") {
             winner=repair.0.clone();
@@ -252,7 +309,10 @@ pub(crate) fn synthesize(
             "error":g["error"].as_str().unwrap_or("")
                 .chars().take(500).collect::<String>()
         })).collect::<Vec<_>>();
-    let mode=if repair_predictor
+    let mode=if inherited_repair.as_ref().is_some_and(|row|
+        row["target"]==target) {
+            "repair_inherited_method_from_downstream_failures"
+        }else if repair_predictor
         && target["path"]=="src/engine/rsi_meta_controller.rs"{
             "repair_own_prediction_mechanism"
         }else if counterexamples.iter().any(|row|
@@ -315,8 +375,10 @@ pub(crate) fn synthesize(
         "nextMutualRedesign":mutual_next,
         "taskOutcomeForecast":winner["outcomeForecast"],
         "forecastDrift":forecast_drift,
-        "metaRepairChosen":repair_predictor
-            && target["path"]=="src/engine/rsi_meta_controller.rs",
+        "metaRepairChosen":mode=="repair_inherited_method_from_downstream_failures"
+            || (repair_predictor
+                && target["path"]=="src/engine/rsi_meta_controller.rs"),
+        "inheritedMethodRepairEvidence":inherited_repair,
         "recentPredictionErrors":recent_errors,
         "referenceDesigns":reference,"counterexamples":counterexamples,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],

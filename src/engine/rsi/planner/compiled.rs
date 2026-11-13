@@ -15,6 +15,11 @@ pub(crate) fn evidence_based_meta_repair_focus(
             Some("repair_own_transfer_method")=>
                 meta["target"]["path"]==
                     crate::engine::rsi_meta_controller::TRANSFER_METHOD_SOURCE,
+            Some("repair_inherited_method_from_downstream_failures")=>
+                meta["inheritedMethodRepairEvidence"]["source"]
+                    =="revalidated_descendant_meta_method_failure_v1"
+                && meta["inheritedMethodRepairEvidence"]["methodSourcePath"]
+                    ==meta["target"]["path"],
             _=>false
         }
 }

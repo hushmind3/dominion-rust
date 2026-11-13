@@ -278,3 +278,43 @@ use super::*;
             list.iter().any(|row|row["target"]["path"]
                 =="src/engine/rsi_meta_controller.rs")));
     }
+
+    #[test]
+    fn two_assessed_failing_descendants_retarget_executable_method(){
+        let source=TRANSFER_METHOD_SOURCE;
+        let target=|path:&str,role:&str|json!({
+            "role":role,"domain":"improver","path":path,
+            "sourceSha256":"a".repeat(64),"sourceBytes":1200
+        });
+        let frontier=vec![
+            target("src/engine/rsi_evolve.rs","improvement_methods"),
+            target(source,"improvement_methods"),
+        ];
+        let observations=(0..2).map(|n|json!({
+            "id":format!("attempt-{n}"),
+            "generatorCommit":"b".repeat(40),
+            "focusFiles":["src/engine/rsi_evolve.rs"],
+            "metaMethodInheritance":{"sourceChanges":[{"path":source}]},
+            "metaMethodOutcome":{
+                "source":"observed_compiled_meta_method_successor_outcome_v1",
+                "inheritedParentCommit":"b".repeat(40),
+                "compiledPolicyRevision":"rev-1",
+                "independentlyAssessed":true,
+                "observedPlanDifference":true,
+                "actuallyFocused":true,
+                "independentCandidateAdopted":false
+            }
+        })).collect::<Vec<_>>();
+        let policy=synthesize(&observations,&frontier,&["improver"],None);
+        assert_eq!(policy["target"]["path"],source);
+        assert_eq!(policy["mode"],
+            "repair_inherited_method_from_downstream_failures");
+        assert!(policy["metaRepairChosen"]==true);
+        assert_eq!(policy["inheritedMethodRepairEvidence"]
+            ["independentlyAssessedChildFailures"],2);
+        let mut with_success=observations.clone();
+        with_success[0]["metaMethodOutcome"]["independentCandidateAdopted"]=json!(true);
+        let no_repair=synthesize(&with_success,&frontier,&["improver"],None);
+        assert_ne!(no_repair["mode"],
+            "repair_inherited_method_from_downstream_failures");
+    }

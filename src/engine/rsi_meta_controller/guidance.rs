@@ -43,6 +43,18 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["taskOutcomeForecast"],policy["controlPolicy"],
         policy["nextMutualRedesign"],refs,failures
     );
+    if policy["mode"]=="repair_inherited_method_from_downstream_failures" {
+        message.push_str(&format!(
+            "\nINHERITED METHOD FAILURE RECOVERY (observational, not causal proof): {}. \
+             Your actual rebuilt method was used by independently assessed \
+             successor attempts without source adoption. Read this current \
+             executable method, redesign the failure diagnosis, experiment \
+             selection or edit-control algorithm itself, then produce a REAL \
+             model-authored source edit. The frozen paired evaluator alone \
+             decides adoption.\n",
+            policy["inheritedMethodRepairEvidence"]
+        ));
+    }
     if policy["peerMethodTransfer"]["active"]==true {
         let rows=policy["peerMethodTransfer"]["references"].as_array()
             .into_iter().flatten()
