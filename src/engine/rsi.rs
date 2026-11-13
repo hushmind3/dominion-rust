@@ -703,7 +703,7 @@ mod tests {
         p["patch"]=json!("diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n@@ -1 +1 @@\n-old\n+new\n");
         assert!(propose(&state,&p).is_err());
         let mut p=proposal("algorithm");
-        p["patch"]=json!(patch().replace("src/engine/rsi.rs","src/../secrets.env"));
+        p["patch"]=json!(patch().replace("src/engine/rsi/planner/domain_selection.rs","src/../secrets.env"));
         assert!(propose(&state,&p).is_err());
         let mut p=proposal("improver");
         p["cases"]=json!((0..8).map(|i|json!({"id":format!("case-{i}"),"domain":"only-one","holdout":i<3,"filter":format!("engine::rsi::tests::case_{i}")})).collect::<Vec<_>>());
