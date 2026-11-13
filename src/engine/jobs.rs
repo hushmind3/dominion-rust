@@ -147,13 +147,15 @@ pub fn recover(state: &AppState) {
             .unwrap_or(0);
         let mut updated = job.clone();
         updated["recovered"] = json!(true);
+        let safe_goal_review = crate::engine::goal_recovery::safe_review_checkpoint(&job);
+        let pending_goal_review = job.pointer("/goalState/reviewPending")
+            .and_then(Value::as_bool)==Some(true);
         let flagged = [
             "/inFlight",
             "/promptState/inFlight",
             "/rsiCompareInFlight",
             "/rsiEvolutionInFlight",
             "/goalState/inFlight",
-            "/goalState/reviewPending",
             "/roomState/inFlight",
             "/workflowState/inFlight",
             "/discordState/inFlight",
@@ -178,7 +180,10 @@ pub fn recover(state: &AppState) {
                         .is_some_and(|run| run["sessionId"].as_str() == Some(session))
             })
         });
-        let uncertain = flagged || unknown_external_result;
+        // Tool replay is unsafe, but a fully persisted read-only verification
+        // phase may restart without repeating any executor side effect.
+        let uncertain = flagged || unknown_external_result
+            || (pending_goal_review && !safe_goal_review);
         updated["status"] = json!(if attempts >= 3 || uncertain {
             "needs_review"
         } else {
@@ -217,7 +222,8 @@ pub fn recover(state: &AppState) {
         }
         state.store.audit(
             "job.recovered",
-            json!({ "jobId": job.get("id"), "attempts": attempts }),
+            json!({"jobId":job.get("id"),"attempts":attempts,
+                "safeReviewResume":safe_goal_review && !uncertain && attempts<3}),
         );
     }
     // A detached generation cannot be replayed without its live coordinator.
