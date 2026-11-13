@@ -7,17 +7,51 @@
         let memory=json!({"role":"memory","domain":"memory",
             "path":"src/engine/memory.rs","sourceSha256":"b".repeat(64),
             "sourceBytes":3000,"verifiedRoleChanged":false});
-        let mut history=(0..4).map(|_|json!({"pairedMeasured":true,
-            "metaLearning":{"source":"source_bound_prequential_feedback_v1",
-                "nextPolicyCanTrainFromObservation":true,
-                "brierError":0.85}})).collect::<Vec<_>>();
+        // The drift controller cannot learn from synthetic loss summaries.
+        // Build complete executable-plan and measured-pair-shaped examples,
+        // then obtain the label from the real feedback function.
+        let attempted=|target:Value,n:usize|{
+            let policy=json!({"source":"compiled_editable_meta_controller_v1",
+                "revision":"d".repeat(64),"target":target,
+                "forecast":{"acceptanceProbability":0.95}});
+            let path=policy["target"]["path"].clone();
+            let mut generation=json!({
+                "generatorCommit":"c".repeat(40),
+                "jobId":format!("generation-{n}"),
+                "controllerPlan":{"metaPolicy":policy.clone(),
+                    "architectureTarget":policy["target"].clone(),
+                    "generatorCommit":"c".repeat(40)},
+                "metaPolicy":policy.clone(),
+                "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+                "metaPolicyExecuted":{"source":"running_compiled_descendant_binary",
+                    "metaRevision":policy["revision"].clone()},
+                "focusFiles":[path.clone()],"changedSourcePaths":[path],
+                "candidateId":format!("candidate-{n}"),
+                "candidateOrigin":"model_driven_detached_worktree",
+                "pairedMeasured":true,"pairedReceiptReplayed":true,
+                "accepted":false,"pairedRevalidated":false,
+                "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                    "evidenceSha256":"e".repeat(64),
+                    "metrics":{"eligible":false,"regressions":1}}
+            });
+            generation["metaLearning"]=
+                crate::engine::rsi_prequential::feedback(&policy,&generation);
+            generation
+        };
+        let mut history=(0..4).map(|n|attempted(memory.clone(),n)).collect::<Vec<_>>();
         let result=synthesize(&history,&[memory.clone(),predictors.clone()],
             &["memory","improver"],None);
         assert_eq!(result["target"]["path"],"src/engine/rsi_prequential.rs");
         assert_eq!(result["predictionRuleRepair"]["repairRuleSourceSelected"],true);
         assert_eq!(result["mode"],"repair_own_source_bound_prediction_rule");
+        // A forged focus-only row cannot establish a measured repair attempt.
         history.push(json!({"pairedMeasured":true,
             "focusFiles":["src/engine/rsi_prequential.rs"]}));
+        let still=synthesize(&history,&[memory.clone(),predictors.clone()],
+            &["memory","improver"],None);
+        assert_eq!(still["predictionRuleRepair"]["cooldown"],false);
+        // An independently replayed, source-targeted attempt DOES cool it down.
+        history.push(attempted(predictors.clone(),5));
         let retry=synthesize(&history,&[memory,predictors],&["memory","improver"],None);
         assert_eq!(retry["predictionRuleRepair"]["cooldown"],true);
         assert_eq!(retry["predictionRuleRepair"]["repairRuleSourceSelected"],false);
