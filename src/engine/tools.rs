@@ -195,6 +195,20 @@ pub async fn execute(
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
+    // A model-authored meta experiment has an immutable write scope.
+    // Enforce it in the normal tool runtime, not merely in the prompt or UI.
+    if isolated_rsi && matches!(name,
+        "workspace_write"|"workspace_replace"|"workspace_replace_range") {
+        if let Some(scope)=ctx.store.get("session",ctx.session_id)
+            .map(|session|session["rsiMetaExperimentDispatch"].clone()) {
+            if let Some(allowed)=scope["allowedPaths"].as_array() {
+                let path=required_arg(args,"path")?;
+                if !allowed.iter().any(|entry|entry.as_str()==Some(path.as_str())) {
+                    return Err("독립 실험에서 승인된 소스 범위 밖의 수정은 허용되지 않습니다.".into());
+                }
+            }
+        }
+    }
     if isolated_rsi && matches!(name,"workspace_read"|"workspace_read_range"
         |"workspace_write"|"workspace_replace"|"workspace_replace_range") {
         let path=resolve_workspace(ctx.workspace,&required_arg(args,"path")?)?;
