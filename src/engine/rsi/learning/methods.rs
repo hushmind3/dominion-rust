@@ -98,6 +98,9 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     let domain = input["rsiDomain"].as_str().unwrap_or("");
     session["rsiResearchPartition"] = json!(research_scope(input).partition_key);
     session["rsiDomain"] = json!(domain);
+    // The matched control changes ONLY inherited procedure availability.
+    // Ordinary model tools, provider and source remain unchanged.
+    session["rsiMethodAblationArm"] = input["rsiMethodAblationArm"].clone();
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
@@ -109,7 +112,9 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
 /// Called by the normal chat runtime. Only the parent's concrete reuse choice
 /// can inject a learned method; ordinary chats and other repositories cannot.
 pub(crate) fn method_strategies(state: &AppState, session: &Value) -> Vec<Value> {
-    if !method_session_running(state,session) || session["rsiDecisionInput"]["reuseDecision"]["action"] != "execute_methods" {
+    if session["rsiMethodAblationArm"]=="without_methods"
+        || !method_session_running(state,session)
+        || session["rsiDecisionInput"]["reuseDecision"]["action"] != "execute_methods" {
         return Vec::new();
     }
     let ids = session["rsiDecisionInput"]["reuseDecision"]["methodIds"].as_array().cloned().unwrap_or_default();
