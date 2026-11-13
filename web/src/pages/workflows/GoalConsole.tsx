@@ -23,6 +23,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const agents=useRemote<Agent[]>('/api/agents',[])
  const [goalText,setGoalText]=useState('')
  const [agentId,setAgentId]=useState('')
+ const [plannerId,setPlannerId]=useState('')
+ const [reviewerId,setReviewerId]=useState('')
  const [criteria,setCriteria]=useState('[]')
  const [iterations,setIterations]=useState(12)
  const [busy,setBusy]=useState(false)
@@ -47,7 +49,10 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
   setBusy(true);setError('');setMessage('')
   try{
    const created=await post<Goal>('/api/goals',{goal:goalText.trim(),
-    executor:{agentId:executor},successCriteria:checks,maxIterations:iterations})
+    executor:{agentId:executor},
+    ...(plannerId?{planner:{agentId:plannerId}}:{}),
+    ...(reviewerId?{reviewer:{agentId:reviewerId}}:{}),
+    successCriteria:checks,maxIterations:iterations})
    setGoalText('');setSelected(created.id);setMessage('목표가 작업 큐에 등록됐습니다. 계획과 검증 결과를 아래에서 추적할 수 있습니다.')
    await Promise.all([goals.reload(),jobs.reload()])
   }catch(e){setError((e as Error).message)}
@@ -82,6 +87,13 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
      <FormField label="최대 실행 단계"><TextInput type="number" min={1} max={64} value={iterations}
       onChange={e=>setIterations(Math.max(1,Math.min(64,Number(e.target.value)||1)))}/></FormField>
     </div>
+    <details className="rounded-xl border border-[#E7E0D5] p-3 text-[12px] text-[#5C544A]">
+     <summary className="cursor-pointer font-semibold">선택: 저비용 계획·검토 모델 분리</summary>
+     <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <FormField label="계획 담당" hint="지정하지 않으면 실행 에이전트 모델을 재사용합니다."><SelectInput value={plannerId} onChange={e=>setPlannerId(e.target.value)}><option value="">실행 모델과 동일</option>{available.map(a=><option key={a.id} value={a.id}>{a.name} · {a.model}</option>)}</SelectInput></FormField>
+      <FormField label="독립 검토 담당" hint="도구 실행 없이 실제 증거와 완료 조건을 검토하는 모델입니다."><SelectInput value={reviewerId} onChange={e=>setReviewerId(e.target.value)}><option value="">실행 모델과 동일</option>{available.map(a=><option key={a.id} value={a.id}>{a.name} · {a.model}</option>)}</SelectInput></FormField>
+     </div>
+    </details>
     <details className="rounded-xl border border-[#E7E0D5] p-3 text-[12px] text-[#5C544A]">
      <summary className="cursor-pointer font-semibold">선택: 기계적으로 검사할 완료 조건</summary>
      <p className="mt-2 leading-5">조건을 생략하면 파일 경로가 명시된 목표에서 가능한 검사 조건을 자동 추론합니다. 예: 파일 존재 검사</p>
