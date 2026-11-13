@@ -2,6 +2,21 @@
 mod tests {
     use super::*;
     #[test]
+    fn new_improver_files_are_not_misclassified_as_harness_patches(){
+        for path in [
+            "src/engine/rsi/planner/domain_selection.rs",
+            "src/engine/rsi/learning/generation_feedback.rs",
+            "src/engine/rsi/learning/methods.rs",
+            "src/engine/rsi_system/lineage.rs",
+            "src/engine/rsi_system/guidance.rs",
+            "src/engine/rsi_meta_controller.rs"
+        ] {
+            let patch=format!("diff --git a/{path} b/{path}\\n--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n-old\\n+new\\n");
+            assert_eq!(classify(&patch),"improver",
+                "real self-improvement source classified as unrelated harness: {path}");
+        }
+    }
+    #[test]
     fn rsi_resolves_cargo_even_with_a_minimal_service_path() {
         let cargo = cargo_executable();
         assert!(
