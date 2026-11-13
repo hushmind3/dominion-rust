@@ -152,6 +152,20 @@ pub(crate) fn method_transfer_target(
             && g["evaluation"]["metrics"]["eligible"]==true
             && g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0)
     else {return Value::Null;};
+    let Some(candidate)=meta["candidateId"].as_str()
+        .and_then(|id|state.store.get("rsi_candidate",id)) else{return Value::Null};
+    if candidate["status"]!="verified"
+        || candidate["evaluation"]["metrics"]["eligible"]!=true
+        || candidate["experimentAdoption"]["commit"]!=meta["acceptedCommit"]
+        || candidate["baseCommit"]!=meta["generatorCommit"]
+        || !crate::engine::rsi::verified_pair_receipt(state,&candidate) {
+        return Value::Null;
+    }
+    let Some(proposed_in_session)=meta["jobId"].as_str()
+        .and_then(|id|state.store.get("job",id))
+        .and_then(|job|job["sessionId"].as_str().and_then(|id|state.store.get("session",id)))
+        .and_then(|session|session["rsiMethodProposals"].as_array().cloned())
+    else{return Value::Null};
     let frozen=input["rsiFrozenCases"].as_array();
     let earlier_method=history.iter().rev().skip(1).find_map(|g|
         if g["methodAblation"]["methodAssociationObserved"]==true
@@ -162,6 +176,7 @@ pub(crate) fn method_transfer_target(
         let Some(domain)=method["domain"].as_str().filter(|d|
             *d!="improver" && crate::engine::rsi_evolve::DOMAINS.contains(d)) else {continue};
         if method["sourceGenerationJobId"]!=meta["jobId"]
+            || !proposed_in_session.iter().any(|origin|origin==method)
             || !method["synthesis"].is_null()
             || method["verification"]["type"]!="procedure"
             || !frozen.is_some_and(|cases|cases.iter().any(|case|
