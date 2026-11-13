@@ -1,7 +1,16 @@
 //! independent paired adoption loop and recovery.
 //! Only campaign_execution owns these implementations. Other RSI stages use explicit
 //! names imported through the stable rsi_evolve facade.
-use super::{AppState, Command, DOMAINS, Digest, Duration, Instant, JobContext, Path, PathBuf, Sha256, Value, bind_inherited_target, campaign_model_tokens, choose_focus_files, command, edit_method_reward, elapsed, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants, generation_stop_reason, git, history_with_verified_payoffs, identical_failed_patch, json, learned_edit_method, matching_prior_campaign, method_reuse_decision, new_research_findings, paired_descendant_target, pending_trial_candidate, post_adoption_objective, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_method_feedback, record_trial_outcome, run_method_control, measured_method_ablation, remember_research, research_artifacts, research_digest, research_scope, rsi_worktree, save, select, select_domain_for_state, select_generation_strategy, selection_objective, session_research_fingerprint, session_tool_usage, should_stop_no_progress, target_focus_objective, verified_candidate_id, worker, retain_generator, matched_planner_intervention, plan_compiled_descendant, capture_generation_evidence, record_generation_feedback, finalize_generation, GenerationObservation, prepare_generation_input, evaluate_and_adopt_generation, launch_generation_worker};
+use super::{
+    AppState, Command, Duration, GenerationObservation, Instant,
+    JobContext, PathBuf, Sha256, Value, campaign_model_tokens,
+    capture_generation_evidence, command, edit_method_reward, elapsed, evaluate_and_adopt_generation,
+    finalize_generation, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants,
+    generation_stop_reason, history_with_verified_payoffs, identical_failed_patch, json, launch_generation_worker,
+    learned_edit_method, measured_method_ablation, new_research_findings, prepare_generation_input, record_generation_feedback,
+    record_method_feedback, remember_research, research_artifacts, research_digest, retain_generator,
+    rsi_worktree, run_method_control, save, verified_candidate_id, worker,
+};
 pub(super) async fn run_loop(
     context: &JobContext,
     job: &Value,
