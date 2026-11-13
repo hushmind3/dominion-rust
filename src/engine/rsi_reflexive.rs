@@ -23,6 +23,10 @@ fn actual_source(g:&Value,path:&str)->bool {
 fn meta_source(path:&str)->bool {
     matches!(path,
         "src/engine/rsi_meta_controller.rs"
+        |"src/engine/rsi/meta/controller_selection.rs"
+        |"src/engine/rsi/meta/controller_policy.rs"
+        |"src/engine/rsi/meta/evolution.rs"
+        |"src/engine/rsi/meta/composition.rs"
         |"src/engine/rsi_factorial.rs"
         |"src/engine/rsi_reflexive.rs"
         |"src/engine/rsi_mutual_program.rs"
@@ -38,6 +42,8 @@ fn current<'a>(frontier:&'a [Value],path:&str,allowed:&[&str])->Option<&'a Value
 }
 fn seed<'a>(frontier:&'a [Value],allowed:&[&str])->Option<&'a Value> {
     const PREFERRED:&[&str]=&[
+        "src/engine/rsi/meta/controller_selection.rs",
+        "src/engine/rsi/meta/evolution.rs",
         "src/engine/rsi_meta_controller.rs",
         "src/engine/rsi_reflexive.rs",
         "src/engine/rsi_mutual_program.rs",
