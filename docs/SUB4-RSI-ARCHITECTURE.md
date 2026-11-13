@@ -37,3 +37,7 @@ The local LoRA/PEFT training and promotion module, training/evaluation/server sc
 - Independent source-contract tests are authored in `tests/unit/engine_rsi_closure_source_tests.rs`. No tests, compilation, CI or live model campaign was executed in this pass.
 
 2026 research context (not reproduced results): [SpecForge, Oct 11](https://arxiv.org/abs/2610.15708) on output coupling; [AIDE², Sep 22](https://arxiv.org/abs/2609.26457) on independently selected self-edits; [MetaSkill-Evolve, Jul 6](https://arxiv.org/abs/2607.05297) on task skills versus meta-improvement procedures.
+
+## Immutable independent-verifier gate
+
+The paired evaluator's own `rsi.rs`, `rsi/evaluation/{worktree,metrics}.rs`, `rsi/proof/`, the frozen oracle and test corpus are excluded at **both** the patch/changed-path gate (`rsi::safe_path`) and source-index discovery (`code_index::is_source`), using `rsi/proof/path_policy.rs`. Legitimate experimental work on `rsi/evaluation/intervention_lab.rs`, `rsi/evaluation/rule_tournament.rs`, actual execution, lineage and planner modules stays open. This blocks the trivial strategy of changing what counts as success instead of improving the successor. Bumping source-index parser version invalidates stale discovery records. The authored boundary tests were not executed.

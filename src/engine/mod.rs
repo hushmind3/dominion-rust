@@ -57,6 +57,8 @@ pub mod rsi_lineage_transfer;
 pub mod rsi_history;
 #[path = "rsi/proof/closure.rs"]
 pub mod rsi_closure;
+#[path = "rsi/proof/path_policy.rs"]
+pub mod rsi_path_policy;
 #[path = "rsi/learning/edit_genome.rs"]
 pub mod rsi_edit_genome;
 #[path = "rsi/learning/edit_program.rs"]

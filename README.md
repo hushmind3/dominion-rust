@@ -276,6 +276,10 @@ POST /api/rsi/... → src/engine/rsi_evolve.rs (job 등록·캠페인)
 소스를 개선기 방법으로 분류한다. 동결 평가·독립 증명 및 일반 애플리케이션 능력은
 방법 소스로 분류하지 않는다. A와 마지막 A는 **방법 소스만 변경**해야 하고,
 B는 **방법 소스를 변경하지 않은 별도 능력 개선**이어야 A→B→A로 인정한다.
+보호 경로는 `rsi/proof/path_policy.rs`에서 단일 관리한다.
+`rsi::safe_path`가 후보 패치를 거부하고 `code_index::is_source`가 자동 수정 대상 인덱스에서
+같은 소스를 제외한다. 동결 기준과 별개인 실험용 `intervention_lab.rs`,
+`rule_tournament.rs`는 개선·평가 대상으로 유지한다.
 네이티브 RSI 변형기가 탐색 정책의 실제 코드를 수정할 수 있도록
 `rsi_evolve.rs::search_features`와 `select_domain`의 원래 결합을 유지한다.
 ```

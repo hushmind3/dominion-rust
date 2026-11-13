@@ -6,6 +6,7 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | --- | --- |
 | Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
 | Frozen paired A/B, detached source receipts | `src/engine/rsi/evaluation/worktree.rs`, `src/engine/rsi/evaluation/metrics.rs` |
+| Protected frozen verifier source boundary | `src/engine/rsi/proof/path_policy.rs`, `src/engine/rsi.rs::safe_path`, `src/engine/code_index.rs::is_source` |
 | Method-source classification for independent A→B→A proof | `src/engine/rsi/proof/source_roles.rs` (classification), `src/engine/rsi/proof/closure.rs` (receipt replay), `tests/unit/engine_rsi_closure_source_tests.rs` |
 | Actual intelligence-role inventory, independent receipt replay | `src/engine/rsi_system.rs` |
 | Source index and bounded model navigation | `src/engine/code_index.rs` |

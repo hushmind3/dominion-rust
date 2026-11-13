@@ -20,7 +20,7 @@ const FILE_KIND: &str = "code_index_file";
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SYMBOLS_PER_FILE: usize = 400;
 const MAP_MAX_CHARS: usize = 6_000;
-const PARSER_VERSION: u64 = 5;
+const PARSER_VERSION: u64 = 6;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -38,6 +38,16 @@ fn is_source(path: &Path) -> bool {
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
+    // Use the same immutable verifier boundary as rsi::safe_path so the
+    // descendant cannot discover a protected file as an editable target.
+    // collect_files may receive an absolute checkout path or relative path.
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let source_path = normalized.rsplit_once("/src/")
+        .map(|(_, rest)| format!("src/{rest}"))
+        .unwrap_or_else(|| normalized.clone());
+    if crate::engine::rsi_path_policy::protected(&source_path) {
+        return false;
+    }
     // The coordinator's evaluation corpus is not source-edit context. Keep
     // it out of discovery, target selection and automatically inlined excerpts.
     if name.ends_with("_tests.rs")
