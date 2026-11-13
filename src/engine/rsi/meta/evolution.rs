@@ -226,22 +226,22 @@ pub(crate) fn valid(plan:&Value,history:&[Value],frontier:&[Value],commit:&str)-
     if let Some(m)=unsigned.as_object_mut(){m.remove("revision");}
     if digest(&unsigned)!=p.revision{return false;}
     let Some(ancestor)=parent(history,commit) else{return false;};
-    if p.parent_generation_id!=ancestor["id"]
-        || p.parent_accepted_commit!=ancestor["acceptedCommit"] {return false;}
+    if Some(p.parent_generation_id.as_str())!=ancestor["id"].as_str()
+        || Some(p.parent_accepted_commit.as_str())!=ancestor["acceptedCommit"].as_str() {return false;}
     if !frontier.iter().any(|row|row==&p.target)
-        || p.operator.role!=p.target["role"]
-        || p.operator.domain!=p.target["domain"]
-        || p.operator.path!=p.target["path"] {return false;}
+        || Some(p.operator.role.as_str())!=p.target["role"].as_str()
+        || Some(p.operator.domain.as_str())!=p.target["domain"].as_str()
+        || Some(p.operator.path.as_str())!=p.target["path"].as_str() {return false;}
     if p.previous_operator_id.is_none() {
         ancestor["systemDesign"]["evolutionProtocol"]==plan["protocol"]
             && p.operator_id==p.protocol.entry
-            && p.origin_generation_id==ancestor["id"]
+            && Some(p.origin_generation_id.as_str())==ancestor["id"].as_str()
     }else {
         let prev=&ancestor["metaEvolutionProgram"];
         prev["source"]==COMPILED
             && ancestor["compiledPlanExecuted"]["evolutionProtocolRevision"]==prev["revision"]
             && prev["protocol"]==plan["protocol"]
-            && p.origin_generation_id==prev["originGenerationId"]
+            && Some(p.origin_generation_id.as_str())==prev["originGenerationId"].as_str()
             && p.previous_operator_id.as_deref()==prev["operatorId"].as_str()
             && p.protocol.transitions.iter().any(|edge|
                 Some(edge.from.as_str())==p.previous_operator_id.as_deref()
