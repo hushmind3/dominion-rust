@@ -340,7 +340,8 @@ mod tests {
         assert_eq!(generation_stop_reason(&json!({"result":{"rsi":{"modelError":"authentication failed"}}}),None),None);
         assert_eq!(generation_stop_reason(&json!({"result":{"rsi":{"diffBytes":0}}}),None),None);
         let record=json!({"limits":{"tokenBudget":30000},"tokens":27446});
-        assert!(!generation_fits_remaining_budget(&record,&json!({"prompt":"한".repeat(3000)})),"do not build or launch a worker when even its existing prompt cannot fit");
+        assert!(!generation_fits_remaining_budget(&record,&json!({"prompt":"한".repeat(3000),
+            "providerId":"budgeted-model-provider","model":"budgeted-model"})),"do not build or launch a paid-model worker when even its existing prompt cannot fit");
         assert!(generation_fits_remaining_budget(&json!({"limits":{}}),&json!({"prompt":"한".repeat(3000)})));
     }
 
