@@ -956,7 +956,3 @@ pub(crate) async fn run_program(
     }));
     Ok(messages)
 }
-
-/// A fully specified replacement is executable without a model only when every
-/// acceptance requirement is the same deterministic operation and its expected
-/// hash was frozen before the turn. Anything less falls back to the model.

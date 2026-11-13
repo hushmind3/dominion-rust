@@ -428,5 +428,3 @@ pub(crate) async fn attempt_model_adaptation(
         "hypothesisResults": hypothesis_results,
     }))
 }
-
-/// Restores a durable program/adaptation checkpoint approved by startup wake.

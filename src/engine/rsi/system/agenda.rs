@@ -330,6 +330,3 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Prior accepted design intent: {}\nReport source changes and receipts, not a claimed AGI or RSI completion.",
         self_model["generatorCommit"],owner_objective,components,history,inherited)
 }
-
-
-/// A model-authored design is an unproven experiment. It cannot modify the

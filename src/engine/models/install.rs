@@ -486,7 +486,3 @@ pub async fn install_llama_server(state: AppState) -> Result<Value, String> {
         "capabilities": runtime_snapshot(&state)["capabilities"],
     }))
 }
-
-/// Installable runtime catalog. The UI renders this list, so adding an engine
-/// only needs an entry here plus an install branch where automatic setup is
-/// possible. External engines are listed with their official download page.

@@ -518,5 +518,3 @@ pub fn unload(state: &AppState) -> Value {
     guard.model_key.clear();
     json!({ "status": "idle" })
 }
-
-/// Hugging Face search, mapped to the shape the model explorer expects.

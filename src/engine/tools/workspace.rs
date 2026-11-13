@@ -180,8 +180,3 @@ pub(crate) fn search_code_index(
     let matches=matches.into_iter().map(|(_,row)|row).collect::<Vec<_>>();
     Ok(json!({"query":query,"indexId":index_id,"indexedFiles":meta["files"],"matchCount":matches.len(),"matches":matches}))
 }
-
-/// Native small-model edit: the verified full-file hash binds a concise
-/// line replacement to exactly the source observed by workspace_read_range.
-/// checked_write repeats the hash comparison under its file mutation lock.
-#[derive(Debug,PartialEq,Eq)]

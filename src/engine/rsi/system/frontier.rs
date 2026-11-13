@@ -109,5 +109,3 @@ pub(crate) fn architecture_frontier(state:&crate::state::AppState,
     frontier.truncate(64);
     frontier
 }
-
-/// Controller output is computed by the newly rebuilt generation, with the
