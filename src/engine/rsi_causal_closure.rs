@@ -91,6 +91,64 @@ fn positive_meta(g:&Value)->bool {
     g["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0)>0 &&
         improved_domain(g,"improver") && paths(g).iter().any(|p|meta_source(p))
 }
+/// Revalidate the exact procedure proposed by the previous META generation,
+/// executed by this descendant and responsible for an accepted source byte.
+/// The execution association is necessary provenance, not proof of isolated
+/// improvement: the independent paired task report supplies quality evidence.
+fn executed_inherited_method(state:&AppState,parent:&Value,child:&Value)->Option<Value> {
+    let job=state.store.get("job",child["jobId"].as_str()?)?;
+    let session=job["sessionId"].as_str()?;
+    for method in parent["methodProposals"].as_array()?.iter() {
+        if method["sourceGenerationJobId"]!=parent["jobId"]
+            || method["synthesis"].is_object()
+            || method["verification"]["type"]!="procedure"
+            || method["domain"]!=child["domain"] {
+            continue;
+        }
+        for execution in child["methodExecutions"].as_array()?.iter() {
+            if execution["methodId"]!=method["id"] || execution["revision"]!=method["revision"]
+                || execution["result"]["verified"]!=true || execution["result"]["followed"]!=true
+                || !crate::engine::rsi_evolve::method_wrote_accepted_candidate(
+                    state,child,execution,session) {continue;}
+            let Some(experience)=execution["experienceId"].as_str()
+                .and_then(|id|state.store.get("experience",id)) else{continue};
+            let valid=experience["executableMethods"].as_array().is_some_and(|methods|
+                methods.iter().any(|stored|stored["id"]==method["id"]
+                    && stored["revision"]==method["revision"]
+                    && stored["verification"]==method["verification"]
+                    && stored["applications"].as_array().is_some_and(|apps|apps.iter().any(|app|
+                        app["jobId"]==child["jobId"]
+                            && app["executionId"]==execution["executionId"]
+                            && app["methodWroteAcceptedCandidate"]==true
+                            && app["verificationVerdict"]=="passed"))));
+            if valid {
+                return Some(json!({
+                    "methodId":method["id"],"revision":method["revision"],
+                    "name":method["name"],"domain":method["domain"],
+                    "sourceGenerationJobId":parent["jobId"],
+                    "executedGenerationJobId":child["jobId"],
+                    "executionId":execution["executionId"],
+                    "experienceId":execution["experienceId"],
+                    "wroteAdoptedSource":true,"qualityClaim":"paired_downstream_only"
+                }));
+            }
+        }
+    }
+    None
+}
+
+fn revised_method_after_feedback(previous:&Value,revised:&Value,prior_child:&Value,
+    meta_revision:&Value)->bool {
+    previous["name"].as_str().is_some_and(|name|!name.trim().is_empty())
+        && previous["name"]==revised["name"]
+        && previous["domain"]==revised["domain"]
+        && previous["methodId"]!=revised["methodId"]
+        && previous["revision"]!=revised["revision"]
+        && meta_revision["improvementDirective"]["sourceGenerationId"]==prior_child["id"]
+        && meta_revision["improvementDirective"]["previousAccepted"]==true
+        && meta_revision["improvementDirective"]["previousCandidateId"]==prior_child["candidateId"]
+}
+
 pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
     let mut verified=Vec::new();
     for rows in history.windows(4) {
@@ -106,6 +164,14 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
         }
         if !improved_domain(cap_b,cap_b["domain"].as_str().unwrap_or("")) ||
             !improved_domain(cap_b2,cap_b2["domain"].as_str().unwrap_or("")) {continue;}
+        // A1 produced a method used in B1; B1's measured outcome reached A2;
+        // A2 produced a different executable revision and B2 used it to write
+        // independently adopted bytes. A change in plan metadata is not enough.
+        let Some(first_method)=executed_inherited_method(state,meta_a,cap_b) else {continue};
+        let Some(revised_method)=executed_inherited_method(state,meta_a2,cap_b2) else {continue};
+        if !revised_method_after_feedback(&first_method,&revised_method,cap_b,meta_a2) {
+            continue;
+        }
         verified.push(json!({
             "source":"independent_meta_capability_meta_capability_closed_loop_v1",
             "acceptedCommits":rows.iter().map(|g|g["acceptedCommit"].clone()).collect::<Vec<_>>(),
@@ -115,13 +181,17 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             "evaluationIds":rows.iter().map(|g|g["evaluation"]["id"].clone()).collect::<Vec<_>>(),
             "firstMetaHoldoutGains":meta_a["evaluation"]["metrics"]["metaHoldoutGains"],
             "secondMetaHoldoutGains":meta_a2["evaluation"]["metrics"]["metaHoldoutGains"],
-            "capabilityDomain":cap_b["domain"],"descendantCapabilityDomain":cap_b2["domain"]
+            "capabilityDomain":cap_b["domain"],"descendantCapabilityDomain":cap_b2["domain"],
+            "initialInheritedMethod":first_method,
+            "revisedInheritedMethod":revised_method,
+            "feedbackGenerationId":cap_b["id"],
+            "methodRevisionVerified":true
         }));
     }
     let sha=format!("{:x}",Sha256::digest(serde_json::to_vec(&verified).unwrap_or_default()));
     json!({"source":"independent_rsi_closure_v1","closedLoopCount":verified.len(),
         "demonstrated":!verified.is_empty(),"loops":verified,"sha256":sha,
-        "requires":"4 contiguous adopted generations; 3 matched compiled planner replays; 2 effective behavior changes after meta improvements; 2 meta and 2 capability independent holdout gains",
+        "requires":"4 contiguous independently adopted generations; 3 matched compiled planner replays; 2 improved descendant source edits using independently verified inherited procedures; second procedure revision grounded in first descendant feedback; 2 meta and 2 capability paired holdout gains",
         "modelWeightUpdates":0})
 }
 // Regression fixtures are kept outside the production RSI source inventory.
