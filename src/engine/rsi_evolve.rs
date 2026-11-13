@@ -5885,7 +5885,7 @@ fn compiled_system_generation_plan(
     let suggested=crate::engine::rsi_recursive_discovery::plan(
         history,&frontier,&blueprint["openTopology"],&meta,
         &raw_factorial,&mutual,commit);
-    let phase=suggested["phase"].as_str().unwrap_or("");
+    let phase=suggested["phase"].as_str().unwrap_or("").to_string();
     // Never interrupt an already accepted recursive invention lineage.
     // When the scientific programme is only inventing from no evidence,
     // let the descendant first create an independently testable task↔method
@@ -5895,12 +5895,12 @@ fn compiled_system_generation_plan(
         && principle["target"].is_object()
         && principle["methodTarget"].is_object()
         && principle["shouldProbeTaskMethod"]==true
-        && matches!(phase,"invent_new_intelligence"|"observe_factorial");
+        && matches!(phase.as_str(),"invent_new_intelligence"|"observe_factorial");
     let scientific_active=!explicit_focus && !enforce_meta_repair
         && !principle_active
         && !open_program["stage"].is_object()
         && suggested["target"].is_object()
-        && (matches!(phase,
+        && (matches!(phase.as_str(),
             "develop_invented_capability"|"return_to_origin"|"rewrite_discovery_method"
                 |"repair_discovery_method")
             || !successor_stage.is_object());

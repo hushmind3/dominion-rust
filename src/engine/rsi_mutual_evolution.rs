@@ -140,7 +140,7 @@ pub(crate) fn graph(history:&[Value],frontier:&[Value])->Value{
                 +8*(count.coupled_adoptions.min(3) as i64)
                 -8*(failed_followups.min(4) as i64)
                 -(tries.min(6) as i64)*3;
-            let focus=frontier.iter().find(|row|row["role"]==to);
+            let focus=frontier.iter().find(|row|row["role"].as_str()==Some(to.as_str()));
             candidates.push((score,json!({
                 "from":from,"to":to,"targetDomain":focus.map(|r|&r["domain"]),
                 "targetPath":focus.map(|r|&r["path"]),
