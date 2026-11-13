@@ -102,15 +102,10 @@ pub(super) fn design(
         "Can this intelligence subsystem improve held-out task quality under its inherited method?"
     };
     let parent=parent_revision(history);
-    let revision=format!("{:x}",Sha256::digest(
-        serde_json::to_vec(&json!([
-            commit,history.len(),policy_source_sha256,path,sha,
-            &protocol,parent,question
-        ])).unwrap_or_default()));
-    serde_json::to_value(ExperimentDesign{
+    let mut proposal=ExperimentDesign{
         schema:"compiled_evolvable_experiment_v1".to_string(),
         generator_commit:commit.to_string(),history_count:history.len(),
-        policy_source_sha256,policy_revision:revision,
+        policy_source_sha256,policy_revision:String::new(),
         target:ExperimentTarget{
             role:target["role"].as_str().unwrap_or("").to_string(),
             domain:target["domain"].as_str().unwrap_or("").to_string(),
@@ -118,7 +113,9 @@ pub(super) fn design(
         },
         protocol,question:question.to_string(),
         parent_experiment_revision:parent
-    }).unwrap_or(Value::Null)
+    };
+    proposal.seal();
+    serde_json::to_value(proposal).unwrap_or(Value::Null)
 }
 
 pub(super) fn apply(agenda:&mut Value,design:&Value){

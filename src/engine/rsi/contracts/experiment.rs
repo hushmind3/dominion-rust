@@ -1,7 +1,6 @@
 //! Typed experiment envelope shared by compiled children and independent
 //! supervising evaluator. Mutable policy code may choose experiments, but may
 //! not forge source bytes, target identity, evaluation or adoption rights.
-use super::*;
 use serde::{Deserialize,Serialize};
 use std::path::Path;
 use serde_json::Value;
@@ -39,6 +38,23 @@ pub(crate) struct ExperimentDesign {
     pub parent_experiment_revision:Option<String>,
 }
 
+impl ExperimentDesign {
+    /// Stable, domain-neutral content identity: selection policy may evolve,
+    /// but every reported decision must name its exact immutable bytes.
+    pub(crate) fn revision(&self)->String {
+        format!("{:x}",Sha256::digest(
+            serde_json::to_vec(&serde_json::json!([
+                self.generator_commit,self.history_count,
+                self.policy_source_sha256,self.target.path,
+                self.target.source_sha256,self.protocol,
+                self.parent_experiment_revision,self.question
+            ])).unwrap_or_default()))
+    }
+    pub(crate) fn seal(&mut self) {
+        self.policy_revision=self.revision();
+    }
+}
+
 fn sha(s:&str,n:usize)->bool {
     s.len()==n && s.bytes().all(|byte|byte.is_ascii_hexdigit())
 }
@@ -69,6 +85,7 @@ pub(crate) fn verify_experiment_design(
         || plan.generator_commit!=commit
         || plan.history_count!=history_count
         || !sha(&plan.policy_revision,64)
+        || plan.policy_revision!=plan.revision()
         || !sha(&plan.policy_source_sha256,64)
         || plan.policy_source_sha256!=source_hash(root)?
         || plan.question.is_empty() || plan.question.len()>500

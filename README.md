@@ -512,3 +512,5 @@ Experiment allocation now counts only source-edited, independently verified, act
 ### Stable experiment contract independent of planner and proof
 
 The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.rs` composition root. `experiment_policy.rs` and `proof.rs` no longer import each other's private implementation. Both compiled descendant and supervisor call the same read-only `verify_experiment_design` through `rsi_evolve::contracts`. `rsi::safe_path` freezes the entire `rsi/contracts/` subtree; evolution modifies the experiment allocation algorithm, never its own source authentication or accepted evaluator.
+
+The stable experiment contract now **seals and replays its canonical proposal revision** from source bytes, inherited policy revision, target role/path/SHA, intervention and question. The mutable experiment policy can change how it selects these fields but cannot invent arbitrary receipt/revision identities. Extra contract source assertions are present but not executed.
