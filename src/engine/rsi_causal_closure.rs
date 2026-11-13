@@ -201,6 +201,18 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
         if !revised_method_after_feedback(&first_method,&revised_method,cap_b,meta_a2) {
             continue;
         }
+        // Do not credit a method's downstream improvement from ordinary
+        // baseline-vs-patch gains alone. Both descendants must separately
+        // beat a REAL same-source worker with inherited methods disabled.
+        // Recompute the pair from preserved jobs and frozen candidate receipts.
+        let first_ablation=crate::engine::rsi_evolve::measured_method_ablation(state,cap_b);
+        let revised_ablation=crate::engine::rsi_evolve::measured_method_ablation(state,cap_b2);
+        if first_ablation["methodAssociationObserved"]!=true
+            || revised_ablation["methodAssociationObserved"]!=true
+            || cap_b["methodAblation"]!=first_ablation
+            || cap_b2["methodAblation"]!=revised_ablation {
+            continue;
+        }
         verified.push(json!({
             "source":"independent_meta_capability_meta_capability_closed_loop_v1",
             "acceptedCommits":rows.iter().map(|g|g["acceptedCommit"].clone()).collect::<Vec<_>>(),
@@ -214,13 +226,16 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             "initialInheritedMethod":first_method,
             "revisedInheritedMethod":revised_method,
             "feedbackGenerationId":cap_b["id"],
-            "methodRevisionVerified":true
+            "methodRevisionVerified":true,
+            "initialMethodDisabledControl":first_ablation,
+            "revisedMethodDisabledControl":revised_ablation,
+            "causalIsolationLimit":"paired source-task intervention, no fixed model sampling seed"
         }));
     }
     let sha=format!("{:x}",Sha256::digest(serde_json::to_vec(&verified).unwrap_or_default()));
     json!({"source":"independent_rsi_closure_v1","closedLoopCount":verified.len(),
         "demonstrated":!verified.is_empty(),"loops":verified,"sha256":sha,
-        "requires":"4 contiguous independently adopted generations; 3 matched compiled planner replays; 2 improved descendant source edits using independently verified inherited procedures; second procedure revision grounded in first descendant feedback; 2 meta and 2 capability paired holdout gains",
+        "requires":"4 contiguous independently adopted generations; 3 matched compiled planner replays; 2 independently replayed same-source method ON/OFF worker comparisons with task-quality wins; two generations that used inherited procedures to write adopted source; feedback-grounded method revision; frozen meta and capability holdout gains",
         "modelWeightUpdates":0})
 }
 // Regression fixtures are kept outside the production RSI source inventory.
