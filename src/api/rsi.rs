@@ -34,7 +34,8 @@ fn apply_capability(record: &mut Value) {
     let meta = crate::engine::rsi_evolve::meta_transfer_proven(&history);
     record["maxVerifiedStreak"] = json!(verified);
     record["metaTransferProven"] = json!(meta);
-    record["capabilityDemonstrated"] = json!(crate::engine::rsi_evolve::capability_demonstrated(&history));
+    record["recursiveProof"]=crate::engine::rsi_evolve::recursive_closure_report(&history);
+    record["capabilityDemonstrated"]=record["recursiveProof"]["closedLoopObserved"].clone();
 }
 
 /// Public RSI status must recheck original frozen paired reports instead of
@@ -46,7 +47,7 @@ fn apply_verified_capability(state:&AppState, record:&mut Value) {
     verified_record["history"]=json!(checked);
     apply_capability(&mut verified_record);
     for field in ["acceptedStreak","maxAcceptedStreak","maxVerifiedStreak",
-        "metaTransferProven","capabilityDemonstrated"] {
+        "metaTransferProven","capabilityDemonstrated","recursiveProof"] {
         record[field]=verified_record[field].clone();
     }
 }
@@ -632,7 +633,8 @@ mod capability_tests {
         grandchild["acceptedCommit"]=json!(d);
         let mut lineage=json!({"history":[parent,child,grandchild]});
         apply_capability(&mut lineage);
-        assert_eq!(lineage["capabilityDemonstrated"],true);
+        assert_eq!(lineage["capabilityDemonstrated"],false,
+            "Three adopted commits without real meta source receipts and executing plans are not closure");
         let unmeasured = json!({"history":[{"accepted":true},{"accepted":true},{"accepted":true}]});
         let mut derived = unmeasured.clone();
         apply_capability(&mut derived);

@@ -2301,7 +2301,8 @@ mod tests {
         let parent=make("improver",&a,&b,"improver");
         let child=make("context",&b,&c,"harness");
         let grandchild=make("context",&c,&d,"algorithm");
-        assert!(capability_demonstrated(&[parent.clone(),child.clone(),grandchild.clone()]));
+        assert!(!capability_demonstrated(&[parent.clone(),child.clone(),grandchild.clone()]),
+            "A three-generation streak without compiled meta edit receipts is not proof");
         let mut copied=child.clone();
         copied["generatorCommit"]=json!(a);
         assert!(!capability_demonstrated(&[parent.clone(),copied,grandchild.clone()]),

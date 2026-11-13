@@ -1069,12 +1069,12 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/room_state.rs b/src/engine/room_state.rs\n"),"algorithm");
         assert_eq!(classify("diff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
-        assert_eq!(classify("diff --git a/src/engine/rsi/meta_controller/selection.rs b/src/engine/rsi/meta_controller/selection.rs\\n"),"improver");
-        assert_eq!(classify("diff --git a/src/engine/rsi/system/agenda.rs b/src/engine/rsi/system/agenda.rs\\n"),"improver");
-        assert_eq!(classify("diff --git a/src/engine/rsi_recursive_laboratory.rs b/src/engine/rsi_recursive_laboratory.rs\\n"),"improver");
-        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\\ndiff --git a/src/engine/rsi/meta_controller/transfer.rs b/src/engine/rsi/meta_controller/transfer.rs\\n"),"improver");
-        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\\ndiff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\\n"),"harness");
-        assert_eq!(classify("diff --git a/src/engine/memory.rs b/src/engine/memory.rs\\n"),"algorithm");
+        assert_eq!(classify("diff --git a/src/engine/rsi/meta_controller/selection.rs b/src/engine/rsi/meta_controller/selection.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi/system/agenda.rs b/src/engine/rsi/system/agenda.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi_recursive_laboratory.rs b/src/engine/rsi_recursive_laboratory.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\ndiff --git a/src/engine/rsi/meta_controller/transfer.rs b/src/engine/rsi/meta_controller/transfer.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\ndiff --git a/web/src/pages/Home.tsx b/web/src/pages/Home.tsx\n"),"harness");
+        assert_eq!(classify("diff --git a/src/engine/memory.rs b/src/engine/memory.rs\n"),"algorithm");
         assert_eq!(classify(""),"harness");
     }
     #[test]
