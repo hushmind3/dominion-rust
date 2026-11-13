@@ -42,7 +42,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   : outputs.value[0]
  const engine=engineChoice??video.value.config.engine
  const usingComfy=engine==='comfyui'
- const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):engine==='runway'?Boolean(video.value.runway?.available&&(seconds<=15||video.value.native?.available)):Boolean(video.value.native?.available)
+ const runwayClipSeconds=runwayModel==='kling_4'?30:15
+ const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):engine==='runway'?Boolean(video.value.runway?.available&&(seconds<=runwayClipSeconds||video.value.native?.available)):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{setRunwayModel(video.value.config.runwayModel||'kling3.0_pro');setRunwayAudio(video.value.config.runwayAudio!==false);setRunwayFrames(video.value.config.runwayContinuityFrames!==false)},[video.value.config.runwayModel,video.value.config.runwayAudio,video.value.config.runwayContinuityFrames])
@@ -134,19 +135,19 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">{t('vid.engine')}</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="runway">시네마틱 영상 · Kling 3.0 (유료)</option></SelectInput>
+     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="runway">시네마틱 영상 · Kling 3.0/4.0 (유료)</option></SelectInput>
     </div>
    </div>
   </Panel>
   <div className="mb-4 grid grid-cols-1 items-start gap-3 md:grid-cols-2">
    {engine==='runway'&&<Panel className="p-4">
     <div className="flex items-center justify-between gap-3"><strong className="text-[13px] text-[#24211D]">🎬 턴키 시네마틱 생성</strong><StateTag online={Boolean(video.value.runway?.available)}>{video.value.runway?.available?'키 등록됨':'Runway Dev 키 필요'}</StateTag></div>
-    <p className="mt-2 text-xs leading-5 text-[#5C544A]">2026년 Kling 3.0 기반. 장면 계획 → 네이티브 영상·오디오 생성 → 결과 다운로드 → 다중 클립 MP4 합성. 사용량은 길이와 모델에 따라 유료 청구되며 실행 전 엔진을 선택해야 합니다.</p>
+    <p className="mt-2 text-xs leading-5 text-[#5C544A]">2026년 Kling 3.0 멀티샷 / Kling 4.0 장면 연속 생성. 장면 계획 → 영상·오디오 → 결과 다운로드 → MP4 자동 합성. 사용량은 길이와 모델에 따라 유료 청구되며 실행 전 엔진을 선택해야 합니다.</p>
     <div className="mt-3 grid gap-2"><FormField label="Runway Dev API Key"><TextInput type="password" value={runwayKey} onChange={e=>setRunwayKey(e.target.value)} placeholder={video.value.config.hasVideoKey?'저장됨 · 변경하려면 새 키 입력':'API 키 입력'}/></FormField>
-     <FormField label="화질 / 모델"><SelectInput value={runwayModel} onChange={e=>setRunwayModel(e.target.value)}><option value="kling3.0_standard">Kling 3.0 Standard · 720p</option><option value="kling3.0_pro">Kling 3.0 Pro · 1080p</option><option value="kling3.0_4k">Kling 3.0 4K</option></SelectInput></FormField>
-     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayAudio} onChange={e=>setRunwayAudio(e.target.checked)}/> 네이티브 사운드 및 대사 생성</label>
+     <FormField label="화질 / 모델"><SelectInput value={runwayModel} onChange={e=>setRunwayModel(e.target.value)}><option value="kling3.0_standard">Kling 3.0 Standard · 720p</option><option value="kling3.0_pro">Kling 3.0 Pro · 1080p</option><option value="kling3.0_4k">Kling 3.0 4K</option><option value="kling_4">Kling 4.0 · 1080p · 최대 30초 단일 클립</option></SelectInput></FormField>
+     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayAudio} disabled={runwayModel==='kling_4'} onChange={e=>setRunwayAudio(e.target.checked)}/> 네이티브 사운드 및 대사 생성{runwayModel==='kling_4'?' (4.0은 기본 포함)':''}</label>
      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayFrames} onChange={e=>setRunwayFrames(e.target.checked)}/> 클립 사이 인물·장면 연속성 유지 (이전 마지막 프레임 활용)</label>
-     <p className="text-[11px] leading-5 text-[#8A8176]">각 클립 내부는 Kling 네이티브 멀티샷으로 촬영합니다. 길이가 15초를 넘으면 앞 클립의 실제 마지막 프레임으로 다음 클립을 시작합니다. 장면 전환이 확연히 달라야 하는 영상은 연속성 옵션을 해제하세요.</p>
+     <p className="text-[11px] leading-5 text-[#8A8176]">Kling 3.0은 최대 15초 네이티브 멀티샷, Kling 4.0은 최대 30초 연속 촬영입니다. 단일 클립 길이를 넘으면 앞 클립의 실제 마지막 프레임으로 다음 클립을 시작합니다. 장면 전환이 확연히 달라야 하는 영상은 연속성 옵션을 해제하세요.</p>
      <Button variant="secondary" disabled={savingConfig} onClick={()=>void saveRunway()}>{savingConfig?'저장 중': '영상 모델 · 키 저장'}</Button>
     </div>
    </Panel>}
@@ -175,14 +176,14 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):engine==='runway'?'Kling 3.0 · 자동 장면 합성':t('vid.ffmpegCard')}</span>}/>
+     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):engine==='runway'?('Kling '+(runwayModel==='kling_4'?'4.0':'3.0')+' · 자동 장면 합성'):t('vid.ffmpegCard')}</span>}/>
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={engine==='runway'?'선택 모델에 따라 720p / 1080p / 4K':`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:engine==='runway'?<p className="text-[11px] leading-5 text-[#8A8176]">유료 생성 · 요청한 {seconds}초를 {Number.isFinite(seconds)&&seconds>0?Math.ceil(seconds/15):"—"}개의 유료 클립으로 나누어 자동 합성합니다. 15초 초과 시 FFmpeg가 필요하며, 모델과 오디오 설정에 따라 청구량이 달라집니다.</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:engine==='runway'?<p className="text-[11px] leading-5 text-[#8A8176]">유료 생성 · 요청한 {seconds}초를 {Number.isFinite(seconds)&&seconds>0?Math.ceil(seconds/runwayClipSeconds):"—"}개의 유료 클립으로 나누어 자동 합성합니다. 단일 클립 길이 초과 시 FFmpeg가 필요하며, 모델과 오디오 설정에 따라 청구량이 달라집니다.</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
