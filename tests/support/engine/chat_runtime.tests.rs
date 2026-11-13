@@ -1,4 +1,4 @@
-//! Runtime unit/regression tests, kept out of the production execution source.
+// Runtime unit/regression tests, kept out of the production execution source.
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
