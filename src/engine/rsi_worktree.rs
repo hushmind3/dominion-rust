@@ -284,6 +284,7 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 }
 #[path="capture.rs"]
 mod capture;
+#[cfg(test)]
 use capture::classify;
 pub use capture::finish;
 
