@@ -76,3 +76,13 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 - 2026 ACL LLM-as-Scheduler 실험: https://aclanthology.org/2026.acl-long.581/
 
 위 링크들의 측정 수치는 각 연구/공식 제공자 환경의 결과이다. DOMINION에서 같은 할인율이나 영상 품질 수치가 입증되었다는 뜻이 아니다.
+
+
+## 6. 다른 2026년 제품·연구에서 확인한 다음 구조 선택지
+
+- GitHub Copilot의 2026년 컨텍스트/라우팅 개선은 캐시 가능한 고정 프롬프트와 도구 검색·지연 로드를 병행한다. [GitHub Engineering 설명](https://github.blog/ai-and-ml/github-copilot/getting-more-from-each-token-how-copilot-improves-context-handling-and-model-routing/)
+- DeepSeek Harness의 2026-09-20 설계 기록은 도구 활성 집합의 변경과 동일한 도구 선언을 분리해 히스토리의 캐시 가능한 접두사를 보존한다. [DeepSeek 동적 도구 업데이트](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-09-20-dynamic-tool-updates.md)
+- 2026 EMS 연구는 다수결 결과가 더 이상 뒤집히지 않을 때 투표를 중단하는 방식을 검증했다. 이 결과는 **답변 취합이 다수결인 토론**에 한정하며 자유 토론의 임의 조기 종료를 정당화하지 않는다. [EMS 논문](https://arxiv.org/abs/2604.02863)
+- 2026-11 ParetoSaddler는 고정 가중치 에이전트 하네스의 품질·비용 Pareto 선택을 연구했다. 실서비스 라우팅에는 사용자 정의 품질 점수뿐 아니라 **실제 작업 성공/실패, 입력 캐시, 비용, 작업 난도**를 동일 실험으로 기록해야 한다. [ParetoSaddler](https://arxiv.org/abs/2611.02079)
+
+다음 통합 목표는 **방별 사용량→비용·성공률→개선 후보→동결 평가→선택된 에이전트·라우팅 정책 revision→후속 작업 재평가**를 하나의 감사 가능한 고리로 연결하는 것이다. 현재 코드의 가격/품질 입력 및 캐시 집계는 그 기반이며, 자기개선에 의한 비용·성능 상승이 입증되었다고 표시하지 않는다.
