@@ -47,6 +47,15 @@ pub(crate) struct SourceTarget {
 }
 #[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
+pub(crate) struct TargetOption {
+    pub(crate) target:SourceTarget,
+    pub(crate) attempted:u64,
+    pub(crate) independently_adopted:u64,
+    pub(crate) independently_rejected:u64,
+    pub(crate) priority:i64,
+}
+#[derive(Clone,Debug,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase")]
 pub(crate) struct ExperimentPolicy {
     pub(crate) schema_version:u32,
     pub(crate) source:String,
@@ -55,6 +64,8 @@ pub(crate) struct ExperimentPolicy {
     pub(crate) frozen:FrozenProtocol,
     pub(crate) choices:Vec<ExperimentOption>,
     pub(crate) selected_protocol:ExperimentProtocol,
+    pub(crate) ranked_targets:Vec<TargetOption>,
+    pub(crate) preferred_focus:Option<SourceTarget>,
     pub(crate) selected_target:Option<SourceTarget>,
     pub(crate) redesign_trigger:Option<String>,
     pub(crate) signature_sha256:String,
@@ -121,6 +132,40 @@ fn observed_trials(history:&[Value])->BTreeMap<&'static str,(u64,u64,u64,u64)>{
     }
     map
 }
+fn target_options(history:&[Value],frontier:&[Value])->Vec<TargetOption>{
+    let mut targets=Vec::new();
+    for target in frontier.iter().filter_map(source_target){
+        let mut tried=0u64;let mut adopted=0u64;let mut rejected=0u64;
+        for row in history.iter().rev().take(MAX_HISTORY) {
+            let touched=row["focusFiles"].as_array().is_some_and(|a|
+                a.iter().any(|p|p.as_str()==Some(target.path.as_str())));
+            if !touched{continue;}
+            tried+=1;
+            // Independently evaluated, source-matching receipts are the
+            // ONLY positive/negative payoffs. Unmeasured attempts affect
+            // exploration pressure, never the observed improvement count.
+            if row["pairedReceiptReplayed"]!=true{continue;}
+            if row["accepted"]==true && row["pairedRevalidated"]==true
+                && row["acceptedSourceHashes"][&target.path]==target.source_sha256{
+                adopted+=1;
+            }else if row["evaluation"]["metrics"].is_object() {rejected+=1}
+        }
+        // Experimental target selection is part of the evolvable code
+        // itself. No named A/B generation or hand-coded list of editable
+        // domains is required; the compiled source frontier is the roster.
+        let novelty=(360/(tried+1)) as i64;
+        let failure_pressure=(rejected.min(5)*85) as i64;
+        let observed_gain=(adopted.min(5)*65) as i64;
+        let repetition_cost=(tried.saturating_sub(4).min(12)*55) as i64;
+        targets.push(TargetOption{target,attempted:tried,
+            independently_adopted:adopted,independently_rejected:rejected,
+            priority:novelty+failure_pressure+observed_gain-repetition_cost});
+    }
+    targets.sort_by(|a,b|b.priority.cmp(&a.priority)
+        .then_with(||a.target.path.cmp(&b.target.path)));
+    targets.truncate(48);
+    targets
+}
 fn experiment_score(kind:ExperimentProtocol,stats:(u64,u64,u64,u64),
     eligible:bool,confidence_gate:bool)->i64{
     if !eligible{return i64::MIN/4;}
@@ -178,6 +223,8 @@ pub(crate) fn synthesize(history:&[Value],frontier:&[Value],algebra:&Value,
     ];
     choices.sort_by(|a,b|b.score.cmp(&a.score));
     let selected_protocol=choices[0].protocol;
+    let ranked_targets=target_options(history,frontier);
+    let preferred_focus=ranked_targets.first().map(|row|row.target.clone());
     // A failed experiment-selection principle can become its OWN next
     // source-edit target. These are observed counterexamples, not a
     // hard-coded generation number or a fabricated A/B result.
@@ -200,7 +247,7 @@ pub(crate) fn synthesize(history:&[Value],frontier:&[Value],algebra:&Value,
     let mut result=ExperimentPolicy{
         schema_version:1,source:POLICY_SOURCE.to_string(),
         generator_commit:commit.to_string(),observed_history:history.len(),
-        frozen,choices,selected_protocol,
+        frozen,choices,selected_protocol,ranked_targets,preferred_focus,
         selected_target:target,redesign_trigger:trigger.map(str::to_string),
         signature_sha256:String::new()
     };
@@ -220,7 +267,10 @@ pub(crate) fn decode(value:&Value,commit:&str,request:&Value)->Option<Experiment
         || envelope.frozen.cases_count!=request["rsiFrozenCases"]
             .as_array().map(Vec::len).unwrap_or(0)
         || envelope.choices.len()!=2
-        || envelope.choices[0].protocol!=envelope.selected_protocol {
+        || envelope.ranked_targets.len()>48
+        || envelope.choices[0].protocol!=envelope.selected_protocol
+        || envelope.preferred_focus!=envelope.ranked_targets.first()
+            .map(|row|row.target.clone()) {
         return None
     }
     let signature=&envelope.signature_sha256;
@@ -244,6 +294,13 @@ pub(crate) fn design_target(value:&Value,commit:&str,request:&Value)->Option<Val
         "source":"compiled_evolvable_experiment_redesign",
         "reason":decision.redesign_trigger,
         "evidenceIsNotQualityProof":true}))
+}
+
+pub(crate) fn preferred_focus(value:&Value,commit:&str,request:&Value)->Option<Value>{
+    let policy=decode(value,commit,request)?;
+    let target=policy.preferred_focus?;
+    Some(json!({"role":target.role,"domain":target.domain,
+        "path":target.path,"sourceSha256":target.source_sha256}))
 }
 #[cfg(test)]
 #[path="experiment_policy/tests.rs"]
