@@ -1,6 +1,4 @@
 use super::*;
-
-    use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
     fn state() -> (AppState, std::path::PathBuf) {
         let root = std::env::temp_dir().join(format!("dominion-rsi-{}", uuid::Uuid::new_v4()));

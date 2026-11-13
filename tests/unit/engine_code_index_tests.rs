@@ -315,3 +315,23 @@ use super::*;
         assert!(!is_source(Path::new("src/engine/rsi_oracle_fixture.rs")));
         let _=std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn frozen_rsi_verifiers_are_never_indexed_as_editable_sources() {
+        for path in [
+            "src/engine/rsi.rs",
+            "src/engine/rsi/evaluation/worktree.rs",
+            "src/engine/rsi/evaluation/metrics.rs",
+            "src/engine/rsi/proof/closure.rs",
+            "src/engine/rsi/proof/path_policy.rs",
+        ] {
+            assert!(!is_source(Path::new(path)), "index included {path}");
+        }
+        for path in [
+            "src/engine/rsi/execution/worker.rs",
+            "src/engine/rsi/evaluation/intervention_lab.rs",
+            "src/engine/rsi/evaluation/rule_tournament.rs",
+        ] {
+            assert!(is_source(Path::new(path)), "edit path suppressed: {path}");
+        }
+    }
