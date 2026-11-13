@@ -27,6 +27,8 @@ src/api/rsi.rs::start
 
 **책임 이동:** `campaign.rs`는 679줄에서 약 255줄로, 초기 1,376줄을 기준으로 보면 약 81%가 감소했다. 호출만 쪼갠 것이 아니라 준비·워커 프로세스/예산·독립 후보 평가/선택·실험 채택이 분리돼 있고, 독립 원본 재생 코드는 `rsi/proof`에 있다. `rsi.rs::safe_path`는 분리한 검증·채택·감독 파일을 후손 변경으로부터 차단한다. 진화 가능한 `generation_preparation.rs`와 메타 계획기/선택기는 계속 일반 소스 최적화 대상이다.
 
+**CI 807개 테스트 실패 대응(2026-11-13):** GitHub Actions의 실제 Rust 릴리스 실행에서 테스트 804개 통과·3개 실패를 확인했다. 후손 작업기가 API provider/model 없이 로컬 네이티브 실행만 하는 경우, 사전에 추정한 모델 프롬프트 토큰을 실제 사용량처럼 처리해 `token_budget`로 종료하던 경로를 `generation_fits_remaining_budget` 및 `worker.rs::fit_worker_prompt`에서 구분했다. API 모델이 지정된 작업의 기존 토큰 예산은 유지된다. 독립 실험 계약 검증도 느슨하게 하지 않고, 기존 후손 제어기 계약 테스트가 새 동결 계약과 소스 트리 해시를 실제로 구성하도록 수정했다. 수정본 통과 여부는 최종 CI 상태를 별도로 확인한다.
+
 **CI 정책과 수정:** `.github/workflows/ci.yml`은 `push`로 실행되고 macOS/Linux/Windows에서 Rust release 테스트, Node 스크립트 검사, React 타입 검사와 빌드를 수행한다. 실제 CI 로그에서 이전 분해의 미수정 문서 주석·누락 함수 가시성·상대 경로·새 모듈의 `String` 비교·`Digest` 트레이트 누락을 발견해 수정했다. [브랜치별 최신 CI 결과](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3) 참조. CI 전체 통과 여부는 GitHub 작업의 최종 상태로만 표현한다.
 
 연구 배경: [GEPA (ICLR 2026)](https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html)는 실패 실행 흔적을 다음 제안에 사용하고, [AIDE² (2026-09)](https://arxiv.org/abs/2609.26457)는 실제 채택된 에이전트 소스와 다음 후손의 독립 성과를 비교한다. DOMINION 구현은 고정 모델 가중치와 동결 평가를 유지하고, RSI 전체 완성이나 온라인 성능 우위는 실측 전까지 주장하지 않는다.
