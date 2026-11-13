@@ -6,12 +6,12 @@
 
 ### 1. 고화질 영상의 턴키 생성 경로
 
-- 화면: web/src/pages/Video.tsx — native / comfyui / veo 선택, Gemini API 키 등록, Veo 모델과 720p/1080p/4k 선택
+- 화면: web/src/pages/Video.tsx — native / comfyui / omni 선택, Gemini API 키 등록, Omni 모델과 360p/720p/1080p/4k 선택
 - 설정: src/api/video.rs::save_config → AppState::save_secret("video:api") → Vault 암호화 → GET /api/video/status의 준비 상태
-- 실행: POST /api/video/jobs → src/engine/video.rs::enqueue → jobs/video → video.rs::run → video/veo.rs::render
-- 제공자: Gemini API Veo 3.1 predictLongRunning → 작업 ID 영속 체크포인트 → operation 상태 폴링 → 신뢰할 수 있는 Google 파일 URL의 MP4 다운로드 → runtime/video/{job_id}/output.mp4 → GET /api/video/jobs/:id/content
+- 실행: POST /api/video/jobs → src/engine/video.rs::enqueue → jobs/video → video.rs::run → video/omni.rs::render
+- 제공자: Gemini API Gemini Omni Flash 1.2 predictLongRunning → 작업 ID 영속 체크포인트 → operation 상태 폴링 → 신뢰할 수 있는 Google 파일 URL의 MP4 다운로드 → runtime/video/{job_id}/output.mp4 → GET /api/video/jobs/:id/content
 - 비용/복구: 중복 과금 위험이 있는 모호한 제출은 needs_review로 종료하고 자동 재요청하지 않음. 다운로드는 256MiB 제한, API 키는 사용자 설정 저장소에 비밀로 보관하며 외부 리다이렉트에 전달하지 않음
-- 현재 계약: 8초 단일 샷, 네이티브 오디오 지원, 9:16/16:9. 더 긴 다중 샷과 인물 일관성은 기존 ComfyUI cinematic 또는 향후 클라우드 편집기로 확장해야 함. 4K 지원 여부는 선택한 모델·계정의 제공자 제한에 종속적
+- 현재 계약: 약 8초 단일 클립, 네이티브 오디오 지원, 9:16/16:9. 더 긴 다중 샷과 인물 일관성은 기존 ComfyUI cinematic 또는 향후 클라우드 편집기로 확장해야 함. 4K 지원 여부는 선택한 모델·계정의 제공자 제한에 종속적
 
 ### 2. 그룹대화의 선택적 토론
 
@@ -31,7 +31,8 @@
 
 ## 2026년 자료와 구현 원칙
 
-- Google Gemini Veo 3.1 REST: https://ai.google.dev/gemini-api/docs/veo (확인: 2026-11-14)
+- Gemini Omni Flash 1.2 Interactions: https://ai.google.dev/gemini-api/docs/omni ; https://ai.google.dev/api/interactions-api ; https://ai.google.dev/gemini-api/docs/background-execution (2026-11-14 검토)
+- **2026-10-22 종료된 Veo Preview API는 제거.** https://discuss.ai.google.dev/t/veo-models-missing-from-models-list-on-a-paid-tier-1-project/199067 (Google 지원 담당 2026-11-13 확인)
 - Google Gemini video overview, Gemini Omni Flash 및 Veo 워크플로: https://ai.google.dev/gemini-api/docs/video (2026-06-30 갱신)
 - Anthropic stable tool schemas + cache_control: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-use-with-prompt-caching (2026년 현행 문서)
 - OpenAI prefix caching, 비용 및 provider 측정: https://developers.openai.com/api/docs/guides/prompt-caching (2026년 현행 문서)
@@ -48,6 +49,12 @@
 4. **영상 멀티샷 완성**: 8초 생성물을 고품질 샷 계획·레퍼런스·프레임 확장·음성·자막·오디오 정합성으로 확장. 비용 상한·중단/재개·후반 합성까지 1개 내구성 있는 작업으로 연결
 5. **분해 및 UX**: engine/chat/provider.rs, chat/runtime/turn.rs, models.rs, rooms.rs 등의 다중 책임을 적절한 어댑터·정책·실행 계층으로 분해. 비밀/승인/품질 검증은 독립 경계에 유지. 카드/세션/비용 실측 표시를 동일 UX 계약으로 구성
 6. **전체 RSI 계승**: 기존 API/jobs→편집→worktree→동결 평가→채택→후손 재빌드 및 메타 재진화 경로를 유지. 모델 가중치/LoRA/파인튜닝은 RSI 경로에 연결하지 않음
+
+### 4. 선택형 모델 등급 라우팅
+
+- `web/src/pages/Rooms.tsx → src/api/rooms.rs → src/engine/rooms/economy.rs::select_tier → src/engine/rooms.rs::run_locked`
+- 사용자가 고른 모델별 `costTier: economy | frontier | balanced`를 보존·검증하고, `modelTiering` 옵션이 켜진 회의실에서만 단순 요청은 저비용, 복잡한 요청은 고성능 등급으로 라우팅합니다. 등급이 없으면 기존 모델 회전을 유지합니다.
+- 실제 과금 단가는 provider에서 측정해야 하며 모델 이름이나 규모로 요금을 추정하지 않습니다. 관리자가 직접 지정한 `providerId`/`model`이 우선합니다.
 
 ## 검증 상태
 
