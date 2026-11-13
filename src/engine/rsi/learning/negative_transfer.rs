@@ -167,9 +167,13 @@ pub(crate) fn valid(plan:&Value,frontier:&[Value],commit:&str,len:usize)->bool{
         && row["independentCandidateCounterexamples"].as_u64().unwrap_or(0)>=2
         && row["distinctDamagedHoldoutCases"].as_u64().unwrap_or(0)>=2
         && row["candidateIds"].as_array().is_some_and(|ids|
-            ids.len()>=2 && ids.len()<=8 && row["independentCandidateCounterexamples"]==ids.len())
+            ids.len()>=2 && ids.len()<=8
+                && row["independentCandidateCounterexamples"].as_u64()==Some(ids.len() as u64)
+                && ids.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len()==ids.len())
         && row["caseIds"].as_array().is_some_and(|ids|
-            ids.len()>=2 && ids.len()<=12 && row["distinctDamagedHoldoutCases"]==ids.len())
+            ids.len()>=2 && ids.len()<=12
+                && row["distinctDamagedHoldoutCases"].as_u64()==Some(ids.len() as u64)
+                && ids.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len()==ids.len())
         && row["sourceWritingModelStratum"].as_str().is_some_and(|s|!s.is_empty())
         && frontier.contains(&row["source"])
         && frontier.contains(&row["victim"])
@@ -213,9 +217,13 @@ pub(crate) fn validate_receipts(
     let victim=selected["victimRole"].as_str()
         .ok_or("피해 역할 없음")?;
     let mut independently_damaged=BTreeSet::<String>::new();
+    let mut seen_candidates=BTreeSet::<String>::new();
     for id in candidates {
         let id=id.as_str().filter(|s|!s.is_empty())
             .ok_or("실패 후보 ID 없음")?;
+        if !seen_candidates.insert(id.to_string()){
+            return Err("독립 실패 후보 ID를 중복 계산했습니다.".into());
+        }
         let row=history.iter().find(|g|
             g["candidateId"]==id
             && g["generatorCommit"]==commit
@@ -354,6 +362,11 @@ mod tests {
         let mixed=plan(&state,&history,&frontier,&head);
         assert!(mixed["selected"].is_null());
         history[1]["generatorModel"]=json!("source-writer");
+        let mut duplicate=result.clone();
+        duplicate["selected"]["candidateIds"]=json!([
+            "negative-candidate-0","negative-candidate-0"]);
+        assert!(!valid(&duplicate,&frontier,&head,2));
+        assert!(validate_receipts(&state,&history,&duplicate).is_err());
         let mut forged_plan=result.clone();
         forged_plan["selected"]["victim"]["path"]=json!("src/engine/other.rs");
         let mut unsigned=forged_plan.clone();
