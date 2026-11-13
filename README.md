@@ -270,13 +270,21 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 - 분리된 5개 모듈도 개선기 소스 역할 분류와 메타 인과 감사에 등록했습니다. 세대의 평가 주장 또한 독립 후보의 평가 ID·원본 수치·증거 SHA와 대조합니다.
 - 테스트·컴파일·빌드·벤치마크는 실행하지 않았으며, 성능 향상과 심판 점수를 선포하지 않습니다.
 
+## 서브3: 동일 RSI 성공 판정 및 개선법 재계승 (재판정 이후)
+
+- `src/engine/rsi.rs::recursive_proof_report`가 **캠페인·자동 종료·API·검증 화면**의 단일 전체 RSI 완성 판정입니다. `capabilityDemonstrated`는 오직 `rsi_system/handoff.rs::handoff_evidence`와 `rsi_causal_closure.rs::audit`가 인정한 전체 시스템 폐회로만 표시합니다. 일반 코드 채택 성과는 `generationCapabilityProven`으로 독립 표기합니다.
+- `src/engine/rsi/execution/campaign.rs::proof_goal_reached`의 자동 종료와 `src/api/rsi.rs::{campaign,verify,list,campaigns}`는 같은 판정 객체를 재검산합니다. 생성 횟수·일반 소스 개선만으로 전체 RSI 성공이나 종료를 기록하지 않습니다.
+- `rsi_causal_closure.rs::audit`는 4개 연속 채택된 후손의 실제 빌드·작업·편집·동결 평가에 더해 **메타 A가 만든 실행 절차 → 후손 B의 확인된 소스 쓰기 → B 결과를 받은 메타 A2의 다른 절차 버전 → 후손 B2의 확인된 소스 쓰기**를 검사합니다. 각 메타/기능 세대는 독립 평가의 실제 홀드아웃 실패→성공 사례를 가져야 합니다.
+- `rsi_system/lineage.rs::lineage_capsule`은 이전의 구체적인 개선법 ID·수정 버전·실행 영수증과 성과 지표를 짧게 보존해 후손의 실제 계획 문맥으로 보냅니다. 선언·프롬프트만으로 증명되지는 않습니다.
+- [수정 구조·증거 경로 설명](docs/RSI-SUB3-STRUCTURE-2026-11-13.md). 소스 구조 검토만 수행했으며 새로운 완성이나 유료 토큰 캠페인 성공은 주장하지 않습니다.
+
 ## 서브3: 재컴파일 자기개선 행동 비교 경로 (2026-11-13)
 
 - `src/engine/rsi/execution/campaign.rs::run_loop`에서 독립 채택된 소스로 다음 개선기를 빌드하고, `--rsi-plan-generation`과 `--rsi-worker-job`으로 실제 후손을 실행합니다.
 - `src/engine/rsi/execution/counterfactual.rs`는 이전 개선기의 실행 바이너리를 SHA로 보존한 뒤, **동일 소스·작업·계보**를 이전/새 바이너리에 전달하는 무모델 계획 비교를 수행합니다. 버전 문자열이나 해시만 변경돼서는 행동 변화로 세지 않습니다. 비교 오류는 성공이 아닌 `unavailable`로 기록합니다.
-- `src/engine/rsi_causal_closure.rs::audit`는 **메타 → 기능 → 메타 → 기능** 4개 연속 독립 채택, 3개 후손 계획 비교(메타개선 직후 2개 행동 변화), 2개 메타 개선과 2개 기능 개선의 동결 홀드아웃 성과, 실제 편집 대상을 검사합니다. `src/engine/rsi_system.rs::handoff_evidence`는 이 검증을 `demonstrated`의 필요조건으로 적용합니다.
+- `src/engine/rsi_causal_closure.rs::audit`는 **메타 → 기능 → 메타 → 기능** 4개 연속 독립 채택, 3개 후손 계획 비교(메타개선 직후 2개 행동 변화), 2개 메타 개선과 2개 기능 개선의 동결 홀드아웃 성과, 실제 편집 대상을 검사합니다. `src/engine/rsi_system/handoff.rs::handoff_evidence`는 이 검증을 `demonstrated`의 필요조건으로 적용합니다.
 - 이 인과 영수증의 재검증 코드(`src/engine/rsi_causal_closure.rs`)와 비교기(`src/engine/rsi/execution/counterfactual.rs`)는 후손 후보가 변경할 수 없는 동결 감독 경계입니다.
-- 현재 공개 판정은 서브3 **36점(구조 36/55, RSI 0/45)**입니다. 이번 코드 변경만으로 RSI 작동이나 점수 상승을 주장하지 않습니다. 빌드·컴파일·테스트·실모델 캠페인은 진행하지 않았습니다.
+- 2026-11-13 사용자 제공 독립 심사에서 서브3는 **45점(RSI 14/45, 경계 12/20, 분해 8/15, 정리 4/10, 테스트 7/10)·4위**였습니다. 이 아래 추가한 연결 개편은 **재심사 전 변경**이며 점수 상승이나 완성 판정을 주장하지 않습니다. 빌드·컴파일·테스트·실모델 캠페인을 실행하지 않았습니다.
 
 ## 자기개선 루프
 
