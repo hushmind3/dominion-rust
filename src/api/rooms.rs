@@ -205,8 +205,12 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         if !valid_effort(effort) {
             return Err(bad("추론 강도 값이 올바르지 않습니다."));
         }
+        let tier = entry["costTier"].as_str().unwrap_or("balanced");
+        if !matches!(tier, "balanced" | "economy" | "frontier") {
+            return Err(bad("모델 등급은 일반·저비용·고성능 중 하나여야 합니다."));
+        }
         if seen_models.insert(format!("{provider_id}|{model}")) {
-            let mut picked = json!({"providerId":provider_id,"model":model});
+            let mut picked = json!({"providerId":provider_id,"model":model,"costTier":tier});
             if !effort.is_empty() {
                 picked["reasoningEffort"] = json!(effort);
             }
@@ -235,6 +239,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         // Legacy room semantics stay unchanged until the owner enables economy.
         "adaptiveSpeakers":bool_field(body,previous,"adaptiveSpeakers",false)?,
         "sparseDebate":bool_field(body,previous,"sparseDebate",false)?,
+        "modelTiering":bool_field(body,previous,"modelTiering",false)?,
         "tokenBudget":number_field_allow_zero(body,previous,"tokenBudget",10_000_000)?,
         "contextBudgetTokens":number_field(body,previous,"contextBudgetTokens",2_000,1_000_000)?,
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
