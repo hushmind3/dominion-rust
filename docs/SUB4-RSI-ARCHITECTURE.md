@@ -228,3 +228,7 @@ history, and every ancestor generation is reopened through
 This avoids losing experiment-design knowledge at a job or campaign
 boundary while rejecting unrelated lookalike source histories.
 Only actual model-driven candidate receipts count.
+
+## Product-wide 2026-11-14 integration (separate from RSI proof)
+
+The product-wide source changes are mapped in [SUB4-PRODUCT-UPGRADE-2026-11-14.md](SUB4-PRODUCT-UPGRADE-2026-11-14.md): native multi-shot video execution and prior-frame conditioning, measured room prompt cache usage, and owner-declared KRW price-aware provider auto routing. They use the existing Rust job, tool, SQLite and vault boundaries and do not train, LoRA-adapt or alter base model weights. These product enhancements are **not** evidence that independent four-generation RSI closure passed. Source-only review; no tests/build/paid generation executed.
