@@ -297,3 +297,21 @@ use super::*;
         assert!(block.contains("run_loop"));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn source_navigation_excludes_large_test_corpora_and_benchmark_binaries(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-index-clean-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::create_dir_all(root.join("tests/unit")).unwrap();
+        std::fs::write(root.join("src/engine/live.rs"),"pub fn live() {}").unwrap();
+        std::fs::write(root.join("tests/e2e.rs"),"pub fn irrelevant() {}").unwrap();
+        std::fs::write(root.join("tests/unit/suite.rs"),"pub fn irrelevant() {}").unwrap();
+        let files=collect_files(&root);
+        assert!(files.iter().any(|p|p.ends_with("src/engine/live.rs")));
+        assert!(!files.iter().any(|p|p.to_string_lossy().contains("/tests/")));
+        assert!(!is_source(Path::new("src/bin/dominion-benchmark.rs")));
+        assert!(!is_source(Path::new("src/engine/suite_tests.rs")));
+        assert!(!is_source(Path::new("src/engine/rsi_oracle_fixture.rs")));
+        let _=std::fs::remove_dir_all(root);
+    }

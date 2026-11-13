@@ -245,3 +245,22 @@ use super::*;
         assert_eq!(map["architecture"][0]["representativeSources"].as_array().unwrap().len(),0);
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn architecture_discovery_ignores_test_only_and_frozen_oracle_sources(){
+        let root=std::env::temp_dir().join(format!(
+            "dominion-frontier-clean-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/engine")).unwrap();
+        std::fs::create_dir_all(root.join("src/bin")).unwrap();
+        std::fs::write(root.join("src/engine/memory.rs"),"pub fn recall() {}").unwrap();
+        std::fs::write(root.join("src/engine/rsi_oracle_fixture.rs"),"pub fn frozen() {}").unwrap();
+        std::fs::write(root.join("src/engine/rsi_method_tests.rs"),"pub fn test_only() {}").unwrap();
+        std::fs::write(root.join("src/bin/dominion-benchmark.rs"),"pub fn benchmark() {}").unwrap();
+        let found=discovered_architecture_sources(&root);
+        assert!(found.iter().any(|row|row.0=="src/engine/memory.rs"));
+        assert!(!found.iter().any(|row|
+            row.0.ends_with("_tests.rs")
+            ||row.0.ends_with("rsi_oracle_fixture.rs")
+            ||row.0=="src/bin/dominion-benchmark.rs"));
+        let _=std::fs::remove_dir_all(root);
+    }
