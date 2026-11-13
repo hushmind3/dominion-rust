@@ -1155,6 +1155,17 @@ pub async fn save_provider(State(state): State<AppState>, Json(body): Json<Value
         );
     }
 
+    // Cost metadata is owner-maintained and deliberately not guessed from a
+    // model name or an out-of-date provider catalog. Units are KRW / 1M tokens.
+    for field in ["costPerMillionInputKrw", "costPerMillionOutputKrw"] {
+        if let Some(price) = body.get(field).filter(|value| !value.is_null()) {
+            if !price.as_f64().is_some_and(|amount| amount.is_finite()
+                && (0.0..=100_000_000.0).contains(&amount)) {
+                return error(StatusCode::BAD_REQUEST,
+                    "모델 비용은 100만 토큰당 0~1억원(원화)으로 입력하세요.");
+            }
+        }
+    }
     if body.get("accountId").and_then(Value::as_str).is_some_and(|value| value.len() > 128) {
         return error(StatusCode::BAD_REQUEST, "Account ID가 너무 깁니다.");
     }
