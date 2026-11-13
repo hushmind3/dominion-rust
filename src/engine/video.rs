@@ -12,13 +12,15 @@ use serde_json::{json, Value};
 mod runway;
 #[path = "video/shot_plan.rs"]
 mod shot_plan;
+#[path = "video/frame_anchor.rs"]
+mod frame_anchor;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayModel":"kling3.0_pro","runwayAudio":true});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayModel":"kling3.0_pro","runwayAudio":true,"runwayContinuityFrames":true});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
