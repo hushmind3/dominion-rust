@@ -342,7 +342,8 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
         return false;
     }
     match tool_name(item) {
-        "workspace_write" | "file_write" => true,
+        "workspace_write" | "workspace_replace" | "workspace_replace_range"
+        | "file_write" => true,
         "shell_exec" | "terminal_exec" => {
             let args = item
                 .get("arguments")
@@ -505,6 +506,17 @@ pub(crate) fn acceptance_gaps(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn actual_range_and_exact_replacements_are_action_evidence() {
+        for tool in ["workspace_replace","workspace_replace_range","workspace_write"] {
+            assert!(is_action_evidence(&json!({"tool":tool,"result":{"ok":true}})));
+            assert!(!is_action_evidence(&json!({"tool":tool,
+                "result":{"error":"stale fingerprint"}})));
+        }
+        assert!(!is_action_evidence(&json!({"tool":"workspace_read",
+            "result":{"content":"unchanged"}})));
+    }
 
     #[test]
     fn reading_an_input_does_not_require_it_to_change() {
