@@ -218,9 +218,8 @@ pub(crate) fn synthesize(
     let errors=drift["recentMeasuredPredictions"].as_u64().unwrap_or(0);
     let mean_error=drift["meanBrierError"].as_f64();
     let cooldown=history.iter().rev().take(4).any(|g|
-        g["pairedMeasured"]==true && g["focusFiles"].as_array()
-            .is_some_and(|files|files.iter().any(|path|
-                path=="src/engine/rsi_prequential.rs")));
+        crate::engine::rsi_prequential::measured_target_attempt(
+            g,"src/engine/rsi_prequential.rs"));
     let predictor_available=ranked.iter().any(|(row,_)|
         row["target"]["path"]=="src/engine/rsi_prequential.rs"
         && row["domain"]=="improver");
