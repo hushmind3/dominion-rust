@@ -206,6 +206,8 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         return Err("15초 초과 영상에는 FFmpeg 병합기가 필요합니다.".into());
     }
     let cfg = &input["config"];
+    let use_frames = cfg["runwayContinuityFrames"].as_bool().unwrap_or(true)
+        && clips.len() > 1;
     let chosen_model = model(cfg);
     let chosen_ratio = ratio(chosen_model, input["aspectRatio"].as_str().unwrap_or("9:16"));
     let scenes = storyboard(ctx, input, clips.len()).await;
@@ -224,13 +226,20 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .build().map_err(|e| e.to_string())?;
     let mut task_ids = Vec::<String>::new();
     for (index, seconds) in clips.iter().enumerate() {
-        let payload = super::shot_plan::request(
+        let mut payload = super::shot_plan::request(
             chosen_model, chosen_ratio, *seconds,
             cfg["runwayAudio"].as_bool().unwrap_or(true), &shot_plans[index]);
+        let endpoint = if use_frames && index > 0 {
+            // Anchoring one film to the preceding clip's actual output frame
+            // prevents independent text-only generations drifting identities.
+            payload["promptImage"] = json!(super::frame_anchor::first_frame_for_next(
+                ctx, cfg, dir, index - 1).await?);
+            "image_to_video"
+        } else { "text_to_video" };
         let percent = 5 + 75 * index as u64 / clips.len() as u64;
         ctx.checkpoint(json!({"phase":"submitting","progress":percent,
             "videoState":{"inFlight":true,"clipIndex":index}}))?;
-        let response = client.post(format!("{API}/text_to_video"))
+        let response = client.post(format!("{API}/{endpoint}"))
             .bearer_auth(&token).header("X-Runway-Version", API_VERSION)
             .json(&payload).timeout(Duration::from_secs(35)).send().await
             .map_err(|e| format!("needs_review: Runway 제출 결과가 불확실합니다: {e}"))?;
@@ -261,7 +270,8 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         "engine":"runway","provider":"Runway Dev","model":chosen_model,
         "description":"Kling 3.0 cinematic native-audio video","duration":input["duration"],
         "scenes":scenes.len(),"shotCount":shot_plans.iter().map(Vec::len).sum::<usize>(),
-        "shotMode":"kling_native_multishot","taskIds":task_ids,
+        "shotMode":"kling_native_multishot","frameAnchoredClips":if use_frames{clips.len()-1}else{0},
+        "taskIds":task_ids,
         "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
     }))
 }
