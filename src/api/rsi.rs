@@ -386,6 +386,11 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
             && body["selectionPolicy"]=="automatic",
         "rsiStopAfterProof": continuous && body["stopAfterProof"]==true
             && body["selectionPolicy"]=="automatic",
+        // Automatic independent OFF task worker for every inherited method.
+        // It consumes additional model tokens and never adopts control code.
+        "rsiMethodAblation":continuous && body["methodAblation"]!=false
+            && body["nativeInduction"]!=true
+            && body["evolutionTarget"]!="product",
         "rsiIndexId": index_meta["id"],
         "rsiIndexFingerprint": index_meta["fingerprint"],
         "rsiIndexFiles": index_meta["files"],

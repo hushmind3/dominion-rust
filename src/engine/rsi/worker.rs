@@ -299,9 +299,23 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         job["rsiSelfControllerVerified"]=json!(true);
         // An accepted model-authored research program becomes executable
         // inside THIS improved descendant, not a descriptive handoff note.
-        if let Some(program)=crate::engine::rsi_system::inherited_program(&history){
+        if job["input"]["rsiMethodAblationArm"]!="without_methods" {
+            if let Some(program)=crate::engine::rsi_system::inherited_program(&history){
             job["input"]["rsiExecutionMethod"]["actionProgram"]=program.clone();
             job["rsiInheritedMetaMethod"]=program;
+            }
+        }
+        // This removes ONLY previously induced executable procedures and
+        // action programs. The compiled source planner still runs unchanged
+        // in both arms; the contrast cannot establish source-level causality.
+        if job["input"]["rsiMethodAblationArm"]=="without_methods" {
+            if job["rsiControlExperiment"]!=true {
+                return Err("개선법 대조군 실행 출처가 없습니다.".into());
+            }
+            job["input"]["rsiExecutionMethod"]=Value::Null;
+            job["input"]["rsiEditPolicy"]=Value::Null;
+            job["rsiInheritedMetaMethod"]=Value::Null;
+            job["rsiMethodAblationDisabled"]=json!(true);
         }
     }
     let focus = job["input"]["rsiFocusFiles"].as_array().into_iter().flatten()
