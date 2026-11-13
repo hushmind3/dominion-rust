@@ -87,33 +87,11 @@ pub(crate) fn independent_trial(g:&Value)->bool {
 /// candidate-scoped, frozen paired receipt from the protected state store.
 /// Reject an otherwise convincing generated summary when the raw metrics,
 /// base commit, changed path or adopted commit disagree.
-pub(crate) fn verify_replay(state:&crate::state::AppState,history:&[Value])->bool {
-    for g in history.iter().filter(|g|independent_trial(g)) {
-        let Some(id)=g["candidateId"].as_str() else{return false};
-        let Some(candidate)=state.store.get("rsi_candidate",id) else{return false};
-        let Some(metrics)=rsi::replayed_pair_metrics(state,&candidate) else{return false};
-        if candidate["id"]!=id
-            || candidate["baseCommit"]!=g["generatorCommit"]
-            || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
-            || candidate["evaluation"]["metrics"]!=metrics
-            || g["evaluation"]["metrics"]!=metrics {
-            return false;
-        }
-        let Some((_,_,path))=grounded_mechanism(g) else{return false};
-        if !candidate["paths"].as_array().is_some_and(|paths|
-            paths.iter().any(|v|v.as_str()==Some(path.as_str()))) {
-            return false;
-        }
-        if g["accepted"]==true
-            && (candidate["status"]!="verified"
-                || !rsi::verified_pair_receipt(state,&candidate)
-                || candidate["experimentAdoption"]["commit"]!=g["acceptedCommit"]
-                || candidate["experimentAdoption"]["generatorCommit"]!=g["generatorCommit"]) {
-            return false;
-        }
-    }
-    true
-}
+// Replayable proof remains a distinct immutable responsibility.
+#[path = "rsi/proof/principle_replay.rs"]
+mod proof_replay;
+pub(crate) use proof_replay::verify_replay;
+
 fn accepted_measured(g:&Value)->bool {
     independent_trial(g)
         && rsi_mutual_program::adopted_source(g)
