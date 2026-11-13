@@ -8,6 +8,9 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+
+#[path = "video/ltx.rs"]
+mod ltx;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -100,7 +103,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui") {
+    if !matches!(engine, "native" | "comfyui" | "ltx") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     if engine == "native" && ffmpeg(state).is_none() {
@@ -111,6 +114,9 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     {
         return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
     }
+    if engine == "ltx" && state.read_secret("video:api").is_none() {
+        return Err("LTX 2.5 API 키를 영상 설정에서 등록하세요.".into());
+    }
     let duration = body["duration"]
         .as_u64()
         .or(cfg["duration"].as_u64())
@@ -118,12 +124,26 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if !(3..=180).contains(&duration) {
         return Err("영상 길이는 3~180초입니다.".into());
     }
+    if engine == "ltx" && !matches!(duration, 6 | 8 | 10) {
+        return Err("LTX 2.5는 6초, 8초 또는 10초를 선택하세요.".into());
+    }
     let aspect = body["aspectRatio"]
         .as_str()
         .or(cfg["aspectRatio"].as_str())
         .unwrap_or("9:16");
     if !matches!(aspect, "9:16" | "16:9" | "1:1") {
         return Err("지원 비율은 9:16,16:9,1:1입니다.".into());
+    }
+    let ltx_model = body["ltxModel"].as_str().unwrap_or("ltx-2-5-pro");
+    let ltx_quality = body["ltxQuality"].as_str().unwrap_or("1080p");
+    if engine == "ltx" {
+        if !matches!(ltx_model,"ltx-2-5-fast" | "ltx-2-5-pro") {
+            return Err("지원하지 않는 LTX 모델입니다.".into());
+        }
+        ltx::resolution(aspect,ltx_quality)?;
+        if brief.chars().count() > 5_000 {
+            return Err("LTX 프롬프트는 최대 5,000자입니다.".into());
+        }
     }
     let title = body["title"]
         .as_str()
@@ -152,6 +172,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
+        "ltxModel":ltx_model,"ltxQuality":ltx_quality,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
@@ -495,10 +516,10 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "comfyui" {
-        comfy(ctx, input, &dir).await
-    } else {
-        native(ctx, input, &dir).await
+    let result = match input["engine"].as_str().unwrap_or("native") {
+        "comfyui" => comfy(ctx,input,&dir).await,
+        "ltx" => ltx::render(ctx,input,&dir).await,
+        _ => native(ctx,input,&dir).await,
     };
     match result {
         Ok(mut value) => {
