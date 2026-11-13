@@ -130,12 +130,12 @@ export function GoalConsole(){
        </div>}
      </details>}
      <div className="text-xs"><strong className="flex items-center gap-1"><CheckCircle2 size={14}/> 검증된 산출물</strong>
-      {chosen.deliverables?.files?.length?<div className="mt-2 space-y-1">{chosen.deliverables.files.map(item=><div key={item.path} className="break-all rounded bg-[#FAF7F1] p-2">
+      {chosen.deliverables?.files?.length?<div className="mt-2 space-y-1">{(chosen.deliverables?.files||[]).map(item=><div key={item.path} className="break-all rounded bg-[#FAF7F1] p-2">
        {item.path} · {item.bytes.toLocaleString()}B {item.sha256&&<span className="text-[#8A8176]">SHA256 {item.sha256.slice(0,12)}…</span>}
       </div>)}</div>:<p className="mt-1 text-[#8A8176]">검증된 파일 수정 산출물 없음</p>}
      </div>
      {(chosen.gaps?.length||0)>0&&<div><strong className="flex items-center gap-1 text-xs"><AlertTriangle size={14}/> 검증 보완사항</strong>
-       <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-amber-800">{chosen.gaps.slice(0,5).map((gap,i)=><li key={i}>{gap}</li>)}</ul></div>}
+       <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-amber-800">{(chosen.gaps||[]).slice(0,5).map((gap,i)=><li key={i}>{gap}</li>)}</ul></div>}
      {['failed','needs_review','cancelled'].includes(chosen.status)&&<div className="space-y-2 border-t border-[#E7E0D5] pt-3">
       <p className="text-xs font-semibold">수동 확인 후 안전하게 재개</p>
       <label className="flex items-start gap-2 text-xs"><input type="checkbox" checked={acknowledged} onChange={e=>setAcknowledged(e.target.checked)}/>

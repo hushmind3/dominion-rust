@@ -326,6 +326,11 @@ pub(crate) fn successful_evidence(item: &Value) -> bool {
     {
         return false;
     }
+    // A delegated job returning "queued"/"failed" is a successful API
+    // transport, NOT successful completion of its delegated work.
+    if matches!(result["status"].as_str(),Some(
+        "queued" | "running" | "pending" | "failed" | "cancelled"
+        | "needs_review" | "interrupted" | "error")) {return false;}
     if let Some(code) = result.get("exitCode") {
         return code.as_i64() == Some(0);
     }
@@ -514,6 +519,17 @@ mod inference_tests {
         assert_eq!(checks[0]["type"], "file_changed");
     }
 
+    #[test]
+    fn delegated_pending_or_failed_subtask_never_counts_as_completed_evidence(){
+        for status in ["queued","running","failed","needs_review","cancelled"]{
+            let event=json!({"tool":"delegate_task","arguments":{"agentId":"a"},
+                "result":{"jobId":"j","status":status}});
+            assert!(!successful_evidence(&event));
+        }
+        let completed=json!({"tool":"delegate_task","arguments":{"agentId":"a"},
+            "result":{"jobId":"j","status":"completed"}});
+        assert!(successful_evidence(&completed));
+    }
     #[test]
     fn multiple_outputs_are_still_inferred_without_a_read_verb() {
         let checks = infer_criteria("a.txt와 b.txt를 만들어줘");
