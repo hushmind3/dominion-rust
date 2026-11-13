@@ -49,7 +49,7 @@ impl GoalControl {
         if self.is_cancelled() {
             return Err(cancelled());
         }
-        let completion = llm::complete(&self.context.state, provider, model, system, prompt);
+        let completion = llm::complete_for_session(&self.context.state, provider, model, system, prompt, &self.session_id);
         tokio::pin!(completion);
         loop {
             tokio::select! {

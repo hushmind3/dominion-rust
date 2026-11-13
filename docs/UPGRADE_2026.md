@@ -38,3 +38,6 @@
 - `POST /api/goals/:id/steer` uses a compare-and-swap `planRevision` and applies owner edits only before the next executor turn; a new edit arriving during review prevents completion on an obsolete plan. `POST /api/goals/:id/cancel` marks queued/running jobs and goal records cancelled.
 
 - UI entrypoint: `WorkspaceShell.tsx` `goals` → `App.tsx` `AutonomousGoalsPage` → `POST /api/goals`, `GET /api/goals`, `GET /api/jobs`, `POST /api/goals/:id/steer|cancel`, and the existing chat/developer pages. Server event refresh and active-goal 6-second polling show progress.
+
+- Goal routing uses `router::select_provider` (at least standard complexity) and stores `resolvedExecutor` for durable resume; user-selected executor roles win. `GoalControl::complete` charges planner/reviewer tokens to the same goal session.
+- `algorithms::choose_decomposition_for_agent` → `decompose::decompose` → frozen goal `decomposition` → planner/executor → independently verified goal completion → idempotent `goal_policy_reward` → `algorithms::record_owner_feedback("task.decomposition", revision, true)`. Human-edited plans and unverified runs receive no positive reward.

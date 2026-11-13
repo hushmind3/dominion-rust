@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {Bot,Check,ClipboardList,ExternalLink,LoaderCircle,PauseCircle,RefreshCw,Send,ShieldCheck} from 'lucide-react'
-import {get,post} from '../api'
+import {post} from '../api'
 import {Button,TextArea} from '../components/Primitives'
 import {Headline,Notice,useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
