@@ -42,7 +42,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   : outputs.value[0]
  const engine=engineChoice??video.value.config.engine
  const usingComfy=engine==='comfyui'
- const runwayClipSeconds=runwayModel==='kling_4'?30:15
+ const savedRunwayModel=video.value.config.runwayModel||'kling3.0_pro'
+ const runwayClipSeconds=savedRunwayModel==='kling_4'?30:15
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):engine==='runway'?Boolean(video.value.runway?.available&&(seconds<=runwayClipSeconds||video.value.native?.available)):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
@@ -176,7 +177,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):engine==='runway'?('Kling '+(runwayModel==='kling_4'?'4.0':'3.0')+' · 자동 장면 합성'):t('vid.ffmpegCard')}</span>}/>
+     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):engine==='runway'?('Kling '+(savedRunwayModel==='kling_4'?'4.0':'3.0')+' · 자동 장면 합성'):t('vid.ffmpegCard')}</span>}/>
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
