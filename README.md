@@ -25,6 +25,35 @@
 
 ---
 
+## 📸 DOMINION 미리보기
+
+**그룹 대화 · 회의 — 여러 에이전트가 한 공간에서 대화하고 협업하는 화면**
+
+<p align="center">
+  <a href="docs/01-multi-agent-room.webp">
+    <img src="docs/01-multi-agent-room.webp" alt="DOMINION multi-agent room with participants, shared conversation and room controls" width="100%" />
+  </a>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center"><strong>💬 채팅 · 모델 선택</strong></td>
+    <td width="50%" align="center"><strong>🤖 에이전트 스튜디오</strong></td>
+  </tr>
+  <tr>
+    <td><a href="docs/02-chat-workspace.webp"><img src="docs/02-chat-workspace.webp" alt="DOMINION chat workspace and model controls" width="100%" /></a></td>
+    <td><a href="docs/03-agent-studio.webp"><img src="docs/03-agent-studio.webp" alt="DOMINION agent studio with configurable agents and roles" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">API/로컬 모델을 선택하고 작업을 지시하는 채팅 공간</td>
+    <td align="center">에이전트별 역할·지침·모델을 관리하는 화면</td>
+  </tr>
+</table>
+
+<sub>실제 개발 중인 DOMINION UI 캡처입니다. 스크린샷은 특정 기능의 실모델 검증 결과를 보증하지 않습니다.</sub>
+
+---
+
 ## 🚀 어떤 프로젝트인가요?
 
 **DOMINION은 LLM 모델이 아니라, 여러분이 선택한 모델로 일을 수행하는 에이전트 도구입니다.**
