@@ -148,7 +148,9 @@ mod tests {
                 "targetFiles":[path]},
             "systemBlueprint":{"sourceInventory":[{
                 "path":path,"sha256":"1".repeat(64)}]},
-            "acceptedSourceHashes":{path:"2".repeat(64)},
+            "acceptedSourceHashes":{
+                "src/engine/rsi_meta_controller/peer_transfer.rs":"2".repeat(64)
+            },
             "metaPolicy":{"revision":"before","mode":"open_ended_mechanism_discovery",
                 "target":{"role":"memory","path":"src/engine/memory.rs"}}
         });

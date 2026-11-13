@@ -219,6 +219,31 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         state.store.put("job",&job).ok_or("차세대 재계획 실패 기록 손실")?;
         return Err(error);
     }
+    // A compiled successor must inherit the EXACT independently adopted
+    // executable improvement-method source and then apply its CURRENT policy
+    // to an actual source focus. This receipt describes an observation, not
+    // a causal claim or an automatic improvement score.
+    job["rsiMetaMethodInheritance"]=if job["input"]["rsiSystemEvolution"]==true {
+        let independently_replayed=crate::engine::rsi_system::revalidated_method_history(
+            &state,&history);
+        crate::engine::rsi_system::inherited_method_receipt(
+            &independently_replayed,
+            &job["input"]["rsiSystemBlueprint"],
+            &job["input"]["rsiMetaPolicy"],&commit,
+            &job["input"]["rsiFocusFiles"])
+    }else{Value::Null};
+    job["input"]["rsiMetaMethodInheritance"]=
+        job["rsiMetaMethodInheritance"].clone();
+    if job["rsiMetaMethodInheritance"]["rebuildConfirmed"]==true{
+        state.store.audit("rsi.compiled_inherited_meta_method",json!({
+            "jobId":job_id,"generatorCommit":commit,
+            "parent":job["rsiMetaMethodInheritance"]["parentAcceptedCommit"],
+            "sourceChanges":job["rsiMetaMethodInheritance"]["sourceChanges"],
+            "decisionDifference":job["rsiMetaMethodInheritance"]["observedPlanDifference"],
+            "sourceFocused":job["rsiMetaMethodInheritance"]["chosenTargetActuallyFocused"],
+            "causalQualityProof":false
+        }));
+    }
     // The next model call must use a receipt that this rebuilt descendant
     // can independently reproduce from the SAME frozen task lineage.
     let expected_objective=crate::engine::memory::stable_id(&[
@@ -274,7 +299,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("\n### 이번 세대의 실행 행동\n{}\n관측된 이전 세대 실패: {}\n",
             execution_action_contract(&action),action)
     } else {String::new()};
-    let instructions=if job["input"]["rsiSystemEvolution"]==true {
+    let mut instructions=if job["input"]["rsiSystemEvolution"]==true {
         let objective=state.store.get("job",&campaign)
             .and_then(|parent|parent["input"]["rsiObjective"].as_str()
                 .map(str::to_string)).unwrap_or_default();
@@ -360,6 +385,16 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         format!("{}{}\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요.\n이 실험 계보의 과거 결과: {}",
             job["input"]["prompt"].as_str().unwrap_or(""),action_prompt,feedback)
     };
+    if job["rsiMetaMethodInheritance"]["rebuildConfirmed"]==true {
+        instructions.push_str(&format!(
+            "\n\nINHERITED EDITABLE METHOD OBSERVATION (not quality proof): {}. \
+             This binary was rebuilt from an independently adopted meta-method \
+             change. The child source target and edit focus are executable; \
+             propose a further concrete change only from the CURRENT code and \
+             independently evaluated results.",
+            job["rsiMetaMethodInheritance"]
+        ));
+    }
     job["input"]["prompt"]=json!(instructions);
     state.store.put("job", &job).ok_or("세대 지시 저장 실패")?;
     let context = JobContext::new(state.clone(), job_id.into());

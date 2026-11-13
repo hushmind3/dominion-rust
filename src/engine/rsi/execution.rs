@@ -604,6 +604,8 @@ pub(super) async fn run_loop(
         generation["systemEvolution"]=current["input"]["rsiSystemEvolution"].clone();
         generation["metaPolicy"]=current["input"]["rsiMetaPolicy"].clone();
         generation["metaPolicyExecuted"]=current["rsiMetaPolicyExecuted"].clone();
+        generation["metaMethodInheritance"]=
+            current["rsiMetaMethodInheritance"].clone();
         generation["metaControlPolicy"]=current["input"]["rsiMetaActionPolicy"].clone();
         generation["peerLineages"]=current["input"]["rsiPeerLineages"].clone();
         generation["mutualCurriculum"]=current["input"]["rsiMutualCurriculum"].clone();
@@ -1105,6 +1107,11 @@ pub(super) async fn run_loop(
         });
         generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
             &generation["metaPolicy"],&generation);
+        // The inherited, compiled method is not scored by its own presence.
+        // Publish whether its REAL successor was independently assessed,
+        // adopted and authored a further change to executable meta source.
+        generation["metaMethodOutcome"]=
+            crate::engine::rsi_system::observed_method_outcome(&generation);
         // The immediate quality receipt and the future descendant's
         // productivity are SEPARATE learning targets. Future descendants
         // reconstruct the latter only after real independent evaluations.
