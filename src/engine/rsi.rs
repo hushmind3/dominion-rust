@@ -32,6 +32,7 @@ pub(crate) fn safe_path(path: &str) -> bool {
         "src/engine/rsi/execution/counterfactual.rs" |
         "src/engine/rsi/proof.rs" |
         "src/engine/rsi/proof/open_evolution.rs" |
+        "src/engine/rsi/proof/reflexive_evidence.rs" |
         "src/engine/rsi/evaluation/contract.rs" |
         "src/engine/rsi_system/design.rs" |
         "src/engine/rsi_system/proposal.rs" |
