@@ -17,9 +17,12 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
     let inherited=self_model["inheritedDesign"].as_object().map(|_|format!("Previously accepted design: nextDomain={} hypothesis={}",self_model["inheritedDesign"]["nextDomain"],self_model["inheritedDesign"]["hypothesis"])).unwrap_or_default();
     let history=self_model["recentMeasuredGenerations"].as_array()
         .into_iter().flatten().take(4).map(|row|format!(
-            "domain={} adopted={} verdict={} holdoutGain={} metaGain={}",
+            "domain={} adopted={} verdict={} holdoutGain={} metaGain={} methodControl={} methodQualityWin={} methodCaseWin={}",
             row["domain"],row["accepted"],row["verdict"],
-            row["improvedHoldouts"],row["metaHoldoutGains"]
+            row["improvedHoldouts"],row["metaHoldoutGains"],
+            row["methodAblation"]["controlId"],
+            row["methodAblation"]["treatmentQualityMetricWins"],
+            row["methodAblation"]["treatmentOnlyWins"]
         )).collect::<Vec<_>>().join("\n");
     format!(
         "[COMPILED DESCENDANT: VERSIONED INTELLIGENCE RUNTIME]\n\
@@ -60,6 +63,13 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         You can rewrite the source of rsi_meta_controller.rs itself to \
         improve that selection and its prediction calibration. A changed \
         improvement procedure must be executed and evaluated in its successor.\n\
+        METHOD FEEDBACK: if a prior descendant has a measured method ON/OFF \
+        receipt, inspect the exact procedure revision, control evaluation ID \
+        and heldout quality delta. Propose a DIFFERENT executable DAG with the \
+        same method name and domain via rsi_method_propose, driven by observed \
+        failures or quality gaps. After adoption, its successor must actually \
+        execute the revised DAG and independently beat the disabled-method \
+        control. Copying a receipt into prose or renaming a rule is not learning.\n\
         Learn from independently paired held-out TASK QUALITY and the actual\n\
         improvement ability of later recompiled descendants, not merely\n\
         acceptance counts. Rewrite rsi_principle_learning.rs when its own\n\
@@ -98,7 +108,11 @@ pub(crate) fn improvement_directive(history:&[Value])->Value {
     let failed_build=previous["evaluation"]["verdict"]=="build_failed"
         || previous["error"].as_str().is_some_and(|s|
             s.contains("build") || s.contains("compiler") || s.contains("compile"));
-    let mode=if previous["accepted"]==true && observed {
+    let measured_method=previous["methodAblation"]["methodAssociationObserved"]==true
+        && previous["methodAblation"]["qualityProven"]==true;
+    let mode=if previous["accepted"]==true && observed && measured_method {
+        "evolve_executed_method_from_feedback"
+    }else if previous["accepted"]==true && observed {
         "extend_verified_capability"
     }else if failed_build {
         if prior=="repair_counterexample"{"change_approach"}else{"repair_counterexample"}
@@ -113,6 +127,16 @@ pub(crate) fn improvement_directive(history:&[Value])->Value {
         "previousAccepted":previous["accepted"]==true && observed,
         "previousVerdict":previous["evaluation"]["verdict"],
         "previousCandidateId":previous["candidateId"],
+        "methodFeedback":if measured_method {json!({
+            "controlId":previous["methodAblation"]["controlId"],
+            "controlEvaluationId":previous["methodAblation"]["controlEvaluationId"],
+            "treatmentEvaluationId":previous["methodAblation"]["treatmentEvaluationId"],
+            "pairedHoldoutCases":previous["methodAblation"]["pairedHoldoutCases"],
+            "treatmentQualityMetricWins":previous["methodAblation"]["treatmentQualityMetricWins"],
+            "treatmentOnlyWins":previous["methodAblation"]["treatmentOnlyWins"],
+            "sourceGenerationId":previous["id"],
+            "requiresNewRevisionAndSuccessorExecution":true
+        })}else{Value::Null},
         "previousFocusFiles":previous["focusFiles"].as_array()
             .map(|a|a.iter().take(4).cloned().collect::<Vec<_>>()).unwrap_or_default(),
         "previousError":previous["error"].as_str().unwrap_or("")
