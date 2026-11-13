@@ -84,7 +84,7 @@ pub(crate) fn remember_research(state:&AppState,input:&Value,generation:&Value,s
 /// Algorithms proposed by the current RSI generation through the
 /// `algorithm_propose` tool. Only the stored records are returned; a proposal
 /// is never treated as adopted before deterministic replay evaluation.
-pub(super) fn numbered_source_range(text: &str, start: u64, end: u64) -> (String, u64, u64) {
+fn numbered_source_range(text: &str, start: u64, end: u64) -> (String, u64, u64) {
     let lines = text.lines().collect::<Vec<_>>();
     let begin = (start.max(1) as usize).min(lines.len());
     let end = (end.max(start) as usize)
@@ -97,7 +97,7 @@ pub(super) fn numbered_source_range(text: &str, start: u64, end: u64) -> (String
     (numbered, begin as u64, end as u64)
 }
 
-pub(super) fn unavailable_research_receipt(mut receipt: Value, reason: &str) -> Value {
+fn unavailable_research_receipt(mut receipt: Value, reason: &str) -> Value {
     receipt["mode"] = json!("source_range_unavailable");
     receipt["status"] = json!("skipped");
     receipt["reason"] = json!(reason);
