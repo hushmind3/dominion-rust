@@ -28,6 +28,7 @@
   <a href="#-what-you-can-do">Features</a> ·
   <a href="#-quick-start">Quick start</a> ·
   <a href="#-architecture">Architecture</a> ·
+  <a href="https://github.com/hushmind3/dominion-rust/discussions">Discussions</a> ·
   <a href="#-contributing">Contribute</a>
 </p>
 
@@ -153,6 +154,7 @@ DOMINION is an **active developer preview**, not a managed SaaS or a fully valid
 
 Contributions are welcome — particularly **reproducible bug reports, test cases, model/provider compatibility fixes, Rust harness improvements, UI work, and documentation**.
 
+- [Join Discussions](https://github.com/hushmind3/dominion-rust/discussions) — ask questions, share your setup, and propose ideas for agents, video workflows, and RSI research.
 - [Open an issue](https://github.com/hushmind3/dominion-rust/issues) — include your OS, model/provider, reproduction steps, and expected vs. actual behavior.
 - [Submit a pull request](https://github.com/hushmind3/dominion-rust/pulls) — explain the change and include appropriate tests when possible.
 - Never include API keys, bot tokens, private conversations, or other secrets in reports.
