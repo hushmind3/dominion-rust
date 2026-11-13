@@ -586,6 +586,13 @@ pub(super) async fn run_loop(
         // input BEFORE queuing the treatment. Real model and evaluation
         // receipts belong to this campaign and count against its budgets.
         run_control(context,record,input,&mut child_input,&lab,&binary,started).await?;
+        // The OFF arm consumes real tokens; recompute the ON worker's budget
+        // from the surviving campaign balance instead of the stale pre-OFF
+        // estimate. The worker performs its own provider-aware preflight.
+        child_input["rsiRemainingCampaignTokens"]=record["limits"]["tokenBudget"]
+            .as_u64().map(|budget|budget.saturating_sub(
+                record["tokens"].as_u64().unwrap_or(0)))
+            .map_or(Value::Null,|tokens|json!(tokens));
         if !generation_fits_remaining_budget(record,input) {
             return Ok("token_budget".into());
         }
