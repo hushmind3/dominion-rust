@@ -23,8 +23,9 @@ pub(crate) fn inferred_checks(workspace: &Path, goal: &str) -> Vec<Value> {
     if workspace.join("go.mod").is_file() {
         commands.push("go test ./...");
     }
-    if let Ok(data)=std::fs::read(workspace.join("package.json")) {
-        if data.len() <= 128 * 1024 {
+    let package_path=workspace.join("package.json");
+    if std::fs::metadata(&package_path).is_ok_and(|meta|meta.is_file() && meta.len()<=128*1024) {
+        if let Ok(data)=std::fs::read(package_path) {
             if let Ok(package)=serde_json::from_slice::<Value>(&data) {
                 let test=package["scripts"]["test"].as_str().unwrap_or("");
                 if !test.trim().is_empty() && !test.contains("no test specified") {
