@@ -95,3 +95,14 @@ task evidence → improvement algorithm change → downstream task evidence
 - [SpecForge (2026)](https://arxiv.org/abs/2610.15708) — frontiers, dependency-aware selection and diverse failure-driven exploration.
 
 These are design context, not claims that DOMINION reproduced the reported performance.
+
+## 8. Owner-requested CI, evidence fixes and typed observation (2026-11-13)
+
+Actual GitHub Actions `CI` was executed. The first completed release test run had **803 of 806 passing and three failing**; this is not green. We preserved strict tests and corrected the sources of failure:
+
+- `rsi_archive::select` no longer treats a JSON-quoted hash and the raw digest as different archive candidates. Live and persisted records with the same patch SHA now occupy one Pareto slot.
+- The negative-transfer forged-evidence test now tampers with the **actually damaged** holdout case, rather than altering a previously passing case. The original independent receipt must reject the fraud.
+- Extracted module `#[path]`, fixture `include_str!`, Rust scoped function visibility, method-family type comparison, dangling doc comments and a mutable-worker borrow boundary were fixed using actual CI compile output.
+- New `rsi/execution/observation.rs` defines typed `GenerationObservation` of the original session and worker: model-only tool timeline, per-job and policy-revision program stages/rules, provider route, and tokens. The campaign no longer collects those records itself, shrinking `campaign.rs` from about 1,282 to about 1,222 lines. A source-only regression tests session, job and policy provenance.
+
+The new head's CI final result must be obtained from GitHub Actions. No passing claim is made from the earlier partial 803/806 outcome. No training/fine-tuning/model-weight adaptation is added to RSI.
