@@ -38,8 +38,11 @@ Branch: `dominion-sub2` · Evaluation basis: **entire engine–harness–algorit
 ### Stability: production vs regression source
 
 - Video was split from one 746-line mixed-purpose module into `video.rs` coordinator plus `native.rs`/ `comfy.rs`/ `ltx.rs`/ `upload.rs`/ `tests.rs`.
+- `models.rs` shrank from 2,547 production-without-test lines to ~413 lines, with `models/{installer,management,loader,catalog,download}.rs` owning the executable work. `algorithms.rs` shrank from 1,792 to ~339, with `algorithms/{builtins,registry,feedback,management}.rs`. `chat/provider.rs` shrank from 1,828 to ~588, with `chat/provider/{openai,adapters,codex,anthropic}.rs`.
+- Original top-level function inventory was statically compared: 75/75 model declarations, 28/28 algorithm declarations, 34/34 provider declarations are present in the new source tree. This is not a typecheck or runtime test.
 - Test code was extracted from `rooms.rs`, `chat/room_context.rs`, `room_knowledge.rs`, `chat/provider.rs`, `models.rs`, `algorithms.rs`, `chat/context.rs` and `room_state.rs` without changing their invocation entry points. All Rust regression files are referenced with `#[cfg(test)]` only.
-- The high-complexity `models.rs`, `algorithms.rs`, `chat/provider.rs` still contain mixed concerns. Their remaining decomposition is a structural priority; do not claim one edit has removed all large-module bottlenecks.
+- Provider-reported usage is stored per room speaker in `rooms.rs::run_locked`. `rooms/usage_ledger.rs::summary` persists aggregate input, output, actual cached tokens and unknown-report counts in `finish` and its audit event. The React room header shows cache reuse **for only provider-reported calls**. Neither an estimated token count nor a missing cache field may be labeled as a measured saving.
+- The long `chat/runtime/turn.rs` single-turn function, parts of `rooms.rs` and other legacy mixed-purpose source still require decomposition. Mixed concerns across these paths are an unfinished structural risk.
 
 ## 3. 2026 reference and independent claims
 
@@ -53,9 +56,9 @@ Branch: `dominion-sub2` · Evaluation basis: **entire engine–harness–algorit
 ### Remaining required proof and upgrades
 
 1. No build, compile, runtime test, benchmark, CI or paid-provider video render was executed for these source changes. Any individual API feature may require future adjustment to provider behavior.
-2. Measure **provider-reported cached tokens, uncached tokens, repeated room context tokens, output quality, latency and cost by provider**, with an equal-task baseline. Avoid treating a theoretical 40–90% discount as achieved.
+2. Provider-reported cached tokens and per-speaker usage are now captured in `rooms/usage_ledger.rs` and `web/src/pages/Rooms.tsx`; next independently measure **identical-task uncached baselines, response quality, latency and monetary costs by provider**. Never treat a theoretical 40–90% discount as achieved.
 3. Implement long-form shot orchestration, continuity controls and native video QA with independent scene receipts before claiming creator-grade turnkey long-form production.
-4. Continue production module responsibility splitting for `models.rs`, `algorithms.rs`, `chat/provider.rs`; remove duplicated fallback and source-inventory coupling.
+4. Continue production responsibility splitting for `chat/runtime/turn.rs` and the room execution loop, and deduplicate expensive provider fallback logic. The reorganized model/algorithm/provider modules preserve original entry points but still require full compilation and real-run validation.
 5. Prove the complete RSI loop: independently tested adopted source → new compiled descendant → another domain's measured improvement → return feedback → revised method → later gain, with matched frozen baseline and actual cost accounting.
 
 ### Non-negotiable constraints

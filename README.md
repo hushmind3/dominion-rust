@@ -563,7 +563,8 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 - **그룹 대화 맥락:** `src/engine/chat/room_context.rs::compile`은 기존의 주인 지시·참가자별 응답·도구 실행 증거를 보존하면서 `chat/room_context/role_routing.rs`의 역할 연관도를 **질문과 연관된 증거에만** 추가 가중합니다. 모델 호출을 늘리지 않으며 예상 미선택 토큰 수는 `room_context.accounting`에 기록합니다.
 - **사용자 선택 모델 계층:** `src/api/rooms.rs::validated_config`가 `tierRoutingEnabled/tierRoutes`를 등록 공급자 기준으로 검증·저장합니다. `src/engine/rooms/model_tiering.rs::select`는 복잡한 요청과 가벼운 요청을 구분하고 `rooms.rs::run_locked`에서 실제 모델·제공자·추론 강도에 반영합니다. `web/src/pages/Rooms.tsx`에서 명시적으로 켜고 **선택한 모델만** 사용합니다. 수동 모델 지정은 항상 우선합니다. 공급자 요금·성능을 자동 추정하거나 미등록 키를 쓰지 않습니다.
 - **RSI의 전체 시스템 인식:** `src/engine/rsi_system.rs::source_role/architecture_role_domain`에 영상과 그룹 대화 실행 소스의 `video/multiagent` 역할을 연결했습니다. 이 소스는 재빌드된 후손의 `source_inventory → blueprint → architecture_frontier`에서 개선 후보로 검토될 수 있습니다. 기존 원본 paired 평가와 채택 게이트는 동일하며 새로운 품질 개선의 증명으로 간주하지 않습니다.
-- **유지보수:** `src/engine/video.rs`를 `video/{native,comfy,ltx,upload}.rs`로 분리했습니다. 그룹 실행·프롬프트 컴파일·지식 추출·모델 공급자·모델 라이브러리·알고리즘·컨텍스트·방 상태의 **회귀 테스트는 각각 production 모듈 밖 `*/tests.rs`**로 분리했습니다. 분리된 파일은 원래 진입점으로부터 `#[cfg(test)]`에 등록됩니다.
+- **유지보수:** `src/engine/video.rs`를 `video/{native,comfy,ltx,upload}.rs`로 분리했습니다. `models.rs`는 `models/{installer,management,loader,catalog,download}.rs`, `algorithms.rs`는 `algorithms/{builtins,registry,feedback,management}.rs`, `chat/provider.rs`는 `chat/provider/{openai,adapters,codex,anthropic}.rs`로 실실행 기능을 나눴습니다. 원래 공개 함수 이름과 Rust 모듈 재내보내기(re-export)를 보존했습니다. 그룹 실행·프롬프트 컴파일·지식 추출·모델 공급자·모델 라이브러리·알고리즘·컨텍스트·방 상태의 **회귀 테스트는 각각 production 모듈 밖 `*/tests.rs`**로 분리했습니다. 분리된 파일은 `#[cfg(test)]`에서만 참조합니다.
+- **실측 비용 계측:** `rooms/usage_ledger.rs`가 완료 메시지의 공급자 보고 토큰을 집계해 작업 원장과 `room.exchange_finished` 감사 로그에 저장합니다. 캐시 사용량이 누락되면 0으로 취급하지 않고 `null`로 남깁니다. 그룹 화면에는 **보고된 호출에 한해** 캐시 입력 재사용률을 표시합니다.
 
 코드 호출도·편집 경계·2026 연구 및 남은 핵심 결함은 [Sub2 출시 후 통합 아키텍처](docs/architecture/RELEASE-INTEGRATION-SUB2-2026-11-14.md)에 있습니다.
 
