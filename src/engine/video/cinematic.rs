@@ -35,6 +35,7 @@ fn storyboard(input: &Value) -> Result<Vec<Shot>, String> {
         .take(MAX_SHOTS)
         .map(|beat| beat.chars().take(400).collect::<String>())
         .collect::<Vec<_>>();
+    let beats = if beats.is_empty() {vec![bible.clone()]} else {beats};
     let count = duration.div_ceil(SHOT_TARGET_SECONDS).min(MAX_SHOTS as u64) as usize;
     let base = duration / count as u64;
     let remainder = duration % count as u64;
