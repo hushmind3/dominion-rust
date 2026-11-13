@@ -20,9 +20,20 @@ fn only_real_compiled_method_selection_qualifies_for_control(){
     assert!(!method_selected(&json!({"rsiSystemEvolution":true,
         "rsiImprovementAlgebra":{"selected":{"rule":{"method":{
             "path":"../../etc/passwd"}}}}})));
-    assert!(method_selected(&json!({"rsiSystemEvolution":true,
-        "rsiImprovementAlgebra":{"selected":{"rule":{"method":{
-            "path":"src/engine/memory.rs"}}}}})));
+    let algebra=json!({"selected":{
+        "rule":{"method":{"path":"src/engine/rsi_meta_controller.rs"}},
+        "target":{"path":"src/engine/memory.rs","domain":"memory"}}});
+    let ready=json!({"rsiSystemEvolution":true,"rsiAutonomous":true,
+        "rsiImprovementAlgebra":algebra,
+        "rsiControllerPlan":{"improvementAlgebra":algebra},
+        "rsiArchitectureTarget":algebra["selected"]["target"],
+        "rsiSelectedDomain":"memory",
+        "rsiFocusFiles":["src/engine/memory.rs"]});
+    assert!(method_selected(&ready));
+    let mut unbound=ready;
+    unbound["rsiFocusFiles"]=json!(["src/engine/context.rs"]);
+    assert!(!method_selected(&unbound),
+        "planning an operator is not the same as dispatching it");
     assert!(!method_selected(&json!({"rsiSystemEvolution":true,
         "rsiImprovementAlgebra":{"selected":{
             "target":{"path":"src/engine/memory.rs"},
