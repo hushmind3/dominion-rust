@@ -498,3 +498,9 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 `rsi_evolve` → 컴파일된 후손 계획기 → 실제 워커 → 독립 평가 → 원본 기록 재생 → 다음 후손에 연결했으며, 동결 평가 정책의 진화는 **별도 승인과 검증을 요구하는 독립 과제**로 분리했습니다. 핵심 파일 분해: `planner/descendant.rs` 681→264줄, `rsi_worktree.rs` 759→459줄, `rsi_system.rs` 637→503줄. **빌드·테스트·CI·실모델 실행은 수행하지 않았으며 완성 점수도 주장하지 않습니다.**
 
 [타입 계약·실험 설계 진화·모듈 구조 및 미완성 범위](docs/CHAMPION-META-ARCHITECTURE-2026-11-13.md).
+
+### 2026-11-13 CI 실제 검증 및 실행 경계 정리
+
+사용자 요청에 따라 GitHub Actions `CI`의 `npm ci`·TypeScript 타입 검사·Vite 빌드·셸 구문 검사·`cargo test --release`를 **실제로 실행**했습니다. 첫 릴리스 테스트 실행에서는 806개 중 803개가 통과했고, 실패 3건의 근거를 수정했습니다. `rsi_archive::select`는 동일 SHA를 따옴표 포함 JSON 문자열과 원본 문자열로 중복 집계하던 오류를 제거했습니다. 교차 능력 손상 테스트는 실제 실패한 holdout을 조작하도록 수정했습니다. 컴파일 단계에서 발견된 상대 경로·모듈 가시성·타입·borrow 오류도 수정했습니다. **최신 커밋의 CI 최종 결과는 GitHub Actions에서 확인해야 하며, 현재 통과를 선언하지 않습니다.**
+
+`rsi/execution/observation.rs`가 실행 작업의 모델 호출·실제 도구·실행 단계·정책 revision 증거를 타입이 명시된 `GenerationObservation`으로 수집합니다. `campaign.rs`의 관측 수집 약 76줄을 이 모듈로 분리했으며, 세션·작업·정책 경계의 회귀 테스트를 추가했습니다. 모델 가중치 학습 기능은 RSI 경로에 연결하지 않았습니다.
