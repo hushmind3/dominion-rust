@@ -522,6 +522,7 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi/lineage/campaign.rs",
             "src/engine/rsi/learning/methods.rs",
             "src/engine/rsi/learning/research.rs",
+            "src/engine/rsi/learning/generation_feedback.rs",
             "src/engine/rsi_system/lineage.rs",
             "src/engine/rsi_system/guidance.rs"
         ];
@@ -533,7 +534,10 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi_system/design.rs",
             "src/engine/rsi_system/proposal.rs",
             "src/engine/rsi_system/handoff.rs",
-            "src/engine/rsi_system/peer_verifier.rs"
+            "src/engine/rsi_system/peer_verifier.rs",
+            "src/engine/rsi/execution/compiled_planning.rs",
+            "src/engine/rsi/execution/generation_evidence.rs",
+            "src/engine/rsi/execution/generation_finalization.rs"
         ] {
             assert!(!crate::engine::rsi::safe_path(path),
                 "a descendant candidate cannot modify its own final judge: {path}");
