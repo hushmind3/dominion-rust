@@ -213,6 +213,32 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
             models.push(picked);
         }
     }
+    // Cost-tier routing is opt-in and only uses explicitly registered models.
+    // No implicit switch to an unknown provider or user-billing account.
+    let tier_routing=bool_field(body,previous,"tierRoutingEnabled",false)?;
+    let tier_config=body.get("tierRoutes").or_else(||previous.get("tierRoutes"));
+    let mut tier_routes=serde_json::Map::new();
+    for name in ["light","deep"] {
+        let entry=tier_config.and_then(|cfg|cfg.get(name)).unwrap_or(&Value::Null);
+        if entry.is_null(){continue;}
+        let provider_id=entry["providerId"].as_str()
+            .filter(|s|!s.is_empty()).ok_or_else(||bad("계층형 라우팅 제공자 ID가 필요합니다."))?;
+        let model=entry["model"].as_str().map(str::trim)
+            .filter(|s|!s.is_empty() && s.len()<=200)
+            .ok_or_else(||bad("계층형 라우팅 모델 이름이 필요합니다."))?;
+        if !state.store.get("provider",provider_id)
+            .is_some_and(|provider|provider["enabled"]!=false){
+            return Err(bad(format!("모델 제공자가 등록되지 않았거나 비활성 상태입니다: {provider_id}")));
+        }
+        let effort=entry["reasoningEffort"].as_str().unwrap_or("").trim();
+        if !valid_effort(effort){return Err(bad("계층형 라우팅 추론 강도가 올바르지 않습니다."));}
+        let mut route=json!({"providerId":provider_id,"model":model});
+        if !effort.is_empty(){route["reasoningEffort"]=json!(effort);}
+        tier_routes.insert(name.to_string(),route);
+    }
+    if tier_routing && (tier_routes.get("light").is_none() || tier_routes.get("deep").is_none()) {
+        return Err(bad("계층형 모델 사용 시 가벼운 작업용과 복잡한 작업용 모델을 모두 지정하세요."));
+    }
     let max_turns = body
         .get("maxTurns")
         .and_then(Value::as_i64)
@@ -237,6 +263,8 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
+        "tierRoutingEnabled":tier_routing,
+        "tierRoutes":tier_routes,
         "reasoningEffort":reasoning_effort,
         "models":models,
     }))

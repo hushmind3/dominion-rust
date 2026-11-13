@@ -2,6 +2,9 @@ use crate::engine::jobs::JobContext;
 use crate::engine::{chat::TurnRequest, run_room_quiet};
 use crate::state::AppState;
 use serde_json::{json, Value};
+
+#[path = "rooms/model_tiering.rs"]
+mod model_tiering;
 use std::collections::{HashSet, VecDeque};
 
 pub const MAX_PARTICIPANTS: usize = 32;
@@ -626,9 +629,21 @@ async fn run_locked(
         } else {
             Some(pool[pool_slot(&roster, &agent_id, pool.len())].clone())
         };
-        let resolved_provider=optional(input,"providerId").or_else(||rotated.as_ref().map(|(provider,_,_)| provider.clone())).or_else(||optional(&agent,"providerId"));
-        let resolved_model=optional(input,"model").or_else(||rotated.as_ref().map(|(_,model,_)| model.clone())).or_else(||optional(&agent,"model"));
-        let rotated_effort=rotated.as_ref().and_then(|(_,_,effort)| effort.clone());
+        // Owner-selected tier routes are optional; a per-job explicit model
+        // always wins. Tier selection never trains a model or edits prompts.
+        let tiered = if input["providerId"].as_str().is_some() || input["model"].as_str().is_some() {
+            None
+        } else { model_tiering::select(&room, owner_text) };
+        let resolved_provider=optional(input,"providerId")
+            .or_else(||tiered.as_ref().map(|(provider,_,_,_)|provider.clone()))
+            .or_else(||rotated.as_ref().map(|(provider,_,_)| provider.clone()))
+            .or_else(||optional(&agent,"providerId"));
+        let resolved_model=optional(input,"model")
+            .or_else(||tiered.as_ref().map(|(_,model,_,_)|model.clone()))
+            .or_else(||rotated.as_ref().map(|(_,model,_)| model.clone()))
+            .or_else(||optional(&agent,"model"));
+        let rotated_effort=tiered.as_ref().and_then(|(_,_,effort,_)|effort.clone())
+            .or_else(||rotated.as_ref().and_then(|(_,_,effort)| effort.clone()));
         // The owner's room model selection is a routing decision, not a hint.
         // Local runtimes are eligible exactly like cloud providers; the gateway
         // still applies local concurrency admission and normal failover.
@@ -702,6 +717,8 @@ async fn run_locked(
             "content":content,
             "messageId":message["id"],
             "evidenceCount":evidence_count,
+            "modelRoute":{"providerId":request.provider_id,"model":request.model,
+                "tier":tiered.as_ref().map(|(_,_,_,tier)|*tier).unwrap_or("manual")},
             "toolCalls":message["tool_calls"].clone(),
         }));
         let resolution =

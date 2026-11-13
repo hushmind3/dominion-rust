@@ -15,8 +15,8 @@ const MAX_ROOM_PARTICIPANTS=32
 
 type RoutingMode='discussion'|'round_robin'|'mentioned'
 type RoomModel={providerId:string;model:string;reasoningEffort?:string}
-type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;tokenBudget?:number;contextBudgetTokens?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];reasoningEffort?:string;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
-type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;tokenBudget:number;contextBudgetTokens:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[];reasoningEffort:string}
+type RoomConfig={id:string;name:string;topic?:string;description?:string;ownerName?:string;agentIds:string[];routingMode?:RoutingMode;rounds?:number;maxTurns?:number;tokenBudget?:number;contextBudgetTokens?:number;toolsEnabled?:boolean;autoLearning?:boolean;autoModels?:boolean;models?:RoomModel[];tierRoutingEnabled?:boolean;tierRoutes?:{light?:RoomModel;deep?:RoomModel};reasoningEffort?:string;sessionId?:string;status?:string;activeAgentId?:string;pauseReason?:string;updatedAt?:string}
+type RoomDraft={id?:string;name:string;topic:string;ownerName:string;agentIds:string[];routingMode:RoutingMode;rounds:number;maxTurns:number;tokenBudget:number;contextBudgetTokens:number;autoModels:boolean;toolsEnabled:boolean;autoLearning:boolean;models:RoomModel[];tierRoutingEnabled:boolean;tierRoutes:{light?:RoomModel;deep?:RoomModel};reasoningEffort:string}
 type Job={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;createdAt?:string;input?:{roomId?:string;sessionId?:string};result?:{memories?:number;status?:string};roomState?:{activeAgentId?:string;inFlight?:boolean}}
 type Execution={id:string;status:string;agentId?:string;sessionId?:string;toolCalls?:number;tokens?:number;reason?:string}
 type Operation={id:string;runId?:string;tool?:string;toolName?:string;name?:string;status?:string;result?:unknown;error?:string;arguments?:unknown}
@@ -32,7 +32,7 @@ const modes:Record<RoutingMode,{label:LocaleKey;description:LocaleKey}>={discuss
 const palette=['#668373','#9A745F','#6D7FA4','#967AA0','#B18C47','#6C9297','#AB7180','#7A8456','#8B7B69']
 const active=(status?:string)=>status==='queued'||status==='running'
 const stamp=(value?:string)=>{if(!value)return '';const normalized=value.includes('T')?value:value.replace(' ','T')+'Z';const date=new Date(normalized);return Number.isNaN(date.getTime())?'':date.toLocaleTimeString(getLocale()==='en'?'en-US':'ko-KR',{hour:'2-digit',minute:'2-digit'})}
-const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,tokenBudget:room?.tokenBudget??0,contextBudgetTokens:room?.contextBudgetTokens??2000,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false,models:room?.models||[],reasoningEffort:room?.reasoningEffort||''})
+const draftOf=(room?:RoomConfig):RoomDraft=>({id:room?.id,name:room?.name||'',topic:room?.topic||room?.description||'',ownerName:room?.ownerName||t('rooms.me'),agentIds:room?.agentIds||[],routingMode:room?.routingMode||'discussion',rounds:room?.rounds||3,maxTurns:room?.maxTurns??0,tokenBudget:room?.tokenBudget??0,contextBudgetTokens:room?.contextBudgetTokens??2000,toolsEnabled:room?.toolsEnabled===true,autoLearning:room?.autoLearning!==false,autoModels:room?.autoModels!==false,models:room?.models||[],tierRoutingEnabled:room?.tierRoutingEnabled===true,tierRoutes:room?.tierRoutes||{},reasoningEffort:room?.reasoningEffort||''})
 const agentColor=(agent?:Agent,index=0)=>/^#[0-9a-f]{3,8}$/i.test(agent?.color||'')?agent!.color!:palette[index%palette.length]
 
 function Avatar({agent,name,owner=false,size='normal',index=0}:{agent?:Agent;name?:string;owner?:boolean;size?:'small'|'normal';index?:number}){
@@ -90,6 +90,15 @@ function RoomSettings({value,onChange,agents,providers,disabled=false}:{value:Ro
   <FormField label={t('rooms.reasoning')} hint={t('rooms.reasoningHint')}><ReasoningSelect value={value.reasoningEffort} onChange={reasoningEffort=>onChange({...value,reasoningEffort})} defaultLabel={t('rooms.reasoningDefault')} disabled={disabled}/></FormField>
   <label className="room-setting-check"><input type="checkbox" checked={value.autoLearning} onChange={e=>onChange({...value,autoLearning:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoLearn')}</strong><small>{t('rooms.autoLearnDesc')}</small></span></label>
   <RoomModelPicker value={value.models} onChange={models=>onChange({...value,models})} providers={providers} disabled={disabled}/>
+  <label className="room-setting-check"><input type="checkbox" checked={value.tierRoutingEnabled} onChange={e=>onChange({...value,tierRoutingEnabled:e.target.checked})} disabled={disabled}/><span><strong>작업 난이도별 모델 자동 선택</strong><small>간단한 요청과 복잡한 요청에 각각 직접 선택한 모델을 사용합니다. 공급자별 실제 가격은 별도입니다.</small></span></label>
+  {value.tierRoutingEnabled&&<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">{(['light','deep'] as const).map(tier=>{
+   const route=value.tierRoutes[tier]
+   const selected=route?route.providerId+'|'+route.model:''
+   return <FormField key={tier} label={tier==='light'?'가벼운 작업 모델':'복잡한 작업 모델'}><SelectInput disabled={disabled} value={selected} onChange={e=>{
+    const next=value.models.find(m=>m.providerId+'|'+m.model===e.target.value)
+    onChange({...value,tierRoutes:{...value.tierRoutes,[tier]:next}})
+   }}><option value="">모델 선택</option>{value.models.map(m=><option key={tier+'|'+m.providerId+'|'+m.model} value={m.providerId+'|'+m.model}>{m.providerId} · {m.model}</option>)}</SelectInput></FormField>
+  })}</div>}
   <label className="room-setting-check"><input type="checkbox" checked={value.autoModels} onChange={e=>onChange({...value,autoModels:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.autoModels')}</strong><small>{t('rooms.autoModelsDesc')}</small></span></label>
   <label className="room-setting-check"><input type="checkbox" checked={value.toolsEnabled} onChange={e=>onChange({...value,toolsEnabled:e.target.checked})} disabled={disabled}/><span><strong>{t('rooms.tools')}</strong><small>{t('rooms.toolsDesc')}</small></span></label>
  </div>
