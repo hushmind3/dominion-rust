@@ -276,6 +276,8 @@ pub(super) async fn run_loop(
             child_input["rsiComparativeMode"]=plan["comparativeMode"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiSymbioticCurriculum"]=plan["symbioticCurriculum"].clone();
+            meta_experiment_evolution::validate(&plan["experimentStrategy"],&head)?;
+            child_input["rsiExperimentStrategy"]=plan["experimentStrategy"].clone();
             child_input["rsiFactorialExperiment"]=plan["factorialExperiment"].clone();
             child_input["rsiNegativeTransfer"]=plan["negativeTransfer"].clone();
             child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
@@ -603,6 +605,8 @@ pub(super) async fn run_loop(
         generation["comparativeMode"]=current["input"]["rsiComparativeMode"].clone();
         generation["successorStage"]=current["input"]["rsiSuccessorStage"].clone();
         generation["symbioticCurriculum"]=current["input"]["rsiSymbioticCurriculum"].clone();
+        generation["experimentStrategy"]=current["input"]["rsiExperimentStrategy"].clone();
+        generation["experimentStrategyApplied"]=current["rsiExperimentExecuted"].clone();
         generation["factorialExperiment"]=current["input"]["rsiFactorialExperiment"].clone();
         generation["negativeTransfer"]=current["input"]["rsiNegativeTransfer"].clone();
         generation["systemDesign"]=session.and_then(|id|context.state.store.get("session",id))

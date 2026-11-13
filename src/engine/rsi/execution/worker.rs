@@ -90,6 +90,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let model=crate::engine::rsi_system::blueprint(root,&commit,&refreshed_history);
         if plan["systemBlueprint"]!=model
             || job["input"]["rsiSystemBlueprint"]!=model
+            || plan["experimentStrategy"]!=job["input"]["rsiExperimentStrategy"]
             || plan["metaPolicy"]!=job["input"]["rsiMetaPolicy"]
             || plan["architectureTarget"]!=job["input"]["rsiArchitectureTarget"]
             || plan["archiveSelection"]!=job["input"]["rsiArchiveSelection"]
@@ -139,6 +140,17 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
     // The coordinator that queued this child may be the OLD generator. A
     // recompiled descendant must actually use its own revised policy
     // synthesis, not inherit an obsolete parent-selected edit method.
+    if compiled_plan.is_some() {
+        meta_experiment_evolution::validate(
+            &job["input"]["rsiExperimentStrategy"],&commit)?;
+        job["rsiExperimentExecuted"]=json!({
+            "source":"running_compiled_descendant_experiment_strategy_v1",
+            "generatorCommit":commit,
+            "revision":job["input"]["rsiExperimentStrategy"]["revision"],
+            "arm":job["input"]["rsiExperimentStrategy"]["arm"],
+            "workerApplied":true
+        });
+    }
     let mut descendant_method=if compiled_plan.is_some() {
         job["input"]["rsiDescendantPlan"]["editPolicy"].clone()
     }else{

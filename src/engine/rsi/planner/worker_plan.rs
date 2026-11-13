@@ -101,6 +101,19 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     let proposed_factorial=crate::engine::rsi_intervention_lab::design(
         &history,&frontier,&inherited_meta,&initial_symbiosis,
         &permitted,revision,profile.as_deref(),&inherited_experiment_method);
+    // Use the original negative-transfer evidence before choosing an arm.
+    let negative_evidence=crate::engine::rsi_negative_transfer::plan(
+        &state,&history,&frontier,revision);
+    let repair_available=negative_evidence["selected"]["supportedForPairedInvestigation"]==true
+        &&negative_evidence["selected"]["frozenProfileSha256"].as_str()==profile.as_deref()
+        &&crate::engine::rsi_negative_transfer::valid(
+            &negative_evidence,&frontier,revision,history.len())
+        &&negative_evidence["selected"]["source"]["domain"].as_str()
+            .is_some_and(|d|permitted.contains(&d))
+        &&negative_evidence["selected"]["victim"]["domain"].as_str()
+            .is_some_and(|d|permitted.contains(&d))
+        &&inherited_meta["alternatives"].as_array().is_some_and(|rows|
+            rows.iter().any(|row|row["target"]==negative_evidence["selected"]["source"]));
     // An active single-source experiment must not starve open-ended
     // inventions. Continue measured sibling interventions on this EXACT
     // source revision; otherwise allocate every third task to experiments.
@@ -114,7 +127,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // the full success or continue exploiting an ambiguous result.
     let isolation_debt=inherited_meta["selectionEvidence"]["causalCredit"]
         ["requiresIsolation"]==true;
-    let factorial_active=auto && stage.is_null()
+    let factorial_available=auto && stage.is_null()
         // A learned principle experiment has to execute on its selected
         // source; otherwise its downstream payoff can never be observed.
         && inherited_meta["principleLearning"]["active"]!=true
@@ -124,9 +137,15 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         && !(inherited_meta["recursiveProgram"]["active"]==true
             && inherited_meta["recursiveProgram"]["phase"]=="rewrite_meta_method")
         && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
-        && proposed_factorial["selected"].is_object()
-        && (measured_siblings>0 || history.len()%3==1
-            || method_promoted || isolation_debt);
+        && proposed_factorial["selected"].is_object();
+    // The compiled descendant evolves experiment selection from REAL
+    // independently paired history rather than a fixed 3-attempt rotation.
+    let experiment_strategy=meta_experiment_evolution::propose(
+        &history,revision,factorial_available,repair_available && auto
+            &&stage.is_null());
+    meta_experiment_evolution::validate(&experiment_strategy,revision)?;
+    let factorial_active=factorial_available
+        &&experiment_strategy["arm"]=="factorial";
     // An explicit owner objective or a previously adopted successor program
     // must NOT inherit file-write restrictions from an unused experiment.
     // Null means no actual factorial intervention was scheduled.
@@ -159,13 +178,12 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
     // cross-capability repair is a new hypothesis, not an inherited regression.
     // It only takes precedence when no owner, successor or meta-method trial
     // is already occupying the next source-edit slot.
-    let negative_evidence=crate::engine::rsi_negative_transfer::plan(
-        &state,&history,&frontier,revision);
     let negative_source=negative_evidence["selected"]["source"].clone();
     let negative_victim=negative_evidence["selected"]["victim"].clone();
     let matched_target=meta["alternatives"].as_array().into_iter().flatten()
         .find(|row|row["target"]==negative_source).cloned();
     let negative_active=auto && stage.is_null() && !factorial_active
+        &&experiment_strategy["arm"]=="repair"
         && parent["input"]["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty)
         && meta["principleLearning"]["active"]!=true
         && meta["predictionRuleRepair"]["active"]!=true
@@ -196,6 +214,12 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
                 negative_transfer["sha256"],winner]))
                 .unwrap_or_default())));
     }
+    let previous_revision=meta["revision"].clone();
+    meta["experimentStrategy"]=experiment_strategy.clone();
+    meta["revision"]=json!(format!("{:x}",Sha256::digest(
+        serde_json::to_vec(&json!([
+            "rsi.meta.experiment.bound.v1",previous_revision,experiment_strategy
+        ])).unwrap_or_default())));
     let architecture_target=meta["target"].clone();
     // The same compiled child can rewrite its coupling search algorithm.
     let symbiosis=crate::engine::rsi_symbiosis::curriculum(
@@ -333,6 +357,7 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         "modelPolicy":model_policy,
         "metaPolicy":meta,
         "peerLineages":peers,"comparativeMode":comparative_mode,
+        "experimentStrategy":experiment_strategy,
         "successorStage":stage,"editPolicy":descendant_policy,
         "symbioticCurriculum":symbiosis,
         "factorialExperiment":factorial,

@@ -59,6 +59,9 @@ mod lineage_adoption;
 use self::lineage_adoption::{compiled_system_target, generation_model_error, generation_target_plan, paired_descendant_target, proof_goal_reached, reconcile_descendant_target, select_generation_strategy};
 pub(crate) use self::lineage_adoption::{adopt};
 
+#[path = "rsi/meta/experiment_evolution.rs"]
+mod meta_experiment_evolution;
+
 #[path = "rsi/planner/worker_plan.rs"]
 mod planner_worker_plan;
 pub use self::planner_worker_plan::{worker_plan};

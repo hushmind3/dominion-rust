@@ -108,6 +108,10 @@ pub(crate) fn revalidated_history(
             })
         }else{false};
         checked["pairedRevalidated"]=json!(valid);
+        // Bind learned experiment strategy to the real executed worker.
+        checked["experimentStrategyApplied"]=job.as_ref()
+            .map(|worker|worker["rsiExperimentExecuted"].clone())
+            .unwrap_or(Value::Null);
         // Every compiled successor observes the same replayable control that
         // the fixed campaign/API oracle will later use. It is dynamic so a
         // queued control can complete after an earlier generation was stored.
