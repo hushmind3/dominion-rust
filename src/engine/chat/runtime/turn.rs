@@ -2,7 +2,7 @@
 //! Split from runtime.rs so the event loop stays an explicit, isolated subsystem.
 use super::*;
 
-async fn run_turn_body(
+pub(super) async fn run_turn_body(
     state: &AppState,
     request: &TurnRequest,
     tx: &UnboundedSender<Value>,
