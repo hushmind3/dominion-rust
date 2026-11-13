@@ -500,3 +500,7 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
 #[path="rsi_system/meta_program.rs"]
 mod meta_program;
 pub(crate) use meta_program::{improvement_directive,compile_action_program,inherited_program};
+
+#[cfg(test)]
+#[path = "rsi/tests/system.rs"]
+mod tests;
