@@ -7,9 +7,9 @@ import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number};videoQuality?:string;shotMode?:string;generateAudio?:boolean;storyboard?:string[]}
-type VideoEngine='native'|'comfyui'|'runway'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasRunwayKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number};videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;storyboard?:string[]}
+type VideoEngine='native'|'comfyui'|'runway'|'ltx'
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasRunwayKey?:boolean;hasLtxKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean};ltx?:{available:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -24,8 +24,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
- const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
- const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'>('1080p'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
+ const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[ltxKey,setLtxKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
+ const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'|'1440p'|'4k'>('1080p'),[ltxModel,setLtxModel]=useState<'ltx-2-5-fast'|'ltx-2-5-pro'>('ltx-2-5-pro'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -43,13 +43,16 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const engine=engineChoice??video.value.config.engine
  const usingComfy=engine==='comfyui'
  const usingRunway=engine==='runway'
- const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):usingRunway?Boolean(video.value.runway?.available):Boolean(video.value.native?.available)
- const maxDuration=usingComfy?9:usingRunway?15:180
+ const usingLtx=engine==='ltx'
+ const ltxDurations=ltxModel==='ltx-2-5-pro'||videoQuality==='1440p'||videoQuality==='4k'?[6,8,10]:[6,8,10,12,14,16,18,20]
+ const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):usingRunway?Boolean(video.value.runway?.available):usingLtx?Boolean(video.value.ltx?.available):Boolean(video.value.native?.available)
+ const maxDuration=usingComfy?9:usingRunway?15:usingLtx?ltxDurations[ltxDurations.length-1]:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
   if(usingRunway&&![5,10,15].includes(seconds))setSeconds(10)
+  else if(usingLtx&&!ltxDurations.includes(seconds))setSeconds(8)
   else if(usingComfy&&seconds>9)setSeconds(9)
- },[usingRunway,usingComfy,seconds])
+ },[usingRunway,usingLtx,usingComfy,seconds,ltxModel,videoQuality])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
@@ -67,7 +70,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  }
  const changeEngine=async(next:VideoEngine)=>{
   if(savingConfig)return;
-  setEngine(next);if(next==='runway')setSeconds(10);setSavingConfig(true);setError('');
+  setEngine(next);if(next==='runway')setSeconds(10);if(next==='ltx')setSeconds(8);setSavingConfig(true);setError('');
   try{await post('/api/video/config',{engine:next,comfyUrl:comfyUrl.trim()||video.value.config.comfyUrl});await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
@@ -81,6 +84,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   if(savingConfig||!runwayKey.trim())return
   setSavingConfig(true);setError('')
   try{await post('/api/video/config',{runwayApiKey:runwayKey.trim()});setRunwayKey('');await video.reload()}
+  catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
+ const saveLtx=async()=>{
+  if(savingConfig||!ltxKey.trim())return
+  setSavingConfig(true);setError('')
+  try{await post('/api/video/config',{ltxApiKey:ltxKey.trim()});setLtxKey('');await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
  const importWorkflow=async(file:File)=>{
@@ -104,7 +113,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     scenes.some(scene=>Array.from(scene).length<3||Array.from(scene).length>512))){
    setError('커스텀 샷을 줄마다 1개씩 3~5개 입력하세요. 각 샷은 3~512자입니다.');return;
   }
-  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||(usingRunway&&![5,10,15].includes(seconds))||
+  if(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration||(usingRunway&&![5,10,15].includes(seconds))||(usingLtx&&!ltxDurations.includes(seconds))||(usingRunway&&['1440p','4k'].includes(videoQuality))||
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
   }
@@ -113,6 +122,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingRunway?{videoQuality,shotMode,scenes:shotMode==='custom'?scenes:[],generateAudio}:{}),
+    ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
@@ -142,7 +152,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">{t('vid.engine')}</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="runway">Runway · AI 멀티샷 + 사운드</option></SelectInput>
+     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="runway">Runway · AI 멀티샷 + 사운드</option><option value="ltx">LTX-2.5 · 최대 4K + 사운드</option></SelectInput>
     </div>
    </div>
   </Panel>
@@ -151,6 +161,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     <div className="flex items-center justify-between gap-2"><strong className="text-[13px]">Runway · 원클릭 AI 영상</strong><StateTag online={Boolean(video.value.runway?.available)}>{video.value.runway?.available?'API 연결 설정 완료':'API 키 필요'}</StateTag></div>
     <p className="mt-2 text-xs leading-5 text-[#5C544A]">2026-06 멀티샷 레시피로 5개 컷과 오디오를 생성하고 결과 MP4를 자동 저장합니다. 생성할 때 Runway API 사용료가 발생합니다.</p>
     <div className="mt-3 flex gap-2"><TextInput aria-label="Runway API 키" type="password" value={runwayKey} onChange={e=>setRunwayKey(e.target.value)} placeholder={video.value.config.hasRunwayKey?'새 API 키로 교체':'Runway API 키'}/><Button variant="secondary" disabled={savingConfig||!runwayKey.trim()} onClick={()=>void saveRunway()}>키 저장</Button></div>
+   </Panel>}
+   {engine==='ltx'&&<Panel className={'p-4 '+(video.value.ltx?.available?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>
+    <div className="flex items-center justify-between gap-2"><strong className="text-[13px]">LTX-2.5 · 턴키 4K 영상</strong><StateTag online={Boolean(video.value.ltx?.available)}>{video.value.ltx?.available?'API 키 등록됨':'API 키 필요'}</StateTag></div>
+    <p className="mt-2 text-xs leading-5 text-[#5C544A]">2026년 V2 비동기 API로 최대 4K 영상과 AI 오디오를 생성합니다. GPU·로컬 모델이 없어도 동작하며, 별도 유료 API 크레딧이 소모됩니다.</p>
+    <div className="mt-3 flex gap-2"><TextInput aria-label="LTX API 키" type="password" value={ltxKey} onChange={e=>setLtxKey(e.target.value)} placeholder={video.value.config.hasLtxKey?'새 API 키로 교체':'LTX API 키'}/><Button variant="secondary" disabled={savingConfig||!ltxKey.trim()} onClick={()=>void saveLtx()}>키 저장</Button></div>
    </Panel>}
    {engine==='comfyui'&&<Panel className={'p-4 '+(video.value.comfy.reachable?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>
     <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Clapperboard size={18} className={video.value.comfy.reachable?'text-emerald-700':'text-amber-700'}/><strong className="text-[13px] text-[#24211D]">{t('vid.comfyTitle')}</strong></div><StateTag online={video.value.comfy.reachable}>{video.value.comfy.reachable?t('vid.reachable'):t('vid.unreachable')}</StateTag></div>
@@ -177,12 +192,19 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):usingRunway?'Runway 멀티샷 · 네이티브 오디오':t('vid.ffmpegCard')}</span>}/>
+     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):usingRunway?'Runway 멀티샷 · 네이티브 오디오':usingLtx?'LTX-2.5 · 클라우드 고화질 영상':t('vid.ffmpegCard')}</span>}/>
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}>{usingRunway?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}><option value={5}>5초</option><option value={10}>10초</option><option value={15}>15초</option></SelectInput>:<TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/>}</FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}>{usingRunway?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}><option value={5}>5초</option><option value={10}>10초</option><option value={15}>15초</option></SelectInput>:usingLtx?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}>{ltxDurations.map(duration=><option key={duration} value={duration}>{duration}초</option>)}</SelectInput>:<TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/>}</FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      {usingLtx&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <FormField label="생성 모델"><SelectInput value={ltxModel} onChange={e=>setLtxModel(e.target.value as 'ltx-2-5-fast'|'ltx-2-5-pro')}><option value="ltx-2-5-pro">LTX-2.5 Pro · 품질 우선</option><option value="ltx-2-5-fast">LTX-2.5 Fast · 속도·비용 우선</option></SelectInput></FormField>
+        <FormField label="해상도" hint="4K·1440p는 크레딧 사용료가 높습니다."><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p'|'1440p'|'4k')}><option value="1080p">1080p</option><option value="720p">720p</option><option value="1440p">1440p</option><option value="4k">4K</option></SelectInput></FormField>
+       </div>
+       <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
+      </div>}
       {usingRunway&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <FormField label="영상 품질" hint={videoQuality==='1080p'?'고화질 Pro 렌더링 · 추가 API 비용 발생 가능':'표준 720p 렌더링'}><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p')}><option value="1080p">1080p · Pro</option><option value="720p">720p · Standard</option></SelectInput></FormField>
@@ -192,7 +214,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
       </div>}
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:usingRunway?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Runway 유료 API로 영상·사운드를 생성합니다. 결과만 로컬에 저장됩니다.':'설정에서 Runway API 키를 등록하세요.'}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:usingRunway?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Runway 유료 API로 영상·사운드를 생성합니다. 결과만 로컬에 저장됩니다.':'설정에서 Runway API 키를 등록하세요.'}</p>:usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'LTX 유료 API에서 영상·오디오를 생성하고 완성된 MP4만 저장합니다.':'설정에서 LTX API 키를 등록하세요.'}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
