@@ -198,7 +198,7 @@ pub(crate) fn steer_quality_predictor_repair(mut policy:Value,history:&[Value],
     }
     let Some(target)=frontier.iter().find(|row|
         row["role"]=="improvement_methods"
-            && row["path"]=="src/engine/rsi_meta_controller.rs"
+            && row["path"]=="src/engine/rsi/meta/controller_selection.rs"
             && row["domain"].as_str().is_some_and(|d|allowed.contains(&d))
             && row["sourceSha256"].as_str().is_some_and(|sha|
                 sha.len()==64 && sha.bytes().all(|c|c.is_ascii_hexdigit())))
@@ -218,7 +218,7 @@ pub(crate) fn steer_quality_predictor_repair(mut policy:Value,history:&[Value],
     policy["forecast"]["verifiedByIndependentHoldout"]=json!(false);
     policy["selectionMode"]=json!("prequential_task_quality_predictor_repair");
     policy["qualityCalibration"]=diagnostic;
-    policy["predictorSource"]=json!("src/engine/rsi_meta_controller.rs");
+    policy["predictorSource"]=json!("src/engine/rsi/meta/controller_selection.rs");
     let mut unsigned=policy.clone();
     if let Some(body)=unsigned.as_object_mut(){body.remove("revision");}
     policy["revision"]=json!(format!("{:x}",Sha256::digest(
@@ -240,7 +240,7 @@ pub(crate) fn valid_policy(policy:&Value,history_count:usize)->bool {
         && policy["historyCount"].as_u64()==Some(history_count as u64)
         && policy["revision"].as_str().is_some_and(|sha|
             sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
-        && policy["metaSource"]=="src/engine/rsi_meta_controller.rs"
+        && policy["metaSource"]=="src/engine/rsi/meta/controller_selection.rs"
         && policy["editableInNextGeneration"]==true
         && policy["externalEvaluationOwner"]=="independent_supervisor"
         && policy["alternatives"].as_array().is_some_and(|a|a.len()<=8)
@@ -275,7 +275,7 @@ pub(crate) fn instruction(policy:&Value)->String {
          Cross-domain holdout observations (isolated edits only): {}.\n\
          Precommitted task-quality forecast={} (distinct from adoption).\n\
          Predictor calibration={} (source revision is an experiment, not proof).\n\
-         Your OWN src/engine/rsi_meta_controller.rs is writable; redesign how\n\
+         Your OWN src/engine/rsi/meta/controller_selection.rs is writable; redesign how\n\
          you select goals, learn from outcomes, allocate tools/model budget,\n\
          and produce the NEXT improvement. The goal is better offspring,\n\
          not merely a patch to a product component. A submitted design is\n\
