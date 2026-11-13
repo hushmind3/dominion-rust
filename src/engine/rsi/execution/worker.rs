@@ -152,7 +152,10 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         let lineage=crate::engine::rsi_system::lineage_capsule(&history);
         let replayed_transfer=crate::engine::rsi_system::method_transfer_target(
             &state,&history,&job["input"]);
+        let open_protocol_overrides_method=job["input"]["rsiMetaEvolutionProgram"].is_object()
+            && job["input"]["rsiMethodTransfer"].is_null();
         if job["input"]["rsiControllerPlan"].is_object()
+            && !open_protocol_overrides_method
             && (job["input"]["rsiMethodTransfer"]!=replayed_transfer
                 || (replayed_transfer.is_object()
                     && (replayed_transfer["domain"]!=domain
