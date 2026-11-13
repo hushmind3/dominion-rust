@@ -29,7 +29,10 @@ fn apply_capability(state: &AppState, record: &mut Value) {
     let max = measured_max.max(record["maxAcceptedStreak"].as_u64().unwrap_or(0));
     record["acceptedStreak"] = json!(streak);
     record["maxAcceptedStreak"] = json!(max);
-    let bounded=max>=3 && engine::campaign_capability_proven(state,record);
+    let source_bounded=max>=3 && engine::campaign_capability_proven(state,record);
+    let bounded=source_bounded && engine::campaign_recursive_method_closure_proven(state,record);
+    record["sourceEvolutionDemonstrated"]=json!(source_bounded);
+    record["recursiveMethodClosureProven"]=json!(bounded);
     record["capabilityDemonstrated"]=json!(bounded);
     record["systemicHandoffProven"]=json!(bounded
         && crate::engine::rsi_system::verified_handoff(

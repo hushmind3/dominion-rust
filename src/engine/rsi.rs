@@ -639,6 +639,11 @@ pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
 pub fn campaign_model_driven_capability_proven(state:&AppState,campaign:&Value)->bool{
     model_driven_capability_proven(state,&lineage_history(state,campaign))
 }
+/// Unlike the 3-generation source-evolution gate, this checks the complete
+/// meta -> downstream task -> updated meta-method feedback closure.
+pub fn campaign_recursive_method_closure_proven(state:&AppState,campaign:&Value)->bool{
+    crate::engine::rsi_recursive_closure::proven(state,&lineage_history(state,campaign))
+}
 
 /// Re-run the capability gate over stored evidence and report every generation
 /// so the screen can show exactly which row earned proof and why it did not.
@@ -688,11 +693,15 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
     }
     json!({
         "campaignId":campaign["id"],
-        "capabilityDemonstrated":campaign_capability_proven(state,campaign),
+        "sourceEvolutionDemonstrated":campaign_capability_proven(state,campaign),
+        "capabilityDemonstrated":campaign_recursive_method_closure_proven(state,campaign),
+        "recursiveMethodClosureProven":campaign_recursive_method_closure_proven(state,campaign),
         "modelDrivenCapabilityDemonstrated":
             campaign_model_driven_capability_proven(state,campaign),
         "verifiedStreak":verified_best,
-        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true},
+        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
+            "executedMethodInChild":true,"downstreamPairedGain":true,
+            "feedbackUsedByNextMetaRewrite":true,"rewrittenMethodPairedGain":true},
         "generations":rows,
     })
 }

@@ -462,3 +462,7 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 ### 후손 개선법 증거 강화 (2026-11-13)
 
 `operatorExecution`은 선택된 규칙만으로 생성되지 않습니다. 후손의 원본 소스 인덱스, 작업 세션의 마지막 검증된 모델 편집, 채택된 파일의 최종 SHA를 다시 확인합니다. 실제 독립 평가가 없는 시도는 개선법 실패 횟수에도 포함하지 않습니다. 확인하지 못한 평가를 실패 사례로 학습시키지 않습니다. 새 소스의 컴파일·실행 검증은 아직 수행하지 않았습니다.
+
+### 완성 RSI 판정과 부분적 소스 진화의 구분
+
+`sourceEvolutionDemonstrated`는 연속 채택과 동결 평가에 대한 제한적 신호입니다. `recursiveMethodClosureProven` 및 `capabilityDemonstrated`는 `rsi/learning/rsi_recursive_closure.rs::proven`에서 재검증된 **모델 기원 방법 수정 → 다음 컴파일 세대의 실제 방법 사용·다른 능력 개선 → 그 평가 결과를 학습한 후손의 방법 재수정·독립 평가 개선**까지 요구합니다. 단순 3회 채택, 코드 변경, 모델 출력만으로 완전 RSI 완료를 표시하지 않습니다. 재컴파일·실모델 검증 결과는 현재 없습니다.

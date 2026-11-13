@@ -49,3 +49,7 @@ Unit-test bodies for `engine/memory`, `engine/tools`, `engine/chat/provider`, `e
 2026 research used for design comparison: HyperAgents (March, editable meta-agent) and AIDE² (September, held-out downstream descendant assessment). No source code was copied.
 
 The source-replayed operator receipt binds the **last** verified edit for its target, and on adopted versions requires matching final accepted source SHA. Unmeasured attempts are excluded from the algebra's rejected-trial statistics; only original paired-measured attempts may affect operator rewriting pressure.
+
+## Full recursive closure is a stricter audited predicate (2026-11-13)
+
+`rsi/learning/rsi_recursive_closure.rs::proven` distinguishes a source-level accepted chain from evidence of complete method self-improvement. A winning triple must have original paired accepted receipts and actual model edits for all three descendants; a first accepted improvement-method source revision; a next compiled child that actually dispatches that method to a different capability and improves the frozen task; a successor which consumes the **same** downstream receipt via method generalization and independently adopts a further improved version of that method. `api/rsi.rs::apply_capability` exposes partial `sourceEvolutionDemonstrated` separately and sets full `capabilityDemonstrated` only after the stricter chain. No live campaign has established this predicate on the latest code.
