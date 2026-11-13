@@ -131,7 +131,7 @@ pub(super) fn codex_tools(tools: &[Value]) -> Vec<Value> {
 /// Normalizes a Responses `function_call` output item into the shape the
 /// harness rebuilds from persisted messages. Extra response fields (`id`,
 /// `status`) are deliberately dropped so chain signatures stay stable.
-pub(super) fn codex_function_call_item(item: &Value) -> Option<Value> {
+pub(crate) fn codex_function_call_item(item: &Value) -> Option<Value> {
     if item["type"].as_str() != Some("function_call") {
         return None;
     }
@@ -154,7 +154,7 @@ pub(super) fn codex_function_call_item(item: &Value) -> Option<Value> {
 
 /// Extracts structured Codex tool calls from a final response output or from
 /// one completed output item.
-pub(super) fn codex_tool_calls(output: &[Value]) -> Vec<super::ToolCall> {
+pub(crate) fn codex_tool_calls(output: &[Value]) -> Vec<super::ToolCall> {
     let mut calls = Vec::new();
     for item in output {
         let Some(normalized) = codex_function_call_item(item) else {
@@ -269,7 +269,7 @@ pub(super) fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
 }
 
 /// Terminal failure events have identical meaning on HTTP and WebSocket.
-pub(super) fn codex_terminal_error(piece: &Value) -> Option<String> {
+pub(crate) fn codex_terminal_error(piece: &Value) -> Option<String> {
     let message = match piece["type"].as_str()? {
         "response.failed" => piece["response"]["error"]["message"]
             .as_str().unwrap_or("응답이 실패했습니다.").to_string(),

@@ -1,7 +1,7 @@
 //! OpenAI-compatible SSE transport and usage metering; provider and cache identity remain defined by the shared gateway.
 use super::*;
 
-pub(super) async fn stream_completion(
+pub(crate) async fn stream_completion(
     state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
