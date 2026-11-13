@@ -191,7 +191,9 @@ fn campaign_view(state: &AppState, job: &Value) -> Value {
         && (job["status"]!="running"||record["status"].is_null()){
         record["status"]=job["status"].clone();
     }
-    if !job["error"].is_null(){record["error"]=job["error"].clone();}
+    if record["closureClaimInvalidated"]!=true && !job["error"].is_null(){
+        record["error"]=job["error"].clone();
+    }
     record
 }
 
@@ -212,10 +214,20 @@ pub async fn verify(State(state):State<AppState>,Path(id):Path<String>)->Respons
 pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
     let rows=state.store.all("job").into_iter().filter(|job|job["kind"]=="rsi_evolve")
         .take(20).map(|job| {
-            let record=state.store.get("rsi_campaign",job["id"].as_str().unwrap_or("")).unwrap_or(Value::Null);
-            json!({"id":job["id"],"status":job["status"],"phase":record["phase"],
+            let mut record=state.store.get("rsi_campaign",job["id"].as_str().unwrap_or(""))
+                .unwrap_or(Value::Null);
+            if record.is_object(){apply_capability(&state,&mut record);}
+            let status=if record["closureClaimInvalidated"]==true {
+                &record["status"]
+            }else{&job["status"]};
+            json!({"id":job["id"],"status":status,"phase":record["phase"],
                 "model":job["input"]["model"],"providerId":job["input"]["providerId"],
-                "createdAt":job["queuedAt"],"acceptedGenerations":record["acceptedGenerations"]})
+                "createdAt":job["queuedAt"],"acceptedGenerations":record["acceptedGenerations"],
+                "sourceEvolutionDemonstrated":record["sourceEvolutionDemonstrated"],
+                "recursiveMethodClosureProven":record["recursiveMethodClosureProven"],
+                "capabilityDemonstrated":record["capabilityDemonstrated"],
+                "actualCompletion":record["actualCompletion"],
+                "closureClaimInvalidated":record["closureClaimInvalidated"]})
         }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))
 }
