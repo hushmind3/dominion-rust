@@ -6,7 +6,9 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::{BTreeMap,BTreeSet};
 
-type Block=(String,String,bool);
+// Case, immutable evaluation profile, baseline outcome, and actual model actor.
+// Different source-writing models are separate strata, never factorial controls.
+type Block=(String,String,bool,String);
 type Arms=[Vec<f64>;3];
 fn digest(v:&Value)->String{
     format!("{:x}",Sha256::digest(serde_json::to_vec(v).unwrap_or_default()))
@@ -18,6 +20,31 @@ fn grounded(row:&Value)->bool{
     row["role"].as_str().is_some_and(crate::engine::rsi_open_topology::valid_role)
         && row["path"].as_str().is_some_and(crate::engine::rsi::safe_path)
         && row["sourceSha256"].as_str().is_some_and(hash_valid)
+}
+
+/// Match factorial receipts by the model that ACTUALLY authored the source.
+/// An explicitly selected but unobserved model route is never treated as
+/// verified execution. Legacy non-ecology campaigns remain a separate,
+/// explicitly declared (weaker) stratum so they cannot borrow audited credit.
+fn source_actor(g:&Value)->Option<String>{
+    let execution=&g["modelEcologyExecuted"];
+    let (proven, provider, model)=if execution.is_object(){
+        if execution["source"]!="real_descendant_model_usage_v1"
+            || execution["actuallyUsedInGeneration"]!=true
+            || execution["auditComplete"]!=true
+            || execution["mixedChatModelCalls"].as_u64()!=Some(0)
+            || execution["actualModelCalls"].as_u64().unwrap_or(0)==0
+            || execution["generationJobId"]!=g["jobId"]
+            || execution["generatorCommit"]!=g["generatorCommit"] {
+            return None;
+        }
+        (true,execution["providerId"].as_str()?,execution["model"].as_str()?)
+    }else{
+        (false,g["generatorProviderId"].as_str()?,g["generatorModel"].as_str()?)
+    };
+    if provider.trim().is_empty()||model.trim().is_empty(){return None;}
+    Some(format!("{}:{}",if proven{"audited"}else{"declared"},
+        json!([provider,model])))
 }
 /// A source-level redesign of the experimental METHOD may pass on an
 /// executable learning policy. Merely writing JSON is not enough: the actual
@@ -97,15 +124,18 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
     let mut blocks=BTreeMap::<Block,Arms>::new();
     let mut provenance=BTreeSet::<String>::new();
     let mut measured_ids=BTreeSet::<String>::new();
+    let mut actor_counts=BTreeMap::<String,[usize;3]>::new();
     for g in history.iter().filter(|g|
         g["generatorCommit"]==commit
         && g["comparisonProfileSha256"]==profile
         && g["factorialMeasured"]==true) {
         let Some(arm)=count_variant(g,a,b) else{continue};
+        let Some(actor)=source_actor(g) else{continue};
         let Some(id)=g["candidateId"].as_str() else{continue};
         if provenance.len()>=32{break;}
         if !provenance.insert(id.to_string()){continue;}
         let mut contributed=false;
+        let mut seen_case=BTreeSet::<(String,bool)>::new();
         for case in g["evaluation"]["metrics"]["measurements"].as_array()
             .into_iter().flatten(){
             if case["holdout"]!=true {continue;}
@@ -113,21 +143,26 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
                 case["id"].as_str().filter(|s|!s.is_empty()),
                 case["baselinePass"].as_bool(),case["candidatePass"].as_bool()
             )else{continue};
-            blocks.entry((name.to_string(),profile.to_string(),before))
+            // Duplicate case receipts from one candidate cannot inflate its
+            // replicate count; the independent evaluator remains authoritative.
+            if !seen_case.insert((name.to_string(),before)){continue;}
+            blocks.entry((name.to_string(),profile.to_string(),before,actor.clone()))
                 .or_insert_with(||[Vec::new(),Vec::new(),Vec::new()])
                 [arm].push((after as i32-before as i32) as f64);
             contributed=true;
         }
         if contributed{
             counts[arm]+=1;
+            actor_counts.entry(actor).or_insert([0;3])[arm]+=1;
             measured_ids.insert(id.to_string());
         }
     }
     let mut matched=Vec::new();
-    for ((name,_,baseline),arms) in blocks.iter(){
+    for ((name,_,baseline,actor),arms) in blocks.iter(){
         if arms.iter().any(Vec::is_empty){continue;}
         let a=mean(&arms[0]);let b=mean(&arms[1]);let both=mean(&arms[2]);
         matched.push(json!({"holdout":name,"baselinePass":baseline,
+            "sourceWritingModelStratum":actor,
             "aOnlyDelta":a,"bOnlyDelta":b,"jointDelta":both,
             "interaction":both-a-b,
             "replicates":arms.iter().map(Vec::len).collect::<Vec<_>>() }));
@@ -144,6 +179,7 @@ fn observation(history:&[Value],a:&str,b:&str,commit:&str,profile:&str)->Value{
         "generatorCommit":commit,"profileSha256":profile,
         "roles":[a,b],
         "observedArms":{"aOnly":counts[0],"bOnly":counts[1],"joint":counts[2]},
+        "sourceWritingModelStrata":actor_counts,
         "completeFrozenCaseBlocks":rows,
         "meanInteractionContrast":average,
         "meanAOnlyEffect":a_effect,"meanBOnlyEffect":b_effect,
@@ -518,6 +554,81 @@ mod tests{
         corrupted["selected"]["a"]["sourceSha256"]=json!("c".repeat(64));
         assert!(validate(&corrupted,&[a,b],&commit,0,Some(&profile)).is_err());
         assert!(validate(&plan,&[],&commit,0,Some(&profile)).is_err());
+    }
+    fn actor_trial(arm:usize,actor:&str,id:&str)->Value{
+        let commit="a".repeat(40);
+        let path_a="src/engine/algorithms.rs";
+        let path_b="src/engine/tools.rs";
+        let paths=match arm{0=>vec![path_a],1=>vec![path_b],_=>vec![path_a,path_b]};
+        json!({"jobId":format!("job-{id}"),"candidateId":id,
+            "generatorCommit":commit,
+            "generatorProviderId":"provider","generatorModel":actor,
+            "modelEcologyExecuted":{
+                "source":"real_descendant_model_usage_v1",
+                "generationJobId":format!("job-{id}"),
+                "generatorCommit":"a".repeat(40),
+                "providerId":"provider","model":actor,
+                "actuallyUsedInGeneration":true,"auditComplete":true,
+                "mixedChatModelCalls":0,"actualModelCalls":2},
+            "comparisonProfileSha256":"b".repeat(64),
+            "factorialMeasured":true,
+            "factorialCompliance":{"eligibleForFactorial":true},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary"},
+            "changedSourcePaths":paths,
+            "descendantPlan":{"architectureFrontier":[
+                {"role":"algorithms","path":path_a},
+                {"role":"tools","path":path_b}]},
+            "systemDesign":{"componentFiles":{"algorithms":[path_a],"tools":[path_b]}},
+            "evaluation":{"metrics":{"measurements":[{"id":"frozen-h1",
+                "holdout":true,"baselinePass":false,"candidatePass":true}]}}})
+    }
+    #[test]
+    fn same_actor_receipts_form_matched_blocks_but_other_models_do_not(){
+        let commit="a".repeat(40);
+        let profile="b".repeat(64);
+        let first=actor_trial(0,"model-a","candidate-a");
+        let second=actor_trial(1,"model-a","candidate-b");
+        let third=actor_trial(2,"model-a","candidate-c");
+        let all=observation(&[first.clone(),second.clone(),third.clone()],
+            "algorithms","tools",&commit,&profile);
+        assert_eq!(all["completeFrozenCaseBlocks"],1);
+        assert_eq!(all["contrasts"][0]["replicates"],json!([1,1,1]));
+        assert!(all["contrasts"][0]["sourceWritingModelStratum"]
+            .as_str().unwrap_or("").contains("model-a"));
+        let different=actor_trial(2,"model-b","candidate-c");
+        let split=observation(&[first,second,different],
+            "algorithms","tools",&commit,&profile);
+        assert_eq!(split["completeFrozenCaseBlocks"],0);
+        assert_eq!(split["observedArms"]["joint"],1);
+        assert_eq!(split["sourceWritingModelStrata"].as_object().unwrap().len(),2);
+    }
+    #[test]
+    fn unverified_or_mixed_actor_cannot_forge_factorial_comparison(){
+        let mut wrong=actor_trial(0,"model-a","candidate-a");
+        wrong["modelEcologyExecuted"]["mixedChatModelCalls"]=json!(1);
+        let result=observation(&[wrong],"algorithms","tools",
+            &"a".repeat(40),&"b".repeat(64));
+        assert_eq!(result["observedArms"]["aOnly"],0);
+        let mut mismatch=actor_trial(0,"model-a","candidate-b");
+        mismatch["modelEcologyExecuted"]["generatorCommit"]=json!("c".repeat(40));
+        let result=observation(&[mismatch],"algorithms","tools",
+            &"a".repeat(40),&"b".repeat(64));
+        assert_eq!(result["observedArms"]["aOnly"],0);
+    }
+    #[test]
+    fn repeated_measurement_is_only_one_replicate_per_candidate(){
+        let commit="a".repeat(40);
+        let profile="b".repeat(64);
+        let mut first=actor_trial(0,"model-a","candidate-a");
+        let repeated=first["evaluation"]["metrics"]["measurements"][0].clone();
+        first["evaluation"]["metrics"]["measurements"]=json!([
+            repeated.clone(),repeated.clone(),repeated]);
+        let result=observation(&[first,
+            actor_trial(1,"model-a","candidate-b"),
+            actor_trial(2,"model-a","candidate-c")],
+            "algorithms","tools",&commit,&profile);
+        assert_eq!(result["completeFrozenCaseBlocks"],1);
+        assert_eq!(result["contrasts"][0]["replicates"],json!([1,1,1]));
     }
     #[test]
     fn matched_evaluation_cannot_mix_different_generator_commits(){
