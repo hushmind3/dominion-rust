@@ -49,7 +49,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 
 ## 출시 제품의 그룹·모델·영상 통합 경로 (2026-11-14)
 
-- `src/engine/rooms/speakers.rs`: 참가자·멘션·발언자 창·모델 풀 선택, 독립적으로 읽고 수정할 책임. `rooms.rs`는 원본 메시지 및 job 체크포인트와 실제 실행을 관리합니다.
+- `src/engine/rooms/speakers.rs`: 참가자·멘션·발언자 창·모델 풀 선택, 독립적으로 읽고 수정할 책임. `rooms.rs`는 원본 메시지 및 job 체크포인트와 실제 실행을 관리합니다. 런타임 `rooms.rs`를 979줄로 축소하고 기존 unit corpus를 `tests/unit/engine_rooms_pool_tests.rs`, `tests/unit/engine_rooms_tests.rs`로 옮겼습니다.
 - `src/engine/router.rs`: 능력 점수와 사용자 입력 원화 토큰 단가 기반 자동 모델 선택 (사용자 고정 라우팅 불변), `api/providers.rs`와 `web/src/pages/Models.tsx`에서 저장·수정합니다.
 - `src/db.rs::session_usage` → `api/rooms.rs` → `Rooms.tsx`: 제공자가 실제 보고한 캐시 적중 입력을 측정 가능한 호출과 함께 노출, 미보고 호출은 비율 계산에서 제외합니다.
 - `api/video.rs` → `engine/video.rs` → `video/{shot_plan,kling4,runway,frame_anchor}.rs`: Kling 3.0 네이티브 멀티샷과 Kling 4.0 최대 30초 연속 생성의 별도 API 계약, 프레임 연속성 옵션, 원격 task ID·다운로드 후 FFmpeg 합성, UI의 유료 클립 수 안내.
