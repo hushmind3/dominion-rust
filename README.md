@@ -541,3 +541,7 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 ### 2026-11-13 CI 검증 단계
 
 `rsi_system/history.rs::replayed_experiment_operator`는 실제 후손이 목표를 선택한 것만으로 실험 보상을 계산하지 않습니다. 동일 작업에서 생성된 모델 편집 후보가 **바로 그 목표 소스**를 변경했고 원본 도구 기록에 성공적인 쓰기가 있으며 동결 평가가 재생되는 경우에만 선택기 학습 근거로 인정합니다. `rsi/contract.rs` 회귀 검증에는 원본 동결 사례 대체와 소스 인벤토리 밖의 목표 편집이 계약을 통과하지 못하는 사례도 포함했습니다. GitHub Actions `CI` 워크플로에서 Rust release tests 및 웹 typecheck/build를 실행하도록 일반 푸시 커밋을 생성합니다. 결과는 별도 실행 링크로 기록합니다.
+
+### 2026-11-13: 원본 영수증의 계보 평가·증명 저장 분리
+
+성장 중인 연속 RSI 실행기의 보상 결정을 다시 분리했습니다. `rsi/execution/learning_feedback.rs::assess`는 이미 수집한 독립 평가를 이용해 실사용 개선법 실행·실험 설계자·메타 결과를 평가하지만 Git 커밋을 바꾸지 않습니다. `rsi/execution/proof_ledger.rs::persist`만 완성된 `rsi_generation` 기록을 영속화하고 동일 폐회로 증명기로 캠페인/API의 성공 필드를 계산합니다. 운영 루프는 모델 실행·예산·재시도 조정만 합니다. 기존 동결 평가 원본과 파일별 해시 검증은 계속 유지합니다. 검증은 GitHub Actions CI 실행 로그를 기준으로 진행합니다.

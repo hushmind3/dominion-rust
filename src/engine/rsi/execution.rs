@@ -21,6 +21,10 @@ use super::{
 mod compiled_plan;
 #[path = "execution/generator.rs"]
 mod generator;
+#[path = "execution/learning_feedback.rs"]
+mod learning_feedback;
+#[path = "execution/proof_ledger.rs"]
+mod proof_ledger;
 
 pub(super) async fn run_loop(
     context: &JobContext,
@@ -944,136 +948,12 @@ pub(super) async fn run_loop(
             && generation["candidateOrigin"]=="model_driven_detached_worktree"
             && generation["acceptedSourceHashes"].as_object()
                 .is_some_and(|m|!m.is_empty()));
-        // Inspect the exact code bytes AFTER actual program/rule execution;
-        // editing the method generator is merely a proposal until a separate
-        // adopted source improvement is independently recorded.
-        let method_reward=sub2_edit_policy_reward(&generation);
-        generation["editMethodExecutionProof"]=json!({
-            "source":"ordered_tool_stage_to_adopted_source_receipt_v1",
-            "revision":generation["editPolicy"]["revision"],
-            "parentRevision":generation["editPolicy"]["parentRevision"],
-            "rewriteProgram":generation["editPolicy"]["rewriteProgram"],
-            "executedStages":generation["programStages"].as_array()
-                .map(Vec::len).unwrap_or(0),
-            "firedRules":generation["ruleExecutions"].as_array()
-                .map(Vec::len).unwrap_or(0),
-            "matchedAdoptedSourceWrite":method_reward>=1.0,
-            "qualityEvidence":if method_reward>=1.0 {
-                "independently_adopted_source_with_prior_executed_policy"
-            }else{"not_proven"},
-            "causalPolicySuperiorityProven":false,
-            "independentlyMeasuredAdoption":generation["accepted"]==true
-                && generation["pairedRevalidated"]==true
-        });
-        generation["metaLearning"]=crate::engine::rsi_meta_controller::feedback(
-            &generation["metaPolicy"],&generation);
-        // The inherited, compiled method is not scored by its own presence.
-        // Publish whether its REAL successor was independently assessed,
-        // adopted and authored a further change to executable meta source.
-        generation["metaMethodOutcome"]=
-            crate::engine::rsi_system::observed_method_outcome(&generation);
-        // The independent old-binary control never joins accepted genealogy.
-        // Replay BOTH immutable candidate receipts before recording any
-        // attributed benefit for this method's real downstream execution.
-        let verified_ancestors=crate::engine::rsi_system::revalidated_method_history(
-            &context.state,record["history"].as_array()
-                .map(Vec::as_slice).unwrap_or(&[]));
-        let method_control_outcome=verified_ancestors.last()
-            .map(|parent|super::method_control::measured_advantage(
-                &context.state,parent,&generation))
-            .unwrap_or(Value::Null);
-        generation["methodControlOutcome"]=method_control_outcome;
-        // The immediate quality receipt and the future descendant's
-        // productivity are SEPARATE learning targets. Future descendants
-        // reconstruct the latter only after real independent evaluations.
-        generation["principleObservation"]=
-            crate::engine::rsi_principle_lab::observation(&generation);
-        generation["modelRouteObservation"]=
-            crate::engine::rsi_model_ecology::observation(&generation);
-        // Persist the real outcome of the newly executed recovery policy.
-        // A ranking score or a source write is not a validated improvement;
-        // this is the observed action utility that the next built generator
-        // may learn from. Keep the exact policy revision and actual outcome.
-        generation["actionPolicyOutcome"]=json!({
-            "revision":generation["actionDirective"]["policy"]["revision"],
-            "mode":generation["actionDirective"]["mode"],
-            "trainingEvidence":generation["actionDirective"]["policy"]["trainingGenerationIds"],
-            "policyStatus":generation["actionDirective"]["policy"]["status"],
-            "focusApplied":generation["actionExecution"]["focusApplied"],
-            "editCheckpointReached":generation["actionExecution"]["editCheckpointReached"],
-            "observedUtility":observed_action_value(&generation),
-            "actualSourceDiffBytes":generation["actionObservation"]["sourceDiffBytes"],
-            "actualCandidateId":generation["candidateId"],
-            "accepted":generation["accepted"],
-            "metric":"observed_action_utility_not_independent_quality_gain",
-            "qualityGain":Value::Null
-        });
+        learning_feedback::assess(context,record,&mut generation);
         let generation_knowledge = generation["knowledgeId"].clone();
         let generation_tokens = generation["tokens"].clone();
         let generation_elapsed = generation["elapsedMs"].clone();
         let generation_verdict = generation["evaluation"]["verdict"].clone();
-        // ARCHIVE BEFORE THE CAMPAIGN DECIDES TO STOP. A campaign can reach
-        // its token/time/max-attempt limit immediately after this generation:
-        // there may never be a next descendant planning/select() call.
-        // Persist only an original, independently replayed neutral experiment;
-        // the source branch, frozen plan and candidate-bound receipt are
-        // checked again by rsi_archive::record_completed.
-        let archive_receipt=crate::engine::rsi_archive::record_completed(
-            &context.state,&generation,
-            &current["input"]["rsiFrozenCases"],
-            current["input"]["rsiSourceBranch"].as_str().unwrap_or(""))?;
-        generation["archivePersistence"]=archive_receipt.clone();
-        record["archiveRefreshObservation"]=archive_receipt;
-        // Workers read this durable table, not the coordinator's in-memory
-        // history. Publish only after research, method feedback, archive and
-        // trial outcomes are complete so the next worker actually continues.
-        context.state.store.put("rsi_generation", &generation)
-            .ok_or("완성된 세대의 연구·실행 결과 저장 실패")?;
-        record["history"]
-            .as_array_mut()
-            .ok_or("세대 목록 손상")?
-            .push(generation);
-        // One source-replayed verifier owns BOTH the campaign stop decision
-        // and every API completion field. The chain must actually return to
-        // editing the inherited improvement method with downstream evidence.
-        let closure=crate::engine::rsi::campaign_recursive_evidence(
-            &context.state,record);
-        record["recursiveClosure"]=closure.clone();
-        record["capabilityDemonstrated"]=json!(closure["proven"]==true);
-        record["systemCapabilityDemonstrated"]=json!(
-            closure["proven"]==true
-                && input["rsiSystemEvolution"]==true
-                && crate::engine::rsi_system::system_capability_proven(
-                    &context.state,&record["history"]));
-        // Completed real descendants contribute evidence to NEXT-METHOD
-        // productivity, never to an already frozen current generation.
-        // The durable rsi_generation rows outlive campaigns and are replayed
-        // again in the next rebuilt binary before any method preference.
-        if let Some(profile)=crate::engine::rsi_meta_controller::comparison_profile(
-            &current["input"]) {
-            let all=context.state.store.all("rsi_generation");
-            let observed=all.iter().filter(|g|
-                g["sourceBranch"]==current["input"]["rsiSourceBranch"]
-                && g["objectiveId"]==crate::engine::memory::stable_id(&[
-                    current["input"]["rsiObjective"].as_str().unwrap_or("")
-                ])
-                && g["knowledgePartition"]==
-                    research_scope(&current["input"]).partition_key
-                && g["generatorProviderId"]==current["input"]["providerId"]
-                && g["generatorModel"]==current["input"]["model"])
-                .cloned().collect::<Vec<_>>();
-            let comparison=crate::engine::rsi_successor_productivity::compare(
-                &context.state,&observed,&profile,
-                current["rsiDomain"].as_str().unwrap_or(""));
-            record["methodSuccessorProductivity"]=json!({
-                "source":comparison["source"],"status":comparison["status"],
-                "selectionEligible":comparison["selectionEligible"],
-                "winnerRevision":comparison["winnerRevision"],
-                "matchedWins":comparison["matchedWins"],
-                "comparedContexts":comparison["comparedContexts"],
-                "causalSuperiorityProven":false
-            });
-        }
+        proof_ledger::persist(context,record,input,&current,generation)?;
         // New findings, not a write count or query spelling, justify continuing
         // a research-only generation within the configured campaign budgets.
         let no_edit = candidate_id.is_none() && novel_source_bytes==0;

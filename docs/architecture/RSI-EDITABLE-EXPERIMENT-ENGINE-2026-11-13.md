@@ -52,3 +52,7 @@ The experiment chooser is a compiled and editable algorithm whose recommendation
 ## CI 전 감사: 선택기 학습의 실제 실행 귀속
 
 실행 정책이 선택한 파일을 `worker`에서 단순 focus로 지정했다고 성과를 인정하면 실제 코드 편집 없이 정책을 강화할 수 있습니다. `rsi_system/history.rs::replayed_experiment_operator`가 **원본 `rsi_candidate`의 소속 세대, model-driven origin, 변경된 `paths`, 원본 도구 호출의 `written` 경로**를 요구하도록 강화했습니다. 이후에만 기존 원본 paired 평가 재생과 연결됩니다. `rsi/contract.rs` 단위 테스트는 변조된 동결 평가 및 누락된 소스 편집 대상의 실패도 다룹니다. 사용자 요청에 따라 `CI`는 GitHub Actions의 `push`로 실행하며 실제 상태는 실행 기록을 기준으로 표시합니다.
+
+## 실행기 결합도 추가 해소
+
+`rsi/execution.rs`에서 개선법·후손 선택 결과 분석을 `execution/learning_feedback.rs::assess`로, 영속화/원본 증명 통합을 `execution/proof_ledger.rs::persist`로 분리했습니다. 전자는 독립 평가와 실제 도구 영수증만 읽는 평가/학습 후처리이며 후자는 세대 기록 저장, 공통 증명기 호출, 다음 후손 생산성 결과 보관에 대한 경계입니다. 캠페인 실행기는 이 두 구체적인 모듈을 순서대로 호출합니다. 타입 계약과 독립 평가 자체는 여전히 구분되며, `execution.rs`가 다루는 보관/증명 책임이 줄었습니다.
