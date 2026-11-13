@@ -221,6 +221,10 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
     if !(0..=100_000).contains(&max_turns) {
         return Err(bad("총 AI 발언 상한은 0~100000 사이여야 합니다."));
     }
+    let cost_mode=text_field(body,previous,"costMode","quality",16)?;
+    if !matches!(cost_mode.as_str(),"quality"|"balanced"|"economy") {
+        return Err(bad("비용 모드는 quality, balanced, economy 중 하나여야 합니다."));
+    }
     let reasoning_effort=text_field(body,previous,"reasoningEffort","",16)?;
     if !valid_effort(&reasoning_effort) {
         return Err(bad("추론 강도 값이 올바르지 않습니다."));
@@ -237,6 +241,7 @@ fn validated_config(state: &AppState, id: &str, previous: &Value, body: &Value) 
         "toolsEnabled":bool_field(body,previous,"toolsEnabled",false)?,
         "autoLearning":bool_field(body,previous,"autoLearning",true)?,
         "autoModels":bool_field(body,previous,"autoModels",true)?,
+        "costMode":cost_mode,
         "reasoningEffort":reasoning_effort,
         "models":models,
     }))
