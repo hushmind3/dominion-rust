@@ -33,6 +33,22 @@ pub(super) fn valid_duration(model:&str,quality:&str,seconds:u64)->bool {
     (6..=max).contains(&seconds) && seconds%2==0
 }
 
+/// Optional camera/subject guidance compiled locally, without an additional
+/// language-model request or hidden prompt cost. Original content is retained.
+pub(super) fn cinematic_prompt(raw:&str,style:&str)->Result<String,String>{
+    let prefix=match style {
+        "original"=>"",
+        "cinematic"=>"Create a premium cinematic shot. Keep identities, wardrobe, lighting and setting consistent across any cuts. Use deliberate camera movement, detailed natural motion, precise lens framing and synchronized environmental audio. No watermarks or accidental text overlays. ",
+        "product"=>"Create a high-end product commercial. Preserve exact product shape, markings and materials. Use clean studio lighting, realistic reflections, close-up texture details and deliberate smooth camera moves. Audio should fit the scene. ",
+        "social"=>"Create a polished vertical social video. Strong first-second visual hook, coherent subject across shots, clear action and framing, dynamic but readable camera movement, crisp natural audio. Do not add unrequested captions. ",
+        _=>return Err("지원하지 않는 영상 연출 프리셋입니다.".into()),
+    };
+    if raw.trim().is_empty(){return Err("영상 프롬프트가 비어 있습니다.".into());}
+    let combined=if prefix.is_empty(){raw.trim().to_string()}else{format!("{prefix} Scene description: {}",raw.trim())};
+    if combined.chars().count()>5_000{return Err("연출 지시를 포함한 전체 프롬프트가 5,000자를 초과했습니다.".into());}
+    Ok(combined)
+}
+
 /// Do not follow arbitrary URLs returned by a compromised video endpoint.
 fn safe_download_url(raw: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(raw).map_err(|_| "영상 다운로드 주소 오류")?;
@@ -67,10 +83,8 @@ pub(super) async fn render(ctx: &JobContext, input: &Value, dir: &Path) -> Resul
     if !valid_duration(model,quality,duration) {
         return Err("선택한 LTX 모델·화질에서 지원하지 않는 영상 길이입니다.".into());
     }
-    let prompt = input["brief"].as_str().unwrap_or("").trim();
-    if prompt.is_empty() || prompt.chars().count() > 5_000 {
-        return Err("LTX 영상 프롬프트는 1~5,000자입니다.".into());
-    }
+    let prompt=cinematic_prompt(input["brief"].as_str().unwrap_or(""),
+        input["ltxStyle"].as_str().unwrap_or("cinematic"))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(45))
@@ -187,6 +201,14 @@ mod tests {
         assert_eq!(resolution("9:16","1080p").unwrap(),"1080x1920");
         assert_eq!(resolution("1:1","4k").unwrap(),"2160x2160");
         assert!(resolution("2:1","1080p").is_err());
+    }
+    #[test]
+    fn style_prompt_preserves_owner_content_and_validates_budget(){
+        let raw="은빛 바다 위를 선회하는 드론";
+        let result=cinematic_prompt(raw,"cinematic").unwrap();
+        assert!(result.contains(raw));
+        assert_eq!(cinematic_prompt(raw,"original").unwrap(),raw);
+        assert!(cinematic_prompt(raw,"unknown").is_err());
     }
     #[test]
     fn fast_supports_twenty_seconds_only_at_lower_resolutions() {

@@ -133,6 +133,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     }
     let ltx_model = body["ltxModel"].as_str().unwrap_or("ltx-2-5-pro");
     let ltx_quality = body["ltxQuality"].as_str().unwrap_or("1080p");
+    let ltx_style = body["ltxStyle"].as_str().unwrap_or("cinematic");
     if engine == "ltx" {
         if !matches!(ltx_model,"ltx-2-5-fast" | "ltx-2-5-pro") {
             return Err("지원하지 않는 LTX 모델입니다.".into());
@@ -141,9 +142,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         if !ltx::valid_duration(ltx_model,ltx_quality,duration) {
             return Err("LTX 2.5 모델·화질별 지원 영상 길이를 확인하세요.".into());
         }
-        if brief.chars().count() > 5_000 {
-            return Err("LTX 프롬프트는 최대 5,000자입니다.".into());
-        }
+        ltx::cinematic_prompt(brief,ltx_style)?;
     }
     let title = body["title"]
         .as_str()
@@ -172,7 +171,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
-        "ltxModel":ltx_model,"ltxQuality":ltx_quality,
+        "ltxModel":ltx_model,"ltxQuality":ltx_quality,"ltxStyle":ltx_style,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });

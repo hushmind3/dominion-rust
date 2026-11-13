@@ -25,7 +25,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(8),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
- const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-pro'),[ltxQuality,setLtxQuality]=useState('1080p')
+ const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-pro'),[ltxQuality,setLtxQuality]=useState('1080p'),[ltxStyle,setLtxStyle]=useState('cinematic')
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -105,7 +105,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
-    ...(usingLtx?{ltxModel,ltxQuality}:{}),
+    ...(usingLtx?{ltxModel,ltxQuality,ltxStyle}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
@@ -174,6 +174,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
       {usingLtx&&<div className="grid grid-cols-2 gap-3"><FormField label="생성 모델"><SelectInput value={ltxModel} onChange={e=>{setLtxModel(e.target.value);if(e.target.value!=='ltx-2-5-fast'&&seconds>10)setSeconds(10)}}><option value="ltx-2-5-pro">Pro · 고품질</option><option value="ltx-2-5-fast">Fast · 빠른 생성</option></SelectInput></FormField><FormField label="출력 화질"><SelectInput value={ltxQuality} onChange={e=>{setLtxQuality(e.target.value);if(!['720p','1080p'].includes(e.target.value)&&seconds>10)setSeconds(10)}}><option value="720p">720p</option><option value="1080p">1080p</option><option value="1440p">1440p</option><option value="4k">4K</option></SelectInput></FormField></div>}
+      {usingLtx&&<FormField label="영상 연출 프리셋" hint="별도 모델 호출 없이 영상 지시를 구성합니다. 원본 그대로도 선택할 수 있습니다."><SelectInput value={ltxStyle} onChange={e=>setLtxStyle(e.target.value)}><option value="cinematic">시네마틱 · 높은 완성도 지향</option><option value="product">제품 광고</option><option value="social">소셜 숏폼</option><option value="original">원본 프롬프트 그대로</option></SelectInput></FormField>}
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={usingLtx?`선택 모델·화질 기준 최대 ${maxDuration}초`:t('vid.max',{count:maxDuration})}>{usingLtx?<SelectInput value={seconds} onChange={e=>setSeconds(Number(e.target.value))}>{[6,8,10,12,14,16,18,20].filter(n=>n<=maxDuration).map(n=><option key={n} value={n}>{n}초</option>)}</SelectInput>:<TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/>}</FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
