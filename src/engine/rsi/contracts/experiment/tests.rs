@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 #[test]
 fn immutable_contract_rejects_unknown_protocol_and_unbound_target(){
     let target=json!({"role":"experiment_design","domain":"improver",
