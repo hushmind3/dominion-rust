@@ -28,10 +28,13 @@ pub(crate) fn hidden_rsi_oracle_path(path:&str)->bool {
 }
 
 pub(crate) fn frozen_rsi_evaluator_path(path:&str)->bool {
-    matches!(path,
-        "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
-        |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
-        |"src/engine/rsi/proof.rs")
+    // Immutable source boundary must follow modules when an evaluator is split.
+    // Otherwise a compiled descendant could rewrite the paired-run verifier.
+    path.starts_with("src/engine/rsi/worktree/")
+        || matches!(path,
+            "src/engine/rsi.rs"|"src/engine/rsi_worktree.rs"
+            |"src/engine/rsi_metrics.rs"|"src/engine/rsi_profile.rs"
+            |"src/engine/rsi/proof.rs")
 }
 pub(crate) fn safe_path(path: &str) -> bool {
     !hidden_rsi_oracle_path(path)
@@ -43,6 +46,19 @@ pub(crate) fn safe_path(path: &str) -> bool {
             || path.starts_with("tests/")
             || path.starts_with("web/src/")
             || path.starts_with("src-tauri/src/"))
+}
+
+
+/// Source-based RSI targets include the REAL subdivided method and planner
+/// implementations. Frozen evaluators never count as editable improvers.
+pub(crate) fn improver_source_path(path:&str)->bool {
+    safe_path(path)
+        && (path=="src/api/rsi.rs"
+            || matches!(path,
+                "src/engine/algorithms.rs"|"src/engine/algorithm_eval.rs"
+                |"src/engine/policy_patch.rs"|"src/engine/rsi_evolve.rs")
+            || (path.starts_with("src/engine/rsi/") && path.ends_with(".rs"))
+            || (path.starts_with("src/engine/rsi_") && path.ends_with(".rs")))
 }
 
 /// Parse and constrain every changed path, not only the declared target.
@@ -119,13 +135,7 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
         .ok_or("baseCommit은 40자리 git SHA여야 합니다.")?;
     let patch = body["patch"].as_str().ok_or("patch가 필요합니다.")?;
     let paths = patch_paths(patch)?;
-    if target == "improver" && !paths.iter().any(|path| {
-        path == "src/engine/rsi.rs" || path == "src/engine/rsi_worktree.rs"
-            || path == "src/engine/rsi_evolve.rs" || path == "src/engine/rsi_metrics.rs"
-            || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
-            || path == "src/engine/algorithm_eval.rs"
-            || path == "src/engine/policy_patch.rs"
-    }) {
+    if target == "improver" && !paths.iter().any(|path| improver_source_path(path)) {
         return Err("improver 후보는 실제 개선기 소스를 수정해야 합니다.".into());
     }
     let hypothesis = body["hypothesis"].as_str()
@@ -570,6 +580,10 @@ mod tests {
         for source in [
             "src/engine/rsi.rs",
             "src/engine/rsi_worktree.rs",
+            "src/engine/rsi/worktree/candidate.rs",
+            "src/engine/rsi/worktree/promotion.rs",
+            "src/engine/rsi/worktree/evaluation.rs",
+            "src/engine/rsi/worktree/tests.rs",
             "src/engine/rsi_metrics.rs",
             "src/engine/rsi_profile.rs",
             "src/engine/rsi/proof.rs",
@@ -579,6 +593,12 @@ mod tests {
         }
         assert!(safe_path("src/engine/rsi/meta_controller/selection.rs"));
         assert!(safe_path("src/engine/rsi/system/agenda.rs"));
+        assert!(safe_path("src/engine/rsi/selection.rs"));
+        assert!(safe_path("src/engine/rsi/descendant_plan.rs"));
+        assert!(safe_path("src/engine/rsi/programs/transfer.rs"));
+        assert!(improver_source_path("src/engine/rsi/descendant_plan.rs"));
+        assert!(improver_source_path("src/engine/rsi/programs/transfer.rs"));
+        assert!(!improver_source_path("src/engine/rsi/worktree/evaluation.rs"));
     }
     #[test]
     fn frozen_oracle_source_is_not_exposed_as_a_candidate_patch() {
@@ -586,7 +606,7 @@ mod tests {
         assert!(hidden_rsi_oracle_path("/repo/src/engine/rsi_oracle_fixture.rs"));
         assert!(!hidden_rsi_oracle_path("src/engine/rsi.rs"));
         assert!(!safe_path("src/engine/rsi_oracle_fixture.rs"));
-        assert!(safe_path("src/engine/rsi.rs"));
+        assert!(!safe_path("src/engine/rsi.rs"));
     }
 
     #[test]

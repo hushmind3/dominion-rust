@@ -545,3 +545,19 @@ and independent holdout win cannot be credited as RSI success.
 
 The split adds no model training dependency. No tests, compilation, CI,
 benchmark or real-model execution were performed during this edit.
+
+
+### Verified editing boundary after worktree modularization
+
+The frozen evaluation boundary is enforced at the **actual source paths**:
+`rsi::safe_path` rejects the entire
+`src/engine/rsi/worktree/` subtree (candidate creation, paired evaluator,
+promotion and its internal tests), in addition to the existing frozen
+`rsi.rs`, `rsi_worktree.rs`, metrics, profile, proof and oracle fixture.
+This exclusion also removes those files from the compiled descendant's source
+inventory. Conversely, `rsi::improver_source_path` recognizes the newly
+split, *editable* RSI planning and execution-method modules as legitimate
+improvement candidates. Thus source-level recursion can change its method
+without silently changing the judging instrument.
+
+The corresponding source assertions were updated. No test was executed.

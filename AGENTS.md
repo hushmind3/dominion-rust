@@ -49,3 +49,10 @@ Their tests are isolated in `rsi/worktree/tests.rs`.
 `rsi/programs/selection.rs` (observed execution and comparable programs),
 and `rsi/programs/transfer.rs` (evidence-backed mutation operator inheritance).
 The compiled worker uses the original `rsi_evolve` method exports.
+
+**Immutable instrumentation:** `rsi::safe_path` excludes
+`src/engine/rsi/worktree/` along with legacy evaluator sources.
+`rsi::improver_source_path` permits the evolvable
+`rsi/selection.rs`, `rsi/descendant_plan.rs`, `rsi/programs/*`
+and other safe compiled improvement modules. Keep these independent:
+an editable method must never become the verifier of its own success.
