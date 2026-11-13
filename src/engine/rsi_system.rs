@@ -155,7 +155,11 @@ pub(crate) use design::design_implemented;
 mod lineage;
 use lineage::{adopted_design,latest_adopted_design};
 pub(crate) use lineage::{lineage_capsule,peer_lineage_references,
-    validate_peer_references,inherited_domain,inherited_stage};
+    inherited_domain,inherited_stage};
+
+// Peer receipt replay is an immutable supervisor gate, unlike mutable ranking.
+mod peer_verifier;
+pub(crate) use peer_verifier::validate_peer_references;
 
 mod guidance;
 pub(crate) use guidance::{instruction,improvement_directive};
