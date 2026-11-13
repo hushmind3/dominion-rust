@@ -204,12 +204,26 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let resume_review=crate::engine::goal_recovery::safe_review_checkpoint(job);
     let next_iteration = checkpoint.get("nextIteration")
         .and_then(Value::as_u64).unwrap_or(0) as usize;
+    if resume_review && next_iteration > max_iterations {
+        return Ok(finish(context,goal_id,"needs_review",vec![
+            "검토 복구 체크포인트가 실행 단계 상한을 초과했습니다.".into()
+        ],None));
+    }
     let start = if resume_review {next_iteration.saturating_sub(1)} else {next_iteration};
 
     for index in start..max_iterations {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
+        // A fully checkpointed executor turn may resume at model-only review
+        // without replaying tools, changing files or creating remote side effects.
+        let (turn_error, tool_errors) = if resume_review && index == start {
+            context.emit(json!({"type":"goal_review_resumed","goalId":goal_id,
+                "iteration":index+1,"evidenceCount":evidence.len()}));
+            (checkpoint["turnError"].as_str().map(str::to_string),
+                checkpoint["toolErrors"].as_array().into_iter().flatten()
+                    .filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>())
+        } else {
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
@@ -260,7 +274,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             goal_id,
             json!({"phase":"review","iterations":index+1,"evidence":evidence,"sessionId":session_id}),
         );
-        context.checkpoint(json!({"stepIndex":index+1,"stepTotal":max_iterations,"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"reviewPending":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
+        context.checkpoint(json!({"stepIndex":index+1,"stepTotal":max_iterations,
+            "goalState":{"sessionId":session_id,"nextIteration":index+1,
+                "inFlight":false,"reviewPending":true,"evidence":evidence,
+                "transcript":transcript,"gaps":gaps,
+                "toolErrors":&stats.tool_errors,"turnError":&turn_error}}))?;
+        (turn_error,stats.tool_errors)
+        };
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
@@ -285,12 +305,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 gaps.push(hint);
             }
         }
-        gaps.extend(
-            stats
-                .tool_errors
-                .iter()
-                .map(|error| format!("실패한 도구: {error}")),
-        );
+        gaps.extend(tool_errors.iter().map(|error| format!("실패한 도구: {error}")));
         review_history.push(json!({"iteration":index+1,"role":"reviewer","providerId":review_provider,"model":review_model,"complete":complete,"gaps":gaps,"evidenceCount":evidence.len(),"at":chrono::Utc::now().to_rfc3339()}));
         patch_goal(state, goal_id, json!({"reviewHistory":review_history}));
         gaps.sort();
