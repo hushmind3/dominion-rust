@@ -63,6 +63,9 @@ pub(crate) fn effective_action(plan:&Value)->Value{
         "inheritedMethodRevision":plan["methodTransfer"]["revision"],
         "inheritedMethodTask":plan["methodTransfer"]["taskObjective"],
         "feedbackDrivenMetaRevision":plan["feedbackRepairSelected"],
+        "metaEvolutionProgramRevision":plan["metaEvolutionProgram"]["revision"],
+        "metaEvolutionOperatorId":plan["metaEvolutionProgram"]["operatorId"],
+        "metaEvolutionExperiment":plan["metaEvolutionProgram"]["operator"]["experiment"],
         "provider":plan["apiRoutePolicy"]["chosen"]["providerId"],
         "model":plan["apiRoutePolicy"]["chosen"]["model"]})
 }
