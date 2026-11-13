@@ -47,3 +47,12 @@ A→B→A2→B2 proof order as the next action.
 ### Stable experiment contract independent of planner and proof
 
 The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.rs` composition root. `experiment_policy.rs` and `proof.rs` no longer import each other's private implementation. Both compiled descendant and supervisor call the same read-only `verify_experiment_design` through `rsi_evolve::contracts`. `rsi::safe_path` freezes the entire `rsi/contracts/` subtree; evolution modifies the experiment allocation algorithm, never its own source authentication or accepted evaluator.
+
+
+## 출시 후 Sub1 2026-11-14 파일·실호출 지도
+
+- 전체 엔진/하네스/알고리즘/UX 연결은 [통합 품질 지도](docs/INTEGRATED-QUALITY-2026-11-14.md)에 있습니다. 특정 기능을 수정할 때는 문서의 **실제 진입점→작업→실행→영수증**을 역추적합니다.
+- **그룹 비용/모델 티어**: `web/src/pages/Rooms.tsx` → `src/api/rooms.rs` → `src/engine/rooms.rs::effective_rounds` 및 `src/engine/rooms/model_tier.rs::select` → `run_room_quiet` → `chat/room_context.rs` → `chat/continuity.rs` → 실제 provider. 명시적 모델 티어와 stable prefix 캐시의 장단점을 함께 봅니다.
+- **영상**: `web/src/pages/Video.tsx` → `src/api/video.rs` → `src/engine/video.rs` → `src/engine/video/{runway,ltx}.rs`. 결과는 job checkpoint/MP4 파일 및 사용자 업로드 단계에서 확인하고, 결제 불확실 작업을 자동 재생성하지 않습니다.
+- **테스트 분리**: `src/engine/{memory,algorithms,learning,improve,jobs}/` 및 `src/db/tests.rs`, `src/api/{providers,video}/tests.rs`, `src/engine/rooms/tests.rs`, `src/engine/chat/room_context/tests.rs`. 테스트 모듈을 이동했지만 CI/컴파일/테스트는 이번 작업에서 실행하지 않았습니다.
+- **남은 경계**: 높은 복잡도를 가진 `src/engine/chat/runtime/turn.rs`의 단일 실행 함수, provider별 실제 원화 과금계산, 취소/복구/중복결제 영수증 확인, 영상 샷 품질 평가, 시맨틱 캐시 정책은 구조적으로 분리할 대상입니다. 성공 영수증을 지어내지 않습니다.
