@@ -708,9 +708,12 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
         "maxVerifiedStreak":verdict["maxVerifiedStreak"],
         "capabilityVerdict":verdict,
         "verifiedStreak":verified_best,
-        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
+        "required":{"verifiedStreak":4,"holdoutDomains":1,"metaTransfer":true,
             "executedMethodInChild":true,"downstreamPairedGain":true,
-            "feedbackUsedByNextMetaRewrite":true,"rewrittenMethodPairedGain":true},
+            "feedbackUsedByNextMetaRewrite":true,"rewrittenMethodPairedGain":true,
+            "revisedMethodExecutedByFourthChild":true,
+            "twoOriginalMethodDisabledWorkers":true,
+            "revisedMethodControlAdvantageExceedsPrevious":true},
         "generations":rows,
     })
 }
