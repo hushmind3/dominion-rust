@@ -217,7 +217,7 @@ pub(super) fn quality_forecast_calibration(history:&[Value])->Value {
         "meanBrierError":mean,"observedRegressions":regressions,
         "needsPredictorSourceRevision":measured_candidates>=4
             && n>=4 && mean>0.35,
-        "editableSource":"src/engine/rsi_meta_controller.rs",
+        "editableSource":"src/engine/rsi/meta/controller_selection.rs",
         "qualityImproved":false,"independentMetaABProven":false})
 }
 
