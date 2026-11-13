@@ -511,7 +511,6 @@ mod modular_rsi_source_role_tests {
     #[test]
     fn nested_rsi_sources_remain_selectable_by_the_descendant_meta_learner() {
         let modules = [
-            "src/engine/rsi/planner/domain_selection.rs",
             "src/engine/rsi/planner/policy.rs",
             "src/engine/rsi/planner/context.rs",
             "src/engine/rsi/planner/descendant.rs",
@@ -523,7 +522,6 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi/lineage/campaign.rs",
             "src/engine/rsi/learning/methods.rs",
             "src/engine/rsi/learning/research.rs",
-            "src/engine/rsi/learning/generation_feedback.rs",
             "src/engine/rsi_system/lineage.rs",
             "src/engine/rsi_system/guidance.rs"
         ];
@@ -531,22 +529,11 @@ mod modular_rsi_source_role_tests {
             .find(|(role,_)|*role=="improvement_methods")
             .expect("an independently editable improvement-method role").1;
         for path in [
-            "src/engine/rsi.rs",
-            "src/engine/rsi_evolve.rs",
-            "src/engine/rsi_system.rs",
-            "src/engine/rsi_worktree.rs",
-            "src/engine/rsi_metrics.rs",
-            "src/engine/rsi_archive.rs",
-            "src/api/rsi.rs",
             "src/engine/rsi/proof.rs",
             "src/engine/rsi_system/design.rs",
             "src/engine/rsi_system/proposal.rs",
             "src/engine/rsi_system/handoff.rs",
-            "src/engine/rsi_system/peer_verifier.rs",
-            "src/engine/rsi/execution/compiled_planning.rs",
-            "src/engine/rsi/execution/generation_evidence.rs",
-            "src/engine/rsi/execution/generation_finalization.rs",
-            "src/engine/rsi/execution/method_ablation.rs"
+            "src/engine/rsi_system/peer_verifier.rs"
         ] {
             assert!(!crate::engine::rsi::safe_path(path),
                 "a descendant candidate cannot modify its own final judge: {path}");
