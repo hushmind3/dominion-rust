@@ -187,3 +187,7 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         "limitation":"single paired model runs may differ by sampling and shared persistent context; repeat controlled seeds needed"
     })
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/support/engine/rsi_method_ablation.tests.rs"]
+mod tests;
