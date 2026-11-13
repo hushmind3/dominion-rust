@@ -135,8 +135,13 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
         && proposed_factorial["selected"].is_object();
     // The compiled descendant evolves experiment selection from REAL
     // independently paired history rather than a fixed 3-attempt rotation.
+    // Reuse the same source-verified continued-campaign lineage as the
+    // acceptance oracle. This keeps meta-search lessons across restarts
+    // without trusting unrelated tasks or arbitrary history labels.
+    let meta_lineage=crate::engine::rsi::lineage_history(&state,&campaign);
+    let meta_history=crate::engine::rsi_system::revalidated_history(&state,&meta_lineage);
     let experiment_strategy=meta_experiment_evolution::propose(
-        &history,revision,factorial_available,repair_available && auto
+        &meta_history,revision,factorial_available,repair_available && auto
             &&stage.is_null());
     meta_experiment_evolution::validate(&experiment_strategy,revision)?;
     let factorial_active=factorial_available

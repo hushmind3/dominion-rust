@@ -17,6 +17,7 @@ fn contract_is_typed_and_executes_only_available_arms(){
 fn run(id:&str,method:&Value,accepted:bool,gains:u64,regressions:u64)->Value{
     json!({
         "jobId":id,"generatorCommit":method["generatorCommit"],
+        "candidateOrigin":"model_driven_detached_worktree",
         "pairedMeasured":true,"pairedRevalidated":accepted,
         "accepted":accepted,"tokens":1000,
         "evaluation":{"metrics":{"improvedHoldouts":gains,"regressions":regressions}},

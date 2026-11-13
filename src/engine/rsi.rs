@@ -513,7 +513,7 @@ pub fn capability_proven(state: &AppState, history: &[Value]) -> bool {
 }
 
 /// Gather every inherited segment of a campaign in lineage order.
-fn lineage_history(state:&AppState,campaign:&Value)->Vec<Value> {
+pub(crate) fn lineage_history(state:&AppState,campaign:&Value)->Vec<Value> {
     let mut segments = Vec::new();
     let mut seen = BTreeSet::new();
     let mut current=campaign.clone();

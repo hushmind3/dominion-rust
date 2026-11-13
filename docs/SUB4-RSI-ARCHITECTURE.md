@@ -218,3 +218,13 @@ trajectory. Because candidate policy comparison is observational, a
 selected variant is not automatically a proven superior experiment-design
 algorithm. Unknown operators and evaluation-policy revisions require
 separate explicit execution contracts and a new frozen-version evaluation.
+
+### Source-verified memory across resumed campaigns
+
+`rsi::lineage_history` (the same provenance-checked lineage used by
+the authoritative proof oracle) is now reused for the meta-genome's
+history, and every ancestor generation is reopened through
+`rsi_system::revalidated_history` before the selector trains on it.
+This avoids losing experiment-design knowledge at a job or campaign
+boundary while rejecting unrelated lookalike source histories.
+Only actual model-driven candidate receipts count.
