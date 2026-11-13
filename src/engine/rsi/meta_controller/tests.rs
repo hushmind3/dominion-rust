@@ -188,6 +188,11 @@
             }
         });
         assert!(meta_source_changed(&generation));
+        generation["systemDesign"]["targetFiles"]=json!(["src/engine/rsi/system/agenda.rs"]);
+        generation["acceptedSourceHashes"]=json!({
+            "src/engine/rsi/system/agenda.rs":"c".repeat(64)
+        });
+        assert!(meta_source_changed(&generation));
         generation["systemDesign"]["targetFiles"]=json!(["src/engine/rsi/meta_controller/tests.rs"]);
         generation["acceptedSourceHashes"]=json!({
             "src/engine/rsi/meta_controller/tests.rs":"c".repeat(64)

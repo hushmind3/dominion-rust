@@ -13,7 +13,13 @@ pub(super) fn executable_meta_source(path:&str)->bool{
         |"src/engine/rsi/meta_controller/reciprocal.rs"
         |"src/engine/rsi/meta_controller/selection.rs"
         |"src/engine/rsi/meta_controller/transfer.rs"
-        |"src/engine/rsi/meta_controller/feedback.rs")
+        |"src/engine/rsi/meta_controller/feedback.rs"
+        |"src/engine/rsi/system/inventory.rs"
+        |"src/engine/rsi/system/blueprint.rs"
+        |"src/engine/rsi/system/discovery.rs"
+        |"src/engine/rsi/system/frontier.rs"
+        |"src/engine/rsi/system/agenda.rs"
+        |"src/engine/rsi/system/design.rs")
 }
 
 pub(super) fn source_role(path:&str)->&'static str{

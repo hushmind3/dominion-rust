@@ -171,4 +171,10 @@
         }
         assert!(!executable_meta_source("src/engine/rsi/meta_controller/tests.rs"));
         assert_eq!(source_role("src/engine/rsi/meta_controller/tests.rs"),"improvement_methods");
+        for stage in ["inventory","blueprint","discovery","frontier","agenda","design"] {
+            let path=format!("src/engine/rsi/system/{stage}.rs");
+            assert_eq!(source_role(&path),"improvement_methods");
+            assert!(executable_meta_source(&path));
+        }
+        assert!(!executable_meta_source("src/engine/rsi/system/tests.rs"));
     }
