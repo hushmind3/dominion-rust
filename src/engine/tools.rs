@@ -97,6 +97,31 @@ pub fn definitions() -> Vec<Value> {
                             "when":{"type":"string","enum":["adopted","improved","neutral","regressed"]}
                         },"required":["from","to","when"],"additionalProperties":false}}
                 },"required":["entry","nodes","edges"],"additionalProperties":false}),
+            "evolutionProtocol":json!({"type":"object",
+                "description":"Optional model-authored EVOLVABLE meta-operator program. Replaces fixed A/B/A/B stages with source-backed operators and measured conditional transitions. The program can redesign meta-selection, experiment design, learning policies, and software capabilities. Only adopted source and recompiled descendants execute it.",
+                "properties":{
+                    "entry":{"type":"string"},
+                    "operators":{"type":"array","minItems":1,"maxItems":32,
+                        "items":{"type":"object","properties":{
+                            "id":{"type":"string"},"role":{"type":"string"},
+                            "domain":{"type":"string","enum":crate::engine::rsi_evolve::DOMAINS},
+                            "path":{"type":"string"},
+                            "objective":{"type":"string"},
+                            "mechanism":{"type":"string"},
+                            "experiment":{"type":"string","enum":[
+                                "paired_source","isolated_source","factorial_source",
+                                "method_control","cross_component","meta_policy_rewrite"]}
+                        }, "required":["id","role","domain","path","objective","mechanism","experiment"],
+                        "additionalProperties":false}},
+                    "transitions":{"type":"array","maxItems":96,
+                        "items":{"type":"object","properties":{
+                            "from":{"type":"string"},"to":{"type":"string"},
+                            "when":{"type":"string","enum":[
+                                "adopted","quality_gain","regressed","rejected",
+                                "inconclusive","meta_gain","method_gain"]}
+                        }, "required":["from","to","when"],"additionalProperties":false}}
+                },"required":["entry","operators","transitions"],
+                "additionalProperties":false}),
             "successorStages":json!({"type":"array","maxItems":8,
                 "description":"Up to eight model-designed next-generation improvement stages. A rebuilt descendant independently rebinds stage source hashes and may change the program based on verified outcomes.",
                 "items":{"type":"object","properties":{
