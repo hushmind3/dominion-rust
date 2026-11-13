@@ -107,7 +107,8 @@ use context_planner::{verified_candidate_id, identical_failed_patch, matching_pr
 
 #[path = "rsi/learning/methods.rs"]
 mod method_learning;
-use method_learning::{method_session_running, applicable_methods, method_reuse_decision, record_method_feedback};
+use method_learning::{method_session_running, applicable_methods, record_method_feedback};
+pub(crate) use method_learning::method_reuse_decision;
 pub(crate) use method_learning::{propose_method, configure_method_session, method_strategies, collect_method_executions, method_wrote_accepted_candidate};
 
 #[path = "rsi/learning/research.rs"]
