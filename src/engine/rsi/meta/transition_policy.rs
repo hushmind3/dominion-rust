@@ -65,7 +65,7 @@ fn value(g:&Value,metric:&Metric)->Option<f64> {
 pub(crate) fn evaluate(guard:&Guard,g:&Value)->bool {
     if !valid(guard)
         || (g["pairedRevalidated"]!=true && g["pairedMeasured"]!=true)
-        || g["evaluation"]["metrics"]["eligible"]!=true
+        || !g["evaluation"]["metrics"].is_object()
         || g["candidateId"].as_str().is_none_or(str::is_empty) {
         return false;
     }
@@ -79,7 +79,7 @@ pub(crate) fn evaluate(guard:&Guard,g:&Value)->bool {
             Comparison::Equal=>(observed-c.threshold).abs()<1e-9,
         }
     };
-    match guard.mode {
+    match &guard.mode {
         GuardMode::All=>guard.clauses.iter().all(match_clause),
         GuardMode::Any=>guard.clauses.iter().any(match_clause),
     }
