@@ -195,6 +195,7 @@ pub(crate) fn method_transfer_target(
             "DOMINION 자율 RSI 후손 작업: {domain} 실제 소스에서 {} 과제를 해결하고, 계승된 실행 절차를 사용해 독립 평가의 기존 실패/비효율을 개선한다. 모델과 동결 평가 계약은 그대로 유지한다.",intent);
         let mut transfer_input=input.clone();
         transfer_input["rsiObjective"]=json!(task_objective);
+        transfer_input["rsiRequestedMethodId"]=method["id"].clone();
         let eligible=crate::engine::rsi_evolve::method_reuse_decision(
             state,&transfer_input,domain);
         if eligible["action"]!="execute_methods"
