@@ -166,6 +166,8 @@ pub fn recover(state: &AppState) {
         // result is unknown, so replaying the job could repeat a side effect.
         let job_session = job["sessionId"]
             .as_str()
+            .or_else(|| job.pointer("/goalState/sessionId").and_then(Value::as_str))
+            .or_else(|| job.pointer("/workflowState/sessionId").and_then(Value::as_str))
             .or_else(|| job.pointer("/input/sessionId").and_then(Value::as_str));
         let unknown_external_result = job_session.is_some_and(|session| {
             state.store.all("execution_operation").iter().any(|operation| {
