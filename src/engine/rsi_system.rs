@@ -932,7 +932,7 @@ fn verified_factorial_receipt(
         && plan["source"]=="compiled_open_topology_counterfactual_lab_v1"
         && plan["generatorCommit"]==generation["generatorCommit"]
         && profile.as_ref().is_some_and(|hash|
-            plan["comparisonProfileSha256"].as_str()==Some(hash))
+            plan["comparisonProfileSha256"].as_str()==Some(hash.as_str()))
         && job["input"]["rsiFactorialExperiment"]==*plan
         && candidate["baseCommit"]==generation["generatorCommit"]
         && candidate["evaluation"]["metrics"]["measurements"].is_array();
