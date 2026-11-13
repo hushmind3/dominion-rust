@@ -253,6 +253,27 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
             }
         }
         let current_method=rule["method"]["sourceSha256"].as_str().unwrap_or("");
+        let method_path=rule["method"]["path"].as_str().unwrap_or("");
+        // After a real A2 rewrite, schedule a downstream B2 episode with
+        // the NEW source bytes. Without this transition a successful B1
+        // would cause endless A2 rewrites rather than recursive use.
+        let method_rewritten=history.iter().rev().take(6).any(|g|
+            g["accepted"]==true && g["pairedRevalidated"]==true
+            && g["operatorExecution"]["targetPath"]==method_path
+            && g["acceptedSourceHashes"][method_path]==current_method
+            && g["improvementDirective"]["methodFeedback"]["source"]
+                =="replayed_real_method_control_v1"
+            && g["improvementDirectiveVerified"]==true
+            && g["candidateId"].as_str().and_then(|id|
+                state.store.get("rsi_candidate",id))
+                .is_some_and(|candidate|candidate["target"]=="improver"
+                    && rsi::replayed_pair_metrics(state,&candidate).is_some()));
+        let revised_method_used=history.iter().rev().take(6).any(|g|
+            g["accepted"]==true
+            && g["operatorExecution"]["methodSourceSha256"]==current_method
+            && g["operatorExecution"]["targetPath"]!=method_path
+            && g["methodAblation"]["methodAssociationObserved"]==true);
+        let pending_revised_trial=method_rewritten && !revised_method_used;
         let predecessor=method_versions.iter().rfind(|sha|
             sha.as_str()!=current_method).map(String::as_str);
         let mut matched_revision_cases=0u64;
@@ -299,6 +320,7 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
             "generatorCommits":commits.into_iter().take(12).collect::<Vec<_>>(),
             "independentReceiptSha256":receipt_ids.into_iter().take(12).collect::<Vec<_>>(),
             "verifiedMethodControlTrials":verified_method_controls,
+            "revisedMethodAwaitingDownstreamControl":pending_revised_trial,
             "methodControlQualityWins":method_control_quality_wins,
             "methodControlQualityLosses":method_control_quality_losses,
             "methodControlEvidenceSha256":control_receipt_ids.into_iter().take(12).collect::<Vec<_>>(),
@@ -387,7 +409,9 @@ pub(crate) fn adapt(mut algebra:Value,feedback:&Value)->Value{
         // A real same-source intervention can influence WHICH next method
         // is rebuilt. A plain accepted source patch gets no intervention
         // credit. Sparse controls receive a bounded, conservative bonus.
-        let control_weight=if control_trials>0 && control_wins>0 && control_losses==0 {
+        let control_weight=if evidence["revisedMethodAwaitingDownstreamControl"]==true {
+            1050
+        }else if control_trials>0 && control_wins>0 && control_losses==0 {
             (control_wins.min(4)*120) as i64
         }else if control_losses>0 {
             -(control_losses.min(4) as i64)*180
@@ -400,7 +424,17 @@ pub(crate) fn adapt(mut algebra:Value,feedback:&Value)->Value{
         // When the method was actually used and consistently hurt external
         // heldouts, prefer editing that method rather than repeating the same
         // target. NO reward from rejected self-reported candidate output.
-        if control_trials>0 && control_wins>0 && control_losses==0 {
+        if evidence["revisedMethodAwaitingDownstreamControl"]==true {
+            // The product target is supplied by source-grounded operator
+            // synthesis. B2 must demonstrate that the revised method
+            // actually improves another capability; an A2 plan is not proof.
+            let product=row["productTarget"].clone();
+            if product["path"].as_str().is_some_and(rsi::safe_path)
+                && product["path"]!=row["rule"]["method"]["path"] {
+                row["target"]=product;
+                row["intent"]=json!("run_revised_method_in_controlled_descendant");
+            }
+        }else if control_trials>0 && control_wins>0 && control_losses==0 {
             let method=row["rule"]["method"].clone();
             if method["path"].as_str().is_some_and(rsi::safe_path)
                 && method["sourceSha256"].as_str().is_some_and(|s|hash_ok(s,64)) {
@@ -445,8 +479,9 @@ pub(crate) fn prefer_capability_target(algebra:&Value,learning:&Value)->bool {
     // let the executable improvement rule operate rather than bypass it.
     if selected["target"]["role"]==gap["role"]{return false;}
     let evidence=&selected["generalizationEvidence"];
-    if evidence["verifiedMethodControlTrials"].as_u64().unwrap_or(0)>0
-        && selected["intent"]=="evolve_measured_method_after_controlled_downstream_gain" {
+    if (evidence["verifiedMethodControlTrials"].as_u64().unwrap_or(0)>0
+        && selected["intent"]=="evolve_measured_method_after_controlled_downstream_gain")
+        || selected["intent"]=="run_revised_method_in_controlled_descendant" {
         return false;
     }
     let independent=evidence["independentReplayedTrials"]
