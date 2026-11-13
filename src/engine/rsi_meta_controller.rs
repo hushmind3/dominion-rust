@@ -372,7 +372,7 @@ pub(crate) fn instruction(policy:&Value)->String {
             "failed roles={} cause={} source={} observed error={}",
             g["roles"],g["failureKind"],g["sourceTarget"],g["error"]
         )).collect::<Vec<_>>().join("\n");
-    format!(
+    let instruction=format!(
         "[EDITABLE META-IMPROVER revision={}]\n\
         Selection mode={}; chosen intelligence subsystem={} domain={} source={} hash={}. \
         Estimated adoption chance={} uncertainty={}; this is an unproven forecast.\n\
@@ -399,7 +399,11 @@ pub(crate) fn instruction(policy:&Value)->String {
         policy["forecast"]["acceptanceProbability"],policy["forecast"]["uncertainty"],
         policy["selectionEvidence"]["prequentialEvidence"],
         policy["predictionRuleRepair"],refs,failures
-    )
+    );
+    if policy["negativeTransfer"]["active"]==true {
+        format!("{instruction}\n{}",crate::engine::rsi_negative_transfer::instruction(
+            &policy["negativeTransfer"]))
+    }else{instruction}
 }
 
 /// New prediction errors are durable observations available to later compiled
