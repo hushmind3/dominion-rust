@@ -879,6 +879,8 @@ pub(super) async fn run_loop(
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
         }
+        generation["methodContrast"]=crate::engine::rsi_evolve::method_contrast_evidence(
+            &context.state,&generation);
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
             generation["knowledgeReuse"]=context.state.store.get("session",session).map(|s|s["rsiKnowledgeReuse"].clone()).unwrap_or(Value::Null);

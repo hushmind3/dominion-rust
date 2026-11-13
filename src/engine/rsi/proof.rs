@@ -4,6 +4,12 @@ use super::*;
 
 #[path = "proof/method_lineage.rs"]
 mod method_lineage;
+#[path = "proof/method_contrast.rs"]
+mod method_contrast;
+
+pub(crate) fn contrast_evidence(state:&AppState,generation:&Value)->Value {
+    method_contrast::evidence(state,generation)
+}
 pub(crate) use method_lineage::{
     method_snapshot as inherited_method_snapshot,
     downstream_feedback as verified_downstream_feedback,
@@ -60,6 +66,11 @@ pub fn revalidated_history(state:&AppState, history:&[Value]) -> Vec<Value> {
         checked["recursiveFeedbackVerified"]=json!(false);
         checked
     }).collect::<Vec<_>>();
+    for row in &mut checked {
+        let contrast=method_contrast::evidence(state,row);
+        row["methodContrast"]=contrast.clone();
+        row["methodContrastVerified"]=json!(contrast["qualityProven"]==true);
+    }
     for index in 2..checked.len(){
         let valid=verified_feedback_reuse(state,&checked[index-2..=index]);
         checked[index]["recursiveFeedbackVerified"]=json!(valid);
