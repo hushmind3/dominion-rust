@@ -646,7 +646,8 @@ pub fn campaign_model_driven_capability_proven(state:&AppState,campaign:&Value)-
 /// Unlike the 3-generation source-evolution gate, this checks the complete
 /// meta -> downstream task -> updated meta-method feedback closure.
 pub fn campaign_recursive_method_closure_proven(state:&AppState,campaign:&Value)->bool{
-    crate::engine::rsi_recursive_closure::proven(state,&lineage_history(state,campaign))
+    // Legacy callers cannot introduce a second notion of "complete RSI".
+    campaign_verdict(state,campaign)["actualCompletion"]==true
 }
 
 /// Re-run the capability gate over stored evidence and report every generation
