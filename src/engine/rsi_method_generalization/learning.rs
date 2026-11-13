@@ -57,8 +57,8 @@ pub(crate) fn learn(state:&AppState,history:&[Value],frontier:&[Value],
                 && intervention["qualityProven"]==true
                 && intervention["methodAssociationObserved"]==true
                 && g["methodAblation"]==intervention
-                && intervention["methodFamilyId"]==
-                    crate::engine::rsi_improvement_algebra::method_family_id(rule) {
+                && intervention["methodFamilyId"].as_str()==
+                    crate::engine::rsi_improvement_algebra::method_family_id(rule).as_deref() {
                 verified_method_controls+=1;
                 method_control_quality_wins+=
                     intervention["treatmentOnlyWins"].as_u64().unwrap_or(0)
