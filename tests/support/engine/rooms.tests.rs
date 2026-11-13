@@ -475,6 +475,11 @@ mod tests {
         });
         assert_eq!(speaker_window(&state, &room, "다시 인사해봐", &ids).len(), 9);
         assert_eq!(speaker_window(&state, &room, "나머지도 말해라", &ids).len(), 9);
+        // An owner can opt into adaptive selection even when the room's
+        // maximum turns would otherwise allow every participant.
+        room["adaptiveSpeakers"] = json!(true);
+        assert_eq!(speaker_window(&state, &room, "짧게 말해", &ids).len(), 2);
+        assert_eq!(speaker_window(&state, &room, "전원 답해", &ids).len(), 9);
         room["maxTurns"] = json!(0);
         assert_eq!(speaker_window(&state, &room, "짧게 말해", &ids).len(), 2);
         std::fs::remove_dir_all(dir).unwrap();
