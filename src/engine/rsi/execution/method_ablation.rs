@@ -115,6 +115,25 @@ pub(super) async fn run_method_control(
     Ok(())
 }
 
+/// Frozen quality dimensions are evidence of solving better tasks, unlike
+/// cheaper execution that merely returns the same answer. The metric baseline
+/// and direction must match in both independently evaluated candidate reports.
+fn paired_quality_delta(control:&Value,treatment:&Value)->(usize,usize){
+    let mut gains=0usize;let mut losses=0usize;
+    let left=control["metrics"].as_array().into_iter().flatten();
+    for old in left.filter(|m|matches!(m["key"].as_str(),Some("quality"|"discoveryScore"))) {
+        let Some(next)=treatment["metrics"].as_array().into_iter().flatten()
+            .find(|m|m["key"]==old["key"] && m["direction"]==old["direction"]
+                && m["baseline"]==old["baseline"]) else{continue};
+        let (Some(before),Some(after))=(old["candidate"].as_f64(),next["candidate"].as_f64()) else{continue};
+        if !before.is_finite() || !after.is_finite(){continue;}
+        let improvement=if old["direction"]=="higher"{after-before}else{before-after};
+        if improvement>1e-9 {gains+=1;}
+        if improvement < -1e-9 {losses+=1;}
+    }
+    (gains,losses)
+}
+
 /// Bind treatment and control to independently saved candidate receipts.
 /// Comparison is honest about model sampling: a single paired run supports
 /// a task-quality observation, not an isolated causal effect estimate.
@@ -168,6 +187,7 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     let treatments=treatment["evaluation"]["metrics"]["measurements"]
         .as_array().cloned().unwrap_or_default();
     let mut better=0usize;let mut worse=0usize;let mut paired=0usize;
+    let mut quality_gains=0usize;let mut quality_regressions=0usize;
     for before in controls.iter().filter(|case|case["holdout"]==true) {
         let Some(after)=treatments.iter().find(|case|case["id"]==before["id"]
             && case["domain"]==before["domain"] && case["holdout"]==true
@@ -175,12 +195,17 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         paired+=1;
         if before["candidatePass"]==false && after["candidatePass"]==true {better+=1;}
         if before["candidatePass"]==true && after["candidatePass"]==false {worse+=1;}
+        if before["candidatePass"]==true && after["candidatePass"]==true {
+            let (gain,loss)=paired_quality_delta(before,after);
+            quality_gains+=gain;quality_regressions+=loss;
+        }
     }
     let real_method=generation["methodExecutions"].as_array()
         .is_some_and(|methods|methods.iter().any(|m|
             control["disabledMethodIds"].as_array().is_some_and(|ids|ids.contains(&m["methodId"]))
             && m["result"]["verified"]==true && m["result"]["followed"]==true));
-    let observed=real_method && paired>=2 && better>0 && worse==0
+    let observed=real_method && paired>=2 && (better+quality_gains)>0
+        && worse==0 && quality_regressions==0
         && paired==controls.iter().filter(|case|case["holdout"]==true).count();
     json!({
         "source":"real_method_enabled_disabled_paired_source_task_v1",
@@ -194,6 +219,8 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
         "actualInheritedMethodExecuted":real_method,
         "pairedHoldoutCases":paired,"treatmentOnlyWins":better,
         "controlOnlyWins":worse,
+        "treatmentQualityMetricWins":quality_gains,
+        "controlQualityMetricWins":quality_regressions,
         "methodAssociationObserved":observed,
         "causalAblationProven":false,
         "qualityProven":observed,
