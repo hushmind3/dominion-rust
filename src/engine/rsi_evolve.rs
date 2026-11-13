@@ -87,6 +87,8 @@ pub(crate) mod meta_evolution;
 pub(crate) mod meta_dispatch;
 #[path = "rsi/meta/experiment_dispatch.rs"]
 pub(crate) mod experiment_dispatch;
+#[path = "rsi/meta/inputs.rs"]
+mod meta_inputs;
 #[path = "rsi/meta/composition.rs"]
 mod meta_composition;
 #[path = "rsi/proof/open_evolution.rs"]
