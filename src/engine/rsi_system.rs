@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi/execution/mutation.rs","src/engine/rsi_system.rs","src/engine/rsi/meta/symbiosis.rs","src/engine/rsi/evaluation/intervention_lab.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs","src/engine/rsi/meta/model_ecology.rs","src/engine/rsi_prequential.rs"]),
+    ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi/execution/mutation.rs","src/engine/rsi_system.rs","src/engine/rsi/meta/symbiosis.rs","src/engine/rsi/evaluation/intervention_lab.rs","src/engine/rsi/learning/negative_transfer.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs","src/engine/rsi/meta/model_ecology.rs","src/engine/rsi_prequential.rs"]),
     ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
