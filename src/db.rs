@@ -1005,7 +1005,17 @@ impl Store {
                     COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0),
                     COALESCE(SUM(CAST(json_extract(detail,'$.completionTokens') AS INTEGER)),0),
                     COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0),
-                    COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0)
+                    COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN json_type(detail,'$.cachedPromptTokens') IN ('integer','real')
+                           AND COALESCE(json_extract(detail,'$.estimated'),0) != 1
+                           THEN CAST(json_extract(detail,'$.cachedPromptTokens') AS INTEGER)
+                           ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN json_type(detail,'$.cachedPromptTokens') IN ('integer','real')
+                           AND COALESCE(json_extract(detail,'$.estimated'),0) != 1
+                           THEN CAST(json_extract(detail,'$.promptTokens') AS INTEGER)
+                           ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN json_type(detail,'$.cachedPromptTokens') IN ('integer','real')
+                           AND COALESCE(json_extract(detail,'$.estimated'),0) != 1 THEN 1 ELSE 0 END),0)
              FROM audit
              WHERE event='model.usage' AND json_extract(detail,'$.sessionId')=?1",
             [session_id],
@@ -1016,19 +1026,26 @@ impl Store {
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             },
         );
         match summary {
-            Ok((calls, prompt, completion, total, estimated)) => json!({
+            Ok((calls, prompt, completion, total, estimated, cached, eligible, measured)) => json!({
                 "calls": calls.max(0),
                 "promptTokens": prompt.max(0),
                 "completionTokens": completion.max(0),
                 "totalTokens": total.max(0),
                 "estimatedCalls": estimated.max(0),
+                "cachedPromptTokens": cached.max(0),
+                "cacheEligiblePromptTokens": eligible.max(0),
+                "cacheReportedCalls": measured.max(0),
             }),
             Err(_) => json!({
-                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0
+                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0,
+                "cachedPromptTokens":0,"cacheEligiblePromptTokens":0,"cacheReportedCalls":0
             }),
         }
     }
@@ -1657,3 +1674,7 @@ mod tests {
         assert!(store.finalize_once(&execution, &marker, &[], &[]).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/db_room_cache_usage_tests.rs"]
+mod cache_usage_tests;
