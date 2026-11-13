@@ -175,3 +175,14 @@ verified positive meta holdout metric. The matched B/B2 controls compare
 either newly passing previously failing tasks or frozen measured quality
 improvement with numerically identical original baseline; mere
 preservation of an already passing guard cannot count as improvement.
+
+### Continuation-safe A→B provenance
+
+`rsi_closure::preceding_method` searches consecutive original generation
+rows in the same campaign first. For the very first generation of a
+continued campaign, it may reuse the prior campaign's final adopted
+method only after the same detached selected commit, source repository,
+branch, base commit and source fingerprint are independently checked.
+The actual previous persisted `rsi_generation` row, not a text label,
+is still required. The normal automatic control enqueue uses this
+anchor, enabling long-running RSI across verified resumptions.

@@ -94,6 +94,39 @@ fn cross_domain_gain(candidate: &Value) -> bool {
                 .is_some_and(|domain| domain!="improver")))
 }
 
+/// Resolve the actual A predecessor either within the current campaign or
+/// across a verified, same-source continuation. A same-name goal or a
+/// generator SHA from an unrelated branch is never enough to join lineages.
+fn preceding_method(state:&AppState,treated:&Value)->Option<Value>{
+    let campaign_id=treated["campaignId"].as_str()?;
+    let attempt=treated["attempt"].as_u64()?;
+    if let Some(prior)=state.store.all("rsi_generation").into_iter().find(|g|
+        g["campaignId"]==campaign_id
+        &&g["attempt"].as_u64().is_some_and(|n|n.checked_add(1)==Some(attempt))
+        &&g["acceptedCommit"]==treated["generatorCommit"]){
+        return Some(prior);
+    }
+    if attempt!=1 {return None;}
+    let current=state.store.get("rsi_campaign",campaign_id)?;
+    if current["lineage"]["reused"]!=true
+        ||current["headCommit"]!=treated["generatorCommit"]{return None;}
+    let previous=state.store.get("rsi_campaign",current["continuedFrom"].as_str()?)?;
+    if previous["headCommit"]!=treated["generatorCommit"]
+        ||previous["sourceDir"]!=current["sourceDir"]
+        ||previous["sourceBranch"]!=current["sourceBranch"]
+        ||previous["baseCommit"]!=current["baseCommit"]
+        ||previous["sourceFingerprint"]!=current["sourceFingerprint"]
+        ||current["lineage"]["selectedCommit"]!=previous["headCommit"]{
+        return None;
+    }
+    let row=previous["history"].as_array()?.last()?;
+    let id=row["id"].as_str()?;
+    let original=state.store.get("rsi_generation",id)?;
+    (original["candidateId"]==row["candidateId"]
+        &&original["acceptedCommit"]==treated["generatorCommit"]
+        &&original["campaignId"]==previous["id"]).then_some(original)
+}
+
 /// A->B->A: an independently measured improver source revision, a descendant
 /// which actually executes the inherited binary and improves B under the
 /// frozen evaluator, and that descendant's own independently measured
@@ -112,11 +145,7 @@ pub(crate) fn control_anchor(state:&AppState,treated:&Value)->Option<Value>{
         return None;
     }
     let campaign=treated["campaignId"].as_str()?;
-    let attempt=treated["attempt"].as_u64()?;
-    let predecessor=state.store.all("rsi_generation").into_iter().find(|g|
-        g["campaignId"]==campaign
-        && g["attempt"].as_u64().is_some_and(|n|n.checked_add(1)==Some(attempt))
-        && g["acceptedCommit"]==treated["generatorCommit"])?;
+    let predecessor=preceding_method(state,treated)?;
     let (a,_)=measured_step(state,&predecessor)?;
     if !method_gain(&a){return None;}
     Some(json!({
@@ -137,11 +166,11 @@ pub(crate) fn control_anchor(state:&AppState,treated:&Value)->Option<Value>{
 pub(crate) fn control_feedback(state:&AppState,treated:&Value)->Value{
     let Some(anchor)=control_anchor(state,treated) else{return Value::Null};
     let Some((candidate,job))=measured_step(state,treated) else{return Value::Null};
-    let Some(predecessor)=state.store.all("rsi_generation").into_iter().find(|g|
-        g["campaignId"]==anchor["treatedCampaignId"]
-            &&g["acceptedCommit"]==anchor["methodOnGeneratorCommit"]
-            &&g["generatorCommit"]==anchor["methodOffGeneratorCommit"])
-        else{return Value::Null};
+    let Some(predecessor)=preceding_method(state,treated) else{return Value::Null};
+    if predecessor["generatorCommit"]!=anchor["methodOffGeneratorCommit"]
+        ||predecessor["acceptedCommit"]!=anchor["methodOnGeneratorCommit"] {
+        return Value::Null;
+    }
     let feedback=method_control::evidence(state,&predecessor,treated,&job,&candidate);
     if feedback["treatedCandidateId"]!=candidate["id"]{return Value::Null;}
     feedback
