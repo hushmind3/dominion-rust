@@ -276,7 +276,8 @@ pub async fn prepare(context:&JobContext,input:&Value)->Result<Worktree,String>{
 }
 fn classify(patch:&str)->&'static str {
     if patch.lines().any(|line|line.starts_with("diff --git ")
-        && (line.contains("src/engine/rsi.rs ")
+        && (line.contains("src/engine/rsi/") 
+            || line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi_archive.rs ")
@@ -1139,6 +1140,7 @@ mod tests {
         assert_eq!(classify("diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/api/rsi.rs b/src/api/rsi.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/rsi_evolve.rs b/src/engine/rsi_evolve.rs\n"),"improver");
+        assert_eq!(classify("diff --git a/src/engine/rsi/planner/search.rs b/src/engine/rsi/planner/search.rs\n"),"improver");
         assert_eq!(classify("diff --git a/src/engine/algorithms.rs b/src/engine/algorithms.rs\n"),"improver",
             "a change to how algorithm candidates are selected must be measured as meta improvement");
         assert_eq!(classify("diff --git a/src/engine/algorithm_eval.rs b/src/engine/algorithm_eval.rs\n"),"improver");

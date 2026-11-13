@@ -19,7 +19,8 @@ fn digest(text: &str) -> String {
 fn stream_verified_domain_selection(source: &str) -> Option<String> {
     let entry="pub(crate) fn select_domain(algorithm: &Value, history: &[Value], objective: &str) -> String {";
     let features_start=source.find("fn search_features(")?;
-    let score_start=source[features_start..].find("\nfn score_domain(")?+features_start+1;
+    let score_start=source[features_start..]
+        .find("\npub(super) fn score_domain(")?+features_start+1;
     let score_end=source[score_start..].find("\npub(crate) fn candidate_domains(")?+score_start;
     let features_hash=digest(&source[features_start..score_start-1]);
     // This optimizer implements two specifically verified feature layouts.
@@ -28,7 +29,7 @@ fn stream_verified_domain_selection(source: &str) -> Option<String> {
     if !matches!(features_hash.as_str(),
         "fee020813338a7a5c3a5c6d4b6767a5854852b5beb7994c173480c60bff92efc"
         |"c50260d36d53cd2641cdf3c483ea14cc8616101a68cfed9c26830b89656da977")
-        || digest(&source[score_start..score_end])
+        || digest(&source[score_start..score_end].replacen("pub(super) ","",1))
             !="a85223433037d93f97c213b8f41d7e9d65b7cf3366f698639dac7452cf5015eb" {
         return None;
     }
@@ -192,7 +193,7 @@ fn stream_verified_policy_statistics(source: &str) -> Option<String> {
 
 fn stream_search_policy_statistics(source: &str) -> Option<String> {
     let first = "fn search_features(history: &[Value], domain: &str, objective: &str) -> BTreeMap<String, f64> {";
-    let after = "\n}\n\nfn score_domain(";
+    let after = "\n}\n\npub(super) fn score_domain(";
     let start = source.find(first)?;
     if source.matches(first).count() != 1 { return None; }
     let end = start + source[start..].find(after)? + 2;
@@ -355,7 +356,7 @@ fn inductive_target_path(input: &Value) -> Option<&str> {
     }
     match input["rsiTargetDomain"].as_str() {
         Some("memory") => Some("src/engine/room_state.rs"),
-        Some("improver") => Some("src/engine/rsi_evolve.rs"),
+        Some("improver") => Some("src/engine/rsi/planner/search.rs"),
         _ => selected,
     }
 }
@@ -460,7 +461,7 @@ mod tests {
                     "the compiled descendant must execute the same verified selector");
             }
         }
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("rsi/planner/search.rs");
         let evolved=stream_verified_domain_selection(source).unwrap_or_else(||source.to_string());
         assert!(evolved.contains("return fast_failure_domain(history"));
         assert!(evolved.contains("\"expression\"|\"counterexample-first\""));
@@ -485,7 +486,7 @@ mod tests {
     }
     #[test]
     fn current_sub3_improver_streaming_keeps_verified_payoff_features() {
-        let source=include_str!("rsi_evolve.rs");
+        let source=include_str!("rsi/planner/search.rs");
         let output=stream_verified_policy_statistics(source)
             .unwrap_or_else(||source.to_string());
         assert!(output.contains("gainPer10kTokens"));
@@ -540,7 +541,7 @@ mod tests {
             "rsiTargetDomain":"memory","rsiFocusFiles":["src/engine/other.rs"]});
         assert_eq!(inductive_target_path(&request),Some("src/engine/room_state.rs"));
         request["rsiTargetDomain"]=json!("improver");
-        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi_evolve.rs"));
+        assert_eq!(inductive_target_path(&request),Some("src/engine/rsi/planner/search.rs"));
         request["rsiTargetDomain"]=json!("tools");
         assert_eq!(inductive_target_path(&request),Some("src/engine/other.rs"));
         request["rsiAutoFocus"]=json!(false);
@@ -551,7 +552,7 @@ mod tests {
 
     #[test]
     fn meta_improver_evolves_verified_streamed_statistics_without_dropping_metrics() {
-        let source = include_str!("rsi_evolve.rs");
+        let source = include_str!("rsi/planner/search.rs");
         // The first adopted child already carries the streamed optimizer.
         // Descendant CI must verify the preserved behavior instead of
         // requiring the old, unoptimized source to still exist.
