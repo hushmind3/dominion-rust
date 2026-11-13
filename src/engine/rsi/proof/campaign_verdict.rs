@@ -71,5 +71,17 @@ pub(crate) fn apply(state:&AppState,campaign:&mut Value)->Value {
         campaign[key]=verdict[key].clone();
     }
     campaign["capabilityVerdict"]=verdict.clone();
+    // Repair legacy or racing success claims at the same boundary as the
+    // proof itself. Otherwise an API could say completion=false while still
+    // returning stopReason=capability_demonstrated.
+    if campaign["stopReason"]=="capability_demonstrated"
+        && verdict["actualCompletion"]!=true {
+        campaign["closureClaimInvalidated"]=json!(true);
+        campaign["stopReason"]=json!("recursive_method_closure_not_proven");
+        if campaign["status"]=="completed" {
+            campaign["status"]=json!("needs_review");
+        }
+        campaign["error"]=json!("A→B→A 개선법 계승의 독립 평가 증거가 부족하여 기존 성공 판정을 무효화했습니다.");
+    }
     verdict
 }
