@@ -43,3 +43,9 @@ function exports and the original tests include remain at the parent level.
 `rsi/worktree/evaluation.rs` (paired evaluator/receipt), and
 `rsi/worktree/promotion.rs` (confirmed branch apply).
 Their tests are isolated in `rsi/worktree/tests.rs`.
+
+**Method evolution map:** `rsi/programs.rs` routes to
+`rsi/programs/action.rs` (tool traces and recovery plans),
+`rsi/programs/selection.rs` (observed execution and comparable programs),
+and `rsi/programs/transfer.rs` (evidence-backed mutation operator inheritance).
+The compiled worker uses the original `rsi_evolve` method exports.

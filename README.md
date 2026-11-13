@@ -529,3 +529,19 @@ Registered calls continue through `rsi_evolve::run` →
 proof precedes acceptance, and acceptance remains separate from
 owner-requested branch promotion. These are source changes only:
 no tests, compilation, CI, benchmarking or real model calls were run.
+
+
+### Inheritable executable method programs (Sub1, 2026-11-13)
+
+`src/engine/rsi/programs.rs` is now a thin compiled module coordinator.
+`rsi/programs/action.rs` tracks tool receipts and writes revised action
+programs after observed failures; `rsi/programs/selection.rs` binds an action
+program to later, actually executed tool operations and compares alternatives;
+`rsi/programs/transfer.rs` reuses independently measured mutation-operator
+evidence across generations and builds the next executable method plan.
+The existing `rsi_evolve` → `rsi/execution.rs` → rebuilt worker route still
+consumes these re-exported methods. A stored program without an executed tool
+and independent holdout win cannot be credited as RSI success.
+
+The split adds no model training dependency. No tests, compilation, CI,
+benchmark or real-model execution were performed during this edit.
