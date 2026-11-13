@@ -6,10 +6,10 @@
 
 ### 1. 고화질 영상의 턴키 생성 경로
 
-- 화면: web/src/pages/Video.tsx — native / comfyui / omni 선택, Gemini API 키 등록, Omni 모델과 360p/720p/1080p/4k 선택
+- 화면: web/src/pages/Video.tsx — native / comfyui / omni 선택, Gemini API 키 등록, Omni 1.2/1.1 모델과 720p/1080p/4k 선택 (API 어댑터는 360p도 허용)
 - 설정: src/api/video.rs::save_config → AppState::save_secret("video:api") → Vault 암호화 → GET /api/video/status의 준비 상태
 - 실행: POST /api/video/jobs → src/engine/video.rs::enqueue → jobs/video → video.rs::run → video/omni.rs::render
-- 제공자: Gemini API Gemini Omni Flash 1.2 predictLongRunning → 작업 ID 영속 체크포인트 → operation 상태 폴링 → 신뢰할 수 있는 Google 파일 URL의 MP4 다운로드 → runtime/video/{job_id}/output.mp4 → GET /api/video/jobs/:id/content
+- 제공자: Gemini Omni Flash 1.2 Interactions API `POST /interactions` → 상호작용 ID 영속 체크포인트 → `GET /interactions/{id}` 상태 폴링 → 안전한 Google 파일 URL 또는 인라인 base64 MP4 다운로드 → runtime/video/{job_id}/output.mp4 → GET /api/video/jobs/:id/content
 - 비용/복구: 중복 과금 위험이 있는 모호한 제출은 needs_review로 종료하고 자동 재요청하지 않음. 다운로드는 256MiB 제한, API 키는 사용자 설정 저장소에 비밀로 보관하며 외부 리다이렉트에 전달하지 않음
 - 현재 계약: 약 8초 단일 클립, 네이티브 오디오 지원, 9:16/16:9. 더 긴 다중 샷과 인물 일관성은 기존 ComfyUI cinematic 또는 향후 클라우드 편집기로 확장해야 함. 4K 지원 여부는 선택한 모델·계정의 제공자 제한에 종속적
 
