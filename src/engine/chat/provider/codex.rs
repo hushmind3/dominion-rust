@@ -2,7 +2,7 @@
 //! Active compiled child of provider.rs.
 use super::*;
 
-pub(super) async fn stream_codex_once(
+pub(crate) async fn stream_codex_once(
     state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,

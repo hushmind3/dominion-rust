@@ -2,7 +2,7 @@
 //! Active compiled child of provider.rs.
 use super::*;
 
-pub(in super::super) async fn stream_completion(
+pub(crate) async fn stream_completion(
     state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
@@ -101,7 +101,7 @@ pub(in super::super) async fn stream_completion(
 /// Compatibility models consume text protocol rather than OpenAI tool-call
 /// message roles. Convert native tool history into ordinary labeled evidence,
 /// preserving it across cloud-to-local failover.
-pub(super) fn compat_messages(messages: &[Value]) -> Vec<Value> {
+pub(crate) fn compat_messages(messages: &[Value]) -> Vec<Value> {
     messages.iter().map(|message| {
         match message["role"].as_str() {
             Some("tool") => json!({
@@ -131,20 +131,20 @@ pub(super) fn compat_messages(messages: &[Value]) -> Vec<Value> {
 /// Latency-triggered rotation serves conversational room turns only.
 /// It must not terminate paid, model-bound, multi-step tool execution after
 /// a successful read. Hard request timeouts and user budgets still apply.
-pub(super) fn route_is_too_slow_for_room(session:&Value,elapsed:std::time::Duration)->bool {
+pub(crate) fn route_is_too_slow_for_room(session:&Value,elapsed:std::time::Duration)->bool {
     session["roomId"].is_string() && elapsed>=std::time::Duration::from_secs(60)
 }
 
 /// A grounded, explicit RSI patch task must request a native edit operation,
 /// not spend the final model call on an unsupported prose completion.
-pub(super) fn rsi_edit_requires_tool(session:&Value,tools:&[Value])->bool {
+pub(crate) fn rsi_edit_requires_tool(session:&Value,tools:&[Value])->bool {
     session["rsiRun"]==true && session["rsiExplicitFocus"]==true
         && !tools.is_empty() && tools.iter().all(|tool|matches!(
             tool["function"]["name"].as_str(),
             Some("workspace_replace"|"workspace_replace_range"|"workspace_write")))
 }
 
-pub(super) async fn stream_completion_once(
+pub(crate) async fn stream_completion_once(
     state: &AppState,
     client: &reqwest::Client,
     provider: &ProviderRef,
@@ -174,7 +174,7 @@ pub(super) async fn stream_completion_once(
     Ok(completion)
 }
 
-pub(super) async fn stream_completion_once_body(
+pub(crate) async fn stream_completion_once_body(
     state:&AppState,client:&reqwest::Client,provider:&ProviderRef,messages:&[Value],tools:&[Value],
     request:&TurnRequest,session_id:&str,tx:&UnboundedSender<Value>,convert_native_history:bool,
     continuity:&mut Value,

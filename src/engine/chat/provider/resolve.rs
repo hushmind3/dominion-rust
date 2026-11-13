@@ -2,7 +2,7 @@
 //! Active compiled child of provider.rs.
 use super::*;
 
-pub(super) fn stream_visible_text(
+pub(crate) fn stream_visible_text(
     tx: &UnboundedSender<Value>,
     content: &str,
     pending: &mut String,
@@ -184,7 +184,7 @@ pub(crate) fn select_provider(
     })
 }
 
-pub(in super::super) fn apply_reasoning_options(
+pub(crate) fn apply_reasoning_options(
     body: &mut Value,
     protocol: &str,
     thinking: Option<bool>,
@@ -231,7 +231,7 @@ pub(in super::super) fn apply_reasoning_options(
 /// Retry transient provider/stream failures only before any content was
 /// published to the client. Replaying a partially streamed answer could repeat
 /// visible text, reasoning, or a tool request, so that case always stops.
-pub(super) fn transient_provider_error(error: &str) -> bool {
+pub(crate) fn transient_provider_error(error: &str) -> bool {
     error.contains(" 연결 실패:")
         || error.contains("스트림 오류:")
         || error.contains("모델 스트림이 완료 신호 없이 종료")
@@ -242,7 +242,7 @@ pub(super) fn transient_provider_error(error: &str) -> bool {
 
 /// Estimated input room for the declared model context, leaving its
 /// configured generation capacity reserved. No universal character cap.
-pub(super) fn input_char_capacity(tokens: u64, max_output_tokens: Option<u64>) -> usize {
+pub(crate) fn input_char_capacity(tokens: u64, max_output_tokens: Option<u64>) -> usize {
     let reserved = max_output_tokens.unwrap_or(tokens / 8)
         .min(tokens / 4).max(128).min(tokens);
     (tokens.saturating_sub(reserved) as usize).saturating_mul(4)
@@ -250,7 +250,7 @@ pub(super) fn input_char_capacity(tokens: u64, max_output_tokens: Option<u64>) -
 
 /// Count the fixed prompt without the bodies of prior tool observations.
 /// Those are dynamically reduced for each candidate provider at request time.
-pub(super) fn fixed_prompt_chars(messages: &[Value]) -> usize {
+pub(crate) fn fixed_prompt_chars(messages: &[Value]) -> usize {
     messages.iter().map(|message| {
         if message["role"] == "tool" {
             let mut envelope = message.clone();
@@ -264,7 +264,7 @@ pub(super) fn fixed_prompt_chars(messages: &[Value]) -> usize {
 
 /// Count serialized JSON string characters (without the surrounding quotes).
 /// Escaping matters for structured tool results containing JSON or newlines.
-pub(super) fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
+pub(crate) fn normalize_assistant_reasoning(messages: &mut [Value], required: bool) {
     for message in messages {
         if message["role"] != "assistant" {
             continue;
@@ -283,7 +283,7 @@ pub(super) fn normalize_assistant_reasoning(messages: &mut [Value], required: bo
 /// immediately by its tool result. Runtime hints are sometimes inserted as
 /// system messages while a round is still executing; move those hints after
 /// the completed tool exchange without dropping them.
-pub(super) fn order_tool_exchanges(messages: Vec<Value>) -> Vec<Value> {
+pub(crate) fn order_tool_exchanges(messages: Vec<Value>) -> Vec<Value> {
     let mut out = Vec::with_capacity(messages.len());
     let mut index = 0;
     while index < messages.len() {
@@ -332,7 +332,7 @@ pub(super) fn order_tool_exchanges(messages: Vec<Value>) -> Vec<Value> {
 /// earlier model/legacy record has no original reasoning, keep its *visible
 /// evidence* as an explicitly quoted user record, never invent private
 /// reasoning and never erase the entire transcript.
-pub(super) fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
+pub(crate) fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
     let mut filled = false;
     let mut out = Vec::with_capacity(messages.len());
     for mut message in messages {
@@ -352,13 +352,13 @@ pub(super) fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, 
     (out, filled)
 }
 
-pub(in super::super) fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
+pub(crate) fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
     usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64)
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
         .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())
 }
 
-pub(super) fn escaped_content_chars(text: &str) -> usize {
+pub(crate) fn escaped_content_chars(text: &str) -> usize {
     text.chars().map(|ch| match ch {
         '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
         '\u{0000}'..='\u{001f}' => 6,
@@ -369,7 +369,7 @@ pub(super) fn escaped_content_chars(text: &str) -> usize {
 /// Trim just the provider-visible copy, retaining the newest observations
 /// first. All raw results remain in the runtime/DB and are available when
 /// a larger context provider takes over a later round.
-pub(super) fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -> String {
+pub(crate) fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -> String {
     if escaped_content_chars(text) <= allowed_encoded_chars {
         return text.to_owned();
     }
@@ -398,7 +398,7 @@ pub(super) fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -
 
 /// Prepare a different model's copy from the original, unabridged tool
 /// observations. No 6k/20k/80k magic limits or local/cloud distinction.
-pub(super) fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars: usize) {
+pub(crate) fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars: usize) {
     let Some(tokens) = provider.context_tokens else { return };
     let fixed = fixed_prompt_chars(messages)
         .saturating_add(schema_chars)
@@ -418,7 +418,7 @@ pub(super) fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], s
     }
 }
 
-pub(super) fn room_route_keys(state: &AppState, session_id: &str) -> Option<std::collections::HashSet<String>> {
+pub(crate) fn room_route_keys(state: &AppState, session_id: &str) -> Option<std::collections::HashSet<String>> {
     let session = state.store.get("session", session_id)?;
     let room = state.store.get("room", session["roomId"].as_str()?)?;
     let mut keys = std::collections::HashSet::new();
@@ -445,7 +445,7 @@ pub(super) fn room_route_keys(state: &AppState, session_id: &str) -> Option<std:
     Some(keys)
 }
 
-pub(super) async fn fallback_candidates(
+pub(crate) async fn fallback_candidates(
     state: &AppState,
     primary: &ProviderRef,
     request: &TurnRequest,
@@ -522,14 +522,14 @@ pub(super) async fn fallback_candidates(
 /// Providers that omit usage during streaming still need a cost signal, so
 /// prompt/output characters provide a conservative estimate. The flag stored
 /// with the message keeps the estimate distinguishable from exact usage.
-pub(super) fn estimate_usage(messages: &[Value], tools: &[Value], completion: &Completion) -> (u64, u64) {
+pub(crate) fn estimate_usage(messages: &[Value], tools: &[Value], completion: &Completion) -> (u64, u64) {
     (
         super::super::room_context::input_estimate(messages, tools) as u64,
         super::super::room_context::estimate(&format!("{}{}",completion.content,completion.reasoning)).max(1) as u64,
     )
 }
 
-pub(super) fn fill_estimated_usage(messages:&[Value],tools:&[Value],completion:&mut Completion){
+pub(crate) fn fill_estimated_usage(messages:&[Value],tools:&[Value],completion:&mut Completion){
     if !completion.usage_exact {
         let(prompt,output)=estimate_usage(messages,tools,completion);
         completion.prompt_tokens=prompt;

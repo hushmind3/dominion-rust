@@ -16,25 +16,25 @@ const TEXT_TOOL_CLOSE: &str = "</tool_call>";
 mod resolve;
 pub(crate) use resolve::select_provider;
 pub(super) use resolve::{apply_reasoning_options,cached_prompt_tokens};
-use resolve::*;
+pub(crate) use resolve::*;
 
 #[path = "provider/stream.rs"]
 mod stream;
 pub(super) use stream::stream_completion;
-use stream::*;
+pub(crate) use stream::*;
 
 #[path = "provider/protocols.rs"]
 mod protocols;
 pub(super) use protocols::{codex_function_call_item,codex_tool_calls,codex_terminal_error};
-use protocols::*;
+pub(crate) use protocols::*;
 
 #[path = "provider/codex.rs"]
 mod codex;
-use codex::*;
+pub(crate) use codex::*;
 
 #[path = "provider/anthropic.rs"]
 mod anthropic;
-use anthropic::*;
+pub(crate) use anthropic::*;
 
 #[cfg(test)]
 #[path = "provider/tests.rs"]

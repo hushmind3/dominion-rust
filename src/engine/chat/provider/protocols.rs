@@ -2,7 +2,7 @@
 //! Active compiled child of provider.rs.
 use super::*;
 
-pub(super) fn anthropic_message_text(value: &Value) -> String {
+pub(crate) fn anthropic_message_text(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         return text.to_string();
     }
@@ -15,7 +15,7 @@ pub(super) fn anthropic_message_text(value: &Value) -> String {
         .join("\n")
 }
 
-pub(super) fn push_anthropic_message(out: &mut Vec<Value>, role: &str, mut blocks: Vec<Value>) {
+pub(crate) fn push_anthropic_message(out: &mut Vec<Value>, role: &str, mut blocks: Vec<Value>) {
     if blocks.is_empty() {
         return;
     }
@@ -33,7 +33,7 @@ pub(super) fn push_anthropic_message(out: &mut Vec<Value>, role: &str, mut block
 /// Converts the engine's OpenAI-style transcript into Anthropic message
 /// blocks: system is separate, tool results become user tool_result blocks,
 /// and assistant tool calls become tool_use blocks.
-pub(super) fn anthropic_messages(messages: &[Value]) -> (String, Vec<Value>) {
+pub(crate) fn anthropic_messages(messages: &[Value]) -> (String, Vec<Value>) {
     let mut system = String::new();
     let mut out: Vec<Value> = Vec::new();
     for message in messages {
@@ -95,7 +95,7 @@ pub(super) fn anthropic_messages(messages: &[Value]) -> (String, Vec<Value>) {
     (system.trim().to_string(), out)
 }
 
-pub(super) fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
+pub(crate) fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
         .filter_map(|tool| {
@@ -113,7 +113,7 @@ pub(super) fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
 /// Codex Responses tool schema. The harness stores OpenAI chat-compatible
 /// definitions; the Responses wire format moves `name` and `parameters` to the
 /// top level of a `function` tool.
-pub(super) fn codex_tools(tools: &[Value]) -> Vec<Value> {
+pub(crate) fn codex_tools(tools: &[Value]) -> Vec<Value> {
     tools
         .iter()
         .filter_map(|tool| {
@@ -132,7 +132,7 @@ pub(super) fn codex_tools(tools: &[Value]) -> Vec<Value> {
 /// Normalizes a Responses `function_call` output item into the shape the
 /// harness rebuilds from persisted messages. Extra response fields (`id`,
 /// `status`) are deliberately dropped so chain signatures stay stable.
-pub(in super::super) fn codex_function_call_item(item: &Value) -> Option<Value> {
+pub(crate) fn codex_function_call_item(item: &Value) -> Option<Value> {
     if item["type"].as_str() != Some("function_call") {
         return None;
     }
@@ -155,7 +155,7 @@ pub(in super::super) fn codex_function_call_item(item: &Value) -> Option<Value> 
 
 /// Extracts structured Codex tool calls from a final response output or from
 /// one completed output item.
-pub(in super::super) fn codex_tool_calls(output: &[Value]) -> Vec<super::super::ToolCall> {
+pub(crate) fn codex_tool_calls(output: &[Value]) -> Vec<super::super::ToolCall> {
     let mut calls = Vec::new();
     for item in output {
         let Some(normalized) = codex_function_call_item(item) else {
@@ -180,7 +180,7 @@ pub(in super::super) fn codex_tool_calls(output: &[Value]) -> Vec<super::super::
 /// Converts chat messages into the Responses API shape used by the Codex
 /// backend. System text becomes `instructions`; assistant tool calls and tool
 /// observations stay structured so the model can continue a real tool loop.
-pub(super) fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
+pub(crate) fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
     let mut instructions = String::new();
     let mut input = Vec::new();
     for message in messages {
@@ -270,7 +270,7 @@ pub(super) fn codex_input(messages: &[Value]) -> (String, Vec<Value>) {
 }
 
 /// Terminal failure events have identical meaning on HTTP and WebSocket.
-pub(in super::super) fn codex_terminal_error(piece: &Value) -> Option<String> {
+pub(crate) fn codex_terminal_error(piece: &Value) -> Option<String> {
     let message = match piece["type"].as_str()? {
         "response.failed" => piece["response"]["error"]["message"]
             .as_str().unwrap_or("응답이 실패했습니다.").to_string(),
