@@ -218,9 +218,13 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         if experiment!=job["input"]["rsiNativePlan"]["experimentDesign"] {
             return Err("재컴파일된 실험 계약이 실제 세대 계획과 다릅니다.".into());
         }
-        verify_experiment_design(&experiment,&commit,history.len(),
+        verify_experiment_design(&experiment,&commit,&history,
             &job["input"]["rsiSystemAgenda"],Path::new(source),
             &expected_snapshot)?;
+        if experiment["protocol"]=="method_on_off"
+            && job["input"]["rsiMethodAblation"]!=true {
+            return Err("대조 실험이 후손 작업에서 허용되지 않았습니다.".into());
+        }
         job["rsiExperimentDesignExecuted"]=experiment.clone();
         let expected_meta=crate::engine::rsi_meta_controller::synthesize(
             &history,

@@ -273,8 +273,12 @@ pub(super) async fn run_loop(
                 return Err("후손의 재설계 목표와 실제 선택 분야가 다릅니다.".into());
             }
             let experiment=&record["nextGenerationPlan"]["experimentDesign"];
-            verify_experiment_design(experiment,&head,recorded_history.len(),
+            verify_experiment_design(experiment,&head,&recorded_history,
                 agenda,&lab,&record["nextGenerationPlan"]["methodSnapshot"])?;
+            if experiment["protocol"]=="method_on_off"
+                && child_input["rsiMethodAblation"]!=true {
+                return Err("대조 실험에 필요한 사용자 허용이 없습니다.".into());
+            }
             let meta=&record["nextGenerationPlan"]["metaPolicy"];
             if meta["source"]!="compiled_editable_meta_controller_v1"
                 || meta["historyCount"].as_u64()!=Some(recorded_history.len() as u64)

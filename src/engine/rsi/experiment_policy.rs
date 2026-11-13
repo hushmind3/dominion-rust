@@ -63,7 +63,7 @@ fn parent_revision(history:&[Value])->Option<String>{
 /// the independent source-bound contract, not trusted as a success receipt.
 pub(super) fn design(
     lab:&Path,commit:&str,history:&[Value],agenda:&Value,
-    meta:&Value,method_snapshot:&Value
+    meta:&Value,method_snapshot:&Value,control_authorized:bool
 )->Value {
     let Some(rows)=agenda["frontier"].as_array() else{return Value::Null};
     let grounded=rows.iter().filter(|row|
@@ -90,7 +90,7 @@ pub(super) fn design(
     let Some(bytes)=bytes else{return Value::Null};
     let policy_source_sha256=format!("{:x}",Sha256::digest(bytes));
     let Some(sha)=target["sourceSha256"].as_str() else{return Value::Null};
-    let protocol=if target["domain"]!="improver"
+    let protocol=if control_authorized && target["domain"]!="improver"
         && method_snapshot.is_object() {
         ExperimentProtocol::MethodOnOff
     }else{ExperimentProtocol::FrozenSourcePair};

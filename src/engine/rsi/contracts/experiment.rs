@@ -74,7 +74,7 @@ fn source_hash(root:&Path)->Result<String,String> {
 /// Do not recompute the descendant's target scores using the old parent code:
 /// that would prevent an accepted child policy from changing its own policy.
 pub(crate) fn verify_experiment_design(
-    value:&Value,commit:&str,history_count:usize,
+    value:&Value,commit:&str,history:&[Value],
     agenda:&Value,root:&Path,method_snapshot:&Value,
 )->Result<(),String>{
     if value.is_null(){return Ok(());}
@@ -83,7 +83,7 @@ pub(crate) fn verify_experiment_design(
     if plan.schema!="compiled_evolvable_experiment_v1"
         || !sha(commit,40)
         || plan.generator_commit!=commit
-        || plan.history_count!=history_count
+        || plan.history_count!=history.len()
         || !sha(&plan.policy_revision,64)
         || plan.policy_revision!=plan.revision()
         || !sha(&plan.policy_source_sha256,64)
@@ -91,7 +91,9 @@ pub(crate) fn verify_experiment_design(
         || plan.question.is_empty() || plan.question.len()>500
         || !sha(&plan.target.source_sha256,64)
         || !crate::engine::rsi::safe_path(&plan.target.path)
-        || !crate::engine::rsi_evolve::DOMAINS.contains(&plan.target.domain.as_str())
+        || plan.target.domain.is_empty()||plan.target.domain.len()>80
+        || !plan.target.domain.bytes().all(|b|
+            b.is_ascii_alphanumeric()||b==b'_'||b==b'-')
         || !plan.target.role.bytes().all(|b|
             b.is_ascii_alphanumeric()||b==b'_'||b==b'-')
         || plan.target.role.is_empty()||plan.target.role.len()>64
@@ -101,6 +103,20 @@ pub(crate) fn verify_experiment_design(
             && (plan.target.domain=="improver"||!method_snapshot.is_object())
     {
         return Err("실험 설계가 수정 불가 출처·허용 실행 방식과 맞지 않습니다.".into());
+    }
+    // Provenance is a versioned relation to an actual accepted predecessor,
+    // never just a 64-character model-authored label. No fixed depth or
+    // "previous two generations" schedule is imposed by this contract.
+    if let Some(previous)=plan.parent_experiment_revision.as_deref() {
+        let authentic=history.iter().any(|g|
+            g["accepted"]==true
+            && g["pairedRevalidated"]==true
+            && g["evaluation"]["metrics"]["eligible"]==true
+            && g["experimentDesign"]["policyRevision"]==previous
+            && g["experimentOutcome"]["sourceEditObserved"]==true
+            && g["experimentOutcome"]["actualWorkerExecuted"]==true
+            && g["experimentOutcome"]["policyRevision"]==previous);
+        if !authentic{return Err("실제 채택되지 않은 실험 정책 계승입니다.".into());}
     }
     let Some(rows)=agenda["frontier"].as_array() else{
         return Err("실험 대상의 유효한 소스 후보가 없습니다.".into());

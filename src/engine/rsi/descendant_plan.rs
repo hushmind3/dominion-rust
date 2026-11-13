@@ -455,7 +455,8 @@ pub(super) fn native_generation_plan(state:&AppState, campaign:&Value, job:&Valu
     // any indexed capability or experiment-policy source may be the next edit.
     let experiment_design=if automatic {
         experiment_policy::design(Path::new(lab),binary_commit,&history,
-            &agenda,&meta_policy,&method_snapshot)
+            &agenda,&meta_policy,&method_snapshot,
+            source_input["rsiMethodAblation"]==true)
     }else{Value::Null};
     if experiment_design.is_object() {
         experiment_policy::apply(&mut agenda,&experiment_design);

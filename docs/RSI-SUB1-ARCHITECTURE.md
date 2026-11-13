@@ -71,3 +71,7 @@ fixture를 중심으로 구분합니다.
 ### Stable experiment contract independent of planner and proof
 
 The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.rs` composition root. `experiment_policy.rs` and `proof.rs` no longer import each other's private implementation. Both compiled descendant and supervisor call the same read-only `verify_experiment_design` through `rsi_evolve::contracts`. `rsi::safe_path` freezes the entire `rsi/contracts/` subtree; evolution modifies the experiment allocation algorithm, never its own source authentication or accepted evaluator.
+
+### Policy provenance and cost-aware experimental consent
+
+`verify_experiment_design` now receives actual persisted generation history (rather than a caller-supplied count alone), rejects an invented `parentExperimentRevision`, and does not import the parent's mutable domain selector. An experimental protocol requiring a real ON/OFF worker is selectable only when that control is enabled in the user's campaign request; supervisor and worker both reject mismatched plans. The frozen interface accepts future domain identifiers that are verified against the agenda by the existing orchestration layer instead of freezing today's domain taxonomy into the typed shared schema.
