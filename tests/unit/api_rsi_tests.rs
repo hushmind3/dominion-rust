@@ -131,5 +131,3 @@ use super::*;
         assert!(state.store.all("code_index").len() >= 1);
         std::fs::remove_dir_all(root).unwrap();
     }
-}
-
