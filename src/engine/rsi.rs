@@ -583,6 +583,16 @@ pub fn recursive_proof_report(state:&AppState,campaign:&Value)->Value {
     })
 }
 
+/// Attach the exact same proof fields to mutable campaign state and API views.
+/// Keeping these assignments here prevents a relaxed UI claim from diverging
+/// from the coordinator's stop condition and the independent audit endpoint.
+pub fn attach_recursive_proof(record:&mut Value, proof:&Value) {
+    record["recursiveProof"]=proof.clone();
+    record["systemEvidence"]=proof["systemEvidence"].clone();
+    record["generationCapabilityProven"]=proof["generationCapabilityProven"].clone();
+    record["capabilityDemonstrated"]=proof["demonstrated"].clone();
+}
+
 /// Re-run the capability gate over stored evidence and report every generation
 /// so the screen can show exactly which row earned proof and why it did not.
 pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
