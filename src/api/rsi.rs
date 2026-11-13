@@ -275,8 +275,12 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
         body["reasoningEffort"]=treated["input"]["reasoningEffort"].clone();
         body["focusFiles"]=json!([]);
         body["maxAttempts"]=json!(1);
-        body["tokenBudget"]=json!(0);
-        body["timeBudgetSeconds"]=json!(0);
+        // The control receives at least B's available model budget, without
+        // silently running unlimited paid tokens when B was bounded.
+        let treatment_remaining=treated["input"]["rsiRemainingCampaignTokens"].as_u64();
+        body["tokenBudget"]=treatment_remaining.map_or(json!(0),|remaining|
+            json!(remaining.max(1000).min(2_000_000)));
+        body["timeBudgetSeconds"]=json!(1800);
         body["selectionPolicy"]=json!("automatic");
         body["expandAfterGain"]=json!(false);
         body["nativeInduction"]=json!(false);

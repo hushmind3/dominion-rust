@@ -84,3 +84,10 @@ chooses baseline for controls, preventing adoption and rsi_current changes.
 `api::rsi::apply_campaign` rejects any control campaign. The independent
 proof verifier requires the resulting original control job to point to the
 exact treated B job and pre-A generator. No control costs were incurred here.
+
+The SelfImprovement React page exposes an explicit **대조군 1회 실행**
+action only after a replayed method/capability/method chain reports a
+missing control. It calls the ordinary `POST /api/rsi/start` and swaps the
+job display to that real isolated control campaign. The derived control
+budget is at least the treatment's preflight budget (when bounded), and
+the ordinary time cap applies. No silent background control requests run.

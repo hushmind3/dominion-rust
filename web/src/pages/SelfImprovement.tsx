@@ -13,7 +13,7 @@ type FocusCandidate={path:string;score?:number;sourceHash?:string;scoring?:strin
  evidence?:{path?:number;symbols?:number;body?:number;domain?:number;priorProductive?:number}}
 type FocusSelection={source?:string;domain?:string;policyRevision?:string;
  candidates?:FocusCandidate[]}
-type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
+type Campaign={id:string;status:string;phase:string;controlRun?:boolean;controlOf?:string;attempts?:number;acceptedGenerations?:number;tokens?:number;
  objective?:string;providerId?:string;model?:string;headCommit?:string;baseCommit?:string;sourceSnapshot?:boolean;
  continuedFrom?:string;selectedVersionRunning?:boolean;installJobId?:string;
  limits?:{maxAttempts?:number;tokenBudget?:number;timeBudgetSeconds?:number};
@@ -24,6 +24,10 @@ type Campaign={id:string;status:string;phase:string;attempts?:number;acceptedGen
 type VerifyRow={index:number;attempt?:number;accepted:boolean;domain?:string;generatorCommit?:string;acceptedCommit?:string;
  target?:string;independentReceipt:boolean;metaTransfer:boolean;regressions?:number;improvedHoldoutDomains?:string[];metaHoldoutGains?:number;reason?:string}
 type VerifyReport={campaignId:string;capabilityDemonstrated:boolean;verifiedStreak:number;
+ recursiveClosure?:{proven?:boolean;methodControl?:{
+  matchedControlFound?:boolean;measuredAdvantage?:boolean;
+  treatedGenerationId?:string;methodOffGeneratorCommit?:string;
+  matchedTaskSha256?:string;taskSha256?:string}};
  required:{verifiedStreak:number;holdoutDomains:number;metaTransfer:boolean};generations:VerifyRow[]}
 const SAVED='dominion.rsi.evolutionJob'
 const PREFERENCES='dominion.rsi.preferences'
@@ -138,7 +142,7 @@ export function SelfImprovementPage(){
  const installing=!!install&&!terminal(install.status)
  const working=!!campaign&&!terminal(campaign.status)
  const adopted=campaign?.acceptedGenerations||0
- const hasSelected=!!campaign?.headCommit&&!!campaign?.baseCommit&&campaign.headCommit!==campaign.baseCommit
+ const hasSelected=!campaign?.controlRun&&!!campaign?.headCommit&&!!campaign?.baseCommit&&campaign.headCommit!==campaign.baseCommit
  const research=campaign?.history?.reduce((n,row)=>n+(row.newFindings||0),0)||0
  const inherited=campaign?.history?.filter((row,index,rows)=>rows.slice(0,index).some(prior=>prior.acceptedCommit&&prior.acceptedCommit===row.generatorCommit)).length||0
  const executedMethods=campaign?.history?.reduce((n,row)=>n+(row.methodExecutions?.length||0),0)||0
@@ -187,6 +191,21 @@ export function SelfImprovementPage(){
   try{setVerify(await get<VerifyReport>('/api/rsi/campaigns/'+encodeURIComponent(campaign.id)+'/verify'))}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const controlTarget=verify?.campaignId===campaign?.id
+  ?verify.recursiveClosure?.methodControl?.treatedGenerationId:undefined
+ const runMethodControl=async()=>{
+  if(!controlTarget||busy||working||installing)return
+  setBusy(true);setError('')
+  try{
+   const job=await post<{id:string;status:string}>('/api/rsi/start',{
+    mode:'continuous',confirmation:'START_RSI_EVOLUTION',
+    controlForGenerationId:controlTarget
+   })
+   setJobId(job.id);setCampaign({id:job.id,status:job.status,phase:'preparing_lab',controlRun:true})
+   setVerify(null);setInstall(null);setSettingsOpen(false)
+   try{localStorage.setItem(SAVED,job.id)}catch{}
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const status=campaign?campaign.status==='completed'?(adopted>0?'검증된 개선본을 선택했습니다':research>0?'연구를 보존했습니다 · 채택한 코드 없음':'개선 근거가 없어 종료했습니다'):campaign.status==='cancelled'?'중단했습니다':
   campaign.status==='needs_review'||campaign.status==='failed'?'이번 작업을 계속하지 못했습니다':phases[campaign.phase]||'개선을 준비하고 있습니다':''
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
@@ -220,6 +239,15 @@ export function SelfImprovementPage(){
      <Button variant="secondary" disabled={busy} onClick={()=>void runVerify()}>{busy?<LoaderCircle size={13} className="animate-spin"/>:<ShieldCheck size={13}/>}검증 시험</Button></div>
     {verify&&verify.campaignId===campaign.id&&<div className="mt-3">
      <p className={verify.capabilityDemonstrated?'rounded-lg bg-[#F2F6EF] px-3 py-2 text-[12px] font-semibold text-[#4E6B45]':'rounded-lg bg-[#FAF7F1] px-3 py-2 text-[12px] font-semibold text-[#7C4A2E]'}>{verify.capabilityDemonstrated?'기준 충족 · 검증된 3세대 연속 채택과 전이 근거를 확인했습니다':`기준 미달 · 독립 검증 채택 ${verify.verifiedStreak}/3세대`}</p>
+     {verify.recursiveClosure?.methodControl?.matchedControlFound===true&&
+      <p className="mt-2 text-[12px] text-[#5C544A]">개선법 A 사용/미사용 대조: {verify.recursiveClosure.methodControl.measuredAdvantage?'동일 동결 과제에서 후손 개선 우위 측정':'대조군이 실측되었으나 후손의 우위 부족'} · 비무작위 비교</p>}
+     {!working&&!campaign.controlRun&&!verify.capabilityDemonstrated&&controlTarget
+       &&verify.recursiveClosure?.methodControl?.matchedControlFound!==true&&
+       <div className="mt-3 rounded-lg border border-[#E7E0D5] p-3">
+        <p className="text-[12px] font-semibold text-[#5C544A]">개선법 A를 제거한 실제 후손 대조 실험</p>
+        <p className="mt-1 text-[11px] leading-5 text-[#7C7469]">A 수정 전 소스를 분리 실행하여 동일한 모델·동결 과제와 비교합니다. 채택·운영 반영은 하지 않으며 유료 모델 호출이 발생합니다.</p>
+        <Button className="mt-2" variant="secondary" disabled={busy||installing} onClick={()=>void runMethodControl()}><Play size={13}/>대조군 1회 실행</Button>
+       </div>}
      {verify.generations.length>0?<div className="mt-2 grid gap-1">{verify.generations.map(row=><div key={row.index} className="rounded-md bg-[#FAF7F1] px-2 py-1.5 text-[11px]">
       <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{row.index}. {row.attempt?row.attempt+'번째 시도':'세대'}{row.domain?' · '+row.domain:''}</span><span className={row.independentReceipt?'text-[#4E6B45]':'text-[#7C7469]'}>{row.accepted?(row.independentReceipt?'독립 검증 일치':'영수증 불일치'):'채택 안 됨'}</span></div>
       <p className="mt-0.5 text-[#81786B]">{row.improvedHoldoutDomains?.length?'개선 확인 분야: '+row.improvedHoldoutDomains.join(', '):'개선 확인 분야 없음'}{row.regressions!=null?' · 회귀 '+row.regressions:''}{row.metaTransfer?' · 전이 확인':''}{row.reason?' · '+row.reason:''}</p>
