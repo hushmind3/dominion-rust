@@ -61,3 +61,9 @@ an editable method must never become the verifier of its own success.
 
 
 **Final verdict boundary:** `rsi/proof.rs::revalidated_history` overwrites self-reported feedback flags, replays the original C job and method source receipt from B, and stamps `recursiveFeedbackVerified` only for measured A→B→A. `recursive_closure_report` then gates campaign status and API results on that replayed proof.
+
+**Live tool execution:** `src/engine/tools.rs` re-exports the actual Rust dispatcher and
+its workspace mutation boundary from `tools/dispatch.rs`, `tools/edit.rs`,
+`tools/process.rs`, `tools/network.rs` and companion modules. Trace
+`tools::execute` → pinned write receipt → detached RSI candidate →
+original frozen paired evaluator. `tools/tests.rs` is test-only.

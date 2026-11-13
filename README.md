@@ -583,3 +583,16 @@ The compiled `rsi/meta_controller/provenance.rs::meta_source_changed` and `rsi/s
 ### Frontier/meta-policy consistent revision
 
 A validated downstream method path is inserted into the source-indexed frontier **before** compiled meta-selection, factorial experiments, laboratory and whole-intelligence proposals are computed. After those proposals, only the immutable selected target/focus change to the eligible A method path; the frontier no longer changes. The worker's independent meta-policy replay consequently receives the same frontier as the planning binary. No compilation or test execution was performed.
+
+### Tool runtime module boundaries (Sub1, 2026-11-13)
+
+The real `tools::execute` API now delegates through `tools/dispatch.rs`.
+`tools/gateway.rs` handles account/delegation, `tools/workspace.rs` owns
+resolved paths and observed reads, `tools/edit.rs` handles the RSI source
+mutation and pinned receipts, `tools/process.rs` owns cancellable subprocess
+groups and `tools/network.rs` owns validated outbound HTTP/search requests.
+`tools/tests.rs` preserves the source unit scenarios in a `#[cfg(test)]`
+module. Existing public `tools::execute`, `run_command`,
+`WORKSPACE_ESCAPE` and `resolve_workspace` entrypoints are re-exported.
+The split changes no model weights or tool protocol. The source was moved,
+not tested or built.
