@@ -12,12 +12,12 @@
 | Kling 3.0 네이티브 멀티샷 | `src/engine/video/shot_plan.rs::{shots,request}` → `video/runway.rs::run` | **이번 변경**: 3~15초를 1~3개 카메라 샷으로 나누고 전체 길이 보존, 반복 인물·배경 앵커, `providerSettings.multiPrompt` 적용 |
 | Kling 4.0 연속 생성 | `src/engine/video/kling4.rs::{clip_durations,direction,request,attach_prior_frame}` → `video/runway.rs::run` | **이번 변경**: 3~30초 1080p 네이티브 오디오, 최대 180초를 필요한 30초 클립으로 분리. 4.0에는 3.0 전용 `multiPrompt`/`audio`를 보내지 않고, 이미지-투-비디오의 `auto_1080p` 계약 사용 |
 | 장편 클립 간 연속성 | `src/engine/video/frame_anchor.rs::first_frame_for_next` → `runway.rs::run` | **이번 변경**: 이전 클립 다운로드가 완료된 뒤 FFmpeg로 마지막 프레임을 JPEG로 추출하고 다음 `image_to_video`의 `promptImage`로 제공. 계정 키는 기존 vault 사용 |
-| 비용·상태 | `runway.rs` 원격 task ID 체크포인트 → 다운로드 → FFmpeg 합성 → `video::public_job` | 기존 유료 중복 제출 방지와 `needs_review` 유지, 신규 `shotCount`/`frameAnchoredClips` 결과 필드 |
+| 비용·상태 | `runway.rs::unsafe_to_resubmit` → 원격 task ID 체크포인트 → 다운로드 → FFmpeg 합성 → `video::public_job` | **이번 변경**: 이전 클립이 유료 생성 후 다운로드된 경우에도 전체 계획 자동 재제출 차단(`needs_review`). 신규 `shotCount`/`frameAnchoredClips` 결과 필드 및 실제 저장된 모델 기준 유료 클립 수 표시 |
 | 사용자 선택 | `Video.tsx`의 **Kling 3.0/4.0 모델·클립 간 연속성** 옵션 → `/api/video/config` → `runwayModel`·`runwayContinuityFrames` | **이번 변경**: 설정 저장·입력 스냅샷 고정, 모델별 최대 길이에 따른 유료 클립 개수 표시. 장면 전환이 필요하면 연속성 옵션 해제 가능 |
 
 Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_to_video` 입력은 2026-10-26 Runway Dev 공식 문서에 근거한다. Kling 4.0의 30초 길이, `kling_4` 모델 ID, `auto_1080p` 이미지-투-비디오 비율은 2026-10-23 출시 및 10-26 공식 문서에 근거한다. 이 구현은 비용을 늘리는 별도 샷 요청 대신 동일 요청 안의 네이티브 멀티샷을 활용한다. **시각·인물 일관성은 확률적인 모델 결과**이며 영상 전체 화질·오디오 정합성이 자동 보장되는 것은 아니다. 15초를 넘는 영상은 여러 개의 유료 task와 합성으로 완성되므로 요청 총 길이에 비례한 비용이 발생한다.
 
-관련 검사 소스: `tests/unit/video_shot_plan_tests.rs` (3.0 샷 길이 합·요청 형식·앵커), `tests/unit/video_kling4_contract_tests.rs` (4.0 30초 분할·요청·이미지 비율·프롬프트). 실행하지 않음.
+관련 검사 소스: `tests/unit/video_shot_plan_tests.rs` (3.0 샷 길이 합·요청 형식·앵커), `tests/unit/video_kling4_contract_tests.rs` (4.0 30초 분할·요청·이미지 비율·프롬프트), `tests/unit/video_paid_resubmission_tests.rs` (유료 처리 부분 완료 후 중복 과금 차단). 실행하지 않음.
 
 ## 2. 실제 변경 — 그룹 대화, 토큰과 모델 가격 계측
 
@@ -60,7 +60,7 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 
 ## 4. 이어서 확장할 핵심 기능과 검수 증거
 
-1. **영상 QA 게이트**: 생성 후 실제 프레임·FPS·오디오 스트림·검은 화면/무음 구간 자동 검사, 원본 task의 재조회/재다운로드, 의도된 장면 전환·대사 씬별 편집, 비용 상한 및 재생성 승인. 현재는 완료된 MP4 컨테이너 중심.
+1. **영상 QA·복구 게이트**: 생성 후 실제 프레임·FPS·오디오 스트림·검은 화면/무음 구간 자동 검사, 원본 task의 재조회/재다운로드, 의도된 장면 전환·대사 씬별 편집, 비용 상한 및 재생성 승인. 현재는 중복 과금 재제출 차단과 완료된 MP4 컨테이너 중심이며, 자동 재개보다 안전한 `needs_review`에서 수동 검토하도록 둔다.
 2. **원가 관측**: provider usage + cached input + 요금표 revision + 실제 청구액 대조, 엔진/모델/룸별 비용 및 지연·품질 차트를 동결 비교. 현재는 토큰·캐시 계측과 선언 가격 기반 자동 선택까지.
 3. **행동 안전형 시맨틱 캐시**: 반복되는 무부작용·시점 불변·권한 동일 질의에만 캐시를 검토. 뉴스·주가·도구·개인정보·환경 상태 변경 질의는 저장값 재사용하면 오류나 누출이 생기므로 무조건적인 LLM 패스는 금지.
 4. **에이전트 역할 통합**: task/episode-root, 발언자 attribution, 실제 도구 결과, delegated child job, room state, 결과 검증과 비용 기록을 단일 실행 계보로 집계; 가짜 사용자 발언을 생성하지 않음.
