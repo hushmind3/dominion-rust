@@ -133,7 +133,7 @@ pub(crate) fn compiled_system_generation_plan(
     // predecessor programme or an explicit owner focus keeps precedence.
     let downstream_method_feedback=if !explicit_focus
         && input["rsiAutoFocus"]==true {
-        crate::engine::rsi_system::next_method_return(history,&frontier,commit)
+        crate::engine::rsi_system::next_method_return(history,&json!(frontier),commit)
     }else{Value::Null};
     if downstream_method_feedback.is_object() {
         // A verified downstream outcome is a stronger continuation signal
@@ -161,7 +161,7 @@ pub(crate) fn compiled_system_generation_plan(
         && input["rsiAutoFocus"]==true
         && downstream_method_feedback.is_null() {
         crate::engine::rsi_system::next_capability_reapplication(
-            history,&frontier,commit)
+            history,&json!(frontier),commit)
     }else{Value::Null};
     if method_reapplication.is_object() {
         successor_stage=Value::Null;

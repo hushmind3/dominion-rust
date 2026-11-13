@@ -162,7 +162,7 @@ pub(super) async fn run(req:PlannerRun<'_>)->Result<(),String> {
                 "modelImprovementDemonstrated":false
             }));
             save(context,record)?;
-            bind_action_to_source(&context.state,&mut child_input,&recorded_history);
+            bind_action_to_source(&context.state,child_input,recorded_history);
         }
     Ok(())
 }

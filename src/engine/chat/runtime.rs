@@ -8,6 +8,9 @@ use super::{
     parse_text_tool_calls, Metrics, ToolCall, TurnRequest, MAX_ELAPSED, MAX_ROUNDS, MAX_TOKENS, MAX_TOOL_CALLS,
 };
 use super::evidence::{evidence_for_source, prepare_owner_action};
+// Child modules were split one directory deeper than the original chat.rs.
+// Re-export sibling architectural services at their expected runtime scope.
+use super::{room_context,context,continuity,budget,protocol};
 use crate::engine::adaptation::types::TaskOutcome;
 use crate::engine::goals;
 use crate::{

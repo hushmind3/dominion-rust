@@ -54,11 +54,11 @@ pub(crate) async fn compare_at(context:&JobContext,id:&str,source:&Path,_runner_
     let report_file=output_dir.join("report.json");
     std::fs::write(&patch_file,patch).map_err(|e|e.to_string())?;
     let runner=output_dir.join("rsi-lab.sh");
-    std::fs::write(&runner,include_str!("../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
-    std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
+    std::fs::write(&runner,include_str!("../../../scripts/rsi-lab.sh")).map_err(|e|e.to_string())?;
+    std::fs::write(output_dir.join("rsi-measure.mjs"),include_str!("../../../scripts/rsi-measure.mjs")).map_err(|e|e.to_string())?;
     let mut plan=json!({"oracleVersion":candidate["oracleVersion"],"cases":candidate["cases"]});
     if candidate["cases"].as_array().into_iter().flatten().any(|c|c["filter"].as_str().is_some_and(|f|f.starts_with("rsi_frozen_oracle::"))){
-        let oracle=include_str!("rsi_oracle_fixture.rs");
+        let oracle=include_str!("../rsi_oracle_fixture.rs");
         let file=std::fs::canonicalize(&output_dir).map_err(|e|e.to_string())?.join("frozen-oracle.rs");
         std::fs::write(&file,oracle).map_err(|e|e.to_string())?;
         plan["oracleFixture"]=json!(file);plan["oracleSha256"]=json!(digest(oracle));

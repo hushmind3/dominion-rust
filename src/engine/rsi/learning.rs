@@ -8,8 +8,8 @@ use super::{
 
 #[path = "learning/selection.rs"]
 mod selection;
-pub(super) use selection::{method_selection_feedback,method_observed_selection_score,
-    method_reuse_decision};
+pub(super) use selection::{adopted_structural_descendant,
+    method_selection_feedback,method_observed_selection_score,method_reuse_decision};
 pub(crate) use selection::{configure_method_session,method_strategies,collect_method_executions};
 #[path = "learning/repairs.rs"]
 mod repairs;
