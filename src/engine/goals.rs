@@ -122,6 +122,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let mut checks = configured.as_array().cloned().unwrap_or_default();
         if checks.is_empty() {
             checks = infer_criteria(&text);
+            // A requested test must be verified by an actual successful
+            // command, not by a model saying the tests would pass.
+            checks.extend(crate::engine::goal_verification::inferred_checks(
+                &state.config.workspace, &text,
+            ));
         }
         baseline_checks(state, checks)
     });
