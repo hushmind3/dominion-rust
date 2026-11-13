@@ -73,8 +73,11 @@ async fn configured_source(state: &AppState) -> Result<PathBuf, String> {
 }
 
 pub async fn list(State(state): State<AppState>) -> Json<Value> {
+    let campaigns=state.store.all("rsi_campaign").into_iter().take(20)
+        .map(|mut record|{apply_verified_capability(&state,&mut record);record})
+        .collect::<Vec<_>>();
     Json(json!({"version":"rsi-v2","candidates":engine::list(&state),
-        "campaigns":state.store.all("rsi_campaign").into_iter().take(20).collect::<Vec<_>>(),
+        "campaigns":campaigns,
         "minPairedCases":engine::MIN_PAIRED_CASES}))
 }
 
@@ -192,6 +195,7 @@ pub async fn campaigns(State(state):State<AppState>)->Json<Value>{
             "maxAcceptedStreak":record["maxAcceptedStreak"],"maxVerifiedStreak":record["maxVerifiedStreak"],
             "metaTransferProven":record["metaTransferProven"],
             "capabilityDemonstrated":record["capabilityDemonstrated"],
+            "recursiveProof":record["recursiveProof"],
             "status":if job["status"]!="running"&&!job["status"].is_null(){job["status"].clone()}else{record["status"].clone()}})
     }).collect::<Vec<_>>();
     Json(json!({"campaigns":rows}))

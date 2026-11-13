@@ -38,6 +38,9 @@ pub fn revalidated_history(state:&AppState, history:&[Value]) -> Vec<Value> {
                         && candidate["experimentAdoption"]["generatorCommit"]==generation["generatorCommit"]
                         && candidate["experimentAdoption"]["campaignId"]==generation["campaignId"]
                         && candidate["target"]==generation["candidateTarget"]
+                        && candidate["paths"]==generation["changedSourcePaths"]
+                        && candidate["origin"]==generation["candidateOrigin"]
+                        && source_change_recorded(generation)
                         && crate::engine::rsi::verify_paired_receipt(state,&candidate).is_ok()
                 })
         } else {

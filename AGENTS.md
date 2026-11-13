@@ -10,7 +10,7 @@
 4. **개선 방법 자체의 진화:** `src/engine/rsi_meta_controller.rs`는 진입점입니다. 실제 개선기는 `src/engine/rsi/meta_controller/`의 provenance(채택 증거), reciprocal(A→B→A), selection(선택 정책), transfer(계보 전이), feedback(예측 검증·후손 지시)에서 변경합니다. 실모델에게 가리키는 소스 경로도 새 모듈을 사용해야 합니다.
 5. **전체 능력의 상호 개선:** `src/engine/rsi_whole_agent.rs`, `src/engine/rsi_causal_ecology.rs`, `src/engine/rsi_recursive_laboratory.rs`
 6. **계승되는 개선 원리:** `src/engine/rsi_principle_learner.rs`, `src/engine/rsi_edit_genome.rs`
-7. **독립 소스 검증:** `src/engine/rsi.rs`, `src/engine/rsi_worktree.rs`, `src/engine/rsi_archive.rs`
+7. **독립 검증·폐회로:** `src/engine/rsi.rs`의 후보 영수증, `src/engine/rsi_worktree.rs::classify/compare_at`의 동결 A/B, `src/engine/rsi/proof.rs`의 메타→능력→메타 3세대 검증, `src/api/rsi.rs::apply_verified_capability`의 API 원본 영수증 재검증, `src/engine/rsi_archive.rs`의 참고 계보.
 
 기능 변경 전에는 **호출자 → 실제 실행 → 독립 평가 → 채택된 후손의 재실행** 경로를 추적한다. 모델이 말한 성공과 독립 검증된 코드 채택을 혼동하지 않는다. 새 메커니즘은 하네스·알고리즘·기억 등 전체 지능으로 전이될 수 있어야 한다.
 

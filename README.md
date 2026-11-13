@@ -274,6 +274,32 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 - `harness`(하네스 코드 변경)는 `proposed`로만 저장하며 주인 승인 없이는 적용하지 않음
 - API: `GET /api/improvements`, `POST /api/improvements/:id/{approve,reject}`
 
+
+### 소스 수준 RSI — 실제 컴파일된 후손의 폐회로
+
+일반 대화의 전략 학습과 별개로, `rsi_evolve` 캠페인은 **고정 모델 가중치** 상태에서 도미니언 코드·하네스·기억·도구·개선 방법을 수정하고 다음 후손이 그 코드를 실행하는지 추적합니다. LoRA·가중치 훈련은 연결하지 않습니다.
+
+```text
+src/api/rsi.rs::start
+  → src/engine/jobs.rs::run_job (rsi_evolve)
+  → src/engine/rsi_evolve.rs::run
+  → src/engine/rsi/execution.rs::run_loop
+  → 실험 소스 빌드 → --rsi-worker-plan
+  → rsi/system/{inventory,blueprint,discovery,frontier,agenda,design}.rs
+  → rsi/meta_controller/{provenance,reciprocal,selection,transfer,feedback}.rs
+  → --rsi-worker → jobs::run_prompt → provider + 모델/도구/실제 소스 편집
+  → src/engine/rsi_worktree.rs::compare_at (동결 A/B, 원본 증거 해시)
+  → src/engine/rsi_evolve.rs::adopt (분리된 worktree 채택)
+  → 후손 재컴파일·새 계획·개선 방법 실행 → 다음 평가
+  → src/engine/rsi/proof.rs::recursive_closure_report
+```
+
+`rsi_worktree::classify`는 실제 변경 경로에서 하위 `rsi/` 모듈도 개선기(`improver`) 수정으로 분류합니다. `rsi_system.rs`와 `rsi_meta_controller.rs`는 모듈 진입점이며 실제 자기개선 소스는 `rsi/system/`과 `rsi/meta_controller/`에 있습니다.
+
+`recursiveProof.closedLoopObserved`는 3회 채택만으로 참이 되지 않습니다. **메타개선기(A) → 다른 능력(B) → 메타개선기(A) 재개선**이 연속한 3개 컴파일 후손에서 관찰되고, 첫째·셋째 세대의 메타 개선기 소스가 실제 변경되며, 각 단계의 향상과 교차 능력 전이가 원본 동결 평가로 확인되어야 합니다. `src/api/rsi.rs::apply_verified_capability`는 조회 시 저장된 성공 플래그를 신뢰하지 않고 원본 후보 영수증을 다시 검증합니다.
+
+**검증 경계:** 소스에 폐회로 검사·계승 경로가 존재하는 것과 유료 모델이 실제 3세대를 완주한 것은 별개입니다. 이 브랜치 변경에서 CI·테스트·컴파일·실모델 캠페인을 실행하지 않았습니다. `causalAblationProven`은 동등 입력 반사실 실험이 없으므로 계속 `false`입니다.
+
 ### 경험 기반 교정 반영
 
 주인이 "아니 그게 아니라", "다시 해", "틀렸어"처럼 이전 답을 교정하면 단순히 그 문장을
