@@ -230,6 +230,29 @@ pub(super) async fn plan_compiled_descendant(
                 "descendantActionSha256":intervention["descendantActionSha256"]
             }));
         }
+        // The previous resident coordinator's cost-only suggestion is not
+        // an owner constraint. Rebind it ONLY after independently checking
+        // the compiled method transfer or the B-feedback meta-rewrite.
+        if plan["methodTransfer"].is_object() || plan["feedbackRepairSelected"]==true {
+            let superseded=child_input["rsiDecisionInput"].clone();
+            child_input["rsiDecisionInput"]=json!({
+                "basis":"verified_compiled_recursive_method_target",
+                "targetDomain":domain,
+                "supersededSupervisorTarget":superseded["targetDomain"],
+                "supersededDecisionBasis":superseded["basis"],
+                "methodTransfer":plan["methodTransfer"],
+                "feedbackRepairSelected":plan["feedbackRepairSelected"],
+                "sourceGeneratorCommit":head,
+                "previousAcceptedGeneration":history.iter().rev()
+                    .find(|g|g["accepted"]==true).map(|g|g["id"].clone())
+            });
+            context.state.store.audit("rsi.compiled_method_target_overrode_supervisor",json!({
+                "campaignId":context.job_id,"attempt":attempt,
+                "supersededDomain":superseded["targetDomain"],
+                "compiledDomain":domain,"methodId":plan["methodTransfer"]["methodId"],
+                "feedbackRepair":plan["feedbackRepairSelected"]
+            }));
+        }
         child_input["rsiSelectedDomain"]=json!(domain);
         child_input["rsiTargetDomain"]=json!(domain);
         child_input["rsiTargetPlan"]=json!({
