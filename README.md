@@ -466,3 +466,9 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 ### 완성 RSI 판정과 부분적 소스 진화의 구분
 
 `sourceEvolutionDemonstrated`는 연속 채택과 동결 평가에 대한 제한적 신호입니다. `recursiveMethodClosureProven` 및 `capabilityDemonstrated`는 `rsi/learning/rsi_recursive_closure.rs::proven`에서 재검증된 **모델 기원 방법 수정 → 다음 컴파일 세대의 실제 방법 사용·다른 능력 개선 → 그 평가 결과를 학습한 후손의 방법 재수정·독립 평가 개선**까지 요구합니다. 단순 3회 채택, 코드 변경, 모델 출력만으로 완전 RSI 완료를 표시하지 않습니다. 재컴파일·실모델 검증 결과는 현재 없습니다.
+
+### 독립 재검증 기반 예측기 자기개선 (2026-11-13)
+
+`src/engine/rsi_prequential.rs`의 `trusted_feedback`/ `calibrate` / `drift`는 저장된 성공 라벨을 직접 믿지 않고 `rsi_system::revalidated_history`가 재구성한 모델 실행·원본 A/B 영수증·실제 목표 파일의 결과로 예측기 학습과 자기수정 선택을 수행합니다. 같은 파일의 다른 소스 SHA는 할인 전이하고, 다른 파일의 성공은 전이하지 않습니다. owner가 채택하지 않은 eligible 후보도 실패 관측으로 오염시키지 않습니다.
+
+`rsi_meta_controller::synthesize` → `rsi/planner/descendant.rs` → `rsi/execution/worker.rs` → `rsi/execution/campaign.rs` → `rsi_system::revalidated_history`로 이어지며, `predictionRepairEvidence`는 계획·실제 정책 실행·후보 파일 변경·독립 채택을 분리해 기록합니다. 상세 경로, 근거 연구, 검증 경계는 [챔피온 출처 결속 예측기 구조](docs/CHAMPION-SOURCE-FORECAST-2026-11-13.md)를 참조하세요. **이 변경에 대한 컴파일·CI·실모델 검증은 아직 수행하지 않았습니다.**
