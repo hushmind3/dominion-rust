@@ -9,7 +9,7 @@
 
 - **진입과 실행:** `src/engine/rsi_evolve.rs`가 등록하는 캠페인을 `src/engine/rsi/execution/campaign.rs`가 운영한다. 재컴파일된 자손의 `src/engine/rsi/planner/worker_plan.rs`가 자기 소스·이력으로 계획을 정하고, `src/engine/rsi/execution/worker.rs`가 실행하는 모델·provider·도구·편집 정책을 결정한다.
 - **영속화와 채택:** `src/engine/rsi/evaluation/worktree.rs`의 동결 paired 사례와 `src/engine/rsi/lineage/adoption.rs`의 커밋이 `rsi_candidate`, `rsi_pair`, `job`, `rsi_generation`으로 연결된다. `src/engine/rsi/lineage/history.rs`는 원본 세대 후보와 잡 입력으로 과거 증거를 재검증한다.
-- **방법·지능 A→B→A 증거:** `src/engine/rsi/proof/closure.rs::evidence`는 연속 채택된 3개 원본 후보와 실행 잡을 다시 읽는다. A는 개선 방법 소스의 수정과 improver held-out 이득이 필요하다. B는 실제 개선된 후손 바이너리가 편집·메타 정책을 선택·실행한 기록과 **다른 능력**의 paired held-out 개선이 필요하다. 다음 A는 B의 후손이 다시 개선 방법 소스를 고쳤고 독립 평가에서 improver held-out 이득을 냈음을 요구한다. 혼합된 방법/능력 소스 편집은 B로 인정하지 않는다.
+- **방법·지능 A→B→A 증거:** `src/engine/rsi/proof/closure.rs::evidence`는 연속 채택된 3개 원본 후보와 실행 잡을 다시 읽는다. A는 개선 방법 소스의 수정, improver held-out 메트릭 이득 및 적어도 1개 원본 improver holdout 사례의 **실패→성공 전환**이 필요하다. 속도만 좋아진 개선기를 후손의 판단력 개선으로 오인하지 않는다. B는 실제 개선된 후손 바이너리가 편집·메타 정책을 선택·실행한 기록과 **다른 능력**의 paired held-out 개선이 필요하다. 다음 A는 B의 후손이 다시 개선 방법 소스를 고쳤고 독립 평가에서 improver held-out 이득을 냈음을 요구한다. 혼합된 방법/능력 소스 편집은 B로 인정하지 않는다.
 - **대외적으로 노출되는 완료 판정:** `src/engine/rsi.rs::campaign_capability_proven`과 `capability_audit.recursiveClosure`; `rsi::capability_proven`의 기초 3세대 판정만으로는 완료 처리하지 않는다.
 - **아직 측정되지 않은 사항:** 현재 Sub4 커밋에서 3세대 A→B→A 사례를 새로 수행하거나 제3자 동결 평가로 관측하지 않았다. 후손 행동 변화에 대한 모든 인과 귀속, 장기 누적 가속, 상용 운영 안정성 역시 미입증이다. 기초모델 가중치는 고정하며 재학습 경로를 두지 않는다.
 - **운영 확인:** 새로운 실모델/CI 비용 지출은 하지 않았고, 소스 코드와 문서만 갱신했다.
