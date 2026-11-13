@@ -38,7 +38,10 @@ pub(crate) fn safe_path(path: &str) -> bool {
         "src/engine/rsi/execution/compiled_planning.rs" |
         "src/engine/rsi/execution/generation_evidence.rs" |
         "src/engine/rsi/execution/generation_finalization.rs" |
-        "src/engine/rsi/execution/method_ablation.rs")
+        "src/engine/rsi/execution/method_ablation.rs" |
+        "src/engine/rsi.rs" |
+        "src/engine/rsi_evolve.rs" |
+        "src/engine/rsi_system.rs")
         && !path.contains('\\')
         && !path.starts_with('/')
         && !path.split('/').any(|part|part.is_empty() || part.starts_with('.'))
@@ -123,13 +126,14 @@ pub fn propose(state: &AppState, body: &Value) -> Result<Value, String> {
     let patch = body["patch"].as_str().ok_or("patch가 필요합니다.")?;
     let paths = patch_paths(patch)?;
     if target == "improver" && !paths.iter().any(|path| {
-        path == "src/engine/rsi.rs" || path == "src/engine/rsi_worktree.rs"
-            || path == "src/engine/rsi_evolve.rs" || path == "src/engine/rsi_metrics.rs"
+        path.starts_with("src/engine/rsi/planner/")
+            || path.starts_with("src/engine/rsi/learning/")
+            || path == "src/engine/rsi_worktree.rs" || path == "src/engine/rsi_metrics.rs"
             || path == "src/api/rsi.rs" || path == "src/engine/algorithms.rs"
             || path == "src/engine/algorithm_eval.rs"
             || path == "src/engine/policy_patch.rs"
             || path == "src/engine/rsi_meta_controller.rs"
-            || path == "src/engine/rsi_system.rs"
+            || path.starts_with("src/engine/rsi_system/")
             || path == "src/engine/rsi_interaction.rs"
     }) {
         return Err("improver 후보는 실제 개선기 소스를 수정해야 합니다.".into());
@@ -501,7 +505,7 @@ mod tests {
     }
     fn base() -> String { "a".repeat(40) }
     fn patch() -> String {
-        "diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n--- a/src/engine/rsi.rs\n+++ b/src/engine/rsi.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
+        "diff --git a/src/engine/rsi/planner/domain_selection.rs b/src/engine/rsi/planner/domain_selection.rs\n--- a/src/engine/rsi/planner/domain_selection.rs\n+++ b/src/engine/rsi/planner/domain_selection.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
     }
     fn cases(domain: &str) -> Vec<Value> {
         (0..8).map(|i|json!({"id":format!("case-{i}"),"domain":if i==1 {"other"} else {domain},"holdout":i<3,
