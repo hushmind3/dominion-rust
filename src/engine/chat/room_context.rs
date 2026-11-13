@@ -8,6 +8,9 @@ use crate::{engine::memory, state::AppState};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
+#[path = "room_context/role_routing.rs"]
+mod role_routing;
+
 pub(crate) struct Compiled {
     pub system: PromptContext,
     pub history: Vec<Value>,
@@ -476,6 +479,10 @@ pub(crate) fn compile(
         .map(|candidate| candidate.terms.clone())
         .collect::<Vec<_>>();
     let scores = memory::bm25_scores(&query_terms, &corpus, 1.2, 0.75);
+    let role_terms = role_routing::role_terms(state,request);
+    let role_hits = candidates.iter()
+        .map(|candidate|role_routing::overlaps(&candidate.terms,&role_terms))
+        .collect::<Vec<_>>();
     for (index, candidate) in candidates.iter_mut().enumerate() {
         if candidate.priority && scores[index] > 0.0 {
             candidate.required = true;
@@ -506,7 +513,8 @@ pub(crate) fn compile(
         .collect::<Vec<_>>();
     remaining.sort_by(|a, b| {
         let value = |i: usize| {
-            (scores[i] + f64::from(candidates[i].priority))
+            (scores[i] + role_routing::role_boost(scores[i],role_hits[i])
+                + f64::from(candidates[i].priority))
                 / ((candidates[i].cost.max(1) as f64).sqrt())
         };
         value(*b)
@@ -602,16 +610,21 @@ pub(crate) fn compile(
     )}));
     let mut messages = vec![json!({"role":"system","content":prompt})];
     messages.extend(history.clone());
+    let full_candidate_tokens = fixed_cost.saturating_add(candidates.iter().map(|candidate|candidate.cost).sum::<usize>());
+    let estimated_input = input_estimate(&messages,tools);
+    let role_selected = selected.iter().filter(|index|role_hits[**index]>0 && scores[**index]>0.0).count();
     let accounting = json!({"estimated":true,"estimator":"ascii-four-unicode-one-v1","contextModelCalls":0,
         "targetInputTokens":target,"requiredInputTokens":required_tokens,"requiredOverBudget":required_tokens>target,
         "personaTokens":persona_tokens,"memoryTokens":memory_tokens,"ownerStateTokens":owner_state_tokens,
         "sharedStateTokens":shared_tokens,"sharedStateDigest":shared["digest"],
         "historyTokens":estimate(&json!(history).to_string()).saturating_sub(memory_tokens+owner_state_tokens+shared_tokens),
-        "systemTokens":estimate(&prompt).saturating_sub(persona_tokens),"toolSchemaTokens":schema_tokens,"totalInputTokens":input_estimate(&messages,tools),
+        "systemTokens":estimate(&prompt).saturating_sub(persona_tokens),"toolSchemaTokens":schema_tokens,"totalInputTokens":estimated_input,
+        "selectionPolicy":"bm25-role-cost-v2","roleConditioned":!role_terms.is_empty(),"roleRelevantItems":role_selected,
+        "fullCandidateInputEstimate":full_candidate_tokens,"prunedCandidateTokenEstimate":full_candidate_tokens.saturating_sub(used),
         "previousSelfMessageId":previous_self.map(|index|all[index]["id"].clone()),
         "selectedMessageIds":rows.iter().map(|row|row["id"].clone()).collect::<Vec<_>>(),"availableMessages":all.len(),"exactDuplicatesExcluded":rejected});
     items.push(json!({"kind":"system_prompt_final","chars":prompt.chars().count(),"digest":memory::stable_id(&[&prompt])}));
-    items.push(json!({"kind":"room_context","selection":"bm25-cost-v1","accounting":accounting}));
+    items.push(json!({"kind":"room_context","selection":"bm25-role-cost-v2","accounting":accounting}));
     let watermark = memory::stable_id(&[&json!(items).to_string()]);
     Ok(Compiled {
         system: PromptContext {
