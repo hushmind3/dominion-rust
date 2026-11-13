@@ -31,3 +31,21 @@ The tree/branch and function-preservation checks were performed against GitHub c
 - Worktree integrity and paired evaluation modules remain in the descendant's full source-inventory fingerprint, but do **not** appear as editable architecture targets. This maintains an independently held verification boundary after the file split. A source-level regression test asserts this distinction.
 
 GitHub source commits use `[skip ci]`; static equivalence checks are not Rust compilation, external CI results, or a verified model-generated descendant success.
+
+## Recursively editable method-learning and descendant planning modules
+
+The source-level `rsi/learning.rs` responsibilities have been split into `learning/{selection,repairs,ablation,failed_edit,feedback}.rs`. These retain the original executed-method proposal/reuse, source-repair synthesis, outcome-bound verified write attribution, and future method feedback. Source-repair attempts still cannot earn accepted-improvement credit merely by being generated.
+
+The `rsi/planner.rs` controller now delegates to `planner/{actions,strategy,edit_policy,compiled}.rs`. Action-outcome adaptation, generation target selection, source-edit rule calibration and compiled descendant planning can be independently redesigned without altering the frozen pair evaluator. The negative-transfer target regression test remains in the parent planner module. Re-exports preserve the previous internal entry points.
+
+Static inspection confirmed 25/25 method-learning and 19/19 planner function declarations accounted for, with no missing cross-module names among those source files. These are **source-preservation checks**, not Rust type-check or runtime proof. A future independent judge should inspect the entire updated source tree and the true API/jobs/model/worktree path rather than score this document.
+
+### Champion integration guidance
+
+Preserve three material boundaries when selecting these changes:
+
+1. The descendant's editable transfer algorithm is `rsi_meta_controller/peer_transfer.rs`, and an observed failed transfer must target that real implementation rather than the parent re-export façade.
+2. Detached worktree source, comparison and promotion remain fingerprinted but excluded from model-editable architecture frontiers; they independently verify source changes.
+3. A proposed new method, code-edit call, or research finding is not an adopted improvement. Only a verified source diff with independent paired evidence and a descendant able to execute its inherited method can establish that link.
+
+All sub2 changes are isolated to `dominion-sub2` and committed with `[skip ci]`; the user did not request a build or a full-model CI run at this stage.
