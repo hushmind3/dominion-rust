@@ -7,7 +7,7 @@
 //! This audit never invokes a model or validator and never upgrades a claim
 //! from generated prose to an observed gain.
 use crate::{engine::{rsi,rsi_operator_provenance},state::AppState};
-use serde_json::Value;
+use serde_json::{json,Value};
 
 fn hex(s:&str,n:usize)->bool {
     s.len()==n && s.bytes().all(|b|b.is_ascii_hexdigit())
@@ -16,7 +16,7 @@ fn hex(s:&str,n:usize)->bool {
 /// Returns true ONLY for consecutive generations whose real source adoption,
 /// model/tool provenance and original frozen paired outcomes form a closed
 /// meta -> downstream -> meta improvement lineage.
-pub(crate) fn proven(state:&AppState,history:&[Value])->bool {
+pub(crate) fn evidence(state:&AppState,history:&[Value])->Option<Value> {
     for window in history.windows(3) {
         let [invent,apply,rewrite]=window else {continue};
         if !rsi::capability_proven(state,window)
@@ -70,9 +70,47 @@ pub(crate) fn proven(state:&AppState,history:&[Value])->bool {
                 && row["adoptedDescendantTrials"].as_u64().unwrap_or(0)>0
                 && row["independentReceiptSha256"].as_array()
                     .is_some_and(|receipts|receipts.contains(receipt))));
-        if linked{return true;}
+        if linked {
+            // These are ORIGINAL source and paired-evaluation identifiers,
+            // not a synthesis of the model's explanation or a count of plans.
+            return Some(json!({
+                "source":"replayed_model_method_A_B_A_v1",
+                "observedClosure":true,
+                "causalAblationProven":false,
+                "methodFamilyId":family,
+                "methodPath":method_path,
+                "parentMethodSha256":method_hash,
+                "rewrittenMethodSha256":rewrite["acceptedSourceHashes"][method_path],
+                "downstreamPairedReceiptSha256":receipt,
+                "generations":[
+                    {"phase":"A_method_edit",
+                     "jobId":invent["jobId"],
+                     "generatorCommit":invent["generatorCommit"],
+                     "acceptedCommit":invent["acceptedCommit"],
+                     "candidateId":invent["candidateId"]},
+                    {"phase":"B_compiled_method_use_other_capability_gain",
+                     "jobId":apply["jobId"],
+                     "generatorCommit":apply["generatorCommit"],
+                     "acceptedCommit":apply["acceptedCommit"],
+                     "candidateId":apply["candidateId"],
+                     "targetPath":apply["operatorExecution"]["targetPath"]},
+                    {"phase":"A_method_rewrite_from_B_evidence",
+                     "jobId":rewrite["jobId"],
+                     "generatorCommit":rewrite["generatorCommit"],
+                     "acceptedCommit":rewrite["acceptedCommit"],
+                     "candidateId":rewrite["candidateId"],
+                     "feedbackMethodFamilyId":family}
+                ]
+            }));
+        }
     }
-    false
+    None
+}
+
+/// Every consumer that needs a yes/no answer delegates to the SAME
+/// source-replayed, receipt-bound proof object.
+pub(crate) fn proven(state:&AppState,history:&[Value])->bool {
+    evidence(state,history).is_some()
 }
 
 #[cfg(test)]
