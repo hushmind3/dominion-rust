@@ -1,4 +1,10 @@
 //! Turn lifecycle, cancellation, limits, tool orchestration and durable evidence.
+/// A single campaign generation may explore further than an ordinary chat
+/// turn, but not without bound: the campaign budget must survive several
+/// generations, otherwise a barren run burns everything in one attempt.
+const CAMPAIGN_GENERATION_ROUNDS: usize = 24;
+const CAMPAIGN_GENERATION_TOOLS: usize = 80;
+
 use super::{
     approval::{close_pending_approvals, request_approval},
     context::history,
@@ -732,10 +738,11 @@ async fn run_turn_body(
         .clamp(4, 120) as usize;
     let campaign_budgeted=session["rsiRun"]==true && session["rsiCampaignId"].is_string();
     if campaign_budgeted {
-        // The campaign's actual token/time budget and cancellation own the run.
-        // Generic chat's learned 20-tool cap must not truncate source research.
-        max_rounds=usize::MAX/4;
-        max_tools=usize::MAX/4;
+        // The campaign owns tokens and time, but one generation must still be
+        // bounded. Unlimited rounds let a barren generation loop until the whole
+        // campaign budget is gone before it ever produces a candidate.
+        max_rounds = max_rounds.clamp(16, CAMPAIGN_GENERATION_ROUNDS);
+        max_tools = max_tools.clamp(24, CAMPAIGN_GENERATION_TOOLS);
     }
     let elapsed_limit=if campaign_budgeted {
         session["rsiCampaignId"].as_str().and_then(|id|state.store.get("job",id))
