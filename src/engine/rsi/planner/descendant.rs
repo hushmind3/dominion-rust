@@ -326,7 +326,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     let meta=crate::engine::rsi_symbiosis::apply_reciprocal_feedback(
         peer_meta,&reciprocal_graph);
     let suggested_stage=if input["rsiAutonomous"]==true && !owner_focus
-        && !paired && !negative_transfer_active
+        && !paired && !meta_redesign_active && !negative_transfer_active
         && !algebra_active && !capability_active {
         crate::engine::rsi_system::inherited_stage(&state,&history,&frontier)
     }else{Value::Null};
@@ -640,6 +640,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "experimentPolicy":experiment_policy,
         "metaOperatorActive":algebra_active,
         "metaRedesignTarget":meta_redesign_target,
+        "metaRedesignActive":meta_redesign_active,
         "modelEvolutionPlan":model_evolution,
         "successorStage":successor_stage,
         "peerLineages":peers,
