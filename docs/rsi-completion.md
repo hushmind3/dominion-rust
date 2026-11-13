@@ -3,6 +3,20 @@
 이 문서는 "재귀적 자기개선이 완성됐다"를 판정하는 기준과, 그 기준에 대한 현재 측정값을 기록한다.
 주장은 저장된 캠페인 기록으로만 뒷받침한다.
 
+## 2026-11-13 — Sub4: 원본 개선법 대조 검증 추가
+
+**현재 RSI 완성 판정은 여전히 미입증입니다.** 독립 재판정의 서브4 48점은 이전 커밋을 기준으로 한 점수이며, 아래 신규 소스 변경으로 재채점한 점수가 아닙니다. 실모델·CI·빌드를 실행하지 않았습니다.
+
+기존 A→B→A 원본 계보, 자손 편집 정책 실행 기록과 동결 paired 평가를 모두 갖춘 후에도, 이제 `src/engine/rsi/proof/method_control.rs`는 **방법 A 도입 전 컴파일된 생성기가 같은 B 작업을 수행한 독립 대조 영수증**을 요구합니다.
+
+- 대조는 `src/engine/rsi/proof/closure.rs::control_anchor`에서 실제 A 채택과 B 후손 작업을 역추적하여 `POST /api/rsi/start`의 `controlForGenerationId`로 명시적으로 시작합니다.
+- `src/api/rsi/control_request.rs`가 B의 원본 모델·작업·동결 사례를 고정하고, `src/engine/rsi/execution/start.rs`가 방법 A 이전 커밋을 독립 worktree에 체크아웃합니다. 기존 후손 계획기→provider→편집→paired evaluator로 **1회 실험**하되 대조 후보는 채택·운영 승격하지 않습니다.
+- 원본 `job`과 `rsi_pair` 재검증, 실제 `model.usage` 감사, 같은 동결 사례와 baseline 결과, 동일 모델·작업 프롬프트·예산 조건으로 비교합니다. 개선 전후의 분야 선택은 결과 변수이므로 강제로 일치시키지 않습니다.
+- B가 동결 holdout의 실패→성공 전환에서 **모든 비교 가능한 대조군을 능가하고 역전 실패가 없을 때**만 `recursiveClosure.methodControl.measuredAdvantage=true`를 반환합니다. 대조가 없으면 `proven=false`입니다. 이는 비무작위 소스 개입의 관찰적 우위이며 장기 무한 RSI 인과 입증은 아닙니다.
+- 캠페인 종료 `proof_goal_reached`, 저장된 `capabilityDemonstrated`, API `campaign_capability_proven`·`capability_audit`는 모두 같은 `rsi_closure::evidence` 진입점을 활용합니다.
+
+**다음 필요 증거:** 실제 A 도입 전/후의 재현 가능한 B 도구 편집과 모델 감사, 그 후 C 개선법 재수정 및 독립 동결 평가가 하나의 검증 가능한 계보에 있어야 합니다. 현재 소스 반영은 실험 준비 단계이며 성공 수행 결과가 아닙니다.
+
 ## 2026-11-13 — Sub4: 엄격한 폐회로 증거 기준 (현재 소스)
 
 **현재 판정: 완전한 RSI 작동 미입증.** 독립 심판의 잠정 구조 점수 39점, RSI 0/45를 새로운 실행 증거 없이 변경하지 않는다. 아래 내용은 **코드의 검증 요건을 보강한 것**이며 실제 캠페인 성공 보고가 아니다.
