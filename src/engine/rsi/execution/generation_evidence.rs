@@ -146,6 +146,7 @@ pub(super) fn capture_generation_evidence(
         }),
         json!({
             "compiledPlanExecuted":current["rsiCompiledPlanExecuted"],
+            "experimentContract":current["input"]["rsiExperimentContract"],
             "behaviorCounterfactual":current["input"]["rsiBehaviorCounterfactual"],
             "peerReferenceCandidateIds":current["input"]["rsiPeerLineages"]["references"]
                 .as_array().map(|rows|rows.iter().filter_map(|row|
