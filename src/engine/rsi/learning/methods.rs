@@ -111,6 +111,7 @@ pub(crate) fn configure_method_session(state: &AppState, input: &Value, session:
     // Ordinary model tools, provider and source remain unchanged.
     session["rsiMethodAblationArm"] = input["rsiMethodAblationArm"].clone();
     session["rsiMethodTransfer"] = input["rsiMethodTransfer"].clone();
+    session["rsiMetaExperimentDispatch"] = input["rsiMetaExperimentDispatch"].clone();
     let mut decision = input["rsiDecisionInput"].clone();
     if !decision.is_object() {decision=json!({});}
     if decision["nextDomain"] != domain || !decision["reuseDecision"].is_object() {
