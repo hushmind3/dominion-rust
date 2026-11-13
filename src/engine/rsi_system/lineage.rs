@@ -48,6 +48,28 @@ pub(crate) fn lineage_capsule(history:&[Value])->Value {
                     "designId":design["id"],"generationId":generation["id"],
                     "generatorCommit":generation["generatorCommit"],
                     "acceptedCommit":generation["acceptedCommit"],
+                    // Keep the actual improvement procedures and their use
+                    // across generations in the NEXT compiled worker's finite
+                    // context. A name alone never proves the method caused gain.
+                    "proposedMethods":generation["methodProposals"].as_array()
+                        .map(|items|items.iter().filter(|method|
+                            method["sourceGenerationJobId"]==generation["jobId"]
+                                && method["synthesis"].is_null())
+                            .take(3).map(|method|json!({
+                                "id":method["id"],"revision":method["revision"],
+                                "name":method["name"],"domain":method["domain"],
+                                "sourceJobId":method["sourceGenerationJobId"]
+                            })).collect::<Vec<_>>()).unwrap_or_default(),
+                    "executedMethods":generation["methodExecutions"].as_array()
+                        .map(|items|items.iter().take(3).map(|used|json!({
+                            "methodId":used["methodId"],"revision":used["revision"],
+                            "executionId":used["executionId"],
+                            "verified":used["result"]["verified"],
+                            "followed":used["result"]["followed"],
+                            "qualityClaim":"independent_pair_receipt_required"
+                        })).collect::<Vec<_>>()).unwrap_or_default(),
+                    "measuredDomainGains":generation["evaluation"]["metrics"]["improvedHoldoutDomains"],
+                    "previousFeedbackGeneration":generation["improvementDirective"]["sourceGenerationId"],
                     "components":design["components"].as_array()
                         .map(|items|items.iter().take(12).cloned().collect::<Vec<_>>())
                         .unwrap_or_default(),
