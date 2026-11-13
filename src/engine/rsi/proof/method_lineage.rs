@@ -85,8 +85,11 @@ fn task_gain(b:&Value)->bool {
 /// Original B job execution + source A + independent B holdout: this is
 /// material for a NEW method rewrite, not proof that the rewrite succeeded.
 pub(crate) fn downstream_feedback(state:&AppState,history:&[Value],binary_commit:&str)->Value {
-    let [a,b]=history else{return Value::Null};
-    let checked=revalidated_history(state,history);
+    // Real campaigns have research attempts and rejected candidates before
+    // a productive A→B pair. Only the contiguous LAST TWO generations are
+    // relevant to the NEXT C planner; earlier failures remain in the ledger.
+    let Some([a,b])=history.last_chunk::<2>() else{return Value::Null};
+    let checked=revalidated_history(state,&[a.clone(),b.clone()]);
     if !checked.iter().all(measured)
         || b["generatorCommit"]!=a["acceptedCommit"]
         || b["acceptedCommit"]!=binary_commit
