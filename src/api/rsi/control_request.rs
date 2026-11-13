@@ -78,5 +78,5 @@ pub(super) fn apply_input(input:&mut Value,control:&Value,treated:&Value){
 }
 
 #[cfg(test)]
-#[path = "../../../../tests/unit/api_rsi_control_request_tests.rs"]
+#[path = "../../../tests/unit/api_rsi_control_request_tests.rs"]
 mod tests;
