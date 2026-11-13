@@ -109,7 +109,7 @@ pub(crate) fn compiled_system_generation_plan(
     // A predecessor can AUTHOR the successor's task program. The compiled
     // descendant interprets it against its own newly built source graph and
     // silently drops stages whose path/role/hash is no longer current.
-    let successor_stage=if open_program["stage"].is_object(){
+    let mut successor_stage=if open_program["stage"].is_object(){
         open_program["stage"].clone()
     }else{
         crate::engine::rsi_system::inherited_stage(history,&frontier)
@@ -123,11 +123,14 @@ pub(crate) fn compiled_system_generation_plan(
     // inherited executable A method. This is a real compiled source target,
     // not a prompt telling the agent to claim self-improvement. An adopted
     // predecessor programme or an explicit owner focus keeps precedence.
-    let downstream_method_feedback=if !explicit_focus && !successor_stage.is_object()
+    let downstream_method_feedback=if !explicit_focus
         && input["rsiAutoFocus"]==true {
         crate::engine::rsi_system::next_method_return(history,&frontier,commit)
     }else{Value::Null};
     if downstream_method_feedback.is_object() {
+        // A verified downstream outcome is a stronger continuation signal
+        // than an older model-authored speculative task stage.
+        successor_stage=Value::Null;
         let target=downstream_method_feedback["target"].clone();
         meta["target"]=target.clone();
         meta["mode"]=json!("close_observed_downstream_method_loop");
@@ -147,13 +150,13 @@ pub(crate) fn compiled_system_generation_plan(
     // to B's original task family. D must independently improve the SAME
     // downstream domain and its own source bytes to earn closure credit.
     let method_reapplication=if !explicit_focus
-        && !successor_stage.is_object()
         && input["rsiAutoFocus"]==true
         && downstream_method_feedback.is_null() {
         crate::engine::rsi_system::next_capability_reapplication(
             history,&frontier,commit)
     }else{Value::Null};
     if method_reapplication.is_object() {
+        successor_stage=Value::Null;
         let target=method_reapplication["target"].clone();
         meta["target"]=target.clone();
         meta["mode"]=json!("reapply_revised_method_to_capability");

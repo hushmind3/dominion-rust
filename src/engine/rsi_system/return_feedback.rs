@@ -200,4 +200,67 @@ mod tests {
         wrong[0]["sourceSha256"]=json!("d".repeat(64));
         assert!(next_method_return(&[b],&wrong,&"c".repeat(40)).is_null());
     }
+
+    #[test]
+    fn adopted_method_revision_must_reenter_the_original_downstream_domain() {
+        let method="src/engine/rsi_meta_controller/peer_transfer.rs";
+        let task="src/engine/memory.rs";
+        let initial=json!({
+            "id":"b","candidateId":"candidate-b",
+            "accepted":true,"pairedRevalidated":true,
+            "sourceLineageVerified":true,
+            "acceptedCommit":"c".repeat(40),
+            "domain":"memory","systemDesign":{"targetFiles":[task]},
+            "acceptedSourceHashes":{"src/engine/memory.rs":"f".repeat(64)},
+            "evaluation":{"evidenceSha256":"e".repeat(64),"metrics":{
+                "eligible":true,"regressions":0,"improvedHoldouts":1,
+                "improvedHoldoutDomains":["memory"]}},
+            "metaMethodInheritance":{
+                "source":"source_bound_compiled_meta_method_inheritance_v1",
+                "rebuildConfirmed":true,"observedPlanDifference":true,
+                "chosenTargetActuallyFocused":true,
+                "parentAcceptedCommit":"a".repeat(40),
+                "sourceChanges":[{"path":method,
+                    "acceptedSourceSha256":"b".repeat(64)}]},
+            "metaMethodOutcome":{
+                "source":"observed_compiled_meta_method_successor_outcome_v1",
+                "independentlyAssessed":true,"independentCandidateAdopted":true,
+                "actuallyFocused":true,
+                "inheritedParentCommit":"a".repeat(40)}
+        });
+        let c_frontier=json!([{"role":"improvement_methods",
+            "domain":"improver","path":method,"sourceSha256":"b".repeat(64)}]);
+        let feedback=next_method_return(&[initial.clone()],&c_frontier,&"c".repeat(40));
+        assert!(feedback.is_object());
+        let c=json!({
+            "id":"c","candidateId":"candidate-c",
+            "accepted":true,"pairedRevalidated":true,
+            "sourceLineageVerified":true,
+            "acceptedCommit":"d".repeat(40),
+            "generatorCommit":"c".repeat(40),
+            "metaPolicy":{"mode":"close_observed_downstream_method_loop"},
+            "returnMethodFeedbackExecuted":true,
+            "downstreamMethodFeedback":feedback,
+            "descendantPlan":{"architectureFrontier":c_frontier,
+                "downstreamMethodFeedback":feedback},
+            "systemDesign":{"targetFiles":[method]},
+            "acceptedSourceHashes":{
+                "src/engine/rsi_meta_controller/peer_transfer.rs":"d".repeat(64)},
+            "evaluation":{"metrics":{"metaHoldoutGains":1}}
+        });
+        let d_frontier=json!([{"role":"memory","domain":"memory",
+            "path":task,"sourceSha256":"f".repeat(64)}]);
+        let reapply=next_capability_reapplication(
+            &[initial.clone(),c.clone()],&d_frontier,&"d".repeat(40));
+        assert_eq!(reapply["target"]["path"],task);
+        assert_eq!(reapply["revisedMethodSourcePath"],method);
+        let mut changed=c.clone();
+        changed["evaluation"]["metrics"]["metaHoldoutGains"]=json!(0);
+        assert!(next_capability_reapplication(
+            &[initial.clone(),changed],&d_frontier,&"d".repeat(40)).is_null());
+        let mut wrong=d_frontier;
+        wrong[0]["sourceSha256"]=json!("0".repeat(64));
+        assert!(next_capability_reapplication(
+            &[initial,c],&wrong,&"d".repeat(40)).is_null());
+    }
 }
