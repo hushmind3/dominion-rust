@@ -294,6 +294,7 @@ fn classify(patch:&str)->&'static str {
             || line.contains("src/engine/rsi_principle_learning.rs ")
             || line.contains("src/engine/rsi_api_route_learning.rs ")
             || line.contains("src/engine/rsi_program_graph.rs ")
+            || line.contains("src/engine/rsi_evolve.rs ")
             || line.contains("src/engine/rsi.rs ")
             || line.contains("src/engine/rsi_worktree.rs ")
             || line.contains("src/engine/rsi/planner/domain_selection.rs ")
