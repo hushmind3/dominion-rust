@@ -122,7 +122,15 @@ pub(crate) fn peer_lineage_references(
 )->Value {
     let mut ranked=Vec::<(i64,Value)>::new();
     let mut patches=BTreeSet::new();
-    for generation in state.store.all("rsi_generation").into_iter().take(256) {
+    // Compare the most recent eligible peer successes, not an arbitrary
+    // first 256 rows from the store's unspecified iteration order.
+    let mut generations=state.store.all("rsi_generation").into_iter()
+        .filter(|generation|generation["campaignId"].as_str()!=Some(campaign)
+            && generation["evaluationProfileSha256"].as_str()==Some(profile_sha))
+        .collect::<Vec<_>>();
+    generations.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str())
+        .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
+    for generation in generations.into_iter().take(256) {
         if generation["campaignId"].as_str()==Some(campaign)
             || generation["evaluationProfileSha256"].as_str()!=Some(profile_sha) {
             continue;
@@ -250,8 +258,10 @@ pub(crate) fn validate_peer_references(
             || row["nextDomain"]!=design["nextDomain"]
             || row["hypothesis"]!=json!(hypothesis)
             || row["designSummary"]!=json!(summary)
-            || row["improvedHoldouts"]!=candidate["evaluation"]["metrics"]["improvedHoldouts"]
-            || row["metaHoldoutGains"]!=candidate["evaluation"]["metrics"]["metaHoldoutGains"]
+            || row["improvedHoldouts"].as_u64()
+                !=Some(candidate["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0))
+            || row["metaHoldoutGains"].as_u64()
+                !=Some(candidate["evaluation"]["metrics"]["metaHoldoutGains"].as_u64().unwrap_or(0))
             || row["sourceCompatibility"]!=json!(
                 if identical>0 {"some_identical"}else{"requires_reimplementation"})
             || row["qualityProvenForThisDescendant"]!=false {
