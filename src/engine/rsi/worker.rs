@@ -1,5 +1,10 @@
 //! Compiled descendant worker entry, plan attestation and model tool orchestration.
-use super::*;
+use super::{
+    AppState, Value, JobContext, Path, json,
+    jobs, rsi, DOMAINS, allowed_trial_campaigns, trial_owned_by,
+    focus_file_context, selection_objective, evolved_execution_action, execution_action_contract, research_continuation,
+    pending_failed_patch_domain, pending_method_recovery_domain, select_generation_strategy, reconcile_descendant_target, compiled_system_generation_plan,
+};
 
 pub async fn plan_generation(path:&str)->Result<(),String>{
     let snapshot:Value=serde_json::from_slice(&std::fs::read(path)
