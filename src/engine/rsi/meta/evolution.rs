@@ -88,7 +88,7 @@ fn valid_protocol(p:&Protocol)->bool {
     let mut ids=BTreeSet::new();
     for op in &p.operators {
         if !identity(&op.id) || !ids.insert(op.id.as_str())
-            || !crate::engine::rsi_system::valid_evolution_role(&op.role)
+            || !crate::engine::rsi_component_birth::valid_role(&op.role)
             || !crate::engine::rsi_evolve::DOMAINS.contains(&op.domain.as_str())
             || !crate::engine::rsi::safe_path(&op.path)
             || !(24..=1800).contains(&op.objective.chars().count())
