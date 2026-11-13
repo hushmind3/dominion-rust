@@ -11,6 +11,9 @@ fn meta_algorithm(path:&str)->bool {
         "src/engine/rsi/meta/evolution.rs"
         |"src/engine/rsi/meta/composition.rs"
         |"src/engine/rsi/meta/policy_dispatch.rs"
+        |"src/engine/rsi/meta/controller_selection.rs"
+        |"src/engine/rsi/meta/controller_policy.rs"
+        |"src/engine/rsi/meta/reflexive_design.rs"
         |"src/engine/rsi_meta_controller.rs"
         |"src/engine/rsi_program_graph.rs"
         |"src/engine/rsi_principle_learning.rs"
@@ -56,6 +59,10 @@ fn executed(state:&AppState,history:&[Value],index:usize)->bool {
         && g["controllerPlan"]["metaEvolutionProgram"]==*plan
         && job["input"]["rsiMetaEvolutionProgram"]==*plan
         && job["input"]["rsiControllerPlan"]==g["controllerPlan"]
+        && job["input"]["rsiExperimentContract"]==g["experimentContract"]
+        && crate::engine::rsi_evolve::experiment_contract::valid(
+            &g["controllerPlan"],g["evaluationProfileSha256"].as_str().unwrap_or(""),
+            &g["experimentContract"])
         && g["compiledPlanExecuted"]["evolutionProtocolRevision"]==plan["revision"]
         && job["rsiCompiledPlanExecuted"]==g["compiledPlanExecuted"]
         && crate::engine::rsi_evolve::meta_evolution::valid(
