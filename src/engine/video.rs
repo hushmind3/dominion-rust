@@ -10,6 +10,8 @@ use crate::{
 use serde_json::{json, Value};
 #[path = "video/runway.rs"]
 mod runway;
+#[path = "video/shot_plan.rs"]
+mod shot_plan;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
