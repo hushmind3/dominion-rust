@@ -106,3 +106,5 @@ Actual GitHub Actions `CI` was executed. The first completed release test run ha
 - New `rsi/execution/observation.rs` defines typed `GenerationObservation` of the original session and worker: model-only tool timeline, per-job and policy-revision program stages/rules, provider route, and tokens. The campaign no longer collects those records itself, shrinking `campaign.rs` from about 1,282 to about 1,222 lines. A source-only regression tests session, job and policy provenance.
 
 The new head's CI final result must be obtained from GitHub Actions. No passing claim is made from the earlier partial 803/806 outcome. No training/fine-tuning/model-weight adaptation is added to RSI.
+
+The dynamic architecture frontier now keeps `src/engine/rsi/meta/experiment_policy.rs` as an individually addressable experimental-design method even when another source is chosen as the representative file. Without this invariant, an experiment-designer failure could produce a redesign proposal with **no reachable code target**. The new entry uses the current code-indexed source SHA and the existing frozen adoption gate; adding a file name alone does not prove improvement.
