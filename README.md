@@ -264,18 +264,22 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 
 ## 서브3: 구조·계보 검증 정리 (2026-11-13)
 
+- `rsi.rs`의 증명 관련 로직은 `rsi/proof.rs`로 분리돼 후보 평가·채택 코드와의 책임을 나눕니다. `rsi_system/peer_verifier.rs`도 수정 가능한 교차 계보 선택기와 분리한 고정 원본 검증기입니다.
+
+
 - `src/engine/rsi_system.rs`의 소스 모델/프런티어와 `src/engine/rsi_system/{design,lineage,guidance,proposal,handoff}.rs`의 책임 경계를 분리했습니다. 모델이 선언한 설계와 독립 영수증이 검증하는 채택은 서로 다른 경계입니다.
-- `lineage::validate_peer_references`는 과거 캠페인의 후보 ID·패치 SHA뿐 아니라 실제 채택 기록에서 추출한 역할·설계 요약·품질 측정·대상 파일을 다시 비교합니다. 수정된 후손의 계획에는 검증 가능한 참조만 사용됩니다.
+- `peer_verifier::validate_peer_references`는 과거 캠페인의 후보 ID·패치 SHA뿐 아니라 실제 채택 기록에서 추출한 역할·설계 요약·품질 측정·대상 파일을 다시 비교합니다. 수정된 후손의 계획에는 검증 가능한 참조만 사용됩니다.
 - API/jobs → 캠페인 → 재빌드 후손 계획 → worker/도구 편집 → worktree 동결 페어 평가 → 채택 → 재빌드 → 계보·방법 계승 → 인과 폐루프 감사의 실제 경로와 한계는 [서브3 구조 설명](docs/RSI-SUB3-STRUCTURE-2026-11-13.md)에 정리했습니다.
 - 분리된 5개 모듈도 개선기 소스 역할 분류와 메타 인과 감사에 등록했습니다. 세대의 평가 주장 또한 독립 후보의 평가 ID·원본 수치·증거 SHA와 대조합니다.
 - 테스트·컴파일·빌드·벤치마크는 실행하지 않았으며, 성능 향상과 심판 점수를 선포하지 않습니다.
 
 ## 서브3: 동일 RSI 성공 판정 및 개선법 재계승 (재판정 이후)
 
-- `src/engine/rsi.rs::recursive_proof_report`가 **캠페인·자동 종료·API·검증 화면**의 단일 전체 RSI 완성 판정입니다. `capabilityDemonstrated`는 오직 `rsi_system/handoff.rs::handoff_evidence`와 `rsi_causal_closure.rs::audit`가 인정한 전체 시스템 폐회로만 표시합니다. 일반 코드 채택 성과는 `generationCapabilityProven`으로 독립 표기합니다.
+- `src/engine/rsi/proof.rs::recursive_proof_report`가 **캠페인·자동 종료·API·검증 화면**의 단일 전체 RSI 완성 판정입니다. `capabilityDemonstrated`는 오직 `rsi_system/handoff.rs::handoff_evidence`와 `rsi_causal_closure.rs::audit`가 인정한 전체 시스템 폐회로만 표시합니다. 일반 코드 채택 성과는 `generationCapabilityProven`으로 독립 표기합니다.
 - `src/engine/rsi/execution/campaign.rs::proof_goal_reached`의 자동 종료와 `src/api/rsi.rs::{campaign,verify,list,campaigns}`는 같은 판정 객체를 재검산합니다. 생성 횟수·일반 소스 개선만으로 전체 RSI 성공이나 종료를 기록하지 않습니다.
 - `rsi_causal_closure.rs::audit`는 4개 연속 채택된 후손의 실제 빌드·작업·편집·동결 평가에 더해 **메타 A가 만든 실행 절차 → 후손 B의 확인된 소스 쓰기 → B 결과를 받은 메타 A2의 다른 절차 버전 → 후손 B2의 확인된 소스 쓰기**를 검사합니다. 각 메타/기능 세대는 독립 평가의 실제 홀드아웃 실패→성공 사례를 가져야 합니다.
 - `rsi_system/lineage.rs::lineage_capsule`은 이전의 구체적인 개선법 ID·수정 버전·실행 영수증과 성과 지표를 짧게 보존해 후손의 실제 계획 문맥으로 보냅니다. 선언·프롬프트만으로 증명되지는 않습니다.
+- `src/engine/rsi/proof.rs`(전체 RSI 판정), `rsi_system/{design,proposal,handoff,peer_verifier}.rs`(검증과 출처 대조)는 RSI 후보의 `safe_path`에서 제외했습니다. `rsi_system/{lineage,guidance}.rs`는 수정 가능한 후손의 학습·계획 코드로 남습니다. 보호된 판정기 편집은 메타 개선 성과로 계산하지 않습니다.
 - [수정 구조·증거 경로 설명](docs/RSI-SUB3-STRUCTURE-2026-11-13.md). 소스 구조 검토만 수행했으며 새로운 완성이나 유료 토큰 캠페인 성공은 주장하지 않습니다.
 
 ## 서브3: 재컴파일 자기개선 행동 비교 경로 (2026-11-13)
