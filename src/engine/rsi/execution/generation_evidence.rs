@@ -139,6 +139,7 @@ pub(super) fn capture_generation_evidence(
             "factorialExperiment":current["input"]["rsiFactorialExperiment"],
             "reflexiveProgram":current["input"]["rsiReflexiveProgram"],
             "openImprovementProgram":current["input"]["rsiOpenImprovementProgram"],
+            "metaEvolutionProgram":current["input"]["rsiMetaEvolutionProgram"],
             "principleLearning":current["input"]["rsiPrincipleLearning"],
             "apiRoutePolicy":current["input"]["rsiApiRoutePolicy"],
             "mutualProgram":current["input"]["rsiMutualProgram"]
