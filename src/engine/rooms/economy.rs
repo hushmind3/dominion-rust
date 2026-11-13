@@ -40,6 +40,30 @@ pub(super) fn should_finish(room: &Value, owner_text: &str,
         b["content"].as_str().unwrap_or(""))
 }
 
+
+/// Route only among *owner-labelled* cost tiers. Never infer model price from
+/// a name, model size or a provider's marketing label. The default rotating
+/// pool is preserved when tiering is off or no relevant label exists.
+pub(super) fn select_tier(
+    room: &Value, owner_text: &str, roster: &[String], agent_id: &str,
+) -> Option<(String, String, Option<String>, String)> {
+    if room["modelTiering"] != true { return None; }
+    let tier = if super::is_deep_request(owner_text) { "frontier" } else { "economy" };
+    let mut matching = room["models"].as_array()?.iter().filter_map(|entry| {
+        (entry["costTier"].as_str() == Some(tier)).then(|| {
+            let provider = entry["providerId"].as_str()?.trim();
+            let model = entry["model"].as_str()?.trim();
+            if provider.is_empty() || model.is_empty() { return None; }
+            let effort = entry["reasoningEffort"].as_str()
+                .filter(|s|!s.is_empty()).map(str::to_string);
+            Some((provider.to_string(), model.to_string(), effort, tier.to_string()))
+        }).flatten()
+    }).collect::<Vec<_>>();
+    if matching.is_empty() { return None; }
+    let slot = roster.iter().position(|name| name == agent_id).unwrap_or(0) % matching.len();
+    Some(matching.swap_remove(slot))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
