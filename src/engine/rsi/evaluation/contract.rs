@@ -164,3 +164,17 @@ pub(crate) fn valid(plan:&Value,evaluation_profile_sha256:&str,observed:&Value)-
         && sha(&actual.signature,64)
         && bind(plan,evaluation_profile_sha256).is_ok_and(|expected|expected==*observed)
 }
+
+/// The frozen evaluator sees the actual candidate patch paths. An isolated
+/// intervention can never claim independent adoption after touching another
+/// source component, even if the model or its tool runtime omitted a receipt.
+pub(crate) fn observed_scope(input:&Value,changed:&[Value])->bool {
+    let scope=&input["rsiMetaExperimentDispatch"];
+    if scope.is_null(){return true;}
+    let allowed=scope["allowedPaths"].as_array();
+    if let Some(allowed)=allowed {
+        !changed.is_empty() && changed.iter().all(|path|
+            path.as_str().is_some_and(|path|allowed.iter().any(|allowed|
+                allowed.as_str()==Some(path))))
+    }else{true}
+}
