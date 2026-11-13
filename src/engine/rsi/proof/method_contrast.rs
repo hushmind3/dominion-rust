@@ -17,6 +17,47 @@ fn actual_method_use(g:&Value)->bool {
     verified_procedure||induced_program
 }
 
+/// Replay the method decision against original execution + tool records.
+/// A generated summary alone cannot claim that a method performed a real edit.
+fn original_method_executed(state:&AppState,g:&Value,job:&Value)->bool {
+    if !actual_method_use(g){return false;}
+    let Some(session)=job["sessionId"].as_str() else{return false};
+    let executions=state.store.all("execution").into_iter()
+        .filter(|e|e["sessionId"]==session).collect::<Vec<_>>();
+    let operations=state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"]==session).collect::<Vec<_>>();
+    let logged=g["methodActions"].as_array().is_some_and(|actions|actions.iter().any(|a|{
+        let Some(execution)=executions.iter().find(|e|e["id"]==a["executionId"])
+            else{return false};
+        let decision=a["decision"].is_object()
+            && a["decision"]==execution["rsiMethodDecision"];
+        let induced=a["inducedProgramDecision"].is_object()
+            && (a["inducedProgramDecision"]==execution["rsiActionProgramDecision"]
+                || execution["rsiActionProgramDecisionHistory"].as_array()
+                    .is_some_and(|rows|rows.contains(&a["inducedProgramDecision"])));
+        (decision||induced) && operations.iter().any(|op|
+            op["runId"]==execution["id"]
+                && matches!(op["tool"].as_str(),Some(
+                    "workspace_replace"|"workspace_replace_range"
+                    |"workspace_replace_function"|"workspace_write"))
+                && op["outcomeUnknown"]!=true
+                && op["status"]!="interrupted")
+    }));
+    let procedures=job["sessionId"].as_str()
+        .and_then(|id|state.store.get("session",id))
+        .is_some_and(|session|g["methodExecutions"].as_array()
+            .is_some_and(|rows|rows.iter().any(|row|
+                session["rsiMethodExecutions"].as_array()
+                    .is_some_and(|logged|logged.contains(row))
+                && row["result"]["verified"]==true
+                && row["result"]["followed"]==true
+                && row["operationIds"].as_array().is_some_and(|ids|
+                    !ids.is_empty()&&ids.iter().all(|id|operations.iter().any(|op|
+                        op["id"]==*id&&op["origin"]=="procedure"
+                        && op["runId"]==row["executionId"]))))));
+    logged||procedures
+}
+
 /// This proves a bounded observed advantage for the same frozen task set.
 /// It is NOT proof of a statistical or isolated causal effect of the entire
 /// source revision. One model sample per arm can differ stochastically.
@@ -82,7 +123,7 @@ pub(super) fn evidence(state:&AppState,generation:&Value)->Value {
     let off_cases=off_candidate["evaluation"]["metrics"]["holdoutEvidence"]
         .as_array().cloned().unwrap_or_default();
     if on_cases.len()<2||off_cases.len()!=on_cases.len()
-        || !actual_method_use(generation) {return no();}
+        || !original_method_executed(state,generation,&on) {return no();}
     let mut seen=BTreeSet::new();
     let mut gains=0usize;let mut losses=0usize;
     let mut task_pairs=0usize;
