@@ -359,7 +359,8 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
     }
     match tool_name(item) {
         "delegate_task" => delegated_successful_operations(item).iter().any(is_action_evidence),
-        "workspace_write" | "file_write" => true,
+        "workspace_write" | "workspace_replace" | "workspace_replace_range" | "file_write" =>
+            item["result"]["written"]==true,
         "shell_exec" | "terminal_exec" => {
             let args = item
                 .get("arguments")
