@@ -37,7 +37,9 @@
 - `src/engine/rooms.rs`에서는 대형 inline 테스트를 `src/engine/rooms/{pool_tests,tests}.rs`로 옮겨 실행 오케스트레이터 가독성을 높였습니다.
 - `src/engine/chat/room_context.rs`의 테스트는 `src/engine/chat/room_context/tests.rs`로 분리했습니다.
 - `src/engine/video.rs` / `src/api/video.rs` 테스트는 각각 `src/engine/video/tests.rs` / `src/api/video/tests.rs`로 분리했고, 새 LTX 실행기는 `video/ltx.rs`입니다.
-- Rust `#[cfg(test)]` 하위 모듈만 이동하였으며 production 모듈 경계/테스트 실행은 변경하지 않았습니다.
+- `src/engine/memory.rs`의 기억 검색·에이전트 격리·회귀 테스트 4개 하위 모듈은 `src/engine/memory/{tests,memory_algorithm_tests,per_agent_memory_learning_tests,regression_memory_visibility_tests}.rs`로 옮겼습니다.
+- `src/engine/{algorithms,improve,learning,jobs}.rs`, `src/api/providers.rs`, `src/db.rs`의 large inline test 모듈도 각 파일명 아래 `tests.rs`로 옮겨 프로덕션 구현과 검증 책임을 분리했습니다.
+- Rust `#[cfg(test)]` 하위 모듈만 이동하였으며 production 호출 그래프·테스트 실행은 변경하지 않았습니다.
 
 ## 4. 다음 핵심 개선 경계 (이번 변경에 아직 구현되지 않은 부분)
 
