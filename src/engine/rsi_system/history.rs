@@ -33,6 +33,33 @@ fn adopted_source_lineage_matches(candidate:&Value,generation:&Value)->bool {
                         sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 
+/// An experiment-design operator earns a sample ONLY if the ORIGINAL native
+/// worker executed that exact source-backed selection. A copied JSON value
+/// is not training evidence for an evolving planner policy.
+fn replayed_experiment_operator(
+    state:&crate::state::AppState,generation:&Value
+)->Value {
+    let Some(job)=generation["jobId"].as_str()
+        .and_then(|id|state.store.get("job",id)) else{return Value::Null};
+    let choice=&generation["experimentOperator"];
+    if choice["source"]!="compiled_replay_trained_experiment_operator_v1"
+        || job["id"]!=generation["jobId"]
+        || job["kind"]!="rsi_generation"
+        || job["rsiExperimentOperatorExecuted"]!=true
+        || job["input"]["rsiGeneratorCommit"]!=generation["generatorCommit"]
+        || &job["input"]["rsiExperimentOperator"]!=choice
+        || &job["input"]["rsiDescendantPlan"]["experimentOperator"]!=choice
+        || job["input"]["rsiExperimentContract"]!=generation["experimentContract"]
+        || job["rsiDomain"]!=choice["target"]["domain"]
+        || job["input"]["rsiFocusFiles"].as_array().is_none_or(|paths|
+            !paths.iter().any(|row|row==&choice["target"]["path"]))
+        || crate::engine::rsi_evolve::contract::validate(
+            &job["input"]["rsiDescendantPlan"],&job["input"]).is_err() {
+        return Value::Null;
+    }
+    choice.clone()
+}
+
 /// Rebuild experimental learning labels from original immutable paired
 /// receipts. A mutable generation JSON can report either a fabricated win
 /// or a fabricated loss; neither should train a descendant's meta-method.
@@ -57,6 +84,9 @@ pub(crate) fn revalidated_method_history(
                 && crate::engine::rsi::replayed_pair_metrics(state,candidate)
                     .is_some_and(|metrics|metrics==candidate["evaluation"]["metrics"]));
         checked["pairedMeasured"]=json!(measured);
+        checked["experimentOperator"]=if measured {
+            replayed_experiment_operator(state,generation)
+        }else{Value::Null};
         if !measured {
             // Preserve operational failure details, but never invent a
             // benchmark outcome or Brier training label without a receipt.

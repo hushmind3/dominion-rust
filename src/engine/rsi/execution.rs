@@ -17,6 +17,11 @@ use super::{
     run_compiled_method_control,
 };
 
+#[path = "execution/compiled_plan.rs"]
+mod compiled_plan;
+#[path = "execution/generator.rs"]
+mod generator;
+
 pub(super) async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -83,65 +88,11 @@ pub(super) async fn run_loop(
             .as_str()
             .ok_or("세대 커밋 없음")?
             .to_string();
-        if built_commit != head {
-            if !built_commit.is_empty() && binary.is_file() {
-                std::fs::copy(&binary,&control_binary)
-                    .map_err(|e|format!("이전 개선기 대조 바이너리 보존 실패: {e}"))?;
-                record["controlGeneratorCommit"]=json!(built_commit);
-                record["controlGeneratorBinarySha256"]=json!(format!("{:x}",
-                    Sha256::digest(std::fs::read(&control_binary)
-                        .map_err(|e|e.to_string())?)));
-            }else{
-                record["controlGeneratorCommit"]=Value::Null;
-                record["controlGeneratorBinarySha256"]=Value::Null;
-            }
-            record["phase"] = json!("building_generator");
-            save(context, record)?;
-            let mut build = Command::new(rsi_worktree::cargo_executable());
-            build
-                .current_dir(&lab)
-                .args([
-                    "build",
-                    "--release",
-                    "--locked",
-                    "--bin",
-                    "dominion-rust",
-                    "--target-dir",
-                ])
-                .arg(&target)
-                .env("DOMINION_RSI_BUILD_COMMIT", &head);
-            let build_timeout = if remaining == u64::MAX {
-                3600
-            } else {
-                remaining.min(600)
-            };
-            let output = command(context, build, Duration::from_secs(build_timeout)).await?;
-            if !output.status.success() {
-                return Err(format!(
-                    "차세대 개선기 빌드 실패: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                        .chars()
-                        .rev()
-                        .take(2000)
-                        .collect::<String>()
-                        .chars()
-                        .rev()
-                        .collect::<String>()
-                ));
-            }
-            let mut identity = Command::new(&binary);
-            identity.arg("--rsi-worker-identity");
-            let output = command(context, identity, Duration::from_secs(10)).await?;
-            if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != head {
-                return Err("실제 개선기 바이너리와 세대 커밋이 다릅니다.".into());
-            }
-            record["generatorBinarySha256"] = json!(format!(
-                "{:x}",
-                Sha256::digest(std::fs::read(&binary).map_err(|e| e.to_string())?)
-            ));
-            record["actualGeneratorCommit"] = json!(head);
-            built_commit = head.clone();
-        }
+        generator::ensure(generator::GeneratorBuild {
+            context,record,head:&head,built_commit:&mut built_commit,
+            binary:&binary,control_binary:&control_binary,lab:&lab,
+            target:&target,remaining
+        }).await?;
         let attempt = record["attempts"].as_u64().unwrap_or(0) + 1;
         let mut child_input = input.clone();
         child_input["rsiSourceDir"] = json!(lab);
@@ -309,141 +260,11 @@ pub(super) async fn run_loop(
         // not only its instruction text. Keep the originally ranked options
         // as evidence while narrowing an implementation stage to one source.
         bind_action_to_source(&context.state,&mut child_input,&recorded_history);
-        if input["rsiSystemEvolution"]==true {
-            // Sub1's compiled-planner principle, extended with Sub3's full
-            // source self-model. This EXECUTES the rebuilt descendant instead
-            // of asking the old coordinator to impersonate its next plan.
-            record["phase"]=json!("planning_next_generator");
-            save(context,record)?;
-            let plan_dir=context.state.config.data_dir.join("rsi-controller-plans");
-            std::fs::create_dir_all(&plan_dir).map_err(|e|e.to_string())?;
-            let plan_path=plan_dir.join(format!("{}-{attempt}.json",context.job_id));
-            let snapshot=json!({
-                "campaignId":context.job_id,
-                "generatorCommit":head,
-                "attempt":attempt,
-                "historyCount":recorded_history.len(),
-                "input":child_input
-            });
-            std::fs::write(&plan_path,
-                serde_json::to_vec(&snapshot).map_err(|e|e.to_string())?)
-                .map_err(|e|e.to_string())?;
-            let mut planner=Command::new(&binary);
-            planner.arg("--rsi-plan-generation").arg(&plan_path)
-                .current_dir(&lab)
-                .env("DOMINION_DATA",std::fs::canonicalize(
-                    &context.state.config.data_dir).map_err(|e|e.to_string())?)
-                .env("DOMINION_WORKSPACE",&lab)
-                .env_remove("DOMINION_DESKTOP_PARENT");
-            let result=command(context,planner,Duration::from_secs(45)).await;
-            let _=std::fs::remove_file(&plan_path);
-            let result=result?;
-            if !result.status.success() {
-                return Err(format!("실제 후손의 전체 시스템 계획 실행 실패: {}",
-                    String::from_utf8_lossy(&result.stderr).chars().take(1500).collect::<String>()));
-            }
-            if result.stdout.len()>2*1024*1024 {
-                return Err("후손 계획이 허용된 크기를 초과했습니다.".into());
-            }
-            let plan:Value=serde_json::from_slice(&result.stdout)
-                .map_err(|e|format!("후손 계획 JSON 오류: {e}"))?;
-            // A supervisor must never impersonate the new descendant's
-            // strategy choice. Verify only source identities and independently
-            // paired foreign-lineage receipts, not an old meta equation.
-            crate::engine::rsi_system::validate_plan_evidence(
-                &context.state,&lab,&head,
-                child_input["rsiIndexId"].as_str().unwrap_or(""),
-                &plan,&recorded_history)?;
-            crate::engine::rsi_meta_controller::validate_peer_lineages(
-                &context.state,&plan["peerLineages"],
-                crate::engine::rsi_meta_controller::comparison_profile(&child_input).as_deref(),
-                &context.job_id)?;
-            let domain=plan["domain"].as_str().filter(|d|DOMAINS.contains(d))
-                .ok_or("후손이 유효하지 않은 개선 분야를 계획했습니다.")?;
-            // The supervisor validates endpoint ownership, pinned frozen
-            // suite and revision digest, NEVER recomputes an old selector's
-            // ranking law. New descendants may evolve that learning law.
-            let original_objective=crate::engine::memory::stable_id(&[
-                child_input["rsiObjective"].as_str().unwrap_or("")
-            ]);
-            if !crate::engine::rsi_model_ecology::valid_facts(
-                &context.state,&child_input,&plan["modelRoute"],&head,
-                domain,&original_objective){
-                return Err("후손의 모델 선택이 승인된 제공자·평가 계보와 일치하지 않습니다.".into());
-            }
-            if !crate::engine::rsi_archive::validate_selection(
-                &context.state,&plan["archiveSelection"],&head,
-                &child_input["rsiFrozenCases"],
-                child_input["rsiSourceBranch"].as_str().unwrap_or("")){
-                return Err("후손이 고른 영구 아카이브 부모의 독립 검증 또는 브랜치가 일치하지 않습니다.".into());
-            }
-            let focus=plan["focusFiles"].as_array()
-                .ok_or("후손의 소스 계획이 없습니다.")?;
-            if plan["source"].as_str().is_none_or(str::is_empty)
-                || plan["generatorCommit"]!=head
-                || plan["historyCount"].as_u64()!=Some(recorded_history.len() as u64)
-                || plan["indexId"]!=child_input["rsiIndexId"]
-                || plan["objectiveId"]!=crate::engine::memory::stable_id(
-                    &[&selection_objective(&child_input)])
-                || focus.len()>3 || focus.iter().any(|row|row.as_str()
-                    .is_none_or(|p|!crate::engine::rsi::safe_path(p)
-                        || !lab.join(p).is_file()
-                        || (crate::engine::code_index::indexed_source_hash(
-                            &context.state,child_input["rsiIndexId"].as_str().unwrap_or(""),p)
-                            .is_none()
-                            && !plan["systemBlueprint"]["sourceInventory"]
-                                .as_array().is_some_and(|sources|sources.iter().any(|row|
-                                    row["path"]==p && row["sha256"].as_str()
-                                        .is_some_and(|sha|sha.len()==64))))))
-            {
-                return Err("후손 소스·계보·인덱스·전체 구조 계획이 일치하지 않습니다.".into());
-            }
-            child_input["rsiSelectedDomain"]=json!(domain);
-            child_input["rsiTargetDomain"]=json!(domain);
-            child_input["rsiTargetPlan"]=plan["targetPlan"].clone();
-            if input["rsiFocusFiles"].as_array().is_none_or(Vec::is_empty) {
-                child_input["rsiFocusFiles"]=json!(focus);
-                child_input["rsiAutoFocus"]=json!(true);
-            }
-            child_input["rsiFocusSelection"]=json!({
-                "source":"rebuilt_descendant_system_controller",
-                "candidates":plan["ranked"],
-                "domain":domain,
-                "generatorCommit":head,
-                "sourceIndexId":child_input["rsiIndexId"]
-            });
-            child_input["rsiSystemBlueprint"]=plan["systemBlueprint"].clone();
-            child_input["rsiImprovementDirective"]=plan["improvementDirective"].clone();
-            child_input["rsiMetaPolicy"]=plan["metaPolicy"].clone();
-            child_input["rsiMetaActionPolicy"]=plan["metaActionPolicy"].clone();
-            child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
-            child_input["rsiMutualCurriculum"]=plan["mutualCurriculum"].clone();
-            child_input["rsiFactorialCurriculum"]=plan["factorialCurriculum"].clone();
-            child_input["rsiRecursiveDiscovery"]=plan["recursiveDiscovery"].clone();
-            child_input["rsiRecursiveScienceActive"]=plan["recursiveScienceActive"].clone();
-            child_input["rsiPrincipleProgramme"]=plan["principleProgramme"].clone();
-            child_input["rsiPrincipleActive"]=plan["principleActive"].clone();
-            child_input["rsiOpenProgramPlan"]=plan["openProgramPlan"].clone();
-            child_input["rsiArchiveSelection"]=plan["archiveSelection"].clone();
-            child_input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
-            child_input["rsiEditPolicy"]=plan["editPolicy"].clone();
-            child_input["rsiModelRoute"]=plan["modelRoute"].clone();
-            if plan["modelRoute"]["selected"].is_object(){
-                child_input["providerId"]=plan["modelRoute"]["selected"]["providerId"].clone();
-                child_input["model"]=plan["modelRoute"]["selected"]["model"].clone();
-            }
-            child_input["rsiDescendantPlan"]=plan.clone();
-            child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
-            record["nextGenerationPlan"]=plan.clone();
-            context.state.store.audit("rsi.rebuilt_descendant_planned",json!({
-                "campaignId":context.job_id,"generatorCommit":head,
-                "attempt":attempt,"domain":domain,
-                "source":"compiled_descendant_system_controller_v3",
-                "modelImprovementDemonstrated":false
-            }));
-            save(context,record)?;
-            bind_action_to_source(&context.state,&mut child_input,&recorded_history);
-        }
+        compiled_plan::run(compiled_plan::PlannerRun {
+            context,parent_input:input,child_input:&mut child_input,
+            record,commit:&head,history:&recorded_history,lab:&lab,
+            binary:&binary,attempt
+        }).await?;
         // Real API/local model selection is a source-backed compiled policy.
         // The owner's baseline remains the default unless explicit opt-in
         // opens a configured model pool. Each actual child receives the
@@ -675,6 +496,14 @@ pub(super) async fn run_loop(
             crate::engine::rsi_meta_controller::comparison_profile(&current["input"]));
         generation["evaluationProfileSha256"]=generation["comparisonProfileSha256"].clone();
         generation["descendantPlan"]=current["input"]["rsiDescendantPlan"].clone();
+        generation["experimentContract"]=
+            current["input"]["rsiExperimentContract"].clone();
+        // Count only the compiled experiment design that reached the actual
+        // worker target; a later inherited-return override is NOT this
+        // operator's independent successful experiment.
+        generation["experimentOperator"]=if current["rsiExperimentOperatorExecuted"]==true {
+            current["input"]["rsiExperimentOperator"].clone()
+        }else{Value::Null};
         generation["systemBlueprintVerified"]=current["rsiSystemBlueprintVerified"].clone();
         generation["systemDesign"]=action_session["rsiSystemDesign"].clone();
         // The rule-induction trainer sees ONLY actual tool operations,

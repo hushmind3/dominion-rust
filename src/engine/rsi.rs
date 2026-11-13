@@ -31,6 +31,7 @@ pub(crate) fn sealed_measurement_path(path:&str)->bool {
         "src/engine/rsi_oracle_fixture.rs",
         "src/engine/rsi_metrics.rs",
         "src/engine/rsi/closure.rs",
+        "src/engine/rsi/contract.rs",
         "src/engine/rsi_system/proof.rs",
         "src/engine/rsi_system/evidence.rs",
         "src/engine/rsi_system/history.rs",

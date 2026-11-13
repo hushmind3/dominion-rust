@@ -97,19 +97,10 @@ pub(crate) fn compiled_system_generation_plan(
     let open_program=if explicit_focus{Value::Null}else{
         crate::engine::rsi_open_program::synthesize(history,&frontier,commit)
     };
-    let mut architecture_target=if open_program["target"].is_object(){
-        open_program["target"].clone()
-    }else if principle["shouldProbeTaskMethod"]==true
-        && principle["target"].is_object()
-        && principle["methodTarget"].is_object(){
-        principle["target"].clone()
-    }else if meta["target"].is_object(){
-        meta["target"].clone()
-    }else{frontier.first().cloned().unwrap_or(Value::Null)};
-    // A predecessor can AUTHOR the successor's task program. The compiled
-    // descendant interprets it against its own newly built source graph and
-    // silently drops stages whose path/role/hash is no longer current.
-    let mut successor_stage=if open_program["stage"].is_object(){
+    // Candidate-producing operator implementations remain editable. The
+    // compiled method learns which experiment designer to invoke next from
+    // independently replayed source outcomes, rather than a fixed phase map.
+    let inherited_stage=if open_program["stage"].is_object(){
         open_program["stage"].clone()
     }else{
         crate::engine::rsi_system::inherited_stage(history,&frontier)
@@ -119,6 +110,23 @@ pub(crate) fn compiled_system_generation_plan(
                 history,&frontier))
             .unwrap_or(Value::Null)
     };
+    let operator_choice=if explicit_focus {
+        json!({"source":"explicit_owner_focus","id":"explicit_owner_focus",
+            "target":meta["target"]})
+    }else{
+        super::operator_policy::select(
+            history,&frontier,&open_program,&principle,&meta,&inherited_stage)
+    };
+    let selected_operator=operator_choice["id"].as_str()
+        .unwrap_or("architecture_frontier_exploration").to_owned();
+    let mut architecture_target=operator_choice["target"].as_object()
+        .map(|_|operator_choice["target"].clone())
+        .or_else(||frontier.first().cloned())
+        .unwrap_or(Value::Null);
+    let mut successor_stage=if matches!(selected_operator.as_str(),
+        "authored_experiment_program"|"inherited_successor_program"){
+        inherited_stage
+    }else{Value::Null};
     // An independently adopted A->B outcome can feed back into the SAME
     // inherited executable A method. This is a real compiled source target,
     // not a prompt telling the agent to claim self-improvement. An adopted
@@ -183,13 +191,15 @@ pub(crate) fn compiled_system_generation_plan(
     // user target or forbid its ordinary source edits at the tool gateway.
     // A live, adopted predecessor's programme takes precedence. Otherwise
     // the compiled meta agent authors the next A->B->A source curriculum.
-    let mutual=if successor_stage.is_object() || explicit_focus || enforce_meta_repair{
+    let mutual=if successor_stage.is_object() || explicit_focus || enforce_meta_repair
+        || selected_operator!="architecture_frontier_exploration"{
         Value::Null
     }else{
         crate::engine::rsi_mutual_evolution::curriculum(&frontier,&meta,DOMAINS)
     };
     // This experiment designer is compiled into the NEW child and can evolve.
-    let raw_factorial=if successor_stage.is_object() || explicit_focus || enforce_meta_repair{
+    let raw_factorial=if successor_stage.is_object() || explicit_focus || enforce_meta_repair
+        || selected_operator!="architecture_frontier_exploration"{
         Value::Null
     }else{
         crate::engine::rsi_causal_curriculum::design(
@@ -203,13 +213,15 @@ pub(crate) fn compiled_system_generation_plan(
     // When the scientific programme is only inventing from no evidence,
     // let the descendant first create an independently testable task↔method
     // principle and measure whether it makes its NEXT descendant stronger.
-    let principle_active=!explicit_focus && !enforce_meta_repair
+    let principle_active=selected_operator=="new_improvement_principle"
+        && !explicit_focus && !enforce_meta_repair
         && !successor_stage.is_object()
         && principle["target"].is_object()
         && principle["methodTarget"].is_object()
         && principle["shouldProbeTaskMethod"]==true
         && matches!(phase.as_str(),"invent_new_intelligence"|"observe_factorial");
-    let scientific_active=!explicit_focus && !enforce_meta_repair
+    let scientific_active=selected_operator=="architecture_frontier_exploration"
+        && !explicit_focus && !enforce_meta_repair
         && !principle_active
         && !open_program["stage"].is_object()
         && suggested["target"].is_object()
@@ -243,7 +255,9 @@ pub(crate) fn compiled_system_generation_plan(
         .filter(|domain|DOMAINS.contains(domain)).map(str::to_string);
     let continuation=if successor_domain.is_some()||inherited.is_some()
         ||architecture_domain.is_some(){None}else{research_continuation(history)};
-    let selected=if enforce_meta_repair{
+    let selected=if enforce_meta_repair
+        || selected_operator=="meta_controller_rewrite"
+        || selected_operator=="new_improvement_principle" {
         architecture_domain.clone()
     }else{
         scientific_domain.or(successor_domain).or(factorial_domain)
@@ -411,7 +425,7 @@ pub(crate) fn compiled_system_generation_plan(
         ]));
     let edit_policy=inherited_edit_policy(state,input,history,
         &model_route["selected"],&domain);
-    Ok(json!({
+    let mut plan=json!({
         "source":"compiled_descendant_system_controller_v3",
         "generatorCommit":commit,
         "historyCount":history.len(),
@@ -428,6 +442,7 @@ pub(crate) fn compiled_system_generation_plan(
         "architectureFrontier":frontier,
         "architectureTarget":architecture_target,
         "metaPolicy":meta,
+        "experimentOperator":operator_choice,
         "metaActionPolicy":meta["controlPolicy"],
         "downstreamMethodFeedback":downstream_method_feedback,
         "methodReapplication":method_reapplication,
@@ -446,6 +461,9 @@ pub(crate) fn compiled_system_generation_plan(
         "improvementDirective":directive,
         "decisionOwner":"rebuilt_descendant_binary",
         "frozenAuthority":"resident_independent_evaluator"
-    }))
+    });
+    plan["experimentContract"]=
+        crate::engine::rsi_evolve::contract::derive(&plan,input)?;
+    Ok(plan)
 }
 

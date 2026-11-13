@@ -10,6 +10,7 @@ pub(super) const EXECUTABLE_METHOD_SOURCES:&[&str]=&[
     "src/engine/rsi_meta_controller/peer_transfer.rs",
     "src/engine/rsi_meta_controller/observations.rs",
     "src/engine/rsi/planner/compiled.rs",
+    "src/engine/rsi/planner/operator_policy.rs",
     "src/engine/rsi/planner/actions.rs",
     "src/engine/rsi/planner/edit_policy.rs",
     "src/engine/rsi/learning/selection.rs",

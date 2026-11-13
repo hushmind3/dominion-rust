@@ -45,7 +45,10 @@ fn source_adoption(state:&AppState,g:&Value)->Option<(Value,Value)> {
         || job["input"]["rsiDescendantPlan"]!=g["descendantPlan"]
         || job["input"]["rsiMetaPolicy"]!=g["metaPolicy"]
         || job["rsiSystemBlueprintVerified"]!=true
-        || job["rsiMetaPolicyExecuted"]!=true {
+        || job["rsiMetaPolicyExecuted"]!=true
+        || crate::engine::rsi_evolve::contract::validate(
+            &job["input"]["rsiDescendantPlan"],&job["input"]).is_err()
+        || g["experimentContract"]!=job["input"]["rsiExperimentContract"] {
         return None;
     }
     Some((candidate,job))

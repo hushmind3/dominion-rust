@@ -23,6 +23,8 @@ pub(super) use strategy::{research_continuation,generation_target_plan,
 mod edit_policy;
 pub(super) use edit_policy::sub2_edit_policy_reward;
 use edit_policy::inherited_edit_policy;
+#[path = "planner/operator_policy.rs"]
+mod operator_policy;
 #[path = "planner/compiled.rs"]
 mod compiled;
 pub(super) use compiled::{evidence_based_meta_repair_focus,compiled_system_generation_plan};

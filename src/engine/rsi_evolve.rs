@@ -40,6 +40,8 @@ mod campaign;
 mod learning;
 #[path = "rsi/evaluation.rs"]
 mod evaluation;
+#[path = "rsi/contract.rs"]
+pub(crate) mod contract;
 #[path = "rsi/method_control.rs"]
 mod method_control;
 use method_control::run_compiled_method_control;

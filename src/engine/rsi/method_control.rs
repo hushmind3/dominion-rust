@@ -58,6 +58,7 @@ fn install_control_plan(input:&mut Value,plan:&Value,old:&str){
     }
     input["rsiInheritedCandidateId"]=plan["archiveSelection"]["candidateId"].clone();
     input["rsiDescendantPlan"]=plan.clone();
+    input["rsiExperimentContract"]=plan["experimentContract"].clone();
 }
 
 /// The control is allowed only when a real, independently adopted A changed
