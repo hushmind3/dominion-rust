@@ -48,3 +48,7 @@ No tests, compilation, benchmarks, CI, local/remote model campaign or weight tra
 ### Additional validation gap
 
 No compilation, runtime campaign, model sampling variance measurement or judge scoring was performed. The A→B→A→B path is *wired as source code* and guarded by real persisted evidence, but cannot be represented as a completed or statistically causal experiment until those jobs actually run. `causalAblationProven=false` is intentional.
+
+## 18:00 structural judgment supersession — open-ended meta experiment policy
+
+This document describes the **method ON/OFF branch** of the experiment runner. The newer [typed, self-evolvable meta-architecture](CHAMPION-META-ARCHITECTURE-2026-11-13.md) now makes ON/OFF an **eligible choice**, not a compulsory scheduled control for every generation. `methodAblation != false` grants permission; the rebuilt descendant's signed `ExperimentPolicy.selectedProtocol` chooses `matched_method_control` or `paired_source` using revalidated results, observed cost and source-compiled search principles. A pair-only experiment cannot claim method-control or full A→B→A→B closure. This separation lets future source edits evolve the experiment designer without editing frozen evaluator code.
