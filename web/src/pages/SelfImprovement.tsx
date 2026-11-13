@@ -197,7 +197,7 @@ export function SelfImprovementPage(){
   try{setVerify(await get<VerifyReport>('/api/rsi/campaigns/'+encodeURIComponent(campaign.id)+'/verify'))}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
- const closure=verify?.campaignId===campaign?.id?verify.recursiveClosure:undefined
+ const closure=verify?.campaignId===campaign?.id?verify?.recursiveClosure:undefined
  const controlTarget=closure?.revisedMethodControl?.matchedControlFound!==true
   ?closure?.revisedMethodControl?.treatedGenerationId
   :closure?.initialMethodControl?.matchedControlFound!==true
