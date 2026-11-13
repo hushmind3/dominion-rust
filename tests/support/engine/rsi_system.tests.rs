@@ -32,6 +32,33 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    fn compiled_model_frontier_includes_modular_runtime_and_transfer_sources() {
+        let root=std::env::temp_dir().join(format!("rsi-model-boundaries-{}",uuid::Uuid::new_v4()));
+        let dir=root.join("src/engine/models");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(root.join("src/engine/models.rs"),"mod inventory;").unwrap();
+        let modules=["inventory.rs","runtime_install.rs","registration.rs",
+            "session.rs","catalog.rs","downloads.rs"];
+        for name in modules {
+            fs::write(dir.join(name),format!("// {name}: model runtime module")).unwrap();
+            assert_eq!(source_role(&format!("src/engine/models/{name}")),"models");
+        }
+        let plan=blueprint(&root,"model-refactor",&[]);
+        let models=plan["architecture"].as_array().unwrap().iter()
+            .find(|row|row["role"]=="models").unwrap();
+        assert_eq!(models["discoveredSourceCount"],7);
+        for name in modules {
+            let expected=format!("src/engine/models/{name}");
+            assert!(models["representativeSources"].as_array().unwrap().iter()
+                .any(|row|row["path"]==expected),"{expected} is absent from model frontier");
+        }
+        let previous=plan["sourceTreeSha256"].clone();
+        fs::write(dir.join("downloads.rs"),"// changed transfer method").unwrap();
+        let next=blueprint(&root,"next",&[]);
+        assert_ne!(previous,next["sourceTreeSha256"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn system_self_model_tracks_real_source_revision_and_covers_all_capabilities() {
         let root=std::env::temp_dir().join(format!("rsi-system-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("src/engine")).unwrap();

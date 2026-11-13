@@ -37,7 +37,16 @@ const COMPONENTS: &[(&str,&[&str])] = &[
         "src/engine/rsi_component_birth.rs","src/engine/rsi_program_graph.rs",
         "src/engine/rsi_principle_learning.rs","src/engine/rsi_api_route_learning.rs"
     ]),
-    ("models",&["src/engine/models.rs","src/engine/cli_model.rs","src/engine/router.rs","src/engine/gateway.rs"]),
+    ("models",&[
+        "src/engine/models.rs",
+        "src/engine/models/inventory.rs",
+        "src/engine/models/runtime_install.rs",
+        "src/engine/models/registration.rs",
+        "src/engine/models/session.rs",
+        "src/engine/models/catalog.rs",
+        "src/engine/models/downloads.rs",
+        "src/engine/cli_model.rs", "src/engine/router.rs", "src/engine/gateway.rs",
+    ]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
 
@@ -97,6 +106,9 @@ fn source_role(path:&str)->&'static str {
     // Source ownership follows the RSI module boundary, not the basename.
     if path.starts_with("src/engine/rsi/") {
         return "improvement_methods";
+    }
+    if path.starts_with("src/engine/models/") {
+        return "models";
     }
     let name=path.rsplit('/').next().unwrap_or(path);
     if name.starts_with("model_") || name.starts_with("training")
