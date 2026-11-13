@@ -19,7 +19,7 @@ fn fingerprint(input:&Value)->String {
 /// measured through the frozen evaluator and intentionally not promoted.
 pub(super) async fn run_method_control(
     context:&JobContext,record:&mut Value,input:&Value,child_input:&mut Value,
-    lab:&PathBuf,binary:&PathBuf,attempt:u64,
+    lab:&PathBuf,binary:&PathBuf,_attempt:u64,started:Instant,
 )->Result<(),String>{
     if input["rsiMethodAblation"]!=true{return Ok(());}
     let domain=child_input["rsiTargetDomain"].as_str().unwrap_or("");
@@ -53,8 +53,13 @@ pub(super) async fn run_method_control(
             .map_err(|e|e.to_string())?)
         .env("DOMINION_WORKSPACE",lab)
         .env_remove("DOMINION_DESKTOP_PARENT");
-    let remaining=record["limits"]["timeBudgetSeconds"].as_u64().unwrap_or(0);
-    let timeout=if remaining==0{7*24*3600}else{remaining.max(1)};
+    let remaining=record["limits"]["timeBudgetSeconds"].as_u64()
+        .map(|budget|budget.saturating_sub(
+            started.elapsed().as_secs().saturating_sub(
+                record["waitingMs"].as_u64().unwrap_or(0)/1000)))
+        .unwrap_or(u64::MAX);
+    if remaining==0 {return Err("improver_method_ablation_time_budget".into());}
+    let timeout=if remaining==u64::MAX{7*24*3600}else{remaining.max(1)};
     let launched=command(context,command_line,Duration::from_secs(timeout)).await;
     let observed=context.state.store.get("job",control_id)
         .ok_or("개선법 대조군 실행 결과 없음")?;
@@ -149,7 +154,10 @@ pub(crate) fn measured_method_ablation(state:&AppState,generation:&Value)->Value
     if crate::engine::rsi::replayed_pair_metrics(state,&control_candidate).is_none()
         || !crate::engine::rsi::verified_pair_receipt(state,&treatment)
         || control_candidate["baseCommit"]!=treatment["baseCommit"]
-        || control_candidate["evaluation"]!=control["evaluation"]
+        || control_candidate["evaluation"]["id"]!=control["evaluation"]["evaluationId"]
+        || control_candidate["evaluation"]["metrics"]!=control["evaluation"]["metrics"]
+        || control_candidate["evaluation"]["evidenceSha256"]!=control["evaluation"]["evidenceSha256"]
+        || control_candidate["evaluation"]["source"]!=control["evaluation"]["source"]
         || control_candidate["cases"]!=treatment["cases"] {
         return json!({"status":"independent_receipts_or_case_plan_mismatch","qualityProven":false});
     }
