@@ -4,6 +4,8 @@
 use super::*;
 use serde::{Deserialize,Serialize};
 use std::path::Path;
+use serde_json::Value;
+use sha2::{Digest,Sha256};
 
 const POLICY_SOURCE:&str="src/engine/rsi/experiment_policy.rs";
 
@@ -105,5 +107,5 @@ pub(crate) fn verify_experiment_design(
 }
 
 #[cfg(test)]
-#[path = "experiment_contract/tests.rs"]
+#[path = "experiment/tests.rs"]
 mod tests;
