@@ -151,6 +151,13 @@ mod descendant_controller_contract_tests {
             "rsiMutualProgram":plan["mutualProgram"],
             "rsiControllerPlan":plan
         });
+        // Reconstruct the same immutable boundary used by real descendant
+        // workers; a handcrafted controller with no sealed contract must
+        // remain rejected in production.
+        let mut input=input;
+        let profile=crate::engine::rsi_profile::from_input(&input).unwrap();
+        input["rsiExperimentContract"]=crate::engine::rsi_evolve::experiment_contract::bind(
+            &input["rsiControllerPlan"],profile["sha256"].as_str().unwrap()).unwrap();
         let validated=validated_descendant_controller(&input,&history,&commit)
             .unwrap().unwrap();
         assert_eq!(validated.0,"learning");
