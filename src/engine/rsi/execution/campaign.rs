@@ -1,7 +1,7 @@
 //! independent paired adoption loop and recovery.
 //! Only campaign_execution owns these implementations. Other RSI stages use explicit
 //! names imported through the stable rsi_evolve facade.
-use super::{AppState, Command, DOMAINS, Digest, Duration, Instant, JobContext, Path, PathBuf, Sha256, Value, bind_inherited_target, campaign_model_tokens, choose_focus_files, command, edit_method_reward, elapsed, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants, generation_stop_reason, git, history_with_verified_payoffs, identical_failed_patch, json, learned_edit_method, matching_prior_campaign, method_reuse_decision, new_research_findings, paired_descendant_target, pending_trial_candidate, post_adoption_objective, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_method_feedback, record_trial_outcome, remember_research, research_artifacts, research_digest, research_scope, rsi_worktree, save, select, select_domain_for_state, select_generation_strategy, selection_objective, session_research_fingerprint, session_tool_usage, should_stop_no_progress, target_focus_objective, verified_candidate_id, worker, retain_generator, matched_planner_intervention, plan_compiled_descendant, capture_generation_evidence, record_generation_feedback, finalize_generation, GenerationObservation};
+use super::{AppState, Command, DOMAINS, Digest, Duration, Instant, JobContext, Path, PathBuf, Sha256, Value, bind_inherited_target, campaign_model_tokens, choose_focus_files, command, edit_method_reward, elapsed, focus_file_context, generation_context, generation_fits_remaining_budget, generation_prompt_variants, generation_stop_reason, git, history_with_verified_payoffs, identical_failed_patch, json, learned_edit_method, matching_prior_campaign, method_reuse_decision, new_research_findings, paired_descendant_target, pending_trial_candidate, post_adoption_objective, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_method_feedback, record_trial_outcome, run_method_control, measured_method_ablation, remember_research, research_artifacts, research_digest, research_scope, rsi_worktree, save, select, select_domain_for_state, select_generation_strategy, selection_objective, session_research_fingerprint, session_tool_usage, should_stop_no_progress, target_focus_objective, verified_candidate_id, worker, retain_generator, matched_planner_intervention, plan_compiled_descendant, capture_generation_evidence, record_generation_feedback, finalize_generation, GenerationObservation};
 pub(super) async fn run_loop(
     context: &JobContext,
     job: &Value,
@@ -371,6 +371,13 @@ pub(super) async fn run_loop(
         child_input["rsiFocusContextChars"] = json!(if defer_focus {0} else {focus.chars().count()});
         child_input["rsiPromptContextChars"] = json!(child_input["prompt"]
             .as_str().map(|prompt| prompt.chars().count()).unwrap_or(0));
+        // If an authorized ablation has an executable inherited method,
+        // first measure a real OFF worker from the same immutable source and
+        // evaluated task input. Only the subsequent ON worker may be adopted.
+        run_method_control(context,record,input,&mut child_input,&lab,&binary,attempt).await?;
+        if !generation_fits_remaining_budget(record,&child_input) {
+            return Ok("token_budget".into());
+        }
         let child = context
             .state
             .store
@@ -574,6 +581,7 @@ pub(super) async fn run_loop(
         if let Some(session)=session {
             generation["methodExecutions"]=json!(record_method_feedback(&context.state,&generation,session));
         }
+        generation["methodAblation"]=measured_method_ablation(&context.state,&generation);
         generation["knowledgeId"]=json!(remember_research(&context.state,&current["input"],&generation,session.unwrap_or("")));
         if let Some(session)=session {
             generation["knowledgeReuse"]=context.state.store.get("session",session).map(|s|s["rsiKnowledgeReuse"].clone()).unwrap_or(Value::Null);
