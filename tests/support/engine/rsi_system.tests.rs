@@ -399,3 +399,34 @@ mod integration_contract_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod modular_rsi_source_role_tests {
+    use super::*;
+
+    #[test]
+    fn nested_rsi_sources_remain_selectable_by_the_descendant_meta_learner() {
+        let modules = [
+            "src/engine/rsi/planner/policy.rs",
+            "src/engine/rsi/planner/context.rs",
+            "src/engine/rsi/planner/descendant.rs",
+            "src/engine/rsi/execution/campaign.rs",
+            "src/engine/rsi/execution/generation.rs",
+            "src/engine/rsi/execution/worker.rs",
+            "src/engine/rsi/evaluation/trials.rs",
+            "src/engine/rsi/lineage/source.rs",
+            "src/engine/rsi/lineage/campaign.rs",
+            "src/engine/rsi/learning/methods.rs",
+            "src/engine/rsi/learning/research.rs"
+        ];
+        let listed = COMPONENTS.iter()
+            .find(|(role,_)|*role=="improvement_methods")
+            .expect("an independently editable improvement-method role").1;
+        for path in modules {
+            assert_eq!(source_role(path),"improvement_methods",
+                "modular RSI descendants must not be mistaken for task algorithms");
+            assert!(listed.contains(&path),
+                "the descendant blueprint must keep new module sources discoverable: {path}");
+        }
+    }
+}
