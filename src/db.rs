@@ -1004,16 +1004,26 @@ impl Store {
              FROM audit
              WHERE event='model.usage' AND json_extract(detail,'$.sessionId')=?1",
             [session_id],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            },
+            |row| Ok((
+                row.get::<_, i64>(0)?, row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?,
+            )),
         );
+        // Optional, exact receipts. Do not interpret a provider's silence as
+        // zero cached tokens or advertise hypothetical monetary discounts.
+        let cache = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.cachedPromptTokens') AS INTEGER)),0)
+             FROM audit WHERE event='model.cache_usage'
+               AND json_extract(detail,'$.sessionId')=?1",
+            [session_id],
+            |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?,row.get::<_, i64>(2)?)),
+        ).unwrap_or((0,0,0));
+        let (reported, measured, cached) = cache;
+        let cache_ratio = if measured > 0 {
+            json!((cached.max(0).min(measured) as f64) / (measured as f64))
+        } else { Value::Null };
         match summary {
             Ok((calls, prompt, completion, total, estimated)) => json!({
                 "calls": calls.max(0),
@@ -1021,9 +1031,15 @@ impl Store {
                 "completionTokens": completion.max(0),
                 "totalTokens": total.max(0),
                 "estimatedCalls": estimated.max(0),
+                "cacheReportedCalls": reported.max(0),
+                "cacheMeasuredPromptTokens": measured.max(0),
+                "cachedPromptTokens": cached.max(0).min(measured.max(0)),
+                "cacheHitRate": cache_ratio,
             }),
             Err(_) => json!({
-                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0
+                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0,
+                "cacheReportedCalls":0,"cacheMeasuredPromptTokens":0,"cachedPromptTokens":0,
+                "cacheHitRate":null
             }),
         }
     }
