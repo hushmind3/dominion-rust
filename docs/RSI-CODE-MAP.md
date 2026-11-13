@@ -7,6 +7,8 @@ Read executable behavior first. Historical design handoffs and one-off local mea
 | Durable multi-generation execution, compilation, work dispatch | `src/engine/rsi_evolve.rs`, `src/engine/rsi/execution/` |
 | Frozen paired A/B, detached source receipts | `src/engine/rsi/evaluation/worktree.rs`, `src/engine/rsi/evaluation/metrics.rs` |
 | Protected frozen verifier source boundary | `src/engine/rsi/proof/path_policy.rs`, `src/engine/rsi.rs::safe_path`, `src/engine/code_index.rs::is_source` |
+| Evolving experiment selection | `rsi/meta/experiment_evolution.rs::propose` → compiled `planner/worker_plan.rs` → executable factorial/negative/open mode → `execution/campaign.rs` → `execution/worker.rs` → `rsi_generation` → `lineage/history.rs` |
+| Stable experiment-policy contract | `meta/experiment_evolution.rs::Contract` (serde deny-unknown, SHA-256 revision), `validate` + `implementation_matches` enforced by compiled planner, controller and worker |
 | Measured method-off vs method-on successor outcome | `src/engine/rsi/proof/method_control.rs` (original model-usage audit, matched frozen paired comparison), `src/engine/rsi/proof/closure.rs` (shared authoritative gate) |
 | Explicit method-off campaign execution | `src/api/rsi.rs::start` → `src/api/rsi/control_request.rs` → `src/engine/rsi/execution/start.rs` → `src/engine/rsi/execution/campaign.rs` → `src/engine/rsi/evaluation/worktree.rs` |
 | Method-source classification for independent A→B→A proof | `src/engine/rsi/proof/source_roles.rs` (classification), `src/engine/rsi/proof/closure.rs` (receipt replay), `tests/unit/engine_rsi_closure_source_tests.rs` |
@@ -44,5 +46,3 @@ The old flat `rsi_*.rs` helpers now live under `rsi/{planner,execution,evaluatio
 The self-improvement page now shows automatic method-off job IDs from the
 normal generation history and independent A→B / A2→B2 replay outcomes.
 
-| Evolving experiment selection | `rsi/meta/experiment_evolution.rs::propose` → compiled `planner/worker_plan.rs` → executable factorial/negative/open mode → `execution/campaign.rs` → `execution/worker.rs` → `rsi_generation` → `lineage/history.rs` |
-| Stable experiment-policy contract | `meta/experiment_evolution.rs::Contract` (serde deny-unknown, SHA-256 revision), `validate` + `implementation_matches` enforced by compiled planner, controller and worker |

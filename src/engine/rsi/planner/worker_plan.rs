@@ -119,12 +119,9 @@ pub async fn worker_plan(campaign_id:&str)->Result<(),String>{
             .is_some_and(|d|permitted.contains(&d))
         &&inherited_meta["alternatives"].as_array().is_some_and(|rows|
             rows.iter().any(|row|row["target"]==negative_evidence["selected"]["source"]));
-    // An active single-source experiment must not starve open-ended
-    // inventions. Continue measured sibling interventions on this EXACT
-    // source revision; otherwise allocate every third task to experiments.
-    // A model-authored adopted experimental method can change this balance.
-    // The real experiment-selection genome now owns trial allocation.
-    // No source-blind modulo-based campaign rotation or honorary credit.
+    // Owner-prioritized source repair remains available; the new
+    // self-evolving experiment genome, not a fixed iteration count, chooses
+    // how the next generated patch is investigated and compared.
     let factorial_available=auto && stage.is_null()
         // A learned principle experiment has to execute on its selected
         // source; otherwise its downstream payoff can never be observed.
