@@ -284,3 +284,20 @@
         assert!(unsafe_audit_for_patch(&root,"diff --git a/src/lib.rs b/src/lib.rs\n+let value = 1;\n").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
+
+
+#[test]
+fn method_source_revisions_are_classified_as_improver_adoptions(){
+    for path in [
+        "src/engine/rsi_meta_controller.rs",
+        "src/engine/rsi_improvement_algebra.rs",
+        "src/engine/rsi_method_generalization/learning.rs",
+        "src/engine/rsi_system/replay.rs"
+    ] {
+        let patch=format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n");
+        assert_eq!(classify(&patch),"improver",
+            "actual A2 method-source adoption must receive improver holdout evaluation: {path}");
+    }
+    let unrelated="diff --git a/src/engine/context.rs b/src/engine/context.rs\n";
+    assert_ne!(classify(unrelated),"improver");
+}
