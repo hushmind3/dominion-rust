@@ -145,6 +145,7 @@ pub fn kind_label(kind: &str) -> &str {
         "recovery.strategy" => "복구 전략",
         "multiagent.sharing" => "에이전트 지식 공유",
         "multiagent.roles" => "에이전트 역할·발언 방식",
+        "multiagent.economy" => "그룹대화 비용·품질 적응 정책",
         "multiagent.conflict" => "멀티에이전트 충돌 해결",
         "execution.ordering" => "도구 실행 순서",
         "execution.parallelism" => "병렬 실행",
