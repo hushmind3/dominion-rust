@@ -29,6 +29,13 @@ pub(crate) fn safe_path(path: &str) -> bool {
         "src/engine/rsi_oracle_fixture.rs" |
         "src/engine/rsi_profile.rs" |
         "src/engine/rsi_causal_closure.rs" |
+        "src/engine/rsi/execution/campaign.rs" |
+        "src/engine/rsi/execution/generation_launch.rs" |
+        "src/engine/rsi/execution/generation_selection.rs" |
+        "src/engine/rsi/lineage/adoption.rs" |
+        "src/engine/rsi/proof/mutual_cycles.rs" |
+        "src/engine/rsi/proof/open_handoff.rs" |
+        "src/engine/rsi/proof/principle_replay.rs" |
         "src/engine/rsi/execution/counterfactual.rs" |
         "src/engine/rsi/proof.rs" |
         "src/engine/rsi/proof/open_evolution.rs" |
