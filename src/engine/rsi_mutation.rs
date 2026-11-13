@@ -381,7 +381,7 @@ fn inductive_target_path(input: &Value) -> Option<&str> {
     }
     match input["rsiTargetDomain"].as_str() {
         Some("memory") => Some("src/engine/room_state.rs"),
-        Some("improver") => Some("src/engine/rsi_evolve.rs"),
+        Some("improver") => Some("src/engine/rsi/selection.rs"),
         _ => selected,
     }
 }
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn fused_bayesian_selector_preserves_default_failure_cluster_policy() {
         use crate::engine::rsi_evolve;
-        let original=include_str!("rsi_evolve.rs");
+        let original=include_str!("rsi/selection.rs");
         let source=fuse_bayesian_domain_statistics(original)
             .unwrap_or_else(||original.to_string());
         assert!(source.contains("return fast_sub1_bayesian_domain(history"));
@@ -496,12 +496,12 @@ mod tests {
         let memory=include_str!("room_state.rs");
         assert!(materialize_verified_owner_provenance(memory).is_some()
             || memory.contains("\"verifiedLocalOwner\": true"));
-        let improver=include_str!("rsi_evolve.rs");
-        assert!(stream_search_policy_statistics(improver).is_some()
-            || improver.contains("One witnessed generation produces all features"));
+        let improver=include_str!("rsi/selection.rs");
+        assert!(fuse_bayesian_domain_statistics(improver).is_some()
+            || improver.contains("fn fast_sub1_bayesian_domain("));
         assert_eq!(inductive_target_path(&json!({"rsiAutoFocus":true,
             "rsiTargetDomain":"memory"})),Some("src/engine/room_state.rs"));
         assert_eq!(inductive_target_path(&json!({"rsiAutoFocus":true,
-            "rsiTargetDomain":"improver"})),Some("src/engine/rsi_evolve.rs"));
+            "rsiTargetDomain":"improver"})),Some("src/engine/rsi/selection.rs"));
     }
 }

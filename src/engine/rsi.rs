@@ -569,7 +569,7 @@ mod tests {
     }
     fn base() -> String { "a".repeat(40) }
     fn patch() -> String {
-        "diff --git a/src/engine/rsi.rs b/src/engine/rsi.rs\n--- a/src/engine/rsi.rs\n+++ b/src/engine/rsi.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
+        "diff --git a/src/engine/rsi/selection.rs b/src/engine/rsi/selection.rs\n--- a/src/engine/rsi/selection.rs\n+++ b/src/engine/rsi/selection.rs\n@@ -1 +1 @@\n-old\n+new\n".into()
     }
     fn cases(domain: &str) -> Vec<Value> {
         (0..8).map(|i|json!({"id":format!("case-{i}"),"domain":if i==1 {"other"} else {domain},"holdout":i<3,
@@ -790,7 +790,7 @@ mod tests {
         p["patch"]=json!("diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n@@ -1 +1 @@\n-old\n+new\n");
         assert!(propose(&state,&p).is_err());
         let mut p=proposal("algorithm");
-        p["patch"]=json!(patch().replace("src/engine/rsi.rs","src/../secrets.env"));
+        p["patch"]=json!(patch().replace("src/engine/rsi/selection.rs","src/../secrets.env"));
         assert!(propose(&state,&p).is_err());
         let mut p=proposal("improver");
         p["cases"]=json!((0..8).map(|i|json!({"id":format!("case-{i}"),"domain":"only-one","holdout":i<3,"filter":format!("engine::rsi::tests::case_{i}")})).collect::<Vec<_>>());

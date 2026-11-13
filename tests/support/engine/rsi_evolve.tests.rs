@@ -1997,11 +1997,11 @@ mod tests {
             .checkpoint(
                 json!({"input":{"rsiNativeApproved":true,"rsiSourceDir":source,"rsiBaseCommit":base,
             "selectionPolicy":"automatic","rsiFrozenCases":cases,
-            "limits":{"maxAttempts":2,"tokenBudget":1000,"timeBudgetSeconds":240}}}),
+            "limits":{"maxAttempts":2,"tokenBudget":16000,"timeBudgetSeconds":300}}}),
             )
             .unwrap();
         let job = state.store.get("job", "campaign").unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(240), run(&context, &job))
+        let result = tokio::time::timeout(Duration::from_secs(300), run(&context, &job))
             .await
             .unwrap()
             .unwrap();
@@ -2075,9 +2075,9 @@ mod tests {
             "rsiObjective":"memory capability improvement",
             "rsiFocusFiles":["src/engine/memory.rs"],
             "rsiFixtureMode":"research_then_adopt",
-            "limits":{"maxAttempts":4,"tokenBudget":1000,"timeBudgetSeconds":300}}})).unwrap();
+            "limits":{"maxAttempts":4,"tokenBudget":32000,"timeBudgetSeconds":540}}})).unwrap();
         let job = state.store.get("job", "campaign").unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(300), run(&context, &job)).await.unwrap().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(540), run(&context, &job)).await.unwrap().unwrap();
         let evolution = &result["evolution"];
         assert_eq!(result["status"], "completed", "{result}");
         assert_eq!(evolution["attempts"], 4, "{result}");

@@ -524,3 +524,7 @@ The stable experiment contract now **seals and replays its canonical proposal re
 ### GitHub CI recovery — exposed executable contracts
 
 After the first real GitHub Actions Rust compilation report, Sub1 restored cross-module helper visibility following the tools/chat/models split, passed the build output directory and child job identity explicitly into their extracted functions, resolved shared meta classification, and updated API unit-state constructors. Continuous push CI is the source of the actual compiler/test result.
+
+### Full-CI regression repair
+
+The frozen independent evaluator remains non-editable. Unit fixtures in `rsi.rs` now patch the live `rsi/selection.rs`, never the frozen `rsi.rs`. The native mutation improver selector has been updated to that actual compiled source module, with assertions against its current optimizer shape. The source model's expected component count includes the new `experiment_design` role. Two heavy, no-paid-model fixture generation campaigns now allow enough token context for newly expanded source planning while preserving their expected two/four-generation executable lineage checks.

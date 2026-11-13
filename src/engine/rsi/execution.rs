@@ -870,7 +870,7 @@ pub(super) async fn run_loop(
                 &&generation["pairedRevalidated"]==true
                 &&generation_is_verified(&generation),
             "protocol":design["protocol"],
-            "actualWorkerExecuted":generation["experimentDesignExecuted"]==design
+            "actualWorkerExecuted":design.is_object() && generation["experimentDesignExecuted"]==design
         });
         generation["evidenceVerified"]=json!(
             generation["accepted"]==true
