@@ -1032,6 +1032,10 @@ pub(super) async fn run_loop(
             let observed=crate::engine::rsi_meta_controller::feedback(
                 &generation["metaPolicy"],&generation);
             generation["metaLearning"]=observed;
+            // Provisional trace only: independent adoption becomes true
+            // after rsi_system replays the original paired receipt.
+            generation["predictionRepairEvidence"]=
+                crate::engine::rsi_prequential::repair_execution_evidence(&generation);
         }
         if candidate_id.is_none() && new_findings>0 && output.is_ok() && stopped.is_none()
             && current["result"]["rsi"]["modelError"].is_null() {
