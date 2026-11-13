@@ -46,3 +46,11 @@ The old flat `rsi_*.rs` helpers now live under `rsi/{planner,execution,evaluatio
 The self-improvement page now shows automatic method-off job IDs from the
 normal generation history and independent A→B / A2→B2 replay outcomes.
 
+
+## 출시 제품의 그룹·모델·영상 통합 경로 (2026-11-14)
+
+- `src/engine/rooms/speakers.rs`: 참가자·멘션·발언자 창·모델 풀 선택, 독립적으로 읽고 수정할 책임. `rooms.rs`는 원본 메시지 및 job 체크포인트와 실제 실행을 관리합니다.
+- `src/engine/router.rs`: 능력 점수와 사용자 입력 원화 토큰 단가 기반 자동 모델 선택 (사용자 고정 라우팅 불변), `api/providers.rs`와 `web/src/pages/Models.tsx`에서 저장·수정합니다.
+- `src/db.rs::session_usage` → `api/rooms.rs` → `Rooms.tsx`: 제공자가 실제 보고한 캐시 적중 입력을 측정 가능한 호출과 함께 노출, 미보고 호출은 비율 계산에서 제외합니다.
+- `api/video.rs` → `engine/video.rs` → `video/{shot_plan,runway,frame_anchor}.rs`: 작업별 고정된 시네마틱 멀티샷과 프레임 연속성 옵션, 원격 task ID·다운로드 후 FFmpeg 합성, UI의 유료 클립 수 안내.
+- 전체 변경 지침과 상태: [서브4 제품 통합 업그레이드](SUB4-PRODUCT-UPGRADE-2026-11-14.md). 테스트·컴파일·빌드·CI를 실행하지 않았습니다.
