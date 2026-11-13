@@ -10,13 +10,13 @@ This file is a short routing index, not proof of performance. Source code is the
    - `src/engine/rsi/execution/` — campaign loop, generation worker, source/worktree and budget guards
    - `src/engine/rsi/evaluation/` — original-paired adoption and success criteria
    - `src/engine/rsi/learning/` — verified edit methods, transfer trials and research reuse
-   - `src/engine/rsi_evolve_tests.rs` — separated Rust unit tests
+   - `src/engine/rsi/tests/evolve.rs` — separated Rust unit tests
 2. `src/engine/rsi_system.rs` — source-grounded architecture, selected-target validation and independently replayed history. Tests: `rsi/tests/system.rs`.
 3. `src/engine/rsi_meta_controller.rs` — editable source-target ranking and prediction-repair priority.
 4. `src/engine/rsi_prequential.rs` — source-bound prequential predictions. Invalid/missing original paired receipts are not learning labels; only actual changed target source can be a target success.
-5. `src/engine/rsi_peer_transfer.rs` — one donor method hypothesis, matched source/frozen-profile control, negative transfer suppression; never auto-apply a peer patch.
+5. `src/engine/rsi/learning/rsi_peer_transfer.rs` — one donor method hypothesis, matched source/frozen-profile control, negative transfer suppression; never auto-apply a peer patch.
 6. `src/engine/rsi_archive.rs` — persistent stepping-stone selection, evidence identity and completed neutral candidate persistence.
-7. `src/engine/rsi_method_generalization.rs`, `rsi_improvement_algebra.rs`, `rsi_recursive_scientist.rs`, `rsi_model_lineage.rs` — descendant-editable improvement algorithms.
+7. `src/engine/rsi_method_generalization.rs`, `rsi_improvement_algebra.rs`, `rsi_recursive_scientist.rs`, `rsi/lineage/rsi_model_lineage.rs` — descendant-editable improvement algorithms.
 8. `src/engine/rsi.rs` and `src/engine/rsi_worktree.rs` — independent paired evaluation and detached source worktree. Frozen evaluator controls adoption.
 
 ## Evidence boundaries
@@ -28,7 +28,7 @@ This file is a short routing index, not proof of performance. Source code is the
 
 ## Readability rule
 
-Production Rust modules contain runtime logic; their large inline test modules were moved to sibling `*_tests.rs` files without changing test cases. Don't reintroduce historical handoffs or generated evidence dumps into source-reading context. Preserve frozen oracle receipts and actual accepted descendants.
+Runtime entry points preserve their original interfaces while test-only modules live in dedicated `*/tests.rs` and named test siblings with explicit `#[path]` declarations. The original test bodies and module scopes were preserved; no compile, build, CI, or model execution is claimed for the latest extraction. Don't reintroduce historical handoffs or generated evidence dumps into source-reading context. Preserve frozen oracle receipts and actual accepted descendants.
 
 ## Pruned source files
 
@@ -37,3 +37,7 @@ Three historical unregistered implementations (`rsi_action_program.rs`, `rsi_jud
 ## Flat-module cleanup (2026-11-13)
 
 The runtime module names and call interfaces are unchanged. Fourteen independently compiled RSI files moved via the exact same Git blobs into `rsi/planner`, `rsi/execution`, `rsi/evaluation`, `rsi/lineage` and `rsi/learning`. The `src/engine/mod.rs` registry uses explicit `#[path]` entries, preserving existing `crate::engine::rsi_*` references. The source-grounded system blueprint pins the moved module identities. The frozen oracle and native mutation template remain at their original referenced paths.
+
+## Test ownership after structural extraction (2026-11-13)
+
+Unit-test bodies for `engine/memory`, `engine/tools`, `engine/chat/provider`, `engine/rsi_worktree`, `engine/algorithms`, `engine/rooms`, `engine/learning`, `engine/rsi_meta_controller`, `api/providers` and `db` are in their corresponding test-only source directories. Production function and type definitions, module-level imports, and runtime call paths were left unchanged. The `#[cfg(test)]` gates remain on every extracted module, so test-only dependencies do not enter the non-test binary. No build or CI was run for this split.
