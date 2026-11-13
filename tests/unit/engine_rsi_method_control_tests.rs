@@ -37,3 +37,18 @@ fn same_task_allows_different_policy_chosen_files_not_different_prompt_or_budget
     control["input"]["rsiPromptBase"]=json!("different task");
     assert!(!same_task(&control,&treated));
 }
+
+#[test]
+fn policy_selected_domain_is_an_observed_outcome_not_a_matching_constraint(){
+    let mut pre=json!({"input":{"rsiFrozenCases":[{"id":"frozen"}],
+        "rsiPromptBase":"same task","rsiObjective":"improve capability",
+        "rsiTargetDomain":"memory","reasoningEffort":"high",
+        "rsiSourceBranch":"dominion-sub4",
+        "rsiRemainingCampaignTokens":40000}});
+    let mut on=pre.clone();
+    on["input"]["rsiTargetDomain"]=json!("tools");
+    assert!(same_task(&pre,&on),
+        "the inherited method is allowed to select a different capability");
+    pre["input"]["rsiObjective"]=json!("different task");
+    assert!(!same_task(&pre,&on));
+}

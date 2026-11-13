@@ -101,3 +101,11 @@ The API control-request validation and task construction are now in
 `src/api/rsi/control_request.rs`; HTTP handlers only route and enqueue.
 Legacy API unit tests were moved to `tests/unit/api_rsi_tests.rs`.
 No Rust build or tests were executed.
+
+The matching comparator deliberately does **not** require the pre-A
+policy and post-A policy to select the same domain or candidate target:
+that selection is an outcome of the editable improvement method, not a
+pre-treatment matching variable. The original task, source branch,
+model-usage stratum, token budget and frozen case suite still match.
+The API capability tests are separate from the Unix-only API integration
+tests so the moved source retains its former test platform coverage.

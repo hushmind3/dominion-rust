@@ -18,7 +18,6 @@ fn same_task(a:&Value,b:&Value)->bool {
         && a["rsiPromptBase"].as_str().is_some_and(|v|!v.trim().is_empty())
         && a["rsiPromptBase"]==b["rsiPromptBase"]
         && a["rsiObjective"]==b["rsiObjective"]
-        && a["rsiTargetDomain"]==b["rsiTargetDomain"]
         && a["reasoningEffort"]==b["reasoningEffort"]
         && a["rsiSourceBranch"]==b["rsiSourceBranch"]
         // A weaker budget could make the control fail for unrelated reasons.
@@ -116,8 +115,7 @@ pub(super) fn evidence(
 )->Value{
     let fingerprint=digest(&json!([
         b_job["input"]["rsiFrozenCases"],b_job["input"]["rsiPromptBase"],
-        b_job["input"]["rsiObjective"],b_job["input"]["rsiTargetDomain"],
-        b_job["input"]["reasoningEffort"]
+        b_job["input"]["rsiObjective"],b_job["input"]["reasoningEffort"]
     ]));
     let pending=json!({
         "source":"source_ablation_matched_control_v1",
@@ -142,8 +140,7 @@ pub(super) fn evidence(
             ||j["input"]["rsiCausalControlCommit"]!=first["generatorCommit"]{
             continue;
         }
-        if c["target"]!=b_candidate["target"]
-            ||c["cases"]!=b_candidate["cases"]
+        if c["cases"]!=b_candidate["cases"]
             ||c["oracleVersion"]!=b_candidate["oracleVersion"]
             ||!same_task(&j,b_job)
             ||audited_actor(state,&j).as_deref()!=Some(actor.as_str()) {continue;}

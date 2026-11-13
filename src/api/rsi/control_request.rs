@@ -1,6 +1,6 @@
 //! Extracted opt-in control request: original job, fixed-weight actor,
 //! frozen task and owned source.  No operator-supplied control commit is used.
-use crate::{state::AppState,engine};
+use crate::state::AppState;
 use serde_json::{json,Value};
 use std::path::Path;
 
@@ -15,7 +15,7 @@ pub(super) fn prepare(state:&AppState,mut body:Value)->Result<(Value,Value,Value
         let Some(g)=state.store.get("rsi_generation",id) else {
             return Err("대조할 실제 후손 세대가 없습니다.".into());
         };
-        let Some(anchor)=crate::engine::rsi_closure::control_anchor(&state,&g) else{
+        let Some(anchor)=crate::engine::rsi_closure::control_anchor(state,&g) else{
             return Err("채택된 방법 A→실제 후손 능력 B의 원본 영수증을 찾지 못했습니다.".into());
         };
         let Some(treated)=anchor["treatedJobId"].as_str()

@@ -456,3 +456,6 @@ pub async fn start(State(state): State<AppState>, Json(body): Json<Value>) -> Re
 #[cfg(all(test, unix))]
 #[path = "../../tests/unit/api_rsi_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "../../tests/unit/api_rsi_capability_tests.rs"]
+mod capability_tests;
