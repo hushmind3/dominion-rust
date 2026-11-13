@@ -453,6 +453,13 @@ pub(super) async fn run_loop(
                 &plan["methodGeneralization"],&head,history.len()) {
                 return Err("후손 개선 방법의 독립 평가 학습 근거가 유효하지 않습니다.".into());
             }
+            // Pure typed contract: immutable evaluator scope and source-
+            // compiled experiment policy are validated before dispatch.
+            if crate::engine::rsi_evolve::meta_experiment_policy::decode(
+                &plan["experimentPolicy"],&head,&child_input).is_none()
+                || !plan["metaOperatorActive"].is_boolean() {
+                return Err("후손 메타 실험 정책 또는 동결 평가 계약이 유효하지 않습니다.".into());
+            }
             if !crate::engine::rsi_improvement_algebra::valid(
                 &plan["improvementAlgebra"],
                 plan["architectureFrontier"].as_array()
@@ -512,6 +519,9 @@ pub(super) async fn run_loop(
             child_input["rsiRecursiveScientificProgram"]=plan["recursiveScientificProgram"].clone();
             child_input["rsiImprovementAlgebra"]=plan["improvementAlgebra"].clone();
             child_input["rsiMethodGeneralization"]=plan["methodGeneralization"].clone();
+            child_input["rsiExperimentPolicy"]=plan["experimentPolicy"].clone();
+            child_input["rsiMetaOperatorActive"]=plan["metaOperatorActive"].clone();
+            child_input["rsiMetaRedesignTarget"]=plan["metaRedesignTarget"].clone();
             child_input["rsiModelEvolutionPlan"]=plan["modelEvolutionPlan"].clone();
             child_input["rsiSuccessorStage"]=plan["successorStage"].clone();
             child_input["rsiPeerLineages"]=plan["peerLineages"].clone();
@@ -793,6 +803,8 @@ pub(super) async fn run_loop(
         generation["recursiveScientificProgram"]=current["input"]["rsiRecursiveScientificProgram"].clone();
         generation["improvementAlgebraPlan"]=current["input"]["rsiImprovementAlgebra"].clone();
         generation["methodGeneralization"]=current["input"]["rsiMethodGeneralization"].clone();
+        generation["experimentPolicy"]=current["input"]["rsiExperimentPolicy"].clone();
+        generation["experimentPolicyExecuted"]=current["rsiExperimentPolicyExecuted"].clone();
         generation["modelEvolutionPlan"]=current["input"]["rsiModelEvolutionPlan"].clone();
         generation["modelEvolutionPlanExecuted"]=current["rsiModelEvolutionPlanExecuted"].clone();
         generation["modelSelectionActual"]=json!({
