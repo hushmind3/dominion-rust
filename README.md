@@ -4,7 +4,7 @@
 
 알고리즘·하네스·기억·학습·도구·UI를 수정하고, 독립 평가를 통과한 버전이 다음 개선을 이어가는 시스템 소스 진화 경로를 구현합니다. 특정 모델에 고정하지 않으며 등록된 API·로컬 모델을 선택할 수 있습니다. **전체 시스템의 반복적인 지능 향상이 실증된 완성품이라는 주장은 하지 않습니다.** 구현·프로토콜 테스트·실제 개선 실적을 구분해 공개합니다.
 
-[설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
+[설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [문서 지도](docs/INDEX.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
 
 **Rust 백엔드 + Rust 실행 엔진**과 React 프론트엔드를 사용합니다.
 
@@ -31,35 +31,29 @@
 
 ```
 src/
-  main.rs            부트스트랩 (설정, DB, 키, 라우터)
-  config.rs          DOMINION_PORT / DOMINION_DATA / DOMINION_WEB / DOMINION_WORKSPACE
-  db.rs              SQLite 레코드·메시지·감사 로그·시크릿
-  vault.rs           API 키 암호화 (ChaCha20-Poly1305, 키 파일 0600)
-  events.rs          /api/events 용 인프로세스 이벤트 버스
-  state.rs           공유 상태 + 승인 대기열
-  engine/
-    chat.rs          스트리밍 채팅 + 도구 호출 루프 + 승인 요청
-    tools.rs         Rust 네이티브 도구 (파일/셸/HTTP/검색/메모리/스킬)
-    jobs.rs          내구성 있는 작업 큐 + 자동화 스케줄러
-    learning.rs      원문 증거 검증·학습 스냅샷·체크포인트
-    memory.rs        에이전트/채널 격리·한국어 검색·정정 이력
-    discord.rs       자체 Discord REST 수신·라우팅·전송 기록
-    personas.rs      사용자 소유 페르소나·아이콘 데이터 이식
-    llm.rs           계획/검토/학습용 비스트리밍 호출
-    workflows.rs     순차 워크플로 실행 ({{input}} / {{previous}})
-    rooms.rs         멀티 에이전트 라운드테이블 실행
-    goals.rs         자율 목표 하네스 (계획·실행·증거 검증·수정)
-    compact.rs       대화 컨텍스트 압축 (요약 체크포인트)
-    models.rs        로컬 모델 런타임 (llama.cpp) · HF 검색/다운로드
-    oauth.rs         GitHub/Google OAuth 설정·state·토큰 교환
-    skills.rs        SKILL.md 카탈로그 스캔 · 가져오기
-    dev.rs           소스 개발 스튜디오 (git · npm · vite 미리보기)
-    mcp.rs           MCP stdio/HTTP 클라이언트 + 도구 네임스페이스
-  api/
-    core.rs          핵심 API
-    collections.rs   JSON 컬렉션 CRUD
-    compat.rs        아직 이식되지 않은 표면의 명시적 응답
-web/                 React 프론트엔드 (Vite)
+  main.rs / bootstrap.rs   기동, 라우터, 정적 파일
+  config.rs                DOMINION_PORT / DATA / WEB / WORKSPACE
+  db.rs / migrations.rs    SQLite 레코드·감사 로그·마이그레이션
+  state.rs / vault.rs      공유 상태·승인 대기열, 키 암호화
+  engine/                  실행 엔진 (모듈 목록은 engine/mod.rs)
+    chat/                  스트리밍 채팅·도구 호출 루프·승인
+    tools.rs               파일·셸·HTTP·검색 도구
+    rsi.rs                 holdout 평가·영수증 검증·능력 게이트
+    rsi_evolve.rs          RSI 캠페인·세대·채택 (대형, 분리 대상)
+    rsi_archive.rs         디딤돌 아카이브 (DGM/GEPA 계열)
+    rsi_system.rs          전체 시스템 구성요소 탐색·핸드오프 증거
+    memory.rs              기억 저장·검색·정정
+    experience.rs          실패·성공 사례 은행
+    jobs.rs                내구성 작업 큐·자동화
+    models.rs              로컬 모델 런타임·모델 다운로드
+  api/                     HTTP API (도메인별 라우터)
+  platform/                OS 연동
+web/                       React 프론트엔드 (Vite)
+scripts/                   측정·실험 스크립트
+docs/                      문서 ([문서 지도](docs/INDEX.md))
+benchmark/                 측정 결과 JSON
+rsi/                       평가 계획
+runtime/                   실행 데이터 (DB·로그·모델, git 제외)
 ```
 
 ## 런타임 구성
@@ -279,6 +273,16 @@ JSON-RPC(스트리밍 응답 포함)로 호출합니다. MCP 호출은 기본적
 - 공유(`shared`)와 에이전트 전용(`agent`) 스코프를 구분
 - `harness`(하네스 코드 변경)는 `proposed`로만 저장하며 주인 승인 없이는 적용하지 않음
 - API: `GET /api/improvements`, `POST /api/improvements/:id/{approve,reject}`
+
+### 예측·아카이브·검증
+
+시스템 소스 진화 캠페인은 세대마다 다음을 남깁니다.
+
+- **예측**: 수정 전에 다음 세대의 예상 holdout 개선치를 기록하고, 독립 A/B 측정 뒤 `bias`(부호 있는 오차)와 `error`(절대 오차)를 저장합니다. 두 값은 탐색 특징(`forecastError`, `forecastBias`)으로 노출되며, 다음 예측은 측정된 bias를 빼서 계산합니다.
+- **디딤돌 아카이브**: 검증된 중립 후보를 `base + 케이스 계획 + 오라클` 해시를 신원으로 영속 저장합니다. 저장된 항목은 paired 영수증을 다시 검증한 뒤에만 부모 후보로 쓰이고, 자손 시도 횟수는 캠페인 전체 기준으로 셉니다.
+- **검증**: `GET /api/rsi/campaigns/:id/verify`가 저장된 세대별 영수증·계보를 다시 대조해 `capabilityDemonstrated`와 세대별 통과·실패 사유를 반환합니다. 화면의 "저장된 검증 기록 → 기록 조회"가 이 경로를 사용합니다.
+
+이 기록은 제한된 프로토콜의 증거이며, 전체 지능 향상을 주장하지 않습니다.
 
 ### 경험 기반 교정 반영
 
