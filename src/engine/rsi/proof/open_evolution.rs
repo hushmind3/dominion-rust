@@ -59,6 +59,14 @@ fn executed(state:&AppState,history:&[Value],index:usize)->bool {
         && g["controllerPlan"]["metaEvolutionProgram"]==*plan
         && job["input"]["rsiMetaEvolutionProgram"]==*plan
         && job["input"]["rsiControllerPlan"]==g["controllerPlan"]
+        && job["input"]["rsiMetaExperimentDispatch"]==g["metaExperimentDispatch"]
+        && g["controllerPlan"]["metaExperimentDispatch"]==g["metaExperimentDispatch"]
+        && g["experimentScopeVerified"]==true
+        && crate::engine::rsi_evolve::experiment_contract::valid_dispatch(
+            &g["controllerPlan"],&g["metaExperimentDispatch"])
+        && crate::engine::rsi_evolve::experiment_contract::observed_scope(
+            &job["input"],g["changedSourcePaths"].as_array()
+                .map(Vec::as_slice).unwrap_or(&[]))
         && job["input"]["rsiExperimentContract"]==g["experimentContract"]
         && crate::engine::rsi_evolve::experiment_contract::valid(
             &g["controllerPlan"],g["evaluationProfileSha256"].as_str().unwrap_or(""),
@@ -132,6 +140,8 @@ pub(crate) fn audit(state:&AppState,history:&[Value])->Value {
             "programRevision":plan["protocol"]["revision"],
             "originGenerationId":plan["originGenerationId"],
             "experiment":plan["operator"]["experiment"],
+            "experimentDispatchRevision":g["metaExperimentDispatch"]["revision"],
+            "actualSourceScopeVerified":g["experimentScopeVerified"],
             "targetDomain":g["domain"],"targetSource":plan["target"]["path"],
             "evaluationId":g["evaluation"]["evaluationId"],
             "independentTaskQualityGain":true,
