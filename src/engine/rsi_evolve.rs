@@ -83,6 +83,8 @@ pub fn limits(body: &Value) -> Result<Value, String> {
 pub(crate) mod meta_evolution;
 #[path = "rsi/meta/policy_dispatch.rs"]
 pub(crate) mod meta_dispatch;
+#[path = "rsi/meta/composition.rs"]
+mod meta_composition;
 
 #[path = "rsi/planner/domain_selection.rs"]
 mod domain_selection;
