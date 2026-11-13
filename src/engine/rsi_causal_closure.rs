@@ -111,7 +111,7 @@ fn actually_changed_target(g:&Value)->bool {
         changed.contains(selected)).collect::<Vec<_>>();
     if used_focus.is_empty(){return false;}
     let new_file=used_focus.iter().any(|selected|
-        !earlier.iter().any(|old|old.as_str()==Some(selected)));
+        !earlier.iter().any(|old|old.as_str()==Some(*selected)));
     let transfer=&g["methodTransfer"];
     // An improved reusable procedure frequently rewrites the SAME source
     // component. Source-path novelty is not the only real behavioural change:
