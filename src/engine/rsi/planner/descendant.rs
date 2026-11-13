@@ -316,6 +316,11 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // It identifies which frozen A, B, A+B variant is not yet measured.
     let factorial=crate::engine::rsi_factorial::design(
         &history,&frontier,&influence,&allowed,commit);
+    // Real model-authored meta operators, free of a fixed A/B/A/B stage list.
+    let evolution_program=if explicit || paired_descendant_target(input)
+        || input["rsiAutonomous"]!=true {Value::Null}
+        else {crate::engine::rsi_evolve::meta_evolution::compile(
+            &history,&frontier,&allowed,commit)};
     let profile=crate::engine::rsi_profile::from_input(input)?;
     let peers=crate::engine::rsi_system::peer_lineage_references(
         &state,campaign,profile["sha256"].as_str().unwrap_or(""),
@@ -331,7 +336,8 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     };
     // Manual source assignments and sealed downstream A/B episodes are not
     // autonomous reciprocal research. They must never mint an A->B->A stage.
-    let mutual_program=if explicit || paired_descendant_target(input) {
+    let mutual_program=if explicit || paired_descendant_target(input)
+        || evolution_program.is_object() {
         Value::Null
     }else{
         crate::engine::rsi_mutual_program::propose(
@@ -347,7 +353,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // continuation remains the fallback. Source adoption, not stage rank,
     // determines whether a newly invented improvement policy can take over.
     let open_program=if explicit || paired_descendant_target(input)
-        || input["rsiAutonomous"]!=true {
+        || evolution_program.is_object() || input["rsiAutonomous"]!=true {
         Value::Null
     }else{
         crate::engine::rsi_program_graph::synthesize(
@@ -358,7 +364,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // accepted, executing reciprocal complement/return work stays intact.
     let learner_repair=principle_learning["predictiveCalibration"]
         ["needsLearnerSourceRevision"]==true
-        && open_program.is_null()
+        && evolution_program.is_null() && open_program.is_null()
         && input["rsiAutonomous"]==true && !explicit
         && !paired_descendant_target(input)
         && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return"));
@@ -367,14 +373,15 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     // the independent evaluator and user-assigned work remain authoritative.
     let quality_repair=prior_meta["qualityPredictorCalibration"]
         ["needsPredictorSourceRevision"]==true
-        && !learner_repair && open_program.is_null()
+        && !learner_repair && evolution_program.is_null() && open_program.is_null()
         && input["rsiAutonomous"]==true && !explicit
         && !paired_descendant_target(input)
         && allowed.contains(&"improver")
         && !matches!(mutual_program["phase"].as_str(),Some("complement"|"return"));
     // The earlier fixed reflexive curriculum is a fallback, not a ceiling
     // over dynamically authored successor improvement programs.
-    let reflexive_program=if learner_repair || quality_repair || open_program.is_object()
+    let reflexive_program=if learner_repair || quality_repair || evolution_program.is_object()
+        || open_program.is_object()
         || explicit || paired_descendant_target(input)
         || input["rsiAutonomous"]!=true
         || matches!(mutual_program["phase"].as_str(),Some("complement"|"return")) {
@@ -392,10 +399,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
     }else if quality_repair {
         crate::engine::rsi_meta_controller::steer_quality_predictor_repair(
             initial_policy,&history,&frontier,&allowed)
-    }else{initial_policy};
+    }else{crate::engine::rsi_evolve::meta_dispatch::steer(
+        initial_policy,&evolution_program)};
     // If a reflexive source experiment has priority, do not also advertise
     // a conflicting speculative mutual-improvement stage to the worker.
-    let mutual_program=if reflexive_program.is_object() || open_program.is_object() {
+    let mutual_program=if reflexive_program.is_object() || open_program.is_object()
+        || evolution_program.is_object() {
         Value::Null
     }else{mutual_program};
     let architecture_target=if explicit || paired_descendant_target(input) {
@@ -513,6 +522,11 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         =="prequential_task_quality_predictor_repair" {
         focus=vec!["src/engine/rsi_meta_controller.rs"];
     }
+    if !explicit && evolution_program.is_object() {
+        if let Some(path)=evolution_program["target"]["path"].as_str(){
+            focus=vec![path];
+        }
+    }
     let directive=crate::engine::rsi_system::improvement_directive(&history);
     let comparative_mode=if peers["references"].as_array()
         .is_some_and(|items|!items.is_empty()) {"compare_independent_peer_lineage"}
@@ -542,6 +556,7 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         "factorialExperiment":factorial,
         "reflexiveProgram":reflexive_program,
         "openImprovementProgram":open_program,
+        "metaEvolutionProgram":evolution_program,
         "principleLearning":principle_learning,
         "apiRoutePolicy":api_route_policy,
         "mutualProgram":mutual_program,
