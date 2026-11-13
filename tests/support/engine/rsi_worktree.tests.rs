@@ -11,7 +11,7 @@ mod tests {
             "src/engine/rsi_system/guidance.rs",
             "src/engine/rsi_meta_controller.rs"
         ] {
-            let patch=format!("diff --git a/{path} b/{path}\\n--- a/{path}\\n+++ b/{path}\\n@@ -1 +1 @@\\n-old\\n+new\\n");
+            let patch=format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+new\n");
             assert_eq!(classify(&patch),"improver",
                 "real self-improvement source classified as unrelated harness: {path}");
         }
