@@ -371,7 +371,7 @@ mod tests{
                 "sha256":"b".repeat(64),"bytes":2048}]}]});
         let mut frontier=vec![json!({
             "role":"improvement_methods","domain":"improver",
-            "path":"src/engine/rsi_archive.rs",
+            "path":"src/engine/rsi/lineage/archive.rs",
             "sourceSha256":"c".repeat(64)})];
         extend_frontier(&b,&mut frontier);
         assert_eq!(frontier.len(),3);

@@ -107,7 +107,7 @@ pub(crate) fn validate_selected(
     let plan=rsi::case_plan(cases)
         .map_err(|e|format!("동결 평가 사례 오류: {e}"))?;
     let oracle=format!("{:x}",Sha256::digest(
-        include_bytes!("rsi_oracle_fixture.rs")));
+        include_bytes!("../../rsi_oracle_fixture.rs")));
     let id=selection["candidateId"].as_str()
         .filter(|id|!id.is_empty()).ok_or("아카이브 후보 ID 없음")?;
     if selection["baseCommit"]!=base
@@ -196,7 +196,7 @@ pub(crate) fn persist_completed(
     }
     let Ok(plan)=rsi::case_plan(cases) else{return false};
     let oracle=format!("{:x}",Sha256::digest(
-        include_bytes!("rsi_oracle_fixture.rs")));
+        include_bytes!("../../rsi_oracle_fixture.rs")));
     if candidate_scores(state,&candidate,base,&plan,&oracle).is_none(){
         return false;
     }
@@ -212,7 +212,7 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
     };
     let oracle = format!(
         "{:x}",
-        Sha256::digest(include_bytes!("rsi_oracle_fixture.rs"))
+        Sha256::digest(include_bytes!("../../rsi_oracle_fixture.rs"))
     );
     let identity=plan_identity(base,&plan,&oracle);
     let mut seen = BTreeSet::new();
@@ -381,7 +381,7 @@ mod tests {
         let report = json!({"baseCommit":candidate["baseCommit"],"patchSha256":candidate["patchSha256"],
             "oracleVersion":candidate["oracleVersion"],"reportSha256":"b".repeat(64),"runner":"test",
             "baselineBuildOk":true,"candidateBuildOk":true,
-            "oracleSha256":format!("{:x}", Sha256::digest(include_bytes!("rsi_oracle_fixture.rs"))),
+            "oracleSha256":format!("{:x}", Sha256::digest(include_bytes!("../../rsi_oracle_fixture.rs"))),
             "cases":(0..8).map(|i|json!({"id":format!("case-{i}"),
                 "baselinePass":true,"candidatePass":true,
                 "metrics":{"quality":{"baseline":0.5,"candidate":scores[i%2]}}
@@ -554,7 +554,7 @@ mod tests {
         let original=select(&state,&[generation],&base,&plan());
         let key=format!("{}:{}",
             plan_identity(&base,&rsi::case_plan(&plan()).unwrap(),
-                &format!("{:x}",Sha256::digest(include_bytes!("rsi_oracle_fixture.rs")))),
+                &format!("{:x}",Sha256::digest(include_bytes!("../../rsi_oracle_fixture.rs")))),
             original["patchSha256"].as_str().unwrap());
         let record=state.store.get("rsi_archive",&key).unwrap();
         let mut forged=record.clone();
