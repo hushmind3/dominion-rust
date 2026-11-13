@@ -12,11 +12,22 @@ fn digest(v:&Value)->String {
 }
 
 fn method_selected(input:&Value)->bool {
-    input["rsiSystemEvolution"]==true &&
-        input["rsiImprovementAlgebra"]["selected"]["rule"]["method"]["path"]
-            .as_str().is_some_and(crate::engine::rsi::safe_path)
-        && input["rsiImprovementAlgebra"]["selected"]["target"]["path"]
-            !=input["rsiImprovementAlgebra"]["selected"]["rule"]["method"]["path"]
+    let algebra=&input["rsiImprovementAlgebra"];
+    let selected=&algebra["selected"];
+    let target=&selected["target"];
+    let Some(path)=target["path"].as_str()
+        .filter(|p|crate::engine::rsi::safe_path(p))else{return false};
+    let Some(method)=selected["rule"]["method"]["path"].as_str()
+        .filter(|p|crate::engine::rsi::safe_path(p))else{return false};
+    // Only dispatchable compiled operators deserve a paid OFF worker. The
+    // same binding rules are checked again during the real ON worker.
+    input["rsiSystemEvolution"]==true && input["rsiAutonomous"]==true
+        && path!=method
+        && input["rsiControllerPlan"]["improvementAlgebra"]==*algebra
+        && input["rsiArchitectureTarget"]==*target
+        && input["rsiSelectedDomain"]==target["domain"]
+        && input["rsiFocusFiles"].as_array()
+            .and_then(|a|a.first()).and_then(Value::as_str)==Some(path)
 }
 
 /// This is called on the normal source evolution route, BEFORE the ON worker
