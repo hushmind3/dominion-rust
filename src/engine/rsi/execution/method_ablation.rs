@@ -22,8 +22,10 @@ pub(super) async fn run_method_control(
     lab:&PathBuf,binary:&PathBuf,_attempt:u64,started:Instant,
 )->Result<(),String>{
     if input["rsiMethodAblation"]!=true{return Ok(());}
-    let domain=child_input["rsiTargetDomain"].as_str().unwrap_or("");
-    let choice=method_reuse_decision(&context.state,child_input,domain);
+    // Own the domain before mutating child_input; retaining a borrowed str
+    // across arm assignment would conflict with the treatment input update.
+    let domain=child_input["rsiTargetDomain"].as_str().unwrap_or("").to_owned();
+    let choice=method_reuse_decision(&context.state,child_input,&domain);
     if choice["action"]!="execute_methods"{return Ok(());}
     let mut decision=child_input["rsiDecisionInput"].clone();
     if !decision.is_object(){decision=json!({});}
