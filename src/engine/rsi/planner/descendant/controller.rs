@@ -62,6 +62,11 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         &history,&frontier,&algebra,input,commit);
     let redesign=crate::engine::rsi_evolve::meta_experiment_policy::design_target(
         &predesign,commit,input);
+    let preferred_source=crate::engine::rsi_evolve::meta_experiment_policy::preferred_focus(
+        &predesign,commit,input);
+    let open_source_focus=preferred_source.as_ref().and_then(|target|
+        frontier.iter().find(|row|row["path"]==target["path"]
+            && row["sourceSha256"]==target["sourceSha256"])).cloned();
     let meta_redesign_target=redesign.as_ref().and_then(|target|
         frontier.iter().find(|source|source["path"]==target["path"]
             && source["sourceSha256"]==target["sourceSha256"])).cloned();
@@ -146,6 +151,12 @@ pub fn plan_generation_from_file(path:&str)->Result<(),String> {
         architecture_target=algebra["selected"]["target"].clone();
     }else if capability_active {
         architecture_target=method_learning["suggestedCapabilityTarget"].clone();
+    }else if science_active && science["phase"]=="discover_new_mechanism"
+        && open_source_focus.is_some() {
+        // The policy may change source targets with ANY role in the current
+        // actual topology. A self-improving experimental designer changes
+        // this exploration algorithm in its own next compiled revision.
+        architecture_target=open_source_focus.clone().unwrap_or(Value::Null);
     }else if science_active && !predictor_repair_active
         && science["phase"]!="discover_new_mechanism" {
         if let Some(first)=science["focus"].as_array().and_then(|f|f.first()){
