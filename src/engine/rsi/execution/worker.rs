@@ -217,7 +217,7 @@ pub async fn worker(job_id: &str) -> Result<(), String> {
         }else{String::new()};
         let meta_directive=crate::engine::rsi_meta_controller::instruction(
             &job["input"]["rsiMetaPolicy"]);
-        let control_feedback=&job["input"]["rsiMetaPolicy"]["methodControlFeedback"];
+        let control_feedback=job["input"]["rsiMetaPolicy"]["methodControlFeedback"].clone();
         let method_control_directive=if control_feedback["source"]
                 =="verified_descendant_method_control_feedback_v1"{
             // The plan was signed by the compiled successor and checked
