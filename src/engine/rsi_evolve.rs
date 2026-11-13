@@ -54,6 +54,10 @@ pub(crate) use learning_research::{reuse_research};
 mod execution_guards;
 use execution_guards::{generation_stop_reason, generation_fits_remaining_budget, unresolved_quality_case, fit_worker_prompt, post_adoption_objective, should_stop_no_progress, new_research_findings, session_tool_usage, generation_prompt_variants, bind_inherited_target};
 pub use execution_guards::{diagnose_capabilities};
+#[path = "rsi/execution/method_ablation.rs"]
+mod method_ablation;
+use method_ablation::run_control;
+pub(crate) use method_ablation::measure as measured_method_ablation;
 #[path = "rsi/execution/campaign.rs"]
 mod execution_campaign;
 use execution_campaign::{run_loop};
