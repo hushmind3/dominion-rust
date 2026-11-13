@@ -115,3 +115,7 @@ pub(super) fn collect_generation_observation<'a>(
         tokens,
     }
 }
+
+#[cfg(test)]
+#[path="observation/tests.rs"]
+mod tests;
