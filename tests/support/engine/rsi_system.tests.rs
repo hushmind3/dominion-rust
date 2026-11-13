@@ -514,7 +514,7 @@ mod modular_rsi_source_role_tests {
             "src/engine/rsi/planner/policy.rs",
             "src/engine/rsi/planner/context.rs",
             "src/engine/rsi/planner/descendant.rs",
-            "src/engine/rsi/execution/campaign.rs",
+            "src/engine/rsi/execution/generation_preparation.rs",
             "src/engine/rsi/execution/generation.rs",
             "src/engine/rsi/execution/worker.rs",
             "src/engine/rsi/evaluation/trials.rs",
@@ -530,6 +530,13 @@ mod modular_rsi_source_role_tests {
             .expect("an independently editable improvement-method role").1;
         for path in [
             "src/engine/rsi/proof.rs",
+            "src/engine/rsi/execution/campaign.rs",
+            "src/engine/rsi/execution/generation_selection.rs",
+            "src/engine/rsi/execution/generation_launch.rs",
+            "src/engine/rsi/lineage/adoption.rs",
+            "src/engine/rsi/proof/mutual_cycles.rs",
+            "src/engine/rsi/proof/open_handoff.rs",
+            "src/engine/rsi/proof/principle_replay.rs",
             "src/engine/rsi_system/design.rs",
             "src/engine/rsi_system/proposal.rs",
             "src/engine/rsi_system/handoff.rs",
