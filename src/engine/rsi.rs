@@ -554,6 +554,35 @@ pub fn campaign_capability_proven(state:&AppState, campaign:&Value)->bool {
     capability_proven(state,&lineage_history(state,campaign))
 }
 
+/// The single authoritative recursive-system completion contract.
+/// Ordinary source-adoption proficiency remains a separate diagnostic: it can
+/// never end a recursive-evolution campaign or be advertised as full RSI.
+/// Continued campaigns use lineage_history's source/commit continuity guard.
+pub fn recursive_proof_report(state:&AppState,campaign:&Value)->Value {
+    let history=lineage_history(state,campaign);
+    let system_evolution=campaign["systemEvolution"]==true;
+    let system_evidence=if system_evolution {
+        crate::engine::rsi_system::handoff_evidence(state,&history)
+    }else{Value::Null};
+    let closure=system_evidence["causalClosure"].clone();
+    let demonstrated=system_evolution
+        && system_evidence["demonstrated"]==true
+        && closure["demonstrated"]==true;
+    let source_proven=capability_proven(state,&history);
+    json!({
+        "source":"canonical_recursive_proof_gate_v1",
+        "demonstrated":demonstrated,
+        "capabilityDemonstrated":demonstrated,
+        "generationCapabilityProven":source_proven,
+        "systemEvolution":system_evolution,
+        "historyCount":history.len(),
+        "systemEvidence":system_evidence,
+        "causalClosure":closure,
+        "requires":"independent source adoption, executed inherited methods, revised method generation, downstream holdout gains and the same recompiled causal-closure lineage",
+        "modelWeightUpdates":0
+    })
+}
+
 /// Re-run the capability gate over stored evidence and report every generation
 /// so the screen can show exactly which row earned proof and why it did not.
 pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
@@ -596,11 +625,16 @@ pub fn capability_audit(state:&AppState,campaign:&Value)->Value {
             "reason":reason,
         }));
     }
+    let gate=recursive_proof_report(state,campaign);
     json!({
         "campaignId":campaign["id"],
-        "capabilityDemonstrated":campaign_capability_proven(state,campaign),
+        "capabilityDemonstrated":gate["demonstrated"],
+        "generationCapabilityProven":gate["generationCapabilityProven"],
+        "recursiveProof":gate,
+        "systemEvidence":gate["systemEvidence"],
         "verifiedStreak":verified_best,
-        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true},
+        "required":{"verifiedStreak":3,"holdoutDomains":1,"metaTransfer":true,
+            "fullRsi":"canonical_recursive_proof_gate_v1"},
         "generations":rows,
     })
 }
