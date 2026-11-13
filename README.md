@@ -506,3 +506,7 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 `rsi/execution/observation.rs`가 실행 작업의 모델 호출·실제 도구·실행 단계·정책 revision 증거를 타입이 명시된 `GenerationObservation`으로 수집합니다. `campaign.rs`의 관측 수집 약 76줄을 이 모듈로 분리했으며, 세션·작업·정책 경계의 회귀 테스트를 추가했습니다. 모델 가중치 학습 기능은 RSI 경로에 연결하지 않았습니다.
 
 추가 연결 보완: `rsi_system::architecture_frontier`는 `experimental_design`의 대표 소스가 다른 파일이어도 `rsi/meta/experiment_policy.rs`를 **독립 수정 후보로 항상 노출**합니다. 이렇게 해야 실패한 실험 선택 원리가 자신의 실제 Rust 정책을 재작성할 기회를 잃지 않습니다.
+
+### 2026-11-13 20시대 — 챔피온 CI 실행 및 조정기 책임 분해
+
+사용자의 요청에 따라 챔피온의 **GitHub Actions CI를 push 트리거로 실제 실행**했습니다. 세대별 후손 빌드 검증(`rsi/execution/generator_build.rs`), 모델·도구 원본 기록(`rsi/execution/observation.rs`), 세대 기록 구성(`rsi/execution/generation_receipt.rs`), 독립 평가·채택(`rsi/evaluation/candidate_selection.rs`)을 분리해 `campaign.rs`를 약 1,282→910줄로 줄였습니다. 최신 HEAD의 웹 타입 검사·빌드·Rust 릴리스 테스트 상태는 [챔피온 Actions](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-champion)에서 확인할 수 있습니다. 과거 커밋의 성공을 새 커밋의 성공으로 대신하지 않습니다.
