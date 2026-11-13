@@ -35,3 +35,16 @@ This update wires a **real control arm into the normal continuous RSI API** and 
 - Existing `rsi.rs` and `api/rsi.rs` tests still assert that mere accepted patches cannot become whole-system completion.
 
 No tests, compilation, benchmarks, CI, local/remote model campaign or weight training were executed during this change. No measured gain or new judge score is claimed.
+
+## Final static audit and structural decomposition
+
+- The source candidate classifier in `rsi_worktree.rs::classify` now recognizes **every `src/engine/rsi_*` implementation source** as an improver target. Previously accepted A2 edits of `rsi_meta_controller.rs`, `rsi_improvement_algebra.rs`, or `rsi_method_generalization/learning.rs` would have been misclassified as harness edits and could not satisfy the original independent meta-gain gate. A regression test covers all four paths.
+- `rsi_method_generalization.rs` was structurally reduced from 745 lines to 409/442 lines (the final additional routing test is in the parent). `rsi_method_generalization/learning.rs` owns original receipt and control replay; `rsi_method_generalization/ranking.rs` owns next-method/source selection, the A2→B2 transition and policy instruction; all prior public API names are preserved.
+- An OFF experiment is launched only when the current compiled controller plan, source target, selected domain and actual focus bind to the same executable operator. This avoids costly control runs for merely proposed or overridden methods.
+- The OFF job consumes both real **time** and **tokens** before ON starts; an exhausted campaign budget cannot pay for an extra treatment.
+- Invalid original OFF model route, later adoption of a supposed control, missing independent paired receipt, or a forged `methodAblation` generation field all revoke method-quality credit.
+- Regression contracts now cover A2 source classification, the real controller target identity, source-less control fabrication, A2→B2 re-targeting, and 4-step fabricated closure. These are **authored but not executed**.
+
+### Additional validation gap
+
+No compilation, runtime campaign, model sampling variance measurement or judge scoring was performed. The A→B→A→B path is *wired as source code* and guarded by real persisted evidence, but cannot be represented as a completed or statistically causal experiment until those jobs actually run. `causalAblationProven=false` is intentional.
