@@ -23,7 +23,8 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 
 | 경로 | 담당 | 상태 |
 | --- | --- | --- |
-| 참여자·발언 제한·모델 선택 | `src/engine/rooms/speakers.rs::{speaker_window,plan_speakers,model_pool}` → `src/engine/rooms.rs::run_locked` | **이번 변경**: 발언자·모델 배정을 독립 모듈로 추출하고 기존 명시적 지정 우선·참가자별 모델 고정 계약 유지. 그룹 대화 런타임 파일 1,969줄 수준에서 979줄로 분리(발언자 코드 및 단위 테스트 별도) |
+| 참여자·발언 제한·모델 선택 | `src/engine/rooms/speakers.rs::{speaker_window,plan_speakers,model_pool,tiered_model_pool}` → `src/engine/rooms.rs::run_locked` | **이번 변경**: 발언자·모델 배정을 독립 모듈로 추출, `economy`/`frontier` 역할은 사용자가 명시적으로 지정했을 때만 난도별 적용. 명시적 모델/전원 발언 우선·모델 경로 유지. 그룹 런타임 파일은 979줄 수준 |
+| 적응형 비용·품질 알고리즘 | `Rooms.tsx` → `api/rooms.rs::validated_config/submit_internal` → `algorithms.rs::{choose_for_agent,record_owner_feedback}` → `rooms/economy.rs` → `rooms/speakers.rs` → `rooms.rs::run_locked` | **이번 변경**: 새 방은 `adaptive` 기본, 기존 방은 `full` 유지. 실제 버전 있는 balanced/lean/quality 정책을 선택해 작업 스냅샷에 고정하고 발언 인원·라운드에 적용. 완료 작업에 대한 사용자 평가만 해당 정책 revision의 다음 선택 통계에 반영, 원본 증거 평가와 분리 |
 | 방별 컨텍스트 | `src/engine/chat/room_context.rs::compile` | 기존: 동결된 주인 원문, 발언자 귀속, BM25+비용 기준 발췌, 압축시 필수 증거 보존 |
 | 프롬프트 재사용 | `src/engine/chat/continuity.rs::{prepare,project,commit_projection}` | 기존: 참가자별 안정된 접두사·동적 프레임, 증거 변경 시 무효화 |
 | 제공자 실제 캐시 사용 | `chat/provider.rs::cached_prompt_tokens` → `gateway::record_usage_tokens_with_cache` → `db.rs::session_usage` | **이번 변경**: 캐시 적중·비교 가능한 총 입력 토큰·측정 회수 별도 SQL 집계. 미보고/추정 토큰을 캐시 실패로 간주하지 않음 |
@@ -33,14 +34,16 @@ Kling 3.0 Standard/Pro/4K의 샷별 길이 합 3~15초, 최대 6개 샷, `image_
 
 **중요한 경계**: 원화 가격과 0~100 품질 점수는 제공자가 자동 제공한 확정된 수치가 아니라 **사용자가 입력한 선언값**이며 최신 가격 반영 및 품질 평가는 사용자 측정에 의존한다. 캐시 적중률은 청구 비용 절감률이 아니다. 캐시 쓰기·읽기 단가, 제공자별 할인과 실제 청구액은 별도이며, 데이터가 없으면 추정 할인율을 표시하지 않는다. 새 가격 정보가 없는 모델은 **무료 모델로 간주하지 않는다**.
 
-검사 소스: `tests/unit/db_room_cache_usage_tests.rs`, `src/engine/router.rs`의 명시가격·품질 자동 선택 테스트, 추출된 `tests/unit/engine_rooms_{pool_tests,tests}.rs`. 실행하지 않음.
+검사 소스: `tests/unit/db_room_cache_usage_tests.rs`, `src/engine/router.rs`의 명시가격·품질 자동 선택 테스트, `tests/unit/engine_rooms_economy_tests.rs`의 예산 상한·지목 우선 검증 및 추출된 `tests/unit/engine_rooms_{pool_tests,tests}.rs`의 모델 tier 검증. 실행하지 않음.
 
 ## 3. 통합 아키텍처 및 유지보수 지도
 
 ```text
 React (Rooms / Models / Video / Chat / SelfImprovement)
   ├── /api/rooms + /api/chat → engine::rooms → engine::chat
-  │                      ├── rooms/speakers (발언자·모델 배정, 작업 순서와 분리)
+  │                      ├── rooms/economy (정책 버전별 발언 수·라운드 실행)
+  │                      ├── rooms/speakers (발언자·저비용/심층 모델 선택)
+  │                      ├── algorithms (revision·상태·사용자 피드백 통계)
   │                      ├── room_context (선택·증거·토큰 예산)
   │                      ├── continuity (고정 접두사·모델별 대화 상태)
   │                      ├── provider (도구·cache telemetry·stream)
@@ -86,3 +89,24 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 - 2026-11 ParetoSaddler는 고정 가중치 에이전트 하네스의 품질·비용 Pareto 선택을 연구했다. 실서비스 라우팅에는 사용자 정의 품질 점수뿐 아니라 **실제 작업 성공/실패, 입력 캐시, 비용, 작업 난도**를 동일 실험으로 기록해야 한다. [ParetoSaddler](https://arxiv.org/abs/2611.02079)
 
 다음 통합 목표는 **방별 사용량→비용·성공률→개선 후보→동결 평가→선택된 에이전트·라우팅 정책 revision→후속 작업 재평가**를 하나의 감사 가능한 고리로 연결하는 것이다. 현재 코드의 가격/품질 입력 및 캐시 집계는 그 기반이며, 자기개선에 의한 비용·성능 상승이 입증되었다고 표시하지 않는다.
+
+## 7. 실제 개선법 계승에 연결된 그룹대화 정책 (2026-11-14)
+
+```text
+신규 대화방 설정 adaptive (기존 방 full)
+→ POST /api/rooms + api/rooms.rs::validated_config (역할·모델 tier 검증)
+→ POST /api/rooms/:id/messages → algorithms::choose_for_agent("multiagent.economy")
+→ source revision 및 파라미터를 불변 job.input.roomSnapshot.economyKernel에 저장
+→ rooms/speakers.rs::plan_speakers → economy::target_speakers
+→ jobs::run(room) → economy::effective_rounds → tiered_model_pool
+→ 실제 모델 호출, 저장 메시지, provider cache usage 및 job 결과
+→ POST /api/rooms/:id/jobs/:job_id/feedback
+→ room_feedback 멱등 레코드와 owner_preference 감사 이벤트
+→ algorithms::record_owner_feedback(revision) → algorithm_stat
+→ 다음 자동 발언 정책 선택
+```
+
+- 사용자가 **전체 토론·전원·직접 지목·직접 모델 지정**을 하면 적응형 최적화보다 우선한다. 모델 tier는 모델명을 추측하지 않고 사용자가 직접 `economy`/`frontier`로 표시한 항목만 사용한다.
+- 이미 실행된 job의 `economyKernel`은 후속 모델/알고리즘 설정이 변해도 다시 해석하지 않는다.
+- 평가 버튼은 사용자 **선호**를 뜻한다. 독립 검증이나 RSI 성공 판정의 oracle로 계산하지 않는다.
+- 성능과 실제 절감률은 모델 호출 전후 관측을 비교해야 한다. 테스트·실제 청구는 이 변경에서 실행하지 않았다.
