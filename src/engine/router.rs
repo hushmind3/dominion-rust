@@ -38,6 +38,26 @@ pub fn classify(input: &str, attachments: usize, messages: usize) -> Complexity 
     Complexity::Standard
 }
 
+/// Explicit owner-entered KRW per million tokens. Unknown prices are not
+/// silently converted into free, and comparisons are limited to known pairs.
+fn estimated_krw_per_million(provider: &Value) -> Option<f64> {
+    let input=provider["costPerMillionInputKrw"].as_f64()?;
+    let output=provider["costPerMillionOutputKrw"].as_f64()?;
+    if !input.is_finite() || !output.is_finite()
+        || input<0.0 || output<0.0 || input>100_000_000.0 || output>100_000_000.0 {
+        return None;
+    }
+    // Conservative conversational shape (four input tokens / one output).
+    Some(input * 0.8 + output * 0.2)
+}
+
+fn compare_known_prices(a: &Value, b: &Value) -> std::cmp::Ordering {
+    match (estimated_krw_per_million(a), estimated_krw_per_million(b)) {
+        (Some(a),Some(b))=>a.total_cmp(&b),
+        _=>std::cmp::Ordering::Equal,
+    }
+}
+
 fn has_key(state: &AppState, provider: &Value) -> bool {
     provider["id"]
         .as_str()
@@ -64,6 +84,7 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
             candidates.sort_by(|a, b| {
                 has_key(state, a)
                     .cmp(&has_key(state, b))
+                    .then_with(|| compare_known_prices(a,b))
                     .then_with(|| {
                         score(a)
                             .partial_cmp(&score(b))
@@ -85,6 +106,8 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
                             .partial_cmp(&score(a))
                             .unwrap_or(std::cmp::Ordering::Equal)
                     })
+                    .then_with(|| compare_known_prices(a,b))
+                    .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
             });
         }
         Complexity::Standard => {
@@ -92,10 +115,15 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
                 has_key(state, a)
                     .cmp(&has_key(state, b))
                     .then_with(|| {
-                        score(b)
-                            .partial_cmp(&score(a))
+                        // For near-equal capability, pay the lower declared
+                        // token price. A large quality gap is not traded away.
+                        ((score(a)-score(b)).abs() >= 0.1)
+                            .then(||score(b).total_cmp(&score(a)))
                             .unwrap_or(std::cmp::Ordering::Equal)
                     })
+                    .then_with(|| compare_known_prices(a,b))
+                    .then_with(|| score(b).total_cmp(&score(a)))
+                    .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
             });
         }
     }
@@ -174,6 +202,20 @@ mod tests {
         assert_eq!(saved["model"], "new-model");
         assert!(rotate_agent_route(&state, "a", "new", "new-model").is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn light_auto_route_uses_declared_price_only_when_both_are_known() {
+        let (state, dir) = state();
+        state.store.put("provider",&json!({"id":"expensive","baseUrl":"https://paid.example/v1",
+            "model":"high","enabled":true,"costPerMillionInputKrw":10000,
+            "costPerMillionOutputKrw":10000}));
+        state.store.put("provider",&json!({"id":"cheap","baseUrl":"https://cheap.example/v1",
+            "model":"high","enabled":true,"costPerMillionInputKrw":500,
+            "costPerMillionOutputKrw":900}));
+        assert_eq!(select_provider(&state, Complexity::Light).unwrap()["id"],"cheap");
+        assert_eq!(estimated_krw_per_million(&json!({"costPerMillionInputKrw":5})),None);
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
