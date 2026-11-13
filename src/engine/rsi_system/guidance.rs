@@ -46,6 +46,16 @@ pub(crate) fn instruction(self_model:&Value,owner_objective:&str)->String {
         Both the module code and actual runtime wiring must change and be \
         independently adopted before the new role enters future search. \
         A rebuilt descendant may then improve this newly invented module. \
+        You may replace the experiment grammar itself with evolutionProtocol: \
+        entry plus arbitrary operators (id, role, domain, path, objective, \
+        mechanism, experiment) and outcome-conditioned transitions (from, \
+        to, when). Operator experiments include paired_source, isolated_source, \
+        factorial_source, method_control, cross_component and meta_policy_rewrite. \
+        Valid outcomes: adopted, quality_gain, regressed, rejected, inconclusive, \
+        meta_gain and method_gain. Source ground every operator and update \
+        src/engine/rsi/meta/evolution.rs or src/engine/rsi/meta/composition.rs \
+        when the selection/experiment algorithm itself needs to evolve. \
+        New protocols only become executable after independent source adoption. \
         Better: author an openProgram containing ANY named improvement \
         nodes, novel role sources, testable mechanisms, entry and outcome \
         edges; the accepted compiled descendant executes this editable \
