@@ -723,9 +723,14 @@ pub(super) fn evidence_based_meta_repair_focus(
 )->bool{
     !explicit_focus && !successor_stage.is_object()
         && meta["metaRepairChosen"]==true
-        && matches!(meta["mode"].as_str(),
-            Some("repair_own_prediction_mechanism"|"repair_own_transfer_method"))
-        && meta["target"]["path"]=="src/engine/rsi_meta_controller.rs"
+        && match meta["mode"].as_str() {
+            Some("repair_own_prediction_mechanism")=>
+                meta["target"]["path"]=="src/engine/rsi_meta_controller.rs",
+            Some("repair_own_transfer_method")=>
+                meta["target"]["path"]==
+                    crate::engine::rsi_meta_controller::TRANSFER_METHOD_SOURCE,
+            _=>false
+        }
 }
 
 /// Compute the NEXT system architecture proposal inside the currently

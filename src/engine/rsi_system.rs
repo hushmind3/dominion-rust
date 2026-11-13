@@ -11,7 +11,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
-    ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_successor_productivity.rs","src/engine/rsi_edit_genome.rs","src/engine/rsi_rule_tournament.rs"]),
+    ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_meta_controller/peer_transfer.rs","src/engine/rsi_meta_controller/guidance.rs","src/engine/rsi_meta_controller/observations.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_successor_productivity.rs","src/engine/rsi_edit_genome.rs","src/engine/rsi_rule_tournament.rs"]),
     ("models",&["src/engine/rsi_model_ecology.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
 ];
@@ -20,7 +20,7 @@ const COMPONENTS: &[(&str,&[&str])] = &[
 // methods in a release descendant and must not pollute its editable frontier.
 pub(crate) fn runtime_source_file(path:&str)->bool{
     let file=path.rsplit('/').next().unwrap_or(path);
-    !file.ends_with("_tests.rs")
+    !file.ends_with("_tests.rs") && file!="tests.rs"
         && !file.ends_with("_fixture.rs")
         && !path.split('/').any(|part|matches!(part,"tests"|"fixtures"))
 }
@@ -79,6 +79,9 @@ fn source_role(path:&str)->&'static str {
     // Submodules owned by the RSI coordinator are policy machinery, not
     // generic "learning" or "algorithms" merely because of their basename.
     if lower.starts_with("src/engine/rsi/"){return "improvement_methods";}
+    if lower.starts_with("src/engine/rsi_meta_controller/"){
+        return "improvement_methods";
+    }
     let name=lower.rsplit('/').next().unwrap_or(&lower);
     if name.starts_with("model_")||name.starts_with("train_")
         || name.starts_with("training")||name.starts_with("trainable")
@@ -335,6 +338,7 @@ pub(crate) fn architecture_frontier(
             for anchor in [
                 "src/engine/rsi_recursive_discovery.rs",
                 "src/engine/rsi_meta_controller.rs",
+                "src/engine/rsi_meta_controller/peer_transfer.rs",
             ] {
                 if let Some(pos)=available.iter().position(|(path,_,_)|
                     *path==anchor) {
@@ -1311,6 +1315,9 @@ mod tests {
             "src/engine/rsi/evaluation.rs",
             "src/engine/rsi/planner.rs",
             "src/engine/rsi/execution.rs",
+            "src/engine/rsi_meta_controller/peer_transfer.rs",
+            "src/engine/rsi_meta_controller/guidance.rs",
+            "src/engine/rsi_meta_controller/observations.rs",
         ] {
             assert_eq!(source_role(module),"improvement_methods");
             assert!(runtime_source_file(module));
@@ -1324,6 +1331,7 @@ mod tests {
             "src/engine/rsi_oracle_fixture.rs",
             "src/engine/tests/worker.rs",
             "src/engine/fixtures/mock.rs",
+            "src/engine/rsi_meta_controller/tests.rs",
         ] {
             assert!(!runtime_source_file(artifact), "{artifact} is not a release capability");
         }
