@@ -48,7 +48,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         )
     }) {
         return Ok(
-            json!({"goalId":goal_id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":goal.get("gaps")}),
+            json!({"goalId":goal_id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":goal.get("gaps"),"metrics":goal.get("metrics")}),
         );
     }
     // An interrupted turn may have changed external state before its response
