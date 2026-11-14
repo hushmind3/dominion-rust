@@ -441,6 +441,27 @@ impl Store {
         Some(record)
     }
 
+    /// Atomically compare multiple record fields before applying a patch.
+    /// Used when text-only CAS is insufficient to guard mutable provenance,
+    /// lifecycle state or partition scope against concurrent agent writes.
+    pub fn patch_if_fields(&self,kind:&str,id:&str,expected:&Value,patch:&Value)->Option<Value>{
+        let expected=expected.as_object()?;
+        let patch=patch.as_object()?;
+        if expected.is_empty() || patch.is_empty() || patch.contains_key("id"){return None;}
+        let conn=self.conn.lock().ok()?;
+        let mut record=conn.query_row(
+            "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+            params![kind,id],record_from_row).ok()?;
+        if !expected.iter().all(|(key,value)|record.get(key).unwrap_or(&Value::Null)==value){
+            return None;
+        }
+        for (key,value) in patch {record[key]=value.clone();}
+        conn.execute(
+            "UPDATE records SET data=?3,updated_at=datetime('now') WHERE kind=?1 AND id=?2",
+            params![kind,id,record.to_string()]).ok()?;
+        Some(record)
+    }
+
     pub fn patch_records(&self, kind: &str, ids: &[String], patch: &Value) -> Option<Vec<Value>> {
         let patch = patch.as_object()?;
         let mut conn = self.conn.lock().unwrap();
