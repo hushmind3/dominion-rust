@@ -296,11 +296,61 @@ mod sub3_goal_resume_tests {
         assert_eq!(job["status"],"queued");
         assert_eq!(job["input"]["goalId"],"goal-1");
         assert_eq!(job["input"]["resumeAfterReview"],true);
+        assert_eq!(job["goalState"]["nextIteration"],16);
+        assert_eq!(job["goalState"]["inFlight"],false);
+        assert_eq!(job["goalState"]["evidence"][0]["tool"],"workspace_read");
         assert_eq!(state.store.recent_audit(20).iter().filter(|row|
             row["event"]=="goal.owner_reviewed_resume").count(),1);
         assert_eq!(resume(&state,"goal-1",
             json!({"acknowledgeUnknownEffects":true})).await.status(),
             StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn interrupted_tool_turn_is_skipped_instead_of_replayed() {
+        let state=state();
+        state.store.put("job",&json!({"id":"old","kind":"goal",
+            "status":"needs_review","input":{"goalId":"interrupted"},
+            "goalState":{"nextIteration":2,"inFlight":true,
+                "evidence":[{"tool":"workspace_write","result":{"ok":true}}],
+                "transcript":"prior completed steps"}})).unwrap();
+        state.store.put("goal",&json!({"id":"interrupted","goal":"edit source",
+            "status":"needs_review","jobId":"old","iterations":2,
+            "maxIterations":8,"evidence":[{"tool":"workspace_read","result":{"ok":true}}]})).unwrap();
+        assert_eq!(resume(&state,"interrupted",
+            json!({"acknowledgeUnknownEffects":true})).await.status(),StatusCode::OK);
+        let goal=state.store.get("goal","interrupted").unwrap();
+        assert_eq!(goal["resumeHistory"][0]["startIteration"],3);
+        assert_eq!(goal["resumeHistory"][0]["skippedUnknownTurn"],true);
+        let job=state.store.get("job",goal["jobId"].as_str().unwrap()).unwrap();
+        assert_eq!(job["goalState"]["nextIteration"],3);
+        assert_eq!(job["goalState"]["reviewPending"],false);
+        assert_eq!(job["goalState"]["inFlight"],false);
+        assert_eq!(job["goalState"]["evidence"][0]["tool"],"workspace_read");
+    }
+
+    #[tokio::test]
+    async fn completed_executor_turn_only_replays_read_only_review() {
+        let state=state();
+        state.store.put("job",&json!({"id":"review-job","kind":"goal",
+            "status":"needs_review","input":{"goalId":"review-only"},
+            "goalState":{"sessionId":"s","nextIteration":3,
+                "inFlight":false,"reviewPending":true,
+                "evidence":[{"tool":"workspace_write","result":{"ok":true}}],
+                "transcript":"saved executor result","gaps":[],
+                "toolErrors":[],"turnError":null}})).unwrap();
+        state.store.put("goal",&json!({"id":"review-only","goal":"update code",
+            "sessionId":"s","status":"needs_review","jobId":"review-job",
+            "iterations":3,"maxIterations":8})).unwrap();
+        let res=resume(&state,"review-only",json!({"acknowledgeUnknownEffects":true})).await;
+        assert_eq!(res.status(),StatusCode::OK);
+        let goal=state.store.get("goal","review-only").unwrap();
+        assert_eq!(goal["resumeHistory"][0]["startIteration"],2);
+        let job=state.store.get("job",goal["jobId"].as_str().unwrap()).unwrap();
+        assert!(crate::engine::goal_recovery::safe_review_checkpoint(&job));
+        assert_eq!(job["goalState"]["nextIteration"],3);
+        assert_eq!(job["goalState"]["transcript"],"saved executor result");
+        assert_eq!(job["goalState"]["evidence"][0]["tool"],"workspace_write");
     }
 
     #[tokio::test]
