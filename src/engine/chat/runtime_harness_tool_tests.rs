@@ -107,6 +107,39 @@ use super::*;
     }
 
     #[test]
+    fn small_model_schema_budget_keeps_relevant_edit_and_verification_tools(){
+        let mut tools=(0..16).map(|n|json!({
+            "type":"function","function":{
+                "name":format!("mcp_unrelated_catalog_{n}"),
+                "description":format!("No matching action for this job: {}", "x".repeat(300))
+            }
+        })).collect::<Vec<_>>();
+        tools.extend([
+            json!({"type":"function","function":{"name":"workspace_read_range",
+                "description":"Read existing Rust source with version hash"}}),
+            json!({"type":"function","function":{"name":"workspace_replace_range",
+                "description":"Apply grounded Rust source code patch"}}),
+            json!({"type":"function","function":{"name":"shell_exec",
+                "description":"Build or test the project in a shell"}}),
+        ]);
+        let selected=budgeted_tool_definitions(tools.clone(),700,
+            "Rust 코드 수정하고 테스트해", &std::collections::HashSet::new());
+        assert!(selected.iter().any(|item|tool_name(item)=="workspace_read_range"),
+            "source observation was dropped behind unrelated MCP catalog");
+        assert!(selected.iter().any(|item|tool_name(item)=="workspace_replace_range"),
+            "editing tool was dropped behind unrelated MCP catalog");
+        assert!(selected.iter().any(|item|tool_name(item)=="shell_exec"),
+            "test tool was dropped behind unrelated MCP catalog");
+        assert!(selected.iter().map(|item|serde_json::to_string(item).unwrap().len())
+            .sum::<usize>()<=700);
+        assert_eq!(selected,budgeted_tool_definitions(tools.clone(),700,
+            "Rust 코드 수정하고 테스트해",&std::collections::HashSet::new()));
+        let no_trim=budgeted_tool_definitions(tools.clone(),100_000,
+            "other",&std::collections::HashSet::new());
+        assert_eq!(no_trim,tools);
+    }
+
+    #[test]
     fn tool_schemas_fit_the_selected_provider_budget() {
         let tools = (0..30)
             .map(|index| json!({"type":"function","function":{"name":format!("tool{index}"),"description":"x".repeat(100)}}))
