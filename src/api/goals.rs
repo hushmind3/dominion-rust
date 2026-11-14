@@ -28,6 +28,19 @@ pub async fn rollback(State(state):State<AppState>,Path(id):Path<String>)->Respo
     }
 }
 
+/// Explicit owner action: apply only the exact SHA-256-reviewed isolated patch.
+pub async fn apply(State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>)->Response{
+    if body.as_object().is_none_or(|object|object.len()!=1 || !object.contains_key("expectedPatchSha256")){
+        return error(StatusCode::BAD_REQUEST,"expectedPatchSha256 항목만 제출하세요.");
+    }
+    let Some(digest)=body["expectedPatchSha256"].as_str() else {
+        return error(StatusCode::BAD_REQUEST,"검토한 Git 패치 SHA-256을 문자열로 제출하세요.");
+    };
+    match engine::goal_git::apply_reviewed(&state,&id,digest).await {
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
 pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("goal", &id);
     state
