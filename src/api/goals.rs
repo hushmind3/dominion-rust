@@ -207,50 +207,49 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if body.get("tokenBudget").is_some_and(|v|v.as_u64().is_none_or(|n|n>2_000_000)) {
         return error(StatusCode::BAD_REQUEST,"목표 실행 토큰 상한은 0~2000000 사이여야 합니다.");
     }
-    let Some(record) = state.store.put(
-        "goal",
-        &json!({
-            "taskId": uuid::Uuid::new_v4().to_string(),
-            "goal": text,
-            "successCriteria": criteria,
-            "isolateWorktree":isolate,"publishPr":publish,
-            "verifyCommands":commands,
-            "executor": executor,
-            "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
-            "planner":body.get("planner").cloned().unwrap_or(json!({})),
-            "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(0),
-            "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
-            "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
-            "replans":0,"planHistory":[],"reviewHistory":[],
-            "status": "queued",
-            "iterations": 0,
-            "maxIterations": max_iterations,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
-        }),
-    ) else {
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "목표를 저장할 수 없습니다.",
-        );
-    };
-    let goal_id = record
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    // Do not leave a permanent "queued" goal without a corresponding durable
-    // job. The goal and the job are separate records with a recoverable link.
-    let Some(job) = crate::engine::jobs::enqueue(
-        &state,"goal",json!({"goalId":goal_id})
-    ) else {
-        state.store.remove("goal",&goal_id);
+    // Goal and runnable job must commit together. A process crash or disk
+    // error cannot leave a queued goal with no executable job.
+    let goal_id=uuid::Uuid::new_v4().to_string();
+    let job_id=uuid::Uuid::new_v4().to_string();
+    let queued_at=chrono::Utc::now().to_rfc3339_opts(
+        chrono::SecondsFormat::Micros,true);
+    let goal=json!({
+        "id":goal_id,"jobId":job_id,
+        "taskId":uuid::Uuid::new_v4().to_string(),
+        "goal":text,
+        "successCriteria":criteria,
+        "isolateWorktree":isolate,"publishPr":publish,
+        "verifyCommands":commands,
+        "executor":executor,
+        "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
+        "planner":body.get("planner").cloned().unwrap_or(json!({})),
+        "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(0),
+        "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
+        "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
+        "replans":0,"planHistory":[],"reviewHistory":[],
+        "status":"queued","iterations":0,
+        "maxIterations":max_iterations,
+        "createdAt":chrono::Utc::now().to_rfc3339()
+    });
+    let job=json!({
+        "id":job_id,"kind":"goal","status":"queued",
+        "queuedAt":queued_at,"input":{"goalId":goal_id},
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
+    if let Err(cause)=state.store.transaction(&[
+        ("goal".to_string(),goal.clone()),("job".to_string(),job.clone())
+    ]) {
+        state.store.audit("goal.enqueue_failed",json!({
+            "goalId":goal_id,"jobId":job_id,"error":cause
+        }));
         return error(StatusCode::INTERNAL_SERVER_ERROR,
-            "목표 실행 작업을 저장할 수 없습니다.");
-    };
-    let job_id=job["id"].clone();
-    let saved=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
-        &json!({"jobId":job_id})).unwrap_or_else(||record.clone());
+            "목표와 실행 작업을 원자적으로 저장하지 못했습니다.");
+    }
+    let saved=state.store.get("goal",&goal_id).unwrap_or(goal);
+    let saved_job=state.store.get("job",&job_id).unwrap_or(job);
     state.bus.record("goal",&saved);
+    state.bus.record("job",&saved_job);
+    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id}));
     Json(saved).into_response()
 }
 
