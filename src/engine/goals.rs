@@ -316,6 +316,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .get("nextIteration")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let resumed_after_review = job["input"]["resumeAfterReview"]==true;
+    let resume_guidance=if resumed_after_review {
+        "\n\n[검토 후 재개] 이전 도구 호출의 외부 결과가 불확실할 수 있습니다. 이전 명령/파일 쓰기를 반복하지 마세요. 먼저 읽기 전용 도구로 현재 Git 변경, 파일 상태와 외부 실행 기록을 재확인한 뒤 남은 작업만 수행하세요."
+    } else {""};
 
     for index in start..max_iterations {
         if let Some((revision,owner))=
@@ -341,7 +345,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
-            input:format!("목표: {text}{git_guidance}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n작업 분해(원래 사용자 요청):\n{decomposition}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
+            input:format!("목표: {text}{git_guidance}{resume_guidance}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n작업 분해(원래 사용자 요청):\n{decomposition}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
