@@ -45,7 +45,8 @@ Engine: goals.rs::run
 | 검증 가능한 협력 | `src/engine/verification.rs::{delegated_successful_operations,is_action_evidence,command_matches}` | 부모 목표는 `delegate_task` 또는 `task_result`의 **완료된 자식 작업의 실제 도구 결과**만 사용. 자식 답변 텍스트·미완료 작업·쓰기 없는 수정 툴은 성공 증거가 아님 |
 | 위임 비용 경계 | `src/engine/tools.rs::delegate` | 세션당 위임 작업 24개, 동시 queued/running 4개 제한 검사. 실행 시점 비원자적 집계이며 분산 워커에서 강한 원자적 제한이라는 주장은 하지 않음 |
 | 코딩 작업 분류 | `src/engine/verification.rs::{looks_actionable,infer_criteria}` | `fix`/`refactor`/`debug`/테스트·PR·버그 수정 등의 목표를 행동 증거가 필요한 작업으로 분류 |
-| 검증 시나리오 작성 | `tests/unit/goal_report_tests.rs` · `tests/unit/agent_delegation_proof_tests.rs` | 거짓 보고, 실제 파일 변경, 나중에 파일이 회귀한 경우, 자식 종료 코드 성공·실패 및 미완료 위임을 검사하는 소스 작성 (**미실행**) |
+| 목표별 토큰 예산 | `api/goals.rs::create_goal` → `goals.rs::run` → `db.rs::session_usage` → `goals/report.rs` 및 `Goals.tsx` | 기본 150,000토큰(사용자 0~200만 조절). 다음 실행 턴 전에 실제 기록된 세션 사용량을 검사하고 한계 초과 시 `needs_review`로 종료. 보고서에 토큰·캐시 적중·호출 건수 포함. 계획/독립 검토 모델 호출의 실청구 상한은 아님 |
+| 검증 시나리오 작성 | `tests/unit/goal_report_tests.rs` · `tests/unit/agent_delegation_proof_tests.rs` · `tests/unit/goals_api_lifecycle_tests.rs` | 거짓 보고, 실제 파일 변경과 회귀, 자식 종료 코드 성공·실패 및 미완료 위임, 목표 생성·계획 수정·중단·수동 재개 계약 검사 소스 작성 (**미실행**) |
 
 ## 3. 25점 에이전트 목표와 남은 실제 증명
 
@@ -55,7 +56,7 @@ Engine: goals.rs::run
 1. **대규모 프로젝트 자동 탐색·Git 결과 통합**: 한 목표 아래 변경 파일 목록, tree SHA와 diff를 소스에 귀속하고 독립 테스트·검토 후 commit/PR까지 책임지는 범용 코딩 하네스. 기존 `tools.rs` Git·터미널·코드 검색을 더 강하게 한 lifecycle로 묶어야 함.
 2. **병렬 위임의 원자적 작업 경계**: 현재 위임 한도는 store 스캔 기반. 실제 다중 worker 안전한 원자적 예약, child outcome 결합, 취소 전파, 주인 목표의 부작용 검증과 격리 수준을 강화.
 3. **복구의 실제 외부 상태 재검증**: `needs_review` 뒤 사용자 확인 + 새 작업은 연결됨. remote idempotency keys, 외부 API GET/diff와 원격 영수증 비교를 제공자별로 자동 검증하는 단계는 별도.
-4. **완수율과 비용 데이터셋**: 저장소 변경·PR·브라우저·MCP·멀티에이전트·장기 복구 과제를 실제 모델로 반복 수행하고 `goal completed / needs_review / failed` 비율, 회귀·토큰·KRW·지연을 객관적으로 측정. 정적 소스만으로 Claude Code·Codex 동급 완주를 입증할 수 없음.
+4. **완수율과 비용 데이터셋**: 목표 토큰 예산은 기록된 다음 executor 턴 진입을 제어할 뿐 실결제 상한은 아니다. 저장소 변경·PR·브라우저·MCP·멀티에이전트·장기 복구 과제를 실제 모델로 반복 수행하고 `goal completed / needs_review / failed` 비율, 회귀·토큰·KRW·지연을 객관적으로 측정. 정적 소스만으로 Claude Code·Codex 동급 완주를 입증할 수 없음.
 5. **목표 평가 ↔ RSI**: 별도 frozen oracle/paired evaluator가 채택한 개선만 후손에 계승. 일반 작업의 주관 평가나 새로운 UI를 독립 RSI 성공으로 승격시키지 않음.
 
 ## 4. 품질·안전 계약
