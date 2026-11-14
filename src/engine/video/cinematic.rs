@@ -98,6 +98,13 @@ pub(super) async fn render(
     let encoder = ffmpeg_from_config(cfg)
         .ok_or("멀티샷 최종 편집에는 FFmpeg가 필요합니다.")?;
     if !quality::available(cfg){return Err("멀티샷의 개별 장면 검수에는 FFprobe가 필요합니다.".into());}
+    // Recovery must inspect the stored paid/external-effect boundary BEFORE
+    // emitting a storyboard checkpoint. JobContext::checkpoint uses a shallow
+    // merge and replacing videoState would otherwise erase the inFlight bit.
+    if ctx.state.store.get("job",&ctx.job_id)
+        .is_some_and(|job|job["videoState"]["inFlight"]==true){
+        return Err("needs_review: ComfyUI 장면 생성 요청이 진행 중이었는지 먼저 확인하세요. 자동으로 다시 제출하지 않습니다.".into());
+    }
     let shots = storyboard(input)?;
     let total = shots.len();
     let plan = shots.iter().map(|shot| json!({
