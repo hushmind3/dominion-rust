@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 
 const TERMINAL=new Set(["completed","failed","cancelled","needs_review"]);
-export const DEFAULT_CASES=[
+const DEFAULT_CASES=[
   {id:"write-single",goal:"{{dir}}/result.txt 파일을 만들고 내용을 정확히 AGENT-OK-1 로 저장하세요.",
    checks:[{type:"file_equals",path:"{{dir}}/result.txt",content:"AGENT-OK-1"}]},
   {id:"write-multiple",goal:"{{dir}}/first.txt와 {{dir}}/second.txt 파일 2개를 만드세요. 첫 파일 내용은 FIRST, 둘째 파일 내용은 SECOND 입니다. 둘 다 실제로 저장하세요.",
@@ -29,7 +29,7 @@ export const DEFAULT_CASES=[
 const iso=()=>new Date().toISOString();
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function assert(condition,message){if(!condition)throw Error(message);}
-export function safeRelativePath(root,path){
+function safeRelativePath(root,path){
   assert(typeof path==="string"&&path.length>0&&!isAbsolute(path)&&!path.includes("\\"),
     "unsafe or absolute path in evaluation manifest");
   const parts=path.split("/");
@@ -101,7 +101,7 @@ export function summarize(records){
     currencyCostReason:"Provider billing amounts, local electricity and GPU costs were not independently observed"
   };
 }
-export function render(value,dir){
+function render(value,dir){
   if(typeof value==="string")return value.replaceAll("{{dir}}",dir);
   if(Array.isArray(value))return value.map(x=>render(x,dir));
   if(value&&typeof value==="object"){

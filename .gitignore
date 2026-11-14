@@ -8,5 +8,3 @@ web/dist
 /bench
 
 .dominion/
-
-scripts/copilot-sdk-baseline/node_modules/
