@@ -67,6 +67,7 @@ fn paths(root:&Path,goal:&Value)->Vec<String>{
     let mut set=BTreeSet::new();
     for evidence in goal["evidence"].as_array().into_iter().flatten(){
         if !crate::engine::verification::successful_evidence(evidence){continue;}
+        if evidence["result"]["written"]!=true {continue;}
         if !matches!(crate::engine::verification::tool_name(evidence),
             "workspace_write"|"workspace_replace"|"workspace_replace_range"|
             "workspace_replace_function"|"file_write") {continue;}
@@ -155,6 +156,22 @@ pub(crate) async fn undo(state:&AppState,goal:&Value,raw:&str,expected:&str)->Re
         return Err("다른 작업이 진행 중입니다. 편집이 끝난 뒤 되돌리세요.".into());
     }
     let file=root.join(&target);
+    // Use the SAME process-local file mutation lock as the model editor.
+    // This blocks concurrent DOMINION edits across the SHA check and restore.
+    let resolved=crate::engine::tools::canonical_target(&file)
+        .map_err(|e|e.to_string())?;
+    let lock={
+        let mut locks=state.file_mutations.lock().unwrap();
+        locks.retain(|_,lock|lock.strong_count()!=0);
+        if let Some(existing)=locks.get(&resolved).and_then(std::sync::Weak::upgrade) {
+            existing
+        } else {
+            let fresh=std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            locks.insert(resolved.clone(),std::sync::Arc::downgrade(&fresh));
+            fresh
+        }
+    };
+    let _guard=lock.lock().await;
     let metadata=std::fs::symlink_metadata(&file).map_err(|e|e.to_string())?;
     if !metadata.is_file()||metadata.len()>MAX_UNDO_BYTES{
         return Err("작거나 일반적인 파일만 안전하게 복원할 수 있습니다.".into());
