@@ -17,7 +17,24 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
             value
         },
         "workflow"=>{
-            let Some(id)=input["workflowId"].as_str().filter(|id|state.store.get("workflow",id).is_some())else{return error(StatusCode::BAD_REQUEST,"워크플로를 찾을 수 없습니다.")};json!({"workflowId":id,"input":input["input"]})
+            let Some(id)=input["workflowId"].as_str() else {
+                return error(StatusCode::BAD_REQUEST,"워크플로 ID가 필요합니다.")
+            };
+            let Some(definition)=state.store.get("workflow",id) else {
+                return error(StatusCode::BAD_REQUEST,"워크플로를 찾을 수 없습니다.")
+            };
+            // This legacy generic job endpoint must enforce the SAME
+            // admission gate as /api/workflows/:id/run. Otherwise callers
+            // could bypass disabled provider checks and frozen step settings.
+            let resolved=match crate::api::workflows::runnable(&state,&definition){
+                Ok(value)=>value,
+                Err(message)=>return error(StatusCode::CONFLICT,&message),
+            };
+            let payload=input["input"].as_str().unwrap_or("");
+            if payload.chars().count()>16_000{
+                return error(StatusCode::BAD_REQUEST,"작업 입력은 16000자를 넘을 수 없습니다.")
+            }
+            json!({"workflowId":id,"input":payload,"definition":resolved})
         },
         _=>return error(StatusCode::BAD_REQUEST,"해당 작업은 대화·회의·영상의 실행 API에서 시작하세요."),
     };
