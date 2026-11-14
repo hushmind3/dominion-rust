@@ -25,6 +25,7 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
  const jobs=useRemote<any[]>(section==='activity'||section==='automations'?'/api/jobs':null,[]),automations=useRemote<any[]>(section==='automations'?'/api/automations':null,[]),audit=useRemote<any[]>(section==='activity'?'/api/audit':null,[]);
  const executions=useRemote<any[]>(section==='activity'?'/api/executions?limit=100':null,[])
  const browserStatus=useRemote<any>(section==='activity'?'/api/browser/status':null,{status:{available:false,running:false},screenshot:null})
+ const goalMetrics=useRemote<{eligibleTerminalGoals:number;harnessCompletedGoals:number;completionRatePercent:number|null;completedWithModelCalls:number;completedWithNonEstimatedTokenUsage:number;independentBenchmark:boolean}>(section==='activity'?'/api/goals/metrics':null,{eligibleTerminalGoals:0,harnessCompletedGoals:0,completionRatePercent:null,completedWithModelCalls:0,completedWithNonEstimatedTokenUsage:0,independentBenchmark:false});
  const workflowResults=useRemote<{id:string;workflowId:string;jobId:string;sha256:string;preview:string;usage?:{totalTokens?:number}}[]>(section==='activity'?'/api/workflow-artifacts':null,[]);
  const [shotTick,setShotTick]=useState(0)
  const [selectedExecution,setSelectedExecution]=useState(''),[operations,setOperations]=useState<any[]>([])
@@ -40,7 +41,21 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
  {section==='automations'&&<><Headline eyebrow={t('ui.eyebrow.automations')} title={t('ops.automations.title')} description={t('ops.automations.description')} actions={<Action onClick={()=>setEdit({kind:'prompt',input:{prompt:'',agentId:agents.value[0]?.id||'',providerId:'',model:''},intervalMinutes:1440,nextAt:new Date(Date.now()+3600000).toISOString(),enabled:true})}><Plus size={17}/> {t('ops.create')}</Action>}/>
  <div className="mb-5 flex items-center gap-4 rounded-xl border border-[#EED9CC] bg-[#F7E8E1] p-5"><div className="grid size-12 shrink-0 place-items-center rounded-xl bg-[#F1DCCF] text-[#C96442]"><CalendarClock size={22}/></div><div><strong>{t('ops.automations.banner')}</strong><p>{t('ops.automations.banner.desc')}</p></div></div>
  <Subheading title={t('ops.scheduled')} extra={<span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{automations.value.length} AUTOMATIONS</span>}/><div className="flex min-w-0 flex-col gap-3">{automations.value.map(a=><Panel className="flex min-w-0 flex-wrap items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-4" key={a.id}><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Clock3 size={20}/></span><div><h3>{a.kind==='workflow'?'협업 워크플로':a.kind==='meeting'?t('ops.meeting'):t('ops.agentJob')}</h3><p>{a.input?.prompt||a.input?.goal||a.input?.input||t('ops.jobWaiting')}</p><small>{t('ops.intervalNext',{interval:a.intervalMinutes,next:a.nextAt?formatDateTime(a.nextAt):t('ops.notSet')})}</small></div><StateTag online={a.enabled}>{a.enabled?t('ops.activeState'):t('ops.stoppedState')}</StateTag><Button size="icon" variant="ghost" onClick={()=>setEdit(a)}><Settings2 size={17}/></Button><Button size="icon" variant="ghost" onClick={async()=>{await del('/api/automations/'+a.id);automations.reload()}}><Trash2 size={17}/></Button></Panel>)}{!automations.value.length&&<Panel><Empty icon={CalendarClock} title={t('ops.noAutomations')} description={t('ops.noAutomations.desc')}/></Panel>}</div><div className="mt-10"><Subheading title={t('ops.queue')}/></div><JobList jobs={jobs.value}/></>}
- {section==='activity'&&<><Headline eyebrow={t('ui.eyebrow.activity')} title={t('ops.activity.title')} description={t('ops.activity.description')} actions={<Action variant="secondary" onClick={()=>{jobs.reload();audit.reload();executions.reload()}}><RefreshCw size={16}/> {t('ops.refresh')}</Action>}/><div className="mb-6"><GoalWorkbench agents={agents.value} jobs={jobs.value} onJobsChanged={()=>void jobs.reload()}/></div>
+ {section==='activity'&&<><Headline eyebrow={t('ui.eyebrow.activity')} title={t('ops.activity.title')} description={t('ops.activity.description')} actions={<Action variant="secondary" onClick={()=>{jobs.reload();audit.reload();executions.reload()}}><RefreshCw size={16}/> {t('ops.refresh')}</Action>}/><div className="mb-6">
+ <GoalWorkbench agents={agents.value} jobs={jobs.value} onJobsChanged={()=>{void jobs.reload();void goalMetrics.reload()}}/>
+ <div className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4 text-xs">
+  <div className="flex items-center justify-between"><strong>자율 작업의 실제 영수증</strong>
+   <Button size="sm" variant="secondary" onClick={()=>void goalMetrics.reload()}>갱신</Button>
+  </div>
+  <div className="mt-2 grid gap-2 sm:grid-cols-4">
+   <span>종료 기록 <strong>{goalMetrics.value.eligibleTerminalGoals}</strong>건</span>
+   <span>하네스 완료 <strong>{goalMetrics.value.harnessCompletedGoals}</strong>건</span>
+   <span>모델 호출 포함 완료 <strong>{goalMetrics.value.completedWithModelCalls}</strong>건</span>
+   <span>실측 토큰 동반 완료 <strong>{goalMetrics.value.completedWithNonEstimatedTokenUsage}</strong>건</span>
+  </div>
+  <p className="mt-2 text-[#7C7469]">내부 작업 영수증입니다. 독립 실모델 과제 완수율이나 실제 청구액으로 계산하지 않습니다.</p>
+ </div>
+ </div>
  <Panel className="mb-5 p-4">
   <div className="flex items-center justify-between">
    <strong className="text-sm">영속 납품 결과</strong>
