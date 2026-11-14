@@ -382,7 +382,13 @@ pub(crate) fn architecture_frontier(
         // perfectly valid inherited next-stage path whenever another file
         // happened to be smaller. Multiple options give the child an actual
         // architectural search space without pre-authoring an optimization.
-        for (path,hash,bytes) in available.into_iter().take(12) {
+        // Improvements of the executable discovery method must remain
+        // reachable even as new, cheaper candidate roles or sources are added.
+        // The independent evaluator still determines whether any edit helps.
+        let role_limit=if role=="improvement_methods"{
+            12usize.max(method_lineage::EXECUTABLE_METHOD_SOURCES.len())
+        }else{12usize};
+        for (path,hash,bytes) in available.into_iter().take(role_limit) {
             let prior=source_attempts.get(path).copied().unwrap_or(0);
             let mut candidate=json!({
                 "role":role,"domain":domain,"path":path,

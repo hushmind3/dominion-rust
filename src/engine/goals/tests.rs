@@ -185,7 +185,7 @@
     async fn lying_executor_and_reviewer_cannot_complete_read_only_goal_run() {
         let (result, state, dir, calls) =
             execute_mock_goal("workspace_read", "create a report").await;
-        assert_eq!(calls, 4, "planner, tool call, final response, reviewer");
+        assert_eq!(calls, 3, "planner + executor tool and completion; deterministic failure avoids paid reviewer");
         assert_eq!(result["status"], "needs_review");
         assert_eq!(
             state.store.get("goal", "g").unwrap()["status"],

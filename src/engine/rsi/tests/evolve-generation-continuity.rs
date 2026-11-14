@@ -30,6 +30,8 @@
         let result = tokio::time::timeout(Duration::from_secs(300), run(&context, &job)).await.unwrap().unwrap();
         let evolution = &result["evolution"];
         assert_eq!(result["status"], "completed", "{result}");
+        assert_eq!(evolution["sourceBranch"], "dominion-sub2",
+            "source branch must survive campaign checkpoints and publication");
         assert_eq!(evolution["attempts"], 4, "{result}");
         assert_eq!(evolution["acceptedGenerations"], 1, "{result}");
         let history = evolution["history"].as_array().unwrap();

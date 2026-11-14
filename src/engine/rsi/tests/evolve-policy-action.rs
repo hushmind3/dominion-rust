@@ -139,8 +139,13 @@
         assert_eq!(first["source"],"compiled_descendant_system_controller_v3");
         assert_eq!(first["generatorCommit"],commit);
         assert_eq!(first["historyCount"],0);
-        assert_eq!(first["systemBlueprint"]["architecture"].as_array().unwrap().len(),8,
-            "the source scanner has 8 seed roles: algorithms, harness, memory, learning, tools, improvement_methods, models and frontend");
+        let roles=first["systemBlueprint"]["architecture"].as_array().unwrap();
+        assert_eq!(roles.len(),crate::engine::rsi_system::COMPONENTS.len(),
+            "compiled source scanner must expose every registered executable intelligence role");
+        for role in ["agent_harness","video","multiagent","improvement_methods"]{
+            assert!(roles.iter().any(|component|component["role"]==role),
+                "compiled source scanner lost registered capability: {role}");
+        }
         assert_eq!(first["systemBlueprint"]["sourceTreeSha256"],
             first["sourceTreeSha256"]);
         assert_eq!(first["decisionOwner"],"rebuilt_descendant_binary");

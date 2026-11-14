@@ -175,7 +175,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
     let mut record = json!({"id":context.job_id,"status":"running","phase":"building_generator",
-        "sourceDir":source,"labDir":lab,"baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
+        "sourceDir":source,"sourceBranch":input["rsiSourceBranch"],"labDir":lab,
+        "baseCommit":base,"headCommit":head,"sourceSnapshot":snapshot,"sourceFingerprint":fingerprint,
         "objective":input["rsiObjective"],"providerId":input["providerId"],"model":input["model"],
         "continuedFrom":input["rsiContinueFrom"],"nextDecision":input["rsiPreviousDecision"],
         "nativeApproved":true,"limits":limits,"attempts":0,"acceptedGenerations":0,"tokens":0,
