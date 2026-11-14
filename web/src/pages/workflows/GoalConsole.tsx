@@ -9,6 +9,7 @@ import {FormField,Notice,Panel,Subheading,useRemote} from '../../components/UI'
 type Agent={id:string;name:string;model?:string;providerId?:string}
 type Goal={
  id:string;jobId?:string;goal:string;status:string;phase?:string;plan?:string;
+ isolateWorktree?:boolean;gitWorktree?:{path?:string;branch?:string;rolledBack?:boolean};
  iterations?:number;maxIterations?:number;replans?:number;sessionId?:string;
  createdAt?:string;gaps?:string[];evidence?:unknown[];
  planHistory?:{version:number;plan:string;reason?:unknown}[];
@@ -29,6 +30,7 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const [agentId,setAgentId]=useState('')
  const [plannerId,setPlannerId]=useState('')
  const [reviewerId,setReviewerId]=useState('')
+ const [isolateWorktree,setIsolateWorktree]=useState(false)
  const [criteria,setCriteria]=useState('[]')
  const [iterations,setIterations]=useState(12)
  const [busy,setBusy]=useState(false)
@@ -57,7 +59,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
     executor:{agentId:executor},
     ...(plannerId?{planner:{agentId:plannerId}}:{}),
     ...(reviewerId?{reviewer:{agentId:reviewerId}}:{}),
-    successCriteria:checks,maxIterations:iterations})
+    successCriteria:checks,maxIterations:iterations,
+    isolateWorktree})
    setGoalText('');setSelected(created.id);setMessage('목표가 작업 큐에 등록됐습니다. 계획과 검증 결과를 아래에서 추적할 수 있습니다.')
    await Promise.all([goals.reload(),jobs.reload()])
   }catch(e){setError((e as Error).message)}
@@ -104,6 +107,13 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
      <FormField label="최대 실행 단계"><TextInput type="number" min={1} max={64} value={iterations}
       onChange={e=>setIterations(Math.max(1,Math.min(64,Number(e.target.value)||1)))}/></FormField>
     </div>
+    <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[#E7E0D5] p-3 text-[12px]">
+     <TextInput type="checkbox" checked={isolateWorktree}
+      onChange={e=>setIsolateWorktree(e.target.checked)} className="mt-0.5"/>
+     <span><strong className="block">코딩 목표: Git 작업공간 격리</strong>
+      <span className="mt-1 block leading-5 text-[#7C7469]">원본 체크아웃이 아닌 독립 worktree와 브랜치에서 수정하고, 변경 내역을 검토하거나 폐기합니다. Git 저장소 최상위·깨끗한 시작 상태가 필요합니다. 셸 명령에는 별도 승인이 필요합니다.</span>
+     </span>
+    </label>
     <details className="rounded-xl border border-[#E7E0D5] p-3 text-[12px] text-[#5C544A]">
      <summary className="cursor-pointer font-semibold">선택: 저비용 계획·검토 모델 분리</summary>
      <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -171,7 +181,9 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
        {goal.metrics.usage&&<p className="mt-3 text-[11px] text-[#5C544A]">모델 호출 {goal.metrics.usage.calls??0}회 · 기록된 토큰 {(goal.metrics.usage.totalTokens??0).toLocaleString()}개 · 추정 사용량 호출 {goal.metrics.usage.estimatedCalls??0}회</p>}
        <p className="mt-1 text-[10px] text-[#8A8176]">기록된 사용량 기준이며 미보고 캐시·실제 결제액은 추정하지 않습니다.</p>
       </section>}
-      <GoalChanges goalId={goal.id} finished={!running(goal.status)}/>
+      <GoalChanges goalId={goal.id} finished={!running(goal.status)}
+       isolated={goal.isolateWorktree===true}
+       discarded={goal.gitWorktree?.rolledBack===true}/>
       {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>}
      </div>}
     </Panel>
