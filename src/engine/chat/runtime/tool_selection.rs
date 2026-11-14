@@ -302,3 +302,80 @@ pub(super) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> V
     kept
 }
 
+
+
+/// Select a query-relevant *subset* only when the provider's schema byte
+/// allowance cannot fit the full tool catalog. Unlike naive first-N trimming,
+/// do not silently hide an editing tool just because many unrelated MCP
+/// definitions were registered before it. The output retains original order
+/// for stable provider prefix caching. Tool execution still checks this exact
+/// menu and all native/MCP permission policies.
+pub(super) fn budgeted_tool_definitions(
+    definitions:Vec<Value>,budget:usize,query:&str,
+    recent:&std::collections::HashSet<String>,
+)->Vec<Value>{
+    let sizes=definitions.iter().map(|definition|
+        serde_json::to_string(definition).map(|s|s.len()).unwrap_or(usize::MAX)
+    ).collect::<Vec<_>>();
+    let total=sizes.iter().try_fold(0usize,|sum,size|sum.checked_add(*size));
+    if total.is_some_and(|bytes|bytes<=budget){return definitions;}
+    if definitions.is_empty(){return definitions;}
+    let query=query.to_lowercase();
+    let tokens=query.split(|c:char|!c.is_alphanumeric())
+        .filter(|token|token.chars().count()>1).take(96).collect::<Vec<_>>();
+    let contains_any=|terms:&[&str]|terms.iter().any(|term|query.contains(term));
+    let editing=contains_any(&["파일","수정","편집","코드","리팩터","패치",
+        "write","edit","patch","fix","refactor","source"]);
+    let coding=editing||contains_any(&["빌드","테스트","컴파일","실행","build","test","run","compile"]);
+    let searching=contains_any(&["검색","찾아","검색해","search","web","http","뉴스"]);
+    let memory=contains_any(&["기억","메모리","memory","recall"]);
+    let github=contains_any(&["깃허브","github","repository","pull request","이슈"]);
+    let delegated=contains_any(&["위임","협업","에이전트","delegate","subagent"]);
+    let mut ranked=definitions.iter().enumerate().map(|(index,definition)|{
+        let name=tool_name(definition).to_lowercase();
+        let haystack=serde_json::to_string(definition).unwrap_or_default().to_lowercase();
+        let mut score:i64=0;
+        if !name.is_empty()&&query.contains(&name){score+=100;}
+        for token in &tokens {
+            if name.contains(token){score+=16;}
+            else if haystack.contains(token){score+=2;}
+        }
+        if recent.contains(&name){score+=36;}
+        if editing&&matches!(name.as_str(),
+            "workspace_read"|"workspace_read_range"|"workspace_replace"|
+            "workspace_replace_range"|"workspace_write"|"workspace_list"|"workspace_diff"){
+            score+=38;
+        }
+        if coding&&matches!(name.as_str(),"shell_exec"|"terminal_exec"){score+=34;}
+        if searching&&matches!(name.as_str(),"web_search"|"http_fetch"){score+=42;}
+        if memory&&matches!(name.as_str(),"memory_search"|"memory_store"){score+=42;}
+        if github&&(name=="github_api"||name.contains("github")){score+=45;}
+        if delegated&&matches!(name.as_str(),"delegate_task"|"delegate_parallel"|
+            "task_status"|"task_result"){score+=36;}
+        // Preserve a minimum observation path for non-specific queries.
+        if matches!(name.as_str(),"workspace_read"|"workspace_list"|"memory_search"){score+=8;}
+        (index,score,sizes[index])
+    }).collect::<Vec<_>>();
+    ranked.sort_by(|a,b|
+        b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+    let mut used=0usize;
+    let mut chosen=std::collections::HashSet::new();
+    for (index,_score,size) in ranked {
+        if size==usize::MAX {continue;}
+        if size<=budget.saturating_sub(used) {
+            used+=size;
+            chosen.insert(index);
+        }
+    }
+    if chosen.is_empty(){
+        // Preserve the legacy fallback for a single oversized schema, but
+        // never silently send multiple schemas beyond the provider allowance.
+        if let Some((index,_))=sizes.iter().enumerate().filter(|(_,size)|**size!=usize::MAX)
+            .min_by_key(|(_,size)|**size) {
+            chosen.insert(index);
+        }
+    }
+    definitions.into_iter().enumerate()
+        .filter_map(|(index,definition)|chosen.contains(&index).then_some(definition))
+        .collect()
+}
