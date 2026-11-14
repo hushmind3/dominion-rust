@@ -93,3 +93,9 @@ Engine: goals.rs::run
 `goal_git::prepare`는 격리 요구 목표의 원본 Git 루트·clean HEAD를 검증해 새 checkout을 마련하며 실패 시 원본에 쓰지 않는다. `chat/runtime/tool_execution.rs`의 실제 모델 도구 실행·효과 영수증과 `goals::run`의 기준 검사, `goals/report.rs`의 최종 증거가 같은 격리 경로를 사용한다. `goal_git::workspace_for_session`은 위임된 자식 세션의 부모 연결을 따라간다. 소유자가 `GET /api/goals/:id/changes`에서 파일·새 파일 미리보기·`reviewDigest`를 본 다음 `POST /apply`를 명시적으로 승인할 때만 격리 브랜치 커밋과 원본 fast-forward가 일어난다. 원본 HEAD·dirty tree 변경을 강제 덮어쓰지 않는다. 불필요한 변경은 `POST /discard`로 미반영 worktree만 폐기한다.
 
 전체 경로, 테스트 범위, 알려진 파일 격리와 OS 샌드박스의 차이는 [SUB4-ISOLATED-AGENT-2026-11-14.md](SUB4-ISOLATED-AGENT-2026-11-14.md)에서 구분한다.
+
+## 9. 병렬 읽기 전용 조사 및 RSI 운영 영수증
+
+`tools/batch.rs::delegate_batch`를 통해 상위 에이전트는 최대 4개의 탐색 작업을 동시에 생성하고 `task_result`에서 결과를 모은다. 자식 세션에는 `delegatedReadOnly`가 저장되며 모델 도구 스키마와 실행기, 별도 MCP 호출의 진입점에서 쓰기와 추가 위임이 차단된다. 부모는 실제 증거를 확인한 후 최종 수정과 완료를 담당한다.
+
+`goals::finish`는 상태와 도구·파일 검증 영수증을 `goal_receipt`에 멱등 기록하고, `rsi/planner/focus.rs::generation_context`에서 좁은 범위의 비신뢰 관측 데이터만 활용한다. 이는 실제 사용자 과제의 문제 지점을 다음 세대 소스 조사 후보로 제시하지만 RSI의 독립 평가·채택 및 후손 계승 실증으로 승격되지 않는다. 자세한 호출 경로는 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md](SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md).
