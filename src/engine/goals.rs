@@ -356,7 +356,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let previous_evidence=evidence.clone();
         let pre_turn_gaps=acceptance_gaps_for_workspace(
             state,&workspace,&text,&criteria,&evidence);
-        let used=state.store.session_usage(&session_id)["totalTokens"].as_u64().unwrap_or(0);
+        let used=state.store.session_tree_usage(&session_id)?["totalTokens"].as_u64().ok_or("목표 하위 에이전트의 사용량을 읽을 수 없습니다.")?;
         if max_executor_tokens>0 && used>=max_executor_tokens{
             gaps.push(format!("실행 모델 토큰 예산 소진: {used}/{max_executor_tokens}. 사용자 확인 후 재개하세요."));
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
@@ -553,7 +553,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if complete {
             return Ok(finish(context, goal_id, "completed", vec![], None));
         }
-        let used=state.store.session_usage(&session_id)["totalTokens"].as_u64().unwrap_or(0);
+        let used=state.store.session_tree_usage(&session_id)?["totalTokens"].as_u64().ok_or("목표 하위 에이전트의 사용량을 읽을 수 없습니다.")?;
         if max_executor_tokens>0 && used>=max_executor_tokens{
             gaps.push(format!("실행 모델 토큰 예산 소진: {used}/{max_executor_tokens}. 추가 요청 전 검토가 필요합니다."));
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
