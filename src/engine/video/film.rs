@@ -74,8 +74,10 @@ pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
             return Err("장면 프롬프트는 문자열 또는 prompt 속성이 있는 객체여야 합니다.".into());
         }
         let prompt=shot_prompt(brief,index,parts.len(),custom);
-        let spec=json!({"prompt":ltx::cinematic_prompt(&prompt, input["ltxStyle"].as_str().unwrap_or("cinematic"))?,
-            "generate_audio":true});
+        // Validate the exact eventual API prompt before any paid job is queued.
+        // LTX applies the style once during render; never double-prefix it.
+        ltx::cinematic_prompt(&prompt, input["ltxStyle"].as_str().unwrap_or("cinematic"))?;
+        let spec=json!({"prompt":prompt,"generate_audio":true});
         clips.push(json!({"index":index,"duration":duration,"render":spec}));
     }
     Ok(json!({"film":{"version":1,"totalDuration":total,"clips":clips,
