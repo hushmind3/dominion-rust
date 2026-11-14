@@ -202,3 +202,70 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     state.bus.record("goal",&saved);
     Json(saved).into_response()
 }
+
+
+#[cfg(test)]
+mod sub3_goal_resume_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    fn state()->AppState {
+        let dir=std::env::temp_dir().join(format!("dominion-sub3-resume-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),workspace:dir.clone(),web_dir:dir.join("web")};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        AppState::new(config,store,vault)
+    }
+    async fn resume(state:&AppState,id:&str,body:Value)->Response{
+        resume_goal(State(state.clone()),Path(id.to_string()),Json(body)).await
+    }
+
+    #[tokio::test]
+    async fn explicit_review_creates_new_durable_job_without_losing_goal_evidence(){
+        let state=state();
+        state.store.put("session",&json!({"id":"session-1"})).unwrap();
+        state.store.put("goal",&json!({"id":"goal-1","goal":"fix failing tests",
+            "status":"needs_review","phase":"review","jobId":"old-job",
+            "sessionId":"session-1","iterations":16,"maxIterations":16,
+            "evidence":[{"tool":"workspace_read","result":{"ok":true}}],
+            "planHistory":[{"version":1,"plan":"inspect"}]})).unwrap();
+        let invalid=resume(&state,"goal-1",json!({})).await;
+        assert_eq!(invalid.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(state.store.get("goal","goal-1").unwrap()["status"],"needs_review");
+        let good=resume(&state,"goal-1",json!({"acknowledgeUnknownEffects":true})).await;
+        assert_eq!(good.status(),StatusCode::OK);
+        let saved=state.store.get("goal","goal-1").unwrap();
+        assert_eq!(saved["status"],"queued");
+        assert_eq!(saved["maxIterations"],24);
+        assert_eq!(saved["resumeCount"],1);
+        assert_eq!(saved["sessionId"],"session-1");
+        assert_eq!(saved["evidence"][0]["tool"],"workspace_read");
+        assert_eq!(saved["planHistory"][0]["plan"],"inspect");
+        let job_id=saved["jobId"].as_str().unwrap();
+        let job=state.store.get("job",job_id).unwrap();
+        assert_eq!(job["kind"],"goal");
+        assert_eq!(job["status"],"queued");
+        assert_eq!(job["input"]["goalId"],"goal-1");
+        assert_eq!(job["input"]["resumeAfterReview"],true);
+        assert_eq!(state.store.recent_audit(20).iter().filter(|row|
+            row["event"]=="goal.owner_reviewed_resume").count(),1);
+        assert_eq!(resume(&state,"goal-1",
+            json!({"acknowledgeUnknownEffects":true})).await.status(),
+            StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn live_job_and_final_result_cannot_be_restarted(){
+        let state=state();
+        state.store.put("goal",&json!({"id":"done","status":"completed"})).unwrap();
+        let done=resume(&state,"done",json!({"acknowledgeUnknownEffects":true})).await;
+        assert_eq!(done.status(),StatusCode::CONFLICT);
+        state.store.put("goal",&json!({"id":"review","status":"needs_review"})).unwrap();
+        state.store.put("job",&json!({"id":"live-job","kind":"goal",
+            "input":{"goalId":"review"},"status":"running"})).unwrap();
+        let live=resume(&state,"review",json!({"acknowledgeUnknownEffects":true})).await;
+        assert_eq!(live.status(),StatusCode::CONFLICT);
+        assert!(state.store.get("goal","review").unwrap()["status"]=="needs_review");
+    }
+}
