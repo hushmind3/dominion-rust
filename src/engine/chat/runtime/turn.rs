@@ -225,6 +225,12 @@ pub(super) async fn run_turn_body(
     if tool_discovery_applies(is_room, session["rsiRun"] == true) {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
+    if session["delegatedReadOnly"]==true {
+        // Do not advertise capabilities that cannot execute. The model sees
+        // only bounded reading and status tools, not MCP or mutation tools.
+        tool_definitions.retain(|definition|
+            crate::engine::tools::delegation_allows(&state.store,session_id,tool_name(definition)));
+    }
     if session["rsiRun"]==true {
         tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
         if session["rsiSystemEvolution"]==true {
