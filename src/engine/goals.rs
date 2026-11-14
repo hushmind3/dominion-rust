@@ -249,41 +249,18 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        // Owner steering is only adopted BETWEEN tool turns. Recheck the
-        // proposal and goal status under the same store lock: stale owner
-        // submissions or a cancellation cannot overwrite executable plans.
-        if let Some((revision,new_plan))=
-            crate::engine::goal_steering::pending(state,goal_id,applied_owner_revision)
+        // Owner steering can only replace the local plan BETWEEN executor turns.
+        // The helper atomically verifies the current revision and running status.
+        if let Some((revision,new_plan,updated_history))=
+            crate::engine::goal_steering::apply_at_boundary(
+                state,goal_id,applied_owner_revision,&plan_history,&text,index+1)
         {
-            if let Some(current)=state.store.get("goal",goal_id){
-                if current["ownerPlan"]["revision"].as_u64()==Some(revision)
-                    && current["status"]=="running"
-                {
-                    let latest_version=plan_history.iter()
-                        .filter_map(|row|row["version"].as_u64()).max().unwrap_or(0)+1;
-                    let mut next_history=plan_history.clone();
-                    next_history.push(json!({"version":latest_version,"plan":new_plan,
-                        "reason":"owner_steering","ownerRevision":revision,
-                        "at":chrono::Utc::now().to_rfc3339()}));
-                    if next_history.len()>40{next_history.drain(..next_history.len()-40);}
-                    let previous=json!({"status":current["status"],"ownerPlan":current["ownerPlan"],
-                        "appliedOwnerPlanRevision":current["appliedOwnerPlanRevision"]});
-                    let patch=json!({"plan":new_plan,"planHistory":next_history,
-                        "appliedOwnerPlanRevision":revision,"planScore":
-                            crate::engine::plan_quality::score(&new_plan,&text)});
-                    if let Some(saved)=state.store.patch_if_fields("goal",goal_id,&previous,&patch){
-                        state.bus.record("goal",&saved);
-                        state.store.audit("goal.owner_steering_applied",json!({
-                            "goalId":goal_id,"revision":revision,"beforeIteration":index+1}));
-                        context.emit(json!({"type":"goal_steering_applied",
-                            "goalId":goal_id,"revision":revision,"iteration":index+1}));
-                        plan=new_plan;
-                        plan_history=next_history;
-                        applied_owner_revision=revision;
-                        stalled=0;
-                    }
-                }
-            }
+            context.emit(json!({"type":"goal_steering_applied",
+                "goalId":goal_id,"revision":revision,"iteration":index+1}));
+            plan=new_plan;
+            plan_history=updated_history;
+            applied_owner_revision=revision;
+            stalled=0;
         }
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         // Large repository snippets belong in the FIRST request of a run,
