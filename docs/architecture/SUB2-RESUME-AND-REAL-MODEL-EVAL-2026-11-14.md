@@ -11,10 +11,10 @@ First run (already implemented):
    -> Store::transaction(goal + job) -> background goal job
 
 Recovery (new):
- POST /api/goals/:id/resume
+ POST /api/goals/:id/resume -> api/goals/recovery.rs::resume_goal
    -> prior terminal job + checkpoint, owner note and external-effects approval
    -> db.rs::session_has_uncertain_effects (parent + delegated descendants)
-   -> Store::resume_goal_atomic
+   -> db/goal_resume.rs::Store::resume_goal_atomic
         tx: check current goal status and prior jobId
         tx: reconcile owner-inspected *uncertain* tool effects
              preserve original status, effect state and outcomeUnknown
@@ -66,6 +66,7 @@ scripts/sub2-goal-eval.mjs
  -> record completion only if:
        terminal completed AND current-job verified receipt AND
        at least one successful action proof AND independent file oracle passes
+       AND at least one real model.usage call is attributable to the goal
  -> emit raw JSON per case to benchmark root/results
  -> aggregate pass@1 and recorded total tokens / verified success
  -> actualBilledKRW=null (not independently reconciled with bills)
@@ -92,7 +93,7 @@ DOMINION_EVAL_ENABLE=1 DOMINION_EVAL_ROOT="$ROOT" \
   node scripts/sub2-goal-eval.mjs
 ```
 
-The script **does not run by importing it in tests** and never starts an LLM or generates a fake result by itself. `node --test scripts/sub2-goal-eval.test.mjs` exercises the independent verifier, forged/stale-receipt rejection, and complete cost aggregation without a provider or payment. CI executes these tests and the existing Rust full test suite.
+A missing `model.usage` record does **not** count as demonstrated live-model completion, even if the output file happens to exist. File permission errors are not treated as proof that a file is absent.\n\nThe script **does not run by importing it in tests** and never starts an LLM or generates a fake result by itself. `node --test scripts/sub2-goal-eval.test.mjs` exercises the independent verifier, forged/stale-receipt rejection, and complete cost aggregation without a provider or payment. CI executes these tests and the existing Rust full test suite.
 
 If a cloud provider is deliberately selected, `DOMINION_EVAL_ALLOW_PAID=1` is additionally required. The token ceiling is a **soft** cap; it is not a billing cap in KRW. Paid runs should use an isolated provider key/account with its own externally enforced spending limit.
 
