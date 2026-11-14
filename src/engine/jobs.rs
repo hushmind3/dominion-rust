@@ -199,7 +199,7 @@ pub fn recover(state: &AppState) {
             updated["result"] = json!({
                 "goalId":completed["id"],"status":completed["status"],
                 "sessionId":completed["sessionId"],"iterations":completed["iterations"],
-                "evidence":completed["evidence"],"gaps":completed["gaps"],
+                "evidence":completed["evidence"],"gaps":completed["gaps"],"metrics":completed["metrics"],
             });
             updated["finishedAt"] = json!(chrono::Utc::now().to_rfc3339());
         }
