@@ -101,7 +101,7 @@ pub(super) fn select_generation_strategy(
         .and_then(|id|state.store.get("algorithm",id))
         .is_some_and(|algorithm|matches!(
             algorithm["rsiTrial"]["status"].as_str(),
-            Some("pending_trial"|"pending_second_trial")
+            Some("pending_trial"|"pending_second_trial"|"trial_unscorable")
         ));
     if let Some(domain) = continuation.filter(|_|!pending_trial) {
         return (domain, "research_continuation", Value::Null);
