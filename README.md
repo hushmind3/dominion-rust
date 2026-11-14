@@ -566,3 +566,17 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - **`delegate_tasks`**: 1~4개 조사 에이전트가 각각 저장된 세션과 작업으로 병렬 실행됩니다. `tools/batch.rs`에서 읽기 전용 도구만 허용하고 `chat/runtime/turn.rs`, `chat/runtime/tool_dispatch.rs`, `tools/dispatch.rs`에서 API/MCP/결정적 실행까지 동일한 제한을 적용합니다. 부모가 개별 `task_result`를 취합해 실제 코드를 수정합니다.
 - **변경 내역·되돌리기 UX**: `GoalConsole` → `GoalChanges` → `/api/goals/:id/changes`/`undo` → `goal_changes.rs`. 시작 Git HEAD와 clean 상태를 도구 실행 전에 저장하고, 성공한 쓰기 도구의 파일만 HEAD 기준 diff와 SHA로 대조합니다. 엄격한 조건을 모두 만족한 경우 사용자가 파일 1개의 복원을 직접 승인할 수 있습니다. 동시 외부 편집·처음부터 변경된 저장소·상용 환경 전체 자동 롤백은 지원 범위가 아닙니다.
 - CI: 일반 `.github/workflows/ci.yml`의 push 검사로 React 타입 검사·빌드와 Rust 릴리스 테스트를 확인합니다. 정확한 실행 로그는 GitHub Actions를 기준으로 합니다. [자율 에이전트 전체 구조](docs/AUTONOMOUS-AGENT-2026-11-14.md).
+
+
+
+### 2026-11-14: 목표별 Git 격리 → 실제 실행 → 검토 → 승인 반영/폐기
+
+`POST /api/goals`의 선택 입력 `isolateWorktree:true`는 파일 수정이 있는 코딩 목표를 원본 checkout과 분리합니다.
+
+1. `goals::run` → `goal_workspace::prepare`: 원본 Git 저장소 최상위·clean 상태를 확인하고 목표 UUID로 별도 Git worktree/브랜치를 만들고 경로·기준 HEAD를 **도구 실행 전** Goal에 영속화합니다. 준비·복구에 실패한 격리 목표는 원본에 쓰지 않고 `needs_review`로 남습니다.
+2. `goals::run`의 별도 `scoped_state`: 프로젝트 사전 조사·완료 조건 baseline·실제 실행 `run_quiet_outcome`·`acceptance_gaps`는 격리 작업공간에서 수행합니다. `tools::execute`가 모든 네이티브 호출에서 Goal Session을 재검증하고 `file_*` 절대 경로 도구를 거부합니다. `shell_exec`의 명시적 cwd도 격리 범위로 해석합니다. `gateway::delegate` 및 `jobs::run_prompt`에서 위임받은 에이전트도 같은 Goal/Worktree 컨텍스트를 계승합니다.
+3. `/api/goals/:id/changes` → `goal_workspace::changes` → `GoalChanges.tsx`: 격리 공간의 tracked diff, staged diff, 미추적 파일 목록, 게시 가능한 패치 SHA를 원본에 적용하지 않고 비교합니다.
+4. `/api/goals/:id/worktree/promote` → `goal_workspace::promote`: **완료 검증 + 사용자 명시적 승인 + 작업 중인 다른 Job 없음 + 기준 HEAD 불변 + 원본 clean + 미추적 파일 0 + 512KB 이하 실제 바이너리 패치 SHA-256 일치 + `git apply --check`** 조건에서만 실제 추적 파일의 수정 내용을 원본으로 적용하고 영수증을 영속화합니다. 자동 커밋이나 강제 병합은 없습니다. 새 파일은 Git에 추가해 diff에 포함한 뒤 반영해야 합니다.
+5. `/api/goals/:id/worktree/discard` → `goal_workspace::discard`: 진행 중인 목표/하위 작업에는 거부하며, 명시적 요청이 있을 때만 격리 worktree를 폐기합니다. 이미 원본에 적용된 변경은 삭제하지 않고, 미반영 결과를 폐기한 경우에만 Goal의 완료 판정을 무효화합니다.
+
+**경계:** Git worktree는 소스 파일의 분리이지 운영체제 샌드박스가 아닙니다. 허용된 셸·외부 앱·MCP는 승인 정책을 따르며 임의 셸 명령이 절대경로를 사용할 수 있다는 한계가 있습니다. 서로 다른 코드 작성 서브에이전트의 충돌 자동 병합이나 실모델 작업 완수율까지 증명한 것은 아닙니다. 자체 RSI 후보의 동결 평가·채택 통로와 일반 Goal의 opt-in Git 격리는 별개입니다. [자율 목표 실행 경로 전체](docs/AUTONOMOUS-AGENT-2026-11-14.md).
