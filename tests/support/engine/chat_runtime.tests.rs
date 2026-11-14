@@ -70,6 +70,48 @@ mod outcome_tests {
     }
 
     #[tokio::test]
+    async fn native_rsi_source_recovery_is_an_actual_audited_read_not_fake_model_text() {
+        let (state,dir)=state();
+        std::fs::create_dir_all(dir.join("src/engine")).unwrap();
+        std::fs::write(dir.join("src/engine/agent.rs"),
+            "fn real_source() -> bool { true }\n").unwrap();
+        state.store.put("session",&json!({"id":"rsi-s","rsiRun":true,
+            "rsiAutoFocus":true,"rsiFocusFiles":["src/engine/agent.rs"]}));
+        state.store.put("execution",&json!({"id":"rsi-e","sessionId":"rsi-s",
+            "status":"running"}));
+        let request=TurnRequest{
+            session_id:Some("rsi-s".into()), input:"개선하라".into(),
+            attachment_ids:vec![], agent_id:None, provider_id:None,model:None,
+            tools_enabled:true,tools_execution_enabled:true, thinking:None,
+            reasoning_effort:None,reasoning_language:None, auto_learning:false,
+            system_override:None,task_id:None,parent_task_id:None,
+            task_revision:None,verification_owner:None,
+        };
+        let (tx,_rx)=tokio::sync::mpsc::unbounded_channel();
+        let metrics=std::sync::Mutex::new(Metrics::default());
+        let (output,receipt)=super::dispatch::deterministic_tool(
+            &state,&request,&tx,"rsi-s","rsi-e","workspace_read_range",
+            &json!({"path":"src/engine/agent.rs","startLine":1,"endLine":120}),
+            1,&metrics
+        ).await.unwrap();
+        assert_eq!(receipt["status"],"completed");
+        assert_eq!(receipt["origin"],"deterministic_shortcut");
+        assert_eq!(receipt["opSeq"],1);
+        assert_eq!(receipt["tool"],"workspace_read_range");
+        assert!(output["content"].as_str().unwrap_or("").contains("real_source"));
+        assert_eq!(output["sourceSha256"].as_str().map(str::len),Some(64));
+        assert_eq!(metrics.lock().unwrap().tool_calls,1);
+        let saved=state.store.all("execution_operation");
+        assert!(saved.iter().any(|operation|
+            operation["runId"]=="rsi-e" && operation["opSeq"]==1
+                && operation["result"]["sourceSha256"]==output["sourceSha256"]));
+        assert_eq!(std::fs::read_to_string(dir.join("src/engine/agent.rs"))
+            .unwrap(),"fn real_source() -> bool { true }\n",
+            "read-only recovery must not manufacture a code change");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn program_resumes_from_a_durable_checkpoint_without_repeating_completed_tools() {
         let (state, dir) = state();
         state.store.put("policy", &json!({"id":"default","autoApproveAll":true}));
