@@ -90,18 +90,113 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
-    let job = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id }));
-    let job_id = job
-        .as_ref()
-        .and_then(|job| job.get("id"))
-        .cloned()
-        .unwrap_or(Value::Null);
-
-    let mut payload = record.clone();
-    payload["jobId"] = job_id;
-    Json(payload).into_response()
+    let job_id = format!("goal-job-{goal_id}");
+    let job = crate::engine::jobs::enqueue_once(&state,&job_id,"goal",json!({"goalId":goal_id}));
+    if job.is_none() {
+        if let Some(failed)=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
+            &json!({"status":"needs_review","phase":"enqueue_failed",
+                "error":"영속 실행 작업을 등록하지 못했습니다."})) {
+            state.bus.record("goal",&failed);
+        }
+        state.store.audit("goal.enqueue_failed",json!({"goalId":goal_id,"jobId":job_id}));
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"목표가 보존됐지만 실행 작업 등록에 실패했습니다. 목표 목록에서 상태를 확인하세요.");
+    }
+    let Some(saved)=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
+        &json!({"jobId":job_id})) else {
+        return error(StatusCode::CONFLICT,"실행 작업은 등록됐지만 목표 상태가 먼저 변경됐습니다.");
+    };
+    state.bus.record("goal",&saved);
+    Json(saved).into_response()
 }
 
+
+/// Owner-approved recovery of a failed/review-blocked goal. A fresh job
+/// continues after the last completed iteration; it never replays the old
+/// job's uncertain in-flight tool call or assumes external writes succeeded.
+pub async fn resume_goal(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response {
+    if body.as_object().is_none_or(|object|object.len()!=1
+        || object.get("acknowledgeUnknownEffects")!=Some(&json!(true))) {
+        return error(StatusCode::BAD_REQUEST,
+            "이전 파일·외부 작업 결과를 확인했다면 acknowledgeUnknownEffects=true를 보내세요.");
+    }
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(),Some("needs_review"|"failed")) {
+        return error(StatusCode::CONFLICT,"검토 대기 또는 실패한 목표만 이어갈 수 있습니다.");
+    }
+    if state.store.all("job").iter().any(|job|job["kind"]=="goal"
+        && job["input"]["goalId"]==id
+        && matches!(job["status"].as_str(),Some("queued"|"running"))) {
+        return error(StatusCode::CONFLICT,"이전 목표 작업이 아직 실행 중입니다.");
+    }
+    let iterations=goal["iterations"].as_u64().unwrap_or(0);
+    let old_max=goal["maxIterations"].as_u64().unwrap_or(16).clamp(1,64);
+    let next_max=if old_max<=iterations {old_max.saturating_add(8).min(64)}else{old_max};
+    if next_max<=iterations {
+        return error(StatusCode::CONFLICT,"목표 반복 한도 64회에 도달했습니다.");
+    }
+    let next=goal["resumeCount"].as_u64().unwrap_or(0).saturating_add(1);
+    if next>12 {
+        return error(StatusCode::CONFLICT,"검토 후 이어가기 횟수 한도에 도달했습니다.");
+    }
+    let old_job_id=goal["jobId"].as_str().map(str::to_string)
+        .or_else(||state.store.all("job").into_iter()
+            .find(|j|j["kind"]=="goal"&&j["input"]["goalId"]==id)
+            .and_then(|j|j["id"].as_str().map(str::to_string)));
+    let old_job=old_job_id.as_deref()
+        .and_then(|job_id|state.store.get("job",job_id))
+        .unwrap_or(Value::Null);
+    let old_checkpoint=&old_job["goalState"];
+    let next_iteration=iterations.max(old_checkpoint["nextIteration"].as_u64().unwrap_or(0));
+    if next_iteration>=next_max {
+        return error(StatusCode::CONFLICT,"이전 실행 단계가 반복 한도를 모두 사용했습니다.");
+    }
+    let new_job_id=format!("goal-job-{id}-resume-{next}");
+    let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
+    history.push(json!({"jobId":new_job_id,"previousJobId":old_job_id,
+        "previousStatus":goal["status"],"startIteration":next_iteration,
+        "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
+    // The new durable worker starts after all completed iterations. Previous
+    // inFlight/reviewPending flags remain on the old job as forensic evidence.
+    let checkpoint=json!({
+        "sessionId":goal["sessionId"],
+        "nextIteration":next_iteration,"inFlight":false,"reviewPending":false,
+        "appliedPlanRevision":goal["appliedPlanRevision"].as_u64().unwrap_or(0),
+        "evidence":goal.get("evidence").cloned()
+            .filter(|v|v.is_array()).unwrap_or_else(||json!([])),
+        "transcript":old_checkpoint["transcript"].as_str().unwrap_or(""),
+        "gaps":goal.get("gaps").cloned()
+            .filter(|v|v.is_array()).unwrap_or_else(||json!([])),
+        "stalled":0,"resumeAfterReview":true
+    });
+    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"status":"queued","phase":"resume","jobId":new_job_id,
+            "resumeCount":next,"maxIterations":next_max,"resumeHistory":history,
+            "finishedAt":null,"error":null,"finalReport":null})) else {
+        return error(StatusCode::CONFLICT,"목표가 다른 요청에서 변경됐습니다.");
+    };
+    let created=crate::engine::jobs::enqueue_once(&state,&new_job_id,"goal",
+        json!({"goalId":id,"resumeAfterReview":true}));
+    if created.is_none() {
+        let restored=state.store.patch_if("goal",&id,"jobId",&json!(new_job_id),
+            &json!({"status":"needs_review","phase":"resume_enqueue_failed",
+                "error":"이어가기 실행 작업을 등록하지 못했습니다."}));
+        if let Some(restored)=restored {state.bus.record("goal",&restored);}
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"이어가기 작업을 등록하지 못했습니다.");
+    }
+    let _=state.store.patch_if("job",&new_job_id,"status",&json!("queued"),
+        &json!({"goalState":checkpoint,"stepIndex":next_iteration,"stepTotal":next_max}));
+    if let Some(session)=saved["sessionId"].as_str(){state.clear_cancel(session);}
+    state.bus.record("goal",&saved);
+    state.store.audit("goal.owner_reviewed_resume",json!({
+        "goalId":id,"jobId":new_job_id,"previousJobId":old_job_id,
+        "startIteration":next_iteration
+    }));
+    Json(saved).into_response()
+}
 
 /// Versioned steering; edits become effective at a safe executor turn boundary.
 pub async fn steer_goal(State(state):State<AppState>,Path(id):Path<String>,
