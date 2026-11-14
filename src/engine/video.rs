@@ -158,7 +158,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_u64()
         .or(cfg["duration"].as_u64())
         .unwrap_or(15);
-    if !(3..=if cinematic {120}else{180}).contains(&duration) {
+    let maximum_duration=if cinematic {120} else {180};
+    if !(3..=maximum_duration).contains(&duration) {
         return Err(if cinematic {"멀티샷 영상 길이는 3~120초입니다."}
             else {"영상 길이는 3~180초입니다."}.into());
     }
