@@ -543,6 +543,8 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
 }
 
 const MAX_DELEGATION_DEPTH: usize = 4;
+const MAX_DELEGATED_JOBS_PER_SESSION: usize = 24;
+const MAX_ACTIVE_DELEGATED_JOBS: usize = 4;
 
 /// Number of delegated sessions between the owner-facing session and this one.
 /// A chain cannot loop forever, so a cycle is cut defensively.
@@ -575,55 +577,58 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         ));
     }
     let prompt = required_arg(args, "prompt")?;
-    let agent = ctx
-        .state
-        .store
-        .get("agent", &agent_id)
-        .ok_or_else(|| format!("위임 대상 에이전트를 찾을 수 없습니다: {agent_id}"))?;
-    let wait = args["wait"].as_bool().unwrap_or(true);
-    let timeout = args["timeoutSeconds"]
-        .as_u64()
-        .unwrap_or(90)
-        .clamp(5, 300);
-
-    let session = ctx
-        .state
-        .store
-        .put(
-            "session",
-            &json!({
-                "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
-                "agentId": agent_id,
-                "providerId": agent["providerId"],
-                "model": agent["model"],
-                "parentSessionId": ctx.session_id,
-                "goalId":ctx.store.get("session",ctx.session_id)
-                    .and_then(|s|s["goalId"].as_str().map(str::to_string)),
-                "delegated": true,
-                "delegatedReadOnly":args["readOnly"]==true,
-            }),
-        )
-        .ok_or("위임 세션을 만들 수 없습니다.")?;
-    let session_id = session["id"].as_str().unwrap_or("").to_string();
-    let job = crate::engine::jobs::enqueue(
-        ctx.state,
-        "prompt",
-        json!({
-            "prompt": prompt,
-            "agentId": agent_id,
-            "providerId": agent["providerId"],
-            "model": agent["model"],
-            "sessionId": session_id,
-            "toolsEnabled": ctx.tools_enabled && ctx.tools_execution_enabled,
-            "toolsExecutionEnabled": ctx.tools_execution_enabled,
-            "parentSessionId": ctx.session_id,
-            "parentAgentId": ctx.agent_id,
-            "delegation": true,
-        }),
-    )
-    .ok_or("위임 작업을 만들 수 없습니다.")?;
-    let job_id = job["id"].as_str().unwrap_or("").to_string();
-    crate::engine::jobs::start_now(ctx.state.clone(), job_id.clone());
+    let agent = ctx.state.store.get("agent",&agent_id)
+        .ok_or_else(||format!("위임 대상 에이전트를 찾을 수 없습니다: {agent_id}"))?;
+    // Never leave a child session without a queued job. Admission is one
+    // IMMEDIATE SQLite transaction across concurrent agent processes.
+    if ctx.state.is_cancelled(ctx.session_id){
+        return Err("상위 세션이 중단되어 새 위임을 생성할 수 없습니다.".into());
+    }
+    if let Some((root,goal))=ctx.store.enclosing_goal(ctx.session_id){
+        let limit=goal["tokenBudget"].as_u64().unwrap_or(150_000);
+        let spent=ctx.store.session_tree_usage(&root)?["totalTokens"]
+            .as_u64().unwrap_or(limit);
+        if spent.saturating_add(256)>limit{
+            return Err(format!(
+                "상위 목표 토큰 예산({limit})이 부족합니다. 하위 세션 포함 관측: {spent}토큰."));
+        }
+    }
+    let wait=args["wait"].as_bool().unwrap_or(true);
+    let timeout=args["timeoutSeconds"].as_u64().unwrap_or(90).clamp(5,300);
+    let session_id=uuid::Uuid::new_v4().to_string();
+    let job_id=uuid::Uuid::new_v4().to_string();
+    let session=json!({
+        "id":session_id,
+        "title":format!("Delegate · {}",prompt.chars().take(36).collect::<String>()),
+        "agentId":agent_id,"providerId":agent["providerId"],"model":agent["model"],
+        "parentSessionId":ctx.session_id,"delegated":true,
+        "delegatedReadOnly":args["readOnly"]==true
+    });
+    let job=json!({
+        "id":job_id,"kind":"prompt","status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "input":{
+            "prompt":prompt,"agentId":agent_id,
+            "providerId":agent["providerId"],"model":agent["model"],
+            "sessionId":session_id,
+            "toolsEnabled":ctx.tools_enabled&&ctx.tools_execution_enabled,
+            "toolsExecutionEnabled":ctx.tools_execution_enabled,
+            "parentSessionId":ctx.session_id,
+            "parentAgentId":ctx.agent_id,
+            "delegation":true,"delegatedReadOnly":args["readOnly"]==true
+        },
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
+    ctx.store.reserve_delegation(
+        ctx.session_id,&session,&job,
+        MAX_DELEGATED_JOBS_PER_SESSION,MAX_ACTIVE_DELEGATED_JOBS
+    )?;
+    let persisted=ctx.store.get("job",&job_id)
+        .ok_or("위임 작업 기록이 사라졌습니다.")?;
+    ctx.state.bus.record("job",&persisted);
+    ctx.state.store.audit("job.queued",json!({"kind":"prompt","jobId":job_id,
+        "parentSessionId":ctx.session_id,"atomicAdmission":true}));
+    crate::engine::jobs::start_now(ctx.state.clone(),job_id.clone());
 
     if !wait {
         return Ok(json!({
