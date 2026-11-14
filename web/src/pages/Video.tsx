@@ -7,7 +7,11 @@ import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number};videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;storyboard?:string[]}
+type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;
+ result?:{bytes:number;shots?:number;newPaidCallsThisRun?:number;technicalQuality?:{status:string;reason?:string};
+ clipReceipts?:{index:number;quality?:{status:string}}[]};
+ videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;
+ technicalGate?:boolean;film?:{paidCallCount?:number;clips?:unknown[]};storyboard?:string[]}
 type VideoEngine='native'|'comfyui'|'runway'|'ltx'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasRunwayKey?:boolean;hasLtxKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean};ltx?:{available:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
@@ -26,6 +30,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[ltxKey,setLtxKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'|'1440p'|'4k'>('1080p'),[ltxModel,setLtxModel]=useState<'ltx-2-5-fast'|'ltx-2-5-pro'>('ltx-2-5-pro'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
+ const [ltxFilm,setLtxFilm]=useState(false),[confirmPaidMultiShot,setConfirmPaidMultiShot]=useState(false),[technicalGate,setTechnicalGate]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -44,16 +49,20 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const usingComfy=engine==='comfyui'
  const usingRunway=engine==='runway'
  const usingLtx=engine==='ltx'
- const ltxDurations=ltxModel==='ltx-2-5-pro'||videoQuality==='1440p'||videoQuality==='4k'?[6,8,10]:[6,8,10,12,14,16,18,20]
+ const ltxDurations=ltxFilm?
+  Array.from({length:(ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(videoQuality)?120:60)/2-5},(_,i)=>12+i*2):
+  ltxModel==='ltx-2-5-pro'||videoQuality==='1440p'||videoQuality==='4k'?[6,8,10]:[6,8,10,12,14,16,18,20]
+ const estimatedFilmShots=ltxFilm?Math.ceil(seconds/
+  (ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(videoQuality)?20:10)):1
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):usingRunway?Boolean(video.value.runway?.available):usingLtx?Boolean(video.value.ltx?.available):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:usingRunway?15:usingLtx?ltxDurations[ltxDurations.length-1]:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
   if(usingRunway&&['1440p','4k'].includes(videoQuality))setVideoQuality('1080p')
   if(usingRunway&&![5,10,15].includes(seconds))setSeconds(10)
-  else if(usingLtx&&!ltxDurations.includes(seconds))setSeconds(8)
+  else if(usingLtx&&!ltxDurations.includes(seconds))setSeconds(ltxFilm?22:8)
   else if(usingComfy&&seconds>9)setSeconds(9)
- },[usingRunway,usingLtx,usingComfy,seconds,ltxModel,videoQuality])
+ },[usingRunway,usingLtx,usingComfy,seconds,ltxModel,videoQuality,ltxFilm])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
@@ -123,7 +132,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingRunway?{videoQuality,shotMode,scenes:shotMode==='custom'?scenes:[],generateAudio}:{}),
-    ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24}:{}),
+    ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24,
+     ltxFilm,confirmPaidMultiShot,technicalGate}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
@@ -205,7 +215,16 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
         <FormField label="해상도" hint="4K·1440p는 크레딧 사용료가 높습니다."><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p'|'1440p'|'4k')}><option value="1080p">1080p</option><option value="720p">720p</option><option value="1440p">1440p</option><option value="4k">4K</option></SelectInput></FormField>
        </div>
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
-      </div>}
+       <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={ltxFilm}
+        onChange={e=>{setLtxFilm(e.target.checked);setSeconds(e.target.checked?22:8);setConfirmPaidMultiShot(false)}}/> 장편 멀티샷 제작 (장면별 독립 생성)</label>
+       {ltxFilm&&<div className="rounded-lg border border-[#E7E0D5] bg-white p-3 text-[11px] text-[#6B6258]">
+        <p>현재 길이에 필요한 예상 유료 생성 <strong>{estimatedFilmShots}회</strong> · 최대 6개 장면. 각 장면의 실제 기술 검수를 기록하고 재시작 시 완료 영수증을 재사용합니다. 추가 모델 호출이나 시각적 연속성 보장은 포함하지 않습니다.</p>
+        <label className="mt-2 flex items-center gap-2"><input type="checkbox" checked={confirmPaidMultiShot}
+         onChange={e=>setConfirmPaidMultiShot(e.target.checked)}/> 위 장면 수만큼 유료 API가 각각 호출되는 데 동의합니다.</label>
+       </div>}
+       <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={technicalGate}
+        onChange={e=>setTechnicalGate(e.target.checked)}/> FFprobe 기술 검수 필수 (로컬 FFprobe 설치 필요)</label>
+      </div>
       {usingRunway&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <FormField label="영상 품질" hint={videoQuality==='1080p'?'고화질 Pro 렌더링 · 추가 API 비용 발생 가능':'표준 720p 렌더링'}><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p')}><option value="1080p">1080p · Pro</option><option value="720p">720p · Standard</option></SelectInput></FormField>
@@ -228,7 +247,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </Panel>}
    </div>
    {tab==='create'&&<div className="grid min-w-0 content-start gap-4">
-    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{(videoJob.shotMode||videoJob.videoModel&&videoJob.videoQuality)&&<p className="text-[11px] text-[#7C7469]">제작 설정: {videoJob.videoQuality||'1080p'} · {videoJob.shotMode?(videoJob.shotMode==='custom'?'사용자 샷 구성':'자동 멀티샷'):videoJob.videoModel} · {videoJob.generateAudio===false?'무음':'AI 오디오'}</p>}{videoJob.storyboard&&videoJob.storyboard.length>0&&<details className="text-xs text-[#5C544A]"><summary className="cursor-pointer font-medium">샷 구성 확인</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{videoJob.storyboard.map((scene,i)=><li key={i}>{scene}</li>)}</ol></details>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
+    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.result?.technicalQuality&&<p className="text-[11px] text-[#7C7469]">
+       실제 영상 기술 검수: <strong>{videoJob.result.technicalQuality.status==='technical_pass'?'FFprobe 통과':
+       '검수되지 않음'}</strong> · 기술적 재생 검증과 영상 시청 품질은 별개입니다.
+      </p>}
+      {videoJob.result?.shots&&<p className="text-[11px] text-[#7C7469]">완성 장면 {videoJob.result.shots}개 · 이번 실행 신규 유료 요청 {videoJob.result.newPaidCallsThisRun??0}건</p>}
+      {(videoJob.shotMode||videoJob.videoModel&&videoJob.videoQuality)&&<p className="text-[11px] text-[#7C7469]">제작 설정: {videoJob.videoQuality||'1080p'} · {videoJob.shotMode?(videoJob.shotMode==='custom'?'사용자 샷 구성':'자동 멀티샷'):videoJob.videoModel} · {videoJob.generateAudio===false?'무음':'AI 오디오'}</p>}{videoJob.storyboard&&videoJob.storyboard.length>0&&<details className="text-xs text-[#5C544A]"><summary className="cursor-pointer font-medium">샷 구성 확인</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{videoJob.storyboard.map((scene,i)=><li key={i}>{scene}</li>)}</ol></details>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
     <Panel className="min-w-0 p-5"><Subheading title={t('vid.upload')} extra={<span className="text-[11px] text-[#8A8176]">{selectedOutput?t('vid.fileReady'):t('vid.pickFile')}</span>}/><div className="grid gap-3"><FormField label={t('vid.videoFile')} hint={t('vid.generatedNote')}><div className="flex flex-col gap-2">{outputs.value.length?<SelectInput value={selectedOutput?.id||''} onChange={e=>{
  const picked=outputs.value.find(item=>item.id===e.target.value);
  if(!picked)return;
