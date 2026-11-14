@@ -83,6 +83,34 @@ Sources:
 - https://github.com/SakanaAI/ShinkaEvolve
 - https://github.com/algorithmicsuperintelligence/openevolve/blob/main/openevolve/database.py
 
+## Native parallel tool scheduler improvement
+
+The prior `tool.combination = parallel-reads` implementation extracted **all**
+read-only calls from a model batch and ran them before any writes. For a
+model batch such as `workspace_write → workspace_read → workspace_read`, this
+could run the reads against stale source and commit results out of causal
+order. It also did not debit the proposal budget for parallel reads.
+
+The corrected production path in `src/engine/chat/runtime/turn.rs` now:
+
+- Batches only a **leading contiguous read prefix**, stopping at an unknown
+  or effectful tool barrier; remaining calls execute in their original order
+  through the serial dispatcher.
+- Runs no more than **4** reads concurrently using
+  `futures_util::stream::iter(...).buffered(4)`, preserving result order.
+- Debits the normal tool-proposal budget for each parallel read and checks
+  cancellation before starting the pool.
+- Disables parallel-read batching when the independent `read-first`
+  ordering policy is active; the two policies cannot silently combine.
+- Adds Rust unit tests for `read → read → write → read`, an initial exclusive
+  call, all-read and empty batches.
+
+This is a bounded conservative improvement, **not** a claim of the complete
+DeepSeek dynamic, reclassified rolling scheduler: reads following a write run
+sequentially until a full barrier-aware group scheduler is introduced.
+Tool failures and external effects continue through the existing native
+evidence engine. Benchmark latency and billed token impact are unmeasured.
+
 ## RSI integration contract and next experiments
 
 An SDK goal can improve the app, but this **does not itself constitute RSI**.
