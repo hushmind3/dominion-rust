@@ -46,6 +46,19 @@ export function goalPayload(instance,providerId,model,limits){
 }
 /** Recovery is proven only by a later successful call in the SAME run
  * to the same resource. It is a tool-level metric, not an official solution. */
+export function approvalPolicy(raw){
+    const permitted=new Set(['workspace_write','workspace_replace',
+        'workspace_replace_range','workspace_replace_function',
+        'shell_exec','terminal_exec']);
+    if(typeof raw!=='string'||!raw.trim())
+        throw Error('Explicit --approve-tools is required for unattended coding')
+    const approved=raw.split(',').map(x=>x.trim()).filter(Boolean)
+    if(approved.length===0||new Set(approved).size!==approved.length
+        ||approved.some(x=>!permitted.has(x)))
+        throw Error('Unsupported or duplicate tool in --approve-tools')
+    return {autoApproveAll:false,autoApproveMcp:false,
+        autoApprove:approved}
+}
 export function analyzeOperations(operations){
     if(!Array.isArray(operations))throw Error('operation ledger is missing')
     const seen=new Set()
@@ -262,6 +275,7 @@ export async function runCase(instance,options){
             kind:options.providerKind,enabled:true,
             ...(options.apiKey?{apiKey:options.apiKey}:{})}
         await request(base,'/api/providers','POST',provider,token)
+        await request(base,'/api/policy','POST',options.approvals,token)
         goal=await request(base,'/api/goals','POST',
             goalPayload(instance,'benchmark',options.model,options.limits),token)
         const deadline=Date.now()+options.timeoutSeconds*1000
@@ -328,7 +342,8 @@ async function run(options){
         limits:{tokens:boundedInt(options['token-budget'],'token-budget',1,2_000_000,150_000),
             iterations:boundedInt(options.iterations,'iterations',1,64,16),
             replans:boundedInt(options.replans,'replans',0,16,6)},
-        timeoutSeconds:boundedInt(options['timeout-seconds'],'timeout-seconds',15,28800,1200)}
+        timeoutSeconds:boundedInt(options['timeout-seconds'],'timeout-seconds',15,28800,1200),
+        approvals:approvalPolicy(options['approve-tools'])}
     if(!['openai','anthropic','ollama'].includes(opts.providerKind))throw Error('invalid provider kind')
     await mkdir(output,{recursive:true})
     const dataset=await readFile(resolve(options.instances))
@@ -337,6 +352,7 @@ async function run(options){
         model:opts.model,providerKind:opts.providerKind,
         providerUrl:opts.providerUrl,apiKeyEnvironment:keyName||null,
         timeoutSeconds:opts.timeoutSeconds,limits:opts.limits,
+        ownerApprovedTools:opts.approvals.autoApprove,
         worktreeIsolation:true,runtimeBinary:binary,
         officialEvaluation:false,createdAt:new Date().toISOString()}
     await writeFile(join(output,'manifest.json'),JSON.stringify(runManifest,null,2))
@@ -377,7 +393,7 @@ async function main(){
     const {action,options}=parseArgs(process.argv.slice(2))
     if(action==='run')await run(options)
     else if(action==='evaluate')await evaluate(options)
-    else throw Error('usage: node scripts/swebench-dominion.mjs run --instances FILE --repos-root PATH --binary PATH --output DIR --provider-url URL --model MODEL [--api-key-env ENV] [--max-instances N] or evaluate --predictions FILE --run-id ID')
+    else throw Error('usage: node scripts/swebench-dominion.mjs run --instances FILE --repos-root PATH --binary PATH --output DIR --provider-url URL --model MODEL --approve-tools workspace_write,shell_exec [--api-key-env ENV] or evaluate --predictions FILE --run-id ID')
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
     main().catch(error=>{console.error(error.message);process.exitCode=1})

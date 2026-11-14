@@ -33,6 +33,7 @@ node scripts/swebench-dominion.mjs run \
   --max-instances 50 \
   --token-budget 150000 \
   --iterations 16 \
+  --approve-tools workspace_write,workspace_replace,workspace_replace_range,workspace_replace_function,shell_exec,terminal_exec \
   --timeout-seconds 1200
 \`\`\`
 
@@ -86,3 +87,15 @@ recovery counts only when a later successful call in the same execution
 addresses the same resource. Missing token or tool telemetry is `null`,
 **never** zero. Internal goal completion is not used as external resolution.
 Korean-won billing is likewise `null` until independently reconciled.
+
+## Explicit owner tool permissions
+
+Unattended goals would otherwise wait for interactive approvals. The operator
+must provide `--approve-tools`, which is persisted as a per-task native
+`POST /api/policy` record. Only local workspace edits and chosen shell tools
+can be authorized; arbitrary file writes, GitHub mutations, MCP and browser
+control are not implicitly allowed. You are authorizing execution of arbitrary
+model-proposed shell code if `shell_exec` or `terminal_exec` is included.
+**Execute the runner itself inside your own container/VM** before granting
+shell execution for untrusted SWE-bench repository tests. A Git worktree is not
+an operating-system sandbox.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {validateInstance,goalPayload,loadInstances,summarize,analyzeOperations} from './swebench-dominion.mjs'
+import {validateInstance,goalPayload,loadInstances,summarize,analyzeOperations,approvalPolicy} from './swebench-dominion.mjs'
 
 const base='a'.repeat(40)
 const row={instance_id:'django__django-1001',repo:'django/django',
@@ -68,4 +68,14 @@ test('durable operation recovery requires later same-run success; unknown side e
     assert.equal(analyzeOperations(operations.slice(0,2)).recoveryRate,0)
     assert.equal(analyzeOperations([]).recoveryRate,null)
     assert.throws(()=>analyzeOperations([operations[0],operations[0]]),/duplicate/)
+})
+
+test('owner selects actual native tool grants for unattended benchmark',()=>{
+    const policy=approvalPolicy('workspace_write,workspace_replace_range,shell_exec')
+    assert.deepEqual(policy,{autoApproveAll:false,autoApproveMcp:false,
+        autoApprove:['workspace_write','workspace_replace_range','shell_exec']})
+    assert.throws(()=>approvalPolicy(''),/Explicit/)
+    assert.throws(()=>approvalPolicy('github_api'),/Unsupported/)
+    assert.throws(()=>approvalPolicy('workspace_write,workspace_write'),/duplicate/)
+    assert.throws(()=>approvalPolicy('file_write'),/Unsupported/)
 })
