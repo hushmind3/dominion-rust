@@ -275,6 +275,29 @@ pub(crate) fn resolve_path(state: &AppState, path: &str) -> Result<PathBuf, Stri
     }
     Ok(resolved)
 }
+/// Resolve a goal's relative (or internal absolute) path only in its own
+/// workspace. A symlinked ancestor may never redirect acceptance outside.
+pub(crate) fn resolve_in_root(root:&Path,path:&str)->Result<PathBuf,String>{
+    let root=root.canonicalize().map_err(|e|e.to_string())?;
+    let raw=Path::new(path);
+    if raw.components().any(|part|matches!(part,Component::ParentDir)){
+        return Err("검증 경로에 상위 디렉터리 이동이 포함돼 있습니다.".into());
+    }
+    let resolved=if raw.is_absolute(){raw.to_path_buf()}else{root.join(raw)};
+    let mut ancestor=resolved.as_path();
+    while !ancestor.exists(){
+        ancestor=ancestor.parent().ok_or("검증 경로의 상위 폴더를 찾을 수 없습니다.")?;
+    }
+    if !ancestor.canonicalize().map_err(|e|e.to_string())?.starts_with(&root){
+        return Err("검증 파일이 목표 작업공간을 벗어납니다.".into());
+    }
+    Ok(resolved)
+}
+fn resolve_for_goal_workspace(state:&AppState,root:&Path,path:&str)->Result<PathBuf,String>{
+    if root==state.config.workspace.as_path(){
+        resolve_path(state,path)
+    }else{resolve_in_root(root,path)}
+}
 pub(crate) fn fingerprint(path: &Path) -> Value {
     use std::hash::{Hash, Hasher};
     let Ok(meta) = std::fs::metadata(path) else {
@@ -291,10 +314,15 @@ pub(crate) fn fingerprint(path: &Path) -> Value {
     }
     json!({"bytes":meta.len(),"modified":meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string())})
 }
-pub(crate) fn baseline_checks(state: &AppState, mut checks: Vec<Value>) -> Value {
+pub(crate) fn baseline_checks(state:&AppState,checks:Vec<Value>)->Value{
+    baseline_checks_for_workspace(state,&state.config.workspace,checks)
+}
+pub(crate) fn baseline_checks_for_workspace(
+    state:&AppState,root:&Path,mut checks:Vec<Value>,
+)->Value{
     for check in &mut checks {
         if check["type"] == "file_replace_exact" {
-            let original = resolve_path(state, check["path"].as_str().unwrap_or_default())
+            let original = resolve_for_goal_workspace(state,root, check["path"].as_str().unwrap_or_default())
                 .ok().and_then(|path| read_bounded_file(&path));
             check["sourceBytes"] = json!(original.as_ref().map(Vec::len));
             check["expectedSha256"] = original.and_then(|bytes| exact_replacement(
@@ -304,7 +332,7 @@ pub(crate) fn baseline_checks(state: &AppState, mut checks: Vec<Value>) -> Value
         } else if check["type"] == "file_changed"
             || (check["type"] == "file_equals" && check["inferred"] == true)
         {
-            check["baseline"] = resolve_path(state, check["path"].as_str().unwrap_or(""))
+            check["baseline"] = resolve_for_goal_workspace(state,root, check["path"].as_str().unwrap_or(""))
                 .map(|path| fingerprint(&path))
                 .unwrap_or(Value::Null);
         }
@@ -432,11 +460,13 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     actual.trim() == command.trim()
 }
 pub(crate) fn acceptance_gaps(
-    state: &AppState,
-    goal: &str,
-    checks: &Value,
-    evidence: &[Value],
-) -> Vec<String> {
+    state:&AppState,goal:&str,checks:&Value,evidence:&[Value],
+)->Vec<String>{
+    acceptance_gaps_for_workspace(state,&state.config.workspace,goal,checks,evidence)
+}
+pub(crate) fn acceptance_gaps_for_workspace(
+    state:&AppState,root:&Path,goal:&str,checks:&Value,evidence:&[Value],
+)->Vec<String>{
     let checks = checks.as_array().cloned().unwrap_or_default();
     let mut gaps = Vec::new();
     let has_explicit_tool = checks.iter().any(|check| {
@@ -452,7 +482,7 @@ pub(crate) fn acceptance_gaps(
         let kind = check["type"].as_str().unwrap_or("");
         let path = check["path"].as_str().unwrap_or("");
         let resolved = if kind.starts_with("file_") {
-            match resolve_path(state, path) {
+            match resolve_for_goal_workspace(state,root,path) {
                 Ok(path) => path,
                 Err(error) => {
                     gaps.push(error);
@@ -460,7 +490,7 @@ pub(crate) fn acceptance_gaps(
                 }
             }
         } else {
-            state.config.workspace.clone()
+            root.to_path_buf()
         };
         let passed = match kind {
             "file_exists" => resolved.is_file(),

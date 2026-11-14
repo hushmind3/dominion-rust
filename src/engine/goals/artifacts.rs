@@ -1,6 +1,6 @@
 //! Deliverable receipts from actual successful tool evidence, not model prose.
 //! Only workspace-scoped write operations yield file manifests.
-use crate::{state::AppState,engine::verification};
+use crate::{state::AppState,engine::{verification,goal_workspace}};
 use serde_json::{json,Value};
 use std::{collections::BTreeSet,fs,path::{Path,Component}};
 use sha2::{Digest,Sha256};
@@ -8,14 +8,17 @@ use sha2::{Digest,Sha256};
 fn candidate(item:&Value)->Option<&str>{
     if !verification::successful_evidence(item){return None;}
     if !matches!(verification::tool_name(item),
-        "workspace_write" | "workspace_replace" | "file_write"){return None;}
+        "workspace_write" | "workspace_replace" | "workspace_replace_function" | "file_write"){return None;}
     let args=item.get("arguments").or_else(||item.get("args"))?;
     args["path"].as_str().or_else(||args["file"].as_str())
         .or_else(||args["filename"].as_str())
 }
 
-pub(super) fn collect(state:&AppState,evidence:&[Value])->Value{
-    let root=match fs::canonicalize(&state.config.workspace){
+pub(super) fn collect(state:&AppState,goal:&Value,evidence:&[Value])->Value{
+    let scoped=match goal_workspace::workspace_for_goal(state,goal){
+        Ok(path)=>path,Err(_)=>return json!({"files":[],"writeEvidence":0,"schema":"goal-artifacts-v1","workspaceUnavailable":true})
+    };
+    let root=match fs::canonicalize(&scoped){
         Ok(root)=>root,Err(_)=>return json!({"files":[],"writeEvidence":0,"schema":"goal-artifacts-v1"})
     };
     let mut paths=BTreeSet::new();
@@ -28,7 +31,7 @@ pub(super) fn collect(state:&AppState,evidence:&[Value])->Value{
             matches!(component,Component::ParentDir)) {continue;}
         // Do not allow a tool to publish file contents outside the assigned
         // workspace, including via absolute paths and symlink hops.
-        let Ok(resolved)=verification::resolve_path(state,raw) else {continue;};
+        let Ok(resolved)=verification::resolve_in_root(&root,raw) else {continue;};
         let Ok(real)=fs::canonicalize(&resolved) else {continue;};
         if real.starts_with(&root) && real.is_file(){paths.insert(real);}
     }

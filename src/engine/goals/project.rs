@@ -1,6 +1,5 @@
 //! Small bounded project reconnaissance shared by goal planning and execution.
 //! No extra model call and no shell: inspect only known root-level manifest files.
-use crate::state::AppState;
 use serde_json::{json,Value};
 use std::{fs,path::Path};
 
@@ -16,8 +15,7 @@ fn safe_excerpt(root:&Path,name:&str)->Option<Value>{
         "truncated":text.chars().count()>1700}))
 }
 
-pub(super) fn inspect(state:&AppState)->Value{
-    let root=&state.config.workspace;
+pub(super) fn inspect(root:&Path)->Value{
     let listing=fs::read_dir(root).ok().map(|items|{
         let mut names=items.flatten().filter_map(|entry|{
             let name=entry.file_name().into_string().ok()?;

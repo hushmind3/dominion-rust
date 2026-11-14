@@ -3,10 +3,9 @@
 //! locations and verified code spans. No extra language-model calls.
 use crate::{engine::code_index,state::AppState};
 use serde_json::{json,Value};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap,path::{Path,PathBuf}};
 
-fn scan(state:&AppState,goal:&str)->Result<(Value,String),String>{
-    let root=&state.config.workspace;
+fn scan(state:&AppState,root:&Path,goal:&str)->Result<(Value,String),String>{
     if !["src","web/src","src-tauri/src"].iter().any(|dir|root.join(dir).is_dir()){
         return Ok((json!({"status":"not_a_source_project"}),String::new()));
     }
@@ -36,10 +35,11 @@ fn scan(state:&AppState,goal:&str)->Result<(Value,String),String>{
         "sourceHashVerified":true,"extraModelCalls":0});
     Ok((summary,context))
 }
-pub(super) async fn collect(state:&AppState,goal:&str)->(Value,String){
+pub(super) async fn collect(state:&AppState,root:&Path,goal:&str)->(Value,String){
     let state=state.clone();
+    let root:PathBuf=root.to_path_buf();
     let goal=goal.to_owned();
-    match tokio::task::spawn_blocking(move||scan(&state,&goal)).await{
+    match tokio::task::spawn_blocking(move||scan(&state,&root,&goal)).await{
         Ok(Ok(result))=>result,
         Ok(Err(error))=>(json!({"status":"unavailable","reason":error}),String::new()),
         Err(error)=>(json!({"status":"unavailable","reason":error.to_string()}),String::new())

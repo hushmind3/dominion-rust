@@ -609,6 +609,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         ));
     }
     let prompt = required_arg(args, "prompt")?;
+    let inherited_goal=crate::engine::goal_workspace::goal_for_session(ctx.state,ctx.session_id)?;
     let agent = ctx
         .state
         .store
@@ -631,6 +632,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
                 "providerId": agent["providerId"],
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
+                "goalId": inherited_goal,
                 "delegated": true,
             }),
         )

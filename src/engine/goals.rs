@@ -4,7 +4,7 @@ pub use crate::engine::verification::{
     check_acceptance, prepare_acceptance_checks, validate_criteria,
 };
 use crate::engine::verification::{
-    acceptance_gaps, baseline_checks, infer_criteria, string, successful_evidence,
+    acceptance_gaps_for_workspace, baseline_checks_for_workspace, infer_criteria, string, successful_evidence,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -24,7 +24,8 @@ mod code_navigation;
 
 pub async fn diff_for_goal(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
-    diff::capture(state,&goal).await
+    if goal["isolateWorktree"]==true{crate::engine::goal_workspace::changes(state,id).await}
+    else{diff::capture(state,&goal).await}
 }
 
 /// The model proposes and reviews work; the Rust harness owns completion,
@@ -120,6 +121,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .and_then(Value::as_i64)
         .unwrap_or(16)
         .clamp(1, 64) as usize;
+    if goal["isolateWorktree"]==true{
+        let info=crate::engine::goal_workspace::prepare(state,goal_id).await?;
+        goal["gitWorktree"]=info;
+    }
+    let workspace=crate::engine::goal_workspace::workspace_for_goal(state,&goal)?;
     let session_id = match goal.get("sessionId").and_then(Value::as_str) {
         Some(id) if state.store.get("session", id).is_some() => id.to_string(),
         _ => {
@@ -130,9 +136,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     };
     let control=crate::engine::goal_control::GoalControl::new(context,goal_id,&session_id);
-    let workspace_view=project::inspect(state);
+    let workspace_view=project::inspect(&workspace);
     let workspace_context=project::prompt(&workspace_view);
-    let (code_view,source_context)=code_navigation::collect(state,&text).await;
+    let (code_view,source_context)=code_navigation::collect(state,&workspace,&text).await;
     let workspace_context=format!("{workspace_context}\n\n소스 코드 네비게이션 데이터:\n{source_context}");
     goal["sessionId"] = json!(session_id);
     goal["status"] = json!("running");
@@ -148,7 +154,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if checks.is_empty() {
             checks = infer_criteria(&text);
         }
-        baseline_checks(state, checks)
+        baseline_checks_for_workspace(state,&workspace, checks)
     });
     goal["acceptanceChecks"] = criteria.clone();
     goal["workspaceInspection"] = workspace_view.clone();
@@ -267,7 +273,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         evidence.extend(stats.evidence.iter().filter(|item|successful_evidence(item)).cloned());
         if evidence.len()>120{evidence.drain(..evidence.len()-120);}
         patch_goal(state,goal_id,json!({"evidence":evidence,"iterations":index+1,
-            "deliverables":artifacts::collect(state,&evidence)}));
+            "deliverables":artifacts::collect(state,&goal,&evidence)}));
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
@@ -306,7 +312,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        let gate_gaps = acceptance_gaps(state, &text, &criteria, &evidence);
+        let gate_gaps = acceptance_gaps_for_workspace(state,&workspace,&text,&criteria,&evidence);
         // A remote review cannot override a failed deterministic acceptance.
         // Skip that otherwise billable call and route directly to repair.
         let review = if gate_gaps.is_empty(){
@@ -468,7 +474,7 @@ fn finish(
     let status = if cancelled { "cancelled" } else { status };
     let prior=context.state.store.get("goal",id).unwrap_or(Value::Null);
     let proof=prior["evidence"].as_array().cloned().unwrap_or_default();
-    let deliverables=artifacts::collect(&context.state,&proof);
+    let deliverables=artifacts::collect(&context.state,&prior,&proof);
     let receipt=receipts::record(context,id,status,&prior,&proof,&deliverables);
     let last_answer=prior["sessionId"].as_str().map(|session|
         context.state.store.messages(session).into_iter().rev()

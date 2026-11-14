@@ -46,6 +46,7 @@ pub(super) async fn deterministic_tool(
     op_seq: u64,
     metrics: &std::sync::Mutex<Metrics>,
 ) -> Result<(Value, Value), String> {
+    let scoped_workspace=crate::engine::goal_workspace::workspace_for_session(state,session_id)?;
     let mut operations = state
         .store
         .all("execution_operation")
@@ -101,7 +102,7 @@ pub(super) async fn deterministic_tool(
         .ok_or("결정적 실행 시작을 저장할 수 없습니다.")?;
     let (mut result, ok) = if allowed {
         let context = ToolContext {
-            workspace: &state.config.workspace,
+            workspace: &scoped_workspace,
             store: &state.store,
             state,
             session_id,
@@ -139,7 +140,7 @@ pub(super) async fn deterministic_tool(
         counters.tool_elapsed_ms += started.elapsed().as_millis() as u64;
     }
     let sealed = crate::engine::effect::seal(
-        &state.config.workspace,
+        &scoped_workspace,
         tool,
         arguments,
         &result,
@@ -236,7 +237,8 @@ pub(super) async fn run_frozen_replacements(
     let mut paths = Vec::new();
     for check in &checks {
         let raw = check["path"].as_str().ok_or("경로가 없습니다.")?;
-        let path = crate::engine::verification::resolve_path(state, raw)?;
+        let root=crate::engine::goal_workspace::workspace_for_session(state,session_id)?;
+        let path = crate::engine::verification::resolve_in_root(&root, raw)?;
         if paths.iter().any(|existing| existing == &path) {
             // Two independently frozen hashes on one file cannot both be
             // validated after the first change. Let the model handle it.
@@ -375,6 +377,7 @@ pub(super) async fn dispatch_tool_call(
     procedure_strategy: Option<&str>,
     procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
+    let scoped_workspace=crate::engine::goal_workspace::workspace_for_session(state,session_id)?;
     let argument_strategy = crate::engine::algorithms::choose_for_agent(
         state,
         "tool.arguments",
@@ -501,7 +504,7 @@ pub(super) async fn dispatch_tool_call(
         (value, false)
     } else if allowed {
         let context = ToolContext {
-            workspace: &state.config.workspace,
+            workspace: &scoped_workspace,
             store: &state.store,
             state,
             session_id,
@@ -581,7 +584,7 @@ pub(super) async fn dispatch_tool_call(
         }),
     );
     let sealed = crate::engine::effect::seal(
-        &state.config.workspace,
+        &scoped_workspace,
         &call.name,
         &arguments,
         &result,
