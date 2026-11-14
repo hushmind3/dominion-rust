@@ -4,6 +4,29 @@ use crate::state::AppState;
 use sha2::{Digest,Sha256};
 use serde_json::{json, Value};
 
+/// Bind a user-installed active skill to exactly one agent step. This
+/// snapshot is immutable for the run even if the skill is later edited.
+fn pin_skill(state:&AppState,step:&Value)->Result<Option<Value>,String>{
+    let Some(id)=step["skillId"].as_str().filter(|id|!id.is_empty()) else{
+        return Ok(None);
+    };
+    let skill=state.store.get("skill",id).ok_or("선택한 워크플로 스킬이 삭제됐습니다.")?;
+    if skill["enabled"]==false || skill["status"]=="draft" {
+        return Err("선택한 스킬이 비활성 또는 초안 상태입니다.".into());
+    }
+    if skill["scope"]=="agent"&&skill["agentId"]!=step["agentId"]{
+        return Err("다른 에이전트 전용 스킬은 실행할 수 없습니다.".into());
+    }
+    let name=skill["name"].as_str().unwrap_or("Skill").chars().take(80).collect::<String>();
+    let instructions=skill["instructions"].as_str()
+        .or(skill["description"].as_str()).unwrap_or("").trim()
+        .chars().take(1500).collect::<String>();
+    if instructions.is_empty(){return Err("선택한 스킬에 실행 지침이 없습니다.".into());}
+    let revision=format!("{:x}",Sha256::digest(format!("{id}|{name}|{instructions}").as_bytes()));
+    Ok(Some(json!({"id":id,"name":name,"instructions":instructions,
+        "revision":revision,"source":"installed_skill_snapshot"})))
+}
+
 /// A run is immutable after enqueue: edits to the workflow cannot change
 /// the model/tool program under a queued job. An explicit requestId makes
 /// network retries idempotent without forbidding intentional repeat runs.
@@ -36,16 +59,19 @@ pub fn enqueue_run(state:&AppState, workflow_id:&str,body:&Value)->Result<Value,
         }
         return Err("워크플로 실행 키가 이미 다른 입력에 사용됐습니다.".into());
     }
-    let definition=state.store.get("workflow",workflow_id)
+    let mut definition=state.store.get("workflow",workflow_id)
         .ok_or("저장된 워크플로가 없습니다.")?;
-    let steps=definition["steps"].as_array()
+    let steps=definition["steps"].as_array_mut()
         .filter(|items|!items.is_empty()&&items.len()<=30)
         .ok_or("워크플로 실행 단계가 없습니다.")?;
-    if steps.iter().any(|step|
-        !step["prompt"].as_str().is_some_and(|text|!text.trim().is_empty())
-        || !step["agentId"].as_str().is_some_and(|id|
-            state.store.get("agent",id).is_some())){
-        return Err("실행할 워크플로의 에이전트 또는 단계가 잘못됐습니다.".into());
+    for step in steps.iter_mut() {
+        if !step["prompt"].as_str().is_some_and(|text|!text.trim().is_empty())
+            || !step["agentId"].as_str().is_some_and(|id|
+                state.store.get("agent",id).is_some()) {
+            return Err("실행할 워크플로의 에이전트 또는 단계가 잘못됐습니다.".into());
+        }
+        // Ignore untrusted snapshots in the editable workflow definition.
+        step["skillSnapshot"]=pin_skill(state,step)?.unwrap_or(Value::Null);
     }
     let input=json!({"workflowId":workflow_id,"input":payload,
         "requestId":request_id,"definition":definition});
@@ -213,13 +239,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             reasoning_effort: None,
             reasoning_language: None,
             system_override: Some(format!(
-                "You are executing step {} of the workflow \"{}\". \
-                 Produce the step result directly and concisely.",
+                "You are executing step {} of the workflow \"{}\". Produce the step result directly and concisely. {}",
                 index + 1,
-                workflow
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Workflow")
+                workflow.get("name").and_then(Value::as_str).unwrap_or("Workflow"),
+                step["skillSnapshot"]["instructions"].as_str().map(|instruction|
+                    format!("\nPinned owner-installed workflow skill [{}] (follow when applicable; tool approvals and security checks remain mandatory):\n{}",
+                        step["skillSnapshot"]["name"].as_str().unwrap_or("Skill"),instruction)
+                ).unwrap_or_default()
             )),
             task_id: None,
             parent_task_id: None,
@@ -264,7 +290,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         outputs.push(json!({
             "stepId":step.get("id"),"name":step_name,
             "agentId":step.get("agentId"),"providerId":step.get("providerId"),
-            "model":step.get("model"),"content":message.get("content")
+            "model":step.get("model"),"skillId":step.get("skillId"),
+            "skillRevision":step["skillSnapshot"]["revision"],
+            "content":message.get("content")
                 .cloned().unwrap_or(json!("")),"messageId":message.get("id"),
             "toolReceipts":tool_receipts,"toolErrors":stats.tool_errors,
             "artifacts":artifacts,"usage":usage,
@@ -406,6 +434,32 @@ mod tests {
             "requestId":uuid::Uuid::new_v4().to_string()})).unwrap();
         assert_ne!(first["id"],another["id"]);
         assert_eq!(state.store.all("job").len(),2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn installed_skills_are_pinned_and_agent_scoped(){
+        let dir=std::env::temp_dir().join(format!("dominion-flow-skill-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=crate::config::Config{
+            port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()
+        };
+        let state=AppState::new(cfg.clone(),
+            crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        state.store.put("agent",&json!({"id":"builder","name":"Builder"})).unwrap();
+        state.store.put("skill",&json!({"id":"reviewer","name":"Reviewer",
+            "instructions":"Check real tool outputs","enabled":true,
+            "scope":"agent","agentId":"builder"})).unwrap();
+        let step=json!({"agentId":"builder","skillId":"reviewer"});
+        let frozen=pin_skill(&state,&step).unwrap().unwrap();
+        assert_eq!(frozen["instructions"],"Check real tool outputs");
+        assert_eq!(frozen["source"],"installed_skill_snapshot");
+        assert!(pin_skill(&state,&json!({"agentId":"other","skillId":"reviewer"})).is_err());
+        state.store.put("skill",&json!({"id":"reviewer","name":"Reviewer",
+            "instructions":"changed later","enabled":false,
+            "scope":"agent","agentId":"builder"})).unwrap();
+        assert_eq!(frozen["instructions"],"Check real tool outputs");
+        assert!(pin_skill(&state,&step).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
