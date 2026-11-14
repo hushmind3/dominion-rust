@@ -247,3 +247,45 @@ node scripts/sub2-swebench-compare.mjs \
 ```
 The comparison reports observed paired outcomes; it is not evidence of
 frontier performance until the owner runs the two real model trials.
+
+## 2026-11-15 native tool boundary and delegated spend control
+
+The live Rust tool gateway has been split without changing its public
+`tools::execute`, `tools::definitions` or `tools::run_command`
+integration. Responsibilities are physically owned by:
+- `src/engine/tools/gateway.rs`: real authority check, RSI scope and dispatch
+- `src/engine/tools/editor.rs`: indexed search and policy-guarded source writes
+- `src/engine/tools/process.rs`: timeout, child process groups and bounded I/O
+- `src/engine/tools/network.rs`: SSRF defense, DNS pinning and bounded fetch
+- `src/engine/tools/tests.rs`: regression tests behind `#[cfg(test)]`
+- `src/engine/tools.rs`: stable native tool catalogue + delegation façade
+
+A delegation request now passes the native `tools::delegate` gateway,
+checks the persisted parent goal's full descendant model usage
+(`src/db/usage_tree.rs`), and calls
+`Store::reserve_delegation` (`src/db/delegation.rs`) for a SQLite
+`IMMEDIATE` transaction that jointly inserts one child session/job.
+This rejects overlapping concurrent admissions, cancellation, UUID
+collisions and over-limit child creation **before** a worker can spawn.
+The existing `jobs::start_now` worker is launched only after commit.
+Boundaries are 4 active and 24 total child jobs per parent session,
+with previously bounded delegation depth unchanged.
+
+`goals::run` now checks `Store::session_tree_usage` before the
+next executor turn and again after review. This counts all descendant
+session model usage (including delegated agents and helper turns)
+against the owner's existing `maxExecutorTokens` ceiling. The
+immutable `goals/receipts.rs` receipt records the complete tree
+usage with `usageComplete` and explicit error when accounting fails.
+The cap is observational between model calls; it does not reserve
+future provider tokens or prove exact billed KRW. A model call already
+in flight can exceed the threshold. Nested child lineage with an
+inherited `goalId` still resolves to the verified root goal.
+
+Regression tests cover SQLite atomic limits, orphan-job rollback,
+cancelled parent rejection, cycle-proof descendant sums, inherited
+goal ancestry, source-edit security and bounded Unix process groups.
+2026 reference: Tokio's official `tokio::process` cancellation/
+`kill_on_drop` guidance, and Sourcegraph CodeScaleBench March 2026
+on the value of large-codebase retrieval. No external benchmark gain
+is claimed without a matched real-model run.
