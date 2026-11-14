@@ -647,6 +647,8 @@ pub(super) async fn run_turn_body(
     // native calls or the text-tool manual for whichever local/API model
     // actually handles each round, including after failover.
 
+    let mut revealed_tool_names=super::tool_discovery::restore(state,execution_id,&tool_definitions);
+    let mut tool_search_queries=std::collections::BTreeSet::<String>::new();
     let discovered_tool_names = tool_definitions
         .iter()
         .filter_map(|definition| {
@@ -972,7 +974,12 @@ pub(super) async fn run_turn_body(
             let offered_bytes = round_tools.iter()
                 .map(|definition|serde_json::to_string(definition)
                     .map(|text|text.len()).unwrap_or(0)).sum::<usize>();
-            round_tools = trim_tool_definitions(round_tools, budget);
+            round_tools = if !is_room && session["rsiRun"]!=true && !force_final {
+                super::tool_discovery::offer(&tool_definitions,&round_tools,budget,
+                    &revealed_tool_names)
+            } else {
+                trim_tool_definitions(round_tools,budget)
+            };
             if round_tools.len() != offered_count {
                 let selected_bytes = round_tools.iter()
                     .map(|definition|serde_json::to_string(definition)
@@ -2001,6 +2008,51 @@ pub(super) async fn run_turn_body(
                     }));
                     continue;
                 }
+            }
+            if call.name==super::tool_discovery::SEARCH_NAME {
+                if !budget.charge_tool() {
+                    return Err("도구 탐색 예산을 초과했습니다.".into());
+                }
+                let query=arguments["query"].as_str().unwrap_or("").trim();
+                let query_key=query.to_lowercase();
+                let repeated=!tool_search_queries.insert(query_key);
+                let (matches,new_names)=if repeated {
+                    (Vec::new(),Vec::new())
+                }else{
+                    super::tool_discovery::search(&tool_definitions,query,
+                        arguments["limit"].as_u64().unwrap_or(4) as usize,
+                        &revealed_tool_names)
+                };
+                for name in &new_names {revealed_tool_names.insert(name.clone());}
+                if let Some(mut execution)=state.store.get("execution",execution_id){
+                    execution["revealedToolNames"]=json!(revealed_tool_names);
+                    state.store.put("execution",&execution);
+                }
+                let result=json!({
+                    "query":query,"matches":matches,"revealed":new_names,
+                    "availableNextRound":true,"repeatedQuery":repeated,
+                    "message":if repeated {
+                        "This query was already searched. Use a revealed tool or try a different action."
+                    }else{
+                        "Matched tool schemas will be included on the NEXT model round."
+                    }
+                });
+                state.store.audit("tool.native_discovery",json!({
+                    "sessionId":session_id,"executionId":execution_id,"round":round,
+                    "query":query,"results":result["revealed"],"repeated":repeated,
+                }));
+                let saved=state.store.write_message(&json!({
+                    "session_id":session_id,"role":"tool","tool_call_id":call.id,
+                    "content":result.to_string(),
+                    "metadata":{"tool":super::tool_discovery::SEARCH_NAME,"executionId":execution_id}
+                })).ok_or("도구 탐색 결과 기록에 실패했습니다.")?;
+                state.bus.message(&saved);
+                messages.push(json!({"role":"tool","tool_call_id":call.id,
+                    "content":result.to_string()}));
+                metrics.lock().unwrap().tool_calls+=1;
+                let _=tx.send(json!({"type":"tool_discovery","query":query,
+                    "matches":result["matches"],"executionId":execution_id}));
+                continue;
             }
             let completed_operations = state
                 .store

@@ -195,3 +195,20 @@ CAS 스케줄 판단을 그대로 적용합니다. 작업 이력 보관과 API �
 
 회귀: `owner_steering_turn_tests::delegated_goal_budget_includes_all_descendant_model_usage`
 (부모/자식/손자 합산, 무관 세션 제외, 상한 초과 차단, 명시적 무제한).
+
+
+## 2026-11-15 · 권한 감쇠형 점진 도구 발견
+
+2026-07-28 MCP 클라이언트 지침의 catalog → search → inspect/execute 흐름을
+서브3 Rust 일반 채팅 엔진에 연결했습니다. `tool_definitions`가 사용자 및
+에이전트 허가/모델 정책을 거친 유일한 탐색 대상입니다.
+각 라운드의 `tool_route`로 먼저 작게 선택한 뒤, 숨긴 도구나 스키마
+예산 초과가 있을 때만 `dominion_tool_search`를 노출합니다.
+검색은 외부 API 호출 없이 문자열/한국어 동의어로 도구명 및 설명을 검색하고
+유효한 다음 라운드에 스키마를 추가하며, 작업 승인이나 도구 실행 권한을 넓히지 않습니다.
+검색 호출은 도구 예산에 포함되고 동일 요청 반복을 억제하며,
+실제 tool-call/result를 메시지 이력과 감사 기록에 남깁니다.
+기존 RSI 작업과 그룹 에이전트 내부 도구 스키마·검증 알고리즘은 건드리지 않습니다.
+Rust 회귀는 `tool_discovery::tests` 3개로 허가 목록 격리,
+검색 후 공개 및 총 스키마 바이트 상한, 불필요한 오버헤드 부재를 확인합니다.
+2026-07-28 MCP 공식: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/docs/2026-07-28/develop/clients/client-best-practices.mdx

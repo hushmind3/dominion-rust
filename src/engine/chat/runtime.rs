@@ -35,6 +35,7 @@ mod intent;
 mod turn;
 mod adaptation;
 mod tool_catalog;
+mod tool_discovery;
 mod tool_route;
 /// Engine-level algorithm evaluation calls the exact production route selector.
 pub(super) fn evaluate_tool_routing() -> Vec<Value> {

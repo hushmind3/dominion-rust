@@ -610,3 +610,15 @@ cargo test --release
 Copyright 2026 hushmind3.
 
 DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. 외부 라이브러리·구성요소에는 각각의 라이선스가 적용됩니다.
+
+
+### 2026-11-15 · 서브3 네이티브 MCP/도구 점진 탐색
+
+일반 에이전트 실행은 `src/engine/chat/runtime/tool_discovery.rs`의 Rust 구현으로
+현재 허가된 도구 목록에서 필요한 도구를 `dominion_tool_search`로 검색할 수 있습니다.
+모델 라운드에 모든 MCP 스키마를 반복 전송하지 않고 현재 라우팅 선택에 더해
+검색된 도구의 실제 JSON 스키마만 다음 라운드에 공개합니다. 도구를 탐색하는 것은
+권한 승인과 별개이며 실제 실행은 기존 `dispatch_tool_call`·승인·예산·Stop 경로를
+통과합니다. 공개 목록/요청은 기존 `execution.revealedToolNames`와 `tool.native_discovery`
+감사 기록에 남습니다. 그룹 대화·격리 RSI·사용자가 도구를 끈 경우의 기존 정책을
+변경하지 않습니다. 실비용 절감율은 별도 동일 태스크 대조 실험 전까지 미측정입니다.
