@@ -26,6 +26,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci --prefix web
+      - run: node scripts/verify-frontend-navigation.mjs
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
       - run: bash -n scripts/rsi-lab.sh
