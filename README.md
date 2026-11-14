@@ -693,3 +693,7 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 `tools/batch.rs::delegate_batch`는 최대 4개 읽기 전용 병렬 조사 에이전트를 실제 작업 큐에 생성합니다. 모델 도구 목록과 실행기·MCP 경로에서 쓰기 권한을 봉쇄하며, 부모 목표의 Git worktree 상속과 결과 수집을 유지합니다.
 
 `goals::finish` → `goal_feedback::record` → `rsi/planner/focus.rs::generation_context`는 실제 목표 성공/실패 및 검증 정보를 다음 자기개선 모델의 조사 입력으로 전달합니다. 이 운영 관찰은 독립 paired RSI 평가·채택 성공과 분리합니다. 전체 호출 경로와 제한 사항은 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14](docs/SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md)를 참조하세요.
+
+#### 실행 중 사용자 계획 수정 (서브4)
+
+`/api/goals/:id/steer`는 예상 plan revision을 동봉한 사용자의 새 계획을 기록한다. `goal_steering::pending`이 다음 executor 턴에서만 적용하고, 기존 계획으로 완료 처리되지 않도록 `goals::run`·`finish`에서 미반영 revision을 검사한다. `Goals.tsx`는 최신/반영 계획 상태를 표시한다. 완료 판정과 권한/검증 조건은 불변이다. 세부 경로: [서브4 v3 문서](docs/SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md).
