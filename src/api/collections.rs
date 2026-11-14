@@ -236,6 +236,48 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
+        ("memory", "edit") => {
+            // The owner edits only the memory text, never its scope, evidence
+            // provenance or lifecycle fields. Use an atomic text comparison so
+            // an older UI view cannot overwrite a newer memory correction.
+            let Some(new_text) = body["text"].as_str().map(str::trim) else {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"수정할 기억 내용이 필요합니다."}))).into_response();
+            };
+            let Some(expected) = body["expectedText"].as_str() else {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"변경 전 기억 내용이 필요합니다."}))).into_response();
+            };
+            if new_text.is_empty() || new_text.chars().count() > 1600 {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"기억은 1~1,600자여야 합니다."}))).into_response();
+            }
+            if let Some(object) = body.as_object() {
+                if object.len()!=2 || !object.contains_key("text") || !object.contains_key("expectedText") {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error":"기억 내용만 수정할 수 있습니다."}))).into_response();
+                }
+            }
+            let Some(old)=state.store.get("memory",&id) else {
+                return (StatusCode::NOT_FOUND, Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response();
+            };
+            if old["text"].as_str()!=Some(expected) {
+                return (StatusCode::CONFLICT, Json(json!({"error":"다른 실행에서 기억이 변경됐습니다. 새로고침 후 다시 검토하세요."}))).into_response();
+            }
+            if expected==new_text{return Json(old).into_response();}
+            let now=chrono::Utc::now().to_rfc3339();
+            // Corrected text must not impersonate the original source quote.
+            // Keep the original source/evidence and mark the independent owner
+            // revision; retrieval eligibility and scope remain unchanged.
+            let patch=json!({"text":new_text,"verification":"owner_revision",
+                "ownerEditedAt":now,
+                "revision":format!("owner-edit-{}",uuid::Uuid::new_v4())});
+            match state.store.patch_if("memory",&id,"text",&json!(expected),&patch) {
+                Some(record)=>{
+                    state.bus.record("memory",&record);
+                    state.store.audit("memory.owner_edited",json!({"memoryId":id,
+                        "scope":old["scope"],"originalVerification":old["verification"]}));
+                    Json(record).into_response()
+                },
+                None=>(StatusCode::CONFLICT,Json(json!({"error":"기억 변경 충돌입니다. 목록을 새로고침하세요."}))).into_response()
+            }
+        },
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
