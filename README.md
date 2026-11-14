@@ -18,6 +18,12 @@
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 서브3 · 재심사 후 에이전트 실행 무결성 (2026-11-14)
+
+- **최신 소스에서 실제 검증:** `verification::fresh_command_matches`가 SQLite `execution_operation`의 도구 실행 순서·시간 영수증을 활용합니다. 테스트 후 새 코드 수정이 있으면 이전 테스트 성공은 무효화되고, 현재 소스의 동일 테스트를 다시 통과해야 목표 완료가 가능합니다. 목표가 테스트까지 요구하면 실제 프로젝트 manifest에서 최대 2개의 검증 명령을 완료 조건으로 등록합니다.
+- **일관된 Git 격리·장애 복구:** 목표 사전/사후 진전 및 완료 게이트는 같은 격리 worktree에서 검사합니다. 신규 목표는 `Store::transaction`, 수동 재개는 `Store::transaction_if_status`로 목표 커서·새 실행 job·resume checkpoint를 같은 SQLite 트랜잭션에 저장합니다. 중간 실패나 중복 재개가 고아 작업을 남기지 않도록 검증합니다. [실제 실행·검증·복구 구조](docs/AGENT-HARNESS-2026-11-14.md).
+- **증거 범위:** 이번 테스트는 실행 순서 검증과 크래시 대응 저장 계약을 검증합니다. 유료 실모델의 장기 완주율·RSI 실개선 채택·영상 품질/청구비는 별도 운영 실적 없이 성공으로 계산하지 않습니다.
+
 ## 서브3 · 2026-11-14 영상 엔진·원화 견적 보강
 
 - **저비용 유료 멀티샷:** 기존 native/ComfyUI/Omni 경로에 LTX 2.5 비동기 V2를 추가했습니다. `api/video.rs` → `engine/video.rs` → `video/{ltx,film,pricing,quality}.rs`에서 실제 장면 생성, 오디오·길이·해상도 FFprobe 검사, FFmpeg 합치기, clip SHA-256 영수증, 정상 장면 재사용·새 유료 작업의 중복 접수를 제어합니다.
