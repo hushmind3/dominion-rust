@@ -996,6 +996,39 @@ pub(super) async fn run_turn_body(
                 }));
             }
         }
+        // RSI phase control may reconstruct its executable tool menu from
+        // the untrimmed catalog above, after the generic per-round budget was
+        // enforced. Re-check the FINAL offered menu at the actual model
+        // boundary. A compiled descendant must not bypass provider schema
+        // limits merely because its phase scheduler selected the tools.
+        if !round_tools.is_empty() {
+            let budget = provider.context_tokens.map(|tokens| {
+                let reserve = provider.max_output_tokens
+                    .unwrap_or(tokens / 8).min(tokens / 4).max(128);
+                ((tokens.saturating_sub(reserve) as usize) * 4 / 2)
+                    .clamp(4_000, 60_000)
+            }).unwrap_or(60_000);
+            let phase_count = round_tools.len();
+            let phase_bytes = round_tools.iter().map(|definition|
+                serde_json::to_string(definition).map(|raw|raw.len())
+                    .unwrap_or(usize::MAX)).try_fold(0usize,|sum,size|
+                    sum.checked_add(size)).unwrap_or(usize::MAX);
+            if phase_bytes > budget {
+                round_tools = budgeted_tool_definitions(
+                    round_tools,budget,&request.input,&recent_tool_names);
+                let final_bytes = round_tools.iter().map(|definition|
+                    serde_json::to_string(definition).unwrap_or_default().len()
+                ).sum::<usize>();
+                state.store.audit("harness.tool_schema_final_budget",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"phaseTools":phase_count,
+                    "offeredTools":round_tools.len(),
+                    "phaseSchemaBytes":phase_bytes,"offeredSchemaBytes":final_bytes,
+                    "budgetBytes":budget,"rsiRun":session["rsiRun"]==true,
+                    "strategy":"post-phase-hard-cap-v1"
+                }));
+            }
+        }
         // An owner correction is a new, durable user instruction, not an
         // assistant/system rewrite. Never interrupt an in-flight tool body.
         // Apply it at the next model-step boundary before the request is built.
