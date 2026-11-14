@@ -61,7 +61,6 @@ pub mod recovery;
 pub mod reasoning;
 pub mod remote_backup;
 pub mod jobs;
-pub mod sdk_local;
 pub mod learning;
 pub mod lease;
 pub mod llm;
