@@ -31,6 +31,11 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -m "build(sub3): lock official Copilot SDK dependency graph"
+            # New code may have been pushed during the SDK compiler run.
+            # Rebase only the generated lockfile commit on the current
+            # branch head, never overwrite unrelated development.
+            git fetch origin dominion-sub3
+            git rebase origin/dominion-sub3
             git push origin HEAD:dominion-sub3
           fi
       - name: Confirm the native Rust feature can be checked under locked mode
