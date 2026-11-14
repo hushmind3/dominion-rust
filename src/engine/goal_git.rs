@@ -325,6 +325,50 @@ mod tests{
      assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
          "fn original() {}");
  }
+ #[tokio::test]
+ async fn owner_sha_review_applies_exact_patch_only_once(){
+     use std::process::Command as StdCommand;
+     let root=std::env::temp_dir().join(format!("goal-review-{}",uuid::Uuid::new_v4()));
+     let source=root.join("source");
+     std::fs::create_dir_all(&source).unwrap();
+     let run=|args:&[&str]|{
+         let output=StdCommand::new("git").current_dir(&source)
+             .args(args).output().unwrap();
+         assert!(output.status.success(),"git {:?}: {}",args,
+             String::from_utf8_lossy(&output.stderr));
+     };
+     run(&["init","-q"]);
+     run(&["config","user.name","DOMINION Test"]);
+     run(&["config","user.email","ci@example.invalid"]);
+     std::fs::write(source.join("sample.rs"),"fn original() {}\n").unwrap();
+     run(&["add","sample.rs"]);run(&["commit","-qm","baseline"]);
+     let config=crate::config::Config{port:0,data_dir:root.join("data"),
+         web_dir:root.join("web"),workspace:source.clone()};
+     let state=AppState::new(config.clone(),
+         crate::db::Store::open(&config.db_path()).unwrap(),
+         crate::vault::Vault::open(&config.key_path()));
+     let id=uuid::Uuid::new_v4().to_string();
+     state.store.put("goal",&json!({"id":id,"status":"queued",
+         "isolateWorktree":true})).unwrap();
+     let isolation=prepare(&state,&id).await.unwrap();
+     let work=PathBuf::from(isolation["path"].as_str().unwrap());
+     std::fs::write(work.join("sample.rs"),"fn reviewed() {}\n").unwrap();
+     state.store.patch_if("goal",&id,"status",&json!("queued"),
+         &json!({"status":"completed"})).unwrap();
+     let review=reviewed_patch(&state,&id).await.unwrap();
+     assert_eq!(review["canApply"],true);
+     assert!(apply_reviewed(&state,&id,&"f".repeat(64)).await.is_err());
+     assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
+         "fn original() {}\n");
+     let sha=review["sha256"].as_str().unwrap();
+     let result=apply_reviewed(&state,&id,sha).await.unwrap();
+     assert_eq!(result["verified"],true);
+     assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
+         "fn reviewed() {}\n");
+     assert!(apply_reviewed(&state,&id,sha).await.is_err());
+     assert_eq!(state.store.get("goal",&id).unwrap()["gitApply"]["patchSha256"],sha);
+     std::fs::remove_dir_all(root).unwrap();
+ }
  #[test]
  fn rejects_attacker_selected_ids(){
      let root=std::env::temp_dir();
