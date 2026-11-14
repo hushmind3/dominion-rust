@@ -14,10 +14,18 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const jobs=useRemote<any[]>('/api/jobs',[])
  const channels=useRemote<any[]>('/api/channels',[])
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
+ const workflows=useRemote<any[]>('/api/workflows',[])
  const enabledProviders=providers.value.filter(p=>p.enabled)
  const authenticatedProviders=enabledProviders.filter((p:any)=>p.hasKey||p.local).length
  const recent=[...jobs.value].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,6)
  const busy=jobs.value.filter(j=>['queued','running','planning','reviewing','repairing'].includes(j.status)).length
+ const lastWorkflow=[...jobs.value].filter(j=>j.kind==='workflow'&&j.status==='completed')
+  .sort((a,b)=>String(b.finishedAt||b.createdAt||'').localeCompare(String(a.finishedAt||a.createdAt||'')))[0]
+ const setupTarget:Destination=authenticatedProviders===0&&runtime.value.status!=='ready'
+  ?'models':agents.value.length===0?'agents':'workflows'
+ const setupText=setupTarget==='models'?'모델 연결·로컬 실행 확인':
+  setupTarget==='agents'?'실행 담당 에이전트 설정':workflows.value.length===0
+   ?'에이전트별 실행 단계 조립':'에이전트 협업 워크플로 실행'
  const metrics=[
   {name:'dashboard.metric.chat',value:sessions.value.length,icon:MessageSquare,page:'chat' as const},
   {name:'dashboard.metric.providers',value:providers.value.filter(p=>p.enabled).length,icon:Cpu,page:'models' as const},
@@ -33,6 +41,18 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">
   <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h1 className="m-0 text-[19px] font-bold tracking-tight">{t('dashboard.title')}</h1><p className="mt-1 text-[12px] text-[#7C7469]">{t('dashboard.subtitle')}</p></div><Button type="button" variant="primary" onClick={()=>navigate('chat')} className="flex h-8 items-center gap-2 rounded-lg px-3 text-[11px] font-semibold"><MessageSquare size={14}/> {t('dashboard.openChat')} <ArrowRight size={13}/></Button></div>
+  <section className="mb-4 rounded-xl border border-[#E7DCCF] bg-[#FAF7F1] p-4">
+   <div className="flex flex-wrap items-center justify-between gap-3">
+    <div><strong className="text-[13px] text-[#3F342A]">연결된 작업 완수 경로</strong>
+     <p className="mt-1 text-[11px] text-[#786E61]">모델 → 에이전트 → 워크플로 → 단계별 도구·파일·토큰 결과 → 개발자 산출물 검증</p>
+    </div>
+    <Button size="sm" variant="primary" onClick={()=>navigate(setupTarget)}>{setupText}<ArrowRight size={14}/></Button>
+   </div>
+   {lastWorkflow&&<div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#E7DCCF] pt-3 text-[11px] text-[#665B50]">
+    <span>최근 워크플로 결과 · {lastWorkflow.result?.outputs?.length||0}단계 · 실제 파일 영수증 {lastWorkflow.result?.artifacts?.length||0}개 · 모델 토큰 {lastWorkflow.result?.usage?.totalTokens??'미집계'}</span>
+    <Button size="sm" variant="secondary" onClick={()=>navigate('workflows')}>결과·영수증 보기</Button>
+   </div>}
+  </section>
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{metrics.map(m=>{const Icon=m.icon;return <Button type="button" key={m.name} onClick={()=>navigate(m.page)} className="flex min-h-24 flex-col items-start rounded-xl border border-[#E7E0D5] bg-white p-4 text-left transition-colors hover:border-[#D8CFC2]"><span className="flex w-full items-center justify-between text-[11px] text-[#7C7469]">{t(m.name as any)}<Icon size={16} className="text-[#A79C8E]"/></span><strong className="mt-4 text-[23px] font-bold leading-none tabular-nums text-[#24211D]">{m.value}</strong></Button>})}</div>
   <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(270px,.72fr)]">
    <section className="rounded-xl border border-[#E7E0D5] bg-white">
