@@ -211,6 +211,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
+        // The owner can steer the next execution step without changing the
+        // current call mid-flight or invalidating a completed review checkpoint.
+        if review_replay != Some(index)
+            && crate::engine::goal_plan::apply_owner_override(
+                state,goal_id,&mut plan,&mut plan_history)
+        {
+            context.emit(json!({"type":"goal_plan_changed","goalId":goal_id,
+                "iteration":index+1,"source":"owner"}));
+        }
         let (turn_error, tool_errors) = if review_replay == Some(index) {
             context.emit(json!({"type":"goal_review_resumed","goalId":goal_id,"iteration":index+1,
                 "note":"completed executor tool turn not replayed"}));
