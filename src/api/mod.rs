@@ -315,6 +315,9 @@ pub fn router(state: AppState) -> Router {
             get(video::list_jobs).post(video::create_job),
         )
         .route("/api/video/jobs/:id/upload", post(video::upload))
+        .route("/api/video/jobs/:id/scenes", get(video::film_scenes))
+        .route("/api/video/jobs/:id/scenes/:index/content", get(video::scene_content))
+        .route("/api/video/jobs/:id/retake", post(video::retake_scene))
         .route("/api/video/jobs/:id/content", get(video::content))
         .route("/api/video/jobs/:id/reveal", post(video::reveal))
         .route("/api/video/open-models", post(video::not_available))
