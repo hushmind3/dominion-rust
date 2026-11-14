@@ -1,5 +1,6 @@
 use crate::engine::chat::TurnRequest;
 use crate::engine::run_quiet;
+use sha2::Digest;
 use crate::engine::{goals, learning, reflect, rooms, workflows};
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -986,16 +987,51 @@ fn schedule_automations(state: &AppState) {
         if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
             continue;
         }
-        enqueue(state, job_kind, input);
-        let mut updated = automation.clone();
-        let interval = automation
-            .get("intervalMinutes")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(1440)
-            .max(1);
-        updated["lastAt"] = json!(now.to_rfc3339());
-        updated["nextAt"] = json!((now + chrono::Duration::minutes(interval)).to_rfc3339());
-        state.store.put("automation", &updated);
+        let Some(automation_id)=automation["id"].as_str().filter(|id|!id.is_empty()) else {
+            continue;
+        };
+        // Never run two overlapping instances of the same recurring task.
+        // Do not advance nextAt while the previous invocation is unsettled:
+        // on completion the scheduler will catch up with one new run.
+        if state.store.all("job").iter().any(|job|
+            job["input"]["automationId"]==automation_id
+            && matches!(job["status"].as_str(),Some("queued"|"running"))) {
+            continue;
+        }
+        let key=format!("dominion:automation:{automation_id}:{next_at}");
+        let hash=sha2::Sha256::digest(key.as_bytes());
+        let mut bytes=[0u8;16];
+        bytes.copy_from_slice(&hash[..16]);
+        bytes[6]=(bytes[6]&0x0f)|0x40;
+        bytes[8]=(bytes[8]&0x3f)|0x80;
+        let invocation_id=uuid::Uuid::from_bytes(bytes).to_string();
+        let queued=if job_kind=="workflow" {
+            input["workflowId"].as_str().and_then(|workflow_id|
+                workflows::enqueue_automation_run(state,workflow_id,
+                    &json!({"input":input["input"],"requestId":invocation_id}),
+                    automation_id).ok())
+        }else{
+            let mut tagged=input.clone();
+            tagged["automationId"]=json!(automation_id);
+            enqueue_once(state,&invocation_id,job_kind,tagged)
+        };
+        let Some(job)=queued else {
+            state.store.audit("automation.enqueue_failed",json!({
+                "automationId":automation_id,"dueAt":next_at,"kind":kind
+            }));
+            continue;
+        };
+        let interval = automation["intervalMinutes"].as_i64().unwrap_or(1440).max(1);
+        let next=(now+chrono::Duration::minutes(interval)).to_rfc3339();
+        if let Some(updated)=state.store.patch_if("automation",automation_id,
+            "nextAt",&json!(next_at),&json!({
+                "lastAt":now.to_rfc3339(),"nextAt":next,"lastJobId":job["id"]
+            })) {
+            state.bus.record("automation",&updated);
+            state.store.audit("automation.queued",json!({
+                "automationId":automation_id,"jobId":job["id"],"kind":kind
+            }));
+        }
     }
 }
 
