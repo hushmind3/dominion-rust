@@ -8,6 +8,12 @@ pub async fn list_goals(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("goal")))
 }
 
+/// Actual production goal outcomes. Never promotes unverified model claims
+/// into a successful benchmark nor invents a provider invoice.
+pub async fn metrics(State(state): State<AppState>) -> Json<Value> {
+    Json(crate::engine::goal_metrics::aggregate(&state))
+}
+
 pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.store.get("goal", &id) {
         Some(goal) => Json(goal).into_response(),
