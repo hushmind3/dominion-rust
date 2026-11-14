@@ -23,6 +23,8 @@ mod diff;
 mod receipts;
 #[path = "goals/code_navigation.rs"]
 mod code_navigation;
+#[path = "goals/progress.rs"]
+mod progress;
 
 pub async fn diff_for_goal(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
@@ -241,6 +243,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or(0) as usize;
 
     for index in start..max_iterations {
+        // Snapshot objective progress before the executor makes another
+        // tool call. A second identical command or self-reported success is
+        // NOT evidence of progress and must not suppress replanning.
+        let previous_evidence=evidence.clone();
+        let pre_turn_gaps=acceptance_gaps_for_workspace(
+            state,&workspace,&text,&criteria,&evidence);
         let used=state.store.session_usage(&session_id)["totalTokens"].as_u64().unwrap_or(0);
         if max_executor_tokens>0 && used>=max_executor_tokens{
             gaps.push(format!("실행 모델 토큰 예산 소진: {used}/{max_executor_tokens}. 사용자 확인 후 재개하세요."));
@@ -329,6 +337,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
         let gate_gaps = acceptance_gaps_for_workspace(state,&workspace,&text,&criteria,&evidence);
+        let turn_progress=progress::measure(
+            &previous_evidence,&evidence,&pre_turn_gaps,&gate_gaps,
+            stats.tool_errors.len());
         // A remote review cannot override a failed deterministic acceptance.
         // Skip that otherwise billable call and route directly to repair.
         let review = if gate_gaps.is_empty(){
@@ -386,7 +397,14 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             gaps.push(format!("실행 모델 토큰 예산 소진: {used}/{max_executor_tokens}. 추가 요청 전 검토가 필요합니다."));
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
-        stalled += 1;
+        if turn_progress.advanced(){stalled=0;}
+        else {stalled=stalled.saturating_add(1);}
+        patch_goal(state,goal_id,json!({"stalled":stalled,
+            "lastProgress":{"iteration":index+1,
+                "freshActionReceipts":turn_progress.new_actions,
+                "clearedAcceptanceGaps":turn_progress.cleared_checks,
+                "toolErrors":turn_progress.tool_errors,
+                "advanced":turn_progress.advanced()}}));
         if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
