@@ -605,6 +605,6 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 
 ### 2026-11-14 · 검토한 Git 패치의 원본 반영
 
-격리 목표의 `GET /api/goals/:id/diff` 응답은 전체 추적 파일 패치(최대 128KiB)의 `patchSha256`·`canApply`를 포함합니다. 사용자는 홈에서 패치를 먼저 확인하고, `POST /api/goals/:id/apply`에 **검토한 SHA-256**을 명시해 원본에 적용합니다. Rust `goal_workspace.rs::apply_reviewed`는 Git HEAD 고정·원본 파일 변경 없음·미추적 파일 없음·다른 실행 작업 없음·동일한 전체 패치 해시·`git apply --check`를 적용 전 확인하고, 적용 후 전체 패치 SHA를 다시 검사해 `gitApply` 영수증을 남깁니다. 사용자의 명시적 적용 전에는 원본 작업폴더에 쓰지 않으며, 자동 커밋·자동 병합은 없습니다.
+격리 목표의 `GET /api/goals/:id/diff`는 **수정된 추적 파일과 새로 생성된 일반 텍스트 소스 파일을 함께 포함**한 전체 패치(최대 128KiB)의 `patchSha256`·`canApply`를 반환합니다. `goal_workspace.rs::patch_bytes`는 원본·격리 체크아웃의 실제 Git 인덱스에 `add`하지 않고 임시 인덱스를 만들며, 신규 소스는 `git add -N`(intent-to-add)로 그 인덱스에서만 검토 패치에 넣습니다. 경로는 64개·32KiB 목록·파일당 128KiB로 제한하고, 격리 경로 밖 파일·심볼릭 링크·바이너리·비 UTF-8 파일은 별도 Git/PR 검토 대상으로 거부합니다. 사용자는 홈에서 **새 파일의 전체 추가 내용까지** 확인하고, `POST /api/goals/:id/apply`에 검토한 SHA-256을 제출합니다. 적용 직전 Rust는 원본 HEAD 일치·원본 변경 없음·다른 실행 작업 없음·현재 패치 해시 일치·`git apply --check`를 재확인하며, 적용 후 신규 파일을 포함한 패치를 다시 구성해 SHA-256을 대조하고 `gitApply` 영수증을 남깁니다. 사용자 승인 없이 원본에 쓰지 않으며 자동 커밋·병합은 없습니다.
 
 기본 `DOMINION_DATA=runtime`가 소스 체크아웃 내부인 경우에도 격리된 Git worktree는 소스 밖 형제 디렉터리로 배치됩니다. Git worktree는 OS 샌드박스를 제공하지 않습니다. [구현 호출도](docs/architecture/AGENT-HARNESS-SUB2-REJUDGE-2026-11-14.md)에서 확인할 수 있습니다.
