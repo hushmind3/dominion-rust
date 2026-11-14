@@ -132,8 +132,10 @@ def stop(proc: subprocess.Popen, log_handle) -> None:
 
 def execution_metrics(base: str, token: str | None, goal: dict) -> dict:
     session = goal.get("sessionId")
-    metrics = {"calls": None, "toolCalls": None, "tokens": None,
-               "costQuoteKrw": None, "costQuoteKnownCalls": None,
+    metrics = {"calls": None, "toolCalls": None, "successfulToolCalls": None,
+               "failedToolCalls": None, "uncertainToolCalls": None,
+               "tokens": None, "costQuoteKrw": None,
+               "costQuoteKnownCalls": None,
                "replans": goal.get("replans"), "iterations": goal.get("iterations")}
     if not isinstance(session, str) or not session:
         return metrics
@@ -142,19 +144,41 @@ def execution_metrics(base: str, token: str | None, goal: dict) -> dict:
         metrics.update({"calls": use.get("calls"), "tokens": use.get("totalTokens"),
                         "costQuoteKrw": use.get("costQuoteKrw"),
                         "costQuoteKnownCalls": use.get("costQuoteKnownCalls")})
-        executions = api(base, "/api/executions?limit=200&offset=0", token)
-        if isinstance(executions, list):
-            calls = 0
+        # Count *attempts*, not only successes. A failed tool invocation is
+        # still a tool call and must not disappear from cost/recovery metrics.
+        # Paginate because lengthy agent tasks may generate >200 executions.
+        operations = []
+        offset = 0
+        while True:
+            executions = api(base, f"/api/executions?limit=1000&offset={offset}", token)
+            if not isinstance(executions, list):
+                raise ValueError("Execution listing is not an array")
             for execution in executions:
                 if execution.get("sessionId") != session:
                     continue
                 ops = api(base, f"/api/executions/{execution['id']}/operations", token)
-                if isinstance(ops, list):
-                    calls += len([op for op in ops if op.get("status") == "completed"])
-            metrics["toolCalls"] = calls
+                if not isinstance(ops, list):
+                    raise ValueError("Operation listing is not an array")
+                operations.extend(ops)
+            if len(executions) < 1000:
+                break
+            offset += 1000
+        metrics.update(tool_operation_metrics(operations))
     except (RuntimeError, URLError, KeyError):
         pass  # Leave the metric unknown; never count a failed query as zero.
     return metrics
+
+
+def tool_operation_metrics(operations: list[dict]) -> dict:
+    """Receipt-only counts; no inference from model text or UI progress."""
+    statuses = [op.get("status") for op in operations if isinstance(op, dict)]
+    return {
+        "toolCalls": len(statuses),
+        "successfulToolCalls": sum(status == "completed" for status in statuses),
+        "failedToolCalls": sum(status in ("failed", "error") for status in statuses),
+        "uncertainToolCalls": sum(status in ("interrupted", "running", "pending")
+                                  for status in statuses),
+    }
 
 
 def validated_patch(payload: dict, expected_base: str) -> str:
@@ -224,13 +248,20 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
         metrics = execution_metrics(base, token, goal)
     except Exception as exc:
         error = str(exc)
-        metrics = {"calls": None, "toolCalls": None, "tokens": None,
-                   "costQuoteKrw": None, "costQuoteKnownCalls": None,
+        metrics = {"calls": None, "toolCalls": None, "successfulToolCalls": None,
+                   "failedToolCalls": None, "uncertainToolCalls": None,
+                   "tokens": None, "costQuoteKrw": None,
+                   "costQuoteKnownCalls": None,
                    "replans": goal.get("replans"), "iterations": goal.get("iterations")}
     finally:
         stop(proc, handle)
     prediction = {"instance_id": ident, "model_name_or_path": args.model_name,
                   "model_patch": patch}
+    metrics["completedWithPriorToolFailures"] = (
+        status == "completed" and
+        isinstance(metrics.get("failedToolCalls"), int) and
+        metrics["failedToolCalls"] > 0
+    ) if metrics.get("failedToolCalls") is not None else None
     metrics["configuredGoalTokenBudget"] = args.token_budget
     if isinstance(metrics.get("tokens"),(int,float)) and args.token_budget:
         metrics["tokenBudgetOverrunObserved"] = max(
@@ -344,6 +375,18 @@ def main() -> int:
     if known:
         summary["meanTokensObserved"] = sum(known)/len(known)
         summary["tokensObservedSamples"] = len(known)
+    witnessed = [r for r in receipts
+                 if isinstance(r.get("metrics", {}).get("failedToolCalls"), int)]
+    failure_cases = [r for r in witnessed if r["metrics"]["failedToolCalls"] > 0]
+    summary["observedFailureCases"] = len(failure_cases)
+    summary["observedRecoveryCases"] = sum(
+        r["status"] == "completed" for r in failure_cases)
+    summary["observedFailureRecoveryRate"] = (
+        summary["observedRecoveryCases"] / len(failure_cases)
+        if failure_cases else None)
+    summary["toolCallSamples"] = len(witnessed)
+    summary["totalToolCallsObserved"] = sum(
+        r["metrics"]["toolCalls"] for r in witnessed)
     if args.run_official:
         run_id = "dominion_" + hashlib.sha256(
             (args.model_name + (args.output/"predictions.jsonl").read_text()).encode()
