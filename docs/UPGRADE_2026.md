@@ -49,3 +49,5 @@
 - Parallel research: `tools::definitions("delegate_parallel")` → `tools::delegate_parallel` → `agent_parallel::validate` → each child `delegate` → separate `jobs::enqueue("prompt")` → child `chat/runtime/turn.rs` schema filter and `tools::execute` read-only runtime check → `task_payload` result aggregation → owner-facing goal executor synthesis. No shared writable worktree, no parallel source-write races by this tool.
 
 - A bounded goal diff UI is wired: `AutonomousGoalsPage::showDiff` → `GET /api/goals/:id/diff` → `api/goals.rs::diff_goal` → `agent_diff::inspect` restricted to goal artifact paths. The endpoint never writes and declines to show unrelated files when no goal artifact exists.
+
+- Enforcement is three-layered: child frozen `delegatedReadOnly`, schema pruning in `chat/runtime/turn.rs`, execution gate for built-ins in `tools.rs`, and a distinct MCP dispatch gate in `chat/runtime/tool_dispatch.rs`.

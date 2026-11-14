@@ -508,7 +508,12 @@ pub(super) async fn dispatch_tool_call(
             tools_enabled: request.tools_enabled,
             tools_execution_enabled: request.tools_execution_enabled,
         };
-        let outcome = if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
+        let outcome = if session["delegatedReadOnly"]==true
+            && !tools::read_only_delegation_tool(&call.name) {
+            // MCP dispatch bypasses tools::execute; enforce the same
+            // read-only capability attenuation before either dispatch path.
+            Err("Read-only investigative teammate cannot call writable, MCP or external service mutation tools".into())
+        } else if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
             && !tools::rsi_allowed(&call.name) {
             Err("자기개선 작업의 허용 도구 범위를 벗어났습니다.".into())
         } else if call.name.starts_with("mcp__") {

@@ -561,3 +561,5 @@ Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation r
 - Read-only restriction is frozen into each child **before** `jobs::start_now`. `chat/runtime/turn.rs` strips writable/MCP schemas, and `tools::execute` enforces the same restriction at execution time. Parent retains editing/approval and independent acceptance duties; the child findings alone cannot complete a root goal. A bounded outstanding-job cap stops runaway fan-out.
 
 - Goal-specific live Git inspection: `GET /api/goals/:id/diff` obtains only previously observed edited artifact paths, then calls `agent_diff::inspect`. The autonomous goals UI opens a bounded, read-only unstaged/staged diff without exposing unrelated workspace files. No observed file path means no diff, not an unrestricted full-checkout response.
+
+- Parallel read-only delegation also checks the separate MCP dispatch path in `chat/runtime/tool_dispatch.rs`. A child cannot bypass the built-in tool gate by calling `mcp__*` directly, even if the model fabricates an unadvertised tool call.
