@@ -104,6 +104,10 @@ pub struct TurnOutcome {
     pub message: Option<Value>,
     pub successful_tools: Vec<String>,
     pub failed_tools: Vec<String>,
+    /// Real bounded tool stderr, exit status, and failure categories.
+    /// SDK consumers can drive their own replanners without re-running
+    /// failed side effects or parsing an LLM's natural language.
+    pub failure_details: Vec<Value>,
     pub tool_evidence: Vec<Value>,
 }
 
@@ -358,6 +362,7 @@ impl DominionSdk {
             message,
             successful_tools: stats.tool_success,
             failed_tools: stats.tool_errors,
+            failure_details: stats.tool_failure_details,
             tool_evidence: stats.evidence,
         })
     }
