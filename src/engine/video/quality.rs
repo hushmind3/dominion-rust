@@ -18,7 +18,7 @@ fn ffprobe(cfg:&Value)->Option<PathBuf>{
 pub(super) fn available(cfg:&Value)->bool{ffprobe(cfg).is_some()}
 fn duration(value:&Value)->Option<f64>{
     value.as_f64().or_else(||value.as_str().and_then(|s|s.parse().ok()))
-        .filter(|v:f64|v.is_finite()&&*v>0.0)
+        .filter(|v|v.is_finite()&&*v>0.0)
 }
 pub(super) fn min_short_edge(input:&Value)->u64{
     match input["engine"].as_str().unwrap_or("native"){
