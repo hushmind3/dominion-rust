@@ -21,6 +21,7 @@ pub mod cli_oauth;
 pub mod benchmark;
 pub mod experiments;
 pub mod chat;
+pub mod sdk;
 pub mod jobs;
 pub mod system;
 pub mod attachments;
@@ -140,6 +141,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/system/restore", post(system::restore_backup))
         .route("/api/chat", post(chat::chat))
+        .route("/api/sdk/threads", post(sdk::create))
+        .route("/api/sdk/threads/:id", get(sdk::resume))
+        .route("/api/sdk/threads/:id/history", get(sdk::history))
+        .route("/api/sdk/threads/:id/run", post(sdk::stream))
+        .route("/api/sdk/threads/:id/cancel", post(sdk::cancel))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))
         .route("/api/jobs/:id/cancel",post(jobs::cancel))
