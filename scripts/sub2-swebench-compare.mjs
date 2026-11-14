@@ -64,12 +64,17 @@ export function compareOfficialRuns(a,b){
   const budgetKeys=['maxIterations','maxExecutorTokens','timeoutMinutes'];
   const sameBudgets=budgetKeys.every(k=>a.reproducibility?.[k]===
     b.reproducibility?.[k] &&Number.isFinite(a.reproducibility?.[k]));
-  const sameModel=a.reproducibility?.provider?.model===
-      b.reproducibility?.provider?.model
-    &&a.reproducibility?.provider?.kind===
-      b.reproducibility?.provider?.kind
-    &&a.reproducibility?.provider?.baseUrl===
-      b.reproducibility?.provider?.baseUrl;
+  const providerA=a.reproducibility?.provider;
+  const providerB=b.reproducibility?.provider;
+  const sameModel=typeof providerA?.model==='string'
+    &&providerA.model.length>0
+    &&typeof providerA?.kind==='string'
+    &&providerA.kind.length>0
+    &&typeof providerA?.baseUrl==='string'
+    &&providerA.baseUrl.length>0
+    &&providerA.model===providerB?.model
+    &&providerA.kind===providerB?.kind
+    &&providerA.baseUrl===providerB?.baseUrl;
   let leftOnly=0,rightOnly=0,both=0,neither=0;
   const paired=taskIds.map(id=>{
     const l=left.get(id),r=right.get(id);
