@@ -29,6 +29,7 @@ mod adaptation;
 mod tool_catalog;
 mod tool_route;
 mod tool_schema;
+mod read_batch;
 mod execution_program;
 mod dispatch;
 mod planning;
