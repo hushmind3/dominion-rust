@@ -286,13 +286,23 @@ async fn run_locked(
         })
         .clamp(1, max_turns_ceiling());
     let token_budget = room["tokenBudget"].as_u64().unwrap_or(0);
-    let observed_usage = state.store.session_usage(session_id)["totalTokens"]
-        .as_u64().unwrap_or(0);
-    // The baseline is part of the immutable job input after first admission.
-    // Re-queued room jobs must not reset the same exchange's cost ceiling.
+    let observed_usage_receipt = state.store.session_usage(session_id);
+    let observed_usage = observed_usage_receipt["totalTokens"].as_u64().unwrap_or(0);
+    // Immutable metering origin: a safe restart cannot mint a new token budget
+    // or erase the prompt/cache usage of earlier speakers in this same job.
     let usage_baseline = economy::metering_baseline(input,observed_usage);
-    if bound_input["usageBaselineTokens"].as_u64()!=Some(usage_baseline) {
+    if bound_input["usageBaselineTokens"].as_u64()!=Some(usage_baseline)
+        || !bound_input["usageBaseline"].is_object() {
         bound_input["usageBaselineTokens"] = json!(usage_baseline);
+        bound_input["usageBaseline"] = if input["usageBaseline"].is_object() {
+            input["usageBaseline"].clone()
+        } else if input["usageBaselineTokens"].is_number() {
+            // Older saved room jobs can recover their total token baseline,
+            // but other original counters were not recorded. Keep unknown.
+            json!({"totalTokens":usage_baseline})
+        } else {
+            observed_usage_receipt
+        };
         context.checkpoint(json!({"input":bound_input}))?;
     }
     let conflict_strategy =
@@ -757,8 +767,17 @@ fn finish(
         room_id,
         json!({"status":if status=="cancelled" {"paused"} else {"idle"},"activeAgentId":null,"pauseReason":reason,"yieldedToMessageId":yielded}),
     );
-    context.state.store.audit("room.exchange_finished",json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"reason":reason}));
-    context.emit(json!({"type":"room_finished","roomId":room_id,"sessionId":session_id,"status":status,"reason":reason}));
+    let job = context.state.store.get("job",&context.job_id).unwrap_or(Value::Null);
+    let origin = &job["input"]["usageBaseline"];
+    let current_usage = context.state.store.session_usage(session_id);
+    let measured_usage = economy::observed_delta(origin,&current_usage);
+    context.state.store.audit("room.exchange_finished",json!({
+        "roomId":room_id,"sessionId":session_id,"turns":outputs.len(),
+        "status":status,"reason":reason,"roomUsage":measured_usage
+    }));
+    context.emit(json!({"type":"room_finished","roomId":room_id,
+        "sessionId":session_id,"status":status,"reason":reason,
+        "roomUsage":measured_usage}));
     // One completed exchange is one learning unit. The job is content-
     // addressed by its last message, so retries and duplicate completion do
     // not create duplicate knowledge.
@@ -786,7 +805,10 @@ fn finish(
             }
         }
     }
-    json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),"status":status,"outputs":outputs,"pauseReason":reason,"yieldedToMessageId":yielded})
+    json!({"roomId":room_id,"sessionId":session_id,"turns":outputs.len(),
+        "status":status,"outputs":outputs,"pauseReason":reason,
+        "yieldedToMessageId":yielded,"roomUsage":measured_usage,
+        "tokenBudget":job["input"]["roomSnapshot"]["tokenBudget"]})
 }
 fn route_peers(
     pending: &mut VecDeque<String>,
