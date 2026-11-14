@@ -8,8 +8,59 @@ use axum::{
 };
 use serde_json::{json, Value};
 
+/// Code-assistant goals may run only against the same real Git workspace
+/// configured for the Rust harness. A different Developer source folder must
+/// not silently send writes to an unrelated repository.
+fn aligned_clean_goal_workspace(state:&AppState, status:&Value)->bool{
+    let source=status["config"]["sourceDir"].as_str()
+        .and_then(|p|std::path::Path::new(p).canonicalize().ok());
+    let runtime=state.config.workspace.canonicalize().ok();
+    source.is_some()&&source==runtime&&status["git"]==true
+        && status["exists"]==true&&status["dirty"].as_u64()==Some(0)
+        && status["commit"].as_str().is_some_and(|sha|sha.len()==40)
+}
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
-    Json(dev::status(&state).await)
+    let mut record=dev::status(&state).await;
+    record["goalWorkspaceReady"]=json!(aligned_clean_goal_workspace(&state,&record));
+    record["goalWorkspaceReason"]=json!(if record["goalWorkspaceReady"]==true{
+        "설정된 소스와 엔진 작업공간이 동일한 깨끗한 Git 저장소입니다."
+    }else{
+        "안전한 자율 코딩은 개발자 소스 폴더와 엔진 작업공간이 같고, Git HEAD가 존재하며 변경 파일이 없는 경우에만 시작됩니다."
+    });
+    Json(record)
+}
+
+/// Developer → isolated Goal → real tool receipts → user-approved Git changes.
+pub async fn agent_goal(State(state):State<AppState>,Json(body):Json<Value>)->Response{
+    let status=dev::status(&state).await;
+    if !aligned_clean_goal_workspace(&state,&status){
+        return (StatusCode::CONFLICT,Json(json!({"error":
+            "개발자 소스 경로와 엔진 Git 작업공간이 다르거나 미커밋 변경이 있습니다. 동일한 깨끗한 Git 저장소에서 시작하세요."}))).into_response();
+    }
+    let Some(task)=body["task"].as_str().map(str::trim)
+        .filter(|s|!s.is_empty()&&s.chars().count()<=6000)else{
+        return (StatusCode::BAD_REQUEST,Json(json!({"error":"코딩 작업은 1~6000자로 입력하세요."}))).into_response();
+    };
+    let Some(agent_id)=body["agentId"].as_str().filter(|id|
+        state.store.get("agent",id).is_some())else{
+        return (StatusCode::BAD_REQUEST,Json(json!({"error":"실행할 등록된 에이전트를 선택하세요."}))).into_response();
+    };
+    let budget=body["tokenBudget"].as_u64().unwrap_or(100_000);
+    if budget>2_000_000{return (StatusCode::BAD_REQUEST,Json(json!({
+        "error":"토큰 예산은 0~200만으로 입력하세요."}))).into_response();}
+    let criteria=match body["verificationCommand"].as_str().map(str::trim){
+        Some(command) if !command.is_empty()&&command.chars().count()<=300=>
+            json!([{"type":"command_succeeded","command":command}]),
+        Some(command) if !command.is_empty()=>
+            return (StatusCode::BAD_REQUEST,Json(json!({"error":"검증 명령어는 300자 이하여야 합니다."}))).into_response(),
+        _=>json!([])
+    };
+    crate::api::goals::create_goal(State(state),Json(json!({
+        "goal":task,"successCriteria":criteria,
+        "executor":{"agentId":agent_id},
+        "isolateWorktree":true,"tokenBudget":budget,
+        "maxIterations":16,"maxReplans":6,"replanAfter":2
+    }))).await
 }
 
 pub async fn get_config(State(state): State<AppState>) -> Json<Value> {

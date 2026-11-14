@@ -282,6 +282,7 @@ pub fn router(state: AppState) -> Router {
             post(models::job_action),
         )
         .route("/api/dev/status", get(dev::status))
+        .route("/api/dev/agent-goal",post(dev::agent_goal))
         .route(
             "/api/dev/config",
             get(dev::get_config).post(dev::save_config),

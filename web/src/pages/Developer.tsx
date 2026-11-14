@@ -1,16 +1,17 @@
 import {t,useLocale,formatDateTime} from '../i18n'
 import {useEffect,useState} from 'react'
 import {Check,Code2,Eye,GitCommit,Hammer,Package,Play,RefreshCw,Square,Terminal,TestTube2,UploadCloud} from 'lucide-react'
-import {Button,TextInput} from '../components/Primitives'
+import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {get,post} from '../api'
+import type {Agent} from '../api'
 
 type DevStatus={
  config:{sourceDir:string;repoUrl:string;branch:string;previewPort:number};
  exists:boolean;nodeModules:boolean;version?:string;name?:string;git:boolean;branch?:string;commit?:string;remote?:string;dirty?:number;
  preview:{status:string;url:string;logs?:string[];error?:string};
  installer?:{name:string;path:string;bytes:number;mtime:string}|null;
- platform:string;arch:string;installedExe:string;
+ platform:string;arch:string;installedExe:string;goalWorkspaceReady?:boolean;goalWorkspaceReason?:string;
 }
 type DevJob={id:string;kind:string;status:string;logs:string[];error?:string;result?:any}
 type DiffResult={changes:{path:string;status:string;patch:string}[];count:number;truncated:boolean}
@@ -23,6 +24,13 @@ export function DeveloperPage(){
  const loc=useLocale()
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
  const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
+ const agents=useRemote<Agent[]>('/api/agents',[])
+ const [agentId,setAgentId]=useState('')
+ const [agentTask,setAgentTask]=useState('')
+ const [verifyCommand,setVerifyCommand]=useState('cargo test')
+ const [agentBudget,setAgentBudget]=useState(100000)
+ const [agentGoal,setAgentGoal]=useState<{id:string;jobId:string}|null>(null)
+ const [agentGoalBusy,setAgentGoalBusy]=useState(false)
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
@@ -76,6 +84,17 @@ export function DeveloperPage(){
   if(!window.confirm('DOMINION을 업데이트하고 재시작합니다. 실행 중인 작업이 있다면 완료한 뒤 진행하세요.'))return
   void run('update')
  }
+ const startAgentCoding=async()=>{
+  if(agentGoalBusy||!s.goalWorkspaceReady||!agentId||!agentTask.trim())return;
+  setAgentGoalBusy(true);setError('');setAgentGoal(null);
+  try{
+   const goal=await post<{id:string;jobId:string}>('/api/dev/agent-goal',{
+    task:agentTask.trim(),agentId,verificationCommand:verifyCommand.trim(),
+    tokenBudget:agentBudget
+   });
+   setAgentGoal(goal);setAgentTask('');setMessage('격리 코딩 목표가 등록됐습니다. 검증·변경 확인은 목표 화면에서 이어집니다.')
+  }catch(e){setError((e as Error).message)}finally{setAgentGoalBusy(false)}
+ }
  const s=status.value
  return <div className="mx-auto w-full max-w-[1280px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
   <Headline eyebrow={t('ui.eyebrow.developer')} title={t('dev.title')} description={t('dev.description')} actions={<Button variant="secondary" onClick={()=>{void status.reload();void loadDiff()}}><RefreshCw size={16}/> {t('dev.statusRefresh')}</Button>}/>
@@ -96,6 +115,19 @@ export function DeveloperPage(){
       <div className="flex justify-between gap-3"><span>{t('dev.changedFiles')}</span><strong>{t('dev.count',{count:s.dirty||0})}</strong></div>
       <div className="flex justify-between gap-3"><span>{t('dev.dependencies')}</span><strong>{s.nodeModules?t('dev.installed'):t('dev.notInstalled')}</strong></div>
       <div className="flex justify-between gap-3"><span>{t('dev.installedApp')}</span><strong className="truncate" title={s.installedExe}>{s.installedExe}</strong></div>
+     </div>
+    </Panel>
+    <Panel className="min-w-0 p-5">
+     <Subheading title="🧠 에이전트 코드 작업 · 격리 검증" extra={<Code2 size={18}/>}/>
+     <p className="text-xs leading-5 text-[#7C7469]">현재 개발자 소스와 엔진 Git 작업공간이 동일한 경우, 선택한 에이전트가 별도 Git worktree에서 코드를 수정하고 검증 명령을 실행합니다. 변경은 자동으로 원본에 반영되지 않습니다.</p>
+     <p className={'mt-2 text-xs '+(s.goalWorkspaceReady?'text-emerald-700':'text-amber-700')}>{s.goalWorkspaceReady?'✅ 실행 준비 완료':'⚠️ 안전한 격리 실행 대기'} · {s.goalWorkspaceReason}</p>
+     <div className="mt-3 grid gap-3">
+      <FormField label="담당 에이전트"><SelectInput value={agentId} onChange={e=>setAgentId(e.target.value)}><option value="">에이전트 선택</option>{agents.value.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</SelectInput></FormField>
+      <FormField label="수정할 소스 작업"><TextArea rows={4} value={agentTask} onChange={e=>setAgentTask(e.target.value)} placeholder="예: 이 Rust 저장소의 요청 처리 오류를 고치고 결과를 검증하세요."/></FormField>
+      <FormField label="반드시 통과할 검증 명령"><TextInput value={verifyCommand} onChange={e=>setVerifyCommand(e.target.value)} placeholder="cargo test"/></FormField>
+      <FormField label="토큰 예산"><TextInput type="number" min={0} max={2000000} value={agentBudget} onChange={e=>setAgentBudget(Math.max(0,Math.min(2000000,Number(e.target.value)||0)))}/></FormField>
+      <Button variant="primary" disabled={!s.goalWorkspaceReady||!agentId||!agentTask.trim()||agentGoalBusy} onClick={()=>void startAgentCoding()}><Play size={14}/> {agentGoalBusy?'목표 등록 중':'격리 코딩 작업 시작'}</Button>
+      {agentGoal&&<a href="#/goals" className="text-xs font-semibold text-[#C96442] hover:underline">실행·변경 검토·원본 적용 확인 · {agentGoal.id.slice(0,12)} →</a>}
      </div>
     </Panel>
     <Panel className="min-w-0 p-5">
