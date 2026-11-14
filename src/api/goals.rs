@@ -98,20 +98,41 @@ pub async fn resume_goal(
         "previousStatus":goal["status"],"startIteration":start_index,
         "skippedUnknownTurn":unknown_turn,
         "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
-    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
-        &json!({"status":"queued","phase":"resume","jobId":job_id,
-            "resumeCount":next,"maxIterations":next_max,"resumeHistory":history,
-            "finishedAt":null,"finalReport":null})) else {
-        return error(StatusCode::CONFLICT,"목표 상태가 변경됐습니다.");
-    };
-    // Put the job and the checkpoint into SQLite in the *same insert*.
-    // Patching goalState after enqueue exposes a replay race to job workers.
-    if crate::engine::jobs::enqueue_once_with_checkpoint(&state,&job_id,"goal",
-        json!({"goalId":id,"resumeAfterReview":true}),Some(resume_state)).is_none() {
-        let _=state.store.patch_if("goal",&id,"jobId",&json!(job_id),
-            &json!({"status":goal["status"],"phase":"needs_review"}));
-        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    // Freeze the entire goal cursor and the new job with its resume
+    // checkpoint inside ONE SQLite transaction. A crash cannot publish a
+    // queued goal whose new job was never persisted.
+    let mut saved=goal.clone();
+    saved["status"]=json!("queued");
+    saved["phase"]=json!("resume");
+    saved["jobId"]=json!(job_id);
+    saved["resumeCount"]=json!(next);
+    saved["maxIterations"]=json!(next_max);
+    saved["resumeHistory"]=json!(history);
+    saved["finishedAt"]=Value::Null;
+    saved["finalReport"]=Value::Null;
+    let job=json!({
+        "id":job_id,"kind":"goal","status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "input":{"goalId":id,"resumeAfterReview":true},
+        "goalState":resume_state,
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
+    let expected=goal["status"].as_str().unwrap_or("");
+    match state.store.transaction_if_status("goal",&id,expected,&[
+        ("goal".to_string(),saved.clone()),("job".to_string(),job.clone())
+    ]){
+        Ok(true)=>{},
+        Ok(false)=>return error(StatusCode::CONFLICT,"목표 상태가 변경됐습니다."),
+        Err(cause)=>{
+            state.store.audit("goal.resume_enqueue_failed",json!({
+                "goalId":id,"jobId":job_id,"error":cause
+            }));
+            return error(StatusCode::INTERNAL_SERVER_ERROR,
+                "목표 재개 상태와 새 실행 작업을 함께 저장하지 못했습니다.");
+        }
     }
+    state.bus.record("job",&job);
+    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id}));
     if let Some(session)=saved["sessionId"].as_str() {state.clear_cancel(session);}
     state.bus.record("goal",&saved);
     state.store.audit("goal.owner_reviewed_resume",json!({
