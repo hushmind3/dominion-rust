@@ -153,6 +153,15 @@ pub async fn resume_goal(
     if next_iteration>=next_max {
         return error(StatusCode::CONFLICT,"이전 실행 단계가 반복 한도를 모두 사용했습니다.");
     }
+    let reviewed_unknown_ids=if let Some(session)=goal["sessionId"].as_str(){
+        match state.store.uncertain_session_operation_ids(session){
+            Ok(ids) if ids.len()<=256=>ids,
+            Ok(_)=>return error(StatusCode::CONFLICT,
+                "검토 대상 미확정 작업이 너무 많아 이어갈 수 없습니다."),
+            Err(reason)=>return error(StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("미확정 작업 영수증 조회 실패: {reason}"))
+        }
+    }else{Vec::new()};
     let new_job_id=format!("goal-job-{id}-resume-{next}");
     let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
     history.push(json!({"jobId":new_job_id,"previousJobId":old_job_id,
@@ -169,7 +178,8 @@ pub async fn resume_goal(
         "transcript":old_checkpoint["transcript"].as_str().unwrap_or(""),
         "gaps":goal.get("gaps").cloned()
             .filter(|v|v.is_array()).unwrap_or_else(||json!([])),
-        "stalled":0,"resumeAfterReview":true
+        "stalled":0,"resumeAfterReview":true,
+        "reviewedUnknownOpIds":reviewed_unknown_ids
     });
     let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
         &json!({"status":"queued","phase":"resume","jobId":new_job_id,
@@ -191,7 +201,8 @@ pub async fn resume_goal(
     state.bus.record("goal",&saved);
     state.store.audit("goal.owner_reviewed_resume",json!({
         "goalId":id,"jobId":new_job_id,"previousJobId":old_job_id,
-        "startIteration":next_iteration
+        "startIteration":next_iteration,
+        "reviewedUnknownOperationIdsCount":reviewed_unknown_ids.len()
     }));
     Json(saved).into_response()
 }
