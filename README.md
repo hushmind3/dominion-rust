@@ -8,6 +8,14 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 👑 챔피온 2026-11-14: 독립 Rust·TypeScript SDK, 실험 기반 RSI, 실제 SWE-bench 평가 경로
+
+- **실제 SDK 패키지:** `sdk/rust`는 원생 Rust HTTP/SSE·MCP 도구 등록 클라이언트, `sdk/typescript`는 타입 있는 브라우저/Node HTTP·SSE SDK입니다. `/api/sdk/threads/:id/run`과 `/:id/steer`는 기존 **DominionSdk / chat::run_turn** 엔진을 그대로 호출하며 UI와 엔진을 분리합니다.
+- **RSI 실측 오류 신호:** `rsi/learning/failure_feedback.rs`가 독립 평가에서 실제 회귀·정체한 사례를 분류·중복 제거하고 다음 **재컴파일된 후손의 모델 실행 컨텍스트**에 반영합니다. 원래 동결 오라클의 채택 검증과 A→B→A 계승은 유지합니다.
+- **SWE-bench Verified:** `GET /api/goals/:id/patch`로 **신규 파일까지 포함한 전체 격리 Git 패치**를 SHA-256/기준 커밋과 함께 출력합니다. `scripts/benchmark/swebench_dominion.py`는 실제 목표 실행→원본 패치→공식 Docker 채점 경로를 제공합니다. 검증 전 성공률은 제공하지 않습니다.
+- **회귀 테스트와 CI:** SDK TS/Rust 테스트, RSI 실패 피드백 테스트, 공식 평가 패치 무결성 테스트, 메뉴/전체 실행 경로 정적 검사를 CI에 추가했습니다. **이번 커밋의 CI 성공·유료 실모델 결과는 아직 검증하지 않았습니다.**
+- **미국·중국 소스 비교와 설계·검증 문서:** [DOMINION 독립 SDK·RSI·2026 프런티어 연구 및 공식 벤치마크](docs/FRONTIER-SDK-RSI-2026-11-14.md).
+
 ## 👑 챔피온 2026-11-14: 사용자 지휘권을 관통하는 네이티브 전 엔진 개선
 
 - **실행 중 명령 변경:** 채팅 입력창과 DOMINION Rust SDK `steer()` → SQLite `chat_steer` → 실제 모델 단계. 사용자 지시가 도착하면 이전 계획의 미시작 도구 호출은 실행하지 않고 원래 `tool_call_id`에 `executed:false` 결과를 남깁니다. 이미 시작한 효과는 원본 기록과 함께 보존합니다.
