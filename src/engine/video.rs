@@ -8,6 +8,8 @@ mod director;
 mod film;
 #[path = "video/quality.rs"]
 mod quality;
+#[path = "video/pricing.rs"]
+mod pricing;
 #[path = "video/cinematic.rs"]
 mod cinematic;
 use crate::{
@@ -108,9 +110,26 @@ pub fn public_job(job: &Value) -> Value {
     json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":storyboard,"filmCompleted":job["videoState"]["filmCompleted"],
     "cinematic":job["input"]["cinematic"],"shotProgress":job["videoState"]["shotIndex"],
     "shotCount":job["videoState"]["shotCount"],"film":job["input"]["render"]["film"],
-    "retake":job["input"]["retake"],"paidSubmissionAttempts":job["paidSubmissionAttempts"],
+    "retake":job["input"]["retake"],"costQuote":job["input"]["costQuote"],
+    "maxApprovedKrw":job["input"]["maxApprovedKrw"],
+    "paidReservedKrw":job["paidReservedKrw"],
+    "paidSubmissionAttempts":job["paidSubmissionAttempts"],
     "result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
+/// Recalculate a complete owner-visible LTX quote from server-side model,
+/// resolution, shot segmentation and the published tariff snapshot.
+pub fn paid_quote(state:&AppState,body:&Value)->Result<Value,String>{
+    let cfg=config(state);
+    let duration=body["duration"].as_u64()
+        .ok_or("영상 길이는 정수 초 단위로 입력하세요.")?;
+    let mut draft=body.clone();
+    if !draft.is_object(){return Err("유효하지 않은 영상 견적 요청".into());}
+    draft["confirmPaidMultiShot"]=json!(true); // quote-only, no job or billing
+    let spec=film::spec(&draft,&cfg,duration)?;
+    let count=spec["film"]["clips"].as_array().map(Vec::len).unwrap_or(1) as u64;
+    pricing::quote(&spec,duration,count)
+}
+
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
     let brief = body["brief"].as_str().unwrap_or("").trim();
@@ -210,9 +229,16 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         }
         Some(validated)
     } else { None };
+    let (cost_quote,approved_limit)=if let Some(spec)=ltx_spec.as_ref(){
+        let count=spec["film"]["clips"].as_array().map(Vec::len).unwrap_or(1) as u64;
+        let quote=pricing::quote(spec,duration,count)?;
+        let amount=pricing::approved(&quote,body)?;
+        (quote,json!(amount))
+    }else{(Value::Null,Value::Null)};
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
+        "costQuote":cost_quote,"maxApprovedKrw":approved_limit,
         "technicalGate":technical_gate,
         "cinematic":cinematic,"badShotRetries":bad_shot_retries,
         "confirmRetryCosts":body["confirmRetryCosts"]==true,
@@ -616,7 +642,15 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
 pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
     uuid::Uuid::parse_str(id).map_err(|_|"잘못된 영상 ID")?;
     let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
-    film::scenes(state,&job)
+    let mut manifest=film::scenes(state,&job)?;
+    if let Some(items)=manifest["clips"].as_array_mut(){
+        for clip in items {
+            let seconds=clip["duration"].as_u64().ok_or("장면 길이 누락")?;
+            let quote=pricing::quote(&job["input"]["render"],seconds,1)?;
+            clip["expectedQuote"]=quote;
+        }
+    }
+    Ok(manifest)
 }
 /// SHA-guarded, idempotent NEW job for exactly one paid replacement clip.
 /// Unchanged clips are copied and verified, not resubmitted to LTX.
@@ -624,7 +658,8 @@ pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>
     uuid::Uuid::parse_str(id).map_err(|_|"잘못된 영상 ID")?;
     if body.as_object().is_none_or(|map|map.keys().any(|k|
         !matches!(k.as_str(),"index"|"expectedSha256"|"prompt"|
-            "confirmedPaidCallCount"|"confirmNewPaidCalls"))){
+            "confirmedPaidCallCount"|"confirmNewPaidCalls"|
+            "approvedPaidQuote"|"approvedQuoteFingerprint"|"maxApprovedKrw"))){
         return Err("지원하지 않는 재생성 설정이 포함됐습니다.".into());
     }
     if body["confirmNewPaidCalls"]!=true{
@@ -635,7 +670,13 @@ pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>
     let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA가 없습니다.")?;
     let calls=body["confirmedPaidCallCount"].as_u64()
         .ok_or("추가 유료 호출 횟수를 확인하세요.")?;
-    let input=film::retake_input(state,&source,index,digest,body["prompt"].as_str(),calls)?;
+    let mut input=film::retake_input(state,&source,index,digest,body["prompt"].as_str(),calls)?;
+    let duration=input["render"]["film"]["clips"][index]["duration"].as_u64()
+        .ok_or("재생성 장면 길이가 없습니다.")?;
+    let quote=pricing::quote(&input["render"],duration,1)?;
+    let approved_limit=pricing::approved(&quote,body)?;
+    input["costQuote"]=quote;
+    input["maxApprovedKrw"]=json!(approved_limit);
     let fingerprint=input["retake"]["fingerprint"].as_str()
         .ok_or("재생성 고유키가 없습니다.")?;
     let hash=Sha256::digest(fingerprint.as_bytes());
