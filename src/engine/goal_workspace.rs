@@ -1,6 +1,6 @@
 //! Goal-owned disposable Git worktrees. They isolate tracked source changes,
- //! not processes, networks or absolute shell paths. Creation/discard never
- //! touches the source checkout or silently publishes a change.
+//! not processes, networks or absolute shell paths. Creation/discard never
+//! touches the source checkout or silently publishes a change.
 use crate::state::AppState;
 use serde_json::{json,Value};
 use std::{collections::HashSet,path::{Path,PathBuf},process::Stdio,time::Duration};
