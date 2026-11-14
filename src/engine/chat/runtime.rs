@@ -46,7 +46,7 @@ mod execution_program;
 mod dispatch;
 mod planning;
 mod finalization;
-use self::intent::{bounded_contract_intent, task_input, rsi_output_allowance, rsi_should_checkpoint, rsi_checkpoint_stage_with_method, rsi_checkpoint_stage, rsi_checkpoint_tool, rsi_offer_grounded_edit_fallback, rsi_compiler_repair_route, tool_discovery_applies, rsi_textual_edit_fallback, rsi_tool_advertised, rsi_canonical_tool_name, rsi_verified_write_operation, rsi_patch_ready_for_verification, rsi_ground_range_edit_args};
+use self::intent::{bounded_contract_intent, task_input, rsi_output_allowance, rsi_should_checkpoint, rsi_checkpoint_stage_with_method, rsi_checkpoint_stage, rsi_checkpoint_tool, rsi_offer_grounded_edit_fallback, rsi_compiler_repair_route, tool_discovery_applies, rsi_textual_edit_fallback, rsi_tool_advertised, rsi_canonical_tool_name, rsi_no_tool_recovery_target, rsi_verified_write_operation, rsi_patch_ready_for_verification, rsi_ground_range_edit_args};
 use self::turn::{run_turn_body};
 use self::adaptation::{run_harness_nodes, failure_observation, environment_fingerprint, record_adaptation_error, attempt_model_adaptation, restore_program_state};
 use self::tool_catalog::{tool_is_read_only, mark_tool_argument_signal, normalize_tool_arguments, tool_name, recent_room_tools, select_room_tools, select_tool_definitions, trim_tool_definitions};
