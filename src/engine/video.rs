@@ -2,6 +2,8 @@
 //! only encodes them. Paid Runway multi-shot and optional ComfyUI are explicit connectors.
 mod runway;
 mod ltx;
+mod film;
+mod quality;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -92,7 +94,9 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["videoQuality"].clone()} else {Value::Null},"videoModel":job["input"]["videoModel"],"shotMode":if job["input"]["engine"]=="runway" {job["input"]["shotMode"].clone()} else {Value::Null},"generateAudio":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["generateAudio"].clone()} else {Value::Null}})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["videoQuality"].clone()} else {Value::Null},"videoModel":job["input"]["videoModel"],"shotMode":if job["input"]["engine"]=="runway" {job["input"]["shotMode"].clone()} else {Value::Null},"generateAudio":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["generateAudio"].clone()} else {Value::Null},
+        "technicalGate":job["input"]["technicalGate"],"film":job["input"]["render"]["film"],
+        "technicalQuality":job["result"]["technicalQuality"],"estimatedPaidCalls":job["input"]["render"]["film"]["paidCallCount"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -154,6 +158,12 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let shot_mode = body["shotMode"].as_str().unwrap_or("auto");
     let scenes = body["scenes"].as_array().cloned().unwrap_or_default();
     let generate_audio = body["generateAudio"].as_bool().unwrap_or(true);
+    let ltx_film = engine=="ltx" && body["ltxFilm"]==true;
+    let technical_gate=body["technicalGate"].as_bool()
+        .unwrap_or_else(||quality::available(&cfg));
+    if technical_gate && !quality::available(&cfg) {
+        return Err("FFprobe 검수를 선택했지만 실행 파일이 없습니다. 검수 해제 또는 FFmpeg 설치 후 재시도하세요.".into());
+    }
     let fps = body["fps"].as_u64().unwrap_or(if engine=="ltx" {24} else {16});
     let seed = body["seed"].as_i64().unwrap_or(-1);
     let negative_prompt = body["negativePrompt"].as_str().unwrap_or("");
@@ -176,13 +186,18 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "videoQuality":video_quality, "videoModel":video_model, "fps":fps,
         "shotMode":shot_mode, "scenes":scenes, "generateAudio":generate_audio,
+        "ltxFilm":ltx_film,"technicalGate":technical_gate,
+        "confirmPaidMultiShot":body["confirmPaidMultiShot"]==true,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
     // Validate against the dated provider contract before persisting a paid
     // job; render() validates again before remote submission.
     if engine == "runway" { runway::recipe_input(&input)?; }
-    if engine == "ltx" { input["render"] = ltx::spec(&input, &cfg)?; }
+    if engine == "ltx" {
+        input["render"] = if ltx_film {film::spec(&input,&cfg)?}
+            else {ltx::spec(&input, &cfg)?};
+    }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -528,7 +543,11 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     } else if input["engine"] == "runway" {
         runway::render(ctx, input, &dir).await
     } else if input["engine"] == "ltx" {
-        ltx::run(ctx, input, &dir).await
+        if input["ltxFilm"]==true {
+            film::run(ctx,input,&dir).await
+        } else {
+            ltx::run(ctx, input, &dir).await
+        }
     } else {
         native(ctx, input, &dir).await
     };
@@ -540,6 +559,17 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
             if bytes < 100 {
                 return Err("생성된 영상이 비어 있습니다.".into());
             }
+            // Inspect actual playable streams, not only the HTTP response or
+            // an MP4 filename. Paid output is retained for manual inspection
+            // on failure, never submitted again without the owner's action.
+            let require_audio=matches!(input["engine"].as_str(),Some("ltx"|"runway"))
+                && input["generateAudio"]==true;
+            let technical=quality::inspect(&input["config"],&dir.join("output.mp4"),
+                input["duration"].as_u64().unwrap_or(15),
+                input["aspectRatio"].as_str().unwrap_or("9:16"),
+                require_audio,input["technicalGate"]==true).await
+                .map_err(|e|format!("needs_review: 생성된 영상 기술 검수 실패: {e}. 결과 파일은 보존되며 자동 재구매하지 않습니다."))?;
+            value["technicalQuality"]=technical;
             value["bytes"] = json!(bytes);
             value["outputUrl"] = json!(format!("/api/video/jobs/{}/content", ctx.job_id));
             progress(ctx, "completed", 100)?;
