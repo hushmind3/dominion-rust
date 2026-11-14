@@ -320,6 +320,36 @@ mod tests {
         )
     }
     #[test]
+    fn runway_paid_jobs_need_exact_owner_approval_and_fresh_quote() {
+        let s=state();
+        // No live API call: this key is stored locally for admission checks.
+        s.save_secret("video:api","fixture-key-not-used");
+        s.store.put("video_config",&json!({"id":"default","engine":"runway",
+            "runwayModel":"kling3.0_standard","runwayAudio":false})).unwrap();
+        let request=json!({"brief":"cost contract",
+            "engine":"runway","duration":10});
+        assert!(video::enqueue(&s,&request).is_err());
+        let quote=video::paid_quote(&s,&json!({"duration":10})).unwrap();
+        assert_eq!(quote["creditsMicro"],90_000_000);
+        assert!(video::enqueue(&s,&json!({"brief":"cost contract",
+            "engine":"runway","duration":10,"approvedPaidQuote":true,
+            "maxCreditsMicro":89_999_999_u64})).is_err());
+        let accepted=video::enqueue(&s,&json!({"brief":"cost contract",
+            "engine":"runway","duration":10,"approvedPaidQuote":true,
+            "maxCreditsMicro":90_000_000_u64})).unwrap();
+        let record=s.store.get("job",accepted["id"].as_str().unwrap()).unwrap();
+        assert_eq!(record["input"]["costQuote"]["creditsMicro"],90_000_000);
+        assert_eq!(accepted["costQuote"]["creditsMicro"],90_000_000);
+        s.store.put("video_config",&json!({"id":"default","engine":"runway",
+            "runwayModel":"kling3.0_4k","runwayAudio":true})).unwrap();
+        // A previous quote cannot be re-used for a more expensive model.
+        assert!(video::enqueue(&s,&json!({"brief":"cost contract",
+            "engine":"runway","duration":10,"approvedPaidQuote":true,
+            "maxCreditsMicro":90_000_000_u64})).is_err());
+        let _=std::fs::remove_dir_all(s.config.data_dir.clone());
+    }
+
+    #[test]
     fn enqueue_is_durable_and_never_publishes_implicitly() {
         let s = state();
         let result = video::enqueue(
