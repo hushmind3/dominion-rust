@@ -1,5 +1,19 @@
 # dominion-rust
 
+## 2026-11-15 · Sub4: room token ceilings and per-exchange metering
+
+`src/engine/rooms.rs` now records one immutable `usageBaselineTokens` and
+full `usageBaseline` model/cache receipt in the durable room job input. Every
+speaker is budget-checked **before** its expensive model turn, including after
+a safe crash/requeue, not just when the previous agent finishes. `rooms/economy.rs`
+produces an observed per-exchange `roomUsage` delta (prompt/completion tokens,
+model calls, reported cache tokens/coverage), included in terminal job result,
+audit and event. `web/src/pages/Rooms.tsx` shows the actual per-exchange total
+rather than assuming all prior room history was spent on this turn. Provider
+cache counts can be absent, and no unverified KRW token billing is invented.
+Zero budget retains the unlimited option. Regression tests cover the baseline,
+resume, independent owner messages and missing cache telemetry.
+
 ## 2026-11-15 · Sub4: real-frame video QA and durable agent event recovery
 
 A ComfyUI cinematic job now freezes `visualQualityGate` in its queued input
