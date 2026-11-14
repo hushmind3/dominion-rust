@@ -420,10 +420,14 @@ fn finish(
         .get("job", &context.job_id)
         .is_some_and(|job| job["cancelRequested"].as_bool() == Some(true));
     let status = if cancelled { "cancelled" } else { status };
+    let prior = context.state.store.get("goal",id).unwrap_or(Value::Null);
+    let metrics = crate::engine::goal_metrics::final_report(&context.state,&prior,status,&gaps);
     patch_goal(
         &context.state,
         id,
-        json!({"status":status,"phase":if status=="completed" {"complete"} else {status},"gaps":gaps,"error":error,"finishedAt":chrono::Utc::now().to_rfc3339()}),
+        json!({"status":status,"phase":if status=="completed" {"complete"} else {status},
+            "gaps":gaps,"error":error,"metrics":metrics,
+            "finishedAt":chrono::Utc::now().to_rfc3339()}),
     );
     let goal = context
         .state
@@ -475,7 +479,9 @@ fn finish(
         }
     }
     context.emit(json!({"type":"goal_finished","goalId":id,"status":status}));
-    json!({"goalId":id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":gaps})
+    json!({"goalId":id,"status":goal["status"],"sessionId":goal.get("sessionId"),
+        "iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":gaps,
+        "metrics":goal["metrics"]})
 }
 
 pub fn parse_review(text: &str) -> (bool, Vec<String>) {
