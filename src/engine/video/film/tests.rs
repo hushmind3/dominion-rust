@@ -2,6 +2,20 @@ use super::*;
 use crate::{config::Config,db::Store,state::AppState,vault::Vault};
 
 #[test]
+fn owner_scripted_paid_shots_all_receive_the_same_frozen_character_bible(){
+    let anchor="Red hair, green coat, same Tokyo alley, continuous rain";
+    let first=shot_prompt("An escape story",0,3,Some("woman turns a corner"),anchor);
+    let last=shot_prompt("An escape story",2,3,Some("woman exits same courtyard"),anchor);
+    assert!(first.contains(anchor)&&last.contains(anchor));
+    assert!(first.contains("woman turns")&&last.contains("same courtyard"));
+    assert!(first.contains("SHOT 1/3")&&last.contains("SHOT 3/3"));
+    assert!(shot_prompt("robot walks",0,2,None,"").contains("robot walks"));
+    let huge="한".repeat(20_000);
+    let bounded=shot_prompt(&huge,1,3,Some(&huge),anchor);
+    assert!(bounded.chars().count()<=4_950);
+    assert!(bounded.contains(anchor));
+}
+#[test]
 fn segmentation_requires_consent_and_bounded_six_clips(){
     assert_eq!(split_duration(22,10).unwrap(),vec![10,6,6]);
     assert_eq!(split_duration(60,10).unwrap(),vec![10,10,10,10,10,10]);

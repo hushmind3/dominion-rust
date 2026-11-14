@@ -37,6 +37,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[ltxKey,setLtxKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'|'1440p'|'4k'>('1080p'),[ltxModel,setLtxModel]=useState<'ltx-2-5-fast'|'ltx-2-5-pro'>('ltx-2-5-pro'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
  const [ltxFilm,setLtxFilm]=useState(false),[confirmPaidMultiShot,setConfirmPaidMultiShot]=useState(false),[technicalGate,setTechnicalGate]=useState(false)
+ const [filmAnchor,setFilmAnchor]=useState(''),[filmShots,setFilmShots]=useState('')
  const [paidQuote,setPaidQuote]=useState<PaidQuote|null>(null),[approvePaid,setApprovePaid]=useState(false),[quoting,setQuoting]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
@@ -149,6 +150,15 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
   }
+  if(usingLtx&&ltxFilm){
+   const scripted=filmShots.trim().split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean)
+   if(scripted.length&&scripted.length!==estimatedFilmShots){
+    setError('장면별 연출은 유료 장면 수와 정확히 일치해야 합니다.');return
+   }
+   if(Array.from(filmAnchor).length>1800){
+    setError('공통 인물·배경 설정은 1,800자 이하여야 합니다.');return
+   }
+  }
   setGenerating(true);setError('');
   try{
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
@@ -156,6 +166,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     ...(usingRunway?{videoQuality,shotMode,scenes:shotMode==='custom'?scenes:[],generateAudio}:{}),
     ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24,
      ltxFilm,confirmPaidMultiShot,technicalGate,
+     ...(ltxFilm?{filmAnchor:filmAnchor.trim(),
+       scenes:filmShots.trim().split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean)}:{}),
      approvedPaidQuote:true,maxUsdCents:paidQuote?.totalUsdCents,
      quoteDigest:paidQuote?.quoteDigest}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
@@ -241,6 +253,14 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={ltxFilm}
         onChange={e=>{setLtxFilm(e.target.checked);setSeconds(e.target.checked?22:8);setConfirmPaidMultiShot(false)}}/> 장편 멀티샷 제작 (장면별 독립 생성)</label>
+       {ltxFilm&&<div className="grid gap-2 rounded-lg border border-[#E7E0D5] bg-white p-3">
+        <FormField label="🎬 연속성 기준 · 등장인물 / 의상 / 배경" hint="모든 유료 장면에 공통으로 전달합니다. 비우면 영상 주제를 기준으로 생성합니다.">
+         <TextArea rows={2} value={filmAnchor} onChange={e=>setFilmAnchor(e.target.value)}
+          placeholder="같은 검은 코트의 주인공, 비 오는 서울 야경, 푸른 네온, 같은 목소리"/></FormField>
+        <FormField label="장면별 연출 · 선택" hint={`장면당 1줄, 설정하면 정확히 ${estimatedFilmShots}줄이어야 합니다.`}>
+         <TextArea rows={3} value={filmShots} onChange={e=>setFilmShots(e.target.value)}
+          placeholder={'첫 장면: 도로를 내려다보는 와이드샷\\n둘째 장면: 인물을 따라가는 카메라'}/></FormField>
+       </div>}
        {ltxFilm&&<div className="rounded-lg border border-[#E7E0D5] bg-white p-3 text-[11px] text-[#6B6258]">
         <p>현재 길이에 필요한 예상 유료 생성 <strong>{estimatedFilmShots}회</strong> · 최대 6개 장면. 각 장면의 실제 기술 검수를 기록하고 재시작 시 완료 영수증을 재사용합니다. 추가 모델 호출이나 시각적 연속성 보장은 포함하지 않습니다.</p>
         <label className="mt-2 flex items-center gap-2"><input type="checkbox" checked={confirmPaidMultiShot}

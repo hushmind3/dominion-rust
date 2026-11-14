@@ -37,15 +37,20 @@ pub(super) fn max_clip(model:&str,quality:&str,fps:u64)->Result<u64,String>{
         _=>Err("지원하지 않는 LTX 모델입니다.".into())
     }
 }
-fn shot_prompt(brief:&str,index:usize,total:usize,custom:Option<&str>)->String{
-    if let Some(prompt)=custom.filter(|p|!p.trim().is_empty()){
-        return prompt.trim().chars().take(4750).collect();
-    }
-    // Without an extra planning model or API call, carry one immutable
-    // character/environment anchor across scenes. These are instructions to
-    // the video model and are not a claim that visual continuity is proven.
-    format!("Continuous film, shot {}/{}. Maintain the same characters, wardrobe, lighting, location, color palette and voice across all cuts. No title cards. Original story: {}. Compose shot {} as the next coherent event.",index+1,total,
-        brief.chars().take(4200).collect::<String>(),index+1)
+/// A single immutable continuity bible is included in EVERY paid shot.
+/// Model-facing guidance is distinct from independent visual verification.
+fn shot_prompt(brief:&str,index:usize,total:usize,custom:Option<&str>,anchor:&str)->String{
+    const MAX_CHARS:usize=4_950; // LTX limit is 5,000
+    let bible=if anchor.trim().is_empty(){brief.trim()}else{anchor.trim()};
+    let scene=custom.filter(|s|!s.trim().is_empty()).unwrap_or(brief).trim();
+    let header=format!(
+        "ONE CONTINUOUS FILM — SHOT {}/{}. Same actor faces, wardrobe,         hairstyle, props, color grade, geography, lighting direction and voices         throughout; connect this shot's events with the preceding scene.         No title cards. Fixed characters and setting: {}. SHOT: ",
+        index+1,total,bible.chars().take(1_200).collect::<String>()
+    );
+    let end=" Continue the narrative without restarting the characters or location.";
+    let room=MAX_CHARS.saturating_sub(header.chars().count()+end.chars().count());
+    let action:String=scene.chars().take(room).collect();
+    format!("{header}{action}{end}")
 }
 pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
     let total=input["duration"].as_u64().ok_or("총 영상 길이가 필요합니다.")?;
@@ -62,6 +67,12 @@ pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
         return Err("멀티샷 영상 연결에는 FFmpeg가 필요합니다. API 영상 생성 전에 설치하세요.".into());
     }
     let brief=input["brief"].as_str().unwrap_or("");
+    let anchor=input["filmAnchor"].as_str().unwrap_or("").trim();
+    if anchor.chars().count()>1_800 {
+        return Err("장면 공통 설정은 1,800자 이하여야 합니다.".into());
+    }
+    let continuity_source=if anchor.is_empty(){brief}else{anchor};
+    let continuity_digest=format!("{:x}",Sha256::digest(continuity_source.as_bytes()));
     let supplied=input["scenes"].as_array().cloned().unwrap_or_default();
     if !supplied.is_empty() && supplied.len()!=parts.len() {
         return Err(format!("장면 프롬프트를 지정한다면 생성 장면 {}개와 정확히 일치해야 합니다.",parts.len()));
@@ -73,15 +84,17 @@ pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
         if supplied.get(index).is_some()&&custom.is_none(){
             return Err("장면 프롬프트는 문자열 또는 prompt 속성이 있는 객체여야 합니다.".into());
         }
-        let prompt=shot_prompt(brief,index,parts.len(),custom);
+        let prompt=shot_prompt(brief,index,parts.len(),custom,anchor);
         let mut prepared=input.clone();
         prepared["duration"]=json!(duration);
         prepared["brief"]=json!(prompt);
         let spec=ltx::spec(&prepared,cfg)?;
         clips.push(json!({"index":index,"duration":duration,"render":spec}));
     }
-    Ok(json!({"film":{"version":1,"totalDuration":total,"clips":clips,
-        "paidCallCount":clips.len(),"verifiedContinuity":false},
+    Ok(json!({"film":{"version":2,"totalDuration":total,"clips":clips,
+        "paidCallCount":clips.len(),"continuityAnchorSha256":continuity_digest,
+        "scenePromptMode":if supplied.is_empty(){"automatic"}else{"owner_scripted"},
+        "verifiedContinuity":false},
         "model":model,"quality":quality,"fps":fps}))
 }
 

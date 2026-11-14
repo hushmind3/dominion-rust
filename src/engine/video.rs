@@ -193,6 +193,10 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let scenes = body["scenes"].as_array().cloned().unwrap_or_default();
     let generate_audio = body["generateAudio"].as_bool().unwrap_or(true);
     let ltx_film = engine=="ltx" && body["ltxFilm"]==true;
+    let film_anchor=body["filmAnchor"].as_str().unwrap_or("").trim();
+    if film_anchor.chars().count()>1_800 {
+        return Err("영상 공통 인물·배경 설정은 1,800자 이하여야 합니다.".into());
+    }
     let technical_gate=body["technicalGate"].as_bool()
         .unwrap_or_else(||quality::available(&cfg));
     if technical_gate && !quality::available(&cfg) {
@@ -220,6 +224,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "videoQuality":video_quality, "videoModel":video_model, "fps":fps,
         "shotMode":shot_mode, "scenes":scenes, "generateAudio":generate_audio,
+        "filmAnchor":film_anchor,
         "ltxFilm":ltx_film,"technicalGate":technical_gate,
         "confirmPaidMultiShot":body["confirmPaidMultiShot"]==true,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
