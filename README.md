@@ -20,6 +20,7 @@
 
 ## 서브3 · 출시 후 전체 시스템 개선 (2026-11-14)
 
+- **RSI 실모델 진입 실패 진단·원본 검증:** [실모델 실행 기록](https://github.com/hushmind3/dominion-rust/actions/runs/43537617763)은 workflow 성공과 달리 내부 개선 세대 0회·모델 호출 0회로 `needs_review`였습니다. `rsi_system/validation.rs`에서 계획 파일의 실제 SHA-256이 일치할 때만 코드 인덱스 누락을 재구성하는 복구 경로를 추가했습니다. 원본 소스의 실제 변경과 채택 검증은 완전히 차단합니다. [원인·코드 경로·실증 한계](docs/POST-LAUNCH-ENGINE-INTEGRATION-2026-11-14.md). 재실행의 실제 개선 성과는 별도 확인해야 합니다.
 - **영상 기술 검증·샷별 예산 보호:** `VideoPage → /api/video/jobs → video::run → video/quality.rs::inspect → qualityReceipt`로 최종 MP4 해상도·길이·화면비·(Omni) 오디오 검증을 강제합니다. FFprobe가 없으면 유료 호출 전에 중단하고, ComfyUI 시네마틱은 통과한 샷을 재사용하며 검수 실패 장면만 사용자 선택 시 최대 1회 재생성합니다. 이는 화질·의미에 관한 VLM 평가가 아닌 FFprobe의 기술 검수입니다.
 - **RSI 개선 신호의 실제 사용자 목표 근거:** `goals::finish → goal.receipt → rsi_system/agent_feedback.rs::observe → rsi_system::usage_evidence → architecture_frontier` 경로로 완료/실패·반복·토큰 사용량을 소스 개선 후보 선정에 활용합니다. 독립 평가 없이 RSI 성능 향상으로 인정하거나 후보를 채택하지 않습니다.
 - **자율 Git 코딩 · PR/CI 관제:** 목표 생성에서 `isolateWorktree`를 선택하면 `goal_git::prepare → chat/runtime/dispatch → verification::acceptance_gaps_in`으로 독립 브랜치·worktree에서 편집·검증합니다. `verifyCommands`는 실제 성공한 테스트 명령만 통과시키고, 선택적 `publishPr`은 GitHub의 실제 201 응답을 필요로 합니다. 활동 화면에서 코드 diff·로컬 worktree 폐기까지 수행할 수 있습니다. [엔진·API·UX·CI 실행 경로](docs/AGENT-HARNESS-2026-11-14.md)를 참고하세요. 원격 PR이나 원본 소스의 자동 롤백은 하지 않습니다.
