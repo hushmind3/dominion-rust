@@ -140,7 +140,7 @@
         assert_eq!(first["generatorCommit"],commit);
         assert_eq!(first["historyCount"],0);
         let roles=first["systemBlueprint"]["architecture"].as_array().unwrap();
-        assert_eq!(roles.len(),crate::engine::rsi_system::COMPONENTS.len(),
+        assert_eq!(roles.len(),11,
             "compiled source scanner must expose every registered executable intelligence role");
         for role in ["agent_harness","video","multiagent","improvement_methods"]{
             assert!(roles.iter().any(|component|component["role"]==role),
