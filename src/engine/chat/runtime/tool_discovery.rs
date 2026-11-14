@@ -133,7 +133,7 @@ mod tests{
         let (found,added)=search(&authorized,"깃허브 create pull",4,&BTreeSet::new());
         assert_eq!(added,vec!["mcp__github__create_pull_request"]);
         assert_eq!(found[0]["name"],"mcp__github__create_pull_request");
-        assert!(!found.to_string().contains("mcp__secret"));
+        assert!(!serde_json::to_string(&found).unwrap().contains("mcp__secret"));
     }
     #[test]
     fn revelation_is_callable_next_round_within_schema_budget(){
