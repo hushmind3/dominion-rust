@@ -587,6 +587,9 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         .unwrap_or(90)
         .clamp(5, 300);
 
+    let parent=ctx.state.store.get("session",ctx.session_id).unwrap_or(Value::Null);
+    // Nested workers inherit the SAME isolated source tree as their parent.
+    // Otherwise a subagent could silently modify the operator's live checkout.
     let session = ctx
         .state
         .store
@@ -598,6 +601,8 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
                 "providerId": agent["providerId"],
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
+                "goalId":parent["goalId"],
+                "goalWorktree":parent["goalWorktree"],
                 "delegated": true,
             }),
         )
