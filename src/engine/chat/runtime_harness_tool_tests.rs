@@ -25,6 +25,23 @@ use super::*;
     }
 
     #[test]
+    fn installed_mcp_tools_are_not_authorized_unless_advertised_this_round(){
+        let global_catalog=vec![
+            json!({"type":"function","function":{"name":"workspace_read"}}),
+            json!({"type":"function","function":{"name":"workspace_write"}}),
+            json!({"type":"function","function":{"name":"mcp_external_delete"}})
+        ];
+        let this_round=vec![global_catalog[0].clone()];
+        assert!(tool_advertised("workspace_read",&this_round));
+        assert!(!tool_advertised("workspace_write",&this_round));
+        assert!(!tool_advertised("mcp_external_delete",&this_round));
+        assert!(!tool_advertised("",&global_catalog));
+        assert!(!tool_advertised("workspace_read\nshell_exec",&global_catalog));
+        // Global registration is not a substitute for current-round rights.
+        assert!(tool_advertised("mcp_external_delete",&global_catalog));
+    }
+
+    #[test]
     fn room_tool_selection_is_zero_for_casual_and_exact_for_actions() {
         let definitions = vec![
             json!({"type":"function","function":{"name":"workspace_read","description":"Read a workspace file"}}),
