@@ -101,6 +101,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or_default();
     let mut stalled = job["goalState"]["stalled"].as_u64().unwrap_or(0) as usize;
     let resumed_after_owner_review = job["input"]["resumeAfterReview"]==true;
+    let token_budget=goal["tokenBudget"].as_u64().unwrap_or(150_000);
     let max_iterations = goal
         .get("maxIterations")
         .and_then(Value::as_i64)
@@ -205,6 +206,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     for index in start..max_iterations {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
+        }
+        // Session-scoped provider token usage is metered by the actual gateway,
+        // including usage from earlier manually reviewed continuations.
+        // The planner/reviewer may use separate model calls; this bounds the
+        // tool-capable executor iterations, not the provider's billing ledger.
+        let observed_tokens=state.store.session_usage(&session_id)["totalTokens"]
+            .as_u64().unwrap_or(0);
+        if token_budget>0 && observed_tokens>=token_budget {
+            gaps.push(format!("목표 토큰 예산 {token_budget}을(를) 사용해 다음 실행을 중단했습니다. 기록된 사용량: {observed_tokens}토큰."));
+            return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
