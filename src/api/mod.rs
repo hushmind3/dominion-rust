@@ -26,6 +26,7 @@ pub mod system;
 pub mod attachments;
 pub mod channels;
 pub mod collections;
+pub mod workflow_results;
 pub mod compat;
 pub mod dev;
 pub mod gateways;
@@ -193,6 +194,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/agents/:id/growth", get(agents::growth))
         .route("/api/synergy", get(agents::synergy))
         .route("/api/agents/:id/avatar", get(personas::avatar))
+        .route("/api/agents/:id/workflow",post(workflow_results::from_agent))
         .route("/api/agents/:id", axum::routing::delete(agents::delete_agent))
         .route("/api/rooms", get(rooms::list).post(rooms::save))
         .route(
@@ -235,6 +237,8 @@ pub fn router(state: AppState) -> Router {
             get(executions::execution_operations),
         )
         .route("/api/skills/:id/export", get(extensions::export_skill))
+        .route("/api/workflow-artifacts",get(workflow_results::list))
+        .route("/api/workflow-artifacts/:id",get(workflow_results::one))
         .route("/api/goals", get(goals::list_goals).post(goals::create_goal))
         .route("/api/goals/metrics", get(goals::metrics))
         .route(
