@@ -102,3 +102,14 @@ again"; without official grading or complete operation receipts it is
 unavailable. Both failed tasks and successful tasks contribute to
 tool calls and tokens per officially resolved task. Provider billing KRW
 remains null unless actual billing data is independently supplied.
+
+## Tool approval in unattended isolated benchmark runs
+
+Each instance is an isolated process, SQLite store, disposable Git checkout
+and a required operator opt-in (DOMINION_SWE_ENABLE=1). The runner explicitly
+sets the native owner-configured execution policy through POST /api/policy
+(autoApproveAll true, MCP automatic approval false) *inside that one
+instance* before admitting the goal. Otherwise an autonomous coding run
+would block on an interactive approval nobody is present to grant.
+No live DOMINION policy is modified, no third-party agent SDK executes
+tools, and the execution/operation ledger still records real effects.

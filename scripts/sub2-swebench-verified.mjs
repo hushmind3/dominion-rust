@@ -239,6 +239,15 @@ async function runOne(task,index,settings,model){
       ...settings.provider,id:'swebench-provider',enabled:true,
     });
     const providerId=provider.id||'swebench-provider';
+    // Owner-authorized, per-task benchmark policy. Without this native
+    // tool writes require interactive approval and an unattended SWE-bench
+    // run can hang indefinitely. It never touches the user's live store.
+    const ownerPolicy=await request(base,'/api/policy','POST',{
+      autoApproveAll:true,autoApproveMcp:false,autoApprove:[],
+    });
+    demand(ownerPolicy.autoApproveAll===true,
+      'isolated benchmark failed to apply owner tool policy');
+    result.ownerPolicy='isolated-per-instance-autoApproveAll';
     const objective=task.problem_statement+'\n\nImplement a minimal, correct fix in this checked-out repository. Inspect the source, edit the necessary files, run focused tests, diagnose failures, and repair them. Do not alter benchmark tests or evaluation fixtures.';
     const goal=await request(base,'/api/goals','POST',{
       goal:objective,maxIterations:settings.maxIterations,
