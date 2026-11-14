@@ -75,3 +75,13 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - 병렬 하위 조사: `tools.rs::definitions` → `delegate_tasks` → `tools/batch.rs::delegate_batch` → `tools/gateway.rs::delegate` → 고유 자식 세션/Job → `jobs::start_now` → `task_result`. 읽기 전용 child를 소스 편집 가능한 child와 혼동하지 않습니다. `delegation_allows`는 네이티브 도구, 모델 도구 디스패치, 결정적 실행과 MCP 경로를 모두 막습니다. 직렬 부모 검증/수정이 필요합니다.
 - Git diff·Undo: `goal_changes.rs::baseline`을 도구 실행 전 저장하고, `preview/undo`는 실제 성공한 `written:true` 도구 증거가 있는 파일에만 접근합니다. 작업 시작 시 clean/HEAD 불일치·도구 기록이 없는 파일·60KB 초과·동시 진행 중 작업은 자동 복원을 허용하지 않습니다. 전체 `git reset`이나 타인의 변경 소거로 해결하지 않습니다.
 - 새 소스 구조: `src/engine/tools/batch.rs`, `src/engine/goal_changes.rs`, `web/src/pages/workflows/GoalChanges.tsx`. 사용자 목표 진입점과 기능 경계는 `docs/AUTONOMOUS-AGENT-2026-11-14.md` 참고.
+
+
+
+## 2026-11-14: Goal worktree 격리·원본 반영 핵심 계약
+
+- `src/engine/goal_workspace.rs`: `prepare`(직렬 Git worktree 생성·영속화), `workspace_for_goal/workspace_for_session`(격리 존재·경로 검증 및 실패 시 원본 fallback 금지), `changes`(Git diff·미추적 파일·패치 SHA), `promote`(명시적 SHA·기준 HEAD/clean/검증된 완료 상태 검사 후 `git apply`), `discard`(목표 종료/하위 Job 비활성 확인 후 작업공간 삭제).
+- `goals.rs::run`: 세션 생성 뒤 opt-in `goal_workspace::prepare`, session의 `goalWorktree` 영속화, `scoped_state`의 컨텍스트 조사·완료조건 baseline·`run_quiet_outcome`·`acceptance_gaps`에 같은 workdir 전달. checkpoint 후 리뷰만 재개하는 기존 보호 경로를 유지합니다.
+- `tools.rs::execute`: 실제 네이티브 ToolContext의 workspace를 session/goal에 귀속된 worktree로 강제하며 파일의 절대 경로 도구를 차단합니다. `chat/runtime/turn.rs`에서도 해당 도구를 모델에게 숨깁니다. `tools/gateway.rs::delegate`가 Goal ID와 worktree 메타를 자식 Session에 계승하고 `jobs.rs::run_prompt`가 자식 LLM 컨텍스트도 workdir로 바꿉니다.
+- `api/goals.rs` ↔ `web/src/pages/workflows/GoalConsole.tsx`/`GoalChanges.tsx`: opt-in 입력·진행 상태·diff·원본 적용 승인·작업공간 폐기를 사용자에게 제공합니다. 결과가 남은 worktree를 Goal 삭제로 유실하지 않게 방어합니다.
+- 비적용 범위: OS 수준 프로세스 샌드박스와 shell 절대 경로 차단, 비추적 파일 자동 게시, 서로 다른 worktree를 동시에 쓰는 여러 코딩 에이전트의 무인 충돌 병합, RSI 동결 평가 우회. `isolateWorktree=false` 기존 워크스페이스 작업은 유지합니다.
