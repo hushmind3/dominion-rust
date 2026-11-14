@@ -38,6 +38,10 @@ pub(super) fn fit_worker_prompt(
     let directive = format!(
         "\n이번 탐색 분야: {domain}. 사용자 목표와 연결된 능력: {capability}. 전체 제품 기능·화면·외부 연결도 개선 대상입니다. 과거 성공·실패와 측정값을 참고하되 관측되지 않은 성능 향상을 주장하지 마세요. 이전 paired 사례의 baseline과 candidate가 같았다면 성공했다고 반복하지 말고, 그 사례를 바꿀 다른 소스 수정 가설을 실제로 구현하세요."
     );
+    // Per-case, independent paired evidence is more actionable than simply
+    // repeating the last global success/failure score. Feedback is derived
+    // by the running compiled descendant from its revalidated history.
+    let gradient=super::failure_feedback::reflective_feedback(history,domain);
     let full = history.iter().rev().take(8).map(|row| {
         let measured=row["evaluation"]["metrics"]["measurements"].as_array();
         let altered=measured.into_iter().flatten().filter(|case|case["metrics"].as_array()
@@ -99,12 +103,30 @@ pub(super) fn fit_worker_prompt(
         } else if !history.is_empty() {
             prompt.push_str("\n과거 세대의 상세 지표는 작업 저장소에 보존되어 있습니다.");
         }
+        let evidence=gradient["signals"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let selected=match mode{
+            "full"=>evidence.iter().take(4).cloned().collect::<Vec<_>>(),
+            "compact"=>evidence.iter().take(1).map(|row|json!({
+                "caseId":row["caseId"],"classification":row["classification"],
+                "metric":row["metric"],"baseline":row["baseline"],
+                "candidate":row["candidate"],"hypothesis":row["hypothesis"]
+            })).collect::<Vec<_>>(),
+            _=>Vec::new()
+        };
+        if !selected.is_empty(){
+            prompt.push_str("\n독립 평가 실측 기반 다음 소스 수정 가설(원인 확정 아님): ");
+            prompt.push_str(&json!(selected).to_string());
+            prompt.push_str("\n동결된 평가 코드를 고치거나 사례를 하드코딩하지 말고 변경한 Rust 구현을 다시 독립 평가하세요.");
+        }
         let estimate = crate::engine::chat::estimate_text_tokens(&prompt);
         if remaining_tokens.is_none_or(|limit|estimate.saturating_add(256)<=limit) {
             return Ok((prompt,json!({
                 "mode":mode,"feedbackRows":rows.len(),
                 "availableRows":history.len(),"estimatedInputTokens":estimate,
-                "ownerObjectivePreserved":true
+                "ownerObjectivePreserved":true,
+                "measuredCounterexamplesDelivered":selected.len(),
+                "measuredCounterexamplesAvailable":evidence.len(),
+                "feedbackSource":gradient["source"]
             })));
         }
     }
