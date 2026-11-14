@@ -278,7 +278,7 @@ pub(crate) fn select_tool_definitions(
     let default_core = [
         "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
-        "task_status", "task_result",
+        "delegate_tasks", "task_status", "task_result",
     ];
     let core = algorithm["parameters"]["tools"]
         .as_array()
