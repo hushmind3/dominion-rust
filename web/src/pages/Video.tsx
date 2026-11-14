@@ -8,7 +8,8 @@ import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
 type ClipQuality={verified:boolean;durationSeconds?:number;width?:number;height?:number;audioStream?:boolean;reason?:string}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number;clipQuality?:ClipQuality[];finalQuality?:ClipQuality;shotCount?:number;frameAnchoredClips?:number;mode?:string;shotResults?:{index:number;duration:number;bytes:number;reused:boolean;technicalRetries:number;qualityReceipt?:ClipQuality}[]}}
+type VideoQuote={model:string;seconds:number;clips:number;creditsMicro:number;referenceKrw:number;referenceFxKrwPerUsd:number;fxAsOf:string;pricingAsOf:string;promotional?:boolean;type:string}
+type VideoJob=JobState & {costQuote?:VideoQuote|null;attemptedExposureCreditsMicro?:number;attemptedSubmissions?:number;progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number;clipQuality?:ClipQuality[];finalQuality?:ClipQuality;shotCount?:number;frameAnchoredClips?:number;mode?:string;shotResults?:{index:number;duration:number;bytes:number;reused:boolean;technicalRetries:number;qualityReceipt?:ClipQuality}[]}}
 type VideoEngine='native'|'comfyui'|'runway'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;runwayModel?:string;runwayAudio?:boolean;runwayContinuityFrames?:boolean;runwayQualityGate?:boolean;hasVideoKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean;model?:string;nativeAudio?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
@@ -30,6 +31,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [runwayKey,setRunwayKey]=useState(''),[runwayModel,setRunwayModel]=useState('kling3.0_pro'),[runwayAudio,setRunwayAudio]=useState(true),[runwayFrames,setRunwayFrames]=useState(true),[runwayQuality,setRunwayQuality]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
+ const [paidQuote,setPaidQuote]=useState<VideoQuote|null>(null),[quoteError,setQuoteError]=useState('')
+ const [paidApproved,setPaidApproved]=useState(false)
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
  const [uploadSubmission,setUploadSubmission]=useState<UploadJob|null>(null),[uploading,setUploading]=useState(false)
  const activeVideo=useJob(videoSubmission?'/api/video/jobs/'+videoSubmission.id:null,videoSubmission)
@@ -48,6 +51,19 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const runwayClipSeconds=savedRunwayModel==='kling_4'?30:15
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow&&(!cinematic||video.value.native?.available)):engine==='runway'?Boolean(video.value.runway?.available&&(seconds<=runwayClipSeconds||video.value.native?.available)):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?(cinematic?120:9):180
+ // Only a fresh quote from the server can authorize a paid request.
+ useEffect(()=>{
+  let live=true
+  setPaidQuote(null);setQuoteError('');setPaidApproved(false)
+  if(engine!=='runway'||!Number.isInteger(seconds)||seconds<3||seconds>180)return
+  const timer=window.setTimeout(()=>{
+   void post<VideoQuote>('/api/video/quote',{duration:seconds}).then(quote=>{
+    if(live&&quote.model===savedRunwayModel&&quote.seconds===seconds)setPaidQuote(quote)
+    else if(live)setQuoteError('저장된 모델 설정이 변경됐습니다. 견적을 다시 조회하세요.')
+   }).catch(err=>{if(live)setQuoteError((err as Error).message)})
+  },250)
+  return()=>{live=false;window.clearTimeout(timer)}
+ },[engine,seconds,savedRunwayModel,video.value.config.runwayAudio])
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{setRunwayModel(video.value.config.runwayModel||'kling3.0_pro');setRunwayAudio(video.value.config.runwayAudio!==false);setRunwayFrames(video.value.config.runwayContinuityFrames!==false);setRunwayQuality(video.value.config.runwayQualityGate!==false)},[video.value.config.runwayModel,video.value.config.runwayAudio,video.value.config.runwayContinuityFrames,video.value.config.runwayQualityGate])
  useEffect(()=>{
@@ -105,10 +121,14 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
   }
+  if(engine==='runway'&&(!paidApproved||!paidQuote||paidQuote.seconds!==seconds||paidQuote.model!==savedRunwayModel)){
+   setError('유료 영상의 현재 견적을 확인하고 승인해야 합니다.');return;
+  }
   setGenerating(true);setError('');
   try{
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
+    ...(engine==='runway'?{approvedPaidQuote:true,maxCreditsMicro:paidQuote!.creditsMicro}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed,cinematic,badShotRetries:cinematic?badShotRetries:0}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
@@ -193,7 +213,17 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       </div>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={engine==='runway'?'선택 모델에 따라 720p / 1080p / 4K':`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:engine==='runway'?<p className="text-[11px] leading-5 text-[#8A8176]">유료 생성 · 요청한 {seconds}초를 {Number.isFinite(seconds)&&seconds>0?Math.ceil(seconds/runwayClipSeconds):"—"}개의 유료 클립으로 나누어 자동 합성합니다. 단일 클립 길이 초과 시 FFmpeg가 필요하며, 모델과 오디오 설정에 따라 청구량이 달라집니다.</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      {engine==='runway'&&<div className="rounded-xl border border-[#E5D2BC] bg-[#FFFBF4] p-3 text-xs leading-5">
+       <strong>💳 유료 생성 예상 비용 · 서버 견적</strong>
+       {paidQuote?<div className="mt-2 space-y-1">
+        <p className="text-base font-bold text-[#3A342D]">약 {paidQuote.referenceKrw.toLocaleString('ko-KR')}원 <span className="text-[11px] font-normal">({paidQuote.clips}개 클립 · 세금·수수료 별도)</span></p>
+        <p className="text-[#7C7469]">{(paidQuote.creditsMicro/1_000_000).toLocaleString('ko-KR',{maximumFractionDigits:2})} Runway Dev 크레딧 · {paidQuote.model} · {paidQuote.seconds}초</p>
+        <p className="text-[#8A8176]">2026-11-13 기준 환율 {paidQuote.referenceFxKrwPerUsd.toLocaleString('ko-KR')}원 적용. 추정 견적이며 실시간 환율·실제 청구액은 별도입니다.</p>
+        {paidQuote.promotional&&<p className="text-[#8A8176]">Kling 4.0 할인 요금 · 2026-11-30까지</p>}
+        <label className="mt-2 flex items-center gap-2 font-semibold"><input type="checkbox" checked={paidApproved} disabled={generating} onChange={event=>setPaidApproved(event.target.checked)}/> 유료 API 견적과 재생성 시 별도 과금 가능성을 확인했습니다.</label>
+       </div>:<p className="mt-2 text-[#8A8176]">{quoteError||'현재 설정으로 견적을 계산하고 있습니다.'}</p>}
+      </div>}
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:engine==='runway'?<p className="text-[11px] leading-5 text-[#8A8176]">유료 생성 · 요청한 {seconds}초를 {Number.isFinite(seconds)&&seconds>0?Math.ceil(seconds/runwayClipSeconds):"—"}개의 유료 클립으로 나누어 자동 합성합니다. 단일 클립 길이 초과 시 FFmpeg가 필요하며, 모델과 오디오 설정에 따라 청구량이 달라집니다.</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()||(engine==='runway'&&(!paidQuote||!paidApproved||paidQuote.seconds!==seconds||paidQuote.model!==savedRunwayModel))} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
@@ -206,7 +236,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </Panel>}
    </div>
    {tab==='create'&&<div className="grid min-w-0 content-start gap-4">
-    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{videoJob.result?.shotResults?.length&&<details className="rounded-xl border border-[#E7E0D5] p-3 text-[11px]">
+    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{videoJob.costQuote&&<div className="rounded-lg border border-[#E5D2BC] bg-[#FFFBF4] p-3 text-[11px] leading-5">
+        <strong>유료 작업 견적 · 약 {videoJob.costQuote.referenceKrw.toLocaleString('ko-KR')}원</strong>
+        <p>Runway Dev {(videoJob.costQuote.creditsMicro/1_000_000).toLocaleString('ko-KR',{maximumFractionDigits:2})} 크레딧 · {videoJob.costQuote.model}</p>
+        {typeof videoJob.attemptedExposureCreditsMicro==='number'&&videoJob.attemptedExposureCreditsMicro>0&&<p>제출 시도 {videoJob.attemptedSubmissions||0}건 · 잠재 과금 노출 {(videoJob.attemptedExposureCreditsMicro/1_000_000).toLocaleString('ko-KR',{maximumFractionDigits:2})} 크레딧</p>}
+        <p className="text-[#8A8176]">제공자 실청구·환불 여부는 별도이며 이 수치는 추정치입니다. 실패·타임아웃 후 자동 재제출하지 않습니다.</p>
+       </div>}{videoJob.result?.shotResults?.length&&<details className="rounded-xl border border-[#E7E0D5] p-3 text-[11px]">
         <summary className="cursor-pointer font-bold">🎞️ 장면별 검수 기록 · {videoJob.result.shotResults.length}장면</summary>
         <div className="mt-2 grid gap-2">{videoJob.result.shotResults.map(shot=><div key={shot.index} className="rounded-lg bg-[#FAF7F1] p-2">
          <strong>장면 {shot.index} · {shot.duration}초</strong>
