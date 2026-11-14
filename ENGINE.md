@@ -1,5 +1,16 @@
 # DOMINION 자체 Rust 엔진
 
+## 2026-11-15 평가 데이터 경계
+
+`scripts/swebench-dominion.mjs::runCase` →
+`scripts/lib/swebench-source.mjs::prepareSealedSource` → 일시 Git
+worktree → 독립 Git init / root commit → tree SHA·reference·object
+alternates 확인 → 일시 worktree 제거 → 네이티브 Rust GoalRunner →
+goal별 작업 worktree → 독립 sealed SHA 기준 실제 패치 추출.
+공식 평가용 정답 패치와 미래 원본 Git 객체를 실행기에서 접근할 수
+없게 합니다. 외부 네트워크/캐시는 격리 VM에서 별도로 제한합니다.
+
+
 ## 2026-11-15 네이티브 RSI: 후손 자기개선 경험과 공개 SDK
 
 실제 실행 경로: rsi_meta_controller::synthesize →

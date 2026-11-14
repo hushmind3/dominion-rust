@@ -2,7 +2,7 @@
 
 This is a **real prediction-producing runner**, not a mock success-rate script.
 It starts the **native Dominion Rust server** separately for each public SWE-bench
-instance, creates an isolated Git checkout and SQLite database, configures the
+instance, creates a sealed single-commit Git repository and SQLite database, configures the
 selected real provider, asks Dominion to solve the original issue, extracts the
 actual resulting Git patch and writes the official JSONL prediction format.
 
@@ -68,7 +68,19 @@ problem/test quality issues; prefer reporting a second fresh/private task set.
 
 The runner is an **evaluation coordinator**, not an alternative agent harness.
 All planning, tools, memory, models and approval decisions remain in Rust.
-Git worktrees separate source changes but are not VM or network isolation.
+The mirror is consulted only during trusted preparation. A temporary checkout
+supplies the exact base revision tree, then the runner constructs a **new Git
+object database with exactly one root commit**, no remote or Git alternates.
+The original Tree SHA is checked against the fresh commit Tree SHA; checkout
+filter behavior or missing files cause the task to stop instead of silently
+changing the baseline. The temporary mirror-linked checkout is removed before
+the autonomous Rust agent launches. The internal goal worktree and prediction
+patch use the sealed commit SHA; the original SHA is retained only as external
+benchmark provenance. This prevents accessing future reference commits through
+local Git history. It does not prohibit network requests or other external
+references; evaluate in a locked-down container/VM for a comparable score.
+
+Git worktrees alone are not VM or network isolation.
 For contamination-resistant evaluation, isolate the **whole process** in a
 container/VM with the evaluator's network rules. Provider invoices and actual
 Korean-won totals remain unmeasured unless separately reconciled.

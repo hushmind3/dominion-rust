@@ -1,5 +1,14 @@
 # dominion-rust
 
+## 2026-11-15 독립 Git 평가 저장소
+
+벤치마크의 Rust 에이전트는 원격 미러의 미래 해답 커밋을 볼 수 있는
+Git worktree 대신, 원본 base 트리 해시와 일치하고 과거 이력이 없는
+**독립 단일 커밋 저장소**에서 실행합니다. 원래 이력을 가진 임시
+준비 worktree는 모델 시작 전에 제거됩니다. SDK 및 일반 실행 정책은
+그대로 유지됩니다. [실행·검증 및 한계](docs/SWE-BENCH-RUNNER.md).
+
+
 ## 2026-11-15 — Native RSI trajectory reuse + public SDK lifecycle
 
 The Rust engine remains the only owner of agent decision-making, tool execution,

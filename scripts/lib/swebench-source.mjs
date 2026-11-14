@@ -34,7 +34,7 @@ export async function prepareSealedSource(mirror,base,source){
             .catch(e=>{if(e.code==='ENOENT')return false;throw e})
         if(foreignGit)throw Error('unexpected Git metadata in source snapshot')
         await git('-C',source,'init','--quiet','--initial-branch=benchmark-base')
-        await git('-C',source,'-c','core.hooksPath=/dev/null','add','-A','--','.')
+        await git('-C',source,'-c','core.hooksPath=/dev/null','add','--force','-A','--','.')
         await git('-C',source,'-c','core.hooksPath=/dev/null',
             '-c','commit.gpgsign=false','-c','user.name=Dominion Benchmark',
             '-c','user.email=benchmark@localhost',
