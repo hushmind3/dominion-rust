@@ -816,3 +816,12 @@ The Rust RSI archive now ranks eligible neutral worktree candidates using traini
 Run the existing Rust autonomous goals engine on real SWE-bench Verified source checkouts with scripts/sub2-swebench-verified.mjs. It emits actual Git patches and usage receipts for every attempted task; optionally invokes the upstream official Docker grader. Hidden test patches are never passed to the agent. The adapter never fabricates an official solved count. See docs/benchmarks/DOMINION-SWEBENCH-VERIFIED-SUB2-2026-11-14.md.
 
 RSI A/B control: set `DOMINION_RSI_PARENT_SEARCH=parent_only_v2` to use the original least-used-parent policy or leave unset to run the native measured niche strategy. Both are held to the same frozen independent A/B evaluator. See the RSI search architecture document for controlled comparisons.
+
+
+### Native autonomous repair loop and observed failure diagnostics (2026-11-15)
+
+Rust goal execution now records actual failing tool exit codes, bounded stderr, error causes and uncertain-effect state, classifies repeated failures, and initiates an early new plan rather than blindly repeating a stale command. Failure diagnosis and replan attempts are visible to the owner in the Home GoalDirector. User goal redirection immediately re-runs source index navigation for the new target, and the native Rust SDK exposes the observed failure details. A scripted-provider integration test runs real Rust tools: failed reads, evidence-driven replan, actual write and deterministic acceptance. This does not claim paid-model SWE-bench performance.
+
+LTX film owner-authored scenes and paid retakes now keep recurring visual context where the prompt budget permits without truncating the user's scene. Prior paid clip SHA-256 receipts are reused; semantic coherence is not falsely declared verified.
+
+See [Native autonomous repair and cross-product execution](docs/architecture/DOMINION-AUTONOMOUS-REPAIR-SUB2-2026-11-15.md).
