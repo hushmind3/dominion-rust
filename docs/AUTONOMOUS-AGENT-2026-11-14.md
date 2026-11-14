@@ -63,3 +63,14 @@
 - [PAUSE (2026-10-21)](https://arxiv.org/abs/2610.29870) — 구현 전 계획 간섭과 저렴한 복구 전략
 
 **평가 원칙:** 사용자 목표 → 실제 도구/모델 실행 → 저장된 증거 → 독립 검토 → 재계획 → 영속 결과 → 계승이라는 실제 연결만 성취로 셉니다. 소스만 변경한 것을 모델 작업 완주로 계산하지 않습니다.
+
+
+## 6. 추가 연결: 목표 비용·품질 계측과 실행 중 계획 수정
+
+- `src/engine/goal_metrics.rs::final_report`: `goals::finish`에서 실제 Goal/Session 감사기록을 읽어 `verifiedCompleted`, `iterations`, `replans`, `reviewCount`, `durationMs`, 성공 도구 증거 수, 검증 조건 수, 미충족 항목 수 및 `session_usage`의 모델 호출/토큰/추정 호출 정보를 영속 기록합니다. 가격 미보고를 임의의 0원 또는 추정 할인액으로 바꾸지 않고 `billingAmount:null`을 남깁니다. Goal 세션 기반 사용량은 해당 세션에 귀속된 호출을 나타내며, 별도 planner/reviewer 호출은 포함되지 않을 수 있습니다.
+- `jobs::recover`는 목표가 먼저 최종 완료된 경우 `metrics`를 포함한 결과를 Job으로 복원합니다. `jobs::recover`에서 unknown external effect의 실제 세션 검사는 `goalState.sessionId` 및 `workflowState.sessionId`까지 확인합니다. 안전한 검토 체크포인트라도 같은 작업 세션에 미확정 외부 부작용이 있으면 자동 재개하지 않습니다.
+- `src/api/goals.rs::update_plan` → `POST /api/goals/:id/plan` → `src/engine/goal_plan.rs::apply_owner_override` → 다음 `goals::run` 실행 반복. 사용자는 GoalConsole에서 계획을 직접 수정합니다. `planOverride`은 독립 필드에 저장되며 기존 성공 기준·실행 권한·도구 호출 중간 상태를 변경하지 않습니다. 실제 다음 실행 반복의 시작에서 CAS로 소비한 뒤 `planHistory`에 `owner_override`를 기록합니다. Review-only 재개 중에는 먼저 이전 작업의 검토를 끝내고 다음 반복에만 반영합니다.
+- `src/engine/goal_intake.rs::inspect`: 작업 공간의 최상위 파일 최대 48개와 실제 존재하는 주요 manifest에 한정된 프로젝트 조사 결과를 1회 생성·영속화하고 planner/executor에 제공합니다. 숨김 파일·링크·원문 소스 파일을 임의로 읽지 않으며 파일 이름은 모델에게 지시가 아닌 신뢰하지 않는 프로젝트 데이터로 표시합니다. Executor는 `code_search`·범위 읽기·독립 하위 조사 `delegate_task` 도구를 활용하도록 지시받습니다.
+- `GoalConsole.tsx`: 완료 검증, 시간, 도구 증거 수, 검토 라운드 및 보고된 토큰 사용량을 표시하고, 실행 중 계획 수정과 선택적 저비용 Planner/Reviewer 지정이 가능해졌습니다.
+
+**관련 정적 검토/테스트 소스:** `src/engine/goal_plan.rs`, `goal_intake.rs`, `goal_metrics.rs`, `goal_review.rs`, `goal_verification.rs`, `goals/tests.rs`, `jobs/tests.rs`. 함수와 회귀 테스트를 추가했으며 이번 세션에서 실행·빌드·CI를 하지 않았습니다. 측정된 작업 완수율 및 기준 점수 상승은 별도 실제 평가가 있어야 합니다.
