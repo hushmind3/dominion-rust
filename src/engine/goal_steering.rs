@@ -40,3 +40,7 @@ mod tests {
         assert!(matches!(SteeringError::Conflict,SteeringError::Conflict));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/goal_steering_tests.rs"]
+mod integration_tests;
