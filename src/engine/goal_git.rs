@@ -116,7 +116,8 @@ pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
     let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
     Ok(json!({"goalId":id,"branch":goal["gitWorktree"]["branch"],
         "baseCommit":base,"status":status,"diff":diff,
-        "untracked":untracked,"truncated":diff.chars().count()>=LIMIT}))
+        "untracked":untracked,"truncated":diff.chars().count()>=LIMIT,
+        "reviewDigest":review_digest(state,id).await?}))
 }
 pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
@@ -154,6 +155,115 @@ pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     Ok(json!({"ok":true,"goalId":id,"localWorktreeRemoved":true,
         "remoteBranchUnchanged":true}))
 }
+/// Verify a review receipt against the *entire* worktree, including new files.
+/// A patch preview alone cannot authenticate untracked file contents.
+async fn review_digest(state:&AppState,id:&str)->Result<String,String>{
+    use sha2::{Digest,Sha256};
+    let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    let work=checked_path(state,id,&goal)?;
+    let status=git(&work,&["status","--porcelain=v1","--untracked-files=all"]).await?;
+    let diff=git(&work,&["diff","--binary","--no-ext-diff","HEAD"]).await?;
+    if status.chars().count()>=LIMIT || diff.chars().count()>=LIMIT{
+        return Err("Git 변경량이 검토 가능 크기를 초과합니다. 범위를 나눠 검토하세요.".into());
+    }
+    let extra=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
+    let mut hash=Sha256::new();
+    hash.update(b"dominion-goal-worktree-review-v1\\0");
+    hash.update(goal["gitWorktree"]["baseCommit"].as_str().unwrap_or("").as_bytes());
+    hash.update(status.as_bytes());
+    hash.update(diff.as_bytes());
+    let paths=extra.lines().collect::<Vec<_>>();
+    if paths.len()>100 {return Err("새 파일이 100개를 초과하여 검토를 중단했습니다.".into());}
+    for name in paths {
+        let path=work.join(name);
+        let meta=std::fs::symlink_metadata(&path).map_err(|e|e.to_string())?;
+        if !meta.file_type().is_file() || meta.len()>8*1024*1024 {
+            return Err("검토 대상에 심볼릭 링크 또는 8MiB 초과 새 파일이 있습니다.".into());
+        }
+        let bytes=std::fs::read(&path).map_err(|e|e.to_string())?;
+        hash.update(name.as_bytes());
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
+    }
+    Ok(format!("{:x}",hash.finalize()))
+}
+
+/// Explicit user-approved integration. The source checkout must be clean and
+/// still point to the exact commit from which this worktree was created.
+/// Never force, reset, stash, checkout or perform an automatic merge commit.
+pub(crate) async fn apply(state:&AppState,id:&str,expected:&str)->Result<Value,String>{
+    let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    if !matches!(goal["status"].as_str(),Some("completed"|"needs_review")){
+        return Err("실행 중이거나 중단된 목표의 변경은 반영할 수 없습니다.".into());
+    }
+    if goal["gitWorktree"]["applied"]==true || goal["gitWorktree"]["rolledBack"]==true{
+        return Err("이미 반영하거나 폐기한 작업공간입니다.".into());
+    }
+    // The same session may have spawned asynchronous children still editing.
+    let outstanding=state.store.all("job").into_iter().any(|job|{
+        if !matches!(job["status"].as_str(),Some("queued"|"running")){return false;}
+        let Some(child)=job.pointer("/input/sessionId").and_then(Value::as_str) else{return false;};
+        let mut cursor=Some(child.to_string());
+        let mut seen=std::collections::HashSet::new();
+        for _ in 0..=8 {
+            let Some(sid)=cursor.take() else{break};
+            if !seen.insert(sid.clone()){return true;}
+            let Some(session)=state.store.get("session",&sid) else{break};
+            if session["goalId"].as_str()==Some(id){return true;}
+            cursor=session["parentSessionId"].as_str().map(str::to_string);
+        }
+        false
+    });
+    if outstanding {return Err("하위 에이전트 실행이 끝나지 않아 병합할 수 없습니다.".into());}
+    let current=review_digest(state,id).await?;
+    if expected.len()!=64 || expected!=current{
+        return Err("변경된 파일이 마지막 검토와 달라졌습니다. 새 미리보기를 열어 다시 확인하세요.".into());
+    }
+    let work=checked_path(state,id,&goal)?;
+    let source=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
+    if goal["gitWorktree"]["source"].as_str()!=source.to_str(){
+        return Err("원본 checkout 경로가 변경됐습니다.".into());
+    }
+    let base=goal["gitWorktree"]["baseCommit"].as_str().ok_or("기준 커밋이 없습니다.")?;
+    let head=git(&source,&["rev-parse","HEAD"]).await?;
+    if head.trim()!=base {
+        return Err("원본 HEAD가 목표 시작 이후 이동했습니다. 강제 병합하지 않습니다.".into());
+    }
+    if !git(&source,&["status","--porcelain=v1","--untracked-files=all"]).await?.trim().is_empty(){
+        return Err("원본 저장소에 아직 검토되지 않은 변경이 있습니다. 강제 병합하지 않습니다.".into());
+    }
+    if git(&work,&["status","--porcelain=v1","--untracked-files=all"]).await?.trim().is_empty(){
+        return Err("병합할 작업 변경이 없습니다.".into());
+    }
+    // One deliberate add/commit in the private branch; no model-provided
+    // command or commit metadata is executed. Disable arbitrary repository
+    // commit hooks on this application-owned operation.
+    git(&work,&["add","-A","--","."]).await?;
+    if review_digest(state,id).await?!=current {
+        return Err("Git stage 도중 변경이 발생해 작업을 중단했습니다. 다시 검토하세요.".into());
+    }
+    git(&work,&["-c","user.name=DOMINION Agent",
+        "-c","user.email=dominion-agent@localhost.invalid",
+        "-c","core.hooksPath=/dev/null",
+        "commit","-m","Apply reviewed DOMINION autonomous goal"]).await?;
+    let adopted=git(&work,&["rev-parse","HEAD"]).await?;
+    if git(&source,&["rev-parse","HEAD"]).await?.trim()!=base
+        || !git(&source,&["status","--porcelain=v1"]).await?.trim().is_empty(){
+        return Err("최종 병합 직전에 원본이 변경됐습니다. 격리 브랜치에 커밋만 보존했습니다.".into());
+    }
+    let branch_name=goal["gitWorktree"]["branch"].as_str().ok_or("작업 브랜치가 없습니다.")?;
+    git(&source,&["-c","core.hooksPath=/dev/null","merge","--ff-only",branch_name]).await?;
+    let saved=state.store.patch_if("goal",id,"status",&goal["status"],&json!({
+        "gitWorktree":{"path":goal["gitWorktree"]["path"],"source":goal["gitWorktree"]["source"],
+            "baseCommit":base,"branch":branch_name,"rolledBack":false,
+            "applied":true,"appliedCommit":adopted.trim()},
+        "changesAppliedAt":chrono::Utc::now().to_rfc3339()
+    })).ok_or("원본 반영은 완료됐지만 목표 기록을 저장하지 못했습니다. Git HEAD를 확인하세요.")?;
+    state.bus.record("goal",&saved);
+    state.store.audit("goal.worktree_applied",json!({"goalId":id,"commit":adopted.trim(),"reviewDigest":expected}));
+    Ok(json!({"ok":true,"goalId":id,"commit":adopted.trim(),"sourceFastForwarded":true}))
+}
+
 #[cfg(test)]
 mod tests{
  use super::*;
