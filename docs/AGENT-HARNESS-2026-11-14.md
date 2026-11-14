@@ -26,12 +26,24 @@
 - \`src/api/goals.rs\`, \`src/api/jobs.rs\`: 내구성 목표-작업 연결, 토큰 예산 및 일관된 취소.
 - \`web/src/components/GoalWorkbench.tsx\`: 목표 입력과 검토·증거 관제.
 
+## 2026-11-14 추가 연결: Git 격리·PR·diff·되돌리기
+
+- \`POST /api/goals\`이 \`isolateWorktree:true\`를 받으면 \`goal_git::prepare\`가 현재 워크스페이스의 깨끗한 Git HEAD에서 \`dominion/goal-<id>\` 브랜치와 별도 worktree를 만든다. 원본 변경이 있거나 Git 루트가 아니면 실패하며 원본에 쓰기로 대체하지 않는다. \`goal.gitWorktree\`에 원본·기준 SHA·분리 경로를 지속 기록한다. 선택하지 않은 비코딩 목표에는 기존 경로를 유지한다.
+- \`chat/runtime/dispatch.rs\`의 정상 도구와 결정적 치환은 \`goal_git::workspace_for_session\`이 검증한 경로를 사용한다. \`delegate_task\`로 만든 하위 세션도 목표 ID와 동일 worktree를 계승한다. \`verification::baseline_checks_in\` / \`acceptance_gaps_in\`은 해당 worktree의 실제 파일을 검증한다.
+- 소스 변경·검증·자동 복구는 \`goals::run\`의 기존 재계획·재시도 루프를 재사용한다. \`verifyCommands\`를 명시하면 \`command_succeeded\` 완료 조건을 삽입하므로 모델이 검사를 실행하고 **정확히 성공한 도구 결과**를 남겨야 완료된다. 실제 명령은 기존 \`terminal_exec\`/\`shell_exec\`의 승인 정책을 따른다.
+- \`publishPr:true\`는 격리 작업공간에서만 유효하다. 모델은 \`git\` 도구로 원격 브랜치를 올리고 \`github_api\`를 통해 PR을 만들어야 한다. HTTP 4xx/5xx는 실패 처리하며 \`verification::github_pr_created\`는 201 + PR 번호 + GitHub PR URL을 근거로 판단한다. 자동 PR 제출은 별도로 선택해야 하며 자동 병합하지 않는다.
+- \`GET /api/goals/:id/changes\`는 기준 SHA 이후 Git 추적 변경 diff, status, untracked 경로를 읽는다. 내용은 최대 약 100,000자, 민감 파일은 UI 표시 전에 별도 필터링하지 않으므로 작업공간 접근 권한이 있는 사용자만 열어야 한다.
+- \`POST /api/goals/:id/rollback\`는 실행 종료 후 명시적 UI 확인을 받아 **그 목표가 만든 로컬 worktree만 폐기**한다. 원본 체크아웃과 GitHub 원격 브랜치/PR은 변경하지 않는다. 살아 있는 하위 세션이 있으면 폐기하지 않는다.
+- \`web/src/components/GoalWorkbench.tsx\`에 격리 브랜치·PR 제출·Rust/웹 검사 선택, 변경 diff 미리보기, 명시적 로컬 폐기 버튼을 연결했다.
+
+**실제 CI:** GitHub Actions \`.github/workflows/ci.yml\`은 푸시와 PR 시 웹 타입검사·번들 빌드, Rust release 테스트(리눅스·맥), Rust test binary 컴파일 및 제한 회귀(Windows)를 실행한다. 새 Git worktree 격리/폐기 및 PR 증거 테스트도 같은 Rust suite에 포함돼 있다. 테스트 결과는 실제 워크플로 run URL/상태를 확인해 보고하며 통과 전에는 통과로 쓰지 않는다.
+
 ## 완성도 상한과 남은 작업
 
 - 전역 비용: \`tokenBudget\`은 목표 세션의 **모델 실행 토큰 사용량**을 기준으로 다음 실행을 막는다. planner/reviewer가 별도 \`llm::complete\`로 소비하는 모든 비용까지 계산한 정확한 청구 한도는 아니다. 토큰 사용량은 실제 청구 원화 금액이 아니다.
-- 배포/PR/작업공간: GitHub·터미널 도구의 원래 승인 정책을 그대로 따르며 독립 워크트리, PR 전후 diff 관제 및 rollback UX는 이 변경만으로 완성되지 않는다.
+- 배포/PR/작업공간: 독립 Git worktree·PR 생성 증거·읽기전용 diff·로컬 폐기 경로까지 구현했다. 원격 PR 폐기, 자동 병합, 파일별 변경 승인, CI 결과를 목표 실행 세션으로 되돌리는 자동 웹훅은 별도 구현 대상이다.
 - 병렬 스케줄러: 세션별 활성 위임 개수 점검은 원자적 동시 요청 제한이 아니다. 진정한 원자적 작업 분배/쓰기 충돌 방지는 후속 과제다.
-- 테스트: 코드 안에 단위/목표 통합 테스트 케이스를 추가했으나 이번 세션에서는 테스트·컴파일·빌드·실모델·비용 벤치마크를 실행하지 않았다. 현행 심사 요건에 따른 **정적 연결 검토**만 수행했다.
+- 테스트: 단위·목표 통합·Git worktree 격리 테스트를 추가했으며 2026-11-14 사용자의 명시적 요청에 따라 GitHub Actions CI를 실행한다. 실모델 API 호출, PR 생성 실계정 테스트, 유료 비용 측정은 CI 범위 밖이다.
 - 진척 판단은 검증 조건과 성공 도구 관측의 구조적 변화에 기초한다. 도구 결과 자체가 고품질 성과라는 보장은 없으며, 이것이 실 모델 기반 완수율을 대체하지 않는다.
 
 ## 2026 참고자료
