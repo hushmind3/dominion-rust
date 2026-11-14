@@ -68,3 +68,10 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - 관련 테스트 소스: `engine/goals/tests.rs`, `engine/jobs/tests.rs`, `engine/goal_review.rs`, `engine/goal_verification.rs`. 기존 inline 테스트를 이동하였지만 실행하지 않았습니다.
 
 - **추가 자율 목표 핵심**: `goal_intake.rs::inspect`(manifest와 bounded project inventory), `goal_plan.rs::apply_owner_override`(사용자 계획을 다음 안전한 턴 시작에 CAS 소비), `goal_metrics.rs::final_report`(실제 증거와 audit 토큰 계측). `POST /api/goals/:id/plan`은 사용자의 목표 완료 검증 조건이나 도구 권한을 수정하지 않습니다. `GoalConsole.tsx`는 해당 조작·관측의 실제 UI입니다.
+
+
+## 새 자율 작업 기능 연결 원칙
+
+- 병렬 하위 조사: `tools.rs::definitions` → `delegate_tasks` → `tools/batch.rs::delegate_batch` → `tools/gateway.rs::delegate` → 고유 자식 세션/Job → `jobs::start_now` → `task_result`. 읽기 전용 child를 소스 편집 가능한 child와 혼동하지 않습니다. `delegation_allows`는 네이티브 도구, 모델 도구 디스패치, 결정적 실행과 MCP 경로를 모두 막습니다. 직렬 부모 검증/수정이 필요합니다.
+- Git diff·Undo: `goal_changes.rs::baseline`을 도구 실행 전 저장하고, `preview/undo`는 실제 성공한 `written:true` 도구 증거가 있는 파일에만 접근합니다. 작업 시작 시 clean/HEAD 불일치·도구 기록이 없는 파일·60KB 초과·동시 진행 중 작업은 자동 복원을 허용하지 않습니다. 전체 `git reset`이나 타인의 변경 소거로 해결하지 않습니다.
+- 새 소스 구조: `src/engine/tools/batch.rs`, `src/engine/goal_changes.rs`, `web/src/pages/workflows/GoalChanges.tsx`. 사용자 목표 진입점과 기능 경계는 `docs/AUTONOMOUS-AGENT-2026-11-14.md` 참고.
