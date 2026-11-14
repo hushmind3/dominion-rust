@@ -61,6 +61,73 @@ use super::{
     retitle_if_placeholder,
 };
 
+/// The owner may redirect an active private turn without waiting for its
+/// original model/plan to finish. Claim only durable owner-authored messages
+/// targeted at this exact execution; peer/tool/model content is never promoted.
+#[allow(clippy::too_many_arguments)]
+fn absorb_owner_steering(
+    state: &AppState,
+    session: &Value,
+    session_id: &str,
+    execution_id: &str,
+    tx: &UnboundedSender<Value>,
+    messages: &mut Vec<Value>,
+    metadata: &mut Value,
+    acceptance: &mut Option<(String, Value)>,
+    owner_source: &mut Option<String>,
+    owner_input: &mut String,
+    owner_min_op_seq: &mut u64,
+    op_seq: u64,
+) -> bool {
+    if session["roomId"].is_string() || session["rsiRun"] == true
+        || session["goalId"].is_string() {return false;}
+    let claimed=super::super::owner_inbox::claim(state,session_id,execution_id);
+    if claimed.is_empty() {return false;}
+    // The earlier plan and task decomposition were decisions about an older
+    // owner request. They cannot remain live instructions after steering.
+    messages.retain(|message| {
+        message["role"] != "system" || !message["content"].as_str().is_some_and(|text|
+            text.starts_with("Internal execution plan.")
+            || text.starts_with("Engine-owned task decomposition."))
+    });
+    for source in &claimed {
+        let Some(id)=source["id"].as_str() else {continue};
+        let Some(text)=source["content"].as_str() else {continue};
+        // If the message landed while history was being prepared, do not send
+        // it twice: keep one latest owner message at the decision boundary.
+        messages.retain(|message|message["_dominion_frame"].as_str()!=Some(id));
+        messages.push(json!({
+            "role":"user","content":text,"_dominion_frame":id,
+            "_dominion_ownerSteer":true,
+        }));
+        *owner_source=Some(id.to_string());
+        *owner_input=text.to_string();
+        let _=tx.send(json!({"type":"owner_steer_applied",
+            "messageId":id,"executionId":execution_id}));
+    }
+    *owner_min_op_seq=op_seq;
+    *acceptance=prepare_owner_action(state,owner_input);
+    metadata["replyToMessageId"]=json!(owner_source);
+    if let Some(mut execution)=state.store.get("execution",execution_id) {
+        execution["ownerSteered"]=json!(true);
+        execution["activeOwnerMessageId"]=json!(owner_source);
+        execution["ownerSteeredAtOpSeq"]=json!(op_seq);
+        execution["planSuperseded"]=json!(true);
+        execution["acceptanceText"]=acceptance.as_ref().map(|(text,_)|json!(text))
+            .unwrap_or(Value::Null);
+        execution["acceptanceChecks"]=acceptance.as_ref().map(|(_,checks)|checks.clone())
+            .unwrap_or(Value::Null);
+        execution["acceptanceSourceMessageId"]=json!(owner_source);
+        state.store.put("execution",&execution);
+    }
+    state.store.audit("owner.steer.activated",json!({
+        "sessionId":session_id,"executionId":execution_id,
+        "ownerMessageId":owner_source,"afterOpSeq":op_seq,
+        "instructions":claimed.len(),
+    }));
+    true
+}
+
 pub(super) async fn run_turn_body(
     state: &AppState,
     request: &TurnRequest,
@@ -230,6 +297,9 @@ pub(super) async fn run_turn_body(
         })
         .unwrap_or((2, 2));
     let mut op_seq = 0u64;
+    let mut active_owner_source = reply_to.clone();
+    let mut active_owner_input = task_input(&session,&request.input).to_string();
+    let mut active_owner_min_op_seq = 0u64;
 
     let mut metadata = json!({"authorKind":"agent","roomId":session.get("roomId"),"replyToMessageId":reply_to,"executionId":execution_id,"taskId":task_id,"reasoningLanguageRequested":request.reasoning_language,"reasoningTranslated":false});
 
@@ -742,6 +812,17 @@ pub(super) async fn run_turn_body(
                 "도구 호출 제한({max_tools}회)을 초과했습니다."
             ));
         }
+        if absorb_owner_steering(state,&session,session_id,execution_id,tx,
+            &mut messages,&mut metadata,&mut acceptance,
+            &mut active_owner_source,&mut active_owner_input,
+            &mut active_owner_min_op_seq,op_seq)
+        {
+            // A previously generated plan/policy program was about the old
+            // user request. Do not execute it on behalf of the new one.
+            program_finished=true;
+            force_final=false;
+            acceptance_passed=false;
+        }
         // DECIDE: an active durable program supplies the next step; otherwise
         // the model decides. Program steps and model steps share this loop,
         // the same tool gateway and the same checkpoint.
@@ -814,7 +895,7 @@ pub(super) async fn run_turn_body(
             // Route only when the request really has relevant capabilities.
             // This avoids recording an algorithm selection for ordinary talk.
             if let Some(baseline)=super::tool_route::select(
-                &round_tools,task_input(&session,&request.input),round,&observations,
+                &round_tools,&active_owner_input,round,&observations,
                 "outcome-aware",
             ){
                 let kernel=crate::engine::algorithms::choose_for_agent(
@@ -823,7 +904,7 @@ pub(super) async fn run_turn_body(
                     .unwrap_or_else(||"outcome-aware".to_string());
                 let route=if kernel=="outcome-aware" {baseline} else {
                     super::tool_route::select(&round_tools,
-                        task_input(&session,&request.input),round,&observations,&kernel)
+                        &active_owner_input,round,&observations,&kernel)
                         .unwrap_or(baseline)
                 };
                 routed_round = true;
@@ -1213,6 +1294,18 @@ pub(super) async fn run_turn_body(
             ));
         }
 
+        if absorb_owner_steering(state,&session,session_id,execution_id,tx,
+            &mut messages,&mut metadata,&mut acceptance,
+            &mut active_owner_source,&mut active_owner_input,
+            &mut active_owner_min_op_seq,op_seq)
+        {
+            // The just-streamed response was based on the superseded request.
+            // It may have consumed tokens, but none of its proposed tools runs.
+            program_finished=true;
+            force_final=false;
+            acceptance_passed=false;
+            continue;
+        }
         if force_final {
             // The deterministic checks already passed. Ignore any late tool
             // request and let the model produce the final answer.
@@ -1371,10 +1464,12 @@ pub(super) async fn run_turn_body(
             // Ordinary-chat evidence gate: a model cannot complete an action
             // request by claiming success without successful tool results.
             if let Some((acceptance_text, checks)) = &acceptance {
-                let evidence = reply_to
+                let evidence = active_owner_source
                     .as_deref()
                     .map(|source| evidence_for_source(state, session_id, source, execution_id))
-                    .unwrap_or_default();
+                    .unwrap_or_default().into_iter()
+                    .filter(|op|op["opSeq"].as_u64().unwrap_or(0)>active_owner_min_op_seq)
+                    .collect::<Vec<_>>();
                 let mut gaps = goals::check_acceptance(state, acceptance_text, checks, &evidence);
                 let mut next_action = String::new();
                 if !gaps.is_empty() {
@@ -2126,10 +2221,12 @@ pub(super) async fn run_turn_body(
         // whole round budget after the work is already complete.
         if !force_final {
             if let Some((acceptance_text, checks)) = &acceptance {
-                let evidence = reply_to
+                let evidence = active_owner_source
                     .as_deref()
                     .map(|source| evidence_for_source(state, session_id, source, execution_id))
-                    .unwrap_or_default();
+                    .unwrap_or_default().into_iter()
+                    .filter(|op|op["opSeq"].as_u64().unwrap_or(0)>active_owner_min_op_seq)
+                    .collect::<Vec<_>>();
                 if !evidence.is_empty()
                     && goals::check_acceptance(state, acceptance_text, checks, &evidence).is_empty()
                 {
