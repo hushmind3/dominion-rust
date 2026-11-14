@@ -16,6 +16,10 @@ const memory=source('web/src/pages/Memory.tsx')
 const collections=source('src/api/collections.rs')
 const router=source('src/api/mod.rs')
 const notice=source('web/src/components/ImprovementNotice.tsx')
+const goals=source('web/src/pages/AutonomousGoals.tsx')
+const goalApi=source('src/api/goals.rs')
+const goalJobs=source('src/engine/jobs.rs')
+const store=source('src/db.rs')
 
 test('one public connections sidebar item, retaining memory, RSI and champion goals',()=>{
  const nav=shell.match(/export const navigation:[\s\S]*?\n\]/)?.[0]
@@ -65,13 +69,31 @@ test('no unsolicited self-improvement prompt, background poll or screen overlay'
 })
 
 
-test('manual memory editing preserves identity and scope while leaving learned evidence untouched',()=>{
+test('manual memory edits use restricted atomic CAS endpoint',()=>{
  assert.match(memory,/memory\.source!=='user'/)
- assert.match(memory,/retrievalEligible:_eligibility/)
- assert.match(memory,/post\('\/api\/memories\/'\+encodeURIComponent\(memory\.id\)/)
- assert.match(memory,/editedAt:new Date\(\)\.toISOString\(\)/)
- assert.match(memory,/m\.source==='user'&&<Button/)
- assert.match(memory,/t\('memory\.update'\)/)
+ assert.match(memory,/statusOf\(m\)==='active'/)
+ assert.match(memory,/expectedText:memory\.text/)
+ assert.match(memory,/post\('\/api\/memories\/'\+encodeURIComponent\(memory\.id\)\+'\/edit'/)
+ assert.doesNotMatch(memory,/\.\.\.stored|editedAt:new Date/)
+ assert.match(collections,/\("memory", "edit"\)/)
+ assert.match(collections,/state\.store\.edit_manual_memory/)
+ assert.match(collections,/put_if_absent\("memory"/)
+ assert.match(store,/pub fn edit_manual_memory/)
+ assert.match(store,/record\["source"\] != "user"/)
+ assert.match(store,/record\["text"\]\.as_str\(\) != Some\(expected\)/)
+ assert.match(store,/fields\.remove\(field\)/)
  assert.match(router,/get\(collections::one\)[\s\S]*?post\(collections::save\)/)
- assert.match(collections,/"memories"/)
+})
+
+test('reviewed autonomous goal resumes from durable job checkpoint without replay',()=>{
+ assert.match(goals,/\+'\/resume'/)
+ assert.match(goals,/acknowledgeUnknownEffects:true/)
+ assert.match(router,/\/api\/goals\/:id\/resume/)
+ assert.match(goalApi,/pub async fn resume_goal/)
+ assert.match(goalApi,/old_checkpoint\["inFlight"\]/)
+ assert.match(goalApi,/enqueue_goal_resume/)
+ assert.match(goalJobs,/pub fn enqueue_goal_resume/)
+ assert.match(goalJobs,/put_if_absent\("job"/)
+ assert.match(goalApi,/goal\.owner_reviewed_resume/)
+ assert.match(goalApi,/goal\.enqueue_failed/)
 })
