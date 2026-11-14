@@ -602,3 +602,9 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 ### 2026-11-14 · 영상 MP4 기술 검수
 
 `engine/video.rs::run`의 LTX 2.5·ComfyUI·기본 FFmpeg 생성 후처리에 `video/quality.rs::inspect`를 연결했습니다. 사용 가능한 `ffprobe`로 비디오/오디오 스트림·해상도·화면비·길이를 검수하고 작업 체크포인트 및 결과에 `technicalQuality`를 저장합니다. 요청과 다르면 `needs_review`로 종료하며 유료 API를 자동 재호출하지 않습니다. `ffprobe`가 없으면 `not_verified`로 표시합니다. **이 검사는 시각적 미학·프레임간 연속성·생성비용 최적화의 실측이나 보증이 아닙니다.** 신규 영상 경로에 대해 빌드·CI·실제 영상 생성은 실행하지 않았습니다.
+
+### 2026-11-14 · 검토한 Git 패치의 원본 반영
+
+격리 목표의 `GET /api/goals/:id/diff` 응답은 전체 추적 파일 패치(최대 128KiB)의 `patchSha256`·`canApply`를 포함합니다. 사용자는 홈에서 패치를 먼저 확인하고, `POST /api/goals/:id/apply`에 **검토한 SHA-256**을 명시해 원본에 적용합니다. Rust `goal_workspace.rs::apply_reviewed`는 Git HEAD 고정·원본 파일 변경 없음·미추적 파일 없음·다른 실행 작업 없음·동일한 전체 패치 해시·`git apply --check`를 적용 전 확인하고, 적용 후 전체 패치 SHA를 다시 검사해 `gitApply` 영수증을 남깁니다. 사용자의 명시적 적용 전에는 원본 작업폴더에 쓰지 않으며, 자동 커밋·자동 병합은 없습니다.
+
+기본 `DOMINION_DATA=runtime`가 소스 체크아웃 내부인 경우에도 격리된 Git worktree는 소스 밖 형제 디렉터리로 배치됩니다. Git worktree는 OS 샌드박스를 제공하지 않습니다. [구현 호출도](docs/architecture/AGENT-HARNESS-SUB2-REJUDGE-2026-11-14.md)에서 확인할 수 있습니다.

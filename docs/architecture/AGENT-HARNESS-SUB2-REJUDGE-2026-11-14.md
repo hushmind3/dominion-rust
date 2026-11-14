@@ -80,3 +80,27 @@ Remaining: OS-level process sandboxing for untrusted commands; owner-controlled 
 `engine/video.rs::run` now routes **all native, ComfyUI and LTX outputs** through `engine/video/quality.rs::inspect` after the output file exists and before reporting completion. An available local `ffprobe` is used to test video dimensions, aspect, playback duration and expected LTX audio. The structured `technicalQuality` result is stored both in `videoState` and the returned video job result. Invalid actual media returns a `needs_review:` error; no generation API is automatically retried. Missing `ffprobe` produces `status:not_verified`, never a fake pass.
 
 This is **technical stream inspection, not subjective scene quality or shot continuity**. The new path and regression unit test have not been compiled or run. The old 942-test green CI on `ffcb6f6` does not cover this change.
+
+## Owner-reviewed Git promotion — additional executable route
+
+```text
+GoalConsole → GET /api/goals/:id/diff
+ → goal_workspace::changes → preview
+ → bounded full Git --binary diff (max 128KiB) + SHA-256 + canApply
+ → show ENTIRE patch and hash to owner
+GoalConsole → POST /api/goals/:id/apply { expectedPatchSha256 }
+ → api/goals::apply_workspace → goal_workspace::apply_reviewed
+ → terminal goal, existing owner worktree, no concurrent writer jobs
+ → source HEAD == goal baseCommit, source tracked/untracked clean
+ → no untracked files in isolated worktree
+ → exact patch hash equals owner's previously reviewed SHA-256
+ → git apply --check → recheck original HEAD & status → git apply
+ → hash original git diff against the same frozen base
+ → persist gitApply { patchSha256, baseCommit, appliedAt, verified }
+```
+
+The patch is not clipped for review. Oversize or non-UTF8 diffs require external pull-request review rather than a potentially misleading source promotion. No git reset, cherry-pick, force, auto-commit or auto-merge occurs. A second attempt to apply the same goal is blocked by its durable `appliedAt` marker. A separate owner-confirmed discard action is still available after successful promotion.
+
+Default `DOMINION_DATA` may be inside the source checkout. `goal_workspace::goal_path` now deterministically creates the worktree outside the checkout, using a source-path digest to avoid sharing a sibling directory between repositories.
+
+Regression specifications cover clean-source application, wrong digest refusal, untracked-file refusal, idempotent second apply, nested data location, separate owner/child workspace, dirty source and explicit discard. Live model cost and actual end-to-end agent success rates are still not measured.
