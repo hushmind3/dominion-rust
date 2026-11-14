@@ -85,5 +85,5 @@ The repository CI now calls these SDK and benchmark export tests; a successful *
 
 `rsi_system/replay.rs` distinguishes replayed independent measurement (`pairedReceiptReplayed`) from adopted/source-validated status (`pairedRevalidated`). `rsi/learning/failure_feedback.rs` now uses the former for failures, including rejected candidate regressions; only candidates with the latter and an eligible accepted commit contribute prior success examples.
 
-The benchmark runner now resolves output to an absolute path, requires the official grader's run-ID-specific `logs/evaluation/<run_id>/results.json`, and reports tool attempts, failed/uncertain operations and observed task recovery rates. [Draft validation PR #11](https://github.com/hushmind3/dominion-rust/pull/11). Neither an unexecuted benchmark nor static tests imply a SWE-bench resolved score.
+The benchmark runner now resolves output to an absolute path, accepts the two source-verified official SWE-bench run-scoped report layouts, rejecting contradictory evidence, and reports tool attempts, failed/uncertain operations and observed task recovery rates. [Draft validation PR #11](https://github.com/hushmind3/dominion-rust/pull/11). Neither an unexecuted benchmark nor static tests imply a SWE-bench resolved score.
 
