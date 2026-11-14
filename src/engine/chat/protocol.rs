@@ -523,7 +523,7 @@ mod sub1_native_qwen_tests {
     }
     #[test]
     fn native_qwen_legacy_fncall_markers_recover_only_policy_known_calls(){
-        let text="Working...\n✿FUNCTION✿: workspace_read\n✿ARGS✿: {\\\"path\\\":\\\"trial/file.txt\\\"}";
+        let text="Working...\n✿FUNCTION✿: workspace_read\n✿ARGS✿: {\"path\":\"trial/file.txt\"}";
         let (calls,clean)=parse_text_tool_calls_known(text,&known());
         assert_eq!(calls.len(),1);
         assert_eq!(calls[0].0,"workspace_read");
@@ -535,7 +535,7 @@ mod sub1_native_qwen_tests {
     }
     #[test]
     fn thinking_blocks_never_trigger_file_writes(){
-        let text="<think>Need to edit <tool_call>{\\\"name\\\":\\\"workspace_write\\\",\\\"arguments\\\":{\\\"path\\\":\\\"stolen\\\",\\\"content\\\":\\\"bad\\\"}}</tool_call></think>I'll read first";
+        let text="<think>Need to edit <tool_call>{\"name\":\"workspace_write\",\"arguments\":{\"path\":\"stolen\",\"content\":\"bad\"}}</tool_call></think>I'll read first";
         let (calls,visible)=parse_text_tool_calls_known(text,&known());
         assert!(calls.is_empty(),"{calls:?}");
         assert_eq!(visible,"I'll read first");
@@ -546,9 +546,9 @@ mod sub1_native_qwen_tests {
         assert!(single_json_tool_envelope(
             r#"{"name":"workspace_read","arguments":{"path":"a.txt"}}"#));
         assert!(single_json_tool_envelope(
-            "```json\n{\\\"name\\\":\\\"workspace_read\\\",\\\"arguments\\\":{\\\"path\\\":\\\"a.txt\\\"}}\n```"));
-        assert!(!single_json_tool_envelope("Here is an example: {\\\"name\\\":\\\"workspace_write\\\"}"));
-        assert!(!single_json_tool_envelope("{\\\"summary\\\":\\\"nothing edited\\\"}"));
+            "```json\n{\"name\":\"workspace_read\",\"arguments\":{\"path\":\"a.txt\"}}\n```"));
+        assert!(!single_json_tool_envelope("Here is an example: {\"name\":\"workspace_write\"}"));
+        assert!(!single_json_tool_envelope("{\"summary\":\"nothing edited\"}"));
     }
 }
 #[cfg(test)]
