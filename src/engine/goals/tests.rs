@@ -289,6 +289,75 @@ use super::*;
         }
     }
 
+    /// Full integration: real workspace_write in iteration 1; a real shell
+    /// verification in iteration 2; the goal cannot pass until BOTH receipts
+    /// are durably recorded and the later check is fresh.
+    #[tokio::test]
+    async fn multi_iteration_goal_requires_fresh_test_after_source_edit() {
+        use axum::{extract::State, response::{IntoResponse,Response},routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        async fn handler(
+            State(counter):State<Arc<AtomicUsize>>, Json(body):Json<Value>
+        )->Response {
+            if body["stream"]!=true {
+                let review=body["messages"][0]["content"].as_str()
+                    .unwrap_or("").contains("strict reviewer");
+                let content=if review {"{\"complete\":true,\"gaps\":[]}"}
+                    else {"1. Write the source. 2. Run the check."};
+                return Json(json!({"choices":[{"message":{"content":content}}]})).into_response();
+            }
+            let index=counter.fetch_add(1,Ordering::SeqCst);
+            let delta=match index {
+                0=>json!({"tool_calls":[{"index":0,"id":"write-source","type":"function",
+                    "function":{"name":"workspace_write","arguments":
+                        json!({"path":"src/lib.rs","content":"pub fn answer()->i32{42}"}).to_string()}}]}),
+                2=>json!({"tool_calls":[{"index":0,"id":"run-check","type":"function",
+                    "function":{"name":"shell_exec","arguments":
+                        json!({"command":"echo verified"}).to_string()}}]}),
+                _=>json!({"content":"Recorded tool result; continue reviewer verification."}),
+            };
+            let output=json!({"choices":[{"delta":delta}]});
+            ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],
+                format!("data: {output}\n\ndata: [DONE]\n\n")).into_response()
+        }
+        let (state,dir)=state();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let counter=Arc::new(AtomicUsize::new(0));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let app=Router::new().route("/v1/chat/completions",post(handler))
+            .with_state(counter.clone());
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        state.store.put("provider",&json!({"id":"mock","name":"mock",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),"model":"test",
+            "enabled":true,"toolMode":"native"}));
+        state.store.put("policy",&json!({"id":"default","autoApproveAll":true}));
+        state.store.put("goal",&json!({"id":"g","goal":"write src/lib.rs then run tests",
+            "status":"queued","maxIterations":2,"maxReplans":0,
+            "executor":{"providerId":"mock","model":"test"},
+            "successCriteria":[
+                {"type":"file_changed","path":"src/lib.rs"},
+                {"type":"command_succeeded","command":"echo verified"}
+            ]}));
+        let job=state.store.put("job",&json!({"id":"j","kind":"goal",
+            "status":"running","input":{"goalId":"g"}})).unwrap();
+        let context=JobContext::new(state.clone(),"j".into());
+        let result=run(&context,&job).await.unwrap();
+        assert_eq!(result["status"],"completed","{result}");
+        assert_eq!(result["iterations"],2);
+        assert_eq!(std::fs::read_to_string(dir.join("src/lib.rs")).unwrap(),
+            "pub fn answer()->i32{42}");
+        assert_eq!(counter.load(Ordering::SeqCst),4);
+        let receipts=result["evidence"].as_array().unwrap();
+        assert_eq!(receipts.len(),2);
+        assert!(receipts.iter().all(|r|r["runId"].is_string()
+            && r["opSeq"].is_number() && r["startedAt"].is_string()
+            && r["status"]=="completed"),"{receipts:?}");
+        assert!(crate::engine::verification::fresh_command_matches(receipts,"echo verified"));
+        server.abort();
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn recovered_review_calls_only_the_reviewer_never_the_executor() {
         use std::sync::atomic::Ordering;
