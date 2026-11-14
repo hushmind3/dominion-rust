@@ -7,11 +7,24 @@ use serde_json::Value;
 /// even when the owner did not spell out a filename. Descriptive and
 /// hypothetical requests are not automatically treated as commands.
 fn explicit_implementation_request(text: &str) -> bool {
-    [
-        "구현해", "구현하", "개발해", "개발하", "고쳐", "고치", "수정해",
-        "적용해", "적용하", "반영해", "반영하", "추가해", "연결해",
-        "implement ", "fix ", "patch ", "refactor ",
-    ].iter().any(|verb| text.contains(verb))
+    // Match actual commands, not descriptive phrases such as "구현할지",
+    // "구현하는 방식" or "어떻게 고치면". A goal-level request may have no
+    // filename; this is its only route into evidence-based execution.
+    const IMPERATIVES: &[&str] = &[
+        "구현해", "구현하라", "구현하라고", "구현하세요", "구현하십시오",
+        "개발해", "개발하라", "개발하라고", "개발하세요",
+        "고쳐", "고치세요", "고치라고", "고치십시오",
+        "수정해", "수정하라", "수정하라고", "수정하세요",
+        "적용해", "적용하라", "적용하라고", "적용하세요",
+        "반영해", "반영하라", "반영하라고", "반영하세요",
+        "추가해", "추가하라", "추가하라고", "추가하세요",
+        "연결해", "연결하라", "연결하라고", "연결하세요",
+        "완성해", "완성하라", "완성하라고", "완성하세요",
+        "개선해", "개선하라", "개선하라고", "개선하세요",
+        "고도화해", "고도화하라", "고도화하라고", "고도화하세요",
+        "implement ", "fix ", "patch ", "refactor ", "complete ", "improve ",
+    ];
+    IMPERATIVES.iter().any(|verb| text.contains(verb))
 }
 
 pub(crate) fn prepare_owner_action(state:&AppState,input:&str)->Option<(String,Value)>{
@@ -41,13 +54,22 @@ mod owner_action_tests {
 
     #[test]
     fn korean_implementation_imperatives_require_real_action() {
-        for text in ["내말잘듣는새끼로구현해라", "이 기능을 고쳐라", "Rust에 적용해라", "커넥터를 반영해라"] {
+        for text in [
+            "내말잘듣는새끼로구현해라", "이 기능을 고쳐라", "Rust에 적용해라",
+            "커넥터를 반영해라", "프론티어급으로 완성하라고",
+            "에이전트 성능 개선하라", "구조를 고도화해주세요",
+        ] {
             assert!(explicit_implementation_request(text), "{text}");
         }
     }
     #[test]
     fn discussing_a_design_does_not_force_a_source_mutation() {
-        for text in ["어떻게 구현할지 판단하라고", "구현 방법을 알려줘", "이 설계의 문제는 뭐지"] {
+        for text in [
+            "어떻게 구현할지 판단하라고", "구현 방법을 알려줘",
+            "구현하는 방식의 장단점", "구현하면 성능이 좋아지나요",
+            "개발하는 법을 설명해", "고치면 어떤 일이 생기나",
+            "이 설계의 문제는 뭐지",
+        ] {
             assert!(!explicit_implementation_request(text), "{text}");
         }
     }
