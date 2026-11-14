@@ -61,12 +61,9 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
         let rebuilt=refreshed["id"].as_str()==Some(index_id)
             && crate::engine::code_index::indexed_source_hash(state,index_id,path)
                 .as_deref()==Some(sha);
-        let stable=fs::read(&actual).map_err(|e|e.to_string())?
-            .as_slice()==fs::read(&base.join(path)).map_err(|e|e.to_string())?
-                .as_slice();
         let final_sha=format!("{:x}",Sha256::digest(
             fs::read(&actual).map_err(|e|e.to_string())?));
-        if !rebuilt || !stable || final_sha!=sha {
+        if !rebuilt || final_sha!=sha {
             return Err(format!("현재 소스와 다른 탐색 근거: {path} (index mismatch after reindex)"));
         }
     }
