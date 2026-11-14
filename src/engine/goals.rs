@@ -329,9 +329,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
 
     for index in start..max_iterations {
         let previous_evidence=evidence.clone();
-        let before_gaps=if goal["isolateWorktree"]==true {
+        let mut before_gaps=if goal["isolateWorktree"]==true {
             crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence)
         }else{acceptance_gaps(state,&text,&criteria,&evidence)};
+        before_gaps.extend(crate::engine::verification::coding_test_gaps(
+            &evidence,goal["requireTests"]==true));
         if let Some((revision,owner))=
             crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
             plan=owner;
@@ -422,9 +424,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        let gate_gaps = if goal["isolateWorktree"]==true {
+        let mut gate_gaps = if goal["isolateWorktree"]==true {
             crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence)
         }else{acceptance_gaps(state,&text,&criteria,&evidence)};
+        gate_gaps.extend(crate::engine::verification::coding_test_gaps(
+            &evidence,goal["requireTests"]==true));
         let turn_progress=progress::measure(&previous_evidence,&evidence,&before_gaps,&gate_gaps,stats.tool_errors.len());
         let evidence_digest=crate::engine::goal_evidence::synopsis(&evidence,10_500);
         let review = control.complete(&review_provider,&review_model,
