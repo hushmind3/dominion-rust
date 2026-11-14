@@ -161,3 +161,11 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 
 - `src/api/automations.rs`: validates recurring prompt/meeting/workflow target and 5-minute..1-year interval; `/api/automations` API restores UI functionality. Scheduler `src/engine/jobs.rs::schedule_automations` now uses deterministic per-occurrence job IDs and `enqueue_once`; CAS-advances nextAt after job persistence, avoids catch-up bursts after downtime, and disables schedules whose target model/provider was deleted or disabled. The alternate generic `/api/jobs` workflow admission uses the same `api::workflows::runnable` frozen provider validation.
 - `web/src/pages/Operations.tsx`: automation form launches the stored workflow, displays lastJobId and review error. Activity section opens actual durable workflow result and operation receipt IDs without claiming independent quality proof.
+
+### 2026-11-14 Sub1 SDK-source study / native implementation only
+
+- NEVER run an external Qwen/OpenAI/Claude/Google SDK as the autonomous decision or approval harness. Read their source for design analysis; original DOMINION Rust remains policy, tool schema, approval, mutation, evidence, review and resume owner.
+- `src/engine/chat/protocol.rs`: Qwen legacy FN markers, exact JSON and native text fallback, removes thinking-region tool attempts, enforces known tool names.
+- `src/engine/chat/runtime/tool_selection.rs`: coding-only bounded model tool menu, no capability expansion or shell privilege inference. `runtime/turn.rs`: native tool-output recovery, one no-action repair then needs_review, and shorter local autonomous model request ceiling.
+- `goals/progress.rs::reviewer_needed`: skip expensive model reviewer when independent acceptance gaps remain and no new real action/cleared check exists; `goals.rs` tracks invocation/skipped source for audit.
+- `chat/tests.rs`: real native Rust tool executor read integration with synthetic model HTTP, NOT live-model benchmark. Prior Qwen3 real oracle remains 0/2. Inspect `docs/SUB1-NATIVE-AGENT-SOURCE-REVIEW-2026-11-14.md` for all referenced SDK code sources and gaps.

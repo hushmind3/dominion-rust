@@ -39,6 +39,12 @@ pub(super) fn measure(
         tool_errors,
     }
 }
+/// An independent reviewer cannot turn unchanged disk state or missing
+/// tool receipts into a completed action. Save the model call for progress,
+/// testable completion, or an actual new operation that needs interpretation.
+pub(super) fn reviewer_needed(gaps:&[String],progress:TurnProgress)->bool{
+    gaps.is_empty() || progress.new_actions>0 || progress.cleared_checks>0
+}
 #[cfg(test)]
 mod tests{
     use super::*;use serde_json::json;
@@ -55,6 +61,15 @@ mod tests{
         assert!(!measure(&[],&[one],&[],&[],1).advanced());
         assert!(measure(&[],&[],&["missing A".into(),"missing B".into()],
             &["missing B".into()],1).advanced());
+    }
+    #[test]
+    fn unchanged_objective_state_skips_only_wasteful_model_review(){
+        let unchanged=TurnProgress{new_actions:0,cleared_checks:0,tool_errors:1};
+        let changed=TurnProgress{new_actions:1,cleared_checks:0,tool_errors:0};
+        assert!(!reviewer_needed(&["file not modified".into()],unchanged));
+        assert!(reviewer_needed(&["file not modified".into()],changed));
+        assert!(reviewer_needed(&[],unchanged),
+            "A passing deterministic gate may still need independent model review");
     }
     #[test]
     fn failed_tools_and_text_claims_do_not_reset_stalls(){
