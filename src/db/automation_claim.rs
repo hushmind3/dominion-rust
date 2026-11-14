@@ -3,6 +3,49 @@
 use super::*;
 
 impl Store {
+    /// Explicit owner review unblocks a schedule WITHOUT rewriting a failed
+    /// job as successful. The old result and tool effect receipts remain for
+    /// audit. A future slot starts after one full interval, never immediately.
+    pub fn acknowledge_automation_review(
+        &self,auto_id:&str,job_id:&str,note:&str,
+    )->Result<Option<(Value,Value)>,String>{
+        if note.trim().chars().count()<10||note.chars().count()>2000{
+            return Err("외부 작업을 확인한 처리 기록은 10~2000자로 작성해야 합니다.".into());
+        }
+        let mut conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let tx=conn.transaction().map_err(|e|e.to_string())?;
+        let get=|kind:&str,id:&str|->Result<Option<Value>,String>{
+            tx.query_row(
+                "SELECT data,id,created_at,updated_at FROM records WHERE kind=?1 AND id=?2",
+                params![kind,id],record_from_row
+            ).optional().map_err(|e|e.to_string())
+        };
+        let Some(mut automation)=get("automation",auto_id)? else{return Ok(None)};
+        let Some(mut job)=get("job",job_id)? else{return Ok(None)};
+        if automation["lastJobId"]!=job_id||job["automationId"]!=auto_id
+            ||job["status"]!="needs_review" || automation["enabled"]!=true {
+            return Ok(None);
+        }
+        let interval=automation["intervalMinutes"].as_i64().unwrap_or(0);
+        if !(1..=525600).contains(&interval){
+            return Err("자동화 반복 간격이 유효하지 않습니다.".into());
+        }
+        let now=chrono::Utc::now();
+        job["ownerReview"]=json!({
+            "originalStatus":"needs_review","at":now.to_rfc3339(),
+            "resolutionNote":note.trim(),
+            "authorizedFutureRuns":true,"verifiedCompletion":false,
+        });
+        job["status"]=json!("cancelled");
+        automation["lastReviewedJobId"]=json!(job_id);
+        automation["lastReviewAt"]=json!(now.to_rfc3339());
+        automation["nextAt"]=json!((now+chrono::Duration::minutes(interval)).to_rfc3339());
+        upsert_tx(&tx,"job",&job)?;
+        upsert_tx(&tx,"automation",&automation)?;
+        tx.commit().map_err(|e|e.to_string())?;
+        Ok(Some((automation,job)))
+    }
+
     pub fn claim_due_automation(
         &self, id:&str, expected_next_at:&str, now:chrono::DateTime<chrono::Utc>
     )->Result<Option<(Value,Value)>,String>{
@@ -108,6 +151,39 @@ mod tests{
         assert_eq!(store.count("job"),2);
         drop(store);std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn explicit_owner_review_can_rearm_an_automation_without_fabricating_success(){
+        let (store,dir)=setup();
+        let now=chrono::Utc::now();
+        let due=(now-chrono::Duration::minutes(10)).to_rfc3339();
+        store.put("workflow",&json!({"id":"flow","steps":[{"id":"s"}]})).unwrap();
+        store.put("automation",&json!({"id":"auto","enabled":true,
+            "kind":"workflow","intervalMinutes":60,"nextAt":due,
+            "input":{"workflowId":"flow"}})).unwrap();
+        let (_,queued)=store.claim_due_automation("auto",&due,now).unwrap().unwrap();
+        let job_id=queued["id"].as_str().unwrap();
+        store.patch_if("job",job_id,"status",&json!("queued"),
+            &json!({"status":"needs_review","result":{
+                "status":"needs_review","verificationGaps":["external effect unknown"]
+            }})).unwrap();
+        assert!(store.acknowledge_automation_review("auto",job_id,"short").is_err());
+        assert!(store.acknowledge_automation_review("auto","wrong",
+            "확인 기록을 충분히 입력했습니다.").unwrap().is_none());
+        assert_eq!(store.get("job",job_id).unwrap()["status"],"needs_review");
+        let (auto,reviewed)=store.acknowledge_automation_review(
+            "auto",job_id,"외부 결과를 직접 확인했고 차기 일정 재실행을 승인했습니다.")
+            .unwrap().unwrap();
+        assert_eq!(reviewed["status"],"cancelled");
+        assert_eq!(reviewed["ownerReview"]["verifiedCompletion"],false);
+        assert_eq!(reviewed["result"]["verificationGaps"][0],"external effect unknown");
+        assert_eq!(auto["lastReviewedJobId"],job_id);
+        assert!(chrono::DateTime::parse_from_rfc3339(auto["nextAt"].as_str().unwrap())
+            .unwrap().with_timezone(&chrono::Utc)>now);
+        assert!(store.acknowledge_automation_review("auto",job_id,
+            "다시 승인한 기록은 중복입니다.").unwrap().is_none());
+        drop(store);std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn injected_automation_state_failure_rolls_back_new_job(){
         let (store,dir)=setup();
