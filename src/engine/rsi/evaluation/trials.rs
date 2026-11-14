@@ -4,10 +4,14 @@ use super::{AppState, BTreeSet, Value, json};
 
 /// The evaluation environment itself must be independently gradeable.
 fn measured_generation(row: &Value) -> bool {
-    let valid_digest=|value:&Value| value.as_str().is_some_and(|text|
-        text.len()==64 && text.bytes().all(|byte|byte.is_ascii_hexdigit()));
-    valid_digest(&row["evaluationProfileSha256"])
-        && valid_digest(&row["objectiveId"])
+    let valid_digest=|value:&Value,length:usize| value.as_str().is_some_and(|text|
+        text.len()==length && text.bytes().all(|byte|byte.is_ascii_hexdigit()));
+    // Frozen evaluator digests are SHA-256 (64 hex), but the *actual*
+    // DOMINION memory::stable_id used for objectiveId is 128-bit (32 hex).
+    // Requiring a 64-character objective silently made every real trial
+    // unscorable even after the independent evaluator had run.
+    valid_digest(&row["evaluationProfileSha256"],64)
+        && valid_digest(&row["objectiveId"],32)
         && row["pairedMeasured"]==true
         && matches!(row["evaluation"]["verdict"].as_str(),
             Some("improved"|"inconclusive"|"regressed"|"build_failed"))
