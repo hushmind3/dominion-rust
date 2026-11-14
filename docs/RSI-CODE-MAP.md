@@ -70,3 +70,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 ### Executable technical QA and coding-agent provenance (2026-11-14)
 
 `engine/video/quality.rs::inspect` → `video/runway.rs::run` → `videoState.qualityReports` / `finalQuality` → `Video.tsx`: FFprobe prerequisite is checked before any paid API submission; each downloaded paid clip is validated before buying the next, merged output is also inspected. Invalid media leads to `needs_review` without blind paid replay. `goals/git.rs::snapshot` → `goals/git.rs::report` → `goals/report.rs::build` → `Goals.tsx`: stores bounded Git diff observations independently of verified actual tool receipts. `state.rs::cancel_delegated_descendants` cascades cancellation epochs and queued/running job stops across the nested agent tree. RSI compiled source map includes these real executor modules; this is not an independent A→B→A acceptance receipt.
+
+### 2026-11-14 · Goal worktree 실실행 호출 경로
+
+`api/goals.rs::create_goal(isolateWorktree)` → `jobs::enqueue_once` → `goals::run` → `goal_git::prepare` → `chat/runtime/tool_execution::{deterministic_tool,dispatch_tool_call}` → `goal_git::workspace_for_session` → `tools::execute` → `verification::{baseline_checks_in,acceptance_gaps_in}` → `goals/report::build` → `api/goals::{changes,apply_changes,discard_changes}` → `Goals.tsx`. 하위 위임은 `tools::delegate`의 `parentSessionId`로 작업공간을 상속하고 `state::cancel_session`에서 취소가 전파됩니다. `rsi_system.rs::COMPONENTS`의 `harness` 영역이 이 실행 모듈을 실제 소스로 추적합니다. 구현 범위와 미해결 OS 샌드박스·동시쓰기 문제는 `docs/SUB4-ISOLATED-AGENT-2026-11-14.md`에 기재합니다.
