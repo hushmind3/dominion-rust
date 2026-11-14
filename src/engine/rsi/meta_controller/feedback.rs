@@ -93,6 +93,19 @@ pub(crate) fn instruction(policy:&Value)->String {
             policy["reciprocalContinuation"]["priorRole"]
         ));
     }
+    let alternate=policy["sourceMatchedAlternatives"].as_array()
+        .into_iter().flatten().take(3).map(|episode|format!(
+            "failed generation={} failure={} source commit={} -> independently accepted alternative={} accepted commit={} shared changed source={} hypothesis={} (same-base observation, not causal repair proof)",
+            episode["failedJobId"],episode["failureKind"],episode["baseCommit"],
+            episode["acceptedJobId"],episode["acceptedCommit"],episode["sharedChangedSources"],
+            episode["acceptedHypothesis"]
+        )).collect::<Vec<_>>().join("\n");
+    if !alternate.is_empty(){
+        prompt.push_str(&format!(
+            "\n[SOURCE-MATCHED SELF-IMPROVEMENT EPISODES]\nUse these source-hash-bound verified alternatives to avoid repeating a failed design. They are observations, not causal proof:\n{}\n",
+            alternate
+        ));
+    }
     prompt
 }
 

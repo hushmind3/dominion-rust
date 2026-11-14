@@ -104,6 +104,9 @@ pub(crate) fn synthesize(
             "error":g["error"].as_str().unwrap_or("")
                 .chars().take(500).collect::<String>()
         })).collect::<Vec<_>>();
+    // Source-matched execution experience informs the next redesign,
+    // while the independent paired evaluator still controls adoption.
+    let source_matched_alternatives=source_matched_alternatives(history);
     let mode=if counterexamples.iter().any(|row|
         row["failureKind"]=="compiler_failure"){"causal_repair_and_new_design"}
         else if !reference.is_empty(){"comparative_hybridization"}
@@ -111,7 +114,8 @@ pub(crate) fn synthesize(
     let alternatives=ranked.iter().take(6)
         .map(|(row,_)|row.clone()).collect::<Vec<_>>();
     let serialized=json!([target,alternatives,reference,counterexamples,mode,
-        inherited_domain,history.len(),reciprocal,reverse_step,interaction_model]);
+        inherited_domain,history.len(),reciprocal,reverse_step,interaction_model,
+        source_matched_alternatives]);
     let revision=format!("{:x}",Sha256::digest(
         serde_json::to_vec(&serialized).unwrap_or_default()));
     json!({
@@ -128,6 +132,7 @@ pub(crate) fn synthesize(
             .unwrap_or(Value::Null),
         "alternatives":alternatives,
         "referenceDesigns":reference,"counterexamples":counterexamples,
+        "sourceMatchedAlternatives":source_matched_alternatives,
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
             "failurePosterior":winner["failurePosterior"],

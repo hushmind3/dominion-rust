@@ -22,6 +22,9 @@ pub(crate) use reciprocal::attach_reciprocal_focus;
 mod selection;
 use selection::*;
 pub(crate) use selection::synthesize;
+#[path = "rsi/meta_controller/trajectory.rs"]
+mod trajectory;
+use trajectory::source_matched_alternatives;
 #[path = "rsi/meta_controller/transfer.rs"]
 mod transfer;
 use transfer::*;
