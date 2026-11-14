@@ -11,8 +11,10 @@ type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
  planHistory?:{version:number;plan:string;reason:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  artifacts?:Artifact[];gaps?:string[];iterations?:number;maxIterations?:number;
- sessionId?:string;createdAt?:string}
-type GoalDiff={paths:string[];status:string;unstaged:string;staged:string;note?:string}
+ sessionId?:string;createdAt?:string;isolateWorktree?:boolean;
+ gitWorktree?:{branch?:string;baseCommit?:string;path?:string;rolledBack?:boolean}}
+type GoalDiff={paths?:string[];status:string;unstaged?:string;staged?:string;diff?:string;
+ branch?:string;baseCommit?:string;untracked?:string;note?:string}
 type Job={id:string;kind:string;status:string;input?:{goalId?:string};
  stepIndex?:number;stepTotal?:number}
 
@@ -21,6 +23,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
  const goals=useRemote<Goal[]>('/api/goals',[])
  const jobs=useRemote<Job[]>('/api/jobs',[])
  const [objective,setObjective]=useState('')
+ const [isolate,setIsolate]=useState(true)
  const [drafts,setDrafts]=useState<Record<string,string>>({})
  const [diffs,setDiffs]=useState<Record<string,GoalDiff>>({})
  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('')
@@ -37,7 +40,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
   if(!objective.trim()||busy)return
   setBusy('new');setError('');setNotice('')
   try{
-   const created=await post<Goal>('/api/goals',{goal:objective.trim()})
+   const created=await post<Goal>('/api/goals',{goal:objective.trim(),isolateWorktree:isolate})
    setObjective('');setNotice('자율 작업을 등록했습니다. 계획부터 실행·검증까지 작업 기록에 남습니다.')
    await reload()
    if(created.sessionId)openSession(created.sessionId)
@@ -65,6 +68,17 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    setDiffs(previous=>({...previous,[goal.id]:result}))
   }catch(e){setError((e as Error).message)}
  }
+ const discard=async(goal:Goal)=>{
+  if(busy||!goal.gitWorktree||goal.gitWorktree.rolledBack||active(goal.status))return
+  if(!window.confirm('이 목표의 독립 Git 작업공간과 커밋되지 않은 수정 내용을 폐기합니다. 원본 프로젝트에는 영향을 주지 않습니다. 진행할까요?'))return
+  setBusy(goal.id);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/rollback',{})
+   setDiffs(previous=>{const next={...previous};delete next[goal.id];return next})
+   setNotice('이 목표 전용 Git 작업공간을 폐기했습니다. 원본 프로젝트는 유지됩니다.')
+   await reload()
+  }catch(e){setError((e as Error).message)}finally{setBusy('')}
+ }
  const cancel=async(goal:Goal)=>{
   if(busy)return
   setBusy(goal.id);setError('');setNotice('')
@@ -82,7 +96,11 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
     onChange={event=>setObjective(event.target.value)}
     placeholder="예: 현재 프로젝트의 로그인 오류를 조사하고, 관련 소스를 수정한 뒤 검증 증거와 변경 파일을 정리해줘"/>
    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-    <p className="text-xs text-[#7C7469]">실제 파일 수정·명령·외부 서비스 작업은 기존 도구 권한과 승인 정책을 따릅니다.</p>
+    <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-[#524941]">
+     <input type="checkbox" checked={isolate} onChange={event=>setIsolate(event.target.checked)}
+      className="size-4 accent-[#C96442]"/> Git 프로젝트를 독립 작업공간에서 수정
+    </label>
+    <p className="text-xs text-[#7C7469]">Git 격리는 원본을 보호합니다. OS 샌드박스는 아닙니다. 명령 실행은 승인을 따릅니다.</p>
     <Button variant="primary" disabled={busy!==''||!objective.trim()} onClick={()=>void create()}>
      {busy==='new'?<LoaderCircle size={15} className="animate-spin"/>:<Send size={15}/>} 작업 시작
     </Button>
@@ -107,6 +125,11 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
      <div className="h-full bg-[#C96442]" style={{width:Math.min(100,100*(goal.iterations||0)/(goal.maxIterations||16))+'%'}}/>
     </div>}
     {job&&<p className="mt-2 text-[11px] text-[#7C7469]">작업 ID: {job.id} · 상태 {job.status}</p>}
+    {goal.isolateWorktree&&<p className="mt-2 text-xs text-[#5C544A]">
+      <ShieldCheck size={13} className="mr-1 inline"/> 독립 Git 작업공간
+      {goal.gitWorktree?.branch&&' · '+goal.gitWorktree.branch}
+      {goal.gitWorktree?.rolledBack?' · 폐기 완료':''}
+     </p>}
     {goal.gaps&&goal.gaps.length>0&&<details className="mt-3 rounded-xl bg-[#FFF7F1] p-3 text-xs">
      <summary className="cursor-pointer font-semibold">검토·수정이 필요한 항목 ({goal.gaps.length})</summary>
      <ul className="mt-2 list-disc space-y-1 pl-5">{goal.gaps.slice(0,12).map((gap,index)=><li key={index}>{gap}</li>)}</ul>
@@ -132,16 +155,20 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
      </div>)}</div><p className="mt-2 text-[11px] text-[#7C7469]">파일 해시는 무결성 기록입니다. 테스트 통과를 의미하지 않습니다.</p>
     </details>}
     {diffs[goal.id]&&<section aria-label="검증된 파일 변경 내용" className="mt-3 space-y-2 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
-     <p className="text-xs font-semibold">Git 변경 사항 · 파일 {diffs[goal.id].paths.length}개</p>
+     <p className="text-xs font-semibold">Git 변경 사항 · {diffs[goal.id].branch||'공유 작업공간'} · 파일 {diffs[goal.id].paths?.length||0}개</p>
      {diffs[goal.id].note&&<p className="text-xs text-[#7C7469]">{diffs[goal.id].note}</p>}
      {diffs[goal.id].status&&<pre className="overflow-auto whitespace-pre-wrap text-[11px]">{diffs[goal.id].status}</pre>}
+     {diffs[goal.id].diff&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].diff}</pre>}
+     {diffs[goal.id].untracked&&<p className="break-all text-[11px] text-[#7C7469]">미추적 파일: {diffs[goal.id].untracked}</p>}
      {diffs[goal.id].unstaged&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].unstaged}</pre>}
      {diffs[goal.id].staged&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].staged}</pre>}
-     {!diffs[goal.id].note&&!diffs[goal.id].unstaged&&!diffs[goal.id].staged&&<p className="text-xs text-[#7C7469]">현재 작업 트리에 Git 변경이 없습니다. 이미 커밋된 변경 내용은 Git 기록에서 확인해야 합니다.</p>}
+     {!diffs[goal.id].note&&!diffs[goal.id].unstaged&&!diffs[goal.id].staged&&!diffs[goal.id].diff&&<p className="text-xs text-[#7C7469]">현재 작업 트리에 Git 변경이 없습니다. 이미 커밋된 변경 내용은 Git 기록에서 확인해야 합니다.</p>}
     </section>}
     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
      {goal.sessionId&&<Button size="sm" variant="ghost" onClick={()=>openSession(goal.sessionId!)}><Bot size={14}/> 작업 대화 열기</Button>}
-     <Button size="sm" variant="ghost" onClick={()=>void showDiff(goal)}><ExternalLink size={13}/>{diffs[goal.id]?'diff 닫기':'실제 Git diff 확인'}</Button>
+     {(goal.gitWorktree&&!goal.gitWorktree.rolledBack||goal.artifacts?.length)&&<Button size="sm" variant="ghost" onClick={()=>void showDiff(goal)}><ExternalLink size={13}/>{diffs[goal.id]?'diff 닫기':'실제 Git diff 확인'}</Button>}
+     {goal.gitWorktree&&!goal.gitWorktree.rolledBack&&!active(goal.status)&&
+      <Button size="sm" variant="danger" disabled={busy!==''} onClick={()=>void discard(goal)}>작업공간 폐기</Button>}
      <a href="#/developer" className="inline-flex items-center gap-1 text-[#A94E30] hover:underline">개발자 도구</a>
      <span className="ml-auto text-[#7C7469]">재계획·검증 기록 {goal.reviewHistory?.length||0}회</span>
     </div>
