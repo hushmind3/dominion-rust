@@ -69,6 +69,78 @@ pub(super) async fn tool_manual(native: &[Value], query: &str) -> String {
     manual
 }
 
+// Tool calls in Qwen's thinking area are not executable instructions.
+// We only inspect the answer region; an unclosed thinking block cannot
+// accidentally execute code from intermediate reasoning.
+pub(crate) fn outside_thinking(content:&str)->String {
+    let mut rest=content;
+    let mut visible=String::new();
+    while let Some(start)=rest.find("<think>") {
+        visible.push_str(&rest[..start]);
+        let after=&rest[start+"<think>".len()..];
+        if let Some(end)=after.find("</think>"){
+            rest=&after[end+"</think>".len()..];
+        }else{
+            return visible;
+        }
+    }
+    visible.push_str(rest);
+    visible
+}
+
+/// An exact standalone tool object is an action proposal even if a native
+/// OpenAI-compatible provider lost the function-call envelope. Narrative
+/// JSON and snippets embedded in ordinary prose are never auto-executed.
+pub(crate) fn single_json_tool_envelope(content:&str)->bool {
+    let cleaned=outside_thinking(content);
+    let text=cleaned.trim();
+    let text=if text.starts_with("```json") || text.starts_with("```JSON") {
+        let inner=&text[7..];
+        match inner.strip_suffix("```"){Some(inner)=>inner.trim(),None=>return false}
+    }else{text};
+    text.len()<=64*1024 && parse_tool_json_known(
+        text,&std::collections::HashSet::new()).is_some()
+}
+
+/// The official Qwen-Agent reference uses ✿FUNCTION✿ / ✿ARGS✿ for its
+/// legacy model family. Translate only whitelisted function names into the
+/// same Dominion tool calls, preserving centralized approval and receipts.
+fn parse_qwen_function_markers(content:&str,known:&std::collections::HashSet<String>)
+    ->(Vec<(String,String)>,String){
+    const CALL:&str="✿FUNCTION✿:";
+    const ARGS:&str="✿ARGS✿:";
+    let Some(first)=content.find(CALL) else {
+        return (Vec::new(),content.to_string());
+    };
+    let mut cleaned=content[..first].to_string();
+    let mut remainder=&content[first..];
+    let mut calls=Vec::new();
+    let mut parsed_any=false;
+    while let Some(pos)=remainder.find(CALL) {
+        if pos>0 {cleaned.push_str(&remainder[..pos]);}
+        let body=&remainder[pos+CALL.len()..];
+        let next=body.find(CALL).unwrap_or(body.len());
+        let block=&body[..next];
+        if let Some((name,args))=block.split_once(ARGS) {
+            let name=name.trim();
+            let args=args.split("✿RESULT✿").next().unwrap_or(args)
+                .split("✿RETURN✿").next().unwrap_or(args).trim();
+            if (known.is_empty()||known.contains(name))
+                && name.len()<=128 && args.len()<=64*1024
+                && serde_json::from_str::<Value>(args).is_ok_and(|a|a.is_object()){
+                calls.push((name.to_string(),args.to_string()));
+                parsed_any=true;
+            }
+        }
+        remainder=&body[next..];
+        if next==body.len(){break}
+    }
+    // Unrecognized protocol markers are NOT valid user-facing completion
+    // evidence. Strip only the explicit protocol region.
+    if parsed_any {(calls,cleaned.trim().to_string())}
+    else {(Vec::new(),content.to_string())}
+}
+
 // Parses text-based tool calls used by small models and `toolMode: compat`.
 
 pub fn parse_text_tool_calls(content: &str) -> (Vec<(String, String)>, String) {
@@ -80,7 +152,10 @@ pub fn parse_text_tool_calls_known(
     known: &std::collections::HashSet<String>,
 ) -> (Vec<(String, String)>, String) {
     let mut calls = Vec::new();
-    let mut cleaned = content.to_string();
+    let mut cleaned = outside_thinking(content);
+    let (qwen_calls,qwen_cleaned)=parse_qwen_function_markers(&cleaned,known);
+    if !qwen_calls.is_empty(){return (qwen_calls,qwen_cleaned)}
+    cleaned=qwen_cleaned;
 
     // Some models emit a DSML-style block instead of native function calls.
     // Parse it when possible, and always remove the block so a failed call is
@@ -439,6 +514,43 @@ fn parse_dsml_tool_calls(
     (calls, cleaned.trim().to_string())
 }
 
+#[cfg(test)]
+mod sub1_native_qwen_tests {
+    use super::*;
+    fn known()->std::collections::HashSet<String>{
+        ["workspace_read","workspace_write","workspace_replace"]
+            .into_iter().map(str::to_string).collect()
+    }
+    #[test]
+    fn native_qwen_legacy_fncall_markers_recover_only_policy_known_calls(){
+        let text="Working...\n✿FUNCTION✿: workspace_read\n✿ARGS✿: {\\\"path\\\":\\\"trial/file.txt\\\"}";
+        let (calls,clean)=parse_text_tool_calls_known(text,&known());
+        assert_eq!(calls.len(),1);
+        assert_eq!(calls[0].0,"workspace_read");
+        assert_eq!(serde_json::from_str::<Value>(&calls[0].1).unwrap()["path"],"trial/file.txt");
+        assert_eq!(clean,"Working...");
+        let (unknown,_) = parse_text_tool_calls_known(
+            "✿FUNCTION✿: forbidden_shell\n✿ARGS✿: {}",&known());
+        assert!(unknown.is_empty());
+    }
+    #[test]
+    fn thinking_blocks_never_trigger_file_writes(){
+        let text="<think>Need to edit <tool_call>{\\\"name\\\":\\\"workspace_write\\\",\\\"arguments\\\":{\\\"path\\\":\\\"stolen\\\",\\\"content\\\":\\\"bad\\\"}}</tool_call></think>I'll read first";
+        let (calls,visible)=parse_text_tool_calls_known(text,&known());
+        assert!(calls.is_empty(),"{calls:?}");
+        assert_eq!(visible,"I'll read first");
+        assert!(!single_json_tool_envelope(text));
+    }
+    #[test]
+    fn standalone_json_tool_proposals_are_not_promoted_from_normal_prose(){
+        assert!(single_json_tool_envelope(
+            r#"{"name":"workspace_read","arguments":{"path":"a.txt"}}"#));
+        assert!(single_json_tool_envelope(
+            "```json\n{\\\"name\\\":\\\"workspace_read\\\",\\\"arguments\\\":{\\\"path\\\":\\\"a.txt\\\"}}\n```"));
+        assert!(!single_json_tool_envelope("Here is an example: {\\\"name\\\":\\\"workspace_write\\\"}"));
+        assert!(!single_json_tool_envelope("{\\\"summary\\\":\\\"nothing edited\\\"}"));
+    }
+}
 #[cfg(test)]
 mod sub1_structured_patch_tests {
     use super::*;
