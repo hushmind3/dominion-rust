@@ -161,3 +161,13 @@ The run directory distinguishes model calls, successful / failed / uncertain
 tool receipts, recovery after measured tool failure, and official Docker
 resolved IDs. Internal goal completion is not a substitute for the official
 grader. Real model results still require a configured provider and runtime.
+
+## Continuation: complete provider boundary, paid final film and official judge scope
+
+- `src/engine/chat/runtime/turn.rs` applies `budgeted_tool_definitions` **again after** RSI phase control, which can rebuild a tool menu from the original untrimmed catalog. `harness.tool_schema_final_budget` tracks the final schema bytes and cap; this does not bypass actual authorization.
+- `scripts/benchmark/swebench_dominion.py` assigns SHA-based case directories and restricts GitHub `owner/name` labels before constructing clone URLs. The official evaluator receives `--instance_ids` matching the prediction cohort. Its run ID now commits to the binary SHA, dataset-row SHA, model and exact patch JSONL, preventing stale result reuse after a binary or cohort change. See the official [SWE-bench evaluation guide](https://www.swebench.com/SWE-bench/guides/evaluation/).
+- `src/engine/video/quality.rs::inspect_final` checks the staged aggregate MP4 using FFprobe and a stronger final-film duration bound (5% or 1 second) plus the existing dimension/audio checks, before `film.rs` publishes `output.mp4`. Failed stitching preserves each original paid clip and all SHA receipts; no new provider request is made. Original output metadata remains `semanticQualityVerified:false` until an independent semantic assessment exists.
+- `scripts/benchmark/test_video_concat_contract.py` runs a tiny, local, **zero-paid-cost** FFmpeg/FFprobe concat smoke in CI when the binaries are available. A direct local synthetic media smoke produced 6.128 seconds for two 3-second clips and audio/video streams. This verifies the external assembly/probe behavior, **not** the currently uncompiled Rust integration or cinematic quality.
+
+The FFmpeg concat demuxer requires compatible stream layouts and adjusts timestamps from each input duration; its successful exit alone does not establish a correct-length film. [FFmpeg format documentation](https://www.ffmpeg.org/ffmpeg-formats.html).
+
