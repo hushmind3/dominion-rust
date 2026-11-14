@@ -57,6 +57,7 @@ impl GoalCreate {
         self
     }
     pub fn require_tests(mut self, enable:bool)->Self{self.require_tests=Some(enable);self}
+    pub fn token_budget(mut self, limit:u64)->Self{self.token_budget=Some(limit);self}
     pub fn executor(mut self, selection: ModelSelection) -> Self {
         self.executor = Some(selection);
         self
@@ -235,9 +236,9 @@ mod goal_budget_contract_tests {
     #[test]
     fn rust_sdk_goal_serializes_real_verification_and_budget_fields(){
         let goal=GoalCreate::new("fix the code")
-            .isolate_worktree(true).require_tests(true).max_iterations(8);
-        let mut payload=serde_json::to_value(goal).unwrap();
-        payload["tokenBudget"]=serde_json::json!(100000);
+            .isolate_worktree(true).require_tests(true)
+            .token_budget(100000).max_iterations(8);
+        let payload=serde_json::to_value(goal).unwrap();
         assert_eq!(payload["isolateWorktree"],true);
         assert_eq!(payload["requireTests"],true);
         assert_eq!(payload["tokenBudget"],100000);
