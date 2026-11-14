@@ -97,7 +97,11 @@ export class DominionClient {
         if (!goal?.id) throw new DominionError('Goal creation did not return an id');
         return this.goals.wait(goal.id, options);
       },
-      resume: (id, options) => this.request('POST', 'api/goals/' + enc(id) + '/resume', {acknowledgeUnknownEffects: true}, options),
+      // The SDK cannot acknowledge uncertain external effects on the owner's
+      // behalf. Only an explicit caller choice may authorize that replay.
+      resume: (id, {acknowledgeUnknownEffects = false, ...options} = {}) =>
+        this.request('POST', 'api/goals/' + enc(id) + '/resume',
+          {acknowledgeUnknownEffects: acknowledgeUnknownEffects === true}, options),
       changes: (id, options) => this.request('GET', 'api/goals/' + enc(id) + '/changes', undefined, options),
       applyReviewed: (id, sha256, options) => this.request('POST', 'api/goals/' + enc(id) + '/apply', {expectedPatchSha256: sha256}, options),
       rollback: (id, options) => this.request('POST', 'api/goals/' + enc(id) + '/rollback', {}, options)
