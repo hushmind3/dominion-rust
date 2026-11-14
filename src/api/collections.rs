@@ -167,6 +167,9 @@ pub async fn save(
                         crate::engine::verification::validate_criteria(checks).is_ok()
                         && checks.as_array().is_some_and(|rows|rows.len()<=8)
                     )
+                    && step.get("maxAttempts").is_none_or(|value|
+                        value.as_u64().is_some_and(|attempts| (1..=4).contains(&attempts))
+                    )
             });
         if !valid {
             return (
