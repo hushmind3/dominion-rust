@@ -170,10 +170,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             .collect::<std::collections::HashSet<_>>();
         let (outcome,stats,sdk_events,sdk_runtime) =
             if step["executionMode"]=="copilot_sdk" {
-                let fallback=step["agentId"].as_str()
-                    .and_then(|agent_id|state.store.get("agent",agent_id));
-                let sdk_model=step["model"].as_str().filter(|m|!m.is_empty())
-                    .or_else(||fallback.as_ref().and_then(|a|a["model"].as_str()));
+                // Existing local agent IDs may specify Qwen/Ollama-only models.
+                // Do not feed them to an unrelated Copilot runtime; use the
+                // official runtime's own default unless explicitly overridden.
+                let sdk_model=step["model"].as_str().filter(|m|!m.is_empty());
                 match crate::engine::copilot_harness::run(
                     state,&session_id,&request.input,sdk_model,
                     step["copilotAllowTools"]==true,600,
