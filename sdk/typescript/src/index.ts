@@ -335,6 +335,77 @@ export class DominionSDK {
     })
     yield* decodeEventStream(response, false)
   }
+
+  /**
+   * Reconnects the read-only durable event feed, never a side-effecting chat
+   * turn. Uses Rust's exclusive 'after' cursor, skips overlap duplicates and
+   * surfaces 'replay_gap' when server retention has pruned older messages.
+   * A caller can cancel an indefinitely running watch with AbortController.
+   */
+  async *watchEventsResilient(options: {
+    after?: number
+    signal?: AbortSignal
+    reconnectDelayMs?: number
+    maxReconnects?: number
+  } = {}): AsyncGenerator<AgentEvent> {
+    let cursor = options.after ?? 0
+    if (!Number.isSafeInteger(cursor) || cursor < 0) {
+      throw new Error('after must be a nonnegative integer')
+    }
+    const initialDelay = options.reconnectDelayMs ?? 400
+    const limit = options.maxReconnects ?? Number.POSITIVE_INFINITY
+    if (!Number.isFinite(initialDelay) || initialDelay < 0 || initialDelay > 30_000) {
+      throw new Error('reconnectDelayMs must be within 0..30000')
+    }
+    if (!Number.isSafeInteger(limit) && limit !== Number.POSITIVE_INFINITY) {
+      throw new Error('maxReconnects must be a nonnegative integer or Infinity')
+    }
+    if (limit < 0) throw new Error('maxReconnects must be nonnegative')
+    let failures = 0
+    while (!options.signal?.aborted) {
+      let received = false
+      try {
+        for await (const event of this.watchEvents({after: cursor, signal: options.signal})) {
+          if (options.signal?.aborted) return
+          if (event.type === 'replay_gap') {
+            yield event
+            continue
+          }
+          const seq = event.seq
+          if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
+            throw new DominionSDKError(0, 'Durable event lacks a valid seq')
+          }
+          if (seq <= cursor) continue
+          cursor = seq
+          received = true
+          yield event
+        }
+      } catch (error) {
+        if (options.signal?.aborted) return
+        if (error instanceof DominionSDKError &&
+          error.status >= 400 && error.status < 500) throw error
+      }
+      if (options.signal?.aborted) return
+      failures = received ? 0 : failures + 1
+      if (failures > limit) {
+        throw new DominionSDKError(0, 'DOMINION durable event watch retry limit reached')
+      }
+      const delay = Math.min(5000, initialDelay * 2 ** Math.min(failures, 5))
+      if (delay > 0) {
+        await new Promise<void>(resolve => {
+          let timer: ReturnType<typeof setTimeout>
+          const done = () => {
+            clearTimeout(timer)
+            options.signal?.removeEventListener('abort', done)
+            resolve()
+          }
+          timer = setTimeout(done, delay)
+          options.signal?.addEventListener('abort', done, {once: true})
+          if (options.signal?.aborted) done()
+        })
+      }
+    }
+  }
 }
 
 export class DominionThread {
