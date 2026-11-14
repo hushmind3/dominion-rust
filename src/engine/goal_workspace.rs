@@ -322,6 +322,42 @@ mod tests {
         assert!(workspace_for_session(&state,session_id).is_err());
         assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
             "fn source() {}\\n");
+        // A second independent goal may explicitly promote its verified,
+        // SHA-pinned diff. The previous discarded attempt stays discarded.
+        let second=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":second,"status":"queued",
+            "isolateWorktree":true})).unwrap();
+        let second_info=prepare(&state,&second).await.unwrap();
+        let second_session="promotion-session";
+        state.store.put("session",&json!({"id":second_session,
+            "goalId":second,"goalWorktree":second_info["path"]})).unwrap();
+        let second_ctx=crate::engine::tools::ToolContext{
+            workspace:&state.config.workspace,store:&state.store,state:&state,
+            session_id:second_session,agent_id:None,
+            tools_enabled:true,tools_execution_enabled:true,
+        };
+        let write=crate::engine::tools::execute(&second_ctx,"workspace_write",
+            &json!({"path":"module.rs","content":"fn promoted() {}\\n"}),
+            "promote-run").await.unwrap();
+        assert_eq!(write["written"],true);
+        state.store.patch_if("goal",&second,"status",&json!("queued"),
+            &json!({"status":"completed"})).unwrap();
+        let candidate=state.store.get("goal",&second).unwrap();
+        let preview=changes(&state,&candidate).await.unwrap();
+        assert_eq!(preview["canPromote"],true);
+        let digest=preview["patchSha256"].as_str().unwrap();
+        assert!(promote(&state,&candidate,&"0".repeat(64)).await.is_err());
+        assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
+            "fn source() {}\\n");
+        let result=promote(&state,&candidate,digest).await.unwrap();
+        assert_eq!(result["applied"],true);
+        assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
+            "fn promoted() {}\\n");
+        assert_eq!(state.store.get("goal",&second).unwrap()["promotion"]["applied"],true);
+        let promoted_goal=state.store.get("goal",&second).unwrap();
+        discard(&state,&promoted_goal).await.unwrap();
+        assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
+            "fn promoted() {}\\n");
         drop(state);
         std::fs::remove_dir_all(base).unwrap();
     }
