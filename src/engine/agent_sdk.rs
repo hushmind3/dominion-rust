@@ -76,6 +76,13 @@ impl DominionSdk {
         Ok(rx)
     }
 
+    /// A new owner directive is persisted before it may affect model decisions.
+    /// It is consumed by the active turn at the next model-step boundary.
+    pub fn steer(&self,id:&str,instruction:&str)->Result<Value,String> {
+        self.resume_thread(id)?;
+        crate::engine::steering::enqueue(&self.state,id,instruction)
+    }
+
     pub fn cancel(&self,id:&str)->Result<(),String> {
         self.resume_thread(id)?;
         self.state.cancel_session(id);
