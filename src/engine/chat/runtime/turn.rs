@@ -643,6 +643,9 @@ pub(super) async fn run_turn_body(
     // A native edit reply without a tool call gets exactly one compat retry;
     // do not change provider settings or repeatedly replay free-model output.
     let mut rsi_text_edit_retry = false;
+    // Native local models can serialize a tool call as text. One bounded,
+    // acceptance-gated schema correction is allowed; no blind retry loop.
+    let mut native_tool_schema_repair_used=false;
 
     let mut program_finished = program_policy.is_none();
     // `toolsEnabled` controls whether the model may call tools. It is not an
@@ -1195,9 +1198,13 @@ pub(super) async fn run_turn_body(
                 "모델이 이번 턴에 제공되지 않은 도구를 호출하려 했습니다.".into(),
             );
         }
+        let explicit_native_call=acceptance.is_some() &&
+            round_provider.tool_mode=="native" &&
+            super::tool_catalog::explicit_native_tool_envelope(&completion.content);
         if completion.tool_calls.is_empty()
             && request.tools_enabled
             && (round_provider.tool_mode != "native" || has_dsml_call
+                || explicit_native_call
                 || (session["rsiExplicitFocus"] == true && rsi_edit_only_announced))
             && !force_final
         {
@@ -1219,6 +1226,27 @@ pub(super) async fn run_turn_body(
                         arguments,
                     })
                     .collect();
+            } else if explicit_native_call {
+                // The visible response is an unambiguous attempted tool call,
+                // not a completed artifact. Ask for the exact advertised
+                // schema once, then fail closed if the model still cannot
+                // produce a recognized tool name and arguments.
+                if !native_tool_schema_repair_used {
+                    native_tool_schema_repair_used=true;
+                    state.store.audit("chat.native_tool_schema_repair",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"extraModelCallsMax":1,
+                        "modelSuccessClaim":false
+                    }));
+                    messages.push(json!({"role":"system",
+                        "content":format!(
+                            "방금 도구 호출 텍스트를 실제 허용 도구 형식으로 해석할 수 없었습니다. 이번에는 제공된 도구 중 하나만 골라 <tool_call>{{\\\"name\\\":\\\"TOOL\\\",\\\"arguments\\\":{{...}}}}</tool_call> 형식으로 호출하세요. 텍스트로 완료를 주장하지 마세요. 현재 허용 도구: {}",
+                            known.iter().cloned().collect::<Vec<_>>().join(", ")
+                        )
+                    }));
+                    continue;
+                }
+                return Err("모델이 허용된 도구 호출 형식으로 수정하지 못했습니다.".into());
             } else if has_dsml_call {
                 // A malformed/unknown DSML call must not be shown as a final
                 // answer. Remove the protocol block and fail the turn.

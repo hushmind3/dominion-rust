@@ -4,6 +4,22 @@ use super::*;
     use serde_json::json;
 
     #[test]
+    fn native_tool_envelope_requires_explicit_standalone_action_not_prose(){
+        assert!(explicit_native_tool_envelope(
+            r#"<tool_call>{"name":"workspace_write","arguments":{"path":"a","content":"hello"}}</tool_call>"#));
+        assert!(explicit_native_tool_envelope(
+            r#"{"name":"workspace_replace","arguments":{"path":"x"}}"#));
+        assert!(explicit_native_tool_envelope(
+            "```json\n{\\"name\\":\\"workspace_write\\",\\"arguments\\":{}}\n```"));
+        assert!(!explicit_native_tool_envelope("Here is a sample: <tool_call>{}</tool_call>"));
+        assert!(!explicit_native_tool_envelope("The file is saved."));
+        assert!(!explicit_native_tool_envelope(
+            r#"{"status":"completed","description":"workspace_write"}"#));
+        assert!(!explicit_native_tool_envelope(
+            "Example: {\\"tool\\":\\"shell_exec\\",\\"arguments\\":{}}"));
+    }
+
+    #[test]
     fn tool_discovery_selects_core_or_query_relevant_tools() {
         let definitions = vec![
             json!({"type":"function","function":{"name":"workspace_write","description":"write"}}),

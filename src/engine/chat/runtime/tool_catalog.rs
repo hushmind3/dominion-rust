@@ -1,6 +1,28 @@
 //! tool_catalog: isolated native chat runtime responsibility; preserve executable RSI behavior.
 use super::*;
 
+/// Some small native-mode models emit a literal tool envelope instead of
+/// native function_call frames. Only an explicit, standalone envelope qualifies
+/// for repair; ordinary prose and quoted code samples are never executable.
+pub(super) fn explicit_native_tool_envelope(text: &str) -> bool {
+    let trimmed=text.trim();
+    if trimmed.starts_with("<tool_call>") {return true}
+    let candidate=if trimmed.starts_with("```json\n") && trimmed.ends_with("```") {
+        trimmed.trim_start_matches("```json\n").trim_end_matches("```").trim()
+    } else {trimmed};
+    if !candidate.starts_with('{') || !candidate.ends_with('}') ||
+        candidate.len()>32_768 {return false}
+    let Ok(value)=serde_json::from_str::<Value>(candidate) else {return false};
+    let tool_name=value.get("name").or_else(||value.get("tool"))
+        .or_else(||value.get("tool_name"))
+        .or_else(||value.get("function").and_then(|f|f.get("name")))
+        .and_then(Value::as_str);
+    tool_name.is_some_and(|name|!name.is_empty())
+        && (value.get("arguments").is_some() ||
+            value.get("args").is_some() ||value.get("parameters").is_some() ||
+            value.get("function").and_then(|f|f.get("arguments")).is_some())
+}
+
 pub(super) fn tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
