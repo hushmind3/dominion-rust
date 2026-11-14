@@ -4,6 +4,7 @@ import {Check,Code2,Eye,GitCommit,Hammer,Package,Play,RefreshCw,Square,Terminal,
 import {Button,TextInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {get,post} from '../api'
+import {WorkflowArtifacts} from './developer/WorkflowArtifacts'
 
 type DevStatus={
  config:{sourceDir:string;repoUrl:string;branch:string;previewPort:number};
@@ -23,6 +24,7 @@ export function DeveloperPage(){
  const loc=useLocale()
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
  const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
+ const workflowJobs=useRemote<any[]>('/api/jobs',[])
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
@@ -105,6 +107,9 @@ export function DeveloperPage(){
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#EFE9DF] pt-3"><Button variant="secondary" disabled={!s.exists||s.preview.status==='running'} onClick={()=>void preview('start')}><Play size={14}/> {t('dev.previewStart')}</Button><Button variant="secondary" disabled={s.preview.status!=='running'} onClick={()=>void preview('stop')}><Square size={14}/> {t('dev.stop')}</Button><Button variant="primary" disabled={!s.preview.url} onClick={()=>void openPreview()}><Eye size={14}/> {t('dev.previewOpen')}</Button><span className="text-[10px] text-[#8A8176]">{s.preview.status==='running'?s.preview.url:s.preview.status}</span></div>
      </div>
      {s.installer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><strong className="block truncate text-[12px] text-[#3A342D]">{s.installer.name}</strong><small className="text-[10px] text-[#8A8176]">{fmtBytes(s.installer.bytes)} · {formatDateTime(s.installer.mtime)}</small></div></div><p className="mt-2 text-[10px] leading-4 text-[#8A8176]">{t('dev.installerNote')}</p></div>}
+    </Panel>
+    <Panel className="min-w-0 p-5">
+     <WorkflowArtifacts jobs={workflowJobs.value} reload={workflowJobs.reload}/>
     </Panel>
     <Panel className="min-w-0 p-5">
      <Subheading title={t('dev.changes')} extra={<div className="flex items-center gap-2"><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void loadDiff()}><RefreshCw size={12}/> {t('dev.refresh')}</Button><span className="text-[11px] text-[#8A8176]">{t('dev.count',{count:diff?.count||0})}</span></div>}/>
