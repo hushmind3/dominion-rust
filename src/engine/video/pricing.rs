@@ -88,6 +88,11 @@ mod tests{
         let q=quote(&film,16,2).unwrap();
         assert_eq!(q["usdCents"],272);
         assert_eq!(q["referenceKrw"],3634);
+        let actual_segments=json!({"model":"ltx-2-5-pro","quality":"1080p",
+            "film":{"clips":[{"duration":10},{"duration":6}]}});
+        // 10s and 6s reservations each round up: 3635 KRW, not 3634.
+        let segmented=quote(&actual_segments,16,2).unwrap();
+        assert_eq!(segmented["referenceKrw"],3635);
         let accepted=json!({"approvedPaidQuote":true,
             "approvedQuoteFingerprint":q["fingerprint"],"maxApprovedKrw":3634});
         assert_eq!(approved(&q,&accepted).unwrap(),3634);
