@@ -240,3 +240,23 @@ test("thread stream retains latest owner defaults and never impersonates an unre
  assert.equal(body.toolsEnabled,true);
  assert.equal(body.sessionId,undefined);
 });
+
+test("native capability negotiation is read-only and does not start a run", async () => {
+  let calls = 0;
+  const sdk = new DominionClient({fetch: async (url, init) => {
+    calls++;
+    assert.equal(new URL(url).pathname, "/api/sdk/info");
+    assert.equal(init.method, "GET");
+    return json({
+      protocol:"dominion-native-agent", apiVersion:1, engine:"rust",
+      transports:["http_json","sse"], capabilities:["native_threads","durable_goals"],
+      semantics:{runPostIdempotent:false,disconnectCancelsExecution:false,
+        eventReplayGetIdempotent:true,externalToolApproval:"engine_enforced"},
+    });
+  }});
+  const info = await sdk.sdkInfo();
+  assert.equal(info.apiVersion, 1);
+  assert.ok(info.capabilities.includes("native_threads"));
+  assert.equal(info.semantics.runPostIdempotent, false);
+  assert.equal(calls, 1);
+});
