@@ -136,10 +136,30 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .build().map_err(|e|e.to_string())?;
     // Persist potential billing exposure and the uncertain-effects guard in
     // ONE job checkpoint before the non-idempotent paid POST.
-    let attempts=ctx.state.store.get("job",&ctx.job_id)
-        .and_then(|job|job["paidSubmissionAttempts"].as_u64()).unwrap_or(0);
+    // A known price-revision and owner-approved total budget are mandatory
+    // before any billable POST. Changing the built-in tariff snapshot revokes
+    // old approvals and requires a fresh owner confirmation.
+    let frozen_quote=&input["costQuote"];
+    if !super::pricing::price_version_matches(frozen_quote) {
+        return Err("needs_review: LTX 가격표 버전이 달라졌습니다. 신규 견적 승인 후 실행하세요.".into());
+    }
+    let clip_quote=super::pricing::quote(&spec,
+        spec["duration"].as_u64().ok_or("생성 영상 길이 누락")?,1)?;
+    let ceiling=input["maxApprovedKrw"].as_u64()
+        .ok_or("needs_review: 영상 원화 승인 한도가 없습니다.")?;
+    let job=ctx.state.store.get("job",&ctx.job_id)
+        .ok_or("needs_review: 영속 영상 작업이 없습니다.")?;
+    let attempts=job["paidSubmissionAttempts"].as_u64().unwrap_or(0);
+    let reserved=job["paidReservedKrw"].as_u64().unwrap_or(0);
+    let next=reserved.checked_add(clip_quote["referenceKrw"].as_u64()
+        .ok_or("원화 클립 단가가 없습니다.")?).ok_or("원화 예산 계산 초과")?;
+    if next>ceiling {
+        return Err("needs_review: 영상 추가 생성 견적이 승인한 원화 상한을 초과했습니다.".into());
+    }
+    // Reservation + uncertain-effects guard share one durable checkpoint.
+    // A crash cannot silently spend again when a remote POST was attempted.
     ctx.checkpoint(json!({"phase":"submitting","progress":5,
-        "paidSubmissionAttempts":attempts.saturating_add(1),
+        "paidReservedKrw":next,"paidSubmissionAttempts":attempts.saturating_add(1),
         "videoState":{"inFlight":true,"provider":"ltx","submitted":false}}))?;
     let response = client.post(API).bearer_auth(&secret).json(&json!({
         "prompt":spec["prompt"],"model":model,"duration":spec["duration"],
