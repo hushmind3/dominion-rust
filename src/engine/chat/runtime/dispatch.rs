@@ -65,6 +65,7 @@ pub(super) async fn deterministic_tool(
     op_seq: u64,
     metrics: &std::sync::Mutex<Metrics>,
 ) -> Result<(Value, Value), String> {
+    let workspace=crate::engine::goal_git::workspace_for_session(state,session_id)?;
     let mut operations = state
         .store
         .all("execution_operation")
@@ -120,7 +121,7 @@ pub(super) async fn deterministic_tool(
         .ok_or("결정적 실행 시작을 저장할 수 없습니다.")?;
     let (mut result, ok) = if allowed {
         let context = ToolContext {
-            workspace: &state.config.workspace,
+            workspace: &workspace,
             store: &state.store,
             state,
             session_id,
@@ -157,7 +158,7 @@ pub(super) async fn deterministic_tool(
         counters.tool_elapsed_ms += started.elapsed().as_millis() as u64;
     }
     let sealed = crate::engine::effect::seal(
-        &state.config.workspace,
+        &workspace,
         tool,
         arguments,
         &result,
@@ -393,6 +394,7 @@ pub(super) async fn dispatch_tool_call(
     procedure_strategy: Option<&str>,
     procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
+    let workspace=crate::engine::goal_git::workspace_for_session(state,session_id)?;
     let argument_strategy = crate::engine::algorithms::choose_for_agent(
         state,
         "tool.arguments",
@@ -519,7 +521,7 @@ pub(super) async fn dispatch_tool_call(
         (value, false)
     } else if allowed {
         let context = ToolContext {
-            workspace: &state.config.workspace,
+            workspace: &workspace,
             store: &state.store,
             state,
             session_id,
@@ -598,7 +600,7 @@ pub(super) async fn dispatch_tool_call(
         }),
     );
     let sealed = crate::engine::effect::seal(
-        &state.config.workspace,
+        &workspace,
         &call.name,
         &arguments,
         &result,
