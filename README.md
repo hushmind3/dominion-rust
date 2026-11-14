@@ -589,3 +589,13 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - **선택 장면 재제작**: `GET /api/video/jobs/:id/scenes` → 영상 UI의 `FilmRetake`에서 결과 SHA·미완성 뒤쪽 장면 수·예상 신규 유료 호출 수 확인 → 명시적 동의 → `POST /api/video/jobs/:id/retake` → `jobs::enqueue_once`의 결정적 작업 ID → 신규 작업이 이전 정상 장면의 MP4/영수증을 검증 후 복사하고 선택 장면 및 아직 없는 장면만 유료 호출합니다. 원본 유료 영상과 영수증은 보존됩니다. 기존 파일과 영수증이 불일치하면 재구매 없이 사용자 검토가 필요합니다.
 - **RSI 연구 입력**: `rsi_scan::report` → `rsi_scan/goal_signals.rs::collect`가 사용자 목표의 반복 실패와 실제 성공 영수증 수를 통계로 수집 → `rsi/system/frontier.rs`에서 실제 소스 개선 목표 연구에 활용합니다. 사용자 자유 텍스트·파일 내용은 전달하지 않습니다. 작업 성공 통계는 **독립 RSI 평가/채택 기록으로 사용하지 않습니다**.
 - 기술 검수는 재생 메타데이터 검사이며 영상의 의미·시청 품질·인물/장면 일관성을 증명하지 않습니다. 유료 API 실제 청구액과 유료 모델 RSI 자율 다세대 개선은 아직 실증되지 않았습니다.
+
+
+### Sub1 2026-11-14: room tool-intent correctness and selection evidence
+
+- `src/engine/chat/runtime/tool_selection.rs::{room_tool_request,select_room_tools}` distinguishes whole-word ASCII actions from incidental substrings (for example `latest`/`test`, `profile`/`file`, `thread`/`read`, `brunch`/`run`). Korean inflected action stems still match, English `files`, `tests`, `continue` and `resume` are supported.
+- Code investigation includes `code_search` and bounded workspace reads. Explicit editing can expose `workspace_replace_range` and `workspace_replace_function`; batched `delegate_tasks` joins the delegate tools. Recent tool history boosts the selection only for explicit continuation, not unrelated new turns.
+- `src/engine/chat/runtime/turn.rs` persists `execution.toolSelection` with catalog/selected tool counts and serialized schema bytes **before provider-specific budget truncation**. These are deterministic routing diagnostics, **not** proof of charged-token or won-currency savings. Provider usage, cache writes/reads, task success and actual costs must be evaluated separately.
+- Regression tests: `tests/support/engine/chat_runtime.tests.rs` covers lexical false positives, positive English actions, fresh-vs-continuation history and source editing exposure. No CI, Rust compiler, paid API or live-provider verification was run for this change.
+- Research context (2026): [OpenAI Tool Search](https://developers.openai.com/api/docs/guides/tools-tool-search), [Anthropic Manage Tool Context](https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context), [ToolBottleneckBench (Oct 2026)](https://arxiv.org/abs/2610.21098) and [Airbnb Agent Harness Optimizer](https://github.com/airbnb/agent-harness-optimizer). Dominion implements its own deterministic selection here; it does not claim native provider-side deferred search.
+
