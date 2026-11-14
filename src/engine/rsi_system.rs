@@ -7,10 +7,10 @@ use std::{path::Path,fs};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rooms/economy.rs","src/engine/rooms/speakers.rs","src/engine/router.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi/evaluation/worktree.rs","src/engine/chat.rs","src/engine/rooms.rs","src/engine/chat/room_context.rs","src/engine/decompose.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/rsi/evaluation/worktree.rs","src/engine/chat.rs","src/engine/rooms.rs","src/engine/chat/room_context.rs","src/engine/decompose.rs","src/engine/goals.rs","src/engine/goal_control.rs","src/engine/goals/report.rs","src/engine/goals/git.rs","src/state.rs","src/engine/verification.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
-    ("tools",&["src/engine/tools.rs","src/engine/video.rs","src/engine/video/runway.rs","src/engine/video/shot_plan.rs","src/engine/video/kling4.rs","src/engine/video/frame_anchor.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
+    ("tools",&["src/engine/tools.rs","src/engine/video.rs","src/engine/video/runway.rs","src/engine/video/shot_plan.rs","src/engine/video/kling4.rs","src/engine/video/frame_anchor.rs","src/engine/video/quality.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_meta_controller.rs","src/engine/rsi_evolve.rs","src/engine/rsi/execution/mutation.rs","src/engine/rsi_system.rs","src/engine/rsi/meta/symbiosis.rs","src/engine/rsi/evaluation/intervention_lab.rs","src/engine/rsi/learning/negative_transfer.rs","src/engine/rsi_recursive_rewrite.rs","src/engine/rsi_principle_learning.rs","src/engine/rsi/meta/model_ecology.rs","src/engine/rsi_prequential.rs"]),
     ("model_architecture",&["src/engine/models.rs","src/engine/llm.rs","src/engine/cli_model.rs","src/engine/learning.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
