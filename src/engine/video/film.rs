@@ -296,12 +296,23 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     }
     let staged = dir.join("output.part.mp4");
     if !std::fs::metadata(&staged).is_ok_and(|metadata| metadata.len()>1024) {
-        return Err("영상 합성 파일이 비어 있습니다.".into());
+        return Err("needs_review: 영상 합성 파일이 비어 있습니다. 유료 클립을 보존합니다.".into());
     }
+    // The concat demuxer can finish successfully while the assembled file
+    // contains missing/truncated timeline segments. Validate the staged film
+    // BEFORE exposing output.mp4. This is local ffprobe, never another paid
+    // generation request; verified original clip receipts remain reusable.
+    let total_seconds=input["render"]["film"]["duration"].as_u64()
+        .ok_or("동결된 최종 영상 길이가 없습니다.")?;
+    let final_technical=quality::inspect_final(&input["config"],&staged,
+        total_seconds,aspect,audio).await.map_err(|error|format!(
+        "needs_review: 최종 영상 합성 검수 실패: {error}. 유료 클립은 보존하며 재과금하지 않습니다."))?;
+    let final_digest=file_sha(&staged)?;
     std::fs::rename(staged,dir.join("output.mp4")).map_err(|e|e.to_string())?;
     Ok(json!({"engine":"ltx","mode":"film","model":input["render"]["model"],
         "duration":input["render"]["film"]["duration"],"shots":clips.len(),
         "clipReceipts":receipts,"newPaidCallsThisRun":charged,
+        "finalTechnicalQuality":final_technical,"finalOutputSha256":final_digest,
         "audio":input["render"]["generate_audio"],
         "quality":input["render"]["quality"],"semanticQualityVerified":false}))
 }
