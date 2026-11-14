@@ -74,3 +74,10 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 ### 2026-11-14 · Goal worktree 실실행 호출 경로
 
 `api/goals.rs::create_goal(isolateWorktree)` → `jobs::enqueue_once` → `goals::run` → `goal_git::prepare` → `chat/runtime/tool_execution::{deterministic_tool,dispatch_tool_call}` → `goal_git::workspace_for_session` → `tools::execute` → `verification::{baseline_checks_in,acceptance_gaps_in}` → `goals/report::build` → `api/goals::{changes,apply_changes,discard_changes}` → `Goals.tsx`. 하위 위임은 `tools::delegate`의 `parentSessionId`로 작업공간을 상속하고 `state::cancel_session`에서 취소가 전파됩니다. `rsi_system.rs::COMPONENTS`의 `harness` 영역이 이 실행 모듈을 실제 소스로 추적합니다. 구현 범위와 미해결 OS 샌드박스·동시쓰기 문제는 `docs/SUB4-ISOLATED-AGENT-2026-11-14.md`에 기재합니다.
+
+### 2026-11-14 v3 · 신규 실제 연결
+
+- 에이전트: `tools::definitions("delegate_tasks")` → `tools/batch.rs::delegate_batch` → `tools::delegate(readOnly=true)` → `chat/runtime/turn.rs` 도구 allowlist → `tools::execute` 및 `chat/runtime/tool_execution.rs` 강제 검사 → `task_result` 집계.
+- 운영 피드백: `goals::finish` → `goal_feedback::record` → DB `goal_receipt` → `rsi/planner/focus.rs::generation_context` → 다음 세대 모델의 조사 프롬프트. `independentRsiGain:false`: 실제 채택·평가 게이트를 대신하지 않음.
+- 영상: `api/video.rs::create_job` → `video::enqueue(cinematic)` → `video::run` → `video/cinematic.rs::render` → `video/comfy.rs::render` → `video/quality.rs::inspect_clip` → `FFmpeg` → 최종 `quality::inspect` → `Video.tsx` 장면별 영수증.
+- 셀프 모델 `rsi_system.rs::COMPONENTS`에 신규 실제 소스 모듈을 등록. 구조·원가/시각 품질/동시성의 미확인 경계는 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md](SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md)에 명시.
