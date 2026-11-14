@@ -11,13 +11,17 @@ use std::time::Duration;
 pub(crate) fn remaining_goal_tokens(
     state:&crate::state::AppState,session_id:&str
 )->Option<u64>{
-    let session=state.store.get("session",session_id)?;
-    let goal_id=session["goalId"].as_str()?;
-    let goal=state.store.get("goal",goal_id)?;
+    // Child delegate sessions share the ROOT goal's owner budget. Never
+    // create a fresh allowance by walking down parentSessionId edges.
+    let (root,goal)=state.store.enclosing_goal(session_id)?;
     if !matches!(goal["status"].as_str(),Some("queued"|"running")){return None;}
     let limit=goal["tokenBudget"].as_u64()?;
-    let observed=state.store.session_usage(session_id)["totalTokens"].as_u64()
-        .unwrap_or(0);
+    // Fail closed on SQLite errors rather than interpreting a broken usage
+    // ledger as zero tokens spent.
+    let observed=match state.store.session_tree_usage(&root){
+        Ok(usage)=>usage["totalTokens"].as_u64().unwrap_or(limit),
+        Err(_)=>return Some(0),
+    };
     Some(limit.saturating_sub(observed))
 }
 pub(crate) fn goal_token_budget_exhausted(
@@ -107,7 +111,7 @@ mod tests {
         let store = crate::db::Store::open(&config.db_path()).unwrap();
         let vault = crate::vault::Vault::open(&config.key_path());
         let state = crate::state::AppState::new(config, store, vault);
-        state.store.put("session", &json!({"id":"s"}));
+        state.store.put("session", &json!({"id":"s","goalId":"g"}));
         state.store.put(
             "goal",
             &json!({"id":"g","goal":"a real task","sessionId":"s","status":"running"}),
@@ -180,6 +184,31 @@ mod tests {
         assert!(!goal_token_budget_exhausted(&state,"s"));
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn delegated_descendant_usage_is_charged_to_original_goal(){
+        let (state,dir)=state();
+        state.store.patch_if("goal","g","id",&json!("g"),
+            &json!({"tokenBudget":1000})).unwrap();
+        state.store.put("session",&json!({"id":"child","parentSessionId":"s"})).unwrap();
+        state.store.put("session",&json!({"id":"grand","parentSessionId":"child"})).unwrap();
+        state.store.audit("model.usage",json!({
+            "sessionId":"s","totalTokens":120
+        }));
+        state.store.audit("model.usage",json!({
+            "sessionId":"child","totalTokens":420
+        }));
+        state.store.audit("model.usage",json!({
+            "sessionId":"grand","totalTokens":260
+        }));
+        assert_eq!(remaining_goal_tokens(&state,"s"),Some(200));
+        assert_eq!(remaining_goal_tokens(&state,"grand"),Some(200));
+        assert!(goal_token_budget_exhausted(&state,"child"));
+        state.store.audit("model.usage",json!({"sessionId":"outsider",
+            "totalTokens":5000}));
+        assert_eq!(remaining_goal_tokens(&state,"s"),Some(200));
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn cancelled_or_deleted_records_stop_work_without_requiring_session_flag() {
         let (state, dir) = state();
