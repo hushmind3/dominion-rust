@@ -729,3 +729,8 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 ### 2026-11-14 서브4 유료 영상 요금 추정·승인·재시도 원장
 
 `VideoPage` → `POST /api/video/quote` → `video::paid_quote` → `runway::quote`로 공개 요금표 기준 **원화 견적·클립 수·모델·오디오**를 계산한다. `POST /api/video/jobs`는 사용자 승인과 최대 추정 크레딧을 검증하며 실제 유료 원격 요청 직전에 가격을 다시 확인한다. 작업의 시도 횟수·잠재 과금 노출은 영속 체크포인트에 남기고 **실제 청구 비용과 구별**한다. 외부 과금/환불 검증은 아직 미실시다. 상세한 공식 가격 근거·회귀 검사는 [SUB4-VIDEO-COST-2026-11-14.md](docs/SUB4-VIDEO-COST-2026-11-14.md)를 참고한다.
+
+
+### 2026-11-14 · 서브4 원자적 목표 생성과 재개
+
+`POST /api/goals`가 목표를 저장한 다음 작업 등록에 실패하면 `status=queued`인 유령 목표가 남던 위험을 제거했다. 사전 생성한 `goalId`와 결정적인 `jobId`를 SQLite `Store::transaction` 한 번으로 저장한다. `POST /api/goals/:id/resume` 역시 `Store::transaction_if_status`로 상태 CAS와 새 작업 등록을 묶어 동시 재개 충돌이나 기록 없는 작업을 차단한다. 두 경우 모두 **트랜잭션 성공 이후에만** SSE 이벤트·감사 기록을 발행한다. 테스트에 트랜잭션 롤백과 동시 재개를 추가했다. UI/API 응답, 기존 중단/격리/토큰 예산의 계약은 유지된다. 외부 실모델 완주 여부는 별도 검증 대상이다.

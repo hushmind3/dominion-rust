@@ -59,3 +59,58 @@ async fn reviewed_resume_is_new_job_and_preserves_provenance(){
         Json(json!({"acknowledgeUnknownEffects":true}))).await.status(),StatusCode::CONFLICT);
     drop(state);std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn goals_never_expose_queued_records_without_matching_jobs(){
+    let (state,dir)=state();
+    let created=create_goal(State(state.clone()),Json(json!({
+        "goal":"build a validated report","successCriteria":[]
+    }))).await;
+    assert_eq!(created.status(),StatusCode::OK);
+    let goals=state.store.all("goal");
+    let jobs=state.store.all("job");
+    assert_eq!(goals.len(),1);
+    assert_eq!(jobs.len(),1);
+    assert_eq!(goals[0]["jobId"],jobs[0]["id"]);
+    assert_eq!(jobs[0]["input"]["goalId"],goals[0]["id"]);
+    assert_eq!(jobs[0]["status"],"queued");
+    let id=goals[0]["id"].as_str().unwrap();
+    let (invalid,_)=state.store.transaction(&[
+        ("goal".to_string(),json!({"id":"phantom","status":"queued"})),
+        ("job".to_string(),json!({"status":"queued"}))
+    ]).err().map(|x|(x,())).expect("invalid job rolls back goal");
+    assert!(!invalid.is_empty());
+    assert!(state.store.get("goal","phantom").is_none());
+    let committed=state.store.transaction_if_status("goal",id,"failed",&[
+        ("goal".to_string(),json!({"id":id,"status":"queued"})),
+        ("job".to_string(),json!({"id":"never-queued","status":"queued"}))
+    ]).unwrap();
+    assert!(!committed);
+    assert!(state.store.get("job","never-queued").is_none());
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+#[tokio::test]
+async fn concurrent_owner_resume_creates_one_job_only(){
+    let (state,dir)=state();
+    state.store.put("goal",&json!({
+        "id":"resume-race","status":"needs_review","goal":"recover",
+        "jobId":"old-job","iterations":1,"maxIterations":4
+    })).unwrap();
+    let (one,two)=tokio::join!(
+        resume_goal(State(state.clone()),Path("resume-race".into()),
+            Json(json!({"acknowledgeUnknownEffects":true}))),
+        resume_goal(State(state.clone()),Path("resume-race".into()),
+            Json(json!({"acknowledgeUnknownEffects":true})))
+    );
+    let codes=[one.status(),two.status()];
+    assert!(codes.contains(&StatusCode::OK));
+    assert!(codes.contains(&StatusCode::CONFLICT));
+    let goal=state.store.get("goal","resume-race").unwrap();
+    assert_eq!(goal["resumeCount"],1);
+    assert_eq!(goal["resumeHistory"].as_array().unwrap().len(),1);
+    let jobs=state.store.all("job");
+    assert_eq!(jobs.len(),1);
+    assert_eq!(goal["jobId"],jobs[0]["id"]);
+    assert_eq!(jobs[0]["input"]["resumeAfterReview"],true);
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
