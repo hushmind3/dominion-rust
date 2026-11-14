@@ -21,6 +21,21 @@ npm install /absolute/path/to/dominion-rust/sdk/typescript
 
 Start the native Dominion service on `http://127.0.0.1:4317`.
 
+## First-party native Rust execution and live steering
+
+The dedicated typed SDK uses **`/api/sdk/threads`**, **`/:id/run`** (SSE), **`/:id/history`**, **`/:id/steer`**, and **`/:id/cancel`**. Both `/api/chat` and the SDK route run the same Rust model/tool loop. The new SDK route never invokes a vendor's agent SDK.
+
+```ts
+const thread = await client.startThread({title: "Maintenance", providerId:"p", model:"m"});
+const running = thread.runStreamed("Fix failing tests and verify");
+for await (const event of running) console.log(event.type);
+// From another concurrent async owner action, while a turn is running:
+await thread.steer("Change direction: reproduce the failure first");
+// No automatic duplicate paid model request on stream interruption.
+```
+
+The correction is persisted before acknowledgement. It supersedes **unstarted** tool calls from the obsolete plan; started side effects and their observed results are not erased.
+
 ## Autonomous goals
 
 ```ts
