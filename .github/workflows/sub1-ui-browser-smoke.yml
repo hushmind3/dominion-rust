@@ -1,0 +1,22 @@
+name: Sub1 UI browser smoke (manual)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - run: npm --prefix web exec -- playwright install --with-deps chromium
+      - name: Test consolidated connections, old links, manual memory and no RSI popups
+        run: node web/tests/connections.browser.mjs
