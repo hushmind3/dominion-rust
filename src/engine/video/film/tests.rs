@@ -47,6 +47,25 @@ fn sha_receipt_does_not_reuse_unknown_or_mutated_paid_clip(){
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
+fn stream_copy_requires_verified_identical_codec_geometry_fps_and_audio(){
+    let q=|fps:&str,codec:&str,width:u64|json!({"quality":{
+        "status":"technical_pass","codec":codec,"width":width,
+        "height":1080,"frameRate":fps,"pixelFormat":"yuv420p",
+        "audioStream":true,"audioCodec":"aac","audioChannels":2,
+        "audioSampleRate":"48000"}});
+    let one=q("24/1","h264",1920);
+    assert!(compatible_for_stream_copy(&[one.clone(),one.clone()]));
+    assert!(!compatible_for_stream_copy(&[one.clone(),q("25/1","h264",1920)]));
+    assert!(!compatible_for_stream_copy(&[one.clone(),q("24/1","hevc",1920)]));
+    assert!(!compatible_for_stream_copy(&[one.clone(),q("24/1","h264",1080)]));
+    assert!(!compatible_for_stream_copy(&[one,json!({"quality":{"status":"not_verified"}})]));
+    let geometry=normalization_geometry(&json!({"videoQuality":"1080p"}),
+        &[], "9:16");
+    assert_eq!(geometry,(1080,1920));
+    assert_eq!(normalization_geometry(&json!({"videoQuality":"720p"}),
+        &[],"16:9"),(1280,720));
+}
+#[test]
 fn retake_consent_counts_only_missing_and_target_shots(){
     let home=std::env::temp_dir().join(format!("film-retake-{}",uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();

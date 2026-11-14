@@ -48,7 +48,8 @@ fn evaluate(probe:&Value,seconds:u64,aspect:&str,audio:bool)->Result<Value,Strin
     if (found-seconds as f64).abs()>tolerance {
         return Err(format!("영상 길이가 요청과 다릅니다: 실제 {found:.1}초, 요청 {seconds}초"));
     }
-    let audio_stream=streams.iter().any(|stream|stream["codec_type"]=="audio");
+    let audio_details=streams.iter().find(|stream|stream["codec_type"]=="audio");
+    let audio_stream=audio_details.is_some();
     if audio&&!audio_stream {
         return Err("오디오 요청 영상인데 오디오 스트림이 없습니다.".into());
     }
@@ -57,6 +58,10 @@ fn evaluate(probe:&Value,seconds:u64,aspect:&str,audio:bool)->Result<Value,Strin
         "verification":"ffprobe-stream-duration-aspect-audio-v1",
         "durationSeconds":found,"width":width,"height":height,
         "codec":codec,"ratio":aspect,"audioStream":audio_stream,
+        "frameRate":video["avg_frame_rate"],"pixelFormat":video["pix_fmt"],
+        "audioCodec":audio_details.map(|stream|&stream["codec_name"]),
+        "audioChannels":audio_details.map(|stream|&stream["channels"]),
+        "audioSampleRate":audio_details.map(|stream|&stream["sample_rate"]),
         "semanticQualityVerified":false}))
 }
 pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,
@@ -72,7 +77,7 @@ pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,
     }
     let mut cmd=tokio::process::Command::new(probe);
     cmd.kill_on_drop(true).args(["-v","error","-show_entries",
-        "format=duration:stream=codec_type,codec_name,width,height,duration",
+        "format=duration:stream=codec_type,codec_name,width,height,duration,avg_frame_rate,pix_fmt,channels,sample_rate",
         "-of","json"]).arg(path);
     let output=tokio::time::timeout(Duration::from_secs(45),cmd.output())
         .await.map_err(|_|"ffprobe 검수 제한시간을 초과했습니다.".to_string())?

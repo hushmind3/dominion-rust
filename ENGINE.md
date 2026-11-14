@@ -68,6 +68,17 @@
 `src/engine/goals/progress.rs::measure_objective`가 실제 GoalRunner의 판단에
 연결되며, 명시적인 검증 조건이 없는 범용 작업은 기존 신규 행동 측정을 유지한다.
 
+## 유료 영상 결합의 로컬 원본 보존
+
+LTX 유료 장면의 ffprobe 검수에는 코덱·프레임률·픽셀 포맷·화면 크기·
+오디오 코덱/채널/샘플링 정보를 포함한다. 동일한 스트림이면 기존 FFmpeg
+무손실 복사를 사용하고, 다른 스트림이나 검증 불가능한 파일은
+**유료 원본을 바꾸지 않은 채** FFmpeg 로컬 복제본으로 프레임률·
+화면 크기·H.264/AAC를 맞춘다. 전송 실패 시에도 재호출 대신
+로컬 정규화를 1회 시도하고, 결과에는 `concatMode`,
+`localNormalizedClips`, `newPaidCallsForNormalization=0`을 기록한다.
+이는 기술적 결합 기능이지 영화적 연속성의 주관적 품질 보증이 아니다.
+
 ## 영상 멀티샷 연속성
 
 영상 작업 등록 시 사용자 입력 `filmAnchor`(인물·의상·배경 기준)을

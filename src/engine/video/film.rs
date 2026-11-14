@@ -286,6 +286,108 @@ fn reuse_other_shots(ctx:&JobContext,input:&Value,dir:&Path)->Result<(),String>{
     Ok(())
 }
 
+/// Same container extension does not mean a safe stream-copy concat.
+/// Video stream properties, timebase and audio layout must be compatible.
+/// Missing ffprobe evidence always selects local normalization, never a
+/// speculative splice of potentially incompatible paid clips.
+fn compatible_for_stream_copy(receipts:&[Value])->bool{
+    let signature=|receipt:&Value|->Option<Value>{
+        let quality=&receipt["quality"];
+        if quality["status"]!="technical_pass"
+            || quality["width"].as_u64().unwrap_or(0)==0
+            || quality["height"].as_u64().unwrap_or(0)==0
+            || quality["codec"].as_str().is_none_or(str::is_empty)
+            || quality["frameRate"].as_str().is_none_or(str::is_empty)
+            || quality["pixelFormat"].as_str().is_none_or(str::is_empty)
+        {return None;}
+        let audio=quality["audioStream"].as_bool()?;
+        if audio && (quality["audioCodec"].as_str().is_none_or(str::is_empty)
+            || quality["audioChannels"].as_u64().unwrap_or(0)==0) {
+            return None;
+        }
+        Some(json!([quality["codec"],quality["width"],quality["height"],
+            quality["frameRate"],quality["pixelFormat"],
+            audio,quality["audioCodec"],quality["audioChannels"],
+            quality["audioSampleRate"]]))
+    };
+    let Some(first)=receipts.first().and_then(signature) else{return false;};
+    receipts.len()>=2 && receipts.iter().skip(1)
+        .all(|receipt|signature(receipt).as_ref()==Some(&first))
+}
+
+fn normalization_geometry(input:&Value,receipts:&[Value],aspect:&str)->(u64,u64){
+    let quality=receipts.first().map(|r|&r["quality"]).unwrap_or(&Value::Null);
+    let wanted=match input["videoQuality"].as_str().unwrap_or("1080p") {
+        "4k"=>2160,"1440p"=>1440,"720p"=>720,_=>1080
+    };
+    let (default_width,default_height)=match aspect{
+        "16:9"=>(wanted*16/9,wanted),
+        "1:1"=>(wanted,wanted),
+        _=>(wanted,wanted*16/9)
+    };
+    let width=quality["width"].as_u64().filter(|n|(320..=8192).contains(n))
+        .unwrap_or(default_width).clamp(320,8192)/2*2;
+    let height=quality["height"].as_u64().filter(|n|(320..=8192).contains(n))
+        .unwrap_or(default_height).clamp(320,8192)/2*2;
+    (width,height)
+}
+fn concat_playlist(dir:&Path,count:usize,normalized:bool)->Result<(),String>{
+    let mut playlist=String::new();
+    for index in 0..count {
+        let entry=if normalized{
+            format!("normalized/clip-{index:02}.mp4")
+        }else{format!("clip-{index:02}/output.mp4")};
+        playlist.push_str(&format!("file '{entry}'\n"));
+    }
+    std::fs::write(dir.join("clips.txt"),playlist).map_err(|e|e.to_string())
+}
+/// Keep original paid MP4s untouched. Transform only local copies and give
+/// every segment identical pixel format, frame rate, geometry and audio codec.
+async fn normalize_paid_clips(
+    ctx:&JobContext,ffmpeg:&Path,dir:&Path,receipts:&[Value],
+    input:&Value,aspect:&str,
+)->Result<(),String>{
+    let output=dir.join("normalized");
+    std::fs::create_dir_all(&output).map_err(|e|e.to_string())?;
+    let (width,height)=normalization_geometry(input,receipts,aspect);
+    let fps=input["fps"].as_u64().filter(|n|matches!(n,24|48)).unwrap_or(24);
+    let filter=format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p");
+    for index in 0..receipts.len(){
+        ctx.checkpoint(json!({"phase":"local_normalization","progress":80+
+            (index*10/receipts.len()),"videoState":{"inFlight":false}}))?;
+        let source=format!("clip-{index:02}/output.mp4");
+        let destination=output.join(format!("clip-{index:02}.mp4"));
+        let partial=output.join(format!("clip-{index:02}.part.mp4"));
+        // An incomplete local encode is discarded on next attempt, not
+        // mistaken for a paid provider result or a verified clip receipt.
+        let _=std::fs::remove_file(&partial);
+        let mut command=tokio::process::Command::new(ffmpeg);
+        command.current_dir(dir).args(["-hide_banner","-loglevel","error",
+            "-nostdin","-y","-i",&source,"-vf",&filter,
+            "-c:v","libx264","-preset","fast","-crf","18",
+            "-r",&fps.to_string()]);
+        if input["generateAudio"]==true{
+            command.args(["-c:a","aac","-b:a","192k","-ar","48000"]);
+        }else{
+            command.arg("-an");
+        }
+        command.args(["-movflags","+faststart"]).arg(&partial);
+        let result=crate::engine::tools::run_command(&mut command,
+            Duration::from_secs(900)).await
+            .map_err(|e|format!("needs_review: 장면 {} 로컬 정규화 오류: {e}. 유료 원본은 보존됩니다.",index+1))?;
+        if !result.status.success(){
+            return Err(format!("needs_review: 장면 {} 로컬 정규화 실패: {}. 유료 원본은 보존됩니다.",
+                index+1,String::from_utf8_lossy(&result.stderr).chars().take(350)
+                    .collect::<String>()));
+        }
+        if !std::fs::metadata(&partial).is_ok_and(|m|m.len()>1024){
+            return Err(format!("needs_review: 장면 {} 정규화 출력이 비었습니다.",index+1));
+        }
+        std::fs::rename(partial,destination).map_err(|e|e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,String>{
     let clips=input["render"]["film"]["clips"].as_array()
         .ok_or("동결된 멀티샷 계획이 없습니다.")?;
@@ -331,20 +433,34 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
             "videoState":{"inFlight":false,"filmCompleted":index+1,
                 "filmTotal":clips.len()}}))?;
     }
-    let mut playlist=String::new();
-    for index in 0..clips.len(){
-        playlist.push_str(&format!("file 'clip-{index:02}/output.mp4'\n"));
+    let mut normalized=!compatible_for_stream_copy(&receipts);
+    if normalized {
+        normalize_paid_clips(ctx,&ffmpeg,dir,&receipts,input,aspect).await?;
     }
-    std::fs::write(dir.join("clips.txt"),playlist).map_err(|e|e.to_string())?;
+    concat_playlist(dir,clips.len(),normalized)?;
     ctx.checkpoint(json!({"phase":"encoding","progress":90,
         "videoState":{"inFlight":false,"filmTotal":clips.len()}}))?;
-    let mut command=tokio::process::Command::new(ffmpeg);
+    let mut command=tokio::process::Command::new(&ffmpeg);
     command.current_dir(dir).args(["-hide_banner","-loglevel","error","-nostdin","-y",
         "-f","concat","-safe","0","-i","clips.txt","-c","copy",
         "-movflags","+faststart","output.part.mp4"]);
-    let output=crate::engine::tools::run_command(&mut command,Duration::from_secs(600)).await?;
+    let mut output=crate::engine::tools::run_command(&mut command,
+        Duration::from_secs(600)).await?;
+    if !output.status.success() && !normalized {
+        // Local-only repair: a successful FFmpeg stream-copy probe does not
+        // guarantee compatible encoded stream headers in every MP4.
+        normalized=true;
+        normalize_paid_clips(ctx,&ffmpeg,dir,&receipts,input,aspect).await?;
+        concat_playlist(dir,clips.len(),true)?;
+        let mut retry=tokio::process::Command::new(&ffmpeg);
+        retry.current_dir(dir).args(["-hide_banner","-loglevel","error","-nostdin","-y",
+            "-f","concat","-safe","0","-i","clips.txt","-c","copy",
+            "-movflags","+faststart","output.part.mp4"]);
+        output=crate::engine::tools::run_command(&mut retry,
+            Duration::from_secs(600)).await?;
+    }
     if !output.status.success(){
-        return Err(format!("장면 결합에 실패했습니다. 이미 구매한 장면은 보존됩니다: {}",
+        return Err(format!("needs_review: 장면 결합에 실패했습니다. 구매한 장면은 보존됩니다: {}",
             String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>()));
     }
     let target=dir.join("output.part.mp4");
@@ -357,7 +473,11 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
     let report=quality::inspect(cfg,&dir.join("output.mp4"),total,aspect,
         input["generateAudio"]==true,strict).await
         .map_err(|e|format!("needs_review: 최종 영상 결합 기술 검수 실패: {e}. 개별 유료 장면은 보존됩니다."))?;
-    Ok(json!({"engine":"ltx","mode":"film","shots":clips.len(),"model":input["videoModel"],
+    Ok(json!({"engine":"ltx","mode":"film",
+        "concatMode":if normalized {"local_normalization"}else{"stream_copy"},
+        "localNormalizedClips":if normalized {clips.len()}else{0},
+        "newPaidCallsForNormalization":0,
+        "shots":clips.len(),"model":input["videoModel"],
         "duration":total,"clipReceipts":receipts,"newPaidCallsThisRun":charged,
         "technicalQuality":report,"semanticQualityVerified":false,
         "quality":"multi-shot-static-consistency-prompt-not-measured"}))
