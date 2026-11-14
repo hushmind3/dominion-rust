@@ -102,7 +102,12 @@ class ExactPatchContract(unittest.TestCase):
         cohort={"x","y","z"}
         report={
             "schema_version":2,"submitted_ids":["x","y","z"],
+            "submitted_instances":3,"total_instances":3,
+            "completed_ids":["x","y","z"],"completed_instances":3,
             "resolved_ids":["x","z"],"resolved_instances":2,
+            "unresolved_ids":["y"],"unresolved_instances":1,
+            "empty_patch_ids":[],"empty_patch_instances":0,
+            "error_ids":[],"error_instances":0,
         }
         result=runner.official_score(report,cohort)
         self.assertEqual(result["officialResolved"],2)
@@ -112,11 +117,50 @@ class ExactPatchContract(unittest.TestCase):
             ("submitted_ids",["x","y"]),
             ("resolved_ids",["x","not-in-cohort"]),
             ("resolved_instances",100),
+            ("completed_ids",["x"]),
+            ("submitted_instances",2),
+            ("empty_patch_ids",["x"]),
+            ("error_ids",["z"]),
             ("schema_version",999),
         ):
             invalid={**report,field:wrong}
             with self.subTest(field=field),self.assertRaises(ValueError):
                 runner.official_score(invalid,cohort)
+
+    def test_official_report_layouts_are_exact_and_conflicts_fail_closed(self):
+        cohort = {"x", "y"}
+        basic = {
+            "schema_version": 2, "total_instances": 2,
+            "submitted_instances": 2, "submitted_ids": ["x", "y"],
+            "completed_instances": 1, "completed_ids": ["x"],
+            "resolved_instances": 1, "resolved_ids": ["x"],
+            "unresolved_instances": 0, "unresolved_ids": [],
+            "empty_patch_instances": 1, "empty_patch_ids": ["y"],
+            "error_instances": 0, "error_ids": [],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run_id = "run_contract"
+            new_path, legacy = runner.official_report_paths(
+                root, run_id, "model/one")
+            self.assertEqual(new_path,
+                             root / "logs" / "evaluation" / run_id / "results.json")
+            self.assertEqual(legacy, root / "model__one.run_contract.json")
+            legacy.write_text(json.dumps(basic), encoding="utf-8")
+            found, _report, score = runner.validated_official_report(
+                root, run_id, "model/one", cohort)
+            self.assertEqual(found, legacy)
+            self.assertEqual(score["officialResolved"], 1)
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            new_path.write_text(json.dumps(basic), encoding="utf-8")
+            found, _report, _score = runner.validated_official_report(
+                root, run_id, "model/one", cohort)
+            self.assertEqual(found, new_path)
+            contrary = {**basic, "resolved_ids": [], "resolved_instances": 0,
+                        "unresolved_ids": ["x"], "unresolved_instances": 1}
+            legacy.write_text(json.dumps(contrary), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                runner.validated_official_report(root, run_id, "model/one", cohort)
 
     def test_operation_metrics_include_failed_and_uncertain_attempts(self):
         events = [
