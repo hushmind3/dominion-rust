@@ -1,6 +1,37 @@
 //! turn: isolated native chat runtime responsibility; preserve executable RSI behavior.
 use super::*;
 
+/// Number of leading tool calls eligible to overlap before the first
+/// exclusive/unknown side-effect barrier. Preserves the model's ordering.
+fn parallel_read_prefix_len<T>(
+    calls: &[T], is_read: impl Fn(&T) -> bool,
+) -> usize {
+    calls.iter().position(|call| !is_read(call)).unwrap_or(calls.len())
+}
+
+#[cfg(test)]
+mod parallel_read_order_tests {
+    use super::parallel_read_prefix_len;
+
+    #[test]
+    fn parallel_reads_respect_first_write_barrier() {
+        let calls = ["read", "read", "write", "read", "read"];
+        assert_eq!(parallel_read_prefix_len(&calls, |call| *call == "read"), 2);
+        assert_eq!(parallel_read_prefix_len(&calls[2..], |call| *call == "read"), 0);
+        assert_eq!(parallel_read_prefix_len(&calls[3..], |call| *call == "read"), 2);
+    }
+
+    #[test]
+    fn unknown_or_exclusive_calls_stay_serial() {
+        let calls = ["mcp_unknown", "read", "read"];
+        assert_eq!(parallel_read_prefix_len(&calls, |call| *call == "read"), 0);
+        let reads = ["read", "read", "read"];
+        assert_eq!(parallel_read_prefix_len(&reads, |call| *call == "read"), 3);
+        let empty: [&str; 0] = [];
+        assert_eq!(parallel_read_prefix_len(&empty, |call| *call == "read"), 0);
+    }
+}
+
 pub(super) async fn run_turn_body(
     state: &AppState,
     request: &TurnRequest,
@@ -1598,12 +1629,31 @@ pub(super) async fn run_turn_body(
             .and_then(|algorithm| algorithm["implementation"].as_str())
             == Some("parallel-reads")
         {
-            let read_calls = round_calls
-                .iter()
-                .filter(|call| tool_is_read_only(&call.name))
-                .cloned()
-                .collect::<Vec<_>>();
+            // Never move a read ahead of an earlier model-ordered write.
+            // Exclusive/unknown calls are barriers, as in DeepSeek Harness.
+            // Parallelize only the *leading contiguous read group*; the
+            // remaining calls keep their original order and serial fallback.
+            let read_count = parallel_read_prefix_len(&round_calls, |call| {
+                tool_is_read_only(&call.name)
+            });
+            let read_calls = round_calls.iter().take(read_count)
+                .cloned().collect::<Vec<_>>();
             if read_calls.len() >= 2 {
+                // Proposed reads are real tool calls and consume the same
+                // per-turn proposal budget as every serial tool dispatch.
+                for _ in &read_calls {
+                    if !budget.charge_proposal() {
+                        mark_budget_exhausted(state, execution_id);
+                        return Err(format!(
+                            "도구 제안 예산({}회)을 초과했습니다.",
+                            MAX_TOOL_CALLS.saturating_mul(2)
+                        ));
+                    }
+                }
+                if state.is_cancelled(session_id)
+                    || state.cancellation_generation(session_id) != generation {
+                    return Err("실행이 중단되었습니다.".into());
+                }
                 // Only this applicable run owns a combination usage record;
                 // a single read is not a combination measurement.
                 let _ = crate::engine::algorithms::choose_for_agent(
@@ -1688,7 +1738,9 @@ pub(super) async fn run_turn_body(
                         state, execution_id, "recovery.strategy", ok,
                     );
                 }
-                round_calls.retain(|call| !tool_is_read_only(&call.name));
+                // Drain only executed prefix. Later reads remain behind the
+                // intervening write/control call, preserving model order.
+                round_calls.drain(..read_count);
             }
         }
         let mut ordering_used = false;
