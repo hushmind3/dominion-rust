@@ -883,3 +883,11 @@ and grandchild's observed model usage via `src/db/usage_tree.rs`.
 No additional model calls are allowed after the observed goal-wide
 limit is reached; an in-flight provider call may exceed the soft cap.
 Unit tests cover concurrent admission invariants and descendant usage.
+
+
+The source now keeps `src/engine/tools.rs` as a small stable façade;
+`tools/catalog.rs` separately owns model schemas and
+`tools/delegation.rs` owns all bounded delegated worker registration.
+Existing goal session usage UI/API calls now include child model usage.
+First-party Rust `DominionSdk::goal_usage(goal_id)` returns the
+same native audit ledger without HTTP or JavaScript.
