@@ -452,6 +452,35 @@ mod schema_budget_tests {
     }
 
     #[test]
+    fn owner_implementation_request_in_room_preserves_read_edit_test_chain() {
+        let names=[
+            "file_list","file_read","workspace_list","workspace_read","code_search",
+            "workspace_read_range","workspace_replace","workspace_replace_range",
+            "workspace_write","shell_exec","mcp__unrelated__tool"
+        ];
+        let available=names.iter().map(|name|schema(name,50))
+            .collect::<Vec<_>>();
+        let request="프론티어급 에이전트 시스템 구현해라";
+        assert!(room_tool_request(request));
+        let tools=select_room_tools(available.clone(),request,
+            &std::collections::HashSet::new(),true);
+        let offered=tools.iter().map(tool_name).collect::<Vec<_>>();
+        for required in ["workspace_read_range","workspace_replace_range","shell_exec"] {
+            assert!(offered.contains(&required),
+                "owner implementation instruction cannot complete without {required}");
+        }
+        assert!(tools.len()<=8);
+        assert!(offered.iter().all(|name|names.contains(name)));
+    }
+
+    #[test]
+    fn casual_room_chat_does_not_offer_mutating_tools() {
+        let tools=select_room_tools(vec![schema("workspace_write",20)],
+            "안녕하세요", &std::collections::HashSet::new(),false);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
     fn filtered_catalog_never_reintroduces_tools() {
         let offered = vec![schema("mcp__only__read", 100), schema("file_read", 100)];
         let selected = trim_tool_definitions(offered.clone(), size(&offered[0]));
