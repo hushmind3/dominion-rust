@@ -89,6 +89,7 @@ export function AgentsPage() {
     try {
       await post("/api/agents", {
         ...edit,
+        skillIds:edit.skillIds||[],
         name: edit.name.trim(),
         aliases: edit.aliases?.map(alias => alias.trim()).filter(Boolean),
         model: edit.providerId ? model : "",
