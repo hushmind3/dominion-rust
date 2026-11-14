@@ -28,6 +28,9 @@ use turn_body::{run_turn_body};
 #[path = "runtime/adaptation.rs"]
 mod adaptation;
 use adaptation::{failure_observation, environment_fingerprint, record_adaptation_error, adaptation_repair_prompt, attempt_model_adaptation};
+#[path = "runtime/tool_loop.rs"]
+mod tool_loop;
+use tool_loop::{check_tool_result_pairs,ReadLoopGuard,LoopDecision};
 #[path = "runtime/tool_selection.rs"]
 mod tool_selection;
 use tool_selection::{tool_advertised, tool_is_read_only, mark_tool_argument_signal, normalize_tool_arguments, tool_name, room_tool_request, recent_room_tools, select_room_tools, select_tool_definitions, trim_tool_definitions};
