@@ -168,6 +168,9 @@ impl Store {
                  WHERE kind='execution_operation';
              CREATE INDEX IF NOT EXISTS idx_execution_task
                  ON records(json_extract(data,'$.taskId'))
+                 WHERE kind='execution';
+             CREATE INDEX IF NOT EXISTS idx_execution_session
+                 ON records(json_extract(data,'$.sessionId'))
                  WHERE kind='execution';",
         )?;
         // Older databases predate reasoning/tool columns.
@@ -206,6 +209,31 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         rows.filter_map(|row| row.ok()).collect()
+    }
+
+    /// Fail-closed scan for unfinished or ambiguous external tool effects
+    /// belonging ONLY to this goal's executor session. Joining from the
+    /// session's execution records through indexed operation.runId avoids
+    /// scanning every operation made by other agents and workspaces.
+    pub fn session_has_uncertain_effects(&self,session_id:&str)->Result<bool,String>{
+        if session_id.trim().is_empty(){
+            return Err("확인할 목표 세션 ID가 비어 있습니다.".into());
+        }
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let found:i64=conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM records AS execution
+                INNER JOIN records AS operation
+                    ON operation.kind='execution_operation'
+                    AND json_extract(operation.data,'$.runId')=execution.id
+                WHERE execution.kind='execution'
+                    AND json_extract(execution.data,'$.sessionId')=?1
+                    AND (json_extract(operation.data,'$.outcomeUnknown')=1
+                         OR json_extract(operation.data,'$.status') IN
+                            ('running','interrupted'))
+                LIMIT 1)",
+            [session_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        Ok(found!=0)
     }
 
     pub fn execution_operations(&self, run_id: &str) -> Result<Vec<Value>, String> {
