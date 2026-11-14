@@ -279,7 +279,7 @@ async fn run_turn_with_policy(
     finish_attempt(state, &execution_id, &result, &metrics);
     // Steering instructions that arrived after the last model boundary
     // remain durable owner messages but must not be reported as applied.
-    let deferred=super::owner_inbox::defer_unclaimed(state,&execution_id);
+    let deferred=super::defer_owner_steer(state,&execution_id);
     if deferred>0 {
         state.store.audit("owner.steer.deferred",json!({
             "sessionId":session_id,"executionId":execution_id,"count":deferred,
