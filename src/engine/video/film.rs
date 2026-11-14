@@ -170,6 +170,27 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
         "recordedPaidCalls":planned.len(),"terminal":terminal}))
 }
 
+/// Recompute only the clips actually charged for a reviewed partial retake.
+/// A verified sibling is never included in the new billable-second estimate.
+pub(super) fn retake_quote(job:&Value,manifest:&Value,index:usize)->Result<Value,String>{
+    let clips=manifest["clips"].as_array().ok_or("재생성 장면 목록이 없습니다.")?;
+    if clips.get(index).is_none_or(|clip|clip["canRetake"]!=true){
+        return Err("불명확한 유료 결과는 자동으로 재생성할 수 없습니다.".into())
+    }
+    let billed=clips.iter().enumerate().filter_map(|(pos,clip)|{
+        (pos==index || (clip["receiptVerified"]!=true && clip["isAvailable"]!=true))
+            .then(||clip["duration"].as_u64()).flatten()
+    }).collect::<Vec<_>>();
+    if billed.len() as u64!=clips[index]["expectedPaidCalls"].as_u64().unwrap_or(u64::MAX){
+        return Err("추가 유료 장면의 초수 또는 호출 수가 불일치합니다.".into())
+    }
+    super::pricing::quote(
+        job["input"]["videoModel"].as_str().ok_or("고정된 LTX 모델 정보가 없습니다.")?,
+        job["input"]["videoQuality"].as_str().ok_or("고정된 영상 해상도가 없습니다.")?,
+        &billed,job["input"]["generateAudio"]!=false,
+    )
+}
+
 /// Require the owner to pin a visible source clip AND the exact number of
 /// new billable calls (target + still-uncreated tail shots). Every other
 /// completed clip remains reused by SHA, never submitted again.
