@@ -1,7 +1,7 @@
 //! recompiled descendant plan and target validation.
 //! Only descendant_planner owns these implementations. Other RSI stages use explicit
 //! names imported through the stable rsi_evolve facade.
-use super::{AppState, DOMAINS, Path, PathBuf, Value, candidate_domains, choose_focus_files, comparable_trial_baseline, focus_file_context, history_with_verified_payoffs, json, learned_edit_method, scored_domains, search_strategy, select, select_domain, selection_objective};
+use super::{AppState, DOMAINS, Path, PathBuf, Value, candidate_domains, choose_focus_files, available_trial_baseline, focus_file_context, history_with_verified_payoffs, json, learned_edit_method, scored_domains, search_strategy, select, select_domain, selection_objective};
 /// The coordinator's guess is auditable; a rebuilt descendant's policy
 /// may select a different domain and must then recompute its source evidence.
 pub(super) fn generation_target_plan(domain:&str,selection:&str,strategy:&Value,commit:&str)->Value {
