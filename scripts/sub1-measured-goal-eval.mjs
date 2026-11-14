@@ -13,6 +13,7 @@ import {createHash} from "node:crypto";
 import {readFileSync,writeFileSync,mkdirSync,existsSync,realpathSync} from "node:fs";
 import {dirname,join,resolve} from "node:path";
 import {appendFileSync} from "node:fs";
+import {sandboxedModuleOracle} from "./sub1-sandboxed-eval.mjs";
 
 const root=resolve(process.env.BENCH_ROOT||"");
 const base=process.env.DOMINION_BASE||"";
@@ -58,36 +59,6 @@ function checkEnvironment(){
  if(!Number.isInteger(perTaskMs)||perTaskMs<10000||perTaskMs>1800000)
   throw Error("Invalid task timeout");
 }
-/**
- * Evaluating generated JS in the privileged oracle process would let a bad
- * patch read benchmark answers or runner state. Execute it in a fresh Node
- * permission-restricted child with access ONLY to that generated module. The
- * host still checks README/marker/source SHA independently.
- */
-async function sandboxedModuleOracle(relative){
- const {spawnSync}=await import("node:child_process");
- const file=join(root,"workspace",relative);
- const tester=[
-  "import {pathToFileURL} from 'node:url';",
-  "const m=await import(pathToFileURL(process.argv[1]).href);",
-  "const f=m.totalWithTax;",
-  "if(typeof f!=='function'||m.currency!=='KRW') process.exit(3);",
-  "const expected=[[[100,0.1],110],[[100.45,0.05],105],[[0,0],0],",
-  " [[-1,0.1],null],[[100,-0.1],null],[[Infinity,0.2],null],",
-  " [[NaN,0.1],null],[['100',0.1],null],[[100,null],null]];",
-  "for(const [args,want] of expected){if(!Object.is(f(...args),want)) process.exit(4)}",
- ].join("\n");
- const child=spawnSync(process.execPath,[
-  "--permission","--allow-fs-read="+file,
-  "--input-type=module","--eval",tester,file
- ],{
-  encoding:"utf8",timeout:20000,maxBuffer:65536,
-  cwd:join(root,"workspace"),
-  env:{PATH:process.env.PATH||"",HOME:"/nonexistent",NODE_OPTIONS:""},
- });
- return child.status===0&&!child.error;
-}
-
 const cases=[
  {
   id:"locale-three-files",
@@ -129,7 +100,7 @@ const cases=[
    {type:"file_contains",path:"trial/code/lib/price.mjs",contains:"Math.round"},
   ],
   async oracle(){
-   return (await sandboxedModuleOracle("trial/code/lib/price.mjs"))
+   return (await sandboxedModuleOracle("trial/code/lib/price.mjs",join(root,"workspace")))
     &&read("trial/code/FIXED.txt").trim()==="tax-calculation-fixed"
     &&read("trial/code/README.md")==="The price module accepts nonnegative finite price and rate; invalid values return null.\n";
   },
