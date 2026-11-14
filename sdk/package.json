@@ -1,0 +1,13 @@
+{
+  "name": "@dominion/agent-sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "First-party JavaScript/TypeScript SDK for the native DOMINION Rust agent engine",
+  "exports": { ".": { "types": "./index.d.mts", "import": "./index.mjs" } },
+  "types": "./index.d.mts",
+  "files": ["index.mjs", "index.d.mts", "README.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test index.test.mjs" },
+  "license": "Apache-2.0"
+}
