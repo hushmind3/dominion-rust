@@ -3,7 +3,7 @@ import {ArrowLeft,ArrowRight,BrainCircuit,Check,LoaderCircle,Play,RefreshCw,Shie
 import {Provider,get,post} from '../api'
 import {ModelPicker} from '../components/ModelPicker'
 import {Button,SelectInput,TextArea} from '../components/Primitives'
-import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
+import {FormField,Headline,Panel,useRemote} from '../components/UI'
 
 type Measurement={id:string;metrics:{key:string;baseline:number;candidate:number;improved:boolean;regressed:boolean}[]}
 type Comparison={attempt:number;candidateId:string;winner:'baseline'|'candidate'|'inconclusive';
@@ -105,6 +105,7 @@ export function SelfImprovementPage(){
  const budget=workloads[workload]
  const [request,setRequest]=useState(''),[selection,setSelection]=useState<'manual'|'automatic'>(()=>preferences().selection)
  const [busy,setBusy]=useState(false),[error,setError]=useState('')
+ const [pollError,setPollError]=useState('')
  const [settingsOpen,setSettingsOpen]=useState(()=>{try{return !localStorage.getItem(SAVED)}catch{return true}})
  const [jobId,setJobId]=useState(()=>{try{return localStorage.getItem(SAVED)||''}catch{return ''}})
  const [campaign,setCampaign]=useState<Campaign|null>(null)
@@ -127,11 +128,14 @@ export function SelfImprovementPage(){
   let alive=true
   const refresh=async()=>{try{
    const next=await get<Campaign>('/api/rsi/campaigns/'+encodeURIComponent(jobId))
-   if(alive)setCampaign(next)
-  }catch(e){if(alive)setError((e as Error).message)}}
-  void refresh();const timer=window.setInterval(()=>void refresh(),1500)
-  return()=>{alive=false;window.clearInterval(timer)}
- },[jobId])
+   if(alive){setCampaign(next);setPollError('')}
+  }catch(e){if(alive)setPollError((e as Error).message)}}
+  void refresh()
+  // Terminal campaigns are immutable; no recurring background alarm/reload.
+  const active=campaign?.id!==jobId||!terminal(campaign.status)
+  const timer=active?window.setInterval(()=>void refresh(),5000):undefined
+  return()=>{alive=false;if(timer!==undefined)window.clearInterval(timer)}
+ },[jobId,campaign?.status])
  useEffect(()=>{
   if(!modelChanged&&campaign?.providerId&&campaign.model&&enabled.some(p=>p.id===campaign.providerId)){
    setProviderId(campaign.providerId);setModel(campaign.model)
@@ -142,9 +146,11 @@ export function SelfImprovementPage(){
   if(!installId)return
   let alive=true
   const refresh=async()=>{try{const next=await get<InstallJob>('/api/dev/jobs/'+encodeURIComponent(installId));if(alive)setInstall(next)}catch{/* The service can restart after a completed installation. */}}
-  void refresh();const timer=window.setInterval(()=>void refresh(),1500)
-  return()=>{alive=false;window.clearInterval(timer)}
- },[installId])
+  void refresh()
+  const active=install?.id!==installId||!terminal(install.status)
+  const timer=active?window.setInterval(()=>void refresh(),5000):undefined
+  return()=>{alive=false;if(timer!==undefined)window.clearInterval(timer)}
+ },[installId,install?.status])
  const installing=!!install&&!terminal(install.status)
  const working=!!campaign&&!terminal(campaign.status)
  const adopted=campaign?.acceptedGenerations||0
@@ -222,7 +228,8 @@ export function SelfImprovementPage(){
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="기존 지식으로 연구하고 새 방법과 코드를 만들며, 검증된 버전이 다음 개선을 이어갑니다."
    actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
-  <Notice message={error||providers.error||install?.error||campaign?.error||''}/>
+  {(error||providers.error||install?.error||campaign?.error)&&<div className="my-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700" role="status" aria-live="off">{error||providers.error||install?.error||campaign?.error}</div>}
+  {pollError&&<div className="my-2 text-[12px] text-[#8A8176]" role="status" aria-live="off">상태 조회 지연 · {pollError} · 작업 기록은 유지됩니다.</div>}
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
    <div className="mb-5 flex items-center gap-3"><BrainCircuit size={25} className="text-[#A94E30]"/><div><h2 className="font-bold">더 나은 버전이 다음 개선을 이어갑니다</h2><p className="mt-1 text-[12px] text-[#7C7469]">코딩 없이 모델과 선택 방식만 고르면 됩니다.</p></div></div>

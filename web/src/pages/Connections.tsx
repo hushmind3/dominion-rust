@@ -6,6 +6,8 @@ import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,
 import {del,openOAuth,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
+import {ExtensionsPage} from './Extensions'
+import {CapabilitiesPage} from './Capabilities'
 
 type ChannelField={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
 type ChannelEntry={id:string;name:string;category:string;mode:string;description:string;docs:string;available:boolean;status:string;features:string[];fields:ChannelField[];instructions?:string[];requiresPublicUrl?:boolean;requiresRoom?:boolean;maxRoomParticipants?:number}
@@ -16,7 +18,8 @@ const groups=[{id:'all',name:'conn.group.all'},{id:'messaging',name:'conn.group.
 const badge=(s:string)=>{const keys:Record<string,LocaleKey>={connected:'conn.status.connected',outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',webhook_ready:'conn.status.webhook_ready',starting:'conn.status.starting',reconnecting:'conn.status.reconnecting',error:'conn.status.error',disabled:'conn.status.disabled',not_started:'conn.status.not_started',stopped:'conn.status.stopped'};return keys[s]?t(keys[s]):s};
 const active=(s:string)=>s==='connected';
 
-export function ConnectionsPage(){
+type ConnectionSection='channels'|'extensions'|'capabilities'
+export function ConnectionsPage({initialSection='channels'}:{initialSection?:ConnectionSection}){
  useLocale()
  const registry=useRemote<ChannelEntry[]>('/api/channels/catalog',[]);
  const channels=useRemote<Channel[]>('/api/channels',[]);
@@ -26,6 +29,12 @@ export function ConnectionsPage(){
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
  const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[view,setView]=useState<'channels'|'accounts'>('channels');
+ const [section,setSection]=useState<ConnectionSection>(initialSection);
+ // Older deep links still open this unified page; tab selection is bookmarkable.
+ const showSection=(next:ConnectionSection)=>{
+  setSection(next);
+  window.history.replaceState(null,'',next==='channels'?'#/connections':'#/connections?section='+next);
+ };
  const [editor,setEditor]=useState<{entry:ChannelEntry;record:any}|null>(null);
  const [error,setError]=useState(''),[info,setInfo]=useState(''),[probe,setProbe]=useState<Record<string,string>>({}),[saving,setSaving]=useState(false);
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
@@ -58,7 +67,19 @@ export function ConnectionsPage(){
   setError('');
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
+ const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
+  <Button variant={section==='channels'?'primary':'ghost'} aria-pressed={section==='channels'} onClick={()=>showSection('channels')}>채널 연결</Button>
+  <Button variant={section==='extensions'?'primary':'ghost'} aria-pressed={section==='extensions'} onClick={()=>showSection('extensions')}>MCP · 스킬</Button>
+  <Button variant={section==='capabilities'?'primary':'ghost'} aria-pressed={section==='capabilities'} onClick={()=>showSection('capabilities')}>역량 마켓</Button>
+ </div>;
+ if(section!=='channels'){
+  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+   {sectionTabs}
+   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>showSection(page==='extensions'?'extensions':'channels')}/>}
+  </div>
+ }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+  {sectionTabs}
   <Headline eyebrow={t('ui.eyebrow.connections')} title={t('conn.title')} description={t('conn.description')} actions={<Action variant="secondary" onClick={()=>{void registry.reload();void channels.reload()}}><Activity size={16}/> {t('conn.refresh')}</Action>}/>
   <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F3EEE5] text-[#7C7469]"><Globe2 size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.platforms')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{registry.value.length}</strong></div></div>

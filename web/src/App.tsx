@@ -4,7 +4,6 @@ import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,t
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
-const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
 const GoalsPage=lazy(()=>import('./pages/Goals').then(module=>({default:module.GoalsPage})))
@@ -13,7 +12,6 @@ const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.V
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
 const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
 const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
-const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({default:module.ExtensionsPage})))
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
@@ -93,13 +91,17 @@ class PageLoadBoundary extends Component<{children:ReactNode},{failed:boolean}>{
 function locationState(){
  const raw=window.location.hash.replace(/^#\/?/,'')
  const [name,query]=raw.split('?')
- const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
- return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
+ // Redirect obsolete sidebar routes without breaking saved links.
+ const legacy=name==='extensions'||name==='capabilities'?name:null
+ const valid=legacy!==null||navigation.some(group=>group.items.some(item=>item.id===name))
+ const tab=legacy||(name==='connections'?params.get('section'):null)
+ const connectionSection=tab==='extensions'||tab==='capabilities'?tab:'channels'
+ return {page:(legacy?'connections':valid?name:'chat') as PageId,connectionSection,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
- const [{page,session,agent,provider,model},setRoute]=useState(locationState)
+ const [{page,session,agent,provider,model,connectionSection},setRoute]=useState(locationState)
  const [chatDraft,setChatDraft]=useState(0)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
@@ -194,7 +196,6 @@ export default function App(){
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='home'&&<HomePage navigate={navigate}/>}
-    {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
     {page==='goals'&&<GoalsPage openSession={id=>navigate('chat',id)}/>}
@@ -204,8 +205,7 @@ export default function App(){
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}
     {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='extensions'&&<ExtensionsPage/>}
-    {page==='connections'&&<ConnectionsPage/>}
+    {page==='connections'&&<ConnectionsPage key={connectionSection} initialSection={connectionSection}/>}
     {page==='developer'&&<DeveloperPage/>}
     {page==='rsi'&&<SelfImprovementPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}

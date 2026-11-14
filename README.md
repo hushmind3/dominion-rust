@@ -707,3 +707,10 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 ### Isolated goal worktree lifetime across delegated descendants (2026-11-14)
 
 `goal_git::rollback` and `goal_git::apply` now share ancestry-aware active child job detection. A still-running grandchild or cyclic/deep unresolved session ancestry blocks worktree removal/integration. See [isolated agent lifecycle](docs/SUB4-ISOLATED-AGENT-2026-11-14.md). Regression cases are committed; runtime CI remains unverified.
+
+
+### 2026-11-14 서브4 연결채널 통합 / 자기개선 비방해형 표시
+
+**연결 채널** 아래 채널 연결 · MCP/스킬 · 역량 마켓 3개 탭을 제공한다(`web/src/pages/Connections.tsx`). 기존 설치·검색·삭제·계정 연결 API는 `ExtensionsPage`, `CapabilitiesPage`에서 그대로 실행되고 `#/extensions`, `#/capabilities` 구형 경로도 연결 채널의 해당 탭에서 열린다. 서브4 독립 **자율 목표**, **기억** 메뉴는 유지한다.
+
+**자기개선**(`SelfImprovement.tsx`)은 작업 상태를 페이지 내부에 표시하고 RSI 상태 조회 실패로 `role=alert`를 반복 발송하지 않는다. 완료/중단 상태의 반복 polling을 중지하고 활성 실행만 5초 주기로 확인한다. 사용자가 요청한 검증/중단/적용 오류·결과는 화면과 서버 작업 기록에서 유지한다. 정적 연결 확인까지 수행; 실제 브라우저 E2E와 빌드 검증은 별도다.
