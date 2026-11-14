@@ -29,6 +29,17 @@ pub(super) fn target_speakers(room:&Value,deep:bool,chars:usize)->usize {
     parameter(room,field,default)
 }
 
+/// A room exchange's metering origin is immutable across safe job resumes.
+/// Without this persisted baseline, a crash/requeue can grant a fresh full
+/// budget to the same discussion. Zero means no explicit token ceiling.
+pub(super) fn metering_baseline(input:&Value, observed_total:u64)->u64 {
+    input["usageBaselineTokens"].as_u64().unwrap_or(observed_total)
+}
+
+pub(super) fn budget_spent(token_budget:u64,baseline:u64,observed_total:u64)->bool {
+    token_budget>0 && observed_total.saturating_sub(baseline)>=token_budget
+}
+
 /// The owner's explicit roster/round request, @mentions and "all" messages
 /// must not be silently turned into a cheap one-speaker exchange. The mode
 /// is intentionally opt-in per room with new rooms defaulting to adaptive.
