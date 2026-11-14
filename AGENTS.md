@@ -93,3 +93,9 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - LTX 동결 샷: `src/engine/video/film.rs::{spec,run,saved_receipt,reuse_other_shots,scenes,retake_input}`. 성공 장면 `clip-XX/output.mp4`와 `receipt.json`은 파일 SHA-256을 대조해 재사용하며, 불확실한 유료 상태에서는 동일 호출을 자동 재전송하지 않습니다. FFmpeg stream-copy로 완성 영상 `output.mp4`를 구성합니다. 사용자가 승인한 호출 개수만큼만 신규 장면 결제가 시도됩니다. 중복 요청의 작업 ID는 `jobs::enqueue_once`로 원자적으로 중복 방지합니다.
 - 프런트: `web/src/pages/Video.tsx`의 LTX 멀티샷 동의/FFprobe 엄격 검수 및 `web/src/pages/video/FilmRetake.tsx`의 장면별 SHA·예상 추가 호출·선택 재생성 동의. 비추적/미검증 품질이나 실제 청구액을 확인된 산출물로 주장하지 않습니다.
 - RSI 목표 성공/실패 신호: `src/engine/rsi_scan.rs::report` → `rsi_scan/goal_signals.rs::collect` → `rsi/system/frontier.rs::architecture_frontier` → 모델 설계 단계. 단지 조사 우선순위 입력으로 전달하며 독립 동결 평가·승인 채택 우회는 허용하지 않습니다. 사용자 목표 프롬프트·비밀·코드 내용은 신호에 넣지 않습니다.
+
+
+## 2026-11-14: Sub1 그룹 도구 선택의 변경 계약
+
+`src/engine/chat/runtime/tool_selection.rs`의 영어 의도 판별은 완전 단어 기준이며, 한국어 행동 어간은 활용형을 위해 부분일치합니다. 새로운 도구를 추가할 때는 역할별 분류·이어하기 이력 규칙과 `tests/support/engine/chat_runtime.tests.rs`를 함께 갱신합니다. `turn.rs`의 `execution.toolSelection`은 후보/선택된 JSON 정의 크기 측정이며 실제 API 과금량으로 간주하지 않습니다. 일반 대화는 0개 스키마, 작업 대화는 필요한 도구 중심으로 유지합니다.
+
