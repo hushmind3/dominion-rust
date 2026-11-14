@@ -42,7 +42,11 @@ pub fn resume_goal(
     let _guard = state.session_guard(&lock_id);
     let goal = state.store.get("goal", id)
         .ok_or_else(|| Missing("목표를 찾을 수 없습니다.".into()))?;
+    // A queued goal cancelled before its first worker turn has no worktree
+    // yet: allow the next worker to create it. Once a worktree was created,
+    // its original identity must still validate before recovery.
     if goal["isolateWorktree"] == true
+        && goal["gitWorktree"].is_object()
         && crate::engine::goal_workspace::workspace_for_goal(state, &goal).is_err() {
         return Err(Conflict(
             "이 목표의 Git 작업공간이 제거되거나 변경되어 자동 재개할 수 없습니다.".into()
@@ -63,6 +67,13 @@ pub fn resume_goal(
         return Err(Conflict("이전 목표 작업이 아직 실행 중입니다.".into()));
     }
     let old = &previous["goalState"];
+    if goal["isolateWorktree"] == true
+        && !goal["gitWorktree"].is_object()
+        && (old["inFlight"] == true || old["reviewPending"] == true) {
+        return Err(Conflict(
+            "미완료 도구 실행의 Git 작업공간 기록이 없습니다. 원본 작업공간을 수동 검토하세요.".into()
+        ));
+    }
     let session = goal["sessionId"].as_str().unwrap_or("");
     let persisted_unknown = if session.is_empty() { false } else {
         match state.store.session_has_uncertain_effects(session) {
@@ -93,7 +104,7 @@ pub fn resume_goal(
     let configured = goal["maxIterations"].as_u64().unwrap_or(16);
     // Do not silently coerce negative, fractional or string limits to defaults.
     let max = match body.get("maxIterations") {
-        None => configured,
+        None | Some(Value::Null) => configured,
         Some(value) => value.as_u64().ok_or_else(||
             Invalid("총 반복 한도는 양의 정수여야 합니다.".into()))?,
     };
@@ -104,7 +115,7 @@ pub fn resume_goal(
     }
     let previous_cap = goal["maxExecutorTokens"].as_u64().unwrap_or(80_000);
     let new_cap = match body.get("maxExecutorTokens") {
-        None => previous_cap,
+        None | Some(Value::Null) => previous_cap,
         Some(value) => value.as_u64().ok_or_else(||
             Invalid("모델 토큰 한도는 양의 정수여야 합니다.".into()))?,
     };
