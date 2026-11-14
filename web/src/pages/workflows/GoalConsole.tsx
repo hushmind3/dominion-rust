@@ -13,6 +13,9 @@ type Goal={
  iterations?:number;maxIterations?:number;replans?:number;resumeCount?:number;sessionId?:string;
  createdAt?:string;gaps?:string[];evidence?:unknown[];
  planHistory?:{version:number;plan:string;reason?:unknown}[];
+ ownerDirectiveRevision?:number;ownerAppliedSeq?:number;
+ ownerDirectiveJournal?:{id:string;seq:number;mode:'append'|'replace';text:string;
+  status:'pending'|'applied';createdAt?:string;appliedAt?:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps?:string[];evidenceCount?:number}[];
  metrics?:{verifiedCompleted?:boolean;durationMs?:number;reviewCount?:number;
   successfulToolEvidenceCount?:number;acceptanceCheckCount?:number;unmetGapCount?:number;
@@ -39,6 +42,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const [message,setMessage]=useState('')
  const [selected,setSelected]=useState('')
  const [planDrafts,setPlanDrafts]=useState<Record<string,string>>({})
+ const [steerMode,setSteerMode]=useState<Record<string,'append'|'replace'>>({})
+ const [steerRequestIds,setSteerRequestIds]=useState<Record<string,string>>({})
  const available=agents.value.filter(agent=>agent.providerId&&agent.model)
  const executor=available.some(agent=>agent.id===agentId)?agentId:(available[0]?.id||'')
  const hasActive=goals.value.some(goal=>running(goal.status))
@@ -89,13 +94,23 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const submitPlan=async(goal:Goal)=>{
   const next=planDrafts[goal.id]?.trim()
   if(!next||busy)return
+  const mode=steerMode[goal.id]||'append'
+  // An ambiguous network failure must not create a second instruction
+  // when the owner presses retry. Keep the same id until a server ACK.
+  const requestId=steerRequestIds[goal.id]||crypto.randomUUID()
+  setSteerRequestIds(previous=>({...previous,[goal.id]:requestId}))
   setBusy(true);setError('');setMessage('')
   try{
-   await post('/api/goals/'+goal.id+'/plan',{plan:next})
-   setMessage('새 계획을 저장했습니다. 현재 실행 중인 도구가 끝나면 다음 실행 단계부터 적용됩니다.')
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/steer',{
+    text:next,mode,requestId
+   })
+   setMessage(mode==='append'
+    ?'사용자 추가 지시를 저장했습니다. 다음 도구 실행 경계에서 기존 작업에 반영합니다.'
+    :'새 실행 계획을 저장했습니다. 아직 실행하지 않은 기존 도구 제안은 중단합니다.')
+   setSteerRequestIds(previous=>{const updated={...previous};delete updated[goal.id];return updated})
    setPlanDrafts(previous=>({...previous,[goal.id]:''}))
    await goals.reload()
-  }catch(e){setError((e as Error).message)}
+  }catch(e){setError((e as Error).message+' · 같은 요청 ID로 재시도할 수 있습니다.')}
   finally{setBusy(false)}
  }
  const ordered=[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))
@@ -164,6 +179,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
        <strong className="block break-words text-[13px]">{goal.goal}</strong>
        <small className="mt-1 block text-[11px] text-[#7C7469]">
         {goal.phase||'대기'} · {goal.iterations||0}/{goal.maxIterations||12}회 실행 · 계획 수정 {goal.replans||0}회
+        {(goal.ownerDirectiveJournal||[]).some(item=>item.status==='pending')
+         ?' · 사용자 새 지시 대기 중':''}
        </small>
       </button>
       <StatusPill status={goal.status}>{goal.status}</StatusPill>
@@ -174,13 +191,31 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
      {expanded&&<div className="mt-3 grid gap-3 border-t border-[#EFE9DF] pt-3">
       {goal.plan&&<section><strong className="text-xs">현재 실행 계획</strong><pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded-lg bg-[#FAF7F1] p-3 text-[11px] leading-5">{goal.plan}</pre></section>}
       {running(goal.status)&&<details className="rounded-lg border border-[#E7E0D5] p-3">
-       <summary className="cursor-pointer text-xs font-semibold">실행 계획 직접 수정</summary>
-       <p className="mt-2 text-[11px] text-[#7C7469]">현재 도구 실행은 중단하지 않고, 다음 안전한 실행 단계에 새 계획을 반영합니다. 목표 완료 조건과 실행 권한은 변경되지 않습니다.</p>
-       <TextArea rows={4} value={planDrafts[goal.id]??''} onChange={e=>setPlanDrafts(previous=>({...previous,[goal.id]:e.target.value}))}
-        placeholder={goal.plan||'실행할 새 계획을 구체적으로 입력하세요.'}/>
-       <div className="mt-2 flex justify-end"><Button size="sm" variant="secondary" disabled={busy||!(planDrafts[goal.id]||'').trim()} onClick={()=>void submitPlan(goal)}>다음 단계 계획으로 적용</Button></div>
+       <summary className="cursor-pointer text-xs font-semibold">👑 실행 중 사용자 지휘</summary>
+       <p className="mt-2 text-[11px] text-[#7C7469]">실행 중인 도구의 완료 기록은 보존하고, 아직 실행하지 않은 이전 계획의 도구 제안을 중단합니다. 사용자 지시를 우선 적용하며 완료 조건은 유지합니다.</p>
+       <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label htmlFor={'steer-mode-'+goal.id} className="text-[11px] font-semibold">지시 방식</label>
+        <SelectInput id={'steer-mode-'+goal.id} value={steerMode[goal.id]||'append'}
+         onChange={e=>{setSteerMode(previous=>({...previous,[goal.id]:e.target.value as 'append'|'replace'}));setSteerRequestIds(previous=>{const updated={...previous};delete updated[goal.id];return updated})}}>
+         <option value="append">기존 계획에 추가 지시</option><option value="replace">계획 전체 교체</option>
+        </SelectInput>
+       </div>
+       <TextArea rows={4} value={planDrafts[goal.id]??''} onChange={e=>{setPlanDrafts(previous=>({...previous,[goal.id]:e.target.value}));setSteerRequestIds(previous=>{const updated={...previous};delete updated[goal.id];return updated})}}
+        placeholder={steerMode[goal.id]==='replace'?(goal.plan||'새 계획을 입력하세요.'):'다음 실행 단계에서 반드시 반영할 지시를 입력하세요.'}/>
+       <div className="mt-2 flex justify-end"><Button size="sm" variant="secondary" disabled={busy||!(planDrafts[goal.id]||'').trim()} onClick={()=>void submitPlan(goal)}>{steerMode[goal.id]==='replace'?'계획 교체':'사용자 지시 추가'}</Button></div>
       </details>}
       {errors(goal.gaps).length>0&&<section><strong className="text-xs">미충족 검증 조건과 수정 과제</strong><ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-amber-700">{errors(goal.gaps).map((gap,i)=><li key={i}>{gap}</li>)}</ul></section>}
+      {(goal.ownerDirectiveJournal||[]).length>0&&<details className="rounded-lg border border-[#E7E0D5] p-3">
+       <summary className="cursor-pointer text-xs font-semibold">👑 사용자 지시 기록 {goal.ownerDirectiveJournal!.length}건 · 적용 순번 {goal.ownerAppliedSeq||0}</summary>
+       {goal.ownerDirectiveJournal!.slice(-16).map(item=><div key={item.id}
+        className="mt-2 rounded-lg bg-[#FAF7F1] p-3 text-[11px]">
+        <div className="flex items-center justify-between gap-2">
+         <strong>#{item.seq} · {item.mode==='replace'?'계획 교체':'추가 지시'}</strong>
+         <span className={item.status==='applied'?'text-emerald-700':'text-amber-700'}>{item.status==='applied'?'적용됨':'적용 대기'}</span>
+        </div>
+        <p className="mt-1 whitespace-pre-wrap break-words">{item.text}</p>
+       </div>)}
+      </details>}
       {(goal.planHistory||[]).length>1&&<details><summary className="cursor-pointer text-xs font-semibold">재계획 기록 {goal.planHistory!.length}개</summary>
        {goal.planHistory!.map((step,i)=><pre key={i} className="mt-2 whitespace-pre-wrap rounded-lg bg-[#FAF7F1] p-3 text-[11px]">{step.version}차: {step.plan}</pre>)}</details>}
       {(goal.reviewHistory||[]).length>0&&<details><summary className="cursor-pointer text-xs font-semibold">독립 검토 기록 {goal.reviewHistory!.length}개 · 성공 도구 증거 {(goal.evidence||[]).length}개</summary>
