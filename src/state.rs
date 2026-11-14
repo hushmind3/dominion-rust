@@ -121,6 +121,59 @@ impl AppState {
                 }
             }
         }
+        self.cancel_delegated_descendants(session_id);
+    }
+
+    /// Abort the entire active delegation tree. A delegated task owns its
+    /// own session, so cancelling the parent alone otherwise leaves model
+    /// calls, writes and paid subagent work running in the background.
+    ///
+    /// The persisted cancellation epoch is advanced for every descendant
+    /// before its job is marked terminal, preventing old invocations from
+    /// becoming active if a user starts a fresh turn later.
+    fn cancel_delegated_descendants(&self, root_session_id: &str) {
+        let jobs=self.store.all("job");
+        let mut sessions=HashSet::from([root_session_id.to_string()]);
+        let mut reached=HashSet::<String>::new();
+        // A bounded fixed-point traversal handles children whose jobs were
+        // enqueued before their parents. An existing cycle cannot loop.
+        for _ in 0..=5 {
+            let mut changed=false;
+            for job in &jobs {
+                if job["input"]["delegation"] != true
+                    || !job["input"]["parentSessionId"].as_str()
+                        .is_some_and(|id|sessions.contains(id)) {continue;}
+                if let Some(child)=job["input"]["sessionId"].as_str() {
+                    if sessions.insert(child.to_string()){changed=true;}
+                    reached.insert(child.to_string());
+                }
+            }
+            if !changed {break;}
+        }
+        if reached.is_empty(){return;}
+        for child in &reached {
+            self.cancelled.lock().unwrap().insert(child.to_string());
+            if self.store.cancel_session_epoch(child).is_none(){
+                self.store.audit("session.delegate_cancel_persistence_failed",
+                    serde_json::json!({"sessionId":child,"parentSessionId":root_session_id}));
+            }
+        }
+        for job in jobs {
+            if !matches!(job["status"].as_str(),Some("queued"|"running")) {
+                continue;
+            }
+            let session=job["sessionId"].as_str()
+                .or_else(||job["input"]["sessionId"].as_str());
+            if !session.is_some_and(|id|reached.contains(id)){continue;}
+            if let Some(id)=job["id"].as_str(){
+                if let Some(saved)=self.store.patch_if("job",id,"status",&job["status"],
+                    &serde_json::json!({"status":"cancelled","cancelRequested":true,
+                        "finishedAt":chrono::Utc::now().to_rfc3339(),
+                        "error":"상위 세션이 취소되어 위임 작업을 중단했습니다."})){
+                    self.bus.record("job",&saved);
+                }
+            }
+        }
     }
 
     pub fn clear_cancel(&self, session_id: &str) {
