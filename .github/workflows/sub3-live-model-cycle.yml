@@ -12,6 +12,8 @@ on:
       - 'src/engine/rsi_worktree.rs'
       - 'src/engine/rsi_evolve.rs'
       - 'src/engine/rsi_system.rs'
+      - 'src/engine/rsi_system/**'
+      - 'src/engine/rsi/**'
       - 'src/engine/rsi_mutual_program.rs'
       - 'src/engine/rsi_principle_learning.rs'
   workflow_dispatch:
