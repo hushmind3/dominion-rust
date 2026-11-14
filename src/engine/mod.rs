@@ -311,6 +311,16 @@ mod outcome_tests {
         assert_eq!(stats.tool_success, vec!["workspace_write"]);
         assert_eq!(stats.evidence.len(), 1);
         assert_eq!(stats.evidence[0]["tool"], "workspace_write");
+        // The goal receives a committed DB receipt, not a truncated
+        // tool_end stream event. This metadata is mandatory to distinguish
+        // a fresh test from one predating later writes.
+        assert_eq!(stats.evidence[0]["callId"], "fixture-write");
+        assert_eq!(stats.evidence[0]["status"], "completed");
+        assert!(stats.evidence[0]["id"].is_string());
+        assert!(stats.evidence[0]["runId"].is_string());
+        assert!(stats.evidence[0]["opSeq"].is_number());
+        assert!(stats.evidence[0]["startedAt"].is_string());
+        assert!(stats.evidence[0]["finishedAt"].is_string());
         assert_eq!(
             state.store.all("execution_operation")[0]["status"],
             "completed"
