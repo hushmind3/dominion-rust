@@ -11,6 +11,33 @@ use tokio::{process::{Child,Command},time::{sleep,timeout}};
 const DATASET:&str="princeton-nlp/SWE-bench_Verified";
 const MAX_PATCH:usize=2_000_000;
 
+/// Derive a goal's durable delegation tree from the same session records
+/// visible to the public API. A child is included only through an explicit
+/// parent-session edge; unrelated benchmark chats cannot inflate measurements.
+fn related_sessions(root:&str, sessions:&Value)->Option<std::collections::HashSet<String>> {
+    if root.is_empty(){return None;}
+    let all=sessions.as_array()?;
+    let mut family=std::collections::HashSet::from([root.to_owned()]);
+    for _ in 0..32 {
+        let before=family.len();
+        for child in all {
+            let Some(id)=child["id"].as_str().filter(|id|!id.is_empty()) else {continue};
+            if child["parentSessionId"].as_str().is_some_and(|parent|family.contains(parent)) {
+                family.insert(id.to_owned());
+            }
+        }
+        if family.len()==before {break;}
+    }
+    Some(family)
+}
+
+/// An explicit failed operation receipt is evidence of a tool failure.
+/// Neither the model's failure narrative nor an unconfirmed interrupted
+/// effect can be counted as a recovered failure.
+fn observed_tool_failures(operations:&[Value])->usize {
+    operations.iter().filter(|operation|operation["status"]=="failed").count()
+}
+
 #[derive(Clone,Debug)]
 struct Options {
     tasks:PathBuf,
@@ -273,20 +300,36 @@ async fn solve(cfg:&Options,task:&Task,client:&reqwest::Client)->Result<Value,St
     let session=final_goal["sessionId"].as_str().unwrap_or("");
     let executions=json_get(client,&format!("{base}/api/executions")).await
         .unwrap_or(Value::Null);
+    let sessions=json_get(client,&format!("{base}/api/sessions")).await
+        .unwrap_or(Value::Null);
+    let tree=related_sessions(session,&sessions);
     let mut tool_calls=0usize;
+    let mut failed_operations=0usize;
     let mut executions_seen=0usize;
-    for execution in executions.as_array().into_iter().flatten(){
-        if execution["sessionId"].as_str()!=Some(session){continue;}
-        let Some(execution_id)=execution["id"].as_str()else{continue};
-        executions_seen+=1;
-        if let Ok(ops)=json_get(client,&format!("{base}/api/executions/{execution_id}/operations")).await{
-            tool_calls+=ops.as_array().map(Vec::len).unwrap_or(0);
+    let mut tool_telemetry_complete=tree.is_some() && executions.is_array();
+    if let Some(tree)=&tree {
+        for execution in executions.as_array().into_iter().flatten(){
+            if !execution["sessionId"].as_str().is_some_and(|id|tree.contains(id)){continue;}
+            let Some(execution_id)=execution["id"].as_str() else {
+                tool_telemetry_complete=false;continue;
+            };
+            executions_seen+=1;
+            match json_get(client,&format!("{base}/api/executions/{execution_id}/operations")).await {
+                Ok(ops)=>{
+                    if let Some(receipts)=ops.as_array() {
+                        tool_calls+=receipts.len();
+                        failed_operations+=observed_tool_failures(receipts);
+                    } else {tool_telemetry_complete=false;}
+                },
+                Err(_)=>tool_telemetry_complete=false,
+            }
         }
     }
-    let usage=if session.is_empty(){Value::Null}else{
-        json_get(client,&format!("{base}/api/sessions/{session}/usage"))
-            .await.unwrap_or(Value::Null)
-    };
+    // The goal's final evidence report is the authoritative owner-goal
+    // meter. /api/sessions/:id/usage omits delegated children.
+    let reported=&final_goal["finalReport"]["sessionUsage"];
+    let usage=if reported["scope"]=="goal_session_tree"
+        && reported["unavailable"]!=true {reported.clone()} else {Value::Null};
     let krw=match (cfg.input_cost_krw_million,
         cfg.output_cost_krw_million,
         usage["promptTokens"].as_u64(),usage["completionTokens"].as_u64()){
@@ -298,7 +341,11 @@ async fn solve(cfg:&Options,task:&Task,client:&reqwest::Client)->Result<Value,St
         "instanceId":task.id,"repo":task.repo,"baseCommit":task.commit,
         "goalId":goal_id,"goalStatus":final_goal["status"],
         "timedOut":timed_out,"elapsedMs":started.elapsed().as_millis() as u64,
-        "toolCalls":tool_calls,"executionCount":executions_seen,
+        "toolCalls":tool_telemetry_complete.then_some(tool_calls),
+        "failedToolOperations":tool_telemetry_complete.then_some(failed_operations),
+        "toolTelemetryComplete":tool_telemetry_complete,
+        "toolTelemetryScope":"goal_root_and_nested_delegates",
+        "executionCount":tool_telemetry_complete.then_some(executions_seen),
         "tokenBudget":cfg.token_budget,
         "measuredUsage":usage,"estimatedCostKrw":krw,
         "patchSha256":format!("{:x}",Sha256::digest(patch.as_bytes())),
@@ -405,6 +452,15 @@ async fn run()->Result<(),String>{
             .collect::<Vec<_>>();
         let costs=stats.iter().filter_map(|r|r["estimatedCostKrw"].as_f64())
             .collect::<Vec<_>>();
+        let measured_failures=stats.iter().filter(|r|
+            r["toolTelemetryComplete"]==true
+                && r["failedToolOperations"].as_u64().unwrap_or(0)>0)
+            .collect::<Vec<_>>();
+        let recovered=measured_failures.iter().filter(|r|
+            r["instanceId"].as_str().is_some_and(|id|resolved.contains(id)))
+            .count();
+        let recovery_rate=(!measured_failures.is_empty())
+            .then_some(recovered as f64/measured_failures.len() as f64);
         let summary=json!({
             "dataset":DATASET,"runId":run_id,
             "frozenSubmittedInstances":count,"resolvedInstances":resolved.len(),
@@ -415,6 +471,11 @@ async fn run()->Result<(),String>{
             "officialReportPath":report_path,
             "measuredToolCallInstances":known_tools.len(),
             "totalMeasuredToolCalls":known_tools.iter().sum::<u64>(),
+            "tasksWithObservedFailedToolOperations":measured_failures.len(),
+            "officiallyResolvedTasksAfterToolFailure":recovered,
+            "taskRecoveryRateGivenObservedToolFailure":recovery_rate,
+            "recoveryRateDefinition":"officially resolved / tasks with an explicit failed tool receipt; not per-tool retry success",
+            "toolTelemetryScope":"goal_root_and_nested_delegates",
             "measuredTokenInstances":usage.len(),
             "totalMeasuredTokens":usage.iter().sum::<u64>(),
             "costPricedInstances":costs.len(),
@@ -442,6 +503,25 @@ async fn main(){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn aggregation_uses_only_owner_descendants_and_explicit_tool_failures(){
+        let sessions=json!([
+            {"id":"root"},{"id":"child","parentSessionId":"root"},
+            {"id":"grandchild","parentSessionId":"child"},
+            {"id":"other"},{"id":"foreign","parentSessionId":"other"}
+        ]);
+        let family=related_sessions("root",&sessions).unwrap();
+        assert_eq!(family.len(),3);
+        for id in ["root","child","grandchild"] {assert!(family.contains(id));}
+        for id in ["other","foreign"] {assert!(!family.contains(id));}
+        assert!(related_sessions("root",&Value::Null).is_none());
+        let operations=vec![
+            json!({"status":"failed","tool":"terminal_exec"}),
+            json!({"status":"completed","tool":"terminal_exec"}),
+            json!({"status":"interrupted","outcomeUnknown":true}),
+            json!({"status":"completed","result":{"error":"failed"}})
+        ];
+        assert_eq!(observed_tool_failures(&operations),1);
+    }
     #[test] fn reject_duplicate_and_unsafe_swebench_instances(){
         let path=env::temp_dir().join(format!("dominion-swe-{}.jsonl",uuid::Uuid::new_v4()));
         let valid=json!({"instance_id":"astropy__astropy-14539",
