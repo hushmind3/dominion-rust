@@ -49,7 +49,7 @@ export async function* decodeSSE(body) {
 }
 
 export class DominionClient {
-  constructor({baseUrl = 'http://127.0.0.1:3927/', token = '', fetch: transport = globalThis.fetch, headers = {}} = {}) {
+  constructor({baseUrl = 'http://127.0.0.1:4317/', token = '', fetch: transport = globalThis.fetch, headers = {}} = {}) {
     this.baseUrl = new URL(baseUrl);
     if (!['http:', 'https:'].includes(this.baseUrl.protocol) || this.baseUrl.username ||
         this.baseUrl.password || this.baseUrl.search || this.baseUrl.hash) {

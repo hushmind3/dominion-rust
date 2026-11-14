@@ -29,3 +29,5 @@ README와 sdk/js/README.md를 진입점으로 유지한다.
 
 검증 범위: sdk/js/test 의 Node.js Mock Fetch+SSE 프로토콜 테스트.
 실제 외부 유료 API 요청/장기 과제 완수율 측정은 해당 테스트가 입증하지 않는다.
+
+추가 Node 실행 계약: `@dominion/agent-sdk/node`의 `DominionRuntime.start({binaryPath,port:0})` → `node:child_process`로 DOMINION Rust 바이너리 실행 → `DOMINION_DESKTOP_PARENT` stdin 종료 수명주기 → stdout 실제 바인드 포트 파싱 → `/api/health.instanceId` 검증 → `runtime.client`로 기존 도구·세션·승인·goal 엔진 호출. 타사 CLI/SDK 실행 파일은 시작하지 않음. `sdk/js/test/runtime.test.mjs`에서 프로세스 소유·종료 계약을 모의 검증.

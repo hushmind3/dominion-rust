@@ -21,7 +21,7 @@
 
 ## 도미니언 자체 에이전트 SDK (2026-11-14)
 
-`sdk/js`는 Rust 에이전트 하네스를 외부 프로그램에서 재사용하는 의존성 없는 JS/TS SDK입니다. `DominionClient`가 채팅 스트리밍·저장된 실제 답변·내구성 목표/작업·세션·승인·Git 패치 검토/명시적 적용·SSE 이벤트 재연결을 제공합니다. 모든 판단·도구 실행·권한·RSI·영속화는 `src/engine` Rust에 남으며 Copilot CLI/타사 하네스 또는 별도 입력 거절 정책을 넣지 않았습니다. `npm install ./sdk/js`로 설치하며 `cd sdk/js && npm test`로 무과금 프로토콜 테스트를 수행합니다. 외부 서버 실행/실모델 성공 여부는 SDK 테스트와 구분합니다. [사용 예제](sdk/js/README.md) · [SDK 전용 CI](https://github.com/hushmind3/dominion-rust/actions/workflows/sub3-sdk.yml?query=branch%3Adominion-sub3).
+`sdk/js`는 Rust 에이전트 하네스를 외부 프로그램에서 재사용하는 의존성 없는 JS/TS SDK입니다. `DominionClient`가 채팅 스트리밍·저장된 실제 답변·내구성 목표/작업·세션·승인·Git 패치 검토/명시적 적용·SSE 이벤트 재연결을 제공합니다. 모든 판단·도구 실행·권한·RSI·영속화는 `src/engine` Rust에 남으며 Copilot CLI/타사 하네스 또는 별도 입력 거절 정책을 넣지 않았습니다. Node에서는 `@dominion/agent-sdk/node`의 `DominionRuntime.start({binaryPath})`로 도미니언 Rust 바이너리를 직접 시작·검증·종료할 수도 있습니다. 외부 실행 엔진은 로드하지 않습니다. `npm install ./sdk/js`로 설치하며 `cd sdk/js && npm test`로 무과금 프로토콜 테스트를 수행합니다. 외부 서버 실행/실모델 성공 여부는 SDK 테스트와 구분합니다. [사용 예제](sdk/js/README.md) · [SDK 전용 CI](https://github.com/hushmind3/dominion-rust/actions/workflows/sub3-sdk.yml?query=branch%3Adominion-sub3).
 
 ## 서브3 · Issue #9 전 제품 연결 고도화 (2026-11-14)
 

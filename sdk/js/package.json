@@ -9,12 +9,18 @@
     ".": {
       "types": "./index.d.ts",
       "default": "./index.js"
+    },
+    "./node": {
+      "types": "./node.d.ts",
+      "default": "./node.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
-    "README.md"
+    "README.md",
+    "node.js",
+    "node.d.ts"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",

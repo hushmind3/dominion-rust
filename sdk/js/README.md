@@ -10,7 +10,7 @@ Install locally from this repository with npm (no third-party runtime packages):
 Example:
 
     import {DominionClient} from '@dominion/agent-sdk';
-    const dom = new DominionClient({baseUrl: 'http://127.0.0.1:3927', token: process.env.DOMINION_TOKEN});
+    const dom = new DominionClient({baseUrl: 'http://127.0.0.1:4317', token: process.env.DOMINION_TOKEN});
     const session = await dom.sessions.create({title:'New session'});
     const result = await dom.chat.run({sessionId:session.id,input:'Inspect this codebase',toolsEnabled:true,toolsExecutionEnabled:true});
     console.log(result.message?.content);
@@ -53,3 +53,18 @@ sessions,system}.rs and src/engine/chat. No model API fees in SDK tests.
 
     cd sdk/js
     npm test
+
+## Optional native Rust process lifecycle (Node only)
+
+The main SDK connects to an already running DOMINION server. To start the
+**DOMINION Rust binary itself** (not Copilot CLI), use the Node entrypoint:
+
+    import {DominionRuntime} from '@dominion/agent-sdk/node';
+    const runtime = await DominionRuntime.start({binaryPath:'/path/to/dominion-rust',port:0});
+    const answer = await runtime.client.chat.run({input:'Implement my request',toolsEnabled:true,toolsExecutionEnabled:true});
+    await runtime.close();
+
+The launcher owns its child process, chooses an available port with port=0,
+checks /api/health against a unique process instance ID to avoid connecting to
+an unrelated server, and shuts down via DOMINION_DESKTOP_PARENT stdin EOF.
+It does not download, bundle or substitute another vendor's agent engine.
