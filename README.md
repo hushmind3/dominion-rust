@@ -679,3 +679,9 @@ CoCoEvolve(2026)의 전체 진화 기록을 통한 메타 반성에서
 - 유료 Runway/Kling 영상 생성은 기본 설정 `runwayQualityGate=true`에서 FFmpeg 옆의 `ffprobe` 존재를 **과금 전** 확인하고, 내려받은 클립의 영상 스트림·길이·화면비·최소 해상도·요청된 오디오를 점검한다. 불량 클립 후속 과금을 막아 `needs_review`로 보존한다. 병합 완료 영상도 최종 기술검수를 수행하고 UI에 측정치를 표시한다. 이는 내용적·미학적 품질을 자동 판정하는 기능이 아니다. FFprobe가 없으면 검수를 명시 해제해야 기존 경로를 사용할 수 있다.
 - `src/engine/rsi_system.rs::COMPONENTS`가 새 실행 경로(목표 검증·Git 결과·기술적 영상 QA)를 후손 코드 역할 지도에 포함한다. 원본 모델 가중치 학습이나 실모델 RSI 성과의 허위 영수증은 없다.
 
+
+### 자율 코딩 목표 · Git 작업 격리·검토·적용 (서브4, 2026-11-14)
+
+`isolateWorktree:true`인 목표는 원본 저장소가 아닌 별도 Git worktree에서 실행됩니다. 실제 도구의 기준 경로(`chat/runtime/tool_execution.rs`), 서브에이전트 상속(`goal_git::workspace_for_session`), 목표 파일 검증(`verification::*_in`)과 완료 보고(`goals/report.rs`)에 연결했습니다. `/api/goals/:id/changes`는 변경 파일·새 파일 내용·검토 해시를 보여주며, 사용자가 해당 해시로 명시적으로 승인한 경우만 `/api/goals/:id/apply`가 원본 Git HEAD가 그대로일 때 fast-forward 합니다. `/discard`는 미반영 worktree만 폐기합니다. 실행 Git 경로가 설정되지 않았거나 격리 준비에 실패하면 원본 checkout으로 자동 복귀하지 않습니다.
+
+관련 구조·한계·근거: [docs/SUB4-ISOLATED-AGENT-2026-11-14.md](docs/SUB4-ISOLATED-AGENT-2026-11-14.md). Git 격리는 OS 보안 샌드박스가 아니며, 승인된 임의 명령과 외부 서비스 호출은 별도 정책을 따릅니다.
