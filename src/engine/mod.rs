@@ -64,6 +64,7 @@ pub mod lease;
 pub mod llm;
 pub mod mcp;
 pub mod custom_tools;
+pub mod steering;
 pub mod maintenance;
 pub mod memory;
 pub mod models;

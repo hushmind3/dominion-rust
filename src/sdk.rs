@@ -231,6 +231,13 @@ impl DominionSdk {
         self.state.cancel_session(session_id);
     }
 
+    /// Steer a running agent **at its next model-step boundary**, or queue the
+    /// original instruction until the next turn if the agent is idle.
+    /// The native Rust engine owns delivery and durable recovery.
+    pub fn steer(&self, session_id: &str, instruction: &str) -> Result<Value, String> {
+        engine::steering::enqueue(&self.state, session_id, instruction)
+    }
+
     /// Register a provider using the same encrypted secret store as the app.
     /// The API key is not persisted in the provider JSON record.
     pub fn register_provider(

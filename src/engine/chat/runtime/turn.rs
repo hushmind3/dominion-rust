@@ -1021,6 +1021,19 @@ pub(super) async fn run_turn_body(
                 rsi_decision_checkpoint = true;
             }
         }
+        // DeepSeek Harness-inspired owner steering: queued input is durable,
+        // and only an explicit owner message may modify the current task.
+        // Read it at a real step boundary, after the previous tool results
+        // and before constructing the next model request. No third-party
+        // policy or automatic paraphrasing is inserted here.
+        let steers = crate::engine::steering::drain_at_step(state, session_id)?;
+        for steer in steers {
+            let _ = tx.send(json!({
+                "type": "owner_steer", "sessionId": session_id,
+                "content": steer["content"],
+            }));
+            messages.push(steer);
+        }
         let wire_messages = messages.clone();
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.

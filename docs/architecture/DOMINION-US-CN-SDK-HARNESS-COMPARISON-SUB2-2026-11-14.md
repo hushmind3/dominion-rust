@@ -70,3 +70,55 @@ not a model answer policy.
 - https://github.com/bytedance/deer-flow
 - https://github.com/QwenLM/Qwen-Agent
 - https://github.com/FoundationAgents/OpenManus
+
+
+## DeepSeek Harness: deepseek-ai/deepseek-harness (China, official, MIT)
+
+Inspected source code on `master` on 2026-11-14:
+
+- `packages/core/agent-loop/src/agent.ts`: `ReactLoopAgent.send`,
+  `followup`, `steer`, `inject`, `cancel`, `preStep`,
+  step model calls and event publication.
+- `packages/core/agent-loop/src/inbox.ts`: two durable inbox lanes,
+  `next-turn` and `next-step`, reconstructed from `agent/inbox/spliced`
+  events with unique message IDs. Claimed input is not a rewritten instruction.
+- `packages/core/agent-loop/src/runtime-context.ts`: stable system prompt
+  projection and explicit runtime-context supersession, avoiding stale context
+  after a resumed turn.
+- `packages/core/agent-loop/src/assistant-stream.ts`: explicit
+  `committed` vs `abandoned` terminal events, preserving partial streamed
+  text and usage across cancellation.
+- `packages/compaction/compaction/src/tool-pairing.ts`: compaction only
+  crosses balanced tool-call/result boundaries to avoid broken histories.
+- `packages/context/agent-instructions/src/index.ts`: workspace instruction
+  baseline and change-aware instructions projection.
+- `packages/core/agent-loop/README.md`: the model/tool loop is a replaceable
+  plugin over independently owned session, tools and prompt services, with
+  cooperative cancellation, bounded parallel tool execution and per-session
+  event-derived state.
+
+### Resulting Rust design
+
+**Adopt now**: owner-initiated live steering with an append-only SQLite record
+and exactly-once message identity:
+`DominionSdk::steer` or `POST /api/sessions/{id}/steer`
+-> `engine::steering::enqueue` -> SQLite `chat_steer` queued record
+-> every native model-step boundary `drain_at_step`
+-> persistent, original user-role message
+-> `messages.push` without transformation
+-> user correction is visible to the next native model request. If the turn
+already ended, the correction remains queued for the next turn.
+
+**Next improvements**: per-session plug-in lifecycle hooks; explicit stream
+commit/abandon event; compaction boundaries with tool-call pairing; user
+settings and workspace files projected with revision hashes instead of
+duplicating old instructions; callback tool timeout and in-flight shutdown
+drain.
+
+**Deliberately reject**: importing Cordis/Node.js into the Rust engine;
+inheriting DeepSeek's host policy or instruction-precedence implementation;
+treating provider outputs as authenticated owner instructions. The owner's
+original instruction has priority over stale engine plan text while existing
+file/system permissions remain enforced separately.
+
+Source: https://github.com/deepseek-ai/deepseek-harness

@@ -114,6 +114,23 @@ pub async fn fork_session(State(state): State<AppState>, Path(id): Path<String>)
     Json(fork).into_response()
 }
 
+/// Queue an exact owner correction without cancelling a model request or
+/// rewriting the original task. A running native turn consumes this before
+/// its next model request; an idle turn receives it on its next run.
+pub async fn steer_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(instruction) = body["instruction"].as_str() else {
+        return error(StatusCode::BAD_REQUEST, "instruction 문자열이 필요합니다.");
+    };
+    match engine::steering::enqueue(&state, &id, instruction) {
+        Ok(saved) => (StatusCode::ACCEPTED,Json(saved)).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
 // ---------------------------------------------------------------- approvals
 
 pub async fn cancel_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {

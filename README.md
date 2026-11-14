@@ -770,3 +770,17 @@ sdk.register_tool(
 The SDK does not insert a third-party refusal policy, redirect the owner's
 instruction, or treat model text as a completed tool operation. User prompt
 content (including whitespace) is preserved in the native `TurnRequest`.
+
+
+### Live owner steering (DeepSeek-style inbox, native Rust)
+
+Call `sdk.steer(session_id, "new exact instruction")` from the Rust host or
+`POST /api/sessions/:id/steer` with JSON `{"instruction":"..."}`. The
+instruction is durably queued, then consumed as a real owner-role user
+message at the next native model-step boundary. Ongoing provider inference
+is not interrupted; a turn with no further step leaves the correction queued
+for the next turn. SQLite IDs prevent duplication when a process crashes
+after writing a user message but before marking the queue item delivered.
+Original bytes, whitespace and the instruction's provenance are preserved.
+Implementation: `src/engine/steering.rs`; reference analysis:
+`docs/architecture/DOMINION-US-CN-SDK-HARNESS-COMPARISON-SUB2-2026-11-14.md`.
