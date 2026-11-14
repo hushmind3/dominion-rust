@@ -313,3 +313,20 @@ pub async fn not_available() -> Response {
 #[cfg(test)]
 #[path = "video/tests.rs"]
 mod tests;
+
+pub async fn scene_diagnostics(
+    State(state):State<AppState>,Path(id):Path<String>,
+)->Response{
+    match video::film_scenes(&state,&id){
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message),
+    }
+}
+pub async fn retake_scene(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response{
+    match video::enqueue_retake(&state,&id,&body){
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message),
+    }
+}
