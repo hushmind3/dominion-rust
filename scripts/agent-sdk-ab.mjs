@@ -32,7 +32,7 @@ if(!['native','sdk'].includes(args.first||'native'))
 const nativeRoot=await realpath(args['native-dir'])
 const sdkRoot=await realpath(args['sdk-dir'])
 if(nativeRoot===sdkRoot)throw Error('Native and SDK workspaces must differ')
-const deadline=Date.now()+Math.min(60,Math.max(1,Number(args['max-minutes']||15)))*60_000
+const maxMinutes=Math.min(60,Math.max(1,Number(args['max-minutes']||15)))
 const baseURL={native:args['native-url'],sdk:args['sdk-url']}
 const flowID={native:args['native-workflow'],sdk:args['sdk-workflow']}
 const folders={native:nativeRoot,sdk:sdkRoot}
@@ -89,6 +89,7 @@ async function run(which){
   sdkToolsApproved:Boolean(args['approve-tools'])
  }:{}
  const started=performance.now()
+ const deadline=Date.now()+maxMinutes*60_000
  const job=await api(which,'POST','/api/workflows/'+encodeURIComponent(flowID[which])+'/run',{
   input:args.task,requestId,...extra
  })
@@ -116,7 +117,7 @@ async function run(which){
    cacheWrite:usage.cacheWriteTokens??null
   },
   toolEvents:output.harnessProvenance?.toolEventCounts??null,
-  domininionVerifiedArtifacts:Array.isArray(output.artifacts)?output.artifacts.length:0,
+  dominionVerifiedArtifacts:Array.isArray(output.artifacts)?output.artifacts.length:0,
   actualBilledKrw:null,
   error:status==='completed'?null:String(latest?.error||status).slice(0,180)
  }
