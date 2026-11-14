@@ -816,3 +816,9 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 - 지연 검색의 전체 인덱스는 초기에 노출된 일부 도구가 아니라 **권한 필터를 통과한 설치된 전체 네이티브/MCP 도구**다. tool.discovery=core처럼 첫 턴에 MCP가 숨겨졌어도 실행 중 검색해서 공개 가능하다. 룸의 비작업 발언에는 기존 툴 비노출을 유지한다.
 
 - [Pydantic AI Harness](https://github.com/pydantic/pydantic-ai)의 source-aware compaction 구조를 참고해 **도미니언 자체** `engine/chat/provider.rs`에 과부하 상태에서만 작동하는 파일 읽기 중복 제거를 구현했다. 파일/범위/도구 인자와 원문 바이트가 정확히 같을 때 이전 관측 내용을 모델 전송본에서만 줄이고, SQLite 원본·도구 호출 ID·최신 관측·서로 다른 파일 버전은 보존한다. 모델 호출이 필요 없는 비용 최적화다.
+
+### 2026-11-14 · 공개 하네스 복구 패턴의 도미니언 자체 구현
+
+- LangGraph(체크포인트), OpenHands(읽기/자원 잠금), Hermes(도구 배치 효과 분류)를 실제 소스에서 조사하고, `jobs::recover`→`workflows::interrupted_step_safe_to_repeat`→`workflows::run` 실행 경로를 개선했다.
+- 단계 시작 시점`stepStartedAt`을 도구 호출 **이전**에 저장한다. 비정상 종료된 워크플로는 해당 시점 이후의 SQLite `execution_operation`을 실제로 조회한다. **workspace/file 읽기·code_search만** 실행됐다면 사용자가 매번 재개 승인할 필요 없이 같은 단계를 재시도한다. 해당 기간의 셸·파일 쓰기·MCP·원격 작업·효과 미확정 작업은 계속 `needs_review`로 정지한다. 예전 체크포인트에 시각/단계 경계가 없으면 자동 복구하지 않는다.
+- 에이전트 런타임·모델 선택·권한·감사 기록은 도미니언 자체 Rust/SQLite 코드가 소유한다. 외부 LangGraph/OpenHands/Hermes 패키지를 호출하지 않는다. 재시작 안전성 분기 회귀 테스트 추가. 실제 재부팅·장기 작업 평가와 토큰 원가 측정은 별도다.

@@ -2,6 +2,70 @@ use crate::engine::jobs::JobContext;
 use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification};
 use serde_json::{json, Value};
 
+/// Strictly local observations which may be restarted after a process crash
+/// without duplicating externally observable writes. A "read-only" HTTP/MCP
+/// tool can still bill, reserve, or mutate server state: never include those.
+pub(crate) fn safely_repeatable_local_observation(tool:&str)->bool {
+    matches!(tool,
+        "workspace_list" | "workspace_read" | "workspace_read_range"
+        | "file_list" | "file_read" | "code_search"
+    )
+}
+
+/// Workflows must not treat a half-finished write as an ordinary retry. The
+/// pending step is repeatable only when a persisted start timestamp identifies
+/// its scope AND every recorded operation since that boundary is a local,
+/// non-mutating observation. This stays conservative if a receipt is malformed.
+pub(crate) fn interrupted_step_safe_to_repeat(
+    state:&crate::state::AppState,job:&Value
+)->bool {
+    let checkpoint=&job["workflowState"];
+    if checkpoint["inFlight"]!=true {return false;}
+    let Some(session_id)=checkpoint["sessionId"].as_str() else{return false;};
+    let Some(started)=checkpoint["stepStartedAt"].as_str()
+        .and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()) else{return false;};
+    let Some(index)=checkpoint["activeStepIndex"].as_u64() else{return false;};
+    if checkpoint["outputs"].as_array().map(|x|x.len())!=Some(index as usize){
+        return false;
+    }
+    if !checkpoint["definition"]["steps"].as_array()
+        .is_some_and(|s|s.get(index as usize).is_some()) {
+        return false;
+    }
+    if state.store.get("session",session_id).is_none(){return false;}
+    let mut executions=std::collections::HashSet::new();
+    for execution in state.store.all("execution"){
+        if execution["sessionId"].as_str()!=Some(session_id){continue;}
+        let Some(time)=execution["startedAt"].as_str()
+            .and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok()) else{
+            // Unknown timestamps from the same session are not proof of
+            // a current step. They cannot justify automatic replay.
+            return false;
+        };
+        if time>=started{
+            let Some(id)=execution["id"].as_str() else{return false;};
+            executions.insert(id.to_owned());
+        }
+    }
+    for operation in state.store.all("execution_operation"){
+        let same_session=operation["sessionId"].as_str()==Some(session_id);
+        if !same_session {continue;}
+        let from_attempt=operation["runId"].as_str()
+            .is_some_and(|id|executions.contains(id));
+        let from_timestamp=operation["startedAt"].as_str()
+            .and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok())
+            .is_some_and(|time|time>=started);
+        if !from_attempt && !from_timestamp {continue;}
+        let Some(tool)=operation["tool"].as_str() else{return false;};
+        if !safely_repeatable_local_observation(tool)
+            || operation["effectState"]=="needs_review"
+            || operation["effectState"]=="unknown" {
+            return false;
+        }
+    }
+    true
+}
+
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
 /// previous step's output is substituted into `{{previous}}`, and progress is
 /// persisted on the job so a restart can resume from the last finished step.
@@ -29,9 +93,23 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .cloned()
         .unwrap_or_else(|| json!({}));
     if existing.get("inFlight").and_then(Value::as_bool) == Some(true) {
-        return Ok(
-            json!({"workflowId":workflow_id,"sessionId":existing.get("sessionId"),"status":"needs_review","reason":"중단된 단계의 도구 실행 여부를 확인해야 합니다."}),
-        );
+        let safe=job["recovered"]==true
+            && interrupted_step_safe_to_repeat(&context.state,job);
+        if !safe {
+            return Ok(json!({
+                "workflowId":workflow_id,
+                "sessionId":existing.get("sessionId"),
+                "status":"needs_review",
+                "reason":"중단된 단계의 도구 실행 여부 또는 외부 효과를 확인해야 합니다."
+            }));
+        }
+        context.state.store.audit("workflow.read_only_replay_approved",json!({
+            "jobId":context.job_id,
+            "workflowId":workflow_id,
+            "stepIndex":existing["activeStepIndex"],
+            "checkpoint":existing["stepStartedAt"],
+            "reason":"only durable local read observations found since step checkpoint"
+        }));
     }
     let definition = existing
         .get("definition")
@@ -123,8 +201,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
 
+        // Persist a unique step-time boundary BEFORE the first model/tool
+        // side effect. Startup recovery can then prove which operations belong
+        // to the interrupted step instead of conflating previous step writes.
+        let step_started_at=chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros,true);
         context.checkpoint(json!({
-            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": true, "activeStepIndex": index },
+            "workflowState": {
+                "sessionId": session_id,"outputs": outputs,"definition": definition,
+                "inFlight": true,"activeStepIndex": index,
+                "stepStartedAt":step_started_at,
+            },
         }))?;
         let request = TurnRequest {
             session_id: Some(session_id.clone()),

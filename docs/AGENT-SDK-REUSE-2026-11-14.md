@@ -60,3 +60,7 @@
 ## 원가 구조 개선: 모델별 문맥 압박 시 출처를 보존하는 중복 읽기 제거
 
 실제 코딩 에이전트는 수차례 같은 파일을 읽는다. `provider.rs::fit_tool_context`에서 모델 입력 여유보다 도구 관측 결과가 클 때만 `deduplicate_repeated_file_reads`를 수행한다. `assistant.tool_calls`의 작업명·경로·읽은 줄 범위를 도구 ID와 연결하고, **이후 읽기 결과의 바이트가 완전히 같은 경우**에만 앞쪽 도구 응답을 간결한 참조로 대체한다. 이전/이후 파일 내용이 다르면 둘 다 남기고, 에러 응답·다른 파일·다른 읽기 범위는 변형하지 않는다. SQLite 원본은 수정하지 않는다. 큰 컨텍스트 Provider의 캐시 가능한 원본 대화도 유지한다. 중복 파일 읽기 벤치/실모델 청구액은 별도로 측정한다.
+
+## 단계 복구: 외부 하네스 동작 방식에서 독립 설계를 추출
+
+[LangGraph `_loop.py`](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/pregel/_loop.py)의 체크포인트 경계, [OpenHands `parallel_executor.py`](https://github.com/OpenHands/software-agent-sdk/blob/main/openhands-sdk/openhands/sdk/agent/parallel_executor.py)의 자원별 실행 충돌 판단, [Hermes `tool_dispatch_helpers.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/tool_dispatch_helpers.py)의 부작용 기반 배치 분할을 대조했다. 우리 워크플로 엔진은 중단된 작업이 실제 로컬 관찰만 수행한 경우에도 전부 사용자 검토로 보냈다. 이 구분을 `jobs::recover`와 `workflows::run` 경로에 통합했다. 스키마·상태·실행 소유권은 DOMINION 단독이며 **SDK 의존성 없음**. 이미 실행했을지 모르는 네트워크/셸/MCP/쓰기와 오래된 체크포인트는 자동 재실행하지 않는다.

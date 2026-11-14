@@ -133,6 +133,9 @@ pub fn recover(state: &AppState) {
             .unwrap_or(0);
         let mut updated = job.clone();
         updated["recovered"] = json!(true);
+        let safe_workflow_replay=job["kind"]=="workflow"
+            && job["workflowState"]["inFlight"]==true
+            && workflows::interrupted_step_safe_to_repeat(state,&job);
         let flagged = [
             "/inFlight",
             "/promptState/inFlight",
@@ -141,7 +144,6 @@ pub fn recover(state: &AppState) {
             "/goalState/inFlight",
             "/goalState/reviewPending",
             "/roomState/inFlight",
-            "/workflowState/inFlight",
             "/discordState/inFlight",
             "/videoState/inFlight",
         ]
@@ -158,13 +160,25 @@ pub fn recover(state: &AppState) {
         let unknown_external_result = job_session.is_some_and(|session| {
             state.store.all("execution_operation").iter().any(|operation| {
                 operation["outcomeUnknown"] == true
+                    && !(safe_workflow_replay && operation["sessionId"].as_str()==Some(session)
+                        && operation["tool"].as_str()
+                            .is_some_and(workflows::safely_repeatable_local_observation))
                     && operation["runId"]
                         .as_str()
                         .and_then(|run_id| state.store.get("execution", run_id))
                         .is_some_and(|run| run["sessionId"].as_str() == Some(session))
             })
         });
-        let uncertain = flagged || unknown_external_result;
+        let workflow_flagged=job["workflowState"]["inFlight"]==true
+            && !safe_workflow_replay;
+        let uncertain=flagged || workflow_flagged || unknown_external_result;
+        if safe_workflow_replay && !uncertain && attempts<3{
+            updated["replayReason"]=json!("local_read_only_step_retry");
+            state.store.audit("workflow.safe_read_requeued",json!({
+                "jobId":job["id"],
+                "stepIndex":job["workflowState"]["activeStepIndex"]
+            }));
+        }
         updated["status"] = json!(if attempts >= 3 || uncertain {
             "needs_review"
         } else {
@@ -1162,6 +1176,70 @@ mod tests {
             "an unknown external result must not be replayed: {stored}"
         );
         assert!(stored["error"].as_str().is_some_and(|text| text.contains("확정")));
+    }
+
+    #[test]
+    fn crashed_workflow_local_reads_resume_but_mutations_stop() {
+        let state=temp_state();
+        let saved_session=state.store.put("session",&json!({
+            "id":"safe-wf-session","title":"read-only workflow"
+        })).unwrap();
+        assert_eq!(saved_session["id"],"safe-wf-session");
+        let job=enqueue(&state,"workflow",json!({"workflowId":"safe-wf","input":"test"})).unwrap();
+        let mut running=job.clone();
+        running["status"]=json!("running");
+        running["attempts"]=json!(1);
+        running["sessionId"]=json!("safe-wf-session");
+        running["workflowState"]=json!({
+            "sessionId":"safe-wf-session",
+            "inFlight":true,
+            "activeStepIndex":0,
+            "stepStartedAt":"2026-11-14T10:00:00Z",
+            "outputs":[],
+            "definition":{"steps":[{"id":"s1","prompt":"read"}]}
+        });
+        state.store.put("job",&running);
+        state.store.put("execution",&json!({
+            "id":"safe-run","sessionId":"safe-wf-session",
+            "startedAt":"2026-11-14T10:00:01Z","status":"running"
+        }));
+        state.store.put("execution_operation",&json!({
+            "id":"safe-op","sessionId":"safe-wf-session","runId":"safe-run",
+            "startedAt":"2026-11-14T10:00:02Z",
+            "tool":"workspace_read","status":"completed",
+            "arguments":{"path":"src/lib.rs"}
+        }));
+        recover(&state);
+        let queued=state.store.get("job",job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(queued["status"],"queued","read-only job may retry after crash: {queued}");
+        assert_eq!(queued["replayReason"],"local_read_only_step_retry");
+
+        let mut unsafe_job=queued.clone();
+        unsafe_job["status"]=json!("running");
+        unsafe_job["recovered"]=json!(false);
+        state.store.put("job",&unsafe_job);
+        state.store.put("execution_operation",&json!({
+            "id":"unsafe-op","sessionId":"safe-wf-session","runId":"safe-run",
+            "startedAt":"2026-11-14T10:00:03Z",
+            "tool":"shell_exec","status":"running",
+            "arguments":{"command":"touch src/main.rs"}
+        }));
+        recover(&state);
+        let paused=state.store.get("job",job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(paused["status"],"needs_review","a possible external effect must never replay");
+    }
+
+    #[test]
+    fn legacy_inflight_workflow_without_checkpoint_cannot_autoreplay(){
+        let state=temp_state();
+        let job=enqueue(&state,"workflow",json!({"workflowId":"old"})).unwrap();
+        let mut running=job.clone();
+        running["status"]=json!("running");
+        running["workflowState"]=json!({"inFlight":true,"sessionId":"unknown","outputs":[]});
+        state.store.put("job",&running);
+        recover(&state);
+        let paused=state.store.get("job",job["id"].as_str().unwrap()).unwrap();
+        assert_eq!(paused["status"],"needs_review");
     }
 
     #[test]
