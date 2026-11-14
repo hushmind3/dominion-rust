@@ -58,14 +58,13 @@ export function MemoryPage(){
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  const saveEdit=async(memory:Memory)=>{
-  if(!editing||editing.id!==memory.id||!editing.text.trim()||busy||memory.source!=='user')return
+  if(!editing||editing.id!==memory.id||!editing.text.trim()||busy||memory.source!=='user'||statusOf(memory)!=='active')return
   setBusy(true);setError('');setNotice('')
   try{
-   // Retrieval eligibility is derived by the Rust API, not a field to persist.
-   // Keep the same record identity, scope and provenance when editing user text.
-   const {retrievalEligible:_eligibility,...stored}=memory
-   await post('/api/memories/'+encodeURIComponent(memory.id),{
-    ...stored,text:editing.text.trim(),editedAt:new Date().toISOString()
+   // Only the expected old text and replacement travel to Rust; the store
+   // owns source/scope/provenance, revisioning and concurrency checks.
+   await post('/api/memories/'+encodeURIComponent(memory.id)+'/edit',{
+    expectedText:memory.text,text:editing.text.trim()
    })
    setEditing(null);setNotice(t('memory.updated'));await memories.reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
@@ -95,7 +94,7 @@ export function MemoryPage(){
     </div>
     <div className="flex flex-col gap-3">{filtered.slice(0,visibleLimit).map(m=><Panel key={m.id} className="min-w-0 p-4">
      <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{t(statusLabels[statusOf(m)] ?? 'memory.status.excluded')}</span><div className="ml-auto flex items-center gap-1">
-      {m.source==='user'&&<Button size="icon" variant="ghost" disabled={busy} onClick={()=>{setEditing({id:m.id,text:m.text});setError('')}} aria-label={t('memory.edit')}><Pencil size={16}/></Button>}
+      {m.source==='user'&&statusOf(m)==='active'&&<Button size="icon" variant="ghost" disabled={busy} onClick={()=>{setEditing({id:m.id,text:m.text});setError('')}} aria-label={t('memory.edit')}><Pencil size={16}/></Button>}
       <Button size="icon" variant="ghost" disabled={busy} onClick={()=>void drop(m.id)} aria-label={t('memory.delete')}><Trash2 size={16}/></Button>
      </div></div>
      {editing?.id===m.id?<div className="grid gap-2">
