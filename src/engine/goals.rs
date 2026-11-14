@@ -469,6 +469,9 @@ fn finish(
         .store
         .get("goal", id)
         .unwrap_or_else(|| json!({}));
+    // Runtime task evidence contributes to the next RSI research hypothesis,
+    // but is never recorded as an independently evaluated RSI improvement.
+    crate::engine::goal_feedback::record(&context.state,&context.job_id,&goal);
     if let Some(task_id) = goal["taskId"].as_str().filter(|id| !id.is_empty()) {
         let final_status = goal["status"].as_str().unwrap_or(status);
         crate::engine::episode::set_root_outcome(
