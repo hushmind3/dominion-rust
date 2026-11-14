@@ -14,9 +14,22 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const jobs=useRemote<any[]>('/api/jobs',[])
  const channels=useRemote<any[]>('/api/channels',[])
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
+ const flows=useRemote<any[]>('/api/workflows',[])
+ const skills=useRemote<any[]>('/api/skills',[])
  const enabledProviders=providers.value.filter(p=>p.enabled)
  const authenticatedProviders=enabledProviders.filter((p:any)=>p.hasKey||p.local).length
- const recent=[...jobs.value].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,6)
+ const recent=[...jobs.value].sort((a,b)=>String(b.queuedAt||b.createdAt||'').localeCompare(String(a.queuedAt||a.createdAt||''))).slice(0,6)
+ const readyAgents=agents.value.filter(a=>{
+   const provider=enabledProviders.find(p=>p.id===a.providerId)
+   return Boolean(provider&&(a.model||provider.model))
+ })
+ const lastWorkflow=recent.find(j=>j.kind==='workflow')
+ const lastDeliverable=jobs.value.filter(j=>j.kind==='workflow'&&j.result?.deliverableId)
+  .sort((a,b)=>String(b.queuedAt||'').localeCompare(String(a.queuedAt||'')))[0]
+ const next=enabledProviders.length===0?{label:'첫 모델 제공자 연결',page:'models' as const,detail:'모델을 연결하면 실제 에이전트 작업을 실행할 수 있습니다.'}
+  :readyAgents.length===0?{label:'실행 가능한 에이전트 구성',page:'agents' as const,detail:'저장된 제공자와 모델을 에이전트에 연결하세요.'}
+  :flows.value.length===0?{label:'에이전트로 다단계 워크플로 만들기',page:'workflows' as const,detail:'실행과 독립 검토를 구성해 작업 결과를 남기세요.'}
+  :{label:'저장된 워크플로 실행하기',page:'workflows' as const,detail:'모델과 에이전트가 확정된 실제 워크플로를 실행합니다.'}
  const busy=jobs.value.filter(j=>['queued','running','planning','reviewing','repairing'].includes(j.status)).length
  const metrics=[
   {name:'dashboard.metric.chat',value:sessions.value.length,icon:MessageSquare,page:'chat' as const},
@@ -34,6 +47,18 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  return <PageContainer className="!max-w-[1200px] !py-5">
   <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h1 className="m-0 text-[19px] font-bold tracking-tight">{t('dashboard.title')}</h1><p className="mt-1 text-[12px] text-[#7C7469]">{t('dashboard.subtitle')}</p></div><Button type="button" variant="primary" onClick={()=>navigate('chat')} className="flex h-8 items-center gap-2 rounded-lg px-3 text-[11px] font-semibold"><MessageSquare size={14}/> {t('dashboard.openChat')} <ArrowRight size={13}/></Button></div>
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{metrics.map(m=>{const Icon=m.icon;return <Button type="button" key={m.name} onClick={()=>navigate(m.page)} className="flex min-h-24 flex-col items-start rounded-xl border border-[#E7E0D5] bg-white p-4 text-left transition-colors hover:border-[#D8CFC2]"><span className="flex w-full items-center justify-between text-[11px] text-[#7C7469]">{t(m.name as any)}<Icon size={16} className="text-[#A79C8E]"/></span><strong className="mt-4 text-[23px] font-bold leading-none tabular-nums text-[#24211D]">{m.value}</strong></Button>})}</div>
+  <section className="mt-4 grid gap-3 rounded-xl border border-[#E7D8C8] bg-[#FFF9F1] p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+   <div>
+    <strong className="text-sm text-[#43382E]">실제 작업 준비 · 다음 연결 단계</strong>
+    <p className="mt-1 text-xs text-[#776858]">{next.detail}</p>
+    <p className="mt-2 text-[11px] text-[#918271]">
+     사용 가능한 에이전트 {readyAgents.length}/{agents.value.length}명 · 영속 워크플로 {flows.value.length}개 · 설치 스킬 {skills.value.filter(sk=>sk.enabled!==false).length}개
+    </p>
+    {lastWorkflow?.status==='needs_review'&&<p className="mt-2 text-xs font-medium text-amber-800">마지막 워크플로가 검토를 기다리고 있습니다. 활동에서 실패한 단계를 확인하세요.</p>}
+    {lastDeliverable&&<p className="mt-2 text-xs text-[#776858]">최근 납품 결과: 작업 {String(lastDeliverable.id).slice(0,8)} · 전체 내용은 워크플로 메뉴에서 확인</p>}
+   </div>
+   <Button variant="primary" onClick={()=>navigate(next.page)}>{next.label} <ArrowRight size={15}/></Button>
+  </section>
   <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(270px,.72fr)]">
    <section className="rounded-xl border border-[#E7E0D5] bg-white">
     <div className="border-b border-[#F0EAE1] px-4 py-3"><h2 className="text-[13px] font-bold">{t('dashboard.runNow')}</h2><p className="mt-1 text-[11px] text-[#8A8176]">{t('dashboard.runNow.desc')}</p></div>
