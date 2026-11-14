@@ -536,6 +536,22 @@ async fn run_job(state: AppState, job: Value) {
                 "job.failed",
                 json!({ "jobId": job_id, "kind": kind, "error": error }),
             );
+            // A worker failure must also leave the durable parent goal in a
+            // reviewable terminal state. Otherwise the UI would show "running"
+            // forever even though the job failed and could not be resumed.
+            if kind == "goal" {
+                if let Some(goal_id)=job.pointer("/input/goalId").and_then(Value::as_str) {
+                    if let Some(goal)=state.store.get("goal",goal_id) {
+                        if matches!(goal["status"].as_str(),Some("queued"|"running")) {
+                            if let Some(saved)=state.store.patch_if("goal",goal_id,"status",
+                                &goal["status"],&json!({"status":status,"phase":status,
+                                    "error":error,"finishedAt":chrono::Utc::now().to_rfc3339()})) {
+                                state.bus.record("goal",&saved);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     if kind == "rsi_evolve" {
