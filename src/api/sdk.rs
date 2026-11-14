@@ -94,3 +94,19 @@ pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Respons
         Err(err)=>bad(err),
     }
 }
+
+#[cfg(test)]
+mod sdk_capability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn native_sdk_contract_is_read_only_and_explicit() {
+        let contract=info().await.0;
+        assert_eq!(contract["protocol"],"dominion-native-agent");
+        assert_eq!(contract["apiVersion"],1);
+        assert_eq!(contract["engine"],"rust");
+        assert_eq!(contract["semantics"]["runPostIdempotent"],false);
+        assert_eq!(contract["semantics"]["disconnectCancelsExecution"],false);
+        assert_eq!(contract["semantics"]["eventReplayGetIdempotent"],true);
+    }
+}
