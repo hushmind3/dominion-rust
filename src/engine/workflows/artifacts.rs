@@ -6,7 +6,7 @@ use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 
 const MAX_ARTIFACT_BYTES:usize=256*1024;
-const MAX_INPUT_BYTES:usize=32*1024;
+const MAX_INPUT_BYTES:usize=16*1024;
 
 fn digest(content:&str)->String {
     format!("{:x}",Sha256::digest(content.as_bytes()))
