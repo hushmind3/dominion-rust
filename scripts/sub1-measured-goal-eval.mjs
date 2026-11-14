@@ -151,6 +151,16 @@ async function launchCase(test){
   evidenceCount:goal?.metrics?.successfulToolEvidenceCount??0,
   unmetGaps:goal?.gaps?.length??null,
   taskError:error,jobStatus:job?.status??null,
+  // These post-run diagnostics are outside the model's tool/context surface.
+  finalGaps:goal?.gaps??null,
+  reviewTrace:goal?.reviewHistory?.slice(-8)??null,
+  sourceTargetCoverage:goal?.sourceTargets?.paths?.map(item=>({
+   path:item.path,initialSha256:item.initialSha256??null,
+   finalSha256:existsSync(join(root,"workspace",item.path))
+    ?sha(read(item.path)):null
+  }))??null,
+  outputPreview:Object.fromEntries(test.output.filter(p=>existsSync(join(root,"workspace",p)))
+   .map(p=>[p,read(p).slice(0,2400)])),
   // Neither model text nor source-side success flags are an oracle.
   evidenceModelClaimTrusted:false,
  };
