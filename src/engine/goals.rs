@@ -17,6 +17,8 @@ mod report;
 mod git;
 #[path = "goals/progress.rs"]
 mod progress;
+#[path = "goals/metrics.rs"]
+pub mod metrics;
 
 // Resolve only the goal's own session tree. An unresolved tool from an
 // unrelated chat/room must never stop an autonomous goal.

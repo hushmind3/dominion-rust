@@ -4,6 +4,15 @@ use axum::{extract::{Path,State},http::StatusCode,response::{IntoResponse,Respon
 use serde_json::{json,Value};
 use super::response::error;
 
+/// Runtime observations, not an externally certified model benchmark.
+pub async fn goal_metrics(State(state):State<AppState>)->Response{
+    match engine::goals::metrics::snapshot(&state){
+        Ok(snapshot)=>Json(snapshot).into_response(),
+        Err(reason)=>error(StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("목표 실행 사용량 집계 실패: {reason}")),
+    }
+}
+
 pub async fn list_goals(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("goal")))
 }

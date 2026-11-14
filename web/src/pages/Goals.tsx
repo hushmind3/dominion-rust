@@ -16,10 +16,16 @@ type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;j
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  evidence?:unknown[];gaps?:string[];acceptanceChecks?:unknown[];finalReport?:GoalReport}
 type Job={id:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;result?:{status?:string;finalReport?:GoalReport}}
+type GoalMetrics={source:string;proofLevel:string;totalGoals:number;settledGoals:number;internalAcceptedGoals:number;pendingOrRunningGoals:number;completedWithoutValidJobOrAcceptance:number;
+ internalAcceptanceRateAmongSettled:number|null;totalIterations:number;totalReplans:number;
+ usage:{calls:number;estimatedCalls:number;totalTokens:number;cachedPromptTokens:number;cacheEligiblePromptTokens:number;
+  sessionsWithAudit:number;goalsWithoutSession:number;sessionsWithoutUsageAudit:number;sharedSessionLinks:number;
+  completeAttribution:boolean;recordedTokensPerInternalAccepted:number|null;actualBilledKrw:number|null;actualBilledKrwPerSuccess:number|null}}
 type VerifyKind='auto'|'file_exists'|'file_changed'|'command_succeeded'
 
 export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
  const goals=useRemote<Goal[]>('/api/goals',[])
+ const metrics=useRemote<GoalMetrics|null>('/api/goals/metrics',null,false)
  const agents=useRemote<Agent[]>('/api/agents',[])
  const [goalText,setGoalText]=useState('')
  const [agentId,setAgentId]=useState('')
@@ -37,6 +43,10 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
  const ordered=useMemo(()=>[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')),[goals.value])
  const selected=ordered.find(item=>item.id===selectedId)||ordered[0]
  const hasJob=selected?.jobId
+ useEffect(()=>{
+  const id=window.setInterval(()=>{if(document.visibilityState==='visible')void metrics.reload()},15000)
+  return()=>window.clearInterval(id)
+ },[metrics.reload])
  useEffect(()=>{
   const id=window.setInterval(()=>{if(document.visibilityState==='visible')void goals.reload()},3500)
   return()=>window.clearInterval(id)
@@ -122,6 +132,19 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
   <Headline eyebrow="AUTONOMOUS AGENT" title="자율 목표 실행" description="목표 하나로 분석 → 계획 → 도구 실행 → 검증 → 실패 수정 → 결과물 전달. 완료 판정은 실제 도구와 최종 검증 조건으로 결정합니다." actions={<Button variant="ghost" onClick={()=>void goals.reload()}><RefreshCw size={15}/> 새로고침</Button>}/>
   {error&&<Notice message={error}/>}
   {notice&&<p role="status" className="mb-4 rounded-lg border border-[#E1D7C9] bg-[#FAF7F1] p-3 text-xs">{notice}</p>}
+  <Panel className="mb-5 space-y-3 p-4">
+   <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-bold">📊 실행 성과 원장</h2><Button variant="ghost" onClick={()=>void metrics.reload()}><RefreshCw size={13}/> 기록 재집계</Button></div>
+   {metrics.value?<><div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+    <div><p className="text-[#8A8176]">내부 검증 통과</p><p className="text-lg font-bold">{metrics.value.internalAcceptedGoals}/{metrics.value.settledGoals}건</p></div>
+    <div><p className="text-[#8A8176]">기록상 완료 비율</p><p className="text-lg font-bold">{metrics.value.internalAcceptanceRateAmongSettled===null?'표본 없음':(metrics.value.internalAcceptanceRateAmongSettled*100).toFixed(1)+'%'}</p></div>
+    <div><p className="text-[#8A8176]">기록된 모델 토큰</p><p className="text-lg font-bold">{metrics.value.usage.totalTokens.toLocaleString('ko-KR')}</p></div>
+    <div><p className="text-[#8A8176]">내부 통과 1건당 토큰</p><p className="text-lg font-bold">{metrics.value.usage.recordedTokensPerInternalAccepted===null?'계측 불충분':Math.round(metrics.value.usage.recordedTokensPerInternalAccepted).toLocaleString('ko-KR')}</p></div>
+   </div>
+   <p className="text-[11px] leading-5 text-[#8A8176]">총 {metrics.value.totalGoals}개 목표 · 진행 중 {metrics.value.pendingOrRunningGoals}개 · 재계획 {metrics.value.totalReplans}회 · 모델 호출 {metrics.value.usage.calls}회 (추정 사용량 {metrics.value.usage.estimatedCalls}회)</p>
+   <p className="text-[11px] leading-5 text-[#8A8176]">캐시 보고 입력 {metrics.value.usage.cachedPromptTokens.toLocaleString('ko-KR')}/{metrics.value.usage.cacheEligiblePromptTokens.toLocaleString('ko-KR')}토큰. 사용량 로그 없는 세션 {metrics.value.usage.sessionsWithoutUsageAudit}개, 세션 누락 {metrics.value.usage.goalsWithoutSession}개. 공급자 실제 청구액: 계측되지 않음.</p>
+   <p className="text-[11px] font-semibold leading-5 text-[#9A5947]">이 수치는 로컬 SQLite의 목표·실행 작업·모델 감사 로그에 기반한 내부 실행 관측입니다. 실모델 독립 벤치마크나 외부 작업 완수율 인증이 아닙니다.</p>
+   </>:<p className="text-xs text-[#8A8176]">{metrics.error||'실행 기록을 집계하고 있습니다.'}</p>}
+  </Panel>
   <div className="grid grid-cols-1 gap-5 lg:grid-cols-[330px_minmax(0,1fr)]">
    <div className="flex min-w-0 flex-col gap-4">
     <Panel className="flex flex-col gap-3 p-4">
