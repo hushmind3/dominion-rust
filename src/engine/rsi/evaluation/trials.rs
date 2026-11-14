@@ -211,14 +211,18 @@ pub(super) fn record_trial_outcome(
     }
     let Some(baseline) = comparable_trial_baseline(prior_history, generation, &candidate) else {
         let mut trial = candidate["rsiTrial"].clone();
-        trial["status"] = json!("trial_inconclusive");
+        // Missing/broken control is not evidence that this candidate failed.
+        // Keep the audit row but exclude it from the two-independent-trial
+        // adoption denominator, so one verifier outage cannot permanently
+        // poison a promising candidate's later matched experiments.
+        trial["status"] = json!("trial_unscorable");
         trial["lastReason"] = json!("comparable_baseline_missing");
         if !trial["trials"].is_array() {
             trial["trials"] = json!([]);
         }
         trial["trials"].as_array_mut().unwrap().push(json!({
             "jobId": generation["jobId"], "attempt": generation["attempt"],
-            "domain": generation["domain"], "verdict": "inconclusive",
+            "domain": generation["domain"], "verdict": "unscorable",
             "reason": "same generator commit, frozen profile, objective and independently scored active baseline이 없습니다.",
             "at": chrono::Utc::now().to_rfc3339(),
         }));
