@@ -176,6 +176,7 @@ pub(crate) async fn deterministic_tool(
         "type": if ok { "tool_end" } else { "tool_error" },
         "name": tool,
         "id": operation_id,
+        "operationId": operation_id,
         "result": operation["result"],
     }));
     Ok((operation["result"].clone(), operation))
@@ -565,6 +566,10 @@ pub(crate) async fn dispatch_tool_call(
                         "type": "tool_end",
                         "name": call.name,
                         "id": call.id,
+                        // The event precedes the durable DB write. The goal
+                        // collector must later hydrate this exact receipt ID
+                        // and must not trust event-only completion evidence.
+                        "operationId": operation_id,
                         "arguments": arguments,
                         "result": value,
                     }));
