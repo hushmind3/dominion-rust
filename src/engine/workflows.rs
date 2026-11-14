@@ -212,18 +212,21 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }));
     }
 
-    state.store.audit(
-        "workflow.completed",
-        json!({ "workflowId": workflow_id, "sessionId": session_id, "steps": outputs.len() }),
-    );
-
-    // A workflow is a real multi-agent execution path. Its result must feed the
-    // same semantic learning pipeline as chat and rooms, not only tool logs.
+    // Audit the actual terminal outcome, not an assumed success. Every
+    // completed deliverable is recorded after the final model/tool turn.
     let status = if state.is_cancelled(&session_id) {
         "cancelled"
     } else {
         "completed"
     };
+    state.store.audit(
+        &format!("workflow.{status}"),
+        json!({ "workflowId": workflow_id, "sessionId": session_id,
+            "jobId":context.job_id,"steps": outputs.len() }),
+    );
+
+    // A workflow is a real multi-agent execution path. Its result must feed the
+    // same semantic learning pipeline as chat and rooms, not only tool logs.
     let artifact=if status=="completed" {
         Some(artifacts::create(state,&context.job_id,workflow_id,&session_id,&outputs)?)
     }else{None};
