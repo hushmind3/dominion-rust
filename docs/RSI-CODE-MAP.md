@@ -81,3 +81,5 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 - 운영 피드백: `goals::finish` → `goal_feedback::record` → DB `goal_receipt` → `rsi/planner/focus.rs::generation_context` → 다음 세대 모델의 조사 프롬프트. `independentRsiGain:false`: 실제 채택·평가 게이트를 대신하지 않음.
 - 영상: `api/video.rs::create_job` → `video::enqueue(cinematic)` → `video::run` → `video/cinematic.rs::render` → `video/comfy.rs::render` → `video/quality.rs::inspect_clip` → `FFmpeg` → 최종 `quality::inspect` → `Video.tsx` 장면별 영수증.
 - 셀프 모델 `rsi_system.rs::COMPONENTS`에 신규 실제 소스 모듈을 등록. 구조·원가/시각 품질/동시성의 미확인 경계는 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md](SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md)에 명시.
+
+- 목표 조종: `Goals.tsx::savePlan` → `api/goals.rs::steer_goal` → `goal_steering.rs::submit` (optimistic CAS) → `goals.rs::run`의 안전한 턴 경계 `pending` 적용 → stale-plan 최종 완료 차단. `rsi_system.rs::COMPONENTS`에 소스 등록.
