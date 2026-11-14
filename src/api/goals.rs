@@ -120,3 +120,33 @@ pub async fn update_plan(
     state.store.audit("goal.plan_override_requested",json!({"goalId":id}));
     Json(saved).into_response()
 }
+
+pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    match engine::goal_changes::preview(&state,&goal).await {
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
+
+/// Deliberate owner-initiated revert of one exact, previewed file; no reset,
+/// clean, bulk checkout or untracked-file deletion is permitted.
+pub async fn undo_change(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response{
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    let Some(path)=body["path"].as_str() else {
+        return error(StatusCode::BAD_REQUEST,"되돌릴 파일 경로가 필요합니다.");
+    };
+    let Some(sha)=body["expectedSha256"].as_str() else {
+        return error(StatusCode::BAD_REQUEST,"미리보기에서 확인한 파일 SHA-256이 필요합니다.");
+    };
+    match engine::goal_changes::undo(&state,&goal,path,sha).await {
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
