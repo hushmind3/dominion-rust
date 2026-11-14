@@ -61,6 +61,47 @@ fn fitness(metrics: &Value) -> Option<BTreeMap<String, f64>> {
     (!result.is_empty()).then_some(result)
 }
 
+/// Select the observable *search niche* from non-holdout paired metrics only.
+/// A niche is a diversity coordinate, NEVER proof of quality or promotion.
+/// Keep withheld oracle cases entirely out of parent-choice heuristics so
+/// model-guided search cannot learn which test to overfit by repeated reuse.
+/// Inspired by island/MAP-Elites exploration, implemented in native Rust.
+fn behavioral_niche(metrics: &Value, plan: &[Value]) -> String {
+    let training_ids = plan.iter()
+        .filter(|case| case["holdout"] != true)
+        .filter_map(|case| case["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let mut best: Option<(f64, String)> = None;
+    for case in metrics["measurements"].as_array().into_iter().flatten() {
+        let Some(id) = case["id"].as_str() else {continue};
+        if !training_ids.contains(id) { continue; }
+        for metric in case["metrics"].as_array().into_iter().flatten() {
+            let (Some(key),Some(before),Some(after),Some(direction)) = (
+                metric["key"].as_str(),metric["baseline"].as_f64(),
+                metric["candidate"].as_f64(),metric["direction"].as_str(),
+            ) else {continue};
+            if !before.is_finite() || !after.is_finite() { continue; }
+            let change = match direction {
+                "higher" => after-before,
+                "lower" => before-after,
+                _ => continue,
+            };
+            if change<=0.0 {continue;}
+            // Relative gain avoids selecting a dimension only because its
+            // measurement units have larger numeric magnitudes.
+            let gain=change / before.abs().max(1e-9);
+            if !gain.is_finite(){continue;}
+            let name=format!("{id}/{key}");
+            if best.as_ref().is_none_or(|(max,old)|gain>*max
+                || (gain==*max&&name<*old)) {
+                best=Some((gain,name));
+            }
+        }
+    }
+    best.map(|(_,name)|format!("train:{name}"))
+        .unwrap_or_else(||"train:neutral".to_string())
+}
+
 fn dominates(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> bool {
     left.len() == right.len()
         && left
@@ -87,7 +128,7 @@ fn scoped_identity(base:&str,plan:&[Value],oracle:&str,branch:Option<&str>)->Str
 /// Candidate-only checks shared by the live history and the persisted archive.
 /// A stored entry is never trusted; its paired receipt is replayed again.
 fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],oracle:&str)
-    -> Option<(String,BTreeMap<String,f64>)> {
+    -> Option<(String,BTreeMap<String,f64>,String)> {
     let id=candidate["id"].as_str()?.to_string();
     if candidate["cases"] != json!(plan) || candidate["oracleVersion"] != "rsi-worktree-v2" {
         return None;
@@ -99,7 +140,8 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
     if hash != oracle {return None;}
     (candidate["evaluation"]["evidenceSha256"] == pair["evidenceSha256"])
         .then_some(())?;
-    Some((id.clone(),fitness(&metrics)?))
+    let niche=behavioral_niche(&metrics,plan);
+    Some((id.clone(),fitness(&metrics)?,niche))
 }
 
 /// Atomic per-candidate archive insertion, independent of next-parent
@@ -235,14 +277,14 @@ fn select_scoped(
         if generation["evaluation"]["evidenceSha256"] != candidate["evaluation"]["evidenceSha256"] {
             continue;
         }
-        let Some((id,scores)) = candidate_scores(state,&candidate,base,&plan,&oracle) else {
+        let Some((id,scores,niche)) = candidate_scores(state,&candidate,base,&plan,&oracle) else {
             continue;
         };
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
         // Persistence failure cannot silently turn a transient candidate
         // into a "persisted" selection the child will later fail to restore.
         if remember(state,&identity,&candidate).is_err(){continue;}
-        entries.push((id, candidate["patchSha256"].clone(), scores));
+        entries.push((id, candidate["patchSha256"].clone(), scores, niche));
     }
     for record in state.store.all("rsi_archive") {
         if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
@@ -252,8 +294,8 @@ fn select_scoped(
             continue;
         }
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
-        let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
-        entries.push((id,candidate["patchSha256"].clone(),scores));
+        let Some((id,scores,niche))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
+        entries.push((id,candidate["patchSha256"].clone(),scores,niche));
     }
     let frontier = entries
         .iter()
@@ -271,17 +313,37 @@ fn select_scoped(
         }
         jobs.len()
     };
-    let selected = frontier.iter().min_by(|left, right| {
-        children(&left.0)
-            .cmp(&children(&right.0))
-            .then_with(|| left.0.cmp(&right.0))
+    // A very productive path can monopolize a single behavior dimension.
+    // Prefer the least-explored, independently measured niche across previous
+    // generations, then the least-used parent inside that niche. All niches
+    // are computed using non-holdout measurements only. The paired evaluator
+    // and promotion threshold remain unchanged and independently frozen.
+    let past=state.store.all("rsi_generation");
+    let niche_attempts=|niche:&str|{
+        let mut jobs=BTreeSet::new();
+        for generation in history.iter().chain(past.iter()){
+            let Some(parent)=generation["inheritedCandidateId"].as_str() else {continue};
+            if !entries.iter().any(|entry|entry.0==parent&&entry.3==niche){continue;}
+            if let Some(job)=generation["jobId"].as_str(){jobs.insert(job.to_string());}
+        }
+        jobs.len()
+    };
+    let distinct_niches=frontier.iter().map(|entry|entry.3.as_str())
+        .collect::<BTreeSet<_>>().len();
+    let selected = frontier.iter().min_by(|left,right| {
+        niche_attempts(&left.3).cmp(&niche_attempts(&right.3))
+            .then_with(||children(&left.0).cmp(&children(&right.0)))
+            .then_with(||left.0.cmp(&right.0))
     });
     selected
         .map(|entry| {
             json!({
                 "candidateId":entry.0,"patchSha256":entry.1,
-                "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
+                "policy":"paired-pareto-stepping-stones-v2",
+                "searchStrategy":"measured-niche-diversity-v1","baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
+                "nicheCount":distinct_niches,"explorationNiche":entry.3,
+                "nicheDescendantAttempts":niche_attempts(&entry.3),
                 "descendantAttempts":children(&entry.0),
                 "persisted":true,"adopted":false,"qualityProven":false,
             })
@@ -324,6 +386,50 @@ pub(crate) fn validate_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn behavior_niches_are_measured_not_guessed_and_never_leak_holdout_cases(){
+        let cases=vec![
+            json!({"id":"private","holdout":true}),
+            json!({"id":"latency","holdout":false}),
+            json!({"id":"quality","holdout":false}),
+        ];
+        let measurements=json!({"measurements":[
+            {"id":"private","metrics":[{"key":"score","direction":"higher",
+                "baseline":0.5,"candidate":0.99}]},
+            {"id":"latency","metrics":[{"key":"elapsedMs","direction":"lower",
+                "baseline":100.0,"candidate":85.0}]},
+            {"id":"quality","metrics":[{"key":"score","direction":"higher",
+                "baseline":0.5,"candidate":0.6}]}
+        ]});
+        let niche=behavioral_niche(&measurements,&cases);
+        assert_eq!(niche,"train:quality/score");
+        let mut altered=measurements;
+        altered["measurements"][0]["metrics"][0]["candidate"]=json!(0.0);
+        assert_eq!(behavioral_niche(&altered,&cases),niche,
+            "holdout measurement must not affect future selection");
+        let empty=vec![json!({"id":"private","holdout":true})];
+        assert_eq!(behavioral_niche(&altered,&empty),"train:neutral");
+    }
+
+    #[test]
+    fn niche_diversity_parent_selection_survives_real_archive_replay(){
+        let (state,root)=state();
+        let first=insert(&state,"quality-first",[0.54,0.51]);
+        let second=insert(&state,"alternate-strength",[0.51,0.54]);
+        let mut history=vec![first,second];
+        let initial=select(&state,&history,&"a".repeat(40),&plan());
+        assert_eq!(initial["nicheCount"],2);
+        assert_eq!(initial["searchStrategy"],"measured-niche-diversity-v1");
+        let chosen=initial["candidateId"].as_str().unwrap().to_string();
+        history.push(json!({"jobId":"generation-2",
+            "inheritedCandidateId":chosen}));
+        let next=select(&state,&history,&"a".repeat(40),&plan());
+        assert_ne!(next["candidateId"],initial["candidateId"]);
+        assert_ne!(next["explorationNiche"],initial["explorationNiche"]);
+        assert_eq!(next["nicheDescendantAttempts"],0);
+        let _=std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn same_patch_in_two_branches_has_disjoint_persistent_archive_identity() {
