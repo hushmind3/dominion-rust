@@ -151,10 +151,73 @@ pub(crate) async fn discard(state:&AppState,id:&str)->Result<Value,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
-    #[test]
-    fn path_identifier_requires_strict_ownership(){
+    fn setup()->(AppState,PathBuf,PathBuf){
+        let root=std::env::temp_dir().join(format!("dominion-goal-workspace-{}",uuid::Uuid::new_v4()));
+        let repo=root.join("source");
+        let data=root.join("data");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let git=|args:&[&str]|{
+            let output=std::process::Command::new("git").current_dir(&repo)
+                .args(args).output().unwrap();
+            assert!(output.status.success(),"git {:?}: {}",args,
+                String::from_utf8_lossy(&output.stderr));
+        };
+        git(&["init","-q"]);
+        git(&["config","user.name","DOMINION Test"]);
+        git(&["config","user.email","test@example.invalid"]);
+        std::fs::write(repo.join("src.txt"),"original").unwrap();
+        git(&["add","src.txt"]);
+        git(&["commit","-qm","baseline"]);
+        let config=crate::config::Config{port:0,data_dir:data,
+            workspace:repo.clone(),web_dir:root.join("web")};
+        let state=AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        (state,root,repo)
+    }
+    #[tokio::test]
+    async fn goal_and_child_share_detached_source_that_can_be_discarded(){
+        let (state,root,source)=setup();
+        let goal_id=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":goal_id,"status":"queued",
+            "isolateWorktree":true})).unwrap();
+        let meta=prepare(&state,&goal_id).await.unwrap();
+        assert_eq!(meta["mode"],"detached_git_worktree");
+        state.store.put("session",&json!({"id":"owner","goalId":goal_id})).unwrap();
+        state.store.put("session",&json!({"id":"child","parentSessionId":"owner",
+            "delegated":true,"delegatedReadOnly":true})).unwrap();
+        let owner=workspace_for_session(&state,"owner").unwrap();
+        let child=workspace_for_session(&state,"child").unwrap();
+        assert_eq!(owner,child,"delegated investigation must see the goal's source");
+        assert_ne!(owner,source.canonicalize().unwrap());
+        std::fs::write(owner.join("src.txt"),"changed").unwrap();
+        let result=changes(&state,&goal_id).await.unwrap();
+        assert!(result["diff"].as_str().unwrap().contains("changed"));
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
+        let goal=state.store.get("goal",&goal_id).unwrap();
+        state.store.patch_if("goal",&goal_id,"status",&goal["status"],
+            &json!({"status":"needs_review"})).unwrap();
+        let discarded=discard(&state,&goal_id).await.unwrap();
+        assert_eq!(discarded["sourceCheckoutPreserved"],true);
+        assert!(workspace_for_session(&state,"child").is_err(),
+            "a removed worktree must never fall back to the source checkout");
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn missing_or_dirty_git_source_does_not_create_a_worktree(){
+        let (state,root,source)=setup();
         let id=uuid::Uuid::new_v4().to_string();
-        assert!(id.len()>=12);
+        state.store.put("goal",&json!({"id":id,"status":"queued",
+            "isolateWorktree":true})).unwrap();
+        std::fs::write(source.join("src.txt"),"existing owner edit").unwrap();
+        assert!(prepare(&state,&id).await.is_err());
+        assert!(!goal_path(&state,&id).unwrap().exists());
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn path_identifier_rejects_traversal(){
         assert!(!"../../etc".bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'));
     }
 }
