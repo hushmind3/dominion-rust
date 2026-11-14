@@ -121,6 +121,26 @@ pub(crate) fn tool_name(definition: &Value) -> &str {
 // prevents incidental English substrings from changing agent execution.
 use crate::engine::text_intent::{has_any as intent_has_any, has_term as intent_has_term};
 
+/// Explicit owner directives outrank token/menu ranking heuristics. A match
+/// requires the exact authorized tool name with word boundaries, not a fuzzy
+/// description match that a tool response or repository file could impersonate.
+pub(crate) fn owner_named_tool(query: &str, name: &str) -> bool {
+    !name.is_empty() && intent_has_term(query, &name.to_lowercase())
+}
+
+/// Keep the *existing* catalog contract. This changes presentation priority,
+/// never grants a missing or upstream-rejected capability.
+pub(crate) fn prioritize_owner_named_tools(
+    definitions: Vec<Value>, owner_text: &str,
+) -> Vec<Value> {
+    let lower = owner_text.to_lowercase();
+    let (mut requested, ordinary): (Vec<_>, Vec<_>) = definitions
+        .into_iter()
+        .partition(|definition| owner_named_tool(&lower, tool_name(definition)));
+    requested.extend(ordinary);
+    requested
+}
+
 /// Casual room turns carry zero tool schemas. Action requests select the
 /// exact native schemas the harness judges relevant; no model call is used.
 pub(crate) fn room_tool_request(input: &str) -> bool {
@@ -259,7 +279,12 @@ pub(crate) fn select_room_tools(
             (score > 0).then(|| (score, definition.clone()))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    // A semantic relevance score must not outvote an explicit owner tool name.
+    scored.sort_by(|a, b| {
+        owner_named_tool(&lower, tool_name(&b.1))
+            .cmp(&owner_named_tool(&lower, tool_name(&a.1)))
+            .then_with(|| b.0.cmp(&a.0))
+    });
     if scored.is_empty() {
         if acceptance {
             return definitions;
@@ -322,10 +347,12 @@ pub(crate) fn select_tool_definitions(
                 .collect::<std::collections::BTreeSet<_>>()
         });
     if strategy == "core" {
+        let lower = query.to_lowercase();
         return definitions
             .into_iter()
             .filter(|definition| core.contains(tool_name(definition))
-                || (coding_request && coding_tools.contains(&tool_name(definition))))
+                || (coding_request && coding_tools.contains(&tool_name(definition)))
+                || owner_named_tool(&lower, tool_name(definition)))
             .collect();
     }
     // query-relevant: always keep the core set, add the best matches.
@@ -357,11 +384,13 @@ pub(crate) fn select_tool_definitions(
         .take(extra)
         .map(|(_, definition)| definition)
         .collect::<Vec<_>>();
+    let lower = query.to_lowercase();
     definitions
         .into_iter()
         .filter(|definition| {
             core.contains(tool_name(definition))
                 || (coding_request && coding_tools.contains(&tool_name(definition)))
+                || owner_named_tool(&lower, tool_name(definition))
                 || keep_extra
                     .iter()
                     .any(|extra| tool_name(extra) == tool_name(definition))
@@ -441,20 +470,36 @@ pub(crate) fn autonomous_code_tool_window(definitions:Vec<Value>,input:&str)->Ve
     if selected.is_empty(){definitions}else{selected}
 }
 
-pub(crate) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
+/// Reserve space for explicitly requested, already-authorized tools FIRST.
+/// Return an error if even those schemas exceed capacity, instead of quietly
+/// pretending the agent can obey a request whose tool never reached the model.
+pub(crate) fn trim_tool_definitions(
+    definitions: Vec<Value>, budget: usize, owner_text: &str,
+) -> Result<Vec<Value>, String> {
+    let lower = owner_text.to_lowercase();
+    let ordered = prioritize_owner_named_tools(definitions, owner_text);
+    let required_bytes = ordered.iter()
+        .filter(|definition| owner_named_tool(&lower, tool_name(definition)))
+        .map(|definition| serde_json::to_string(definition).unwrap_or_default().len())
+        .sum::<usize>();
+    if required_bytes > budget {
+        return Err(format!(
+            "사용자가 지정한 도구의 스키마({required_bytes}바이트)가 현재 모델 예산({budget}바이트)을 초과합니다. 더 큰 컨텍스트 모델을 선택하거나 도구를 나눠 실행해야 합니다."
+        ));
+    }
     let mut kept = Vec::new();
     let mut used = 0usize;
-    for definition in definitions {
+    for definition in ordered {
         let size = serde_json::to_string(&definition)
             .map(|text| text.len())
             .unwrap_or(0);
-        if used + size > budget && !kept.is_empty() {
+        if used.saturating_add(size) > budget && !kept.is_empty() {
             continue;
         }
-        used += size;
+        used = used.saturating_add(size);
         kept.push(definition);
     }
-    kept
+    Ok(kept)
 }
 
 
@@ -497,5 +542,49 @@ mod sub1_native_autonomous_tool_tests {
             .filter(|v|tool_name(v)!="shell_exec").collect(),"fix x.rs and test; use shell_exec");
         assert!(!no_shell.iter().any(|v|tool_name(v)=="shell_exec"),
             "The window cannot invent a capability denied by upstream policy");
+    }
+
+    #[test]
+    fn owner_explicit_tools_survive_discovery_even_when_not_core_or_relevant() {
+        let def=|name:&str|json!({"type":"function","function":{"name":name,
+            "parameters":{"type":"object","description":"unrelated"}}});
+        let catalog=vec![def("workspace_read"),def("shell_exec"),def("mcp__archive")];
+        let request="Inspect config and use mcp__archive and shell_exec";
+        for strategy in ["core","query-relevant"] {
+            let chosen=select_tool_definitions(
+                catalog.clone(),request,&json!({"implementation":strategy,
+                    "parameters":{"tools":["workspace_read"],"extra":0}}));
+            let names=chosen.iter().map(tool_name).collect::<Vec<_>>();
+            assert!(names.contains(&"mcp__archive"),"{strategy} erased owner tool");
+            assert!(names.contains(&"shell_exec"),"{strategy} erased owner tool");
+        }
+        let allowed=select_tool_definitions(vec![def("workspace_read")],
+            request,&json!({"implementation":"core","parameters":{"tools":[]}}));
+        assert!(allowed.is_empty(),"Never manufacture a missing capability");
+        assert!(!owner_named_tool("mcp__archive_extra","mcp__archive"));
+    }
+    #[test]
+    fn owner_tools_take_priority_over_trim_and_fail_visibly_if_impossible() {
+        let def=|name:&str,description:&str|json!({"type":"function",
+            "function":{"name":name,"description":description,
+            "parameters":{"type":"object"}}});
+        let catalog=vec![def("background","x".repeat(350).as_str()),
+            def("workspace_read","required"),def("mcp__review","required")];
+        let request="Use mcp__review and workspace_read to inspect the result";
+        let kept=trim_tool_definitions(catalog.clone(),270,request).unwrap();
+        let names=kept.iter().map(tool_name).collect::<Vec<_>>();
+        assert_eq!(names,vec!["workspace_read","mcp__review"]);
+        assert!(trim_tool_definitions(catalog,20,request).is_err());
+    }
+    #[test]
+    fn room_tool_limit_cannot_silently_drop_named_owner_tool() {
+        let def=|name:&str|json!({"type":"function","function":{"name":name,
+            "description":"read file review test file source"}}); 
+        let mut catalog=(0..12).map(|i|def(&format!("file_tool_{i}"))).collect::<Vec<_>>();
+        catalog.push(def("mcp__explicit"));
+        let selected=select_room_tools(catalog,
+            "Read files and invoke mcp__explicit", &Default::default(),false);
+        assert!(selected.iter().any(|d|tool_name(d)=="mcp__explicit"));
+        assert!(selected.len()<=8);
     }
 }

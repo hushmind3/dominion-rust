@@ -216,10 +216,22 @@ pub(super) async fn run_turn_body(
         .map(|tool| serde_json::to_string(tool).unwrap_or_default().len())
         .sum();
     let is_room = session["roomId"].is_string();
+    // The tool planner sees genuine owner text only. Room agent/peer/tool
+    // messages are NEVER instruction sources for granting menu priority.
+    let owner_tool_query = if is_room {
+        source_message_id
+            .and_then(|id| state.store.message(id))
+            .filter(|message| message["role"]=="user"
+                && message["metadata"]["authorKind"]=="owner")
+            .and_then(|message|message["content"].as_str().map(str::to_string))
+            .unwrap_or_default()
+    } else {
+        task_input(&session,&request.input).to_string()
+    };
     if is_room && request.tools_enabled && request.tools_execution_enabled {
         let recent = recent_room_tools(state, session_id);
         tool_definitions =
-            select_room_tools(tool_definitions, &request.input, &recent, acceptance.is_some());
+            select_room_tools(tool_definitions, &owner_tool_query, &recent, acceptance.is_some());
     }
     let discovery = if is_room {
         Value::Null
@@ -229,7 +241,7 @@ pub(super) async fn run_turn_body(
         ).unwrap_or(Value::Null)
     };
     if tool_discovery_applies(is_room, session["rsiRun"] == true) {
-        tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
+        tool_definitions = select_tool_definitions(tool_definitions, &owner_tool_query, &discovery);
     }
     if session["goalWorktree"].is_string() {
         // Workspace-relative source tools are mandatory under goal isolation.
@@ -262,7 +274,7 @@ pub(super) async fn run_turn_body(
         && request.tools_enabled && request.tools_execution_enabled {
         let before=tool_definitions.len();
         tool_definitions=autonomous_code_tool_window(
-            tool_definitions,task_input(&session,&request.input));
+            tool_definitions,&owner_tool_query);
         if tool_definitions.len()!=before {
             state.store.audit("agent.tool_window",json!({
                 "sessionId":session_id,"executionId":execution_id,
@@ -798,7 +810,14 @@ pub(super) async fn run_turn_body(
                         .clamp(4_000, 60_000)
                 })
                 .unwrap_or(60_000);
-            round_tools = trim_tool_definitions(round_tools, budget);
+            round_tools = trim_tool_definitions(round_tools, budget, &owner_tool_query)
+                .map_err(|error| {
+                    state.store.audit("agent.owner_tool_budget_conflict",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"reason":error
+                    }));
+                    error
+                })?;
         }
         if session["rsiRun"]==true && !force_final {
             let session_operations=state.store.all("execution_operation").into_iter()

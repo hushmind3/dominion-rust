@@ -17,6 +17,14 @@ Codex·Claude Agent·Copilot SDK는 내부 계획·도구·복구 설계의 **�
 권한상 사용할 수 있을 때 누락시키지 않도록 동작합니다.
 분석 및 실제 수정 위치는 [2026 SDK 자체 하네스 비교](docs/research/2026-sdk-native-harness-comparison.md)에 정리했습니다.
 
+## 사용자 지휘권 (Owner Authority)
+
+DOMINION의 우선 원칙은 **사용자가 실행 목표와 방법을 지휘한다**는 것이다.
+자동 도구 선택·최적화·모델 계획은 사용자가 명시한 실행 도구를 누락할 수 없고,
+장기 실행의 계획 수정은 다음 도구 경계에서 적용한다. 사용자 지시와 모델·도구
+제안의 출처는 분리되며, 실제 실행 증거와 변경 기록은 유지된다.
+구체적인 실행 경로는 [ENGINE.md](ENGINE.md#사용자-지휘권-dominion--owner-authority)를 참조한다.
+
 ## 도미니언 자체 SDK
 
 **Rust가 1차 SDK 구현입니다.** 별도 컴파일 가능한 [도미니언 Rust SDK](sdk/rust/README.md)를 제공합니다.
