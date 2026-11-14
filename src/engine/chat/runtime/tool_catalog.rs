@@ -284,19 +284,145 @@ pub(super) fn select_tool_definitions(
         .collect()
 }
 
+/// Trim schema JSON by bytes without starving entire tool capabilities.
+///
+/// A plain prefix truncation favors directory/read tools, dropping edit,
+/// verification and MCP schemas from smaller-context models. Reserve one
+/// usable representative from each capability family first, then fill the
+/// remaining budget in original order. The returned order is unchanged so
+/// provider prefix caching stays stable across rounds.
 pub(super) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
-    let mut kept = Vec::new();
-    let mut used = 0usize;
-    for definition in definitions {
-        let size = serde_json::to_string(&definition)
-            .map(|text| text.len())
-            .unwrap_or(0);
-        if used + size > budget && !kept.is_empty() {
-            continue;
-        }
-        used += size;
-        kept.push(definition);
+    let bytes = definitions.iter().map(|definition| {
+        serde_json::to_string(definition).map(|text| text.len()).unwrap_or(0)
+    }).collect::<Vec<_>>();
+    if bytes.iter().sum::<usize>() <= budget {
+        return definitions;
     }
-    kept
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    fn reserve(
+        definitions: &[Value],
+        bytes: &[usize],
+        selected: &mut [bool],
+        remaining: &mut usize,
+        predicate: impl Fn(&str) -> bool,
+    ) -> bool {
+        if let Some((index, size)) = bytes.iter().enumerate()
+            .find(|(index, size)| {
+                !selected[*index] && **size <= *remaining
+                    && predicate(tool_name(&definitions[*index]))
+            })
+        {
+            selected[index] = true;
+            *remaining -= *size;
+            true
+        } else {
+            false
+        }
+    }
+
+    let mut selected = vec![false; definitions.len()];
+    let mut remaining = budget;
+    // These are alternatives, not a mandate to advertise unrelated tools.
+    // Reserve only names that the caller has already authorized/selected.
+    for family in [
+        &["workspace_read_range", "workspace_read", "file_read", "workspace_list"][..],
+        &["workspace_replace_range", "workspace_replace", "workspace_write", "file_write"][..],
+        &["shell_exec", "terminal_exec"][..],
+        &["code_search", "web_search", "http_fetch"][..],
+    ] {
+        for name in family {
+            if reserve(&definitions, &bytes, &mut selected, &mut remaining,
+                |candidate| candidate == *name) {
+                break;
+            }
+        }
+    }
+    // External MCP schemas are normally appended after native tools. Without
+    // this reserve they can never be invoked on a bounded-context provider.
+    reserve(&definitions, &bytes, &mut selected, &mut remaining,
+        |name| name.starts_with("mcp__"));
+    for name in ["workspace_write", "web_search", "delegate_task", "task_status", "task_result"] {
+        reserve(&definitions, &bytes, &mut selected, &mut remaining,
+            |candidate| candidate == name);
+    }
+    // Preserve original order, including schemas and cache-prefix stability.
+    for (index, size) in bytes.iter().enumerate() {
+        if !selected[index] && *size <= remaining {
+            selected[index] = true;
+            remaining -= *size;
+        }
+    }
+    definitions.into_iter().enumerate()
+        .filter_map(|(index, definition)| selected[index].then_some(definition))
+        .collect()
 }
 
+#[cfg(test)]
+mod schema_budget_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema(name: &str, description_len: usize) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "x".repeat(description_len),
+                "parameters": {"type": "object", "properties": {}}
+            }
+        })
+    }
+    fn size(value: &Value) -> usize {
+        serde_json::to_string(value).unwrap().len()
+    }
+
+    #[test]
+    fn balanced_budget_keeps_read_edit_verification_and_mcp() {
+        let names = [
+            "workspace_list", "workspace_read", "file_list", "file_read",
+            "code_search", "workspace_read_range", "workspace_replace_range",
+            "shell_exec", "mcp__tracker__update", "workspace_write",
+        ];
+        let original = names.iter().map(|name| schema(name, 1100)).collect::<Vec<_>>();
+        let required = ["workspace_read_range", "workspace_replace_range",
+            "shell_exec", "code_search", "mcp__tracker__update"];
+        let budget = original.iter()
+            .filter(|value| required.contains(&tool_name(value)))
+            .map(size).sum::<usize>();
+        let trimmed = trim_tool_definitions(original, budget);
+        let offered = trimmed.iter().map(tool_name).collect::<Vec<_>>();
+        for name in required {
+            assert!(offered.contains(&name), "missing critical capability: {name}");
+        }
+        assert!(trimmed.iter().map(size).sum::<usize>() <= budget);
+        // Selection does not reorder source definitions: stable prompt prefix.
+        let positions = offered.iter().map(|name| {
+            names.iter().position(|candidate| candidate == name).unwrap()
+        }).collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn no_budget_overflow_and_no_changes_when_all_fit() {
+        let small = schema("workspace_read", 5);
+        let oversized = schema("mcp__huge__tool", 10_000);
+        let offered = vec![small.clone(), oversized.clone()];
+        assert_eq!(trim_tool_definitions(offered.clone(), size(&small) + size(&oversized)),
+            offered);
+        assert_eq!(trim_tool_definitions(vec![oversized.clone(), small.clone()],
+            size(&small)), vec![small]);
+        assert!(trim_tool_definitions(vec![oversized], 0).is_empty());
+    }
+
+    #[test]
+    fn filtered_catalog_never_reintroduces_tools() {
+        let offered = vec![schema("mcp__only__read", 100), schema("file_read", 100)];
+        let selected = trim_tool_definitions(offered.clone(), size(&offered[0]));
+        assert!(selected.iter().all(|value| {
+            offered.iter().any(|candidate| tool_name(candidate) == tool_name(value))
+        }));
+    }
+}
