@@ -56,6 +56,30 @@ pub async fn edit_plan(
     }
 }
 
+/// Plan steering is versioned and takes effect only at the next turn
+/// boundary. The initial success contract, tool rights and reviewer remain fixed.
+pub async fn steer_goal(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response{
+    if body.as_object().is_none_or(|fields|fields.len()!=2) {
+        return error(StatusCode::BAD_REQUEST,"plan과 expectedRevision만 제공하세요.");
+    }
+    let Some(revision)=body["expectedRevision"].as_u64() else{
+        return error(StatusCode::BAD_REQUEST,"현재 계획 revision이 필요합니다.");
+    };
+    let Some(plan)=body["plan"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"새 계획이 필요합니다.");
+    };
+    use crate::engine::goal_steering::{submit,SteeringError};
+    match submit(&state,&id,revision,plan){
+        Ok(saved)=>Json(saved).into_response(),
+        Err(SteeringError::Missing)=>error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다."),
+        Err(SteeringError::Immutable)=>error(StatusCode::CONFLICT,"종료된 목표는 계획을 변경할 수 없습니다."),
+        Err(SteeringError::Conflict)=>error(StatusCode::CONFLICT,"다른 계획 변경이 먼저 저장됐습니다. 최신 revision으로 다시 확인하세요."),
+        Err(SteeringError::Invalid)=>error(StatusCode::BAD_REQUEST,"계획은 1~6000자이고 NULL 문자를 포함할 수 없습니다."),
+    }
+}
+
 /// Cancels the durable root and its queued/running job, not merely its UI.
 pub async fn cancel_goal(State(state):State<AppState>,Path(id):Path<String>)->Response {
     let Some(goal)=state.store.get("goal",&id) else {
@@ -189,6 +213,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
             "isolateWorktree":body["isolateWorktree"].as_bool().unwrap_or(false),
             "replans":0,"planHistory":[],"reviewHistory":[],
+            "planRevision":0,"appliedPlanRevision":0,"ownerPlan":null,
             "status": "queued",
             "iterations": 0,
             "maxIterations": max_iterations,
