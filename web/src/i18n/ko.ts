@@ -560,6 +560,8 @@ const ko = {
   'chat.learnNow': '지금 학습 실행',
   'chat.learning': '학습 중…',
   'chat.send': '보내기',
+  'chat.steer': '진행 중인 에이전트에 새 지시 전달',
+  'chat.steerQueued': '새 사용자 지시를 저장했습니다. 다음 판단 단계에서 이전 계획보다 먼저 적용합니다.',
   'chat.copy': '복사',
   'chat.noModel': '모델 서버 미연결',
   'chat.manage': '연결 관리',
