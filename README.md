@@ -633,3 +633,15 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 **실행 호출도·테스트 수준·요구 소프트웨어·API/부분 재생성 영수증·한계:** [서브2 장편 영상·자율 목표·기억 출처 보호](docs/architecture/SUB2-CINEMATIC-VIDEO-GOALS-MEMORY-2026-11-14.md). 실제 15개 메뉴의 화면·API·엔진 대응표는 [전 메뉴 감사](docs/architecture/SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md).
 
 신규 LTX 다중장면 엔진 초기 작업 커밋 `97c98959`에서 GitHub CI 전체 통과를 확인했습니다. 이후 추가한 ComfyUI 멀티샷·메뉴·기억·미리보기 구현은 [최신 서브2 CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)의 별도 검증 대상입니다. 유료 영상이나 실모델 장기 RSI 벤치마크가 실행됐다는 의미는 아닙니다.
+
+
+## 2026-11-14 · 서브2: 실제 목표 완수·실패 복구 신뢰성 개선
+
+재채점에서 서브2는 **73/100**으로 평가됐습니다(당시 HEAD `d1638cb4`, CI 성공). 명령어·메뉴 수는 자율 능력 가산점이 아니라는 판정을 반영하여, **실제 목표 실행 과정**의 결함 4개를 수정했습니다. 이 섹션은 재채점 이후 소스 변경을 설명하며 새로운 점수를 주장하지 않습니다.
+
+- **유령 목표 방지:** `api/goals.rs::create_goal`에서 목표 레코드와 실행 작업을 `Store::transaction`으로 **한 번에 기록**합니다. 작업 큐 저장에 실패하면 목표도 롤백되며 실행 가능한 job ID가 없는 `queued` 목표가 생성되지 않습니다. SQLite의 작업 삽입 오류를 강제로 발생시키는 회귀 테스트를 추가했습니다.
+- **실제 진전만 인정:** `engine/goals/progress.rs`는 새로운 성공 도구 작업과 실제 감소한 검증 조건을 비교합니다. 이전에는 실패 상태의 모든 턴이 무조건 정체 횟수를 늘려 생산적 작업도 과도하게 재계획했으나, 이제 의미 있는 진전은 정체 횟수를 초기화합니다. 같은 명령 재시도와 모델의 성공 주장만으로는 진전으로 판단하지 않습니다.
+- **외부 효과 미확정 시 중단:** `engine/goals.rs → db.rs::session_has_uncertain_effects`는 모델이 정상 응답했더라도 도구 실행 작업이 진행 중·중단·외부 결과 미확정이면 다음 턴 실행을 중단하고 사용자 확인을 요구합니다. 해당 세션만 SQLite 인덱스 조회해 다른 에이전트의 기록을 전체 스캔하지 않습니다. DB 조회 오류 역시 검토 상태로 전환합니다.
+- **중복 문맥·토큰 낭비 억제:** `engine/goals/turn_input.rs`는 이전 모든 실행 보고를 매 턴 6,000자씩 재삽입하지 않고, 이미 보존된 동일 세션의 도구 이력을 활용하며 검증 조건·계획·현재 오류 정보를 짧게 전달합니다. 검증 근거와 원본 이력은 유지하고 실모델 완수율·청구 토큰을 측정하기 전까지 절감률은 주장하지 않습니다.
+
+[**실제 API → DB → 작업 큐 → 도구 실행 → 증거 비교 → 복구 호출도, 테스트 및 한계**](docs/architecture/SUB2-GOAL-RELIABILITY-2026-11-14.md). 기존 LTX/ComfyUI 장면 제작, 그룹 사용량 원장, 기억 출처 보호, RSI 분리 검증과 Git 작업폴더 소스 반영 경로는 유지했습니다. [서브2 GitHub Actions](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)에서 각 HEAD의 `npm` 검사와 Rust 전체 테스트 결과를 확인할 수 있습니다.
