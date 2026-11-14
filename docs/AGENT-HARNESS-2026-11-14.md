@@ -62,3 +62,16 @@
 - `GoalWorkbench → GET /api/goals/:id/changes → goal_git::changes → reviewed_patch`가 미리보기 Git 패치와 SHA-256을 제공하며 미추적 파일을 표시합니다. 큰 패치(96KiB 초과)는 이 경로로 승인하지 않고 PR 검토가 필요합니다.
 - 사용자 확인 뒤 `POST /api/goals/:id/apply`에서 SHA-256 64자리를 전달합니다. `goal_git::apply_reviewed`는 작업 완료 상태, Git 원본 HEAD, 원본 무변경 상태, 미추적 파일, 진행 중 작업, 패치의 SHA를 재검증한 다음 `git apply --check`를 거쳐 원본에 적용합니다. 적용 후 다시 diff SHA를 검사하고 감사·영수증을 저장합니다.
 - 이 작업은 명시적 승인 없이는 원본에 쓰지 않습니다. 원격 배포나 PR 자동 병합을 수행하지 않으며, 승인 패치의 실제 사용 성공률은 별도 검증 대상입니다.
+
+
+## 2026-11-14 · 서브3 실증 채점 대응: 최신 소스 검증과 원자적 재개
+
+**코드 실행 경로**: `POST /api/goals` → `Store::transaction`에서 최초 goal/job 동시 저장 → `jobs::run_job` → `goals::run` → `chat/runtime/dispatch.rs`의 실제 `execution_operation` 기록 → `verification::acceptance_gaps_in(workdir)` → 검토 결과/목표 영수증. 수동 재개는 `POST /api/goals/:id/resume` → `Store::transaction_if_status`에서 **상태 CAS·목표 커서·새 job·checkpoint 모두 같은 SQLite 트랜잭션**으로 커밋한다. 이전 도구 실행이 불확실하면 커서를 앞으로 옮기고 자동 재실행하지 않는다.
+
+**이전 통과 테스트 재사용 금지**: `verification::fresh_command_matches`는 영속된 성공 셸 영수증(`tool`, `arguments`, `result.exitCode`, `runId`, `opSeq`, `startedAt`, `finishedAt`)을 현재 검증 명령과 대조한다. 마지막 성공 시험 뒤 `workspace_write/replace/replace_range/replace_function/file_write` 등 성공한 소스 수정이 있으면 **이전 테스트 통과를 무효화**하고 현재 소스에서 재검사를 요구한다. 동일 실행의 `opSeq`가 최우선이고 다른 실행은 시간 순서를 사용한다. 순서가 불분명한 기록은 보수적으로 실패 처리한다. 성공한 조회와 실패한 파일 수정은 검증을 무효화하지 않는다.
+
+**Git 격리 워크스페이스 일치**: 목표 전·후 진전 판단과 최종 완료 판단이 동일한 `&workdir` 경로에서 실제 파일 상태를 검사한다. 파일 변경 조건이 원래 체크아웃을 참조해 잘못된 진전/정체를 기록하는 문제를 수정했다.
+
+**사용자 요청 기반 실제 테스트**: `goal_checks::inferred_checks`는 목표에서 테스트 수행 의도가 명시된 경우에만 `Cargo.toml`, `go.mod`, `package.json`의 실제 테스트 진입점 또는 `pytest.ini`에서 최대 2개 고정 검증 명령을 찾아 초기 acceptance contract에 등록한다. 생성한 명령에 자연어 사용자 입력을 끼워 넣지 않으며, 프롬프트의 모델 자기보고를 통과 영수증으로 인정하지 않는다.
+
+**회귀/실측 구분**: Rust 테스트는 동일 실행 편집→시험, 시험→후속 편집, 다른 실행의 편집, 무시해야 하는 조회·실패한 수정, 동시 재개 요청에서 단일 작업 생성, SQLite 트랜잭션 내 작업 저장 실패시 전체 롤백을 검사한다. 3OS GitHub Actions 결과는 해당 HEAD와 연결해서 확인한다. 이 수정만으로 외부 유료 모델의 장기 코딩 완수율이나 RSI 실제 성능 향상 수치를 주장하지 않는다.
