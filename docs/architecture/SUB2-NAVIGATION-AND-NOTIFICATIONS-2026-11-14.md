@@ -2,16 +2,17 @@
 
 Branch: `dominion-sub2`. Reconciliation source: `main` at `da78dd7e6712c80c2ab7b2738efff1abc5cc7b72`; issue [#8](https://github.com/hushmind3/dominion-rust/issues/8). This is a full-menu **source-path audit**, not a claim that all paths were exercised in a live browser.
 
-## Product navigation: 14 visible menu entries, four groups
+## Product navigation: 15 visible menu entries, four groups
 
 | Sidebar group | Visible entry | React entry | Existing API | Execution/data boundary | Verification |
 |---|---|---|---|---|---|
+| Workspace | Goals | `Goals.tsx` / `GoalConsole.tsx` | `/api/goals`, `/api/goals/:id/resume`, `/api/goals/:id/diff`, `/api/goals/:id/apply` | `engine/goals.rs`, `engine/goal_workspace.rs` | Explicit page + static API routing; no live-model claim |
 | Workspace | Home | `Home.tsx` / `GoalConsole.tsx` | `/api/goals`, `/api/jobs`, `/api/status` | `engine/goals.rs`, `engine/jobs.rs`, `engine/goal_workspace.rs` | Static source |
 | Workspace | Chat | `Chat.tsx` | `/api/chat`, `/api/sessions`, `/api/approvals` | `engine/chat/runtime/turn.rs` / native/MCP tool calls | Static source |
 | Workspace | Group chat | `Rooms.tsx` | `/api/rooms`, `/api/rooms/:id/messages` | `engine/rooms.rs`, `engine/chat/room_context.rs` | Static source |
 | Workspace | Models | `Models.tsx` | `/api/providers`, `/api/model-library/runtime` | `engine/models/*`, `engine/chat/provider/*` | Static source |
 | Workspace | Agents | `Agents.tsx` | `/api/agents`, `/api/personas/import` | `engine/personas.rs`, chat runtime and delegated jobs | Static source |
-| Workspace | Video | `Video.tsx` | `/api/video/jobs`, `/api/video/config` | `engine/video.rs`, `engine/video/{native,comfy,ltx,quality,upload}.rs` | Static source |
+| Workspace | Video | `Video.tsx`, `video/FilmRetake.tsx` | `/api/video/jobs`, `/api/video/jobs/:id/scenes`, `/api/video/jobs/:id/retake`, `/api/video/config` | `engine/video.rs`, `engine/video/{film,cinematic,native,comfy,ltx,quality,upload}.rs` | Multi-shot source + tests; paid/live film unmeasured |
 | Extensions/Connections | Connections | `Connections.tsx` + `Extensions.tsx` + `Capabilities.tsx` | `/api/channels`, `/api/mcp`, `/api/skills`, `/api/skill-catalog`, `/api/capabilities` | `engine/channel_adapter.rs`, `engine/mcp.rs`, `engine/skills.rs` | Source tab wiring; no live install run |
 | Extensions/Connections | Memory | `Memory.tsx`, `memory/Growth.tsx`, `memory/LearningRecords.tsx` | `/api/memories`, `/api/memories/:id/edit`, `/api/memory/overview` | `api/collections.rs`, `engine/memory.rs`, chat retrieval | Source + new unit test (pending result) |
 | Operations | Automations | `Operations.tsx` | `/api/automations`, `/api/jobs` | `engine/scheduler.rs`, `engine/jobs.rs` | Static source |
@@ -34,9 +35,9 @@ The menu is rendered from `WorkspaceShell.tsx::navigation`, which now exposes **
 ## Memory editing and provenance
 
 - `Memory.tsx`: list/search/filter/create/delete retained. Each memory gains inline edit/save/cancel, limited to 1,600 characters.
-- `api/collections.rs::action` now recognizes `POST /api/memories/:id/edit`, requires exactly `expectedText` and `text`, and applies `store.patch_if("memory", id, "text", expectedText, ...)` atomically.
-- Scope, agent ID, source role, existing evidence quotation, source message IDs, lifecycle status and retrieval eligibility are **not** rewritten. `verification=owner_revision` marks the new text as owner corrected, not an exact quote from the original conversation. The previous text can be recovered only through earlier backups, not an exposed revision UI.
-- One Rust regression test covers stale edits rejected with HTTP 409, modified text, preserved scope and evidence, and subsequent stale updates rejected. A passing Rust CI result is needed before claiming test execution success.
+- `api/collections.rs::action` now recognizes `POST /api/memories/:id/edit`, requires exactly `expectedText` and `text`, and now applies `store.patch_if_fields("memory", id, {text, source, status, scope, agentId, partitionKey, verification, evidenceQuote, sourceMessageIds}, patch)` atomically.
+- Edit is allowed only for **active `source=user` records with no source quote, evidence quote or source message IDs**; machine-learned, archived and sourced records return HTTP 403. Scope, agent ID, source role, original evidence quotation, source message IDs, lifecycle status and retrieval eligibility are **not** rewritten. `verification=owner_revision` marks the new text as owner corrected, not an exact quote from the original conversation. The previous text can be recovered only through earlier backups, not an exposed revision UI.
+- Rust regression tests cover HTTP 409 stale edits, preserving scope, rejecting learned/archived/source-grounded memory with HTTP 403, and persisted owner-correction provenance. CI status is tracked separately from source review.
 
 ## Reviewability and verification limits
 
@@ -46,4 +47,4 @@ The menu is rendered from `WorkspaceShell.tsx::navigation`, which now exposes **
 
 ## Follow-up quality gates
 
-Interactive checks: navigate all 14 sidebar entries, switch between the 3 Connections tabs, refresh deep links, install/uninstall an MCP item and a skill with approval, open Marketplace details, edit a memory and recover a concurrent conflict, open RSI with an old failed campaign and temporarily unavailable server without popup, verify true errors within the collapsed record, and confirm approvals/audit logs remain readable.
+Interactive checks: navigate all 15 sidebar entries, switch between the 3 Connections tabs, refresh deep links, install/uninstall an MCP item and a skill with approval, open Marketplace details, edit a memory and recover a concurrent conflict, open RSI with an old failed campaign and temporarily unavailable server without popup, verify true errors within the collapsed record, and confirm approvals/audit logs remain readable.
