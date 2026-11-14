@@ -90,6 +90,12 @@ impl AppState {
                 drop(local);
                 for job in &stopped.jobs {self.bus.record("job",job);}
                 for goal in &stopped.goals {self.bus.record("goal",goal);}
+                // Drop live approval senders now. A stopped child must not
+                // hold a worker slot waiting for the owner approval timeout.
+                // close_session_approvals is durable and CAS-protected.
+                for id in &stopped.session_ids {
+                    crate::engine::chat::close_session_approvals(self,id);
+                }
                 self.store.audit("session.cancel_tree",serde_json::json!({
                     "rootSessionId":session_id,
                     "sessions":stopped.session_ids.len(),
@@ -101,6 +107,7 @@ impl AppState {
                 // Stop the local turn even when disk persistence fails;
                 // report the failure rather than claiming durable cancellation.
                 self.cancelled.lock().unwrap().insert(session_id.to_string());
+                crate::engine::chat::close_session_approvals(self,session_id);
                 self.store.audit("session.cancel_persistence_failed",
                     serde_json::json!({"sessionId":session_id,"error":error}));
             }

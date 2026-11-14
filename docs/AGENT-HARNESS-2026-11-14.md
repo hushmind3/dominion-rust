@@ -146,3 +146,18 @@
 `api::jobs::tests`의 `stop_reaches_input_session_before_first_job_checkpoint`,
 `stop_uses_goal_session_even_without_job_checkpoint`는 실행 중 작업의
 실제 입력 소유자와 목표 소유자 각각을 Stop API에서 검증합니다.
+
+## 2026-11-15 · Stop의 승인 대기 해제
+
+종전에는 한 번 요청한 도구 승인이 `DOMINION_APPROVAL_TIMEOUT_SECS`만큼
+대기하는 동안 부모/하위 실행의 Stop 상태와 분리될 수 있었습니다.
+`AppState::cancel_session`은 취소 트랜잭션 완료 후
+`chat::close_session_approvals`를 부모·모든 위임 후손 세션에 수행해
+`approval.pending`을 CAS 취소하고 live oneshot 송신자를 제거합니다.
+`request_approval`은 승인 정책 평가 이전과 승인 결과 수신 이후에
+세션의 실제 취소 상태를 확인하므로, 늦은 allow/자동 승인으로
+취소된 도구를 새로 실행하지 않습니다.
+
+회귀 `approval::tests::stopping_a_session_closes_live_approval_without_timeout`은
+실제 pending 기록과 live receiver를 만들고 Stop 후 500ms 이내
+승인 대기 해제·DB 취소·반복 실행 거부를 검사합니다.

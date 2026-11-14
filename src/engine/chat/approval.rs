@@ -213,6 +213,9 @@ pub(super) async fn request_approval(
     operation_id: &str,
     procedure_node: Option<&str>,
 ) -> bool {
+    // No policy (including auto-approved or previously approved actions) may
+    // revive a cancelled worker. Recheck after any awaited owner decision.
+    if state.is_cancelled(session_id) {return false;}
     if crate::engine::rsi_evolve::auto_write_allowed(state,session_id,tool,args) {
         state.store.audit("rsi.isolated_write_authorized",json!({"sessionId":session_id,"runId":execution_id,"operationId":operation_id,"args":args}));
         return true;
@@ -317,11 +320,16 @@ pub(super) async fn request_approval(
     let outcome = tokio::time::timeout(approval_timeout(), receiver).await;
     state.approvals.lock().unwrap().remove(&id);
 
-    let (allowed, status) = match outcome {
-        Ok(Ok(true)) => (true, "approved"),
-        Ok(Ok(false)) => (false, "denied"),
-        Ok(Err(_)) => (false, "cancelled"),
-        Err(_) => (false, "expired"),
+    let cancelled=state.is_cancelled(session_id);
+    let (allowed, status) = if cancelled {
+        (false,"cancelled")
+    } else {
+        match outcome {
+            Ok(Ok(true)) => (true, "approved"),
+            Ok(Ok(false)) => (false, "denied"),
+            Ok(Err(_)) => (false, "cancelled"),
+            Err(_) => (false, "expired"),
+        }
     };
     let resolved = state.store.patch_if(
         "approval",
@@ -521,4 +529,42 @@ mod tests {
         assert!(!consume_decision(&state, "a1", "exec", "op"));
         let _ = std::fs::remove_dir_all(dir);
     }
+    #[tokio::test]
+    async fn stopping_a_session_closes_live_approval_without_timeout() {
+        let dir=std::env::temp_dir().join(format!("dominion-approval-stop-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=crate::config::Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let store=crate::db::Store::open(&cfg.db_path()).unwrap();
+        let state=AppState::new(cfg,store,Vault::open(&dir.join("key.bin")));
+        state.store.put("session",&json!({"id":"session-a"})).unwrap();
+        state.store.put("execution",&json!({"id":"run-a","sessionId":"session-a",
+            "status":"running"})).unwrap();
+        let (tx,_rx)=tokio::sync::mpsc::unbounded_channel::<Value>();
+        let worker=state.clone();
+        let task=tokio::spawn(async move{
+            request_approval(&worker,&tx,"session-a","shell_exec",
+                &json!({"command":"touch paid.txt"}),"run-a","op-a",None).await
+        });
+        let pending=tokio::time::timeout(Duration::from_secs(3),async {
+            loop {
+                let records=state.store.all("approval");
+                if let Some(item)=records.iter().find(|a|a["status"]=="pending") {
+                    break item["id"].as_str().unwrap().to_string();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        state.cancel_session("session-a");
+        assert!(!tokio::time::timeout(Duration::from_millis(500),task).await.unwrap().unwrap(),
+            "Stop must reject pending tool approval immediately");
+        assert_eq!(state.store.get("approval",&pending).unwrap()["status"],"cancelled");
+        assert!(state.approvals.lock().unwrap().is_empty());
+        let (tx,_rx)=tokio::sync::mpsc::unbounded_channel();
+        assert!(!request_approval(&state,&tx,"session-a","shell_exec",
+            &json!({"command":"touch paid.txt"}),"run-a","op-b",None).await,
+            "An auto-approved/replayed tool may not execute after cancellation");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
 }
