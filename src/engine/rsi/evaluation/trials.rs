@@ -1,6 +1,30 @@
 //! Paired candidate/control comparators and durable experiment verdicts.
 //! This module owns the evaluation ledger, not research retrieval or mutation.
 use super::{AppState, BTreeSet, Value, json};
+
+/// The evaluation environment itself must be independently gradeable.
+fn measured_generation(row: &Value) -> bool {
+    let valid_digest=|value:&Value| value.as_str().is_some_and(|text|
+        text.len()==64 && text.bytes().all(|byte|byte.is_ascii_hexdigit()));
+    valid_digest(&row["evaluationProfileSha256"])
+        && valid_digest(&row["objectiveId"])
+        && row["pairedMeasured"]==true
+        && matches!(row["evaluation"]["verdict"].as_str(),
+            Some("improved"|"inconclusive"|"regressed"|"build_failed"))
+}
+
+/// Candidate/control must solve the *same* frozen evaluation profile and
+/// objective. Equal source commits or high-level domains alone cannot establish
+/// comparability: otherwise easy unrelated tasks can promote the wrong kernel.
+fn matched_trial_envelope(candidate: &Value, control: &Value) -> bool {
+    measured_generation(candidate)
+        && measured_generation(control)
+        && candidate["generatorCommit"] == control["generatorCommit"]
+        && candidate["domain"] == control["domain"]
+        && candidate["evaluationProfileSha256"] == control["evaluationProfileSha256"]
+        && candidate["objectiveId"] == control["objectiveId"]
+}
+
 /// Finds a prior generation that used the globally active strategy under the
 /// same generator commit and target domain. Different domains, different
 /// source revisions, a missing evaluation or a control already paired with
@@ -19,6 +43,7 @@ pub(super) fn comparable_trial_baseline(
                 && row["domain"] == generation["domain"]
                 && row["accepted"].is_boolean()
                 && row["evaluation"].is_object()
+                && matched_trial_envelope(generation,row)
                 && row["jobId"].as_str().is_some_and(|id| !id.is_empty())
                 && !candidate["rsiTrial"]["trials"]
                     .as_array()
@@ -30,6 +55,19 @@ pub(super) fn comparable_trial_baseline(
 }
 
 pub(super) fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Value) {
+    if !matched_trial_envelope(generation,baseline) {
+        return ("inconclusive".to_string(),json!({
+            "baselineJobId":baseline["jobId"],
+            "trialJobId":generation["jobId"],
+            "reason":"unscorable_or_unpaired_evaluation",
+            "baselineScorable":measured_generation(baseline),
+            "trialScorable":measured_generation(generation),
+            "sameFrozenProfile":generation["evaluationProfileSha256"]==
+                baseline["evaluationProfileSha256"],
+            "sameObjective":generation["objectiveId"]==baseline["objectiveId"],
+            "noPromotion":true,
+        }));
+    }
     let trial_accepted = generation["accepted"] == true;
     let baseline_accepted = baseline["accepted"] == true;
     let trial_regressed = generation["evaluation"]["verdict"] == "regressed";
@@ -79,6 +117,9 @@ pub(super) fn trial_verdict(generation: &Value, baseline: &Value) -> (String, Va
         json!({
             "baselineJobId": baseline["jobId"],
             "baselineAttempt": baseline["attempt"],
+            "evaluationProfileSha256": generation["evaluationProfileSha256"],
+            "objectiveId": generation["objectiveId"],
+            "pairedMeasured":true,
             "baselineAccepted": baseline_accepted,
             "trialAccepted": trial_accepted,
             "baselineVerdict": baseline["evaluation"]["verdict"],
@@ -178,7 +219,7 @@ pub(super) fn record_trial_outcome(
         trial["trials"].as_array_mut().unwrap().push(json!({
             "jobId": generation["jobId"], "attempt": generation["attempt"],
             "domain": generation["domain"], "verdict": "inconclusive",
-            "reason": "same generator commit, domain and active-strategy baseline이 없습니다.",
+            "reason": "same generator commit, frozen profile, objective and independently scored active baseline이 없습니다.",
             "at": chrono::Utc::now().to_rfc3339(),
         }));
         candidate["rsiTrial"] = trial;
