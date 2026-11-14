@@ -174,6 +174,29 @@ async fn owner_review_reconciles_delegated_effects_without_fabricating_success()
 }
 
 #[tokio::test]
+async fn active_delegated_execution_cannot_be_falsely_marked_as_reviewed(){
+    let (state,dir)=fixture("needs_review",false);
+    state.store.put("session",&json!({"id":"running-child",
+        "parentSessionId":"goal-session","delegated":true})).unwrap();
+    state.store.put("execution",&json!({"id":"run-active",
+        "sessionId":"running-child","status":"running"})).unwrap();
+    state.store.put("execution_operation",&json!({"id":"op-active",
+        "runId":"run-active","status":"running",
+        "outcomeUnknown":true,"effectState":"started"})).unwrap();
+    let response=resume_goal(State(state.clone()),Path("g".into()),Json(json!({
+        "acknowledgeExternalEffects":true,
+        "resolutionNote":"하위 작업의 현재 상태를 확인했습니다. 재개를 승인합니다."
+    }))).await;
+    assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"needs_review");
+    let op=state.store.get("execution_operation","op-active").unwrap();
+    assert_eq!(op["status"],"running");
+    assert_eq!(op["effectState"],"started");
+    assert_eq!(state.store.count("job"),1);
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn owner_review_and_resume_rollback_together_when_queue_write_fails(){
     let (state,dir)=fixture("needs_review",false);
     state.store.put("execution",&json!({"id":"r","sessionId":"goal-session"})).unwrap();
