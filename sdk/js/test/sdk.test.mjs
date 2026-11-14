@@ -89,6 +89,22 @@ test('durable SSE replay reconnects after latest sequence without duplicates', a
   assert.match(urls[1], /after=9/);
 });
 
+test('steer transmits real owner text to exact session and never spoofs completion', async () => {
+  const requests = [];
+  const sdk = new DominionClient({token:'owner-token',fetch:async(url,init)=>{
+    requests.push({path:new URL(url).pathname,init});
+    return json({id:'steer-1',status:'queued',executionId:'active-run'},202);
+  }});
+  const outcome=await sdk.sessions.steer('chat:1','기존 계획을 버리고 새 지시를 수행해라');
+  assert.equal(outcome.status,'queued');
+  assert.equal(requests[0].path,'/api/sessions/chat%3A1/steer');
+  assert.deepEqual(JSON.parse(requests[0].init.body),
+    {input:'기존 계획을 버리고 새 지시를 수행해라'});
+  assert.equal(requests[0].init.headers.get('X-Dominion-Token'),'owner-token');
+  await assert.rejects(sdk.sessions.steer('chat:1','  '),/non-empty owner instruction/);
+  assert.equal(requests.length,1);
+});
+
 test('HTTP errors and local abort do not claim remote cancellation', async () => {
   const fail = new DominionClient({fetch: async () => json({error:'conflict'},409)});
   await assert.rejects(fail.approvals.resolve('a',true), error =>
