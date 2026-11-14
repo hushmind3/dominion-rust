@@ -852,3 +852,12 @@ repair observations are separately recorded. See
 [2026 native SDK integration](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
 
 Rust SDK worktree lifecycle: `apply_goal_patch(goal_id, expected_patch_sha256).await` and `discard_goal_worktree(goal_id, "DISCARD_GOAL_WORKTREE").await` call the existing independently verifying Rust source manager. The SDK does not auto-merge or silently discard user files.
+
+
+SWE-bench Verified experiment measurements now include all delegated child
+agent sessions (usage and tool operations), strict model/time/iteration limits,
+and original-patch-matched independent Docker grading. The official evaluator
+is restricted to attempted IDs and writes logs in the isolated output folder.
+Offline grading reconciliation:
+`node scripts/sub2-swebench-verified.mjs --import-grade /absolute/report.json /absolute/logs/evaluation/<runId>`.
+An actual provider benchmark is opt-in; no synthetic fixture is a claimed solve.
