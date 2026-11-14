@@ -335,10 +335,10 @@ pub(super) fn budgeted_tool_definitions(
         let name=tool_name(definition).to_lowercase();
         let haystack=serde_json::to_string(definition).unwrap_or_default().to_lowercase();
         let mut score:i64=0;
-        if !name.is_empty()&&query.contains(&name){score+=100;}
+        if !name.is_empty()&&query.contains(name.as_str()){score+=100;}
         for token in &tokens {
-            if name.contains(token){score+=16;}
-            else if haystack.contains(token){score+=2;}
+            if name.contains(*token){score+=16;}
+            else if haystack.contains(*token){score+=2;}
         }
         if recent.contains(&name){score+=36;}
         if editing&&matches!(name.as_str(),
