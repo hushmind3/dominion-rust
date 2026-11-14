@@ -21,11 +21,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .take(16_000)
         .collect::<String>();
 
-    let workflow = context
-        .state
-        .store
-        .get("workflow", workflow_id)
-        .ok_or_else(|| "워크플로를 찾을 수 없습니다.".to_string())?;
+    let workflow = input.get("definition")
+        .filter(|value|value.is_object()).cloned()
+        .or_else(||context.state.store.get("workflow",workflow_id))
+        .ok_or_else(||"워크플로 실행 당시의 동결 정의가 없으며 원본도 삭제됐습니다.".to_string())?;
+    if workflow["id"]!=workflow_id {
+        return Err("동결 워크플로 ID가 요청과 일치하지 않습니다.".into());
+    }
     let existing = job
         .get("workflowState")
         .cloned()
@@ -36,8 +38,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         );
     }
     let definition = existing
-        .get("definition")
-        .cloned()
+        .get("definition").filter(|value|value.is_object()).cloned()
         .unwrap_or_else(|| workflow.clone());
     let steps = definition
         .get("steps")
