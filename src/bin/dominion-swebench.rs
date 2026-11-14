@@ -260,6 +260,9 @@ async fn solve(cfg:&Options,task:&Task,client:&reqwest::Client)->Result<Value,St
         state=json_get(client,&format!("{base}/api/goals/{goal_id}")).await?;
     }
     let final_goal=json_get(client,&format!("{base}/api/goals/{goal_id}")).await?;
+    if timed_out && matches!(final_goal["status"].as_str(),Some("queued"|"running")){
+        return Err("goal timed out while a tool effect was still in flight; refused to snapshot mutable patch".into());
+    }
     let work=final_goal["gitWorktree"]["path"].as_str()
         .ok_or("isolated Git worktree was not created")?;
     let work=Path::new(work);
@@ -371,9 +374,59 @@ async fn run()->Result<(),String>{
         if !output.status.success(){
             return Err(format!("official SWE-bench evaluation failed (see official-evaluation.log), exit {}",output.status));
         }
+        // Never infer "resolved" from the evaluator process exit code.
+        // Validate the real official report and the exact frozen subset.
+        let report_path=PathBuf::from("logs/evaluation").join(&run_id).join("results.json");
+        let official:Value=serde_json::from_slice(
+            &fs::read(&report_path).map_err(|e|
+                format!("official results.json missing at {}: {e}",report_path.display()))?
+        ).map_err(|e|format!("official results.json invalid: {e}"))?;
+        let selected=tasks.iter().map(|t|t.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let submitted=official["submitted_ids"].as_array()
+            .ok_or("official report has no submitted_ids")?
+            .iter().filter_map(Value::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if submitted!=selected {
+            return Err("official evaluator submitted a different task set; refusing to score".into());
+        }
+        let resolved=official["resolved_ids"].as_array()
+            .ok_or("official report has no resolved_ids")?
+            .iter().filter_map(Value::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if !resolved.is_subset(&selected) {
+            return Err("official report claims resolved IDs outside the frozen subset".into());
+        }
+        let count=selected.len();
+        let success_rate=resolved.len() as f64/count as f64;
+        let known_tools=stats.iter()
+            .filter_map(|r|r["toolCalls"].as_u64()).collect::<Vec<_>>();
+        let usage=stats.iter().filter_map(|r|r["measuredUsage"]["totalTokens"].as_u64())
+            .collect::<Vec<_>>();
+        let costs=stats.iter().filter_map(|r|r["estimatedCostKrw"].as_f64())
+            .collect::<Vec<_>>();
+        let summary=json!({
+            "dataset":DATASET,"runId":run_id,
+            "frozenSubmittedInstances":count,"resolvedInstances":resolved.len(),
+            "resolvedRate":success_rate,
+            "officialResolvedIds":resolved,
+            "officialErrorIds":official["error_ids"],
+            "officialEmptyPatchIds":official["empty_patch_ids"],
+            "officialReportPath":report_path,
+            "measuredToolCallInstances":known_tools.len(),
+            "totalMeasuredToolCalls":known_tools.iter().sum::<u64>(),
+            "measuredTokenInstances":usage.len(),
+            "totalMeasuredTokens":usage.iter().sum::<u64>(),
+            "costPricedInstances":costs.len(),
+            "estimatedTotalCostKrw":(costs.len()==count).then_some(costs.iter().sum::<f64>()),
+            "scoreSource":"official_swebench_results_json",
+            "notComparableToFull500UnlessAll500Submitted":count<500,
+        });
+        write_json(&cfg.output.join("official-evaluation-summary.json"),&summary)?;
         write_json(&cfg.output.join("official-evaluation-run.json"),
-            &json!({"runId":run_id,"dataset":DATASET,"status":"official_evaluator_exited_successfully",
-                "note":"Read official resolved/unresolved reports before claiming benchmark success"}))?;
+            &json!({"runId":run_id,"dataset":DATASET,
+                "status":"official_report_validated",
+                "summary":"official-evaluation-summary.json"}))?;
     }
     println!("Predictions: {}",predictions.display());
     println!("Results: {}",cfg.output.join("manifest.json").display());

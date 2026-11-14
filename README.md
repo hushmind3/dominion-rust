@@ -8,6 +8,19 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Rust SWE-bench Verified integration
+
+`src/bin/dominion-swebench.rs` runs the **real DOMINION Rust goal
+engine** against isolated SWE-bench Verified task clones, producing
+official JSONL patch predictions and recorded tool/timing/token usage.
+`scripts/export_swebench_verified.py` removes gold patches and hidden
+test payloads before the agent sees input. Optional official Docker
+evaluation is scored ONLY from the immutable official
+`logs/evaluation/<run_id>/results.json` after verifying all submitted
+instance IDs match the frozen input set. Reports never pass off a
+partial subset's rate as a full 500-instance result. Runbook:
+[docs/SWEBENCH-VERIFIED-RUNBOOK-2026.md](docs/SWEBENCH-VERIFIED-RUNBOOK-2026.md).
+
 ## 2026-11-14 Native Rust program failure recovery
 
 `src/engine/chat/runtime/program.rs` treats a failed tool call or
