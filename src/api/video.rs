@@ -157,6 +157,57 @@ pub async fn job(State(state): State<AppState>, Path(id): Path<String>) -> Respo
         None => error(StatusCode::NOT_FOUND, "영상 작업을 찾을 수 없습니다."),
     }
 }
+/// Read-only scene manifest with local SHA-256 receipts.
+pub async fn film_scenes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match video::film_scenes(&state,&id){
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message),
+    }
+}
+/// One owner-approved, SHA-bound replacement shot; creates a NEW durable job.
+pub async fn retake_scene(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    match video::enqueue_retake(&state,&id,&body){
+        Ok(value)=>(StatusCode::ACCEPTED,Json(value)).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message),
+    }
+}
+/// Preview only a bounded, regular MP4 inside the UUID-owned job directory.
+pub async fn scene_content(
+    State(state):State<AppState>,Path((id,index)):Path<(String,usize)>,
+    request:Request<Body>,
+)->Response{
+    let manifest=match video::film_scenes(&state,&id){
+        Ok(value)=>value,
+        Err(e)=>return error(StatusCode::NOT_FOUND,e),
+    };
+    if index>=6||manifest["clips"][index]["isAvailable"]!=true{
+        return error(StatusCode::NOT_FOUND,"해당 장면 영상이 없습니다.");
+    }
+    let root=match video::directory(&state,&id)
+        .and_then(|p|p.canonicalize().map_err(|_|"영상 디렉터리가 없습니다.".to_string())){
+        Ok(root)=>root,
+        Err(e)=>return error(StatusCode::NOT_FOUND,e),
+    };
+    let local=root.join(format!("clip-{index:02}/output.mp4"));
+    if !std::fs::symlink_metadata(&local).is_ok_and(|m|
+        m.file_type().is_file()&&m.len()>=1024&&m.len()<=256*1024*1024){
+        return error(StatusCode::NOT_FOUND,"장면 MP4를 읽을 수 없습니다.");
+    }
+    let target=match local.canonicalize(){
+        Ok(p) if p.starts_with(&root)=>p,
+        _=>return error(StatusCode::FORBIDDEN,"영상 경로가 작업 디렉터리를 벗어났습니다."),
+    };
+    match tower_http::services::ServeFile::new(target).try_call(request).await{
+        Ok(reply)=>{
+            let mut response=reply.into_response();
+            response.headers_mut().insert("x-content-type-options","nosniff".parse().unwrap());
+            response.headers_mut().insert("cache-control","no-store".parse().unwrap());
+            response
+        }
+        Err(_)=>error(StatusCode::NOT_FOUND,"장면 미리보기에 실패했습니다."),
+    }
+}
 pub async fn upload(
     State(state): State<AppState>,
     Path(id): Path<String>,
