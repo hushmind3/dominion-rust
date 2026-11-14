@@ -585,9 +585,12 @@ async function run(){
     });
     // The evaluator writes inside this isolated run directory. A partial
     // or infrastructure-failed run does NOT turn into a benchmark success.
-    importOfficialVerdicts(receipts,predictions,name,
-      join(s.output,'logs','evaluation',runId));
+    const officialLogs=join(s.output,'logs','evaluation',runId);
+    importOfficialVerdicts(receipts,predictions,name,officialLogs);
     save();
+    // Persist the same explicit grading provenance as the offline importer;
+    // the next report reader must see exactly which official run was graded.
+    importOfficialRun(report,officialLogs);
     if(exit!==0)process.exitCode=1;
   }
   process.stdout.write(JSON.stringify({report,predictionFile,summary:summarize(receipts)})+'\n');
