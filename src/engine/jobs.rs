@@ -8,6 +8,9 @@ use std::time::Duration;
 
 #[path = "jobs/goal_status.rs"]
 mod goal_status;
+#[path = "jobs/cancellation.rs"]
+mod cancellation;
+pub use cancellation::{cancel_job, CancelJobError};
 
 const MAX_EVENTS: usize = 200;
 
