@@ -563,6 +563,24 @@ fn finish(
         "goal.finished",
         json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
     );
+    // Persist a compact, idempotent owner-goal observation for future RSI
+    // source research. Never promote it to a paired evaluator reward.
+    let recorded_tokens=goal["sessionId"].as_str().map(|session|{
+        context.state.store.all("execution").iter()
+            .filter(|run|run["sessionId"].as_str()==Some(session))
+            .map(|run|run["usage"]["totalTokens"].as_u64().unwrap_or(0))
+            .sum::<u64>()
+    }).unwrap_or(0);
+    let receipt=json!({"id":format!("goal-receipt-{id}"),"goalId":id,
+        "status":status,"verifiedCompletion":status=="completed"&&gaps.is_empty(),
+        "iterations":goal["iterations"],"artifactCount":goal["artifacts"].as_array()
+            .map(Vec::len).unwrap_or(0),
+        "recordedSessionTokens":recorded_tokens,
+        "at":chrono::Utc::now().to_rfc3339(),"source":"owner_goal",
+        "qualityProven":false,"independentPairedEvaluator":false});
+    if let Some(saved)=context.state.store.put_if_absent("goal_receipt",&receipt){
+        context.state.bus.record("goal_receipt",&saved);
+    }
     if status == "completed" {
         // Only the independent reviewer + deterministic gate can generate
         // a reward, and an owner-rewritten plan does not credit the original

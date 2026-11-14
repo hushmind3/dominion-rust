@@ -38,6 +38,8 @@ pub(crate) use execution_source::{command};
 pub use execution_source::{auto_write_allowed, campaign_source, campaign_model_tokens, remaining_output_tokens, lineage_fingerprint_valid, choose, run};
 #[path = "rsi/planner/context.rs"]
 mod planner_context;
+#[path = "rsi/learning/goal_feedback.rs"]
+mod owner_goal_feedback;
 use planner_context::{verified_candidate_id, identical_failed_patch, matching_prior_campaign, research_digest, target_focus_objective, choose_focus_files, focus_file_context, paired_behavioral_feedback, generation_context, research_scope, focus_domain_hint, selection_objective};
 #[path = "rsi/learning/methods.rs"]
 mod learning_methods;
