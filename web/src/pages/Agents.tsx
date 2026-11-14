@@ -370,7 +370,7 @@ export function AgentsPage() {
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={goalIsolated} onChange={e=>setGoalIsolated(e.target.checked)}/> Git 격리 작업공간에서 수정 (사용자 검토 후 원본 반영)</label>
           <FormField label="이번 목표 토큰 예산"><TextInput type="number" min={0} max={2000000} step={10000} value={goalBudget} onChange={e=>setGoalBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
           {goalError&&<Notice message={goalError}/>}
-          {createdGoal?<div className="rounded-xl border border-[#E7E0D5] p-3 text-xs"><p>✅ 목표와 실행 작업 등록 완료 · {createdGoal.id.slice(0,12)}</p><a className="mt-2 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline" href="#/goals">목표 화면에서 실행·검증 확인 <ArrowRight size={13}/></a></div>:null}
+          {createdGoal?<div className="rounded-xl border border-[#E7E0D5] p-3 text-xs"><p>✅ 목표와 실행 작업 등록 완료 · {createdGoal.id.slice(0,12)}</p><a className="mt-2 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline" href="#/activity">활동에서 작업·검증·변경 검토 <ArrowRight size={13}/></a></div>:null}
           <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setRunner(null)} disabled={goalBusy}>닫기</Button><Button onClick={()=>void launchAgentGoal()} disabled={goalBusy||!goalText.trim()}><Play size={14}/>{goalBusy?'등록 중':'작업 등록'}</Button></div>
          </div>
         </DialogPanel>

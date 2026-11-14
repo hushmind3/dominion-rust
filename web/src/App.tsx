@@ -6,7 +6,6 @@ import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} 
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
-const GoalsPage=lazy(()=>import('./pages/Goals').then(module=>({default:module.GoalsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
 const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
@@ -97,7 +96,7 @@ function locationState(){
  const valid=legacy!==null||navigation.some(group=>group.items.some(item=>item.id===name))
  const tab=legacy||(name==='connections'?params.get('section'):null)
  const connectionSection:'channels'|'extensions'|'capabilities'=tab==='extensions'||tab==='capabilities'?tab:'channels'
- return {page:(legacy?'connections':valid?name:'chat') as PageId,connectionSection,session:params.get('session')||undefined,
+ return {page:(name==='goals'?'activity':legacy?'connections':valid?name:'chat') as PageId,connectionSection,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
@@ -198,7 +197,7 @@ export default function App(){
     {page==='home'&&<HomePage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='goals'&&<GoalsPage openSession={id=>navigate('chat',id)}/>}
+    
 
     {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}

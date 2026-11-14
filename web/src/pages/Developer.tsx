@@ -92,7 +92,7 @@ export function DeveloperPage(){
     task:agentTask.trim(),agentId,verificationCommand:verifyCommand.trim(),
     tokenBudget:agentBudget
    });
-   setAgentGoal(goal);setAgentTask('');setMessage('격리 코딩 목표가 등록됐습니다. 검증·변경 확인은 목표 화면에서 이어집니다.')
+   setAgentGoal(goal);setAgentTask('');setMessage('격리 코딩 목표가 등록됐습니다. 검증·변경 검토는 활동에서 이어집니다.')
   }catch(e){setError((e as Error).message)}finally{setAgentGoalBusy(false)}
  }
  const s=status.value
@@ -127,7 +127,7 @@ export function DeveloperPage(){
       <FormField label="반드시 통과할 검증 명령"><TextInput value={verifyCommand} onChange={e=>setVerifyCommand(e.target.value)} placeholder="cargo test"/></FormField>
       <FormField label="토큰 예산"><TextInput type="number" min={0} max={2000000} value={agentBudget} onChange={e=>setAgentBudget(Math.max(0,Math.min(2000000,Number(e.target.value)||0)))}/></FormField>
       <Button variant="primary" disabled={!s.goalWorkspaceReady||!agentId||!agentTask.trim()||agentGoalBusy} onClick={()=>void startAgentCoding()}><Play size={14}/> {agentGoalBusy?'목표 등록 중':'격리 코딩 작업 시작'}</Button>
-      {agentGoal&&<a href="#/goals" className="text-xs font-semibold text-[#C96442] hover:underline">실행·변경 검토·원본 적용 확인 · {agentGoal.id.slice(0,12)} →</a>}
+      {agentGoal&&<a href="#/activity" className="text-xs font-semibold text-[#C96442] hover:underline">실행·변경 검토·원본 적용 확인 · {agentGoal.id.slice(0,12)} →</a>}
      </div>
     </Panel>
     <Panel className="min-w-0 p-5">

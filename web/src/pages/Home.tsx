@@ -5,7 +5,7 @@ import {useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 import {t,useLocale,formatDateTime,jobKindLabel} from '../i18n'
 import type {Agent,ChatSession,Provider} from '../api'
-type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'|'rsi'|'goals'|'automations'
+type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'|'rsi'|'automations'
 export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  useLocale()
  const sessions=useRemote<ChatSession[]>('/api/sessions',[])
@@ -32,7 +32,7 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
    !agents.value.length?
    {title:'실행 에이전트 만들기',detail:'모델을 담당할 역할·도구 지침을 지정하세요.',page:'agents'}:
    pendingReview>0?
-   {title:'검토 대기 작업 확인',detail:`${pendingReview}개 목표의 외부 작업 상태나 Git 변경을 검토해야 합니다.`,page:'goals'}:
+   {title:'검토 대기 작업 확인',detail:`${pendingReview}개 목표의 외부 작업 상태나 Git 변경을 검토해야 합니다.`,page:'activity'}:
    !workflows.value.length?
    {title:'에이전트 협업 워크플로 만들기',detail:'단계별 에이전트를 배치해 실제 도구 영수증이 있는 결과물을 만드세요.',page:'workflows'}:
    {title:'완성된 워크플로 실행·자동화',detail:'에이전트의 공동 결과물을 실행하고 반복 예약하세요.',page:'automations'}
