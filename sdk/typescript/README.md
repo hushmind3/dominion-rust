@@ -57,6 +57,22 @@ Native tools are already present in the Rust engine. To add external tools, run 
 - `DominionThread.cancel()`, `fork()`, and `DominionGoal.status()/resume()/cancel()/changes()/applyChanges()/discardChanges()` map to real existing Rust API routes.
 - The SDK does not execute tools, alter model system instructions or replace DOMINION's independent validation/recovery engine.
 
+## One-line goal completion observation
+
+```ts
+const goal = await sdk.startGoal({goal: '리포트 작성 및 파일 검증'})
+const finished = await goal.waitForTerminal({signal: abortController.signal})
+if (finished.status === 'completed') console.log('완료',finished.id)
+else console.log('종료 상태와 검토 항목:',finished.status,finished.gaps)
+```
+
+The helper reads `GET /api/goals/:id`, observes only durable goal events
+and re-fetches the authoritative goal after updates or a retention gap.
+An old SSE record cannot make a currently running goal appear completed.
+Stopping with `AbortSignal` stops only observation, not the Rust goal;
+explicit `goal.cancel()` is still required to stop execution.
+No automatic retry of `POST /api/goals` or owner approvals occurs.
+
 ## Durable read-only event observation
 
 ```ts
