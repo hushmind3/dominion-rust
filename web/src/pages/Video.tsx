@@ -224,7 +224,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        </div>}
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={technicalGate}
         onChange={e=>setTechnicalGate(e.target.checked)}/> FFprobe 기술 검수 필수 (로컬 FFprobe 설치 필요)</label>
-      </div>
+      </div>}
       {usingRunway&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <FormField label="영상 품질" hint={videoQuality==='1080p'?'고화질 Pro 렌더링 · 추가 API 비용 발생 가능':'표준 720p 렌더링'}><SelectInput value={videoQuality} onChange={e=>setVideoQuality(e.target.value as '720p'|'1080p')}><option value="1080p">1080p · Pro</option><option value="720p">720p · Standard</option></SelectInput></FormField>
