@@ -1,0 +1,20 @@
+name: TypeScript SDK contracts
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - 'sdk/typescript/**'
+      - '.github/workflows/typescript-sdk.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typescript-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund --prefix sdk/typescript
+      - run: npm test --prefix sdk/typescript

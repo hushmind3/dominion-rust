@@ -107,13 +107,23 @@ All requests target the current Rust API routes. No extra refusal policy is
 inserted. Existing engine tools, session permissions and user approval behavior
 still apply.
 
-The first release does not provide an out-of-process custom-tool callback
-server, an ACP server, or automatic agent runtime lifecycle management.
-Those need additional native Rust bridge endpoints and are not advertised
-as implemented SDK capabilities.
+Node process hosting is implemented. ACP and custom TypeScript callback MCP tooling remain separate enhancements.
 
 ## Development evidence
 
 `npm test` uses an in-process mock HTTP/SSE transport and does **not**
 claim a live provider execution, real workspace patch, or production recovery
 measurement. See `tests/sdk.test.mjs`. Live acceptance is separate.
+
+## Node runtime ownership (native Rust engine)
+
+The `@hushmind3/dominion-sdk/node` entrypoint can spawn **DOMINION's own Rust executable** and validate its instance ID, PID, workspace and SQLite state before exposing a typed API client. The browser entrypoint never spawns processes.
+
+```js
+import {DominionRuntime} from '@hushmind3/dominion-sdk/node';
+const host=await DominionRuntime.spawn({binary:'./target/release/dominion-rust',workspace:'./repository',dataDir:'./dominion-state'});
+const goal=await host.client.goals.create({goal:'Implement, run tests, and verify'});
+await host.shutdown();
+```
+
+`goals.appendInstruction(goalId,text,requestId)` and `goals.replacePlan(goalId,text,requestId)` send **durable owner-authored instructions** to `/api/goals/:id/steer`; keep the same `requestId` if retrying an ambiguous network failure. Native subprocess integration tests run when `DOMINION_RUST_BINARY` is supplied. Node-only tests do not claim genuine model inference.
