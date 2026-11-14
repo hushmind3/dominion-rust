@@ -60,6 +60,19 @@ async fn owner_plan_edits_are_durable_but_cannot_change_a_running_goal(){
     assert_eq!(denied.status(),StatusCode::CONFLICT);
     std::fs::remove_dir_all(dir).unwrap();
 }
+#[test]
+fn goal_approval_scope_includes_children_but_excludes_other_rooms(){
+    let (state,dir)=fixture("needs_review",false);
+    state.store.put("session",&json!({"id":"child","parentSessionId":"goal-session",
+        "delegated":true}));
+    state.store.put("session",&json!({"id":"other","parentSessionId":"unrelated",
+        "delegated":true}));
+    assert!(belongs_to_goal(&state,"goal-session","goal-session"));
+    assert!(belongs_to_goal(&state,"child","goal-session"));
+    assert!(!belongs_to_goal(&state,"other","goal-session"));
+    assert!(!belongs_to_goal(&state,"unknown","goal-session"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
 #[tokio::test]
 async fn queued_goal_cancel_immediately_sets_parent_status(){
     let (state,dir)=fixture("queued",false);

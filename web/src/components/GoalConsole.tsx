@@ -35,7 +35,7 @@ export function GoalConsole(){
  const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
  const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
  const approvals=useRemote<GoalApproval[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/approvals':null,[])
- const pendingApprovals=approvals.value.filter(item=>item.status==='pending')
+ const pendingApprovals=approvals.value.filter(item=>item.status==='pending'||item.status==='interrupted')
  const subtasks=useRemote<Subtask[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/subtasks':null,[])
  const available=agents.value.filter(a=>a.providerId&&a.model)
  const executor=available.find(a=>a.id===agentId)?.id||available[0]?.id||''
