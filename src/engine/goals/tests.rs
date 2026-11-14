@@ -185,8 +185,14 @@ use super::*;
     async fn lying_executor_and_reviewer_cannot_complete_read_only_goal_run() {
         let (result, state, dir, calls) =
             execute_mock_goal("workspace_read", "create a report").await;
-        assert_eq!(calls, 4, "planner, tool call, final response, reviewer");
+        // A read-only action cannot satisfy a write goal. With no new
+        // action evidence, the deterministic gate skips the redundant model
+        // review; this is a saved call, not a missed verification.
+        assert_eq!(calls, 3, "planner, tool call, final response; reviewer skipped");
         assert_eq!(result["status"], "needs_review");
+        let review = &state.store.get("goal", "g").unwrap()["reviewHistory"][0];
+        assert_eq!(review["modelInvoked"], false);
+        assert_eq!(review["method"], "deterministic_no_progress");
         assert_eq!(
             state.store.get("goal", "g").unwrap()["status"],
             "needs_review"
