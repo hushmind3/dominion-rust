@@ -125,8 +125,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
 
+        let checks=crate::engine::verification::baseline_checks(state,
+            step["successCriteria"].as_array().cloned().unwrap_or_default());
         context.checkpoint(json!({
-            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": true, "activeStepIndex": index },
+            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": true, "activeStepIndex": index,
+                "acceptanceChecks":checks },
         }))?;
         let request = TurnRequest {
             session_id: Some(session_id.clone()),
@@ -169,8 +172,25 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 "needs_review: {step_name} 단계 응답이 중단됐습니다: {error}. 도구 영수증 {receipt_ids:?}을 확인하세요."
             ))
         };
-        // A model saying 'done' is a draft deliverable, not a verified code
-        // change. Preserve the executed tool IDs, error count and role origin.
+        let gaps=crate::engine::verification::check_acceptance(
+            state,&prompt,&checks,&stats.evidence);
+        if !gaps.is_empty(){
+            // Block downstream agent turns if the previous step did not
+            // actually produce its required file change. Preserve evidence
+            // and expected checks in a durable review checkpoint.
+            context.checkpoint(json!({"workflowState":{
+                "sessionId":session_id,"outputs":outputs,"definition":definition,
+                "inFlight":true,"activeStepIndex":index,
+                "acceptanceChecks":checks,"acceptanceGaps":gaps,
+                "lastAttempt":{"messageId":message.get("id"),
+                    "receiptIds":receipt_ids,"toolErrorCount":stats.tool_errors.len()}
+            }}))?;
+            return Err(format!("needs_review: {} 단계 검증이 미달했습니다. 후속 단계 실행을 중단하고 실행 영수증을 확인하세요: {}",
+                step_name,gaps.join("; ")));
+        }
+        // A model saying 'done' is a draft deliverable, not independent
+        // quality proof; only the configured file-change checks are machine
+        // verified. Preserve the real tool IDs and role origin.
         outputs.push(json!({
             "stepId":step.get("id"),"name":step_name,
             "agentId":step.get("agentId"),"providerId":step.get("providerId"),
@@ -178,6 +198,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "content":message.get("content").cloned().unwrap_or(json!("")),
             "messageId":message.get("id"),"committedToolReceiptIds":receipt_ids,
             "toolErrorCount":stats.tool_errors.len(),
+            "acceptanceChecks":checks,"acceptanceVerified":checks.as_array().is_some_and(|x|!x.is_empty()),
             "usageAfterStep":state.store.session_usage(&session_id),
         }));
 
