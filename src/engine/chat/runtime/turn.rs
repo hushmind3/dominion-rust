@@ -384,6 +384,20 @@ pub(super) async fn run_turn_body(
     // the provider-visible sequence. Otherwise a synthetic role=user memory
     // message becomes the latest request, overriding what the owner actually
     // asked. This preserves the immutable system prefix and tool call pairs.
+    // The actual owner source is stored independently from compacted or
+    // model-generated context. Restore it only when the trimmed transcript
+    // omitted it. A peer, model plan, or retrieved memory cannot become it.
+    let owner_source = reply_to.as_deref()
+        .and_then(|id| state.store.message(id))
+        .filter(|source| source["session_id"] == session_id
+            && source["role"] == "user"
+            && source["metadata"]["authorKind"] == "owner");
+    if super::super::owner_intent::preserve_original(&mut history_messages, owner_source.as_ref()) {
+        context_items.push(json!({
+            "kind": "owner_task_restored",
+            "sourceMessageId": reply_to,
+        }));
+    }
     super::super::context::place_retrieval_before_latest_user(
         &mut history_messages,
         &prompt_context.dynamic_context,
