@@ -12,6 +12,9 @@ type Goal={
  createdAt?:string;gaps?:string[];evidence?:unknown[];
  planHistory?:{version:number;plan:string;reason?:unknown}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps?:string[];evidenceCount?:number}[];
+ metrics?:{verifiedCompleted?:boolean;durationMs?:number;reviewCount?:number;
+  successfulToolEvidenceCount?:number;acceptanceCheckCount?:number;unmetGapCount?:number;
+  usage?:{calls?:number;totalTokens?:number;estimatedCalls?:number;cachedPromptTokens?:number}};
 }
 type Job={id:string;kind:string;status:string;input?:{goalId?:string};stepIndex?:number;stepTotal?:number}
 const running=(status:string)=>status==='queued'||status==='running'
@@ -136,6 +139,17 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
         {review.iteration}회차 · {review.complete?'검토 통과':'수정 필요'} · 증거 {review.evidenceCount||0}개
         {errors(review.gaps).length>0&&<p className="mt-1 break-words">{errors(review.gaps).join(' / ')}</p>}
        </div>)}</details>}
+      {goal.metrics&&<section className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+       <strong className="text-xs">실행 품질·비용 계측</strong>
+       <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+        <div><span className="block text-[#8A8176]">완료 검증</span><strong>{goal.metrics.verifiedCompleted?'통과':'미완료'}</strong></div>
+        <div><span className="block text-[#8A8176]">도구 증거</span><strong>{goal.metrics.successfulToolEvidenceCount??0}건</strong></div>
+        <div><span className="block text-[#8A8176]">검토 라운드</span><strong>{goal.metrics.reviewCount??0}회</strong></div>
+        <div><span className="block text-[#8A8176]">소요 시간</span><strong>{typeof goal.metrics.durationMs==='number'?Math.round(goal.metrics.durationMs/1000)+'초':'기록 없음'}</strong></div>
+       </div>
+       {goal.metrics.usage&&<p className="mt-3 text-[11px] text-[#5C544A]">모델 호출 {goal.metrics.usage.calls??0}회 · 기록된 토큰 {(goal.metrics.usage.totalTokens??0).toLocaleString()}개 · 추정 사용량 호출 {goal.metrics.usage.estimatedCalls??0}회</p>}
+       <p className="mt-1 text-[10px] text-[#8A8176]">기록된 사용량 기준이며 미보고 캐시·실제 결제액은 추정하지 않습니다.</p>
+      </section>}
       {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>}
      </div>}
     </Panel>
