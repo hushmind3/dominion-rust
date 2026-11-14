@@ -1352,6 +1352,8 @@ mod tests {
         state.store.put("rsi_candidate",&json!({
             "id":"candidate-one","patchSha256":patch_sha,"baseCommit":"base",
             "oracleVersion":"rsi-worktree-v2","pairedComparisonComplete":true,
+            "cases":[{"id":"planning-quality","holdout":false},
+                {"id":"hidden-eval-only","holdout":true}],
             "evaluation":{"id":"eval-one","evidenceSha256":proof}
         }));
         let pair=json!({
