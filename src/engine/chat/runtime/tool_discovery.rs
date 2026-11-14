@@ -86,14 +86,29 @@ pub(super) fn search_tool_definitions_for_round(
 /// catalog so no restarted turn can widen an agent's tool permissions.
 pub(super) fn restore_revealed(state:&AppState,execution_id:&str,catalog:&[Value]) -> BTreeSet<String> {
     let allowed=catalog.iter().map(tool_name).collect::<HashSet<_>>();
-    state.store.get("execution",execution_id)
-        .and_then(|execution|execution["revealedToolNames"].as_array().cloned())
-        .unwrap_or_default().iter()
-        .filter_map(Value::as_str)
+    let Some(current)=state.store.get("execution",execution_id) else{
+        return BTreeSet::new();
+    };
+    // Each resumed attempt creates a NEW execution ID. Recover only from a
+    // prior attempt with the identical durable task and session; never import
+    // tool disclosures from another owner or a different job.
+    let values=current["revealedToolNames"].as_array().cloned().or_else(||{
+        let task=current["taskId"].as_str()?;
+        let session=current["sessionId"].as_str()?;
+        state.store.all("execution").into_iter()
+            .filter(|previous|
+                previous["id"].as_str()!=Some(execution_id)
+                && previous["taskId"].as_str()==Some(task)
+                && previous["sessionId"].as_str()==Some(session)
+                && previous["revealedToolNames"].as_array()
+                    .is_some_and(|items|!items.is_empty())
+            )
+            .max_by_key(|previous|previous["startedAt"].as_str().unwrap_or("").to_owned())
+            .and_then(|previous|previous["revealedToolNames"].as_array().cloned())
+    }).unwrap_or_default();
+    values.iter().filter_map(Value::as_str)
         .filter(|name|allowed.contains(name))
-        .take(MAX_REVEALS)
-        .map(str::to_string)
-        .collect()
+        .take(MAX_REVEALS).map(str::to_string).collect()
 }
 
 fn lexemes(text:&str) -> BTreeSet<String> {
