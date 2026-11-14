@@ -113,3 +113,19 @@ workflow CI and end-to-end recovery were **not executed here**.
 Do not infer functional performance, total savings or readiness from a
 successful GitHub content update. There is no LoRA, finetuning or
 model-weight training in the RSI path.
+
+## SDK capability negotiation (2026-11-15)
+
+A read-only `GET /api/sdk/info` advertises the server's native `apiVersion:1`,
+transport protocols, runtime capabilities and critical retry semantics:
+run POST is **not idempotent**, losing an SSE socket does **not** cancel
+the server run, and read-only event replay GET is idempotent.
+`src/api/sdk.rs::info` is connected through `src/api/mod.rs`;
+`sdk/typescript/src/client.ts::sdkInfo()` and
+`sdk/rust/src/client.rs::sdk_info()` consume the same contract.
+A server can evolve optional features without a TypeScript SDK guessing
+whether a method exists. This is a capability-discovery contract, **not**
+a new agent executor or evidence that a live model ran.
+The TypeScript and Rust SDK suites each include a mock HTTP integration
+asserting the GET route and execution semantics.
+
