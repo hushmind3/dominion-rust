@@ -6,6 +6,8 @@ import {Notice,useRemote} from '../../components/UI'
 
 type Shot={index:number;duration:number;outputSha256?:string;isAvailable:boolean;
  receiptVerified:boolean;qualityStatus?:string;canRetake:boolean;expectedPaidCalls:number;
+ reviewRecommended?:boolean;visualDiagnostics?:{status?:string;blackSeconds?:number;
+ frozenSeconds?:number;sampledSeconds?:number;potentialVisualDefect?:boolean};
  expectedQuote?:{referenceKrw:number;fingerprint:string;pricingAsOf:string}}
 type SceneManifest={clips?:Shot[];terminal?:boolean;unknownEffect?:boolean}
 type RetakeResult={id:string;status:string;kind:'video';[key:string]:unknown}
@@ -60,6 +62,10 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
      {clip.receiptVerified?'기존 검증 영수증':clip.isAvailable?'출력 있음·기술 검수 미완료':'아직 생성 안 됨'}
     </span>
     {clip.outputSha256&&<small className="block text-[10px] text-[#8A8176]">SHA-256: {clip.outputSha256.slice(0,20)}…</small>}
+    {clip.visualDiagnostics?.status==='measured'&&<small className={'block text-[10px] '+(clip.reviewRecommended?'text-amber-700':'text-[#7C7469]')}>
+      자동 기술 점검 · 검은 화면 {clip.visualDiagnostics.blackSeconds??0}초 · 정지 화면 {clip.visualDiagnostics.frozenSeconds??0}초
+      {clip.reviewRecommended?' · 시청 검토 권장 (자동 재과금 없음)':''}
+    </small>}
    </span>
   </label>)}
   {shot&&<div className="mt-3 grid gap-2">
