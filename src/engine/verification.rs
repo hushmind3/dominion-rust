@@ -552,6 +552,16 @@ pub(crate) fn acceptance_gaps(
             _ => false,
         };
         if !passed {
+            if kind == "command_succeeded"
+                && evidence.iter().any(|item|command_matches(item,
+                    check["command"].as_str().unwrap_or("")))
+            {
+                gaps.push(format!(
+                    "검증 명령 '{}'의 이전 성공 후 코드·파일이 다시 변경되었습니다. 최신 소스에서 같은 검증을 다시 실행하세요.",
+                    check["command"].as_str().unwrap_or("")
+                ));
+                continue;
+            }
             if kind == "file_replace_exact" {
                 gaps.push(format!("The exact replacement in {path} has not been verified. Preserve every other byte of the original file."));
                 continue;
