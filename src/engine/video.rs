@@ -31,6 +31,9 @@ pub fn config(state: &AppState) -> Value {
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
     value
 }
+pub fn quality_available(state:&AppState)->bool {
+    quality::available(&config(state))
+}
 pub fn ffmpeg(state: &AppState) -> Option<PathBuf> {
     ffmpeg_from_config(&config(state))
 }
