@@ -71,10 +71,37 @@ pub async fn export_skill(State(state): State<AppState>, Path(id): Path<String>)
 /// Installed, enabled/disabled skills usable by agents; catalogue entries
 /// are only install candidates and must not be promised as executable skills.
 pub async fn installed_skills(State(state): State<AppState>) -> Json<Value> {
-    Json(json!(state.store.all("skill").into_iter().map(|item|json!({
-        "id":item["id"],"name":item["name"],"description":item["description"],
-        "enabled":item["enabled"]!=false,"status":item["status"],
-    })).collect::<Vec<_>>()))
+    // The same endpoint feeds Agent capability selection AND the full
+    // Extensions editor. Returning only display metadata silently erased
+    // existing instructions when editing an installed skill.
+    Json(json!(state.store.all("skill").into_iter().map(|mut item|{
+        let enabled=item["enabled"]!=false;
+        item["enabled"]=json!(enabled);
+        item
+    }).collect::<Vec<_>>()))
+}
+
+#[cfg(test)]
+mod native_skill_response_tests{
+    use super::*;
+    #[tokio::test]
+    async fn installed_skills_preserve_instructions_and_editable_origin(){
+        let root=std::env::temp_dir().join(format!("skill-api-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=crate::config::Config{
+            port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone(),
+        };
+        let state=AppState::new(cfg.clone(),
+            crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        state.store.put("skill",&json!({"id":"sample","name":"Local author skill",
+            "instructions":"Never alter owner's policy","source":"manual","enabled":true}));
+        let response=installed_skills(State(state)).await.0;
+        assert_eq!(response[0]["instructions"],"Never alter owner's policy");
+        assert_eq!(response[0]["source"],"manual");
+        assert_eq!(response[0]["enabled"],true);
+        let _=std::fs::remove_dir_all(root);
+    }
 }
 
 pub async fn skill_catalog(State(state): State<AppState>) -> Json<Value> {
