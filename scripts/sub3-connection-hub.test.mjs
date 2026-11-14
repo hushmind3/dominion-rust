@@ -65,14 +65,14 @@ test('memory still appears as a first-class connected product feature',()=>{
  assert.match(page,/GrowthDashboard/)
 })
 
-test('autonomous goals are discoverable and durable resume requires owner review',()=>{
- assert.match(shell,/id:'goals',label:'nav.goals'/)
- assert.match(app,/page==='goals'&&<GoalsPage\/>/)
- const goals=source('web/src/pages/Goals.tsx')
+test('autonomous goals remain a command and Activity workflow, with durable reviewed resume',()=>{
+ assert.doesNotMatch(shell,/id:'goals',label:'nav.goals'/)
+ assert.doesNotMatch(app,/page==='goals'&&<GoalsPage\/>/)
+ const operations=source('web/src/pages/Operations.tsx')
  const workbench=source('web/src/components/GoalWorkbench.tsx')
  const api=source('src/api/goals.rs')
  const routes=source('src/api/mod.rs')
- assert.match(goals,/GoalWorkbench/)
+ assert.match(operations,/GoalWorkbench/)
  assert.match(workbench,/acknowledgeUnknownEffects:true/)
  assert.match(api,/pub async fn resume_goal/)
  assert.match(api,/goal.owner_reviewed_resume/)
@@ -168,14 +168,14 @@ test('goal continuation atomically commits goal cursor and new runnable checkpoi
 test('goal success-rate view is grounded in persisted receipts not model assertions',()=>{
  const goals=source('src/api/goals.rs')
  const routes=source('src/api/mod.rs')
- const page=source('web/src/pages/Goals.tsx')
+ const page=source('web/src/pages/Operations.tsx')
  assert.match(goals,/pub\(crate\) fn measured_goal_summary/)
  assert.match(goals,/receipt\["verificationOwner"\]=="goal-parent"/)
  assert.match(goals,/completedWithNonEstimatedTokenUsage/)
  assert.match(goals,/"independentBenchmark":false/)
  assert.match(routes,/\/api\/goals\/metrics/)
  assert.match(page,/\/api\/goals\/metrics/)
- assert.match(page,/metrics\.value\.completedWithModelCalls/)
+ assert.match(page,/goalMetrics\.value\.completedWithModelCalls/)
 })
 
 
