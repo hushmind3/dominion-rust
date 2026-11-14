@@ -8,6 +8,12 @@ use serde_json::{json, Value};
 /// the model/tool program under a queued job. An explicit requestId makes
 /// network retries idempotent without forbidding intentional repeat runs.
 pub fn enqueue_run(state:&AppState, workflow_id:&str,body:&Value)->Result<Value,String>{
+    if body.as_object().is_none_or(|fields|fields.keys().any(|key|
+        !matches!(key.as_str(),"input"|"requestId")))
+        ||body.get("input").is_some_and(|value|!value.is_string())
+        ||body.get("requestId").is_some_and(|value|!value.is_string()){
+        return Err("워크플로 실행 입력은 input 문자열과 requestId UUID만 지정하세요.".into());
+    }
     let payload=body["input"].as_str().unwrap_or("");
     if payload.len()>16_000{return Err("워크플로 입력이 16,000바이트를 초과합니다.".into());}
     let request_id=match body["requestId"].as_str(){
@@ -370,6 +376,38 @@ pub fn render(template: &str, input: &str, previous: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn execution_is_frozen_replay_safe_and_owner_can_start_new_attempt(){
+        let dir=std::env::temp_dir().join(format!("dominion-flow-admission-{}",
+            uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config{
+            port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()
+        };
+        let store=crate::db::Store::open(&config.db_path()).unwrap();
+        let vault=crate::vault::Vault::open(&config.key_path());
+        let state=AppState::new(config,store,vault);
+        state.store.put("agent",&json!({"id":"agent-1","name":"Builder"})).unwrap();
+        state.store.put("workflow",&json!({"id":"flow-1","name":"Build report",
+            "steps":[{"id":"step-1","agentId":"agent-1","prompt":"{{input}}"}]})).unwrap();
+        let request_id=uuid::Uuid::new_v4().to_string();
+        let first=enqueue_run(&state,"flow-1",&json!({"input":"report","requestId":request_id})).unwrap();
+        assert_eq!(first["kind"],"workflow");
+        assert_eq!(first["input"]["definition"]["steps"][0]["prompt"],"{{input}}");
+        state.store.put("workflow",&json!({"id":"flow-1","name":"Now edited",
+            "steps":[{"id":"step-1","agentId":"agent-1","prompt":"changed after queue"}]})).unwrap();
+        let replay=enqueue_run(&state,"flow-1",&json!({"input":"report","requestId":request_id})).unwrap();
+        assert_eq!(first["id"],replay["id"]);
+        assert_eq!(replay["input"]["definition"]["name"],"Build report");
+        assert!(enqueue_run(&state,"flow-1",&json!({"input":"different","requestId":request_id})).is_err());
+        assert!(enqueue_run(&state,"flow-1",&json!({"input":42})).is_err());
+        assert!(enqueue_run(&state,"flow-missing",&json!({"input":"x"})).is_err());
+        let another=enqueue_run(&state,"flow-1",&json!({"input":"report",
+            "requestId":uuid::Uuid::new_v4().to_string()})).unwrap();
+        assert_ne!(first["id"],another["id"]);
+        assert_eq!(state.store.all("job").len(),2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn handoff_includes_verified_artifact_paths_and_usage_delta(){
         let output=json!({"content":"draft {{input}}","artifacts":[{"path":"build/report.md","sha256":"123abc"}]});
