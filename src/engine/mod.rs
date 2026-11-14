@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod goal_git;
+pub mod goal_feedback;
 pub mod adaptation_loop;
 pub mod distill;
 pub mod effect;
