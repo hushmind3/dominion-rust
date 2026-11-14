@@ -1,3 +1,4 @@
+use sha2::Digest;
     use super::*;
 
     #[test]
