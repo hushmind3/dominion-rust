@@ -222,3 +222,5 @@ when malformed arguments are returned as errors.
 cap and reports native failure/replanning evidence separately from external
 official Docker grading. No live model score or paid cost is inferred from
 mock-provider tests.
+
+Verified promotion and disposal also have native Rust SDK entry points: `sdk::DominionSdk::apply_goal_patch` and `discard_goal_worktree`, calling the same native `goal_workspace::apply_reviewed/discard` as REST, without separate SDK authority.
