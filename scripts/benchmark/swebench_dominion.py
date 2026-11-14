@@ -444,15 +444,11 @@ def main() -> int:
         summary["officialRunId"] = run_id
         done = subprocess.run(command,cwd=args.output,check=False)
         summary["officialExitCode"] = done.returncode
-        # The official evaluator has shipped both report layouts. Keep the
-        # run-specific name in both candidates; never read an unrelated or
-        # previous run's report as a new score.
-        report_candidates = [
-            args.output/"logs"/"evaluation"/run_id/"results.json",
-            args.output/(args.model_name.replace("/", "__") + f".{run_id}.json"),
-        ]
-        report = next((path for path in report_candidates if path.is_file()), None)
-        if done.returncode == 0 and report is not None:
+        # The official SWE-bench evaluator documents exactly this run-scoped
+        # summary path. Never accept a different, unverified JSON location as
+        # evidence of an independently graded result.
+        report = args.output / "logs" / "evaluation" / run_id / "results.json"
+        if done.returncode == 0 and report.is_file():
             try:
                 official = json.loads(report.read_text())
                 score = official_score(official, {p["instance_id"] for p in preds})
