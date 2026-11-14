@@ -304,7 +304,12 @@ impl Store {
     ) -> Result<Value, ManualMemoryEditError> {
         use ManualMemoryEditError as E;
         let mut conn = self.conn.lock().map_err(|_| E::Database)?;
-        let tx = conn.transaction().map_err(|_| E::Database)?;
+        // Acquire the SQLite write reservation before reading the expected
+        // text. Separate Store instances/processes then serialize at BEGIN,
+        // making a stale write a 409 conflict instead of SQLITE_BUSY.
+        let tx = conn.transaction_with_behavior(
+            rusqlite::TransactionBehavior::Immediate
+        ).map_err(|_| E::Database)?;
         let mut record: Value = tx.query_row(
             "SELECT data, id, created_at, updated_at FROM records WHERE kind='memory' AND id=?1",
             [id],
