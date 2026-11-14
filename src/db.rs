@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 #[path = "db/goal_resume.rs"]
 mod goal_resume;
+#[path = "db/automation_claim.rs"]
+mod automation_claim;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinalizeOutcome {
