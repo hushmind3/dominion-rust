@@ -6,7 +6,7 @@ import {Headline,Notice,useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 
 type Artifact={path:string;sha256:string;bytes:number;sourceTool:string}
-type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
+type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;error?:string;
  planRevision?:number;appliedPlanRevision?:number;ownerPlan?:{revision:number;plan:string};
  planHistory?:{version:number;plan:string;reason:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
@@ -18,7 +18,7 @@ type GoalDiff={paths?:string[];status:string;unstaged?:string;staged?:string;dif
  patchSha256?:string;canApply?:boolean;patchBytes?:number}
 type SharedChange={path:string;diff:string;currentSha256:string;canUndo:boolean;undoReason:string}
 type SharedChanges={goalId:string;baselineClean:boolean;sameHead:boolean;files:SharedChange[];notice:string}
-type Job={id:string;kind:string;status:string;input?:{goalId?:string};
+type Job={id:string;kind:string;status:string;error?:string;input?:{goalId?:string};
  stepIndex?:number;stepTotal?:number}
 
 const active=(status:string)=>status==='queued'||status==='running'
@@ -175,6 +175,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
      <div className="h-full bg-[#C96442]" style={{width:Math.min(100,100*(goal.iterations||0)/(goal.maxIterations||16))+'%'}}/>
     </div>}
     {job&&<p className="mt-2 text-[11px] text-[#7C7469]">작업 ID: {job.id} · 상태 {job.status}</p>}
+    {(goal.error||job?.error)&&<p role="status" className="mt-2 whitespace-pre-wrap break-words text-xs text-[#A94E30]">실행 기록: {goal.error||job?.error}</p>}
     {goal.isolateWorktree&&<p className="mt-2 text-xs text-[#5C544A]">
       <ShieldCheck size={13} className="mr-1 inline"/> 독립 Git 작업공간
       {goal.gitWorktree?.branch&&' · '+goal.gitWorktree.branch}
