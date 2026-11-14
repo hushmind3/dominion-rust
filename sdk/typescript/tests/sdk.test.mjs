@@ -145,7 +145,7 @@ test('approval and durable goal APIs use native server contracts', async () => {
   const goal = await sdk.startGoal({goal:'task',isolateWorktree:true})
   assert.equal(goal.id, 'g1')
   await goal.steer('execute updated plan', 3)
-  await goal.resume()
+  await goal.resume({acknowledgeUnknownEffects:true})
   assert.equal((await goal.status()).status, 'running')
   assert.deepEqual(seen[0][2], {id:'approval-1',allow:true})
   assert.deepEqual(seen[2][2], {plan:'execute updated plan',expectedRevision:3})
@@ -180,4 +180,28 @@ test('non-2xx responses return typed errors without accidental successful result
     sdk.startThread(),
     error => error instanceof DominionSDKError && error.status === 403 && error.message === 'not allowed',
   )
+})
+
+test('goal lifecycle SDK uses the exact Rust resume and reviewed-diff contracts', async () => {
+  const calls = []
+  const sdk = new DominionSDK({fetch: async (url, init) => {
+    const body = init.body && JSON.parse(init.body)
+    calls.push({url,body})
+    if (url === '/api/goals/g1/changes') return asJson({reviewDigest:'sha256-reviewed-1'})
+    if (url === '/api/goals/g1/apply') return asJson({applied:true})
+    if (url === '/api/goals/g1/resume') return asJson({status:'queued'})
+    throw Error('Unexpected route '+url)
+  }})
+  const goal = sdk.resumeGoal('g1')
+  assert.equal((await goal.changes()).reviewDigest,'sha256-reviewed-1')
+  await assert.rejects(goal.applyChanges(''), /reviewed change digest/)
+  await assert.rejects(goal.resume({}), /acknowledgeUnknownEffects/)
+  await goal.applyChanges('sha256-reviewed-1')
+  await goal.resume({acknowledgeUnknownEffects:true})
+  assert.deepEqual(calls[1], {url:'/api/goals/g1/apply',body:{
+    reviewDigest:'sha256-reviewed-1',acknowledgeReview:true,
+  }})
+  assert.deepEqual(calls[2], {url:'/api/goals/g1/resume',body:{
+    acknowledgeUnknownEffects:true,
+  }})
 })
