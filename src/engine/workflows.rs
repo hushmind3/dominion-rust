@@ -446,16 +446,31 @@ mod tests {
             return Json(json!({"choices":[{"message":{"content":"1. Execute the step."}}],
                 "usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18}})).into_response();
         }
-        let has_tool_result=body["messages"].as_array().is_some_and(|messages|
+        let messages=body["messages"].as_array();
+        let has_tool_result=messages.is_some_and(|messages|
             messages.iter().any(|v|v["role"]=="tool"));
-        let delta=if has_tool_result{
+        // Repair fixture: the first pass writes the wrong bytes. A later
+        // user turn containing the verifier's actual diagnostic can fix it.
+        let repairing=messages.is_some_and(|messages|messages.iter().any(|v|
+            v["role"]=="user" && v["content"].as_str()
+                .is_some_and(|text|text.contains("[워크플로 자동 수정"))));
+        let tool_after_latest_user=messages.is_some_and(|messages|{
+            let start=messages.iter().rposition(|v|v["role"]=="user").map_or(0,|i|i+1);
+            messages.iter().skip(start).any(|v|v["role"]=="tool")
+        });
+        let delta=if if mock.tool=="repair_fixture"{
+            tool_after_latest_user
+        }else{has_tool_result}{
             json!({"content":"Completed with a saved artifact."})
         }else{
-            let args=if mock.tool=="workspace_write"{
-                json!({"path":"verified.txt","content":"EXPECTED"})
-            }else{json!({"path":"existing.txt"})};
+            let (tool,args)=match mock.tool {
+                "workspace_write"=>("workspace_write",json!({"path":"verified.txt","content":"EXPECTED"})),
+                "repair_fixture"=>("workspace_write",json!({"path":"verified.txt",
+                    "content":if repairing{"EXPECTED"}else{"WRONG"}})),
+                other=>(other,json!({"path":"existing.txt"})),
+            };
             json!({"tool_calls":[{"index":0,"id":"flow-call",
-                "type":"function","function":{"name":mock.tool,
+                "type":"function","function":{"name":tool,
                 "arguments":args.to_string()}}]})
         };
         let stream=format!("data: {}\n\ndata: [DONE]\n\n",
@@ -506,6 +521,21 @@ mod tests {
         assert_eq!(result["verificationSummary"]["verifiedSteps"],1);
         drop(state);std::fs::remove_dir_all(dir).unwrap();
     }
+    #[tokio::test]
+    async fn checked_step_repairs_wrong_file_and_then_hands_off_to_second_agent(){
+        let (result,state,dir,calls)=execute_with_check("repair_fixture").await;
+        assert_eq!(result["status"],"completed","{result}");
+        assert_eq!(std::fs::read_to_string(dir.join("verified.txt")).unwrap(),"EXPECTED");
+        assert_eq!(result["outputs"].as_array().unwrap().len(),2);
+        assert_eq!(result["outputs"][0]["verification"]["status"],"verified");
+        assert_eq!(result["outputs"][0]["verification"]["attempts"],2);
+        assert_eq!(result["outputs"][0]["verification"]["repairAttempts"],1);
+        assert_eq!(result["outputs"][0]["verification"]["repairHistory"].as_array().unwrap().len(),1);
+        assert!(calls>=4,"expected a real provider turn for both attempts, got {calls}");
+        assert_eq!(state.store.get("job","job").unwrap()["workflowState"]["inFlight"],false);
+        drop(state);std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn failed_artifact_gate_blocks_downstream_agent_and_preserves_review(){
         let (result,state,dir,_)=execute_with_check("workspace_read").await;
