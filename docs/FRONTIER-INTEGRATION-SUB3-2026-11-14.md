@@ -38,13 +38,27 @@
 - 리그레션: `tests/support/engine/rsi_evolve.tests.rs`에 프로필·목표 불일치/미측정 실험 거부, 미측정 사례 이후의 정상 독립 시험 2회 채택 조건을 추가했다.
 - 실모델 RSI Action 43607295439/43607411081은 `cargo build --locked`의 Cargo.lock 업데이트 요구로 **모델 실행 전에 실패**했다. `.github/workflows/sub3-live-model-cycle.yml`은 동일 일반 CI처럼 Cargo 잠금 재해석을 허용하고 해시와 변경 로그를 남기도록 수정했다. 이 변경을 모델 작성·후손 채택 성공 실적으로 세지 않는다.
 
+### 실제 RSI 실행 진입 개선 (2026-11-15)
+
+- Cargo.lock는 실모델 Linux 실행 로그에서 추출한 **Cargo resolver의 실제 19개 패치 구간**으로 동기화했다. `.github/workflows/sub3-live-model-cycle.yml`은 다시 `cargo build --release --locked`로 엔진을 빌드하고, 재귀 후손 실행 역시 잠금 파일을 검사한다.
+- 실제 연결 실험 [Action #43609071999](https://github.com/hushmind3/dominion-rust/actions/runs/43609071999)은 **Rust 엔진 빌드·모델 연결·후손 내부 진입 성공**, `modelCalls=1`, `toolsUsed=[]`, `verifiedWrites=0`, `acceptedGenerations=0`이었다. 모델은 파일을 요청하는 글로 종료했고 코드를 수정하지 않았다. 이 실행을 RSI 성공 사례로 채점하지 않는다.
+- `chat/runtime/turn.rs`의 새 `rsi.first_tool_recovery`는 모델의 도구 없는 중단을 검사한다. 이미 Rust 계획기가 선정하고 검증한 소스 경로에 대해 **실제 `workspace_read_range`를 같은 엔진 dispatch로 실행**하고, `execution_operation`의 영수증·SHA-256을 만든다. 검증 가능한 소스 관찰이 없으면 변경을 만들어내지 않는다. 다음 모델 단계에는 경계가 표시된 실제 소스 자료를 준다.
+- 테스트는 `tests/support/engine/chat_runtime.tests.rs::native_rsi_source_recovery_is_an_actual_audited_read_not_fake_model_text` 및 기존 `rsi_no_tool_recovery_tests`로 수행 경로와 도구 원문/스코프 제한을 점검한다. **자율 후손 편집과 실모델 개선 채택은 다음 실험에서 확인할 성과**로 남는다.
+
 ## 5. 다중 에이전트와 모델 호환성
 
 - `chat/runtime/tool_catalog.rs::select_room_tools`는 그룹의 코드 구현 요청에서 `workspace_read_range`, `workspace_replace_range`, `shell_exec` 대표 도구를 복원한다. 8개 스키마 예산으로 인해 편집·검증 기능이 실수로 사라지는 현상을 막는다.
 - `chat/protocol.rs`는 Qwen 계열의 `✿FUNCTION✿` / `✿ARGS✿` 레거시 텍스트 호출을 파싱한다. 광고된 도구만 실행하고, 인자는 JSON object만 허용한다. Native ToolCall·DSML·기존 호환 경로를 보존한다.
 - 영상·그룹·목표·RSI/워크플로 등의 기존 제품 경로는 제거하지 않는다. `video/quality.rs`의 FFprobe 검수는 기술적 검사이며 영상의 내용·화질·배우 동일성을 입증하지는 않는다.
 
-## 6. 실제 확인과 미확인 구분
+## 6. 실제 SWE-bench 실행 및 측정
+
+- `scripts/swebench-verified.mjs`는 실제 배포된 Rust 실행 파일을 별도 SQLite/워크트리에서 시작해 **실제 `/api/goals` 자율 계획·편집·재시도**를 수행한다. 공식 JSONL의 `problem_statement`·`repo`·`base_commit`만 전달하고 `test_patch`나 정답을 에이전트에 넣지 않는다.
+- 사용자가 허용한 실제 모델 연결과 단가가 필요하며 비신뢰 코드의 셸 실행은 별도 VM/컨테이너가 필요하다. 결과는 Git `--intent-to-add`와 `git diff --binary`의 실제 변경 패치로 제출한다. 공식 Docker 재현 채점은 별도로 실행한다.
+- `scripts/swebench-verified.test.mjs`은 **실제 Git 저장소·추가 파일·편집 결과**, 데이터 누출 방지, 영수증 기반 도구 오류 복구율, 사용자가 입력한 원화 토큰 단가 계산을 확인한다. 이 파일의 Node 5개 테스트는 [CI #43611352207](https://github.com/hushmind3/dominion-rust/actions/runs/43611352207) Ubuntu 단계에서 통과했다.
+- 모델 호출/도구 수정/성공률이 계측되지 않은 문제를 0% 성공으로 꾸미거나, 캐시 결측을 임의 원가로 채우지 않는다.
+
+## 7. 실제 확인과 미확인 구분
 
 **코드로 추가한 회귀 확인**:
 - 사용자 스티어링 SQLite 원자성·타실행 ID 오용 거부·종료 후 지시 보존
@@ -56,7 +70,7 @@
 
 **심사 기준으로 남는 실증**: 실제 여러 모델의 장기 소스 패치 완수율, 독립 비밀 테스트, 비용/캐시 hit에 따른 원화 청구액, 유료 멀티샷 영상의 시각적/시간적 품질, RSI 새 세대 채택 및 후손 재실행의 검증 성공, 운영 장애 복구. 이러한 기록이 없으면 프론티어 성능이 *이미 측정됐다*고 주장하지 않는다.
 
-## 7. 2026년 공개 연구 근거 (알고리즘/평가 설계 참고)
+## 8. 2026년 공개 연구 근거 (알고리즘/평가 설계 참고)
 
 - Google Developers Blog, **The Anatomy of Harness Engineering**, 2026-09-09: 최종 점수만이 아니라 행동별 회귀 평가. https://developers.googleblog.com/en/the-anatomy-of-harness-engineering-how-to-evaluate-iterate-and-guard-ai-coding-agents/
 - **An Empirical Study of Harness Design for Coding Agents**, 2026-09-17: 계획·도구 공간·컨텍스트의 독립 실험. https://arxiv.org/abs/2609.20804
