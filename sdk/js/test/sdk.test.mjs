@@ -67,6 +67,9 @@ test('goal run keeps durable review and exact owner patch approval contract', as
   assert.equal(result.status, 'needs_review');
   assert.deepEqual(states, ['running','needs_review']);
   await sdk.goals.resume('g');
+  assert.deepEqual(JSON.parse(sent.at(-1).body), {acknowledgeUnknownEffects:false},
+    'SDK must not grant authority for unknown external effects');
+  await sdk.goals.resume('g',{acknowledgeUnknownEffects:true});
   assert.deepEqual(JSON.parse(sent.at(-1).body), {acknowledgeUnknownEffects:true});
   await sdk.goals.applyReviewed('g', 'a'.repeat(64));
   assert.deepEqual(JSON.parse(sent.at(-1).body), {expectedPatchSha256:'a'.repeat(64)});
