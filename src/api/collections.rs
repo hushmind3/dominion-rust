@@ -239,12 +239,12 @@ pub async fn action(
         // Editing verified/learned evidence in place would falsify provenance.
         // Only owner-authored memories support a guarded, text-only mutation.
         ("memory", "edit") => {
-            let Some(mut record) = state.store.get("memory", &id) else {
-                return (StatusCode::NOT_FOUND, Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response();
-            };
-            if record["source"] != "user" {
-                return (StatusCode::FORBIDDEN, Json(json!({
-                    "error":"근거가 있는 학습 기억은 원문을 직접 수정할 수 없습니다."
+            use crate::db::ManualMemoryEditError as E;
+            if body.as_object().is_none_or(|map|
+                map.len() != 2 || !map.contains_key("text") || !map.contains_key("expectedText")
+            ) {
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error":"수정할 내용과 이전 내용만 지정하세요."
                 }))).into_response();
             }
             let Some(text) = body["text"].as_str().map(str::trim)
@@ -253,26 +253,24 @@ pub async fn action(
                     "error":"수정할 기억 내용은 1~16000자여야 합니다."
                 }))).into_response();
             };
-            if body["expectedText"].as_str() != record["text"].as_str() {
-                return (StatusCode::CONFLICT, Json(json!({
-                    "error":"기억 내용이 다른 곳에서 변경됐습니다. 목록을 새로고침한 뒤 다시 수정하세요."
-                }))).into_response();
-            }
-            record["text"] = json!(text);
-            record["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
-            // Stale quote evidence must not remain attached to altered text.
-            record["verification"] = json!("manual_edit");
-            record["sourceMessageIds"] = json!([]);
-            record["evidenceQuote"] = Value::Null;
-            match state.store.put("memory", &record) {
-                Some(saved) => {
-                    state.store.audit("memory.manual_edit", json!({"id":id,"source":"user"}));
+            let Some(expected) = body["expectedText"].as_str() else {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error":"현재 기억 내용이 필요합니다."}))).into_response();
+            };
+            match state.store.edit_manual_memory(&id, expected, text) {
+                Ok(saved) => {
                     state.bus.record("memory", &saved);
                     Json(saved).into_response()
                 }
-                None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
-                    "error":"기억을 수정하지 못했습니다."
-                }))).into_response(),
+                Err(reason) => {
+                    let (status, message) = match reason {
+                        E::NotFound => (StatusCode::NOT_FOUND, "기억을 찾을 수 없습니다."),
+                        E::NotManual => (StatusCode::FORBIDDEN, "학습·증거 기반 기억은 원문을 직접 수정할 수 없습니다."),
+                        E::NotActive => (StatusCode::CONFLICT, "비활성·만료된 기억은 직접 수정할 수 없습니다."),
+                        E::Conflict => (StatusCode::CONFLICT, "기억이 변경됐습니다. 새로고침 후 다시 수정하세요."),
+                        E::Database => (StatusCode::INTERNAL_SERVER_ERROR, "기억 수정 트랜잭션이 실패했습니다."),
+                    };
+                    (status, Json(json!({"error":message}))).into_response()
+                }
             }
         }
         ("workflow", "run") => enqueue_job(
