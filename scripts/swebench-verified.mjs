@@ -63,10 +63,61 @@ export function prediction(instance, model, patch) {
   };
 }
 
-export function metrics(goal, executions, elapsedMs, patch) {
+/** Recoveries have to be OBSERVED in the same execution after the failure.
+ * Successful unrelated tools cannot retroactively erase a failed action. */
+export function measuredRecovery(operations) {
+  const rows=(Array.isArray(operations)?operations:[])
+    .filter(op=>op && typeof op==='object')
+    .sort((a,b)=>String(a.runId||'').localeCompare(String(b.runId||''))
+      || (Number(a.opSeq)||0)-(Number(b.opSeq)||0));
+  const successful=op=>op.status==='completed'
+    && !op.result?.error
+    && (op.toolReceipt?.verified !== false || !op.toolReceipt);
+  const failed=op=>['failed','denied','error','needs_review'].includes(op.status);
+  const attempted=rows.filter(op=>successful(op)||failed(op));
+  const errors=attempted.filter(failed);
+  const recovered=errors.filter((error)=>{
+    const path=error.arguments?.path ?? error.arguments?.cwd;
+    return rows.some(next=>{
+      if(next.runId!==error.runId
+        || (Number(next.opSeq)||0)<=(Number(error.opSeq)||0)
+        || !successful(next))return false;
+      if(path) {
+        return (next.arguments?.path ?? next.arguments?.cwd)===path;
+      }
+      return next.tool===error.tool;
+    });
+  }).length;
+  return {
+    observedToolCalls:attempted.length,
+    successfulToolCalls:attempted.filter(successful).length,
+    failedToolCalls:errors.length,
+    recoveredToolFailures:recovered,
+    // null is not 100% when there were no tool failures to recover.
+    toolFailureRecoveryRate:errors.length===0 ? null :
+      recovered/errors.length,
+  };
+}
+
+/** Owner-specified Korean-won price card; never mistaken for actual billing. */
+export function estimatedKrw(usage,pricing){
+  if(!pricing)return null;
+  const input=Number(pricing.promptPerMillionKrw);
+  const output=Number(pricing.completionPerMillionKrw);
+  if(!Number.isFinite(input)||!Number.isFinite(output)||input<0||output<0){
+    throw new Error('Pricing must specify nonnegative KRW per million tokens');
+  }
+  const prompt=Number(usage?.promptTokens)||0;
+  const completion=Number(usage?.completionTokens)||0;
+  if(prompt===0 && completion===0)return null;
+  return Math.round((prompt*input+completion*output)/1_000_000);
+}
+
+export function metrics(goal, executions, elapsedMs, patch, operations=[],pricing=null) {
   const records = Array.isArray(executions) ? executions : [];
   const sum = field => records.reduce((n, r) => n + (Number(r?.[field]) || 0), 0);
   const tokens = goal?.receipt?.tokenUsage ?? {};
+  const observed=measuredRecovery(operations);
   return {
     goalId: goal?.id ?? null,
     goalStatus: goal?.status ?? 'unavailable',
@@ -75,9 +126,16 @@ export function metrics(goal, executions, elapsedMs, patch) {
     officialSWEbenchVerdict: null,
     iterations: Number(goal?.iterations) || 0,
     replans: Number(goal?.replans) || 0,
-    executedToolCalls: sum('toolCalls'),
-    modelCalls: sum('modelCalls'),
+    executedToolCalls: observed.observedToolCalls || sum('toolCalls'),
+    ...observed,
+    modelCalls: Number(tokens.calls) || sum('modelCalls'),
+    promptTokens: Number(tokens.promptTokens)||0,
+    completionTokens: Number(tokens.completionTokens)||0,
     totalTokens: Number(tokens.totalTokens) || sum('tokens'),
+    estimatedTokenCalls: Number(tokens.estimatedCalls)||0,
+    estimatedProviderCostKrw:estimatedKrw(tokens,pricing),
+    actualProviderBillingKrw:null,
+    cacheDiscountIncluded:false,
     patchBytes: Buffer.byteLength(patch),
     elapsedMs,
   };
@@ -97,7 +155,8 @@ function options(args) {
   const numeric={'--limit':'limit','--iterations':'maxIterations',
     '--tokens':'tokenBudget','--timeout-ms':'timeoutMs'};
   const paths={'--dataset':'dataset','--repos':'repos','--binary':'binary',
-    '--provider':'provider','--output':'output','--metrics':'metricsPath'};
+    '--provider':'provider','--output':'output','--metrics':'metricsPath',
+    '--pricing':'pricingPath'};
   for(let i=0;i<args.length;i++){
     const key=args[i];
     if(key==='--approve-tools'){out.approveTools=true;continue;}
@@ -169,7 +228,7 @@ async function runCase(row,cfg,provider,repoRoot) {
   const localRepo=await realpath(join(repoRoot,...row.repo.split('/')));
   if(!localRepo.startsWith(repoRoot+sep))throw new Error('Git clone escapes --repos');
   const checkout=join(workspaceRoot,'repo');
-  let worktree=false, runtime=null, record=null, patch='',executions=[],failure=null;
+  let worktree=false, runtime=null, record=null, patch='',executions=[],operations=[],failure=null;
   try{
     await git(localRepo,'cat-file','-e',row.base_commit+'^{commit}');
     await git(localRepo,'worktree','add','--detach',checkout,row.base_commit);
@@ -201,11 +260,23 @@ async function runCase(row,cfg,provider,repoRoot) {
     executions=await client.request('GET','api/executions?limit=1000');
   }catch(error){
     failure=String(error?.message||error).slice(0,1500);
-    if(runtime) {
-      try{executions=await runtime.client.request('GET','api/executions?limit=1000');}
-      catch{}
-    }
   }finally{
+    if(runtime){
+      // Collect the native dispatcher evidence even after a goal fails. The
+      // operation ledger is the authority for recoveries, not a model claim.
+      try{
+        if(!executions.length)executions=await runtime.client.request(
+          'GET','api/executions?limit=1000');
+        for(const run of executions){
+          if(typeof run?.id!=='string')continue;
+          const rows=await runtime.client.request('GET',
+            'api/executions/'+encodeURIComponent(run.id)+'/operations');
+          if(Array.isArray(rows))operations.push(...rows);
+        }
+      }catch(error){
+        failure ??= 'Operation evidence unavailable: '+String(error.message).slice(0,350);
+      }
+    }
     if(runtime)await runtime.close().catch(()=>{});
     if(worktree){
       try{
@@ -217,7 +288,7 @@ async function runCase(row,cfg,provider,repoRoot) {
     }
     if(!cfg.keep)await rm(workspaceRoot,{recursive:true,force:true});
   }
-  const stats=metrics(record,executions,Date.now()-start,patch);
+  const stats=metrics(record,executions,Date.now()-start,patch,operations,cfg.pricing);
   stats.instanceId=row.instance_id;
   stats.failure=failure;
   stats.sourceRepo=row.repo;
@@ -230,6 +301,8 @@ export async function main(args=process.argv.slice(2)) {
   const repoRoot=await realpath(cfg.repos);
   const provider=JSON.parse(await readFile(cfg.provider,'utf8'));
   if(!provider?.baseUrl || !provider?.model)throw new Error('Provider JSON requires baseUrl and model');
+  cfg.pricing=cfg.pricingPath?JSON.parse(await readFile(cfg.pricingPath,'utf8')):null;
+  if(cfg.pricing)estimatedKrw({promptTokens:1,completionTokens:1},cfg.pricing);
   if(!provider.apiKey && process.env.DOMINION_BENCH_API_KEY){
     provider.apiKey=process.env.DOMINION_BENCH_API_KEY;
   }
