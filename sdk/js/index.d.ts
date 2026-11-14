@@ -45,6 +45,8 @@ export class DominionClient {
     messages(id: string, options?: Options): Promise<ChatMessage[]>;
     usage(id: string, options?: Options): Promise<RecordData>;
     cancel(id: string, options?: Options): Promise<RecordData>;
+    /** Apply new owner instructions at the next running Rust agent decision. */
+    steer(id: string, input: string, options?: Options): Promise<RecordData>;
   };
   approvals: {
     pending(options?: Options): Promise<RecordData[]>;
