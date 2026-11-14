@@ -339,9 +339,9 @@ mod tests {
         }
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port=listener.local_addr().unwrap().port();
-        let server=tokio::spawn(axum::serve(listener,Router::new()
-            .route("/v1/chat/completions",post(respond))
-            .with_state(observed.clone())).into_future());
+        let router=Router::new().route("/v1/chat/completions",post(respond))
+            .with_state(observed.clone());
+        let server=tokio::spawn(async move {axum::serve(listener,router).await.unwrap()});
         let root=std::env::temp_dir().join(format!("workflow-delivery-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
