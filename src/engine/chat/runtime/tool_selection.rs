@@ -136,7 +136,9 @@ pub(crate) fn room_tool_request(input: &str) -> bool {
         "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
         "browser", "memory", "delegate", "task", "continue", "resume",
-        "files", "tests", "searching", "running", "commit", "git",
+        "files", "tests", "testing", "searching", "running", "commit", "git",
+        "fix", "bug", "code", "source", "edit", "delete", "create", "save",
+        "refactor", "patch", "debug", "push", "pull",
     ];
     intent_has_any(&lower, terms)
 }
@@ -179,7 +181,7 @@ pub(crate) fn select_room_tools(
         (
             &[
                 "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
-                "열어줘", "열어봐", "보여줘", "보여 줘", "read", "file",
+                "열어줘", "열어봐", "보여줘", "보여 줘", "read", "file", "files",
             ],
             &["workspace_list", "workspace_read", "workspace_read_range", "file_list", "file_read"],
         ),
@@ -187,24 +189,24 @@ pub(crate) fn select_room_tools(
             &[
                 "쓰기", "써줘", "써 줘", "저장해", "저장하", "수정해", "수정하",
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
-                "기록", "남겨", "write", "save", "edit", "delete", "create",
+                "기록", "남겨", "write", "save", "edit", "delete", "create", "fix", "patch", "refactor",
             ],
             &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range",
               "workspace_replace_function", "workspace_write", "file_write"],
         ),
         (
-            &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
+            &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "running", "build", "test", "tests", "testing", "install"],
             &["shell_exec", "terminal_exec"],
         ),
         (
-            &["검색", "웹", "http", "url", "fetch", "search"],
+            &["검색", "웹", "http", "url", "fetch", "search", "searching"],
             &["web_search", "http_fetch"],
         ),
         (
             &["메모리", "memory", "기억해둬", "기억해 둬", "저장해"],
             &["memory_store", "memory_search"],
         ),
-        (&["코드", "버그", "소스", "code", "debug", "refactor"],
+        (&["코드", "버그", "소스", "code", "source", "bug", "debug", "fix", "refactor", "patch"],
             &["code_search", "workspace_list", "workspace_read", "workspace_read_range"]),
         (&["스킬", "skill"], &["skill_propose"]),
         (
@@ -215,7 +217,7 @@ pub(crate) fn select_room_tools(
             &["브라우저", "browser", "클릭", "click"],
             &["browser_control"],
         ),
-        (&["github", "깃허브", "git", "커밋", "commit"],
+        (&["github", "깃허브", "git", "커밋", "commit", "push", "pull"],
             &["github_api", "shell_exec"]),
         (&["계정", "oauth", "account"], &["account_status"]),
     ];
