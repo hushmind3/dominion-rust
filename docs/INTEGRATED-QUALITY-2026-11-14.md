@@ -70,3 +70,7 @@
 `WorkflowsPage` → `GoalConsole` → `api/goals::create_goal` → `jobs::enqueue/run_job` → `goals::run` → `chat/runtime/turn`/Tools → `goal_review::snapshot` → `verification::acceptance_gaps`/Reviewer → `replan` → `episode::set_root_outcome`/Learning.
 
 추가된 실제 런타임 불변 조건: 안전한 리뷰만 재시작, 사용자 테스트 요청의 성공 영수증 요구, Job/Goal 등록·취소·크래시 최종 상태 정합. 병렬 Goal DAG, 통합 diff/되돌리기, 실모델 완주 측정은 미구현 범위입니다.
+
+### 2026-11-14 자율 에이전트 추가 구현
+
+`GoalConsole` → `api/goals` → `jobs::enqueue` → `goals::run`의 기존 목표 오케스트레이터에 `goal_intake`(작업 공간 조사), `goal_review`(검토만 안전하게 재실행), `goal_verification`(요청된 테스트의 실제 성공 영수증), `goal_plan`(사용자 실행 중 계획 개입), `goal_metrics`(독립 완료 계측)을 연결했습니다. 이 연결은 실제 Goal 레코드와 Job 체크포인트에 저장되며, 검사할 수 없는 실행은 자동 재생하지 않습니다. [자율 에이전트 심사 지도](AUTONOMOUS-AGENT-2026-11-14.md).
