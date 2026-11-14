@@ -49,7 +49,7 @@ fn hint(kind:&str)->&'static str {
 /// already-known case. Never call this evidence of a root cause or completion.
 pub(crate) fn reflective_feedback(history:&[Value],domain:&str)->Value{
     let mut distinct=BTreeMap::<(String,String,String),Value>::new();
-    for generation in history.iter().rev().take(20).filter(|g|measured(g)){
+    for generation in history.iter().rev().filter(|g|measured(g)).take(20){
         for case in generation["evaluation"]["metrics"]["measurements"]
             .as_array().into_iter().flatten(){
             let Some(id)=case["id"].as_str().filter(|s|!s.is_empty())else{continue};
@@ -85,10 +85,57 @@ pub(crate) fn reflective_feedback(history:&[Value],domain:&str)->Value{
             .then_with(||a["caseId"].as_str().cmp(&b["caseId"].as_str()))
     });
     signals.truncate(4);
+    // Successful *adopted* modifications are useful counterfactual context:
+    // retrieve only separately revalidated, eligible improvements in this
+    // domain. Never teach from an unadopted patch, model assertion or fixture.
+    // This is bounded case evidence, not a claim of transferable causality.
+    let mut successful_cases=std::collections::BTreeSet::new();
+    let mut prior_successes=Vec::new();
+    for generation in history.iter().rev().filter(|g|measured(g)).take(20) {
+        if generation["accepted"]!=true
+            || generation["evaluation"]["metrics"]["eligible"]!=true
+            || !generation["acceptedCommit"].as_str()
+                .is_some_and(|hash|hash.len()==40
+                    && hash.bytes().all(|byte|byte.is_ascii_hexdigit())) {
+            continue;
+        }
+        for case in generation["evaluation"]["metrics"]["measurements"]
+            .as_array().into_iter().flatten() {
+            let Some(case_id)=case["id"].as_str().filter(|s|!s.is_empty()) else {continue};
+            let case_domain=case["domain"].as_str()
+                .or_else(||generation["domain"].as_str()).unwrap_or("");
+            if case_domain!=domain || successful_cases.contains(case_id) {continue;}
+            let gain=case["metrics"].as_array().into_iter().flatten().find(|metric|{
+                let Some(baseline)=metric["baseline"].as_f64() else{return false};
+                let Some(candidate)=metric["candidate"].as_f64() else{return false};
+                if !baseline.is_finite() || !candidate.is_finite()
+                    || metric["improved"]!=true {return false;}
+                match metric["direction"].as_str() {
+                    Some("higher")=>candidate>baseline+1e-9,
+                    Some("lower")=>candidate<baseline-1e-9,
+                    _=>false
+                }
+            });
+            let Some(metric)=gain else {continue};
+            successful_cases.insert(case_id.to_string());
+            prior_successes.push(json!({
+                "caseId":case_id,"domain":domain,"metric":metric["key"],
+                "baseline":metric["baseline"],"candidate":metric["candidate"],
+                "direction":metric["direction"],
+                "acceptedCommit":generation["acceptedCommit"],
+                "sourcePaths":generation["changedSourcePaths"].as_array()
+                    .map(|paths|paths.iter().take(4).cloned().collect::<Vec<_>>()),
+                "transferVerified":false
+            }));
+            if prior_successes.len()>=2 {break}
+        }
+        if prior_successes.len()>=2 {break}
+    }
     json!({
         "source":"independent_paired_counterexample_gradient_v1",
         "targetDomain":domain,
         "signals":signals,
+        "priorSuccesses":prior_successes,
         "origin":"replayed_oracle_metrics_only",
         "rootCauseProven":false,
         "qualityImprovementClaimed":false
@@ -135,4 +182,36 @@ mod tests{
     assert_eq!(reflective_feedback(&[gen("g3",&hash,"x","quality",0.5,0.1,true)],
         "memory")["signals"].as_array().unwrap().len(),0);
  }
+ 
+ #[test]
+ fn noisy_unmeasured_tail_does_not_hide_older_verified_regression(){
+    let hash="d".repeat(40);
+    let meaningful=gen("measured",&hash,"case","quality",0.8,0.4,true);
+    let noise=(0..25).map(|_|json!({"pairedMeasured":false}))
+        .collect::<Vec<_>>();
+    let mut history=vec![meaningful];history.extend(noise);
+    let result=reflective_feedback(&history,"tools");
+    assert_eq!(result["signals"][0]["caseId"],"case");
+ }
+ #[test]
+ fn retrieves_only_independently_validated_adopted_successes(){
+    let hash="e".repeat(40);
+    let mut accepted=gen("success",&hash,"passed","quality",0.2,0.7,false);
+    accepted["accepted"]=json!(true);
+    accepted["acceptedCommit"]=json!("f".repeat(40));
+    accepted["evaluation"]["metrics"]["eligible"]=json!(true);
+    accepted["changedSourcePaths"]=json!(["src/engine/algorithms.rs"]);
+    let mut unadopted=gen("draft",&hash,"fake","quality",0.1,0.9,false);
+    unadopted["accepted"]=json!(false);
+    unadopted["acceptedCommit"]=json!("a".repeat(40));
+    unadopted["evaluation"]["metrics"]["eligible"]=json!(true);
+    let result=reflective_feedback(&[accepted.clone(),unadopted],"tools");
+    assert_eq!(result["priorSuccesses"].as_array().unwrap().len(),1);
+    assert_eq!(result["priorSuccesses"][0]["caseId"],"passed");
+    assert_eq!(result["priorSuccesses"][0]["transferVerified"],false);
+    accepted["pairedRevalidated"]=json!(false);
+    let empty=reflective_feedback(&[accepted],"tools");
+    assert_eq!(empty["priorSuccesses"].as_array().unwrap().len(),0);
+ }
+
 }
