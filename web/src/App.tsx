@@ -96,7 +96,7 @@ function locationState(){
  const legacy=name==='extensions'||name==='capabilities'?name:null
  const valid=legacy!==null||navigation.some(group=>group.items.some(item=>item.id===name))
  const tab=legacy||(name==='connections'?params.get('section'):null)
- const connectionSection=tab==='extensions'||tab==='capabilities'?tab:'channels'
+ const connectionSection:'channels'|'extensions'|'capabilities'=tab==='extensions'||tab==='capabilities'?tab:'channels'
  return {page:(legacy?'connections':valid?name:'chat') as PageId,connectionSection,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
