@@ -15,7 +15,7 @@ const chat=source('web/src/pages/Chat.tsx')
 
 test('one sidebar entry owns all three connection capabilities',()=>{
  const navigation=shell.split('export const navigation:')[1]?.split('const items=')[0]||''
- assert.equal((navigation.match(/id:'[^']+'/g)||[]).length,15,'all 14 baseline entries plus autonomous goals remain')
+ assert.equal((navigation.match(/id:'[^']+'/g)||[]).length,14,'the 14 baseline product entries remain; /goal is a command')
  assert.equal((navigation.match(/id:'connections'/g)||[]).length,1)
  assert.doesNotMatch(navigation,/id:'extensions'|id:'capabilities'/)
  assert.match(navigation,/id:'memory'/)
