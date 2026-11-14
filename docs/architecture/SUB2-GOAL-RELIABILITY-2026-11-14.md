@@ -37,10 +37,14 @@ engine/goals.rs::run iteration
    -> progress: reset stalled=0
       no progress: increment stalled
    -> replan only after consecutive unproductive turns exceed replanAfter
-   -> lastProgress + stalled on goal record
+   -> lastProgress + stalled + bounded progressHistory (max 64 turns)
+   -> goals/receipts.rs: immutable goal receipt with productive/unproductive
+      turn counts and actually resolved acceptance-check counts
 ```
 
-Previously, `stalled += 1` happened after **every** unsuccessful reviewer turn, including work that created additional real files, passed a new check, or made another successful change. That forces repeated planner calls, spends extra tokens and may destabilize a productive strategy. The new condition does not trust the assistant saying 'done': a duplicate of the same successful tool signature is *not* a fresh action, and failed tool calls are never counted. A newly satisfied deterministic predicate is credible progress even if other tool failures occurred. No acceptance condition or owner authorization is weakened.
+Previously, `stalled += 1` happened after **every** unsuccessful reviewer turn, including work that created additional real files, passed a new check, or made another successful change. That forces repeated planner calls, spends extra tokens and may destabilize a productive strategy. The signal is persisted even when the *final* executor turn completes the goal or hits a token budget; earlier code recorded `lastProgress` only after the success/budget return. The final immutable `goal_receipt` now includes `progressWindowTurns`, `productiveTurnsWindow`, `unproductiveTurnsWindow`, `resolvedChecksWindow` alongside session usage and replans. These counters cover the most recent 64 recorded turns and are **not** a synthetic real-model benchmark.
+
+The new condition does not trust the assistant saying 'done': a duplicate of the same successful tool signature is *not* a fresh action, and failed tool calls are never counted. A newly satisfied deterministic predicate is credible progress even if other tool failures occurred. No acceptance condition or owner authorization is weakened.
 
 `goals/progress.rs` tests cover distinct real successful actions, repeated no-op signatures, failed tools and independently reduced verification gaps.
 
