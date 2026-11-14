@@ -12,6 +12,7 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
