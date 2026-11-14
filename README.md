@@ -19,6 +19,14 @@
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
 
+## 서브3 · 사용자 지배권과 프론티어 알고리즘 실행 경로 (2026-11-14)
+
+**도미니언 전체 Rust 시스템의 지시·판단·실행·검증 연결**을 보강했습니다. 일반 채팅 중 `POST /api/sessions/:id/steer` 또는 `DominionClient.sessions.steer(id,input)`와 데스크톱 전송 버튼으로 사용자 명령을 추가할 수 있습니다. 사용자 원문은 SQLite 메시지와 실행 ID를 가진 큐에 트랜잭션으로 저장되며, `chat/runtime/turn.rs`는 다음 모델 결정 경계에서 과거 계획을 교체합니다. 적용되지 않은 늦은 지시는 `deferred`로 기록합니다.
+
+`tool.routing`은 최근 사용만으로 실패 도구에 가점을 주던 선택을 실제 성공·실패 결과 기반 재랭킹으로 보강했습니다. `GET /api/algorithms/evaluate`의 결정론적 비교는 실제 생산 라우터의 matched 사례를 사용합니다. `execution.budget`을 선택하면 **바깥 Tokio 실행 제한과 내부 BudgetLedger에 동일하게 적용**합니다. “구현해라” 등 행동형 코딩 요청은 실제 소스 변경 영수증 없이는 완료할 수 없습니다. 그룹대화의 코딩 요청도 읽기·편집·검증 도구를 함께 보존합니다.
+
+[서브3 프론티어 통합 — Rust/API/UI/SDK 실제 진입점, 검증 및 남은 범위](docs/FRONTIER-INTEGRATION-SUB3-2026-11-14.md). **소스 경로·단위 검증과 실모델 프론티어 수행 성과를 동일시하지 않습니다.** 현재 소스의 CI 및 완수율은 커밋별로 확인해야 합니다.
+
 ## 도미니언 자체 에이전트 SDK (2026-11-14)
 
 `sdk/js`는 Rust 에이전트 하네스를 외부 프로그램에서 재사용하는 의존성 없는 JS/TS SDK입니다. `DominionClient`가 채팅 스트리밍·저장된 실제 답변·내구성 목표/작업·세션·승인·Git 패치 검토/명시적 적용·SSE 이벤트 재연결을 제공합니다. 모든 판단·도구 실행·권한·RSI·영속화는 `src/engine` Rust에 남으며 Copilot CLI/타사 하네스 또는 별도 입력 거절 정책을 넣지 않았습니다. Node에서는 `@dominion/agent-sdk/node`의 `DominionRuntime.start({binaryPath})`로 도미니언 Rust 바이너리를 직접 시작·검증·종료할 수도 있습니다. 외부 실행 엔진은 로드하지 않습니다. `npm install ./sdk/js`로 설치하며 `cd sdk/js && npm test`로 무과금 프로토콜 테스트를 수행합니다. 외부 서버 실행/실모델 성공 여부는 SDK 테스트와 구분합니다. [사용 예제](sdk/js/README.md) · [SDK 전용 CI](https://github.com/hushmind3/dominion-rust/actions/workflows/sub3-sdk.yml?query=branch%3Adominion-sub3).
