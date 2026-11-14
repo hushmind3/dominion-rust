@@ -168,6 +168,41 @@ pub async fn retake_scene(State(state):State<AppState>,Path(id):Path<String>,
         Err(error)=>self::error(StatusCode::BAD_REQUEST,error)
     }
 }
+/// Preview one generated scene before deciding which paid clip to retake.
+/// Only local, bounded regular MP4 files under the UUID-owned job directory.
+pub async fn scene_content(State(state):State<AppState>,Path((id,index)):Path<(String,usize)>,
+    request:Request<Body>)->Response{
+    let manifest=match video::film_scenes(&state,&id){
+        Ok(value)=>value,
+        Err(error)=>return self::error(StatusCode::NOT_FOUND,error)
+    };
+    if index>=6 || manifest["clips"][index]["isAvailable"]!=true{
+        return self::error(StatusCode::NOT_FOUND,"재생 가능한 영상 장면이 없습니다.");
+    }
+    let root=match video::directory(&state,&id).and_then(|path|
+        path.canonicalize().map_err(|_|"영상 디렉터리가 없습니다.".to_string())){
+        Ok(root)=>root,
+        Err(error)=>return self::error(StatusCode::NOT_FOUND,error)
+    };
+    let original=root.join(format!("clip-{index:02}")).join("output.mp4");
+    if !std::fs::symlink_metadata(&original).is_ok_and(|meta|
+        meta.file_type().is_file() && meta.len()>=1024 && meta.len()<=256*1024*1024){
+        return self::error(StatusCode::NOT_FOUND,"영상 장면을 확인할 수 없습니다.");
+    }
+    let target=match original.canonicalize(){
+        Ok(path) if path.starts_with(&root)=>path,
+        _=>return self::error(StatusCode::FORBIDDEN,"영상 디렉터리 밖의 파일은 제공하지 않습니다.")
+    };
+    match tower_http::services::ServeFile::new(target).try_call(request).await{
+        Ok(response)=>{
+            let mut response=response.into_response();
+            response.headers_mut().insert("x-content-type-options","nosniff".parse().unwrap());
+            response.headers_mut().insert("cache-control","no-store".parse().unwrap());
+            response
+        }
+        Err(error)=>self::error(StatusCode::INTERNAL_SERVER_ERROR,error.to_string())
+    }
+}
 pub async fn upload(
     State(state): State<AppState>,
     Path(id): Path<String>,
