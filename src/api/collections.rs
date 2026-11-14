@@ -236,6 +236,45 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
+        // Editing verified/learned evidence in place would falsify provenance.
+        // Only owner-authored memories support a guarded, text-only mutation.
+        ("memory", "edit") => {
+            let Some(mut record) = state.store.get("memory", &id) else {
+                return (StatusCode::NOT_FOUND, Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response();
+            };
+            if record["source"] != "user" {
+                return (StatusCode::FORBIDDEN, Json(json!({
+                    "error":"근거가 있는 학습 기억은 원문을 직접 수정할 수 없습니다."
+                }))).into_response();
+            }
+            let Some(text) = body["text"].as_str().map(str::trim)
+                .filter(|value| !value.is_empty() && value.chars().count() <= 16_000) else {
+                return (StatusCode::BAD_REQUEST, Json(json!({
+                    "error":"수정할 기억 내용은 1~16000자여야 합니다."
+                }))).into_response();
+            };
+            if body["expectedText"].as_str() != record["text"].as_str() {
+                return (StatusCode::CONFLICT, Json(json!({
+                    "error":"기억 내용이 다른 곳에서 변경됐습니다. 목록을 새로고침한 뒤 다시 수정하세요."
+                }))).into_response();
+            }
+            record["text"] = json!(text);
+            record["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            // Stale quote evidence must not remain attached to altered text.
+            record["verification"] = json!("manual_edit");
+            record["sourceMessageIds"] = json!([]);
+            record["evidenceQuote"] = Value::Null;
+            match state.store.put("memory", &record) {
+                Some(saved) => {
+                    state.store.audit("memory.manual_edit", json!({"id":id,"source":"user"}));
+                    state.bus.record("memory", &saved);
+                    Json(saved).into_response()
+                }
+                None => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({
+                    "error":"기억을 수정하지 못했습니다."
+                }))).into_response(),
+            }
+        }
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
