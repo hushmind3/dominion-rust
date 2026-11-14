@@ -138,6 +138,43 @@ mod tests {
     use super::*;
     use crate::{config::Config,db::Store,vault::Vault};
     #[test]
+    fn aggregate_never_counts_unverified_or_legacy_completion_as_success() {
+        let dir=std::env::temp_dir().join(format!("goal-aggregate-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let empty=aggregate(&state);
+        assert_eq!(empty["terminalGoals"],0);
+        assert!(empty["verifiedSuccessRate"].is_null());
+        assert!(empty["modelUsage"]["reportedTotalTokens"].is_null());
+        state.store.put("goal",&json!({"id":"verified","status":"completed",
+            "sessionId":"s1","metrics":{"source":"goal_final_audit_v1",
+                "status":"completed","verifiedCompleted":true,
+                "unmetGapCount":0,"durationMs":1050}}));
+        state.store.put("goal",&json!({"id":"claim-only","status":"completed",
+            "metrics":{"verifiedCompleted":true}}));
+        state.store.put("goal",&json!({"id":"failed","status":"failed",
+            "metrics":{"source":"goal_final_audit_v1","status":"failed",
+                "verifiedCompleted":false,"unmetGapCount":1}}));
+        state.store.put("goal",&json!({"id":"queued","status":"queued"}));
+        // Persisted provider receipt, NOT a fabricated 'tokens saved' claim.
+        state.store.audit("model.usage",json!({"sessionId":"s1",
+            "promptTokens":82,"completionTokens":18,"totalTokens":100,
+            "estimated":false}));
+        let report=aggregate(&state);
+        assert_eq!(report["terminalGoals"],3);
+        assert_eq!(report["activeGoals"],1);
+        assert_eq!(report["verifiedCompletions"],1);
+        assert_eq!(report["unknownOrLegacyAuditCount"],1);
+        assert!((report["verifiedSuccessRate"].as_f64().unwrap()-1.0/3.0).abs()<1e-9);
+        assert_eq!(report["modelUsage"]["reportedTotalTokens"],100);
+        assert_eq!(report["modelUsage"]["strictlyMeasuredGoalCount"],1);
+        assert!(report["actualProviderBillingKrw"].is_null());
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn final_report_never_invents_money_or_model_quality() {
         let dir=std::env::temp_dir().join(format!("goal-metrics-{}",uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
