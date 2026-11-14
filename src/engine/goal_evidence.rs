@@ -78,6 +78,7 @@ mod tests {
         assert!(s.chars().count()<=1300);
         assert!(s.contains("terminal_exec"));
         assert!(s.contains("exitCode"));
-        assert!(!s.contains(&"x".repeat(500)));
+        let forbidden="x".repeat(500);
+        assert!(!s.contains(forbidden.as_str()));
     }
 }

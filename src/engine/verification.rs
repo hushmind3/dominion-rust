@@ -71,6 +71,12 @@ pub(crate) fn looks_actionable(goal: &str) -> bool {
         "작성",
         "수정",
         "편집",
+        "고치",
+        "고쳐",
+        "변경",
+        "리팩터",
+        "리팩토",
+        "패치",
         "삭제",
         "제거",
         "실행",
@@ -85,6 +91,11 @@ pub(crate) fn looks_actionable(goal: &str) -> bool {
         "write",
         "save",
         "edit",
+        "fix",
+        "repair",
+        "refactor",
+        "implement",
+        "patch",
         "delete",
         "remove",
         "run",
@@ -106,7 +117,7 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
         .iter()
         .any(|v| lower.contains(v));
     let writing = [
-        "만들", "생성", "저장", "작성", "수정", "편집", "create", "write", "save", "edit", "update",
+        "만들", "생성", "저장", "작성", "수정", "편집", "고치", "고쳐", "변경", "리팩터", "리팩토", "패치", "create", "write", "save", "edit", "update", "fix", "repair", "refactor", "implement", "patch",
     ]
     .iter()
     .any(|v| lower.contains(v));
