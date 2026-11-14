@@ -39,8 +39,20 @@ fn normalize(state:&AppState,body:&Value)->Result<Value,String>{
             .is_none_or(|provider|provider["enabled"]==false){
             return Err(format!("{}단계의 지정 모델 제공자를 연결하세요.",i+1))
         }
+        // An optional real file-change acceptance criterion makes workflow
+        // success testable without trusting the model's own prose.
+        let verify_path=step["verifyPath"].as_str().unwrap_or("").trim();
+        if verify_path.len()>512||verify_path.starts_with('/')||
+            std::path::Path::new(verify_path).is_absolute() {
+            return Err("검증 파일은 워크스페이스 내 상대 경로(512자 이하)여야 합니다.".into())
+        }
+        let checks=if !verify_path.is_empty() {
+            json!([{"type":"file_changed","path":verify_path}])
+        }else{step.get("successCriteria").cloned().unwrap_or_else(||json!([]))};
+        crate::engine::verification::validate_criteria(&checks)?;
         normalized.push(json!({"id":id,"name":title,"prompt":prompt,
-            "agentId":agent_id,"providerId":provider_id,"model":model}));
+            "agentId":agent_id,"providerId":provider_id,"model":model,
+            "verifyPath":verify_path,"successCriteria":checks}));
     }
     if normalized.iter().map(|s|s["prompt"].as_str().unwrap_or("").len()).sum::<usize>()>70_000 {
         return Err("전체 워크플로 지시문은 최대 70KB입니다.".into())
