@@ -260,6 +260,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mcp/presets", get(extensions::mcp_presets))
         .route("/api/mcp/catalog", get(extensions::mcp_catalog))
         .route("/api/mcp/discover", get(extensions::mcp_discover))
+        .route("/api/skills", get(extensions::installed_skills))
         .route("/api/skill-catalog", get(extensions::skill_catalog))
         .route("/api/skill-catalog/meta", get(extensions::skill_catalog_meta))
         .route("/api/skill-catalog/import", post(extensions::import_skill))
