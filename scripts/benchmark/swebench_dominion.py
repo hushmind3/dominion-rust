@@ -296,17 +296,24 @@ def main() -> int:
     args.binary = args.binary.resolve()
     args.state_template = args.state_template.resolve()
     args.cache = args.cache.resolve()
+    # The official evaluator runs with cwd=args.output; relative prediction
+    # paths would otherwise be interpreted a second time beneath that cwd.
+    args.output = args.output.resolve()
     if not args.binary.is_file() or not args.state_template.is_dir():
         parser.error("A built Dominion executable and a configured state template are required")
     if args.token_budget is not None and not 1000 <= args.token_budget <= 2_000_000:
         parser.error("token-budget must be between 1000 and 2000000")
     if args.timeout < 1 or args.max_iterations not in range(1, 65):
         parser.error("timeout and max-iterations are out of range")
+    if args.max_workers < 1 or args.poll_interval <= 0 or args.max_replans < 0:
+        parser.error("max-workers, poll-interval and max-replans must be valid")
     args.output.mkdir(parents=True, exist_ok=True)
     tasks = [json.loads(line) for line in args.tasks_jsonl.read_text().splitlines()
              if line.strip()]
     if args.max_instances > 0:
         tasks = tasks[:args.max_instances]
+    if not tasks:
+        parser.error("No official instances selected; refusing an empty benchmark")
     if len({row["instance_id"] for row in tasks}) != len(tasks):
         parser.error("Duplicate instance IDs are forbidden")
     preds, receipts = [], []
@@ -349,14 +356,22 @@ def main() -> int:
                    "--max_workers",str(args.max_workers),"--run_id",run_id]
         done = subprocess.run(command,cwd=args.output,check=False)
         summary["officialExitCode"] = done.returncode
-        report = args.output/"logs"/"evaluation"/run_id/"results.json"
-        if done.returncode == 0 and report.is_file():
+        # The official evaluator has shipped both report layouts. Keep the
+        # run-specific name in both candidates; never read an unrelated or
+        # previous run's report as a new score.
+        report_candidates = [
+            args.output/"logs"/"evaluation"/run_id/"results.json",
+            args.output/(args.model_name.replace("/", "__") + f".{run_id}.json"),
+        ]
+        report = next((path for path in report_candidates if path.is_file()), None)
+        if done.returncode == 0 and report is not None:
             try:
                 official = json.loads(report.read_text())
                 score = official_score(official, {p["instance_id"] for p in preds})
                 summary.update(score)
                 summary["officialEvaluated"] = True
                 summary["officialReport"] = official
+                summary["officialReportPath"] = str(report)
             except (ValueError, KeyError, json.JSONDecodeError) as exc:
                 summary["officialError"] = ("Official grader result did not validate: " + str(exc))
         else:
