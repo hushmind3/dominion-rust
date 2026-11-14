@@ -22,6 +22,14 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// The active budget algorithm owns the deadline. Do not let an unrelated
+/// fixed outer timeout defeat the kernel selected by the Rust planner.
+pub(super) fn selected_turn_limit(algorithm: &Value) -> Duration {
+    let seconds=algorithm["parameters"]["maxElapsedSecs"].as_u64()
+        .unwrap_or(MAX_ELAPSED.as_secs()).clamp(60,3600);
+    Duration::from_secs(seconds)
+}
+
 // Stable public entrypoints stay here; internal runtime responsibilities are isolated.
 mod intent;
 mod turn;
@@ -258,6 +266,17 @@ async fn run_turn_with_policy(
         .ok_or("실행 기록을 저장할 수 없습니다.")?;
     state.bus.record("execution", &execution);
     crate::engine::run_state::apply(state, &execution_id, "start");
+    // Resolve once and freeze for the attempt. Outer Tokio timeout and the
+    // inner budget ledger must never choose different limits or kernels.
+    let selected_budget=crate::engine::algorithms::choose_for_agent(
+        state,"execution.budget",request.agent_id.as_deref(),Some(&execution_id)
+    ).unwrap_or(Value::Null);
+    let selected_limit=selected_turn_limit(&selected_budget);
+    if let Some(mut execution)=state.store.get("execution",&execution_id) {
+        execution["turnBudgetAlgorithm"]=selected_budget.clone();
+        execution["effectiveMaxElapsedSecs"]=json!(selected_limit.as_secs());
+        state.store.put("execution",&execution);
+    }
     let metrics = std::sync::Mutex::new(Metrics::default());
     if provider.context_tokens.is_some() {
         if let Some(mut execution) = state.store.get("execution", &execution_id) {
@@ -271,7 +290,7 @@ async fn run_turn_with_policy(
             .and_then(|job|job["input"]["limits"]["timeBudgetSeconds"].as_u64())
             .filter(|seconds|*seconds>0).map(std::time::Duration::from_secs)
             .unwrap_or(std::time::Duration::from_secs(365*24*3600))
-    }else{MAX_ELAPSED};
+    }else{selected_limit};
     let result = tokio::select! {
         result = tokio::time::timeout(turn_limit, run_turn_body(state, &request, tx, &session_id, &metrics, &execution_id, &task_id, record_input, generation, source_message_id)) =>
             result.unwrap_or_else(|_| Err("설정한 실행 시간 제한을 초과했습니다.".into())),
@@ -339,5 +358,19 @@ async fn wait_cancelled(state: &AppState, session_id: &str, generation: u64) {
 }
 
 // Heavy regression fixtures live outside the production source inventory.
+#[cfg(test)]
+mod turn_budget_contract_tests {
+    use super::*;
+    #[test]
+    fn extended_kernel_changes_actual_outer_timeout() {
+        let extended=json!({"parameters":{"maxElapsedSecs":900}});
+        assert_eq!(selected_turn_limit(&extended),Duration::from_secs(900));
+        let lean=json!({"parameters":{"maxElapsedSecs":300}});
+        assert_eq!(selected_turn_limit(&lean),Duration::from_secs(300));
+        assert_eq!(selected_turn_limit(&Value::Null),MAX_ELAPSED);
+        assert_eq!(selected_turn_limit(&json!({"parameters":{"maxElapsedSecs":999999}})),
+            Duration::from_secs(3600));
+    }
+}
 #[cfg(test)]
 include!("../../../tests/support/engine/chat_runtime.tests.rs");
