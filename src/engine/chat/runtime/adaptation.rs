@@ -123,6 +123,23 @@ pub(super) async fn run_harness_nodes(
     Ok(synthetic)
 }
 
+/// The actual file digest closes a same-size, same-timestamp edit hole in
+/// recovery and repeated-read admission. Limit reads to 1 MiB to avoid
+/// turning a cheap retry preflight into an unbounded disk scan.
+fn observable_path_state(path: &std::path::Path, metadata: &std::fs::Metadata) -> Value {
+    let content_sha = if metadata.is_file() && metadata.len() <= 1024 * 1024 {
+        std::fs::read(path).ok().map(|data|
+            format!("{:x}",Sha256::digest(&data)))
+    } else { None };
+    json!({
+        "exists":true,"isDir":metadata.is_dir(),"len":metadata.len(),
+        "modifiedUnixNanos":metadata.modified().ok()
+            .and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d|d.as_nanos().to_string()),
+        "contentSha256":content_sha
+    })
+}
+
 /// Observable state related to a failed call. This is what "the environment
 /// changed" means for retry admission; a successful call count is not proof.
 pub(super) fn failure_observation(
@@ -142,19 +159,7 @@ pub(super) fn failure_observation(
             state.config.workspace.join(value)
         };
         if let Ok(metadata) = std::fs::metadata(&path) {
-            path_state.insert(
-                key.to_string(),
-                json!({
-                    "exists": true,
-                    "isDir": metadata.is_dir(),
-                    "len": metadata.len(),
-                    // Equal-sized edits still change the observable state.
-                    // File mtime is part of the retry/loop fingerprint.
-                    "modifiedUnixNanos": metadata.modified().ok()
-                        .and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d|d.as_nanos().to_string()),
-                }),
-            );
+            path_state.insert(key.to_string(),observable_path_state(&path,&metadata));
         } else {
             path_state.insert(key.to_string(), json!({"exists": false}));
         }
@@ -446,3 +451,33 @@ pub(super) async fn attempt_model_adaptation(
     }))
 }
 
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    #[test]
+    fn same_length_edit_changes_read_retry_fingerprint_even_if_mtime_is_unchanged() {
+        let root=std::env::temp_dir().join(format!("dominion-read-hash-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file=root.join("target.txt");
+        std::fs::write(&file,b"STATE-A").unwrap();
+        let first=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        std::fs::write(&file,b"STATE-B").unwrap();
+        let second=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        assert_eq!(first["len"],second["len"]);
+        assert_ne!(first["contentSha256"],second["contentSha256"]);
+        assert_eq!(first["exists"],true);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn large_file_does_not_trigger_unbounded_hash_read(){
+        let root=std::env::temp_dir().join(format!("dominion-read-large-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file=root.join("large");
+        let handle=std::fs::File::create(&file).unwrap();
+        handle.set_len(1024*1024+1).unwrap();
+        let state=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        assert!(state["contentSha256"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
