@@ -120,3 +120,7 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 ## 9. 자율 목표 실행·증거·장기 복구 (에이전트 25점 기준)
 
 기존 `goals.rs` 계획→실행→검토→재계획 폐회로에 `goals/report.rs::build`의 최종 기계적 검증과 파일 SHA-256 보고를 더했다. 별도 `Goals.tsx` UI를 사이드바와 API에 연결해 목표 입력, 실행 상태, 계획 버전, 실도구 결과, 검증 산출물, 중단, 대기 중 계획 변경, 외부 결과 수동 확인 후 재개를 제공한다. `verification.rs`는 `delegate_task` 및 `task_result` 완료 하위 도구 성공만 상위 목표에 귀속하고, `tools.rs` 위임 작업 수/활성 수 제한으로 급격한 모델 호출 확장을 줄인다. 자세한 소스 경로·검증 경계·후속 개선은 [자율 에이전트 통합 지도](SUB4-AUTONOMOUS-AGENT-2026-11-14.md)에 기록했다. **코드 소스 확인 및 커밋만 완료, 실행·CI·유료 모델 평가 미실행.**
+
+### 자율 목표 실행 토큰 예산 및 소스 계약 (2026-11-14)
+
+`api/goals.rs`는 자율 작업별 `tokenBudget`(0=무제한, 기본 150,000, 최대 2,000,000)을 저장한다. `goals.rs::run`은 다음 executor 턴 시작 직전에 `db::session_usage`의 실제 누적 토큰을 조회하며, 초과 시 `needs_review`로 마무리한다. `goals/report.rs`의 `finalReport.sessionUsage`와 `Goals.tsx`에 관측된 입력/출력/캐시 토큰과 호출 횟수를 표시한다. Planner·Reviewer의 별도 추론·제공자 청구는 이 예산에 자동 포함되지 않아 청구 총액 상한으로 선전하지 않는다. `tests/unit/goals_api_lifecycle_tests.rs`에서 목표-작업 연결, 대기중 계획 수정, 취소 및 명시 확인 후 재개를 검사하도록 작성했다(미실행).
