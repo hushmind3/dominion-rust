@@ -320,3 +320,41 @@ fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod owner_memory_edit_tests {
+    use super::*;
+    #[tokio::test]
+    async fn owner_memory_edit_requires_matching_text_and_preserves_provenance() {
+        let dir=std::env::temp_dir().join(format!("dominion-memory-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config{port:0,data_dir:dir.clone(),
+            workspace:dir.join("workspace"),web_dir:dir.join("web")};
+        let state=AppState::new(config.clone(),
+            crate::db::Store::open(&config.db_path()).unwrap(),
+            crate::vault::Vault::open(&config.key_path()));
+        state.store.put("memory",&json!({"id":"m1","text":"old content",
+            "scope":"agent","agentId":"a1","status":"active",
+            "source":"learn","evidenceQuote":"original source phrase",
+            "sourceMessageIds":["msg1"],"verification":"source_quote"})).unwrap();
+        let uri=axum::http::Uri::from_static("/api/memories/m1/edit");
+        let bad=action(State(state.clone()),OriginalUri(uri.clone()),
+            Json(json!({"text":"replacement","expectedText":"stale"}))).await;
+        assert_eq!(bad.status(),StatusCode::CONFLICT);
+        let ok=action(State(state.clone()),OriginalUri(uri.clone()),
+            Json(json!({"text":"replacement","expectedText":"old content"}))).await;
+        assert_eq!(ok.status(),StatusCode::OK);
+        let saved=state.store.get("memory","m1").unwrap();
+        assert_eq!(saved["text"],"replacement");
+        assert_eq!(saved["agentId"],"a1");
+        assert_eq!(saved["scope"],"agent");
+        assert_eq!(saved["evidenceQuote"],"original source phrase");
+        assert_eq!(saved["sourceMessageIds"][0],"msg1");
+        assert_eq!(saved["verification"],"owner_revision");
+        let stale=action(State(state.clone()),OriginalUri(uri),
+            Json(json!({"text":"clobber","expectedText":"old content"}))).await;
+        assert_eq!(stale.status(),StatusCode::CONFLICT);
+        drop(state);
+        let _=std::fs::remove_dir_all(dir);
+    }
+}
