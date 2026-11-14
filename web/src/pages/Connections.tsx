@@ -1,11 +1,41 @@
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
 import {StatusPill} from '../components/StatusPill'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
-import {useEffect,useMemo,useState} from 'react'
+import {lazy,Suspense,useEffect,useMemo,useState} from 'react'
 import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,Github,KeyRound,Link2,LockKeyhole,MessageCircle,Plus,RadioTower,Search,Send,Settings2,ShieldCheck,Trash2,UsersRound,X} from 'lucide-react'
 import {del,openOAuth,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
+
+// Keep the legacy extension/market implementations and API contracts intact,
+// but load their large bundles only when the user actually opens that tab.
+const ExtensionsTab=lazy(()=>import('./Extensions').then(module=>({default:module.ExtensionsPage})))
+const CapabilitiesTab=lazy(()=>import('./Capabilities').then(module=>({default:module.CapabilitiesPage})))
+export type ConnectionSection='channels'|'extensions'|'capabilities'
+
+export function ConnectionsPage({initialSection='channels'}:{initialSection?:ConnectionSection}){
+ const [section,setSection]=useState<ConnectionSection>(initialSection)
+ useEffect(()=>setSection(initialSection),[initialSection])
+ const selectSection=(next:ConnectionSection)=>{
+  setSection(next)
+  const target='#/connections'+(next==='channels'?'':'?section='+next)
+  if(window.location.hash!==target)window.history.pushState(null,'',target)
+ }
+ return <div className="w-full">
+  <div role="tablist" aria-label="연결 및 확장 기능" className="mx-auto flex w-full max-w-[1320px] flex-wrap gap-2 px-5 pt-5 sm:px-7 lg:px-6">
+   <Button role="tab" id="connections-tab-channels" aria-selected={section==='channels'} variant={section==='channels'?'primary':'ghost'} onClick={()=>selectSection('channels')}>채널 연결</Button>
+   <Button role="tab" id="connections-tab-extensions" aria-selected={section==='extensions'} variant={section==='extensions'?'primary':'ghost'} onClick={()=>selectSection('extensions')}>MCP · 스킬</Button>
+   <Button role="tab" id="connections-tab-capabilities" aria-selected={section==='capabilities'} variant={section==='capabilities'?'primary':'ghost'} onClick={()=>selectSection('capabilities')}>역량 마켓</Button>
+  </div>
+  <div role="tabpanel" aria-labelledby={'connections-tab-'+section}>
+   <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">연결 기능 불러오는 중…</div>}>
+    {section==='channels'?<ChannelConnectionsPanel/>:
+     section==='extensions'?<ExtensionsTab/>:
+     <CapabilitiesTab navigate={page=>selectSection(page==='extensions'?'extensions':'channels')}/>}
+   </Suspense>
+  </div>
+ </div>
+}
 
 type ChannelField={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
 type ChannelEntry={id:string;name:string;category:string;mode:string;description:string;docs:string;available:boolean;status:string;features:string[];fields:ChannelField[];instructions?:string[];requiresPublicUrl?:boolean;requiresRoom?:boolean;maxRoomParticipants?:number}
@@ -16,7 +46,7 @@ const groups=[{id:'all',name:'conn.group.all'},{id:'messaging',name:'conn.group.
 const badge=(s:string)=>{const keys:Record<string,LocaleKey>={connected:'conn.status.connected',outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',webhook_ready:'conn.status.webhook_ready',starting:'conn.status.starting',reconnecting:'conn.status.reconnecting',error:'conn.status.error',disabled:'conn.status.disabled',not_started:'conn.status.not_started',stopped:'conn.status.stopped'};return keys[s]?t(keys[s]):s};
 const active=(s:string)=>s==='connected';
 
-export function ConnectionsPage(){
+function ChannelConnectionsPanel(){
  useLocale()
  const registry=useRemote<ChannelEntry[]>('/api/channels/catalog',[]);
  const channels=useRemote<Channel[]>('/api/channels',[]);
