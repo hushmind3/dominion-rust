@@ -777,6 +777,18 @@ mod harness_tool_selection_tests {
         assert!(names.contains(&"workspace_replace_range"), "{names:?}");
         assert!(names.contains(&"workspace_replace_function"), "{names:?}");
         assert!(!names.contains(&"web_search"), "{names:?}");
+        let english = vec![
+            json!({"function":{"name":"code_search"}}),
+            json!({"function":{"name":"workspace_replace_function"}}),
+            json!({"function":{"name":"web_search"}}),
+        ];
+        let repaired = select_room_tools(
+            english, "Fix the bug in this code",
+            &std::collections::HashSet::new(), false,
+        );
+        assert!(repaired.iter().any(|tool| tool_name(tool) == "code_search"));
+        assert!(repaired.iter().any(|tool| tool_name(tool) == "workspace_replace_function"));
+        assert!(repaired.iter().all(|tool| tool_name(tool) != "web_search"));
     }
 
     #[test]
