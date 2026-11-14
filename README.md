@@ -685,3 +685,11 @@ CoCoEvolve(2026)의 전체 진화 기록을 통한 메타 반성에서
 `isolateWorktree:true`인 목표는 원본 저장소가 아닌 별도 Git worktree에서 실행됩니다. 실제 도구의 기준 경로(`chat/runtime/tool_execution.rs`), 서브에이전트 상속(`goal_git::workspace_for_session`), 목표 파일 검증(`verification::*_in`)과 완료 보고(`goals/report.rs`)에 연결했습니다. `/api/goals/:id/changes`는 변경 파일·새 파일 내용·검토 해시를 보여주며, 사용자가 해당 해시로 명시적으로 승인한 경우만 `/api/goals/:id/apply`가 원본 Git HEAD가 그대로일 때 fast-forward 합니다. `/discard`는 미반영 worktree만 폐기합니다. 실행 Git 경로가 설정되지 않았거나 격리 준비에 실패하면 원본 checkout으로 자동 복귀하지 않습니다.
 
 관련 구조·한계·근거: [docs/SUB4-ISOLATED-AGENT-2026-11-14.md](docs/SUB4-ISOLATED-AGENT-2026-11-14.md). Git 격리는 OS 보안 샌드박스가 아니며, 승인된 임의 명령과 외부 서비스 호출은 별도 정책을 따릅니다.
+
+### 서브4 v3 (2026-11-14) · 멀티샷·병렬 조사·운영 기반 RSI 학습
+
+ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinematic.rs`의 장면별 storyboard/작업/ffprobe/검증된 클립 재사용/기술 불량 샷 최대 1회 재생성 → FFmpeg 1080p 편집 및 최종 기술 검수로 이어집니다. `video/comfy.rs`를 분리해 원격 제출·이력 조회·다운로드를 담당합니다. 결과 UI는 개별 장면 기술 검수와 재시도·재사용 기록을 제공합니다. 시각적 미학·실제 GPU 비용을 측정한 것은 아닙니다.
+
+`tools/batch.rs::delegate_batch`는 최대 4개 읽기 전용 병렬 조사 에이전트를 실제 작업 큐에 생성합니다. 모델 도구 목록과 실행기·MCP 경로에서 쓰기 권한을 봉쇄하며, 부모 목표의 Git worktree 상속과 결과 수집을 유지합니다.
+
+`goals::finish` → `goal_feedback::record` → `rsi/planner/focus.rs::generation_context`는 실제 목표 성공/실패 및 검증 정보를 다음 자기개선 모델의 조사 입력으로 전달합니다. 이 운영 관찰은 독립 paired RSI 평가·채택 성공과 분리합니다. 전체 호출 경로와 제한 사항은 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14](docs/SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md)를 참조하세요.
