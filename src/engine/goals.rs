@@ -145,6 +145,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         crate::engine::goal_intake::inspect(&state.config.workspace)
     };
     goal["projectInventory"] = project_inventory.clone();
+    // Capture the exact clean/dirty Git baseline before any executor tool.
+    // Only a clean starting workspace can later offer guarded file undo.
+    if !goal["gitBaseline"].is_object() {
+        goal["gitBaseline"] = crate::engine::goal_changes::baseline(
+            &state.config.workspace,
+        ).await;
+    }
     let root = crate::engine::episode::start_root(
         state,
         crate::engine::episode::RootSpec {
