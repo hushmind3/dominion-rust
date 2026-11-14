@@ -4,7 +4,7 @@ import {post} from '../../api'
 import {Button,SelectInput,TextInput} from '../../components/Primitives'
 import {StatusPill} from '../../components/StatusPill'
 
-type Flow={id?:string;name:string;steps:{agentId:string}[]}
+type Flow={id?:string;name:string;steps:{agentId:string;harness?:string;sdkProvider?:string;sdkTools?:string}[]}
 type Run={id:string;kind:string;status:string;input?:{workflowId?:string};
  result?:{sessionId?:string;outputs?:unknown[];artifacts?:unknown[];usage?:{totalTokens?:number}}}
 export function WorkflowLauncher({agentId,flows,jobs,reload}:{
@@ -26,8 +26,15 @@ export function WorkflowLauncher({agentId,flows,jobs,reload}:{
   const requestId=pendingId||crypto.randomUUID()
   setPendingId(requestId)
   try{
+   const flow=linked.find(f=>f.id===workflowId)
+   const sdkCostApproved=flow?.steps.some(s=>s.harness==='copilot-sdk'&&s.sdkProvider==='github')||false
+   const sdkToolsApproved=flow?.steps.some(s=>s.harness==='copilot-sdk'&&s.sdkTools==='trusted_full')||false
+   if((sdkCostApproved||sdkToolsApproved)&&!window.confirm(
+    (sdkCostApproved?'GitHub Copilot SDK의 유료 모델 호출을 승인합니다. ':'')+
+    (sdkToolsApproved?'외부 실행기의 셸·파일 수정 권한을 승인합니다. 관리자 활성화가 별도로 필요합니다. ':'')+
+    '작업을 등록할까요?'))return
    const job=await post<Run>('/api/agents/'+encodeURIComponent(agentId)+'/workflows/'+
-    encodeURIComponent(workflowId)+'/run',{input,requestId})
+    encodeURIComponent(workflowId)+'/run',{input,requestId,sdkCostApproved,sdkToolsApproved})
    setNotice('실행 작업 '+job.id.slice(0,8)+' 등록 · 활동에서 상태 확인')
    setPendingId('')
    await reload()
