@@ -50,11 +50,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const usingComfy=engine==='comfyui'
  const usingRunway=engine==='runway'
  const usingLtx=engine==='ltx'
+ const ltxClipMax=ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(videoQuality)?20:10
  const ltxDurations=ltxFilm?
-  Array.from({length:(ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(videoQuality)?120:60)/2-5},(_,i)=>12+i*2):
+  Array.from({length:(ltxClipMax*6-ltxClipMax)/2},(_,i)=>ltxClipMax+2+i*2):
   ltxModel==='ltx-2-5-pro'||videoQuality==='1440p'||videoQuality==='4k'?[6,8,10]:[6,8,10,12,14,16,18,20]
- const estimatedFilmShots=ltxFilm?Math.ceil(seconds/
-  (ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(videoQuality)?20:10)):1
+ const estimatedFilmShots=ltxFilm?Math.ceil(seconds/ltxClipMax):1
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):usingRunway?Boolean(video.value.runway?.available):usingLtx?Boolean(video.value.ltx?.available):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:usingRunway?15:usingLtx?ltxDurations[ltxDurations.length-1]:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
