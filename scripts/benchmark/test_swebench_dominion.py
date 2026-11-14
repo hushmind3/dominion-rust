@@ -80,6 +80,24 @@ class ExactPatchContract(unittest.TestCase):
                                 root / "cache", root / "task", True)
             self.assertFalse((root / "task").exists())
 
+    def test_official_evaluation_command_pins_the_submitted_cohort(self):
+        output = Path("/tmp/dominion-contract-output")
+        command = runner.official_evaluator_command(
+            output, "dominion_binary_pinned", 2,
+            ["astropy__astropy-14539", "sympy__sympy-20590"])
+        self.assertIn("--dataset_name", command)
+        self.assertEqual(command[command.index("--dataset_name") + 1],
+                         runner.DATASET)
+        self.assertEqual(command[command.index("--predictions_path") + 1],
+                         str(output / "predictions.jsonl"))
+        self.assertEqual(command[-3:],
+                         ["--instance_ids", "astropy__astropy-14539",
+                          "sympy__sympy-20590"])
+        with self.assertRaises(ValueError):
+            runner.official_evaluator_command(output, "same", 1, [])
+        with self.assertRaises(ValueError):
+            runner.official_evaluator_command(output, "same", 1, ["x", "x"])
+
     def test_official_score_requires_exact_cohort_and_matching_resolved_evidence(self):
         cohort={"x","y","z"}
         report={
