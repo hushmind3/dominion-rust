@@ -87,7 +87,7 @@ export function GoalConsole(){
  }
  const applyWorktree=async()=>{
   if(!chosen||busy||!diff||diff.id!==chosen.id||!diff.canApply||!diff.patchSha256)return
-  if(!window.confirm('검토한 Git 변경을 원본 체크아웃에 반영합니다. 반영 후 원본 Git 파일이 변경되며 자동 커밋은 생성하지 않습니다. 진행할까요?'))return
+  if(!window.confirm('검토한 Git 변경(새로 생성한 소스 파일 포함)을 원본 체크아웃에 반영합니다. 적용된 파일은 자동 커밋하지 않습니다. 진행할까요?'))return
   setBusy(true);setError('');setNotice('')
   try{
    await post('/api/goals/'+encodeURIComponent(chosen.id)+'/apply',{
@@ -111,7 +111,7 @@ export function GoalConsole(){
   setBusy(true);setError('')
   try{const data=await get<{diff:string;note?:string;workspaceMode?:string;status?:string;untracked?:string;baseCommit?:string;patchSha256?:string;canApply?:boolean}>('/api/goals/'+encodeURIComponent(chosen.id)+'/diff')
    const summary=data.workspaceMode==='isolated'
-    ?'격리된 Git 작업폴더 · 기준 커밋 '+(data.baseCommit||'')+'\n상태:\n'+(data.status||'없음')+'\n추적되지 않은 파일:\n'+(data.untracked||'없음')+'\n\n'
+    ?'격리된 Git 작업폴더 · 기준 커밋 '+(data.baseCommit||'')+'\n상태:\n'+(data.status||'없음')+'\n새 파일(아래 검토 패치에 포함):\n'+(data.untracked||'없음')+'\n\n'
     :''
    setDiff({id:chosen.id,text:summary+(data.diff||data.note||'변경된 추적 파일의 diff가 없습니다.'),
     patchSha256:data.patchSha256,canApply:data.canApply})}
@@ -217,7 +217,7 @@ export function GoalConsole(){
      </div>}
      {diff?.id===chosen.id&&<details open><summary className="cursor-pointer text-xs font-semibold">실제 Git Diff</summary>
       {diff.patchSha256&&<div className="mt-2 break-all rounded bg-[#F2EADF] p-2 text-[11px]">검토한 전체 패치 SHA-256: {diff.patchSha256}
-       <p className="mt-1 text-[#7C7469]">{diff.canApply?'원본 적용 가능 · 원본 HEAD/파일 상태는 적용 직전 다시 확인됩니다.':'원본 적용 불가 · 미추적 파일 또는 목표 상태를 확인하세요.'}</p>
+       <p className="mt-1 text-[#7C7469]">{diff.canApply?'원본 적용 가능 · 원본 HEAD/파일 상태는 적용 직전 다시 확인됩니다.':'원본 적용 불가 · 목표 종료 상태와 패치 검토 제한을 확인하세요.'}</p>
       </div>}
       <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#FAF7F1] p-2 text-[10px]">{diff.text}</pre></details>}
      </>:<p className="text-sm text-[#8A8176]">목표를 선택하면 계획·검증·복구 정보를 볼 수 있습니다.</p>}
