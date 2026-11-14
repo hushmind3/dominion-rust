@@ -57,6 +57,32 @@ Native tools are already present in the Rust engine. To add external tools, run 
 - `DominionThread.cancel()`, `fork()`, and `DominionGoal.status()/resume()/cancel()/changes()/applyChanges()/discardChanges()` map to real existing Rust API routes.
 - The SDK does not execute tools, alter model system instructions or replace DOMINION's independent validation/recovery engine.
 
+## Durable read-only event observation
+
+```ts
+const stop = new AbortController()
+for await (const event of sdk.watchEventsResilient({
+  after: lastPersistedSequence,
+  signal: stop.signal,
+  reconnectDelayMs: 400,
+})) {
+  if (event.type === 'replay_gap') {
+    // SQLite retains a bounded history: refresh the canonical goal/job state.
+    const actualGoal = await sdk.goal(goalId)
+    console.log(actualGoal.status)
+    continue
+  }
+  if (typeof event.seq === 'number') lastPersistedSequence = event.seq
+  console.log(event.type)
+}
+```
+
+The optional `watchEventsResilient` reconnects only **GET /api/events**.
+The server subscribes before replay, returns all retained pages (not just 500),
+and signals truncated retention explicitly. It does not replay `POST /api/chat`,
+tool executions or approval decisions. Persist your last observed sequence
+where appropriate and re-fetch the canonical record on `replay_gap`.
+
 ## Development
 
 ```sh
