@@ -7,7 +7,11 @@ use std::{path::Path,process::Stdio,time::Duration};
 use tokio::io::AsyncWriteExt;
 
 pub fn validate(step:&Value,request:&Value,scheduled:bool)->Result<(),String>{
-    if step["harness"].as_str().unwrap_or("native")!="copilot-sdk"{return Ok(());}
+    match step["harness"].as_str().unwrap_or("native") {
+        "native"=>return Ok(()),
+        "copilot-sdk"=>{},
+        _=>return Err("지원하지 않는 외부 에이전트 SDK 엔진입니다.".into())
+    }
     if !matches!(step["sdkProvider"].as_str(),Some("ollama"|"github")){
         return Err("Copilot SDK 실행은 Ollama 또는 GitHub 계정 중 하나를 선택해야 합니다.".into());
     }
@@ -25,8 +29,13 @@ pub fn validate(step:&Value,request:&Value,scheduled:bool)->Result<(),String>{
             return Err("신뢰 도구 전체 실행에는 사용자의 명시 승인과 서버 관리자의 별도 활성화가 필요합니다.".into());
         }
     }
-    if step["sdkProvider"]=="github"&&!scheduled&&request["sdkCostApproved"]!=true{
-        return Err("GitHub Copilot 모델 사용 전에 명시적인 비용 승인이 필요합니다.".into());
+    if step["sdkProvider"]=="github" {
+        if std::env::var("DOMINION_COPILOT_ACCOUNT_MODE").as_deref()!=Ok("1"){
+            return Err("서버 관리자가 Copilot 계정 실행을 활성화하지 않았습니다.".into());
+        }
+        if !scheduled&&request["sdkCostApproved"]!=true {
+            return Err("GitHub Copilot 모델 사용 전에 명시적인 비용 승인이 필요합니다.".into());
+        }
     }
     Ok(())
 }
@@ -94,11 +103,15 @@ mod tests{
     fn sdk_never_activates_or_spends_without_explicit_input(){
         let native=json!({"model":"any"});
         assert!(validate(&native,&json!({}),false).is_ok());
+        assert!(validate(&json!({"harness":"unreviewed-supplier"}),&json!({}),false).is_err());
         let local=json!({"harness":"copilot-sdk","sdkProvider":"ollama","model":"qwen3:4b"});
         assert!(validate(&local,&json!({}),false).is_ok());
         let hosted=json!({"harness":"copilot-sdk","sdkProvider":"github","model":"auto"});
         assert!(validate(&hosted,&json!({}),false).is_err());
-        assert!(validate(&hosted,&json!({"sdkCostApproved":true}),false).is_ok());
+        // Host credentials are never billable to a browser user by default.
+        if std::env::var("DOMINION_COPILOT_ACCOUNT_MODE").as_deref()!=Ok("1") {
+            assert!(validate(&hosted,&json!({"sdkCostApproved":true}),false).is_err());
+        }
         let trusted=json!({"harness":"copilot-sdk","sdkProvider":"ollama",
             "model":"qwen3:4b","sdkTools":"trusted_full"});
         assert!(validate(&trusted,&json!({}),false).is_err());
