@@ -1,0 +1,24 @@
+name: Sub4 SWE-bench Verified integration
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'src/bin/dominion-swebench.rs'
+      - 'scripts/export_swebench_verified.py'
+      - 'scripts/tests/test_swebench_export.py'
+      - '.github/workflows/sub4-swebench.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-evaluation-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate gold-free dataset export
+        run: python3 -m unittest discover -s scripts/tests -p 'test_swebench_export.py'
+      - name: Build and unit-test native Rust SWE-bench driver
+        run: cargo test --release --locked --bin dominion-swebench

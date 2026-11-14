@@ -245,7 +245,7 @@ async fn solve(cfg:&Options,task:&Task,client:&reqwest::Client)->Result<Value,St
         "tokenBudget":cfg.token_budget,
         "successCriteria":[]
     })).await?;
-    let goal_id=goal["id"].as_str().ok_or("goal id absent")?;
+    let goal_id=goal["id"].as_str().ok_or("goal id absent")?.to_owned();
     let started=Instant::now();
     let mut state=goal;
     let mut timed_out=false;
@@ -331,7 +331,7 @@ async fn run()->Result<(),String>{
         let patch=record["patch"].as_str().unwrap_or("");
         writeln!(pred,"{}",json!({
             "instance_id":task.id,
-            "model_name_or_path":format!("dominion-rust__{}",cfg.provider_model.replace('/','_')),
+            "model_name_or_path":format!("dominion-rust__{}",cfg.provider_model.replace('/',"_")),
             "model_patch":patch
         })).map_err(|e|e.to_string())?;
         pred.flush().map_err(|e|e.to_string())?;
