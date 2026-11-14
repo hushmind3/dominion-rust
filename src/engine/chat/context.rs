@@ -449,17 +449,27 @@ pub(super) fn render_history(
                     .iter()
                     .take_while(|row| row["role"] == "tool" && row["agent_id"].as_str() == agent_id)
                     .collect();
-                let valid = calls.len() == results.len()
-                    && calls.iter().zip(&results).all(|(call, result)| {
-                        call["id"].as_str().is_some() && call["id"] == result["tool_call_id"]
-                    });
+                // Parallel tools can complete out of order. Reconstruct the
+                // original provider batch by call ID, never by arrival order.
+                // Missing, duplicated or orphaned results still fail closed.
+                let mut by_id=std::collections::HashMap::new();
+                let no_duplicates=results.iter().all(|result| {
+                    result["tool_call_id"].as_str()
+                        .is_some_and(|id|by_id.insert(id,result).is_none())
+                });
+                let mut ids=std::collections::HashSet::new();
+                let valid=no_duplicates && calls.len()==results.len()
+                    && calls.iter().all(|call|call["id"].as_str()
+                        .is_some_and(|id|ids.insert(id)&&by_id.contains_key(id)));
                 if valid {
                     let mut assistant = json!({"role":"assistant","content":content,"tool_calls":calls});
                     if let Some(reasoning) = stored_reasoning(message) {
                         assistant["reasoning_content"] = json!(reasoning);
                     }
                     out.push(assistant);
-                    out.extend(results.iter().map(|row| {
+                    out.extend(calls.iter().filter_map(|call|
+                        call["id"].as_str().and_then(|id|by_id.get(id).copied())
+                    ).map(|row| {
                         let content = row["content"].as_str().unwrap_or("");
                         let content = if is_room && content.chars().count() > 2_000 {
                             format!(
@@ -564,6 +574,30 @@ mod tests {
         (state, dir)
     }
 
+    #[test]
+    fn parallel_tool_results_reconstruct_by_call_id_not_completion_order(){
+        let (state,dir)=state();
+        let rows=vec![
+            json!({"id":"a","role":"assistant","agent_id":null,"content":"",
+                "tool_calls":[
+                    {"id":"call-a","type":"function","function":{"name":"workspace_read","arguments":"{}"}},
+                    {"id":"call-b","type":"function","function":{"name":"workspace_read","arguments":"{}"}}
+                ]}),
+            json!({"id":"r-b","role":"tool","agent_id":null,"tool_call_id":"call-b","content":"B"}),
+            json!({"id":"r-a","role":"tool","agent_id":null,"tool_call_id":"call-a","content":"A"})
+        ];
+        let history=render_history(&state,"s",None,&rows,Vec::new());
+        assert_eq!(history.len(),3);
+        assert_eq!(history[0]["role"],"assistant");
+        assert_eq!(history[1]["tool_call_id"],"call-a");
+        assert_eq!(history[1]["content"],"A");
+        assert_eq!(history[2]["tool_call_id"],"call-b");
+        assert_eq!(history[2]["content"],"B");
+        let duplicated=vec![rows[0].clone(),rows[2].clone(),rows[2].clone()];
+        assert!(render_history(&state,"s",None,&duplicated,Vec::new()).is_empty(),
+            "duplicate observations must not enter a model request");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn room_history_preserves_stored_reasoning_for_provider_specific_replay() {
         let (state, dir) = state();
