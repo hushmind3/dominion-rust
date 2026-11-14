@@ -138,7 +138,7 @@ asserting the GET route and execution semantics.
 
 An independent rejected regression now appears in next-generation diagnostic input without promoting it to the selected source. Tests explicitly cover this status difference.
 
-**Benchmark fixes:** `scripts/benchmark/swebench_dominion.py` resolves `--output` before running the official evaluator in that output directory. It recognizes both official grader report layouts by the exact run ID and verifies the submitted cohort. It counts failed and uncertain tool operations rather than labeling only completed operations as all calls. The receipt records `failedToolCalls`, `successfulToolCalls`, `uncertainToolCalls`, `observedFailureCases`, `observedRecoveryCases`, `observedFailureRecoveryRate`, with unknown metrics kept null when telemetry cannot be read.
+**Benchmark fixes:** `scripts/benchmark/swebench_dominion.py` resolves `--output` before running the official evaluator in that output directory. It accepts only the official grader's documented `logs/evaluation/<run_id>/results.json` location and verifies the submitted cohort. It counts failed and uncertain tool operations rather than labeling only completed operations as all calls. The receipt records `failedToolCalls`, `successfulToolCalls`, `uncertainToolCalls`, `observedFailureCases`, `observedRecoveryCases`, `observedFailureRecoveryRate`, with unknown metrics kept null when telemetry cannot be read.
 
 [Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11) isolates CI/review from automatic main-branch merge. No remote Docker evaluation, paid model inference or local Rust compilation was performed by this chat.
 
