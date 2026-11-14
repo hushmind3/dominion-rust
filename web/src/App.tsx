@@ -3,6 +3,7 @@ import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,t
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
+const GoalsPage=lazy(()=>import('./pages/Goals').then(module=>({default:module.GoalsPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
@@ -185,6 +186,7 @@ export default function App(){
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='home'&&<HomePage navigate={navigate}/>}
+     {page==='goals'&&<GoalsPage/>}
     
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
