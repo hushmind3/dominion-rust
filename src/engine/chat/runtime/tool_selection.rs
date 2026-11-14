@@ -47,6 +47,14 @@ pub(super) fn normalize_tool_arguments(mut arguments: Value, strategy: &str) -> 
     arguments
 }
 
+/// Authoritative schema boundary for this exact model round. A tool the
+/// model has not been shown must never be dispatched merely because the
+/// underlying process has a global implementation for it (including MCP).
+/// The allowlist is the actual post-selection, post-budget, post-phase menu.
+pub(super) fn tool_advertised(name:&str,round_tools:&[Value])->bool{
+    !name.is_empty()&&round_tools.iter().any(|definition|tool_name(definition)==name)
+}
+
 pub(super) fn tool_name(definition: &Value) -> &str {
     definition["function"]["name"]
         .as_str()
