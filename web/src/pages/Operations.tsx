@@ -57,6 +57,28 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
  </div>
  </div>
  <Panel className="mb-5 p-4">
+  <div className="flex items-center justify-between gap-3">
+   <strong className="text-sm">DOMINION 자체 도구 선택 · 입력 검증</strong>
+   <Button size="sm" variant="secondary" onClick={()=>void audit.reload()}><RefreshCw size={14}/> 갱신</Button>
+  </div>
+  <p className="mt-1 text-xs text-[#7C7469]">각 모델 라운드에 실제 제공한 도구와 잘못된 호출의 차단 기록입니다. SDK 실행 또는 외부 에이전트 통계가 아닙니다.</p>
+  <div className="mt-3 grid gap-2">
+   {audit.value.filter((a:any)=>['tool.native_route','tool.schema_rejected','tool.unadvertised_blocked'].includes(a.event)).slice(0,10).map((a:any)=>
+    <div key={a.id} className="rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-3 text-xs">
+     <div className="flex flex-wrap items-center gap-2">
+      <strong>{a.event==='tool.native_route'?'도구 라우팅':a.event==='tool.schema_rejected'?'인수 스키마 차단':'미제공 도구 차단'}</strong>
+      <span className="text-[#7C7469]">{a.detail?.stage||a.detail?.tool||a.detail?.name||''}</span>
+      <small className="ml-auto text-[#9C9388]">{a.detail?.round!==undefined?'라운드 '+a.detail.round:''} {formatDateTime(a.created_at||a.createdAt)}</small>
+     </div>
+     {a.event==='tool.native_route'?
+      <p className="mt-1 break-words text-[#5C544A]">{a.detail?.selectedCount??0}/{a.detail?.candidateCount??0}개 도구 · {(a.detail?.selectedTools||[]).join(', ')}</p>:
+      <p className="mt-1 break-words text-[#5C544A]">{a.detail?.reason||'이번 실행에서 사용 가능한 도구가 아닙니다.'}</p>}
+    </div>)}
+   {!audit.value.some((a:any)=>['tool.native_route','tool.schema_rejected','tool.unadvertised_blocked'].includes(a.event))&&
+    <p className="text-xs text-[#9C9388]">아직 기록이 없습니다. 일반 채팅에서 파일·웹·MCP 도구가 필요한 작업을 실행하면 도구 선택 내역이 나타납니다.</p>}
+  </div>
+ </Panel>
+ <Panel className="mb-5 p-4">
   <div className="flex items-center justify-between">
    <strong className="text-sm">영속 납품 결과</strong>
    <Button size="sm" variant="secondary" onClick={()=>void workflowResults.reload()}><RefreshCw size={14}/> 갱신</Button>
