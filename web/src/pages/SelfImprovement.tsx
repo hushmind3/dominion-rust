@@ -122,8 +122,8 @@ export function SelfImprovementPage(){
   const refresh=async()=>{try{
    const next=await get<Campaign>('/api/rsi/campaigns/'+encodeURIComponent(jobId))
    if(alive)setCampaign(next)
-  }catch(e){if(alive)setError((e as Error).message)}}
-  void refresh();const timer=window.setInterval(()=>void refresh(),1500)
+  }catch{/* Passive refresh errors stay in the job record, without repeatedly displaying an alert. */}}
+  void refresh();const timer=window.setInterval(()=>void refresh(),4000)
   return()=>{alive=false;window.clearInterval(timer)}
  },[jobId])
  useEffect(()=>{
@@ -192,7 +192,8 @@ export function SelfImprovementPage(){
  return <div className="mx-auto w-full max-w-[920px] px-5 py-6 sm:px-7">
   <Headline eyebrow="DOMINION" title="계속 발전하기" description="기존 지식으로 연구하고 새 방법과 코드를 만들며, 검증된 버전이 다음 개선을 이어갑니다."
    actions={<Button variant="secondary" onClick={()=>{void providers.reload();void catalogue.reload()}} aria-label="새로고침"><RefreshCw size={15}/></Button>}/>
-  <Notice message={error||providers.error||install?.error||campaign?.error||''}/>
+  {/* Prominent notices are reserved for directly triggered actions, not background polling. */}
+   <Notice message={error}/>
   {campaign&&!working&&<div className="mb-3 flex justify-end"><Button variant="ghost" onClick={()=>setSettingsOpen(v=>!v)}>{settingsOpen?'설정 닫기':'모델 바꾸기'}</Button></div>}
   {(!campaign||settingsOpen)&&<Panel className="p-5 sm:p-7">
    <div className="mb-5 flex items-center gap-3"><BrainCircuit size={25} className="text-[#A94E30]"/><div><h2 className="font-bold">더 나은 버전이 다음 개선을 이어갑니다</h2><p className="mt-1 text-[12px] text-[#7C7469]">코딩 없이 모델과 선택 방식만 고르면 됩니다.</p></div></div>
@@ -226,6 +227,7 @@ export function SelfImprovementPage(){
    {working?<Button variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={13}/>중단</Button>:
     <div className="flex flex-wrap gap-2"><Button variant="ghost" onClick={backToSetup}><ArrowLeft size={14}/>돌아가기</Button><Button variant="primary" disabled={busy||installing||!providerId||!model.trim()} onClick={()=>void start(true)}><Play size={14}/>같은 목표로 이어가기</Button></div>}</div>
    {campaign.objective&&<p className="mt-3 text-[13px] leading-6 text-[#5C544A]">목표: {campaign.objective}</p>}
+   {(campaign.error||install?.error||providers.error)&&<details className="mt-3 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-xs text-[#7C7469]"><summary className="cursor-pointer">진행·연결 오류 기록 확인</summary><pre className="mt-2 whitespace-pre-wrap break-all">{[campaign.error,install?.error,providers.error].filter(Boolean).join('\n')}</pre></details>}
    <p className="mt-3 text-[12px] text-[#7C7469]">개선 시도 {campaign.attempts||0}회 <ArrowRight size={12} className="mx-1 inline"/>채택 {campaign.acceptedGenerations||0}회 · 생성에 사용한 토큰 {campaign.tokensEstimated?'약 ':''}{(campaign.tokens||0).toLocaleString()}</p>
    <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">{[{label:'새 연구 근거',value:research},{label:'검증·선택한 코드',value:adopted},{label:'선택 버전으로 후속 실행',value:inherited},{label:'저장된 방법의 실제 실행',value:executedMethods}].map(item=><div key={item.label} className="rounded-lg bg-[#FAF7F1] p-3"><span className="block text-[#7C7469]">{item.label}</span><strong className="mt-1 block text-lg">{item.value}</strong></div>)}</div>
    {!working&&campaign.stopReason&&<p className="mt-3 text-[12px] text-[#7C7469]">{stops[campaign.stopReason]||campaign.stopReason}</p>}
