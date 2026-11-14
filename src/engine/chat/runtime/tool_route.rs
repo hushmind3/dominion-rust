@@ -225,6 +225,60 @@ pub(super) fn select(
     Some(Route{tools,stage,candidate_count})
 }
 
+/// Matched deterministic routing fixtures. They exercise the exact native
+/// route kernel, not a mock scoring function. A score is not a claim about a
+/// frontier model's solve rate; it measures a concrete harness behavior:
+/// preserving a successful alternative without resurfacing the failed one.
+pub(super) fn evaluation_rows() -> Vec<Value> {
+    let catalog = (0..16)
+        .map(|index| json!({
+            "type":"function",
+            "function":{
+                "name":format!("candidate_{index}"),
+                "description":"Fix Rust source bug",
+                "parameters":{"type":"object","properties":{}}
+            }
+        }))
+        .collect::<Vec<_>>();
+    let cases = [
+        // The original recency kernel promotes both calls, even though the
+        // first was rejected. The outcome kernel must keep the recovery path.
+        (vec![(0, false), (15, true)], 15, vec![0]),
+        (vec![(2, false), (14, true)], 14, vec![2]),
+        (vec![(1, false), (3, false), (13, true)], 13, vec![1, 3]),
+        (vec![(0, false), (1, false), (12, true)], 12, vec![0, 1]),
+    ];
+    ["recency-biased", "outcome-aware"].into_iter().map(|kernel| {
+        let mut correct = 0usize;
+        let mut selected_success = 0usize;
+        let mut rejected_failed = 0usize;
+        for (history, desired, failed) in &cases {
+            let observed = history.iter().map(|(index, ok)| {
+                json!({"tool":format!("candidate_{index}"),
+                    "status":if *ok {"completed"}else{"failed"},
+                    "result":if *ok {json!({"success":true})}
+                        else{json!({"error":"verified failure"})}})
+            }).collect::<Vec<_>>();
+            let routed = select(&catalog,"Fix Rust source bug",2,&observed,kernel);
+            let names = routed.as_ref().map(|route|
+                route.tools.iter().map(tool_name).collect::<HashSet<_>>())
+                .unwrap_or_default();
+            let success = names.contains(format!("candidate_{desired}").as_str());
+            let no_bad = failed.iter().all(|index|
+                !names.contains(format!("candidate_{index}").as_str()));
+            if success {selected_success+=1}
+            if no_bad {rejected_failed+=1}
+            if success && no_bad {correct+=1}
+        }
+        json!({"kernel":kernel,"metric":"matched_routing_accuracy",
+            "value":correct as f64/cases.len() as f64,
+            "correct":correct,"total":cases.len(),
+            "successfulAlternativeRetained":selected_success,
+            "failedAlternativeAvoided":rejected_failed,
+            "fixture":"failed-tool-and-successful-recovery-v1"})
+    }).collect()
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
