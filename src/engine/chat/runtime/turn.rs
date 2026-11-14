@@ -32,6 +32,7 @@ use super::{
     rsi_textual_edit_fallback,
     rsi_tool_advertised,
     rsi_canonical_tool_name,
+    rsi_no_tool_recovery_target,
     rsi_verified_write_operation,
     rsi_patch_ready_for_verification,
     rsi_ground_range_edit_args,
