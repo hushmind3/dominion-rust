@@ -585,3 +585,16 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 [**자율 에이전트 전체 호출도·책임 경계·2026 근거**](docs/architecture/AGENT-HARNESS-SUB2-2026-11-14.md)
 
 > 심판의 52/100은 개편 이전 정적 점수입니다. 신규 빌드·테스트·실모델 실행·CI·비용 실측은 수행하지 않았으므로 개선 후 점수나 Claude Code·Codex 동등 성능을 주장하지 않습니다.
+
+## 2026-11-14 · 서브2 재심사 이후: Git 격리·병렬 조사 직접 연결
+
+심판 재심사 **57/100** 이후, 소스 수준에서 다음 실행 경로를 추가했습니다. 변경 후의 새 점수·성능 향상 수치를 주장하지 않습니다.
+
+- **소스 격리:** 홈 `GoalConsole`에서 Git 격리 옵션을 켜면 `api/goals.rs::create_goal → goals.rs::run → goal_workspace.rs::prepare`가 공용 체크아웃의 깨끗한 Git HEAD로 데이터 폴더에 detached worktree를 준비합니다. `chat/runtime/dispatch.rs`의 도구 실행·효과 기록, `goals/project.rs`의 프로젝트 조사, `goals/code_navigation.rs`의 코드 인덱스, `verification.rs`의 수용 조건, `goals/artifacts.rs`의 파일 증거가 **동일한 목표 전용 폴더**를 사용합니다. 원본 파일은 목표 수정으로 덮어쓰지 않습니다.
+- **검토/폐기:** `GET /api/goals/:id/diff`로 격리된 변경과 untracked 경로를 확인하고, 목표 종료 후 `POST /api/goals/:id/discard`로 사용자 확인을 거쳐 해당 worktree만 폐기합니다. 목표가 삭제되거나 폐기된 후 공용 폴더로 자동 복귀하지 않습니다. Git 격리는 OS 샌드박스가 아니며 승인된 셸·외부 명령이 다른 경로를 읽고 쓸 수 있습니다.
+- **병렬 읽기 전용 조사:** `tools.rs::definitions/execute → tools/batch.rs::delegate_many`로 최대 4개 조사 작업을 실제 세션/작업 큐에 등록하고 `task_result`로 모읍니다. 읽기 전용 하위 세션은 도구 스키마·실제 native/MCP 디스패치 모두에서 변경 도구를 거부합니다. 하위 세션의 Git 경로는 부모 목표에서 계승합니다.
+- **RSI로 피드백:** `rsi_system.rs::{COMPONENTS,source_role}`에 신설 하네스/도구 소스를 실제 개조 가능 영역으로 노출했습니다. 기존 독립 쌍대 평가·계보·채택 기준은 그대로입니다.
+
+[실행 호출도·증거 경계·2026 근거·남은 문제](docs/architecture/AGENT-HARNESS-SUB2-REJUDGE-2026-11-14.md)
+
+이전 커밋 `ffcb6f6`은 GitHub Actions에서 **Rust 942개 테스트 및 웹 타입 검사·빌드 통과** 기록이 있습니다. **이 절의 신규 코드에 대해 CI·컴파일·테스트·유료 모델 실험은 실행하지 않았습니다.**

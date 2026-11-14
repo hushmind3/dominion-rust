@@ -86,3 +86,11 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 3. Normal goal executor can delegate to existing independent workers; its real child-job status and pending approvals are visible in the owner goal console. Pending/running/failed delegation statuses cannot satisfy independent success evidence. A dedicated planning-DAG/parallel merge conflict scheduler and explicit child-job quality integration remain deeper engineering goals.
 4. User goal receipt recording is live-source integrated; statistically significant task-completion, API spend and agent–RSI A→B→A improvement require actual independent real-run evidence.
 5. Current `goals.rs` retains a large iterative coordinator (with production tests now external) and `chat/runtime/turn.rs` still mixes substantial concerns. Further structural isolation should follow verified execution boundaries.
+
+### 2026-11-14 static rejudge follow-up
+
+After the judge's 57/100 review, the executable harness gained an **opt-in detached Git goal workspace** and a **real 1–4 read-only parallel investigation path**. Unlike a new directory only, the scoped root is carried by `goal_workspace.rs::workspace_for_session` into `chat/runtime/dispatch.rs`, `goals.rs`, `goals/{project,code_navigation,artifacts}.rs`, and `verification.rs`. The owner can view exact tracked diffs and untracked names and explicitly discard a terminal goal's worktree without touching the original checkout. The same worktree is inherited by child sessions.
+
+`tools/batch.rs::delegate_many` creates actual asynchronous child jobs, and `delegatedReadOnly` is checked at the tool catalogue, the native tool executor and MCP dispatch. The new modules are mapped into the compiled RSI source frontier as actual harness/tools changes. Source creation and source review here are not a frozen-paired performance measurement; the new integration has not been compiled or tested.
+
+See [Rejudge follow-up source map](AGENT-HARNESS-SUB2-REJUDGE-2026-11-14.md).

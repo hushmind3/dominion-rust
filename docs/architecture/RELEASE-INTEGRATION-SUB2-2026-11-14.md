@@ -71,3 +71,11 @@ The previous generic `prompt` job on Home now coexists with a dedicated `GoalCon
 ### Non-negotiable constraints
 
 Fixed base-model weights. No LoRA, fine-tuning, retraining, or source path that attaches weight learning to RSI. User hardware is not required for heavyweight local inference. Immutable evaluation/frozen cases remain outside candidate-edit authority.
+
+### 2026-11-14 rejudge integration addendum
+
+New opt-in production route: `GoalConsole → POST /api/goals → goals::run → goal_workspace::prepare → chat/runtime/dispatch ToolContext`. Scoped source/validation/receipt paths are preserved for delegated child sessions and resumed attempts. Reviewable isolated diff uses `goal_workspace::changes`; explicit `POST /api/goals/:id/discard` removes only the goal-owned detached worktree after terminal-state and child-job checks. Worktree isolation is not an OS sandbox and does not stop approved absolute shell commands.
+
+New parallel route: `tools::definitions("delegate_tasks") → tools/batch.rs::delegate_many → tools::delegate → jobs::enqueue("prompt")`, capped at 4 active read-only child jobs; schema filter and native/MCP runtime deny all other tools for the child. Normal goal receipts now include worktree mode and base commit. `rsi_system::source_role` exposes both executable additions to the rebuilt descendant frontier.
+
+The static judge's prior **57/100** and earlier `ffcb6f6` green CI are historical references. These new changes have **not** been built, tested, CI-validated or paid-model benchmarked.
