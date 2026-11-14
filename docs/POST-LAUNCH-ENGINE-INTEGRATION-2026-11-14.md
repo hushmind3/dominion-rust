@@ -1,6 +1,6 @@
 # DOMINION sub3 — 출시 후 엔진·하네스·알고리즘 통합 개선 (2026-11-14)
 
-> Scope: dominion-sub3. Source inspection and edits only; this change does not claim completed CI, a measured cost reduction, a real-model quality win, or demonstrated full-system RSI.
+> Scope: dominion-sub3. Technical source changes and GitHub CI are separate from paid-model video execution; this document does not claim a measured cost reduction, real-model quality win, or demonstrated full-system RSI.
 
 ## 실제로 연결한 경로
 
@@ -28,6 +28,20 @@
 - src/engine/chat/provider.rs 변경: 4개 HTTP·WebSocket 스트리밍 경로의 cache-read 사용량을 gateway에 직접 전달
 - src/engine/gateway.rs 변경: model.usage 감사 이벤트의 cachedPromptTokens, uncachedPromptTokens, cacheUsageReported
 - 값이 없는 제공자의 캐시 적중은 null로 보존. totalTokens에서 캐시 읽기 토큰을 빼지 않는다. 캐시는 단가를 바꾸는 것이지 요청의 문맥 크기를 제거하는 것이 아니다. 절감률은 단가와 실제 hit tokens에 따라 계산해야 한다.
+
+### 1-1. 실제 완료 게이트·샷별 비용 방지 (2026-11-14 최신)
+
+- **진입점:** \`web/src/pages/Video.tsx\`은 FFprobe 준비를 표시하며, \`src/api/video.rs::status\`는 \`video::quality_available\`을 반환합니다. \`video::enqueue\`는 외부 제공자에 과금될 요청을 보내기 **이전**에 검수 도구가 있는지 검사합니다.
+- **완료 증거:** \`video::run\` → \`video/quality.rs::inspect\`는 생성된 \`output.mp4\`의 디코딩 가능한 비디오 스트림·해상도·화면비·재생 길이, Omni의 오디오 스트림을 확인합니다. 불합격이면 완료로 기록하지 않으며 \`videoQuality\`에 오류를 보존합니다. 성공 시 결과 \`qualityReceipt\`를 영상 UI에 표시합니다.
+- **비용 보호:** \`video/cinematic.rs::render\`는 각 원본 샷에 \`quality::inspect\`를 적용하고, 재시작 시 유효한 기존 샷을 다시 과금하지 않고 재사용합니다. 유효하지 않은 샷만 사용자가 \`badShotRetries:1\`을 명시적으로 선택했을 때 1번 재생성합니다. 원격 제출 상태가 미확정이면 계속 멈춥니다.
+- **검증 수준:** FFprobe는 **기술적 품질**만 판정합니다. 장면의 심미성·인물 동일성·프레임 움직임·영상 의미와 내용의 정확성은 검증하지 않습니다. 유료 실제 생성 완주나 비용 절감률을 측정했다는 주장도 하지 않습니다.
+
+### 1-2. 목표 영수증 → RSI 개선 가설 → 소스 후보 우선순위
+
+- \`goals::finish\`는 기존 \`goal.receipt\`에 완료 판정 소유자(\`goal-parent\`), 실제 결과, 증거·반복·토큰 사용량을 지속 기록합니다.
+- \`rsi_system/agent_feedback.rs::observe\`는 최근 목표의 상태와 \`receipt\`가 일치하는 완료/실패 기록을 최대 64건만 집계합니다. 실패 목표의 ID·검증 누락 사유를 포함하는 신호를 최대 6건 만들고 실제 \`goals.rs\`, \`tools.rs\`, \`verification.rs\`, \`gateway.rs\` 등의 코드 경로를 조사 후보로 표시합니다.
+- \`rsi_system::usage_evidence\`에 그 신호를 결합하므로 **실제 호출 중인** \`rsi_system/frontier.rs::architecture_frontier\`가 소스 SHA를 대조하면서 개선 대상을 우선순위화할 수 있습니다. 이 데이터는 모델이 재작성할 소스 범위를 제안하는 **관측 가설**이며 \`qualityProven:false\`, \`pairedEvaluation:false\`입니다.
+- 채택과 후손 계승은 계속 \`rsi_worktree.rs\` / \`rsi/evaluation/contract.rs\`의 동결 독립 비교를 사용합니다. 사용자 목표가 성공했다고 해서 RSI 소스 개선의 성공으로 승격하지 않습니다.
 
 ## 2026년 자료와 구현 원칙
 
@@ -58,4 +72,4 @@
 
 ## 검증 상태
 
-2026-11-14의 변경은 소스 읽기와 GitHub 소스 수정으로만 검토했다. 컴파일·빌드·테스트·벤치마크·실 API 영상 생성·유료 모델 실행을 수행하지 않았다. 엔진 하네스/알고리즘 통합 완성도 및 80/90점 여부는 독립 구조 심사와 운영 증거가 필요하다.
+2026-11-14에는 GitHub Actions 자동 CI가 브랜치 push에서 실행된다. 워크플로 결과는 완료된 run의 해당 커밋 SHA와 함께 확인해야 한다. 실 API 영상 생성·유료 모델 실행·장면별 생성 원가/시각적 품질 실측은 수행하지 않았다. 엔진 하네스/알고리즘 통합 완성도 및 80/90점 여부는 독립 구조 심사와 운영 증거가 필요하다.
