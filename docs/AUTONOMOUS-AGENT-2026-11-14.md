@@ -89,3 +89,17 @@
 일반 Goal은 `episode`·`learning`에 실증 결과를 보내지만 RSI의 동결 평가 결과를 생성하거나 특정 후손을 자동 채택하지 않습니다. 자율 병렬 조사는 **읽기 전용**이므로, 둘 이상의 에이전트가 같은 공유 작업 공간에 소스를 동시에 쓰고 `git merge`로 해결할 수 있다고 가장하지 않습니다. 복수 실행자의 독립 worktree 소스 생성·컴파일·순차 승인 병합은 아직 별도 구현 범위입니다.
 
 **검증 현황:** 이전 Sub1 HEAD `79383ad`는 GitHub CI `43531904929`에서 npm 타입 검사·React 빌드·`cargo test --release`가 성공했습니다. 이후 병렬 도구와 diff/복원 구현에서도 GitHub Actions가 실행되고 있으며, 그 새 커밋의 검사 결과를 최종 확인해야 합니다.
+
+
+
+## 8. Goal별 Git 격리와 검토 후 승인 반영 (추가 개발)
+
+`api/goals::create_goal(isolateWorktree)` → `jobs::enqueue/run_job` → `goals::run` → `goal_workspace::prepare` → Goal 및 Session 영속화 → `scoped_state.config.workspace` 전환 → `goal_intake::inspect`·`verification::baseline_checks` → `run_quiet_outcome` → `tools::execute`의 세션 귀속 경로 재검증 → 실행 영수증 수집 → `verification::acceptance_gaps` → 독립 리뷰·재계획 → `goals::finish`.
+
+서브에이전트도 `tools/gateway::delegate`가 원본 Goal ID와 격리 메타를 자식 Session에 복제하고 `jobs::run_prompt`가 부모의 실제 worktree를 다시 검사한 뒤 실행합니다. 분리 작업공간이 없거나 메타 경로가 맞지 않으면 **원본 checkout으로 fallback하지 않습니다**. 독립 리뷰 체크포인트는 전과 같이 실도구 재실행 없이 검토만 재개합니다.
+
+`GoalConsole` → `GoalChanges` → `api/goals::changes` → `goal_workspace::changes`는 tracked/staged diff·untracked 파일명·게시 patch 해시를 보여줍니다. 실제 원본 반영은 `POST /api/goals/:id/worktree/promote`로만 요청할 수 있고, 엔진은 **목표 완료·다른 작업 없음·Git 기준 HEAD 동일·원본 작업공간 clean·미추적 파일 부재·512KB 이하 패치 SHA 일치·`git apply --check`**를 재확인한 뒤 `git apply`하고 영속화된 승인 영수증을 남깁니다. 새 파일이 미추적 상태라면 그 파일을 Git에 포함한 뒤 다시 검토해야 합니다. 별도 확인을 누른 `discard`는 격리 worktree만 제거하며, 이미 원본에 반영된 소스를 지우지 않습니다. 반영되지 않은 Goal 결과가 폐기되면 완료 상태를 다시 검토로 내립니다.
+
+`src/engine/goal_workspace.rs` 테스트는 실제 임시 Git repo에 worktree를 만들고, 네이티브 `workspace_write`가 원본이 아니라 격리 공간을 변경하는지, 절대경로 파일 도구가 거부되는지, 폐기 후 원본이 불변인지, 틀린 SHA의 게시가 거부되는지, 맞는 SHA로 명시적 원본 반영이 되는지 검증하도록 작성했습니다. 테스트 코드가 존재한다는 사실과 CI에서 테스트가 실제 통과했다는 사실은 구분합니다.
+
+**격리의 범위:** Git 파일 복사본 및 워크스페이스-relative 도구의 경계입니다. OS 프로세스, 외부 브라우저, 셸 명령 내부의 절대 경로는 강제 격리가 아니며 기존 사용자 승인에 맡깁니다. 여러 코딩 에이전트의 동시 쓰기 및 자동 conflict-resolve는 본 구현 범위가 아닙니다. 참고한 2026년 사례: [Claude Code 병렬 worktree 충돌 논의](https://github.com/anthropics/claude-code/issues/34645) (2026년 3월), [격리와 통합 레인 분석](https://blog.restatolabs.com/claude-code-git-parallel-workflows/) (2026년 8월).
