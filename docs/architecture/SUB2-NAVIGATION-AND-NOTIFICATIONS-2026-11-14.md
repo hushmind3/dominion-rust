@@ -6,7 +6,7 @@ Branch: `dominion-sub2`. Reconciliation source: `main` at `da78dd7e6712c80c2ab7b
 
 | Sidebar group | Visible entry | React entry | Existing API | Execution/data boundary | Verification |
 |---|---|---|---|---|---|
-| Workspace | Goals | `Goals.tsx` / `GoalConsole.tsx` | `/api/goals`, `/api/goals/:id/resume`, `/api/goals/:id/diff`, `/api/goals/:id/apply` | `engine/goals.rs`, `engine/goal_workspace.rs` | Explicit page + static API routing; no live-model claim |
+| Workspace | Goals | `Goals.tsx` / `GoalConsole.tsx` | `/api/goals`, `/api/goals/:id/steer`, `/api/goals/:id/resume`, `/api/goals/:id/diff`, `/api/goals/:id/apply` | `engine/goals.rs`, `engine/goal_workspace.rs` | Explicit page + static API routing; no live-model claim |
 | Workspace | Home | `Home.tsx` / `GoalConsole.tsx` | `/api/goals`, `/api/jobs`, `/api/status` | `engine/goals.rs`, `engine/jobs.rs`, `engine/goal_workspace.rs` | Static source |
 | Workspace | Chat | `Chat.tsx` | `/api/chat`, `/api/sessions`, `/api/approvals` | `engine/chat/runtime/turn.rs` / native/MCP tool calls | Static source |
 | Workspace | Group chat | `Rooms.tsx` | `/api/rooms`, `/api/rooms/:id/messages` | `engine/rooms.rs`, `engine/chat/room_context.rs` | Static source |
