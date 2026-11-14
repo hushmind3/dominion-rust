@@ -6007,6 +6007,46 @@ fn compat_mode_executes_a_bare_json_tool_call_from_a_weak_model() {
 }
 
 #[test]
+fn native_mode_repairs_explicit_small_model_json_tool_without_sdk_or_fake_evidence(){
+    let _serial=serial();
+    let (port,requests)=scripted_provider(|request|{
+        let messages=request["messages"].as_array().unwrap();
+        let saw_tool=messages.iter().any(|message|message["role"]=="tool");
+        if saw_tool {
+            vec![json!({"choices":[{"delta":{"content":"검증된 파일을 저장했습니다."},
+                "finish_reason":"stop"}]})]
+        }else{
+            // Weak local model does not populate native function_call frames.
+            // The native DOMINION harness must recover the *explicit*
+            // standalone tool request and dispatch it with normal approval.
+            vec![json!({"choices":[{"delta":{"content":
+                r#"{"tool":"workspace_write","args":{"path":"native-small.txt","content":"NATIVE-OK"}}"#},
+                "finish_reason":"stop"}]})]
+        }
+    });
+    let app=TestApp::new(port,"native");
+    app.post("/api/policy",&json!({"autoApproveAll":true}));
+    let session=app.post("/api/sessions",&json!({"title":"native-json-small-model"}));
+    let stream=app.chat(&json!({
+        "sessionId":session["id"],"input":"native-small.txt 파일을 만들어줘",
+        "autoLearning":false
+    }));
+    assert!(stream.contains("assistant_saved"),"{stream}");
+    assert!(stream.contains("tool_start"),"{stream}");
+    assert_eq!(std::fs::read_to_string(app._root.join("native-small.txt")).unwrap(),"NATIVE-OK");
+    let execution=app.get("/api/executions")[0].clone();
+    assert_eq!(execution["status"],"completed");
+    let operations=app.get(&format!("/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()));
+    assert_eq!(operations.as_array().unwrap().len(),1,
+        "repair must use one approved real file write, not a fabricated receipt");
+    assert_eq!(operations[0]["tool"],"workspace_write");
+    assert_eq!(operations[0]["status"],"completed");
+    assert!(requests.lock().unwrap().len()<=4,
+        "explicit recovery must not create an unbounded loop");
+}
+
+#[test]
 fn delegate_task_runs_a_real_child_agent_and_returns_its_result() {
     let _serial = serial();
     use std::sync::{Arc, Mutex};
