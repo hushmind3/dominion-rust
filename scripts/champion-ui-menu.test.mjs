@@ -24,6 +24,7 @@ const filmRetake=source('web/src/pages/video/FilmRetake.tsx')
 const videoApi=source('src/api/video.rs')
 const videoEngine=source('src/engine/video.rs')
 const filmEngine=source('src/engine/video/film.rs')
+const ltxEngine=source('src/engine/video/ltx.rs')
 const store=source('src/db.rs')
 
 test('one public connections sidebar item, retaining memory, RSI and champion goals',()=>{
@@ -121,5 +122,9 @@ test('paid cinematic retake runs through UI, SHA-bound owner API and deduplicate
  assert.match(filmEngine,/reuse_other_shots\(ctx,input,dir\)/)
  assert.match(filmEngine,/quality::inspect/)
  assert.match(filmEngine,/newPaidCallsThisRun/)
+ assert.match(ltxEngine,/paidSubmissionAttempts/)
+ assert.match(ltxEngine,/videoState":\{"inFlight":true/)
+ assert.match(videoEngine,/paidSubmissionAttempts":job\["paidSubmissionAttempts"\]/)
+ assert.match(video,/videoJob\.paidSubmissionAttempts/)
  assert.match(videoEngine,/clip_count > 1 && \(!technical_gate/)
 })
