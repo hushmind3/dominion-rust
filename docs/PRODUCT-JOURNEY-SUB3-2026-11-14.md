@@ -34,7 +34,7 @@
 | 기억 | 기존 범위/출처/편집 유지 | workflow session이 기존 의미학습 경로에 연결됨 | 기억 향상 수치 미측정 |
 | 목표 | 이전 최신 소스 검증/재개 개선 유지 | `goals.rs → verification.rs` | 현재 테스트 컴파일 참조 복구는 보수 유지보수 |
 | 자동화 | **새 반복 workflow 지원** | `Operations → collections → schedule_automations → enqueue_once` | 동일 슬롯 중복 등록 테스트; 실제 예약 운영 표본 필요 |
-| 활동 | 기존 실행/도구/감사 기록 유지 | `execution_operation`, `workflow.artifact_ready` 감사 이벤트 추가 | 통합 실행·과금 비교 화면은 다음 작업 |
+| 활동 | **새 영속 결과·실행 출처·토큰 영수증 확인** | `Operations.tsx → /api/workflow-artifacts → jobId/SHA/modelUsage` | 실제 데이터 조회; 원화 실청구 비교는 미구현 |
 | RSI | 기존 독립 평가·후손 구조 유지 | 모델 결과물의 출처 계측 가능 | 모델 주도 RSI 실증 없음 |
 | 설정 | 기존 정책/백업/관리 보존 | 워크플로 도구 호출의 승인 정책 재사용 | 백업 UI 직접 고도화 없음 |
 | 워크플로 | **원문 납품·재사용·증거 옵션·예산 게이트** | `workflows.rs → artifacts.rs → SQLite → UI` | 실모델 결과 품질/총원가 추가 측정 필요 |
@@ -46,3 +46,5 @@
 - 프론트 정적 연결 회귀: `scripts/sub3-connection-hub.test.mjs`에서 Agents→API→workflows→artifacts→automations→Home UI/엔진 경로 검증.
 - GitHub Actions: 새 HEAD 기준 Ubuntu/macOS 전체 Rust 테스트, Windows 테스트 바이너리 컴파일, 3OS 프론트 타입/빌드. **커밋별 CI 결론을 별도로 확인한다.**
 - 유료 실모델의 종단 간 실행, 사용자 시청 영상 품질, 독립 RSI 개선, 원화 실청구 절감률은 이번 코드만으로 실증한 것이 아니다. 저사양 로컬/클라우드 모델 선택 정책은 유지한다.
+
+**실행 정의 동결과 단계 ID**: 직접 시작하거나 자동화로 예약한 작업의 `input.definition`을 등록 시점에 저장한다. 워크플로 정의가 이후 수정·삭제돼도 기존 job은 동결된 단계를 사용한다. UI에서 저장하는 단계에 `uuid` ID를 부여하고 중복을 거부해 checkpoints/영수증의 출처가 흐려지지 않게 한다. `workflow.cancelled`와 `workflow.completed` 감사 이벤트는 실제 최종 상태로 분리한다.
