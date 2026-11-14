@@ -30,6 +30,7 @@ fn parallel_tool_messages<T>(
 #[cfg(test)]
 mod parallel_read_order_tests {
     use super::parallel_read_prefix_len;
+    use serde_json::json;
 
     #[test]
     fn parallel_reads_respect_first_write_barrier() {
