@@ -962,6 +962,12 @@ async fn run_resume(context: &JobContext, job: &Value) -> Result<Value, String> 
 
 fn schedule_automations(state: &AppState) {
     let now = chrono::Utc::now();
+    // One scan per tick, not O(automations × all historic jobs).
+    let blocked=state.store.all("job").into_iter()
+        .filter(|job|matches!(job["status"].as_str(),
+            Some("queued"|"running"|"needs_review")))
+        .filter_map(|job|job["input"]["automationId"].as_str().map(str::to_string))
+        .collect::<std::collections::HashSet<_>>();
     for automation in state.store.all("automation") {
         if automation.get("enabled").and_then(|value| value.as_bool()) != Some(true) {
             continue;
@@ -994,11 +1000,7 @@ fn schedule_automations(state: &AppState) {
         // Never run two overlapping instances of the same recurring task.
         // Do not advance nextAt while the previous invocation is unsettled:
         // on completion the scheduler will catch up with one new run.
-        if state.store.all("job").iter().any(|job|
-            job["input"]["automationId"]==automation_id
-            && matches!(job["status"].as_str(),Some("queued"|"running"|"needs_review"))) {
-            continue;
-        }
+        if blocked.contains(automation_id) {continue;}
         let key=format!("dominion:automation:{automation_id}:{next_at}");
         let hash=sha2::Sha256::digest(key.as_bytes());
         let mut bytes=[0u8;16];
@@ -1055,6 +1057,48 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn scheduled_workflow_is_frozen_duplicate_safe_and_never_overlaps(){
+        let state=temp_state();
+        state.store.put("agent",&json!({"id":"writer","name":"Writer"})).unwrap();
+        state.store.put("workflow",&json!({"id":"briefing","name":"Daily Brief",
+            "steps":[{"id":"step-1","agentId":"writer","prompt":"{{input}}"}]})).unwrap();
+        let due=(chrono::Utc::now()-chrono::Duration::minutes(2)).to_rfc3339();
+        state.store.put("automation",&json!({
+            "id":"daily-brief","enabled":true,"kind":"workflow",
+            "input":{"workflowId":"briefing","input":"produce summary"},
+            "nextAt":due,"intervalMinutes":1440,"confirmRecurringModelCosts":true
+        })).unwrap();
+        schedule_automations(&state);
+        let first=state.store.all("job");
+        assert_eq!(first.len(),1);
+        assert_eq!(first[0]["kind"],"workflow");
+        assert_eq!(first[0]["input"]["automationId"],"daily-brief");
+        assert_eq!(first[0]["input"]["definition"]["steps"][0]["prompt"],"{{input}}");
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),1);
+        // Even if an old clock tick is replayed, a queued attempt blocks it.
+        state.store.patch_if("automation","daily-brief","id",
+            &json!("daily-brief"),&json!({"nextAt":due})).unwrap();
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),1);
+        let id=first[0]["id"].as_str().unwrap();
+        state.store.patch_if("job",id,"status",&json!("queued"),
+            &json!({"status":"completed"})).unwrap();
+        let new_due=(chrono::Utc::now()-chrono::Duration::minutes(1)).to_rfc3339();
+        state.store.patch_if("automation","daily-brief","id",
+            &json!("daily-brief"),&json!({"nextAt":new_due})).unwrap();
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),2);
+        state.store.put("automation",&json!({
+            "id":"unapproved","enabled":true,"kind":"workflow",
+            "input":{"workflowId":"briefing","input":"another summary"},
+            "nextAt":due,"intervalMinutes":1440
+        })).unwrap();
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),2);
     }
 
     #[test]
