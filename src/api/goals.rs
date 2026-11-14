@@ -126,7 +126,10 @@ pub async fn resume_goal(
 /// read-only review replay; tool turns with uncertain external effects are
 /// skipped instead of repeated.
 fn resume_checkpoint(goal:&Value, previous_job:Option<&Value>)->(Value,u64,bool) {
-    let old_state=previous_job.map(|job|&job["goalState"]).unwrap_or(&Value::Null);
+    // Bind the fallback for the full function scope; borrowing a temporary
+    // serde_json::Value in unwrap_or would be dropped after this statement.
+    let empty_state=Value::Null;
+    let old_state=previous_job.map(|job|&job["goalState"]).unwrap_or(&empty_state);
     let completed=goal["iterations"].as_u64().unwrap_or(0);
     let prior_cursor=old_state["nextIteration"].as_u64().unwrap_or(0);
     let session=goal["sessionId"].as_str().unwrap_or("");
