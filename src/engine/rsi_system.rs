@@ -8,12 +8,12 @@ use std::{path::Path,fs};
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
     ("harness",&["src/engine/jobs.rs","src/engine/rsi_worktree.rs","src/engine/chat.rs","src/engine/decompose.rs"]),
-    ("agent_harness",&["src/engine/goals.rs","src/engine/goal_control.rs","src/api/goals.rs","src/engine/goals/receipts.rs"]),
+    ("agent_harness",&["src/engine/goals.rs","src/engine/goal_control.rs","src/engine/goal_workspace.rs","src/api/goals.rs","src/engine/goals/receipts.rs"]),
     ("memory",&["src/engine/memory.rs"]),
     ("multiagent",&["src/engine/rooms.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs","src/engine/chat/room_context.rs"]),
     ("video",&["src/engine/video.rs","src/api/video.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/procedure.rs"]),
-    ("tools",&["src/engine/tools.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
+    ("tools",&["src/engine/tools.rs","src/engine/tools/batch.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
     ("improvement_methods",&["src/engine/rsi_open_program.rs","src/engine/rsi_principle_lab.rs","src/engine/rsi_meta_controller.rs","src/engine/rsi_meta_controller/peer_transfer.rs","src/engine/rsi_meta_controller/guidance.rs","src/engine/rsi_meta_controller/observations.rs","src/engine/rsi_recursive_discovery.rs","src/engine/rsi_evolve.rs","src/engine/rsi_mutation.rs","src/engine/rsi_system.rs","src/engine/rsi_successor_productivity.rs","src/engine/rsi_edit_genome.rs","src/engine/rsi_rule_tournament.rs"]),
     ("models",&["src/engine/rsi_model_ecology.rs","src/engine/models.rs","src/engine/cli_model.rs","src/engine/llm.rs","src/engine/router.rs","src/engine/gateway.rs"]),
     ("frontend",&["web/src","web/src/App.tsx","web/src/main.tsx"])
@@ -89,6 +89,7 @@ fn source_role(path:&str)->&'static str {
         return "improvement_methods";
     }
     if lower=="src/engine/goals.rs" || lower=="src/engine/goal_control.rs"
+        || lower=="src/engine/goal_workspace.rs"
         || lower=="src/api/goals.rs"
         || lower.starts_with("src/engine/goals/"){return "agent_harness";}
     // Full-system RSI includes the shipping media engine and room harness,
@@ -105,6 +106,7 @@ fn source_role(path:&str)->&'static str {
     // Model installers, downloaders and protocol adapters remain the MODEL
     // capability after being split into runtime submodules. Do not silently
     // mis-credit them as generic algorithms or chat-UI changes.
+    if lower.starts_with("src/engine/tools/"){return "tools";}
     if lower.starts_with("src/engine/models/")
         || lower=="src/engine/chat/provider.rs"
         || lower.starts_with("src/engine/chat/provider/"){return "models";}
