@@ -16,13 +16,15 @@ mod shot_plan;
 mod frame_anchor;
 #[path = "video/kling4.rs"]
 mod kling4;
+#[path = "video/quality.rs"]
+mod quality;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 pub fn config(state: &AppState) -> Value {
-    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayModel":"kling3.0_pro","runwayAudio":true,"runwayContinuityFrames":true});
+    let mut value = json!({"id":"default","engine":"native","duration":15,"aspectRatio":"9:16","comfyUrl":"","comfyWorkflow":null,"workflowDir":"","outputDir":"","ffmpegPath":"","providerId":"","model":"","useModel":false,"runwayModel":"kling3.0_pro","runwayAudio":true,"runwayContinuityFrames":true,"runwayQualityGate":true});
     if let Some(saved) = state.store.get("video_config", "default") {
         if let Some(map) = saved.as_object() {
             for (k, v) in map {
