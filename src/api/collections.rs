@@ -286,10 +286,11 @@ pub async fn action(
 
     match (kind.as_str(), action.as_str()) {
         ("memory", "edit") => {
-            if body.as_object().is_none_or(|fields|fields.len()!=2
-                || !fields.contains_key("text") || !fields.contains_key("expectedText")) {
+            if body.as_object().is_none_or(|fields|fields.len()!=3
+                || !fields.contains_key("text") || !fields.contains_key("expectedText")
+                || !fields.contains_key("expectedRevision")) {
                 return (StatusCode::BAD_REQUEST,Json(json!({
-                    "error":"text와 expectedText만 보내세요."
+                    "error":"text, expectedText, expectedRevision만 보내세요."
                 }))).into_response();
             }
             let Some(expected) = body["expectedText"].as_str() else {
@@ -308,7 +309,12 @@ pub async fn action(
                     "error":"기억을 찾을 수 없습니다."
                 }))).into_response();
             }
-            match state.store.edit_manual_memory(&id,expected,text) {
+            let Some(revision)=body["expectedRevision"].as_u64() else {
+                return (StatusCode::BAD_REQUEST,Json(json!({
+                    "error":"수정 전에 확인한 기억 revision이 필요합니다."
+                }))).into_response();
+            };
+            match state.store.edit_manual_memory(&id,expected,revision,text) {
                 Some(updated) => {
                     state.store.audit("memory.owner_edited",json!({
                         "id":id,"scope":updated["scope"],"revision":updated["revision"]
@@ -390,7 +396,7 @@ mod owner_memory_edit_tests {
         })).unwrap();
         let uri=||OriginalUri("/api/memories/manual/edit".parse().unwrap());
         let changed=action(State(state.clone()),uri(),Json(json!({
-            "text":"after","expectedText":"before"
+            "text":"after","expectedText":"before","expectedRevision":0
         }))).await;
         assert_eq!(changed.status(),StatusCode::OK);
         let stored=state.store.get("memory","manual").unwrap();
@@ -405,12 +411,12 @@ mod owner_memory_edit_tests {
         assert_eq!(stored["revision"],1);
         assert_eq!(stored["editHistory"].as_array().unwrap().len(),1);
         let stale=action(State(state.clone()),uri(),Json(json!({
-            "text":"overwrite","expectedText":"before"
+            "text":"overwrite","expectedText":"before","expectedRevision":0
         }))).await;
         assert_eq!(stale.status(),StatusCode::CONFLICT);
         assert_eq!(state.store.get("memory","manual").unwrap()["text"],"after");
         let forged=action(State(state.clone()),uri(),Json(json!({
-            "text":"hacked","expectedText":"after","scope":"shared"
+            "text":"hacked","expectedText":"after","expectedRevision":1,"scope":"shared"
         }))).await;
         assert_eq!(forged.status(),StatusCode::BAD_REQUEST);
         let generic=save(State(state.clone()),
@@ -434,7 +440,7 @@ mod owner_memory_edit_tests {
             })).unwrap();
             let path=format!("/api/memories/{id}/edit");
             let reply=action(State(state.clone()),OriginalUri(path.parse().unwrap()),
-                Json(json!({"text":"changed","expectedText":"original"}))).await;
+                Json(json!({"text":"changed","expectedText":"original","expectedRevision":0}))).await;
             assert_eq!(reply.status(),StatusCode::CONFLICT);
             assert_eq!(state.store.get("memory",id).unwrap()["text"],"original");
         }
