@@ -52,6 +52,26 @@ class ExactPatchContract(unittest.TestCase):
                                 root / "cache", root / "task", True)
             self.assertFalse((root / "task").exists())
 
+    def test_official_score_requires_exact_cohort_and_matching_resolved_evidence(self):
+        cohort={"x","y","z"}
+        report={
+            "schema_version":2,"submitted_ids":["x","y","z"],
+            "resolved_ids":["x","z"],"resolved_instances":2,
+        }
+        result=runner.official_score(report,cohort)
+        self.assertEqual(result["officialResolved"],2)
+        self.assertEqual(result["officialDenominator"],3)
+        self.assertAlmostEqual(result["officialResolvedRate"],2/3,places=6)
+        for field,wrong in (
+            ("submitted_ids",["x","y"]),
+            ("resolved_ids",["x","not-in-cohort"]),
+            ("resolved_instances",100),
+            ("schema_version",999),
+        ):
+            invalid={**report,field:wrong}
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                runner.official_score(invalid,cohort)
+
     def test_swe_bench_verified_is_pinned_not_user_label(self):
         self.assertEqual(runner.DATASET, "princeton-nlp/SWE-bench_Verified")
         self.assertNotEqual(runner.DATASET, "princeton-nlp/SWE-bench_Lite")
