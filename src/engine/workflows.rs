@@ -1,5 +1,5 @@
 use crate::engine::jobs::JobContext;
-use crate::engine::{chat::TurnRequest, run_quiet};
+use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification};
 use serde_json::{json, Value};
 
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
@@ -119,6 +119,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             .and_then(|value| value.as_str())
             .unwrap_or("");
         let prompt = render(template, &payload, previous);
+        let checks=step.get("acceptanceChecks").cloned().unwrap_or_else(||json!([]));
+        verification::validate_criteria(&checks)?;
+        if checks.as_array().is_some_and(|rows|rows.len()>8){
+            return Err("워크플로 단계별 검증 조건은 최대 8개입니다.".into());
+        }
+        let prompt=if checks.as_array().is_some_and(|rows|!rows.is_empty()){
+            format!("{prompt}\n\n[단계 산출물 검증 조건 · 실제 도구 실행과 검증 필요]\n{}",
+                serde_json::to_string_pretty(&checks).unwrap_or_default())
+        }else{prompt};
         if prompt.trim().is_empty() {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
@@ -153,21 +162,63 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
-        let message = match run_quiet(state, &request).await {
+        let before_usage=state.store.session_usage(&session_id);
+        let (turn,stats)=run_quiet_outcome(state, &request).await;
+        let message = match turn {
             Ok(Some(message)) => message,
             Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
             Err(_) if state.is_cancelled(&session_id) => {
-                return Ok(
-                    json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
-                )
+                return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                    "outputs":outputs,"status":"cancelled"}))
             }
             Err(error) => return Err(error),
         };
+        // Side effects are an execution truth, not a model claim. Never hand
+        // uncertain external work to the next agent as a finished result.
+        let unresolved=state.store.session_has_uncertain_effects(&session_id)?;
+        let gaps=verification::acceptance_gaps_for_workspace(
+            state,&state.config.workspace,&prompt,&checks,&stats.evidence);
+        if unresolved || !gaps.is_empty(){
+            let failures=if unresolved {
+                vec!["외부 도구 결과가 미확정입니다. 실행 이력을 직접 점검하세요.".to_string()]
+            }else{gaps};
+            context.checkpoint(json!({
+                "workflowState":{"sessionId":session_id,"outputs":outputs,
+                    "definition":definition,"inFlight":false,
+                    "failedStepIndex":index,"verificationGaps":failures},
+                "stepIndex":index,"stepTotal":total,
+            }))?;
+            state.store.audit("workflow.step_needs_review",json!({
+                "workflowId":workflow_id,"jobId":context.job_id,
+                "stepIndex":index,"gaps":failures,"unknownEffects":unresolved
+            }));
+            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                "outputs":outputs,"status":"needs_review",
+                "failedStepIndex":index,"verificationGaps":failures}));
+        }
+        let after_usage=state.store.session_usage(&session_id);
+        let usage_delta=|key:&str|after_usage[key].as_u64().unwrap_or(0)
+            .saturating_sub(before_usage[key].as_u64().unwrap_or(0));
+        let proof=json!({
+            "status":if checks.as_array().is_some_and(|rows|!rows.is_empty()){
+                "verified"
+            }else{"unchecked"},
+            "criteriaCount":checks.as_array().map_or(0,Vec::len),
+            "operationIds":stats.evidence.iter().filter_map(|v|v["id"].as_str())
+                .collect::<Vec<_>>(),
+            "toolErrorCount":stats.tool_errors.len(),
+            "modelCalls":usage_delta("calls"),
+            "totalTokens":usage_delta("totalTokens"),
+            "usageEstimated":after_usage["estimatedCalls"].as_u64().unwrap_or(0)>
+                before_usage["estimatedCalls"].as_u64().unwrap_or(0),
+        });
         outputs.push(json!({
             "stepId": step.get("id"),
             "name": step_name,
+            "agentId":step.get("agentId"),
             "content": message.get("content").cloned().unwrap_or(json!("")),
             "messageId": message.get("id"),
+            "verification":proof,
         }));
 
         context.checkpoint(json!({
@@ -233,6 +284,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "workflowId": workflow_id,
         "sessionId": session_id,
         "outputs": outputs,
+        "verificationSummary":{
+            "verifiedSteps":outputs.iter().filter(|v|v["verification"]["status"]=="verified").count(),
+            "uncheckedSteps":outputs.iter().filter(|v|v["verification"]["status"]=="unchecked").count(),
+            "totalTokensRecorded":state.store.session_usage(&session_id)["totalTokens"],
+            "usage":state.store.session_usage(&session_id),
+        },
         "status": status,
     }))
 }
