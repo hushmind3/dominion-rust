@@ -8,7 +8,14 @@ pub(super) fn record(ctx:&JobContext,id:&str,status:&str,goal:&Value,evidence:&[
     let receipt_id=format!("goal-receipt:{id}:{}",ctx.job_id);
     if let Some(existing)=ctx.state.store.get("goal_receipt",&receipt_id){return existing;}
     let session=goal["sessionId"].as_str().unwrap_or("");
-    let usage=if session.is_empty(){Value::Null}else{ctx.state.store.session_usage(session)};
+    let (usage,usage_error)=if session.is_empty(){
+        (Value::Null,Some("goal session missing".to_owned()))
+    }else{
+        match ctx.state.store.session_tree_usage(session){
+            Ok(value)=>(value,None),
+            Err(error)=>(Value::Null,Some(error))
+        }
+    };
     let action_count=evidence.iter().filter(|item|verification::is_action_evidence(item)).count();
     let criteria_count=goal["acceptanceChecks"].as_array().map(Vec::len).unwrap_or(0);
     let artifact_count=deliverables["files"].as_array().map(Vec::len).unwrap_or(0);
@@ -38,6 +45,8 @@ pub(super) fn record(ctx:&JobContext,id:&str,status:&str,goal:&Value,evidence:&[
             .map(|rows|rows.iter().filter(|row|row["skippedForDeterministicGap"]==true).count())
             .unwrap_or(0),
         "planScore":goal["planScore"],"usage":usage,
+        "usageScope":"goal_session_tree_including_delegated_agents",
+        "usageComplete":usage_error.is_none(),"usageError":usage_error,
         "usageIncludesGoalHelperCalls":true,
         "providerBillingVerified":false,
         "usageCaveat":"Provider usage may be estimated or absent. Paid KRW and local compute power are not independently measured.",
