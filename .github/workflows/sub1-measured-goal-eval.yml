@@ -1,12 +1,18 @@
-name: Sub1 measured real-model goal completion
+name: Sub1 real-model harness comparison
 
-# Trigger once when this workflow is added; manual reruns are supported.
-# Subsequent source commits do NOT silently start long model inference.
+# Manual opt-in only: downloading the model and running CPU inference uses
+# GitHub runner minutes and energy even when the provider API bill is zero.
 on:
-  push:
-    branches: [dominion-sub1]
-    paths: [.github/workflows/sub1-measured-goal-eval.yml]
   workflow_dispatch:
+    inputs:
+      backend:
+        description: "Choose the exact harness; same model, two tasks, private oracle"
+        required: true
+        default: dominion_goals
+        type: choice
+        options:
+          - dominion_goals
+          - qwen_sdk
 
 permissions:
   contents: read
@@ -28,6 +34,7 @@ jobs:
       DOMINION_BASE: http://127.0.0.1:44329
       BENCH_MODEL: qwen3:4b-instruct-2507-q4_K_M
       BENCH_PROVIDER_ID: sub1-local-eval
+      BENCH_EXECUTOR: ${{ inputs.backend || 'dominion_goals' }}
       BENCH_TASK_TIMEOUT_MS: "480000"
       OLLAMA_CONTEXT_LENGTH: "8192"
       OLLAMA_NUM_PARALLEL: "1"
@@ -68,6 +75,15 @@ jobs:
           ollama pull "$BENCH_MODEL"
           ollama list
 
+      - name: Install official Qwen-Agent SDK only for opted-in comparison
+        if: inputs.backend == 'qwen_sdk'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/sdkvenv"
+          "$RUNNER_TEMP/sdkvenv/bin/python" -m pip install 'qwen-agent>=0.0.26,<0.1'
+          echo "DOMINION_QWEN_SDK_PYTHON=$RUNNER_TEMP/sdkvenv/bin/python" >> "$GITHUB_ENV"
+
       - name: Start a benchmark-marked isolated engine
         shell: bash
         run: |
@@ -91,7 +107,7 @@ jobs:
           curl -fsS "$DOMINION_BASE/api/health" >/dev/null
           curl -fsS "$DOMINION_BASE/api/benchmark/identity"
 
-      - name: Measure actual goal tool turns against private host oracle
+      - name: Compare selected actual agent harness against the same host oracle
         run: |
           set -euo pipefail
           node scripts/sub1-measured-goal-eval.mjs
@@ -101,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sub1-measured-goals-${{ github.run_id }}-${{ github.run_attempt }}
+          name: sub1-measured-${{ inputs.backend }}-${{ github.run_id }}-${{ github.run_attempt }}
           retention-days: 30
           if-no-files-found: warn
           path: |
