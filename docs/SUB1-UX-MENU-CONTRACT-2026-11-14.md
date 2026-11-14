@@ -1,10 +1,10 @@
-# Sub1 프론트 14메뉴·연결 통합·자기개선 비방해 계약 (2026-11-14)
+# Sub1 프론트 15메뉴·연결 통합·자기개선 비방해 계약 (2026-11-14)
 
 > 판정 기준: [공통지침](../README.md)의 전체 제품 완성도. 정적 코드 연결과 CI 타입/빌드 검증을 실제 브라우저·실모델 완수 검증으로 혼동하지 않습니다. 현재 변경의 주목적은 최신 main의 통합 메뉴를 Sub1에 계승하고 전역 RSI 추천 알림을 억제하는 것입니다.
 
-## 1. 4개 카테고리·14개 실제 노출 메뉴
+## 1. 4개 카테고리·15개 실제 노출 메뉴
 
-`web/src/components/WorkspaceShell.tsx::navigation`에 4개 그룹·14개 노출 항목. 옛 `extensions`/`capabilities`는 사이드바에서는 제거하되 `web/src/App.tsx::locationState`에서 옛 해시 URL을 `connections`의 해당 탭으로 매핑합니다. 검색 명령 팔레트도 `navigation`에서 직접 구축하므로 중복 항목이 사라집니다.
+`web/src/components/WorkspaceShell.tsx::navigation`에 4개 그룹·15개 노출 항목. 옛 `extensions`/`capabilities`는 사이드바에서는 제거하되 `web/src/App.tsx::locationState`에서 옛 해시 URL을 `connections`의 해당 탭으로 매핑합니다. 검색 명령 팔레트도 `navigation`에서 직접 구축하므로 중복 항목이 사라집니다.
 
 | 카테고리 | 메뉴 | 프론트 → API → 실행/상태 근거 | 확인 및 추가 검증 |
 |---|---|---|---|
@@ -13,6 +13,7 @@
 | 작업공간 | 그룹대화 | `pages/Rooms.tsx` → `/api/rooms` 및 메시지/실행/중지 → `api/rooms.rs` → `engine/rooms.rs` | 참가자/비용/중단·재개 실사용 추가 검증 |
 | 작업공간 | 모델 | `pages/Models.tsx` → `/api/providers`, `/api/model-library/*` → `api/providers.rs`, `api/models.rs` | Provider/OAuth/로컬 런타임 실연결 추가 검증 |
 | 작업공간 | 에이전트 | `pages/Agents.tsx` → `/api/agents` → `api/agents.rs` → `engine/personas.rs` | 신규 생성·삭제/역할 실행 실사용 추가 검증 |
+| 작업공간 | 자율 목표 | `pages/Goals.tsx` → `workflows/GoalConsole.tsx` → `/api/goals`, `/api/goals/:id/cancel`, `/api/goals/:id/resume` → `api/goals.rs` → `engine/goals.rs`, `engine/goal_control.rs` | 실제 사용자 승인 재개/취소/토큰 상한·체크포인트 테스트 추가; 실모델 장기 완수 별도 검증 |
 | 작업공간 | 영상 | `pages/Video.tsx` → `/api/video/jobs`, `/api/video/config` → `api/video.rs` → `engine/video.rs` | FFmpeg 파일/요금/재생성 영수증 실검증 추가 |
 | 확장·연결 | 연결 채널 | `pages/Connections.tsx` → `channels`·`oauth`·`mcp`·`skills`·`capabilities` API → `api/{channels,oauth,collections,extensions,system}.rs` | 3개 탭·설치/계정/실행 경로 정적 연결, 실제 연결 실험 별도 |
 | 확장·연결 | 기억 | `pages/Memory.tsx` → `/api/memories`, `/api/memories/:id/edit` → `api/collections.rs` → `engine/memory.rs` → 채팅 컨텍스트 | 수동 기억 수정 범위/동시수정/출처 불변 테스트 추가 |
@@ -47,10 +48,17 @@
 
 ## 5. 검증 분류 및 명령
 
-- **정적 계약 검사**: `node scripts/verify-frontend-navigation.mjs` (14개 메뉴/3탭, API 경로, 구주소, 전역 RSI 알림 미탑재, 메모리 API 수정 경로). CI의 `npm run typecheck --prefix web`, `npm run build --prefix web`, `cargo test --release`와 함께 실행됩니다.
+- **정적 계약 검사**: `node scripts/verify-frontend-navigation.mjs` (15개 메뉴/3탭, API 경로, 구주소, 전역 RSI 알림 미탑재, 메모리 API 수정 경로). CI의 `npm run typecheck --prefix web`, `npm run build --prefix web`, `cargo test --release`와 함께 실행됩니다.
 - **실제 브라우저 미완료 항목**: 3탭 실제 클릭, 기존 URL 직접 접근, MCP 설치/삭제/실행, OAuth 리다이렉트, 기억 수정-새로고침, 15초 이상 대기 시 RSI 추천 팝업 미발생. 이 문서와 소스 검사는 브라우저 실험 결과가 아닙니다.
 - **실제 과금/RSI 메타 계승**은 별도 운영 측정이 필요합니다. 자기개선 성공 알림·품질 상승을 임의로 생성하지 않습니다.
 
 ### 실브라우저 UI 계약 시나리오 (수동 실행)
 
 `web/tests/connections.browser.mjs`에서 Chromium으로 실제 클릭·탭 selected 상태/URL/옛 북마크/수동 기억 수정 성공을 테스트하고, 채팅 화면을 이전 제안 폴링 주기인 15초보다 오래 열어 자기개선 자동 팝업과 네이티브 alert 미발생을 감시합니다. 서버/API는 deterministic stub이라 MCP 프로세스 연결이나 실제 과금/RSI 채택의 증거는 아닙니다. `.github/workflows/sub1-ui-browser-smoke.yml`은 수동 실행 전용이며 GitHub Actions의 일반 push CI에 브라우저 설치 부하를 추가하지 않습니다.
+
+## 6. 재심사 반영 후 기술 검증 경계
+
+- **원자적 기억 수정:** `src/db.rs::Store::edit_manual_memory`가 수동 등록·활성 상태·이전 텍스트 일치를 한 SQLite 트랜잭션에서 검사하고, 수정 및 감사를 함께 커밋합니다. `src/api/collections.rs`는 API 오류 코드를 적절히 매핑합니다. 2개 경쟁 쓰기 중 1개만 성공해야 합니다.
+- **독립 목표 작업공간:** `pages/Goals.tsx`는 `GoalConsole`을 재사용합니다. `#/goals`에서 목표 생성·계획 수정·검증·격리 Git diff·명시적 중단·검토 후 재개 동선이 열립니다. `needs_review/failed`일 때 사용자가 외부 효과를 확인했다고 승인해야 새 작업이 만들어집니다. 기존 불확실한 in-flight 작업을 재실행하지 않고, 마지막 확정 iteration부터 다시 살핍니다.
+- **계획·검토 비용:** `GoalControl`은 `llm::complete_for_session`으로 측정되는 사용량을 goal session에 연결하고 관측된 토큰 한도에 도달한 경우 후속 helper 호출을 거절합니다. 비보고 토큰·현재 호출 초과는 별도 문제입니다.
+- **CI 경계:** 이전 실패는 826개 성공 후 Chrome CDP 원격 포트 실패에서 발생했습니다. 실제 브라우저 실험은 명시적 opt-in으로 남겨 일반 Rust CI 환경 오류를 피하고, 별도 Playwright 시나리오로 사용자 UI 동작을 검증하도록 했습니다.
