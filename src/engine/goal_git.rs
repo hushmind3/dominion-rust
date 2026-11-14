@@ -218,6 +218,36 @@ pub(crate) async fn reviewed_patch(state:&AppState,id:&str)->Result<Value,String
             && !matches!(goal["status"].as_str(),Some("queued"|"running")),
         "notice":"Preview digest binds exact Git patch bytes; untracked files are not silently omitted."}))
 }
+/// Untruncated, hash-bound Git patch from a STOPPED isolated task.
+/// External SWE-bench graders need exact patch bytes; display-only /diff
+/// intentionally clips at LIMIT and must never be used for evaluation.
+/// Untracked files require separate review and are not silently dropped.
+pub(crate) async fn export_patch(state:&AppState,id:&str)->Result<Value,String>{
+    let goal=state.store.get("goal",id).ok_or("Goal not found")?;
+    if goal["isolateWorktree"]!=true{
+        return Err("Patch export requires an isolated goal worktree".into());
+    }
+    if !matches!(goal["status"].as_str(),
+        Some("completed"|"needs_review"|"failed"|"cancelled")){
+        return Err("Patch is not stable while the goal is running".into());
+    }
+    let work=checked_path(state,id,&goal)?;
+    let base=goal["gitWorktree"]["baseCommit"].as_str()
+        .filter(|s|s.len()==40&&s.bytes().all(|c|c.is_ascii_hexdigit()))
+        .ok_or("Missing frozen source commit")?;
+    let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
+    if !untracked.trim().is_empty(){
+        return Err("Untracked generated files are not part of a complete Git diff".into());
+    }
+    let bytes=full_patch(&work,base).await?;
+    let patch=String::from_utf8(bytes.clone())
+        .map_err(|_|"Non-UTF8 patch cannot be exported as JSON".to_string())?;
+    Ok(json!({"goalId":id,"baseCommit":base,
+        "modelPatch":patch,"bytes":bytes.len(),"sha256":digest(&bytes),
+        "complete":true,"untrackedFiles":0,
+        "source":"isolated_git_binary_diff_after_terminal_goal_v1"}))
+}
+
 /// The owner passes a digest from /diff. No force, reset, checkout or shell.
 pub(crate) async fn apply_reviewed(state:&AppState,id:&str,expected:&str)->Result<Value,String>{
     if expected.len()!=64||!expected.bytes().all(|b|b.is_ascii_hexdigit()){
