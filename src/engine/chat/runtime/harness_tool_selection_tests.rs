@@ -10,13 +10,15 @@ use super::*;
         assert!(explicit_native_tool_envelope(
             r#"{"name":"workspace_replace","arguments":{"path":"x"}}"#));
         assert!(explicit_native_tool_envelope(
-            "```json\n{\\"name\\":\\"workspace_write\\",\\"arguments\\":{}}\n```"));
+            r#"```json
+{"name":"workspace_write","arguments":{}}
+```"#));
         assert!(!explicit_native_tool_envelope("Here is a sample: <tool_call>{}</tool_call>"));
         assert!(!explicit_native_tool_envelope("The file is saved."));
         assert!(!explicit_native_tool_envelope(
             r#"{"status":"completed","description":"workspace_write"}"#));
         assert!(!explicit_native_tool_envelope(
-            "Example: {\\"tool\\":\\"shell_exec\\",\\"arguments\\":{}}"));
+            r#"Example: {"tool":"shell_exec","arguments":{}}"#));
     }
 
     #[test]

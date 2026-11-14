@@ -1199,6 +1199,7 @@ pub(super) async fn run_turn_body(
             );
         }
         let explicit_native_call=acceptance.is_some() &&
+            request.tools_execution_enabled && !round_tools.is_empty() &&
             round_provider.tool_mode=="native" &&
             super::tool_catalog::explicit_native_tool_envelope(&completion.content);
         if completion.tool_calls.is_empty()
@@ -1214,8 +1215,14 @@ pub(super) async fn run_turn_body(
                 .filter(|name| !name.is_empty())
                 .map(str::to_string)
                 .collect::<std::collections::HashSet<_>>();
-            let (parsed, cleaned) =
-                super::protocol::parse_text_tool_calls_known(&completion.content, &known);
+            // Empty allowlist is NOT an unrestricted namespace. Never turn
+            // an arbitrary JSON answer into a tool call when no tool was
+            // advertised to this model round.
+            let (parsed, cleaned) = if known.is_empty() {
+                (Vec::new(),completion.content.clone())
+            } else {
+                super::protocol::parse_text_tool_calls_known(&completion.content, &known)
+            };
             if !parsed.is_empty() {
                 completion.content = cleaned;
                 completion.tool_calls = parsed
@@ -1240,7 +1247,7 @@ pub(super) async fn run_turn_body(
                     }));
                     messages.push(json!({"role":"system",
                         "content":format!(
-                            "방금 도구 호출 텍스트를 실제 허용 도구 형식으로 해석할 수 없었습니다. 이번에는 제공된 도구 중 하나만 골라 <tool_call>{{\\\"name\\\":\\\"TOOL\\\",\\\"arguments\\\":{{...}}}}</tool_call> 형식으로 호출하세요. 텍스트로 완료를 주장하지 마세요. 현재 허용 도구: {}",
+                            r#"방금 도구 호출 텍스트를 실제 허용 도구 형식으로 해석할 수 없었습니다. 이번에는 제공된 도구 중 하나만 골라 <tool_call>{{"name":"TOOL","arguments":{{...}}}}</tool_call> 형식으로 호출하세요. 텍스트로 완료를 주장하지 마세요. 현재 허용 도구: {}"#,
                             known.iter().cloned().collect::<Vec<_>>().join(", ")
                         )
                     }));
