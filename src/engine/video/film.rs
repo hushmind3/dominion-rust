@@ -134,7 +134,11 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
     let planned=job["input"]["render"]["film"]["clips"].as_array()
         .ok_or("영상 장면 계획이 없습니다.")?;
     let mut clips=Vec::new();
-    let mut unknown=false;
+    // A paid LTX submission can be accepted remotely before its local MP4
+    // exists. Source-level inFlight means another paid side effect is still
+    // unresolved; never infer a cheap "missing shot" from absence of bytes.
+    let pending_remote=job["videoState"]["inFlight"]==true;
+    let mut unknown=pending_remote;
     let mut missing=0u64;
     for (index,item) in planned.iter().enumerate(){
         let clip_dir=root.join(format!("clip-{index:02}"));
@@ -162,7 +166,7 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
     for (index,item) in clips.iter_mut().enumerate() {
         let target_exists=item["isAvailable"]==true;
         let others_unknown=unknown_indices.iter().any(|other|*other!=index);
-        item["canRetake"]=json!(terminal&&target_exists&&!others_unknown);
+        item["canRetake"]=json!(terminal&&target_exists&&!others_unknown&&!pending_remote);
         item["expectedPaidCalls"]=json!(1+missing);
     }
     Ok(json!({"jobId":id,"status":job["status"],"film":true,
