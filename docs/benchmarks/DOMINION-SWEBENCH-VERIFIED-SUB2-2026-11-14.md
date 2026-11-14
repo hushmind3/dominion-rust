@@ -83,3 +83,22 @@ checks cannot silently delete an actual prediction. Known grader failures
 remain in per-instance reports. No cost in KRW is fabricated when model
 billing rates and provider invoices are unknown; the report stores measured
 total tokens including unsuccessful tasks instead.
+
+
+## Tool and failure-recovery accounting
+
+The runner now queries the live native Rust engine's persisted
+GET /api/executions (paginated) and GET /api/executions/:id/operations
+for each completely isolated task session. It derives actual tool call
+counts from operation IDs, not model assertions, and records completed,
+failed, unknown-outcome, and independently verified calls separately.
+Missing operation data remains null instead of claiming zero usage.
+
+Goal receipts expose actual iterations, replan count, productive/
+unproductive turns and resolved check counts. The report's
+officialRecoveryRate means **officially resolved tasks among instances
+with at least one observed tool error**, not "model apologized and tried
+again"; without official grading or complete operation receipts it is
+unavailable. Both failed tasks and successful tasks contribute to
+tool calls and tokens per officially resolved task. Provider billing KRW
+remains null unless actual billing data is independently supplied.

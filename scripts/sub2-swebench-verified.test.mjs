@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskPublicView,prediction,summarize,verifyManifest} from './sub2-swebench-verified.mjs';
+import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger} from './sub2-swebench-verified.mjs';
 const issue={
  instance_id:'django__django-10000',
  repo:'django/django',
@@ -50,4 +50,34 @@ test('success count stays null without the official Docker evaluator',()=>{
  assert.equal(final.tokensPerOfficialResolution,1000);
  assert.equal(final.actualBilledKRW,null);
  assert.equal(summarize([...rows,{patchBytes:0,usage:null}]).tokensPerGeneratedPatch,null);
+});
+
+test('tool calls use persisted Rust operation IDs; failed and unknown calls count',()=>{
+  const rows=[
+    {id:'op-1',status:'completed',toolReceipt:{verified:true},effectState:'verified'},
+    {id:'op-2',status:'failed',result:{outcomeUnknown:true},effectState:'effect_unknown'},
+    {id:'op-3',status:'completed',toolReceipt:{verified:false},effectState:'applied'},
+  ];
+  const summary=toolLedger(rows);
+  assert.deepEqual(summary,{
+    total:3,completed:2,failed:1,unknown:1,verified:1,blocked:0,recovered:false,
+  });
+  assert.deepEqual(executionLedger([{operations:rows.slice(0,2)},{operations:rows.slice(2)}]),summary);
+  assert.throws(()=>toolLedger([...rows,rows[0]]),'reusing one operation ID is not a new tool call');
+  assert.throws(()=>executionLedger([{operations:null}]),'missing ledger cannot be zero calls');
+});
+test('only official grader can certify recovery and tool cost per solved task',()=>{
+  const trial=[
+    {usage:{totalTokens:100},toolLedger:{total:3,failed:1,unknown:0},officialSolved:true},
+    {usage:{totalTokens:300},toolLedger:{total:7,failed:2,unknown:1},officialSolved:false},
+    {usage:{totalTokens:200},toolLedger:{total:2,failed:0,unknown:0},officialSolved:true},
+  ];
+  const report=summarize(trial);
+  assert.equal(report.toolCalls,12);
+  assert.equal(report.toolErrors,3);
+  assert.equal(report.unknownEffects,1);
+  assert.equal(report.toolCallsPerOfficialResolution,6);
+  assert.equal(report.officialRecoveryRate,0.5);
+  assert.equal(summarize(trial.map(row=>({...row,officialSolved:null}))).officialRecoveryRate,null);
+  assert.equal(summarize([...trial,{usage:null,toolLedger:null}]).toolCalls,null);
 });

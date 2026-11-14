@@ -64,10 +64,60 @@ export function summarize(rows){
       && rows.every(x=>typeof x.officialSolved==='boolean')
       && rows.some(x=>x.officialSolved)
       ?tokens/rows.filter(x=>x.officialSolved).length:null,
+    toolCalls:total>0&&rows.every(row=>Number.isSafeInteger(row.toolLedger?.total))
+      ?rows.reduce((sum,row)=>sum+row.toolLedger.total,0):null,
+    toolErrors:total>0&&rows.every(row=>Number.isSafeInteger(row.toolLedger?.failed))
+      ?rows.reduce((sum,row)=>sum+row.toolLedger.failed,0):null,
+    unknownEffects:total>0&&rows.every(row=>Number.isSafeInteger(row.toolLedger?.unknown))
+      ?rows.reduce((sum,row)=>sum+row.toolLedger.unknown,0):null,
+    toolCallsPerOfficialResolution:total>0
+      &&rows.every(row=>Number.isSafeInteger(row.toolLedger?.total))
+      &&rows.every(row=>typeof row.officialSolved==='boolean')
+      &&rows.some(row=>row.officialSolved)
+      ?rows.reduce((sum,row)=>sum+row.toolLedger.total,0)
+        /rows.filter(row=>row.officialSolved).length:null,
+    officialRecoveryRate:total>0
+      &&rows.every(row=>Number.isSafeInteger(row.toolLedger?.failed))
+      &&rows.every(row=>typeof row.officialSolved==='boolean')
+      &&rows.some(row=>row.toolLedger.failed>0)
+      ?rows.filter(row=>row.toolLedger.failed>0 && row.officialSolved).length
+        /rows.filter(row=>row.toolLedger.failed>0).length:null,
     actualBilledKRW:null,
     note:'Only the official SWE-bench Docker grader can populate officialResolved and officialResolveRate. Native goal completion and nonempty patches are NOT solved tests.'
   };
 }
+/**
+ * Metrics from the Rust engine's persisted execution_operation receipts,
+ * never from streamed/model-reported tool text. Missing ledger data is NOT 0.
+ * Every completed/failed/unknown tool invocation counts against efficiency.
+ */
+export function toolLedger(operations){
+  if(!Array.isArray(operations))throw Error('operations ledger must be an array');
+  const ids=new Set();
+  let completed=0,failed=0,unknown=0,verified=0,blocked=0;
+  for(const op of operations){
+    const id=op?.id;
+    demand(typeof id==='string'&&id.length>0&&!ids.has(id),'invalid or duplicate operation id');
+    ids.add(id);
+    if(op.status==='completed')completed++;
+    else if(op.status==='failed')failed++;
+    if(op.effectState==='effect_unknown'||op.result?.outcomeUnknown===true)unknown++;
+    if(op.toolReceipt?.verified===true)verified++;
+    if(op.effectState==='needs_review'||op.toolReceipt?.failureLayer==='authority')blocked++;
+  }
+  return {total:operations.length,completed,failed,unknown,verified,blocked,
+    // Resolution after an error must be shown only by official external grader.
+    recovered:false};
+}
+export function executionLedger(rows){
+  const all=[];
+  for(const row of rows){
+    demand(Array.isArray(row.operations),'missing per-execution operations');
+    all.push(...row.operations);
+  }
+  return toolLedger(all);
+}
+
 function command(bin,args,options={}){
   const run=spawnSync(bin,args,{encoding:'utf8',timeout:options.timeout||60000,
     maxBuffer:32*1024*1024,env:options.env||process.env,cwd:options.cwd});
@@ -172,6 +222,7 @@ async function runOne(task,index,settings,model){
   const result={instance_id:task.instance_id,repo:task.repo,
     base_commit:task.base_commit,model,startedAt:NOW(),goalId:null,jobId:null,
     goalStatus:'not_started',patchSha256:null,patchBytes:0,usage:null,receipt:null,
+    toolLedger:null,executionCount:null,
     error:null,elapsedMs:null,officialSolved:null};
   const began=Date.now();
   let child;
@@ -212,13 +263,44 @@ async function runOne(task,index,settings,model){
     try{
       const receipt=await request(base,'/api/goals/'+encodeURIComponent(result.goalId)+'/receipt');
       result.receipt={id:receipt.id,jobId:receipt.jobId,verifiedCompletion:receipt.verifiedCompletion,
-        actionEvidenceCount:receipt.actionEvidenceCount};
+        actionEvidenceCount:receipt.actionEvidenceCount,
+        iterations:receipt.iterations,replans:receipt.replans,
+        productiveTurnsWindow:receipt.productiveTurnsWindow,
+        unproductiveTurnsWindow:receipt.unproductiveTurnsWindow,
+        resolvedChecksWindow:receipt.resolvedChecksWindow};
     }catch(error){result.receiptError=String(error.message)}
     if(snapshot.sessionId){
       try{
         const usage=await request(base,'/api/sessions/'+encodeURIComponent(snapshot.sessionId)+'/usage');
-        result.usage={totalTokens:usage.totalTokens??null,calls:usage.calls??null};
+        result.usage={totalTokens:usage.totalTokens??null,calls:usage.calls??null,
+          estimatedCalls:usage.estimatedCalls??null,
+          promptTokens:usage.promptTokens??null,completionTokens:usage.completionTokens??null};
       }catch(error){result.usageError=String(error.message)}
+      try{
+        const all=[];
+        // Session is isolated per task, so these operation receipts cannot
+        // include an earlier benchmark problem or another owner's work.
+        for(let offset=0;;offset+=1000){
+          const page=await request(base,'/api/executions?limit=1000&offset='+offset);
+          demand(Array.isArray(page),'invalid execution list');
+          all.push(...page.filter(x=>x.sessionId===snapshot.sessionId));
+          if(page.length<1000)break;
+          demand(offset<100_000,'execution list exceeded benchmark bound');
+        }
+        const executions=[];
+        for(const execution of all){
+          const operations=await request(base,
+            '/api/executions/'+encodeURIComponent(execution.id)+'/operations');
+          demand(Array.isArray(operations),'incomplete native operations');
+          executions.push({id:execution.id,operations});
+        }
+        const metrics=executionLedger(executions);
+        result.executionCount=executions.length;
+        result.toolLedger={
+          total:metrics.total,completed:metrics.completed,failed:metrics.failed,
+          unknown:metrics.unknown,verified:metrics.verified,blocked:metrics.blocked,
+        };
+      }catch(error){result.toolLedgerError=String(error.message)}
     }
   }catch(error){result.error=String(error.message).slice(0,2200)}
   finally{
