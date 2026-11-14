@@ -417,13 +417,14 @@ pub(super) async fn dispatch_tool_call(
     let tool_started = std::time::Instant::now();
     let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
 
+    let denied_read_only=!tools::delegation_allows(&state.store,session_id,&call.name);
     let needs_approval = if call.name.starts_with("mcp__") {
         mcp::requires_approval(state, &call.name)
     } else {
         tools::requires_approval(&call.name)
     };
     let operation_id = format!("{execution_id}:{round}:{call_index}:{}", call.id);
-    let allowed = if effect_block.is_some() {
+    let allowed = if effect_block.is_some()||denied_read_only {
         false
     } else if needs_approval {
         request_approval(
@@ -559,6 +560,11 @@ pub(super) async fn dispatch_tool_call(
                 (json!({ "error": error }), false)
             }
         }
+    } else if denied_read_only {
+        let message="읽기 전용 조사 세션은 변경·실행·재위임 도구를 사용할 수 없습니다.";
+        let _=tx.send(json!({"type":"tool_error","name":call.name,
+            "id":call.id,"error":message}));
+        (json!({"error":message,"readOnlyDelegationDenied":true}),false)
     } else {
         let _ = tx.send(json!({
             "type": "tool_error",

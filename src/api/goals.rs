@@ -20,7 +20,8 @@ pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) 
     if matches!(goal["status"].as_str(),Some("queued"|"running")){
         return error(StatusCode::CONFLICT,"실행 중인 목표는 먼저 중단하세요.");
     }
-    if goal["isolateWorktree"]==true && goal["gitWorktree"]["discarded"]!=true{
+    if goal["isolateWorktree"]==true && goal["gitWorktree"].is_object()
+        && goal["gitWorktree"]["discarded"]!=true{
         return error(StatusCode::CONFLICT,"격리 작업공간의 변경사항을 확인하고 별도로 폐기한 뒤 기록을 삭제하세요.");
     }
     state.store.remove("goal", &id);
