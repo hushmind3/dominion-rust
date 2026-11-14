@@ -230,3 +230,28 @@ test('workflow evidence references real persisted session operation IDs, not mod
  assert.match(artifact,/toolOperationIds/)
  assert.match(ui,/DB operation IDs/)
 })
+
+test('Issue 9: Goal stays a slash command, not an independent sidebar product',()=>{
+ const nav=source('web/src/components/WorkspaceShell.tsx')
+ const app=source('web/src/App.tsx')
+ assert.doesNotMatch(nav,/\{id:'goals',label:'nav\.goals'/)
+ assert.doesNotMatch(app,/page==='goals'&&<GoalsPage/)
+ assert.match(source('src/api/mod.rs'),/\/api\/goals/)
+})
+
+test('2026 official Agent SDK is an actual optional Rust workflow backend',()=>{
+ const cargo=source('Cargo.toml')
+ const sdk=source('src/engine/copilot_harness.rs')
+ const workflow=source('src/engine/workflows.rs')
+ const ui=source('web/src/pages/Workflows.tsx')
+ const api=source('src/api/mod.rs')
+ assert.match(cargo,/github-copilot-sdk/)
+ assert.match(cargo,/copilot-harness = \["dep:github-copilot-sdk"\]/)
+ assert.match(sdk,/github_copilot_sdk::\{Client,ClientOptions,SessionConfig,MessageOptions\}/)
+ assert.match(sdk,/send_and_wait/)
+ assert.match(sdk,/DenyAllHandler/)
+ assert.match(sdk,/state\.store\.write_message/)
+ assert.match(workflow,/step\["executionMode"\]=="copilot_sdk"/)
+ assert.match(ui,/GitHub Copilot SDK/)
+ assert.match(api,/\/api\/agent-harnesses/)
+})
