@@ -1,5 +1,6 @@
 import {t} from './i18n'
 import {translateError} from './i18n/errors'
+import {DominionSDK, DominionSDKError} from '../../sdk/typescript/src/index'
 
 export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:string;[key:string]:any}
 export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean;reflection?:boolean;reflectionModel?:string;accountId?:string;costPerMillionInputKrw?:number|null;costPerMillionOutputKrw?:number|null}
@@ -13,7 +14,11 @@ export function koreanReasoningEnabled(){
  try{return localStorage.getItem(koreanReasoningKey)!=='0'}catch{return true}
 }
 let authToken = ''
-export function setAuthToken(value: string) { authToken = value.trim() }
+const nativeAgentSDK = new DominionSDK()
+export function setAuthToken(value: string) {
+ authToken = value.trim()
+ nativeAgentSDK.setToken(authToken)
+}
 
 function apiFetch(url: string, init: RequestInit = {}) {
  const headers = new Headers(init.headers)
@@ -79,32 +84,20 @@ export type ChatRequest = {
  reasoningLanguage?: string; reasoningEffort?: string; thinking?: boolean;
 }
 
+// The regular Chat UI uses the same first-party SDK stream decoder exposed
+// to external clients. DOMINION's Rust harness remains the executor.
 export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
- const res = await apiFetch('/api/chat', {method: 'POST', body: JSON.stringify(data), signal})
- if (!res.ok) throw new ApiError(res.status, translateError((await readJson(res))?.error || 'HTTP ' + res.status))
- if (!res.body || !res.headers.get('Content-Type')?.startsWith('text/event-stream')) {
-  throw Error('No streaming response')
- }
- const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
- let buffer = ''
  try {
-  while (true) {
-   const {done, value} = await reader.read()
-   if (done) throw Error(t('chat.streamInterrupted'))
-   buffer += value
-   let boundary: RegExpExecArray | null
-   while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
-    const frame = buffer.slice(0, boundary.index)
-    buffer = buffer.slice(boundary.index + boundary[0].length)
-    const payload = frame.split(/\r?\n/).filter(line => line.startsWith('data:'))
-     .map(line => line.slice(5).replace(/^ /, '')).join('\n')
-    if (!payload) continue
-    const event: StreamEvent = JSON.parse(payload)
-    onEvent(event)
-    if (event.type === 'done') return
-   }
+  for await (const event of nativeAgentSDK.streamChat(data, signal)) {
+   onEvent(event as StreamEvent)
+   if (event.type === 'done') return
   }
- } finally {
-  await reader.cancel().catch(() => {})
+ } catch (error) {
+  if (error instanceof DominionSDKError) {
+   const message = error.message === 'DOMINION stream interrupted before done'
+    ? t('chat.streamInterrupted') : translateError(error.message)
+   throw new ApiError(error.status, message)
+  }
+  throw error
  }
 }
