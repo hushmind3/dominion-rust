@@ -7,7 +7,7 @@ import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
-type ClipQuality={verified:boolean;durationSeconds?:number;width?:number;height?:number;audioStream?:boolean;reason?:string}
+type ClipQuality={verified:boolean;durationSeconds?:number;width?:number;height?:number;audioStream?:boolean;reason?:string;contentDefectScan?:{checked:boolean;passed?:boolean;blackFraction?:number;frozenFraction?:number;elapsedMs?:number;semanticContinuityAssessed?:boolean}}
 type VideoQuote={model:string;seconds:number;clips:number;creditsMicro:number;referenceKrw:number;referenceFxKrwPerUsd:number;fxAsOf:string;pricingAsOf:string;promotional?:boolean;type:string}
 type VideoJob=JobState & {costQuote?:VideoQuote|null;attemptedExposureCreditsMicro?:number;attemptedSubmissions?:number;progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number;clipQuality?:ClipQuality[];finalQuality?:ClipQuality;shotCount?:number;frameAnchoredClips?:number;mode?:string;shotResults?:{index:number;duration:number;bytes:number;reused:boolean;technicalRetries:number;qualityReceipt?:ClipQuality}[]}}
 type VideoEngine='native'|'comfyui'|'runway'
@@ -26,7 +26,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
- const [cinematic,setCinematic]=useState(false),[badShotRetries,setBadShotRetries]=useState(0)
+ const [cinematic,setCinematic]=useState(false),[badShotRetries,setBadShotRetries]=useState(0),[visualQualityGate,setVisualQualityGate]=useState(true)
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [runwayKey,setRunwayKey]=useState(''),[runwayModel,setRunwayModel]=useState('kling3.0_pro'),[runwayAudio,setRunwayAudio]=useState(true),[runwayFrames,setRunwayFrames]=useState(true),[runwayQuality,setRunwayQuality]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
@@ -129,7 +129,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(engine==='runway'?{approvedPaidQuote:true,maxCreditsMicro:paidQuote!.creditsMicro}:{}),
-    ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed,cinematic,badShotRetries:cinematic?badShotRetries:0}:{}),
+    ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed,cinematic,badShotRetries:cinematic?badShotRetries:0,visualQualityGate:cinematic&&visualQualityGate}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
@@ -207,7 +207,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
       {usingComfy&&<div className="space-y-2 rounded-xl border border-[#E3D9CB] p-3 text-xs">
        <label className="flex items-center gap-2 font-semibold"><input type="checkbox" checked={cinematic} onChange={e=>{setCinematic(e.target.checked);if(!e.target.checked&&seconds>9)setSeconds(9)}}/> 🎬 멀티샷 영화 만들기 (3~120초)</label>
-       <p className="text-[#7C7469]">장면별 생성 후 FFprobe로 기술 검수하고, 이미 검증된 클립은 재사용합니다. FFmpeg·FFprobe 및 &#123;&#123;prompt&#125;&#125;, &#123;&#123;duration&#125;&#125; 워크플로 변수가 필요합니다.</p>
+       <p className="text-[#7C7469]">장면별 생성 후 FFprobe로 길이·비율을 검증하고, 선택한 경우 FFmpeg로 실제 프레임을 디코딩해 검은 화면·장시간 정지 결함을 탐지합니다. 검증된 클립은 재사용합니다. FFmpeg·FFprobe 및 &#123;&#123;prompt&#125;&#125;, &#123;&#123;duration&#125;&#125; 워크플로 변수가 필요합니다.</p>
+       {cinematic&&<label className="flex items-center gap-2"><input type="checkbox" checked={visualQualityGate} onChange={e=>setVisualQualityGate(e.target.checked)}/> 실제 프레임 결함 검수 (로컬 FFmpeg · 추가 GPU/API 호출 없음)</label>}
        {cinematic&&<FormField label="기술 검수 실패 장면 재생성" hint="0회: 추가 GPU 비용 없음 · 1회: 불량 장면만 한 번 더 생성"><SelectInput value={String(badShotRetries)} onChange={e=>setBadShotRetries(Number(e.target.value))}><option value="0">재생성 없음</option><option value="1">최대 1회 재생성</option></SelectInput></FormField>}
        {cinematic&&!video.value.native?.available&&<p className="text-amber-700">멀티샷 최종 병합에 FFmpeg가 필요합니다.</p>}
       </div>}
@@ -247,6 +248,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
          <strong>장면 {shot.index} · {shot.duration}초</strong>
          <p>{shot.reused?'기존 검증 장면 재사용':'새 장면 생성'} · 기술 검수 재생성 {shot.technicalRetries}회 · {fmtBytes(shot.bytes)}</p>
          {shot.qualityReceipt?.verified&&<p className="text-[#7C7469]">{shot.qualityReceipt.width}×{shot.qualityReceipt.height} · 재생 정보 검증</p>}
+         {shot.qualityReceipt?.contentDefectScan?.checked&&<p className="text-[#7C7469]">실제 프레임 검사 통과 · 검은 화면 최장 {((shot.qualityReceipt.contentDefectScan.blackFraction??0)*100).toFixed(0)}% · 정지 최장 {((shot.qualityReceipt.contentDefectScan.frozenFraction??0)*100).toFixed(0)}% · 검사 {shot.qualityReceipt.contentDefectScan.elapsedMs??0}ms</p>}
         </div>)}</div>
        </details>}{videoJob.result?.finalQuality&&<div className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5">
         <strong>{videoJob.result.finalQuality.verified?'✅ 파일 기술 검수 통과':'검수 미실행'} · 클립 {videoJob.result.clipQuality?.length||0}개</strong>
