@@ -5,6 +5,7 @@ on:
     branches: [dominion-sub3]
     paths:
       - '.github/workflows/sub3-live-model-cycle.yml'
+      - 'Cargo.lock'
       - 'scripts/sub3-live-model-campaign.mjs'
       - 'scripts/sub3-prepare-owned-source.sh'
       - 'scripts/sub3-prepare-owned-source.test.mjs'
@@ -78,26 +79,14 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --prefix web && npm run build --prefix web
         if: steps.probe.outputs.reachable == 'true'
-      - name: Build actual Rust RSI engine and record dependency resolution
+      - name: Build frozen Rust RSI engine and verify dependency integrity
         if: steps.probe.outputs.reachable == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # The dedicated runner must not die before touching the model merely
-          # because Cargo.lock is not synchronized with the 2026 resolver.
-          # Use the same normal build contract as the full cross-platform CI.
-          # Record any resolution drift instead of silently calling it pinned.
-          cargo build --release --bin dominion-rust
+          cargo build --release --locked --bin dominion-rust
+          git diff --exit-code -- Cargo.lock
           echo "RSI_RUNTIME_LOCK_SHA256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)"
-          if ! git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock differs after resolution; runner did not use --locked." >> "$GITHUB_STEP_SUMMARY"
-            git diff --stat -- Cargo.lock >> "$GITHUB_STEP_SUMMARY"
-            # Full dependency-only delta is public and lets us repair the
-            # tracked lock once, preserving --locked for compiled descendants.
-            echo "SUB3_CARGO_LOCK_PATCH_BEGIN"
-            git diff -- Cargo.lock
-            echo "SUB3_CARGO_LOCK_PATCH_END"
-          fi
       - name: Let DOMINION execute a genuine model-written source improvement
         if: steps.probe.outputs.reachable == 'true'
         shell: bash
