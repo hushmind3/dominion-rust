@@ -631,3 +631,14 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 RSI와 일반 에이전트의 모델별 작업 영수증 조회는 기존 SQLite 실행 ID
 인덱스(`idx_operation_run`)를 사용하는 `Store::execution_operations`로
 통합해 다른 작업의 전체 기록을 매 라운드 스캔하지 않습니다.
+
+
+### 2026-11-15 · 멀티샷 영상의 장면별 서사/연속성 유지
+
+`src/engine/video/film.rs`의 실제 LTX 멀티샷 생성 경로에서 추가 API 호출 없이
+`establish → advance → resolve`의 장면별 동작을 분리했습니다.
+사용자가 독립 장면 프롬프트를 지정해도 최초 작품의 등장인물·의상·장소·조명·목소리
+기준은 함께 전달하며, 장면별 `storyBeat`와 변하지 않는
+`continuityAnchorSha256`을 제작 계획에 기록합니다. 기존 유료 호출 수,
+유저 승인·장면 재사용·부분 재제작·원화 가격표는 변경하지 않았습니다.
+프롬프트 구조상 연속성 지시가 유지되는 것은 검사하지만 실제 시청 품질은 미측정입니다.

@@ -17,6 +17,31 @@ fn segmentation_requires_consent_and_bounded_six_clips(){
     assert!(spec(&body,&cfg).is_err()); // no consent or FFmpeg
 }
 #[test]
+fn multishot_plan_has_distinct_story_beats_and_preserves_owner_directed_continuity(){
+    let brief="A blue-coated scientist opens a glowing door in a dark observatory";
+    let first=shot_prompt(brief,0,3,None);
+    let middle=shot_prompt(brief,1,3,None);
+    let final_shot=shot_prompt(brief,2,3,None);
+    assert!(first.contains("establish") && first.contains("Establish subject"));
+    assert!(middle.contains("advance") && middle.contains("Continue the prior action"));
+    assert!(final_shot.contains("resolve") && final_shot.contains("visible consequence"));
+    for prompt in [&first,&middle,&final_shot] {
+        assert!(prompt.contains(brief));
+        assert!(prompt.contains("SAME subject identity"));
+        assert!(super::ltx::cinematic_prompt(prompt,"cinematic").is_ok());
+    }
+    let custom=shot_prompt(brief,1,3,Some("The scientist walks through the door"));
+    assert!(custom.contains("The scientist walks through the door"));
+    assert!(custom.contains(brief));
+    assert!(custom.contains("SAME subject identity"));
+    assert!(super::ltx::cinematic_prompt(&custom,"cinematic").is_ok());
+    let huge="한".repeat(9_000);
+    assert!(super::ltx::cinematic_prompt(
+        &shot_prompt(&huge,0,3,None),"cinematic").is_ok());
+    assert!(super::ltx::cinematic_prompt(
+        &shot_prompt(&huge,1,3,Some(&huge)),"cinematic").is_ok());
+}
+#[test]
 fn sha_receipt_does_not_reuse_unknown_or_mutated_paid_clip(){
     let dir=std::env::temp_dir().join(format!("film-receipt-{}",uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();

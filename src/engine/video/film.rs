@@ -37,15 +37,32 @@ pub(super) fn max_clip(model:&str,quality:&str,fps:u64)->Result<u64,String>{
         _=>Err("지원하지 않는 LTX 모델입니다.".into())
     }
 }
+/// Freeze a common subject/environment anchor across all paid shots, while
+/// giving each shot an actual narrative role. An explicit scene overrides the
+/// auto-generated action, not the film's continuity constraints. This does
+/// not make a claim that a video model fulfilled those constraints.
 fn shot_prompt(brief:&str,index:usize,total:usize,custom:Option<&str>)->String{
-    if let Some(prompt)=custom.filter(|p|!p.trim().is_empty()){
-        return prompt.trim().chars().take(4750).collect();
+    let (beat,action)=shot_beat(index,total);
+    let user_scene=custom.filter(|p|!p.trim().is_empty());
+    let anchor=brief.trim().chars().take(if user_scene.is_some(){400}else{4000})
+        .collect::<String>();
+    let instruction=match user_scene{
+        Some(scene)=>format!("Owner-directed scene: {}",scene.trim().chars().take(3800).collect::<String>()),
+        None=>format!("Narrative objective: {action}"),
+    };
+    format!(
+        "ONE CONTINUOUS FILM, shot {}/{} ({beat}). Shared continuity anchor: {}.         SAME subject identity, wardrobe, physical environment, time of day,         light direction, camera axis, color palette and voice across every cut.         Preserve the preceding shot's physical state; do not reset the story.         {} No title cards, visual identity swaps or unrelated establishing shots.",
+        index+1,total,anchor,instruction
+    )
+}
+fn shot_beat(index:usize,total:usize)->(&'static str,&'static str){
+    if index==0 {
+        ("establish","Establish subject, location and the initiating visual action in a purposeful wide-to-medium composition.")
+    } else if index+1>=total {
+        ("resolve","Resolve the action with a visible consequence or payoff. Preserve the SAME actors, objects and lighting from the preceding shot.")
+    } else {
+        ("advance","Continue the prior action with physical cause and effect, advancing the story through a motivated camera move without resetting the scene.")
     }
-    // Without an extra planning model or API call, carry one immutable
-    // character/environment anchor across scenes. These are instructions to
-    // the video model and are not a claim that visual continuity is proven.
-    format!("Continuous film, shot {}/{}. Maintain the same characters, wardrobe, lighting, location, color palette and voice across all cuts. No title cards. Original story: {}. Compose shot {} as the next coherent event.",index+1,total,
-        brief.chars().take(4200).collect::<String>(),index+1)
 }
 pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
     let total=input["duration"].as_u64().ok_or("총 영상 길이가 필요합니다.")?;
@@ -78,10 +95,12 @@ pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
         // LTX applies the style once during render; never double-prefix it.
         ltx::cinematic_prompt(&prompt, input["ltxStyle"].as_str().unwrap_or("cinematic"))?;
         let spec=json!({"prompt":prompt,"generate_audio":true});
-        clips.push(json!({"index":index,"duration":duration,"render":spec}));
+        clips.push(json!({"index":index,"duration":duration,"render":spec,
+            "storyBeat":shot_beat(index,parts.len()).0}));
     }
     Ok(json!({"film":{"version":1,"totalDuration":total,"clips":clips,
-        "paidCallCount":clips.len(),"verifiedContinuity":false},
+        "paidCallCount":clips.len(),"verifiedContinuity":false,
+        "continuityAnchorSha256":format!("{:x}",Sha256::digest(brief.as_bytes()))},
         "model":model,"quality":quality,"fps":fps}))
 }
 
