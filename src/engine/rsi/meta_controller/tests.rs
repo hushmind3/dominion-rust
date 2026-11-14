@@ -232,9 +232,16 @@
         let mut tested=missed("paired");
         tested["candidateId"]=json!("candidate");
         tested["evaluation"]=json!({
-            "verdict":"paired_rejected","metrics":{"eligible":false}
+            "verdict":"paired_rejected","metrics":{"eligible":false},
+            "measurementScope":"frozen_native_cases_only",
+            "pairedCases":8,"evidenceSha256":"d".repeat(64)
         });
         assert!(paired_outcome_observed(&tested));
+        let mut ungrounded=tested.clone();
+        ungrounded["evaluation"]["evidenceSha256"]=Value::Null;
+        assert!(!paired_outcome_observed(&ungrounded));
+        assert_eq!(feedback(&synthesize(&[],&[target.clone()],&["context"],None),
+            &ungrounded)["categoricalBrier"],Value::Null);
         let mut next=history.clone();
         next.push(tested);
         let paired=synthesize(&next,&[target.clone()],&["context"],None);

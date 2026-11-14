@@ -3,7 +3,8 @@
 ## 2026-11-15 RSI 예측의 관측 분리
 
 `rsi/meta_controller/provenance.rs::paired_outcome_observed`는 실제
-독립 평가 verdict·eligible receipt가 있거나 성공한 독립 채택 영수증을
+독립 평가 verdict·eligible, 최소 8개 동결 사례 및 원본 평가 증거
+SHA-256이 있거나 성공한 독립 채택 영수증을
 지닌 세대만 채택 확률 추정의 표본으로 인정합니다.
 `rsi/meta_controller/selection.rs::synthesize`는 확인된 paired
 표본만 Beta(1,1) 사전분포와 합산하고, 빌드 실패/소스 후보 없음처럼

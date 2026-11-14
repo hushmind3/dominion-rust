@@ -40,6 +40,11 @@ pub(super) fn paired_outcome_observed(g:&Value)->bool{
             && !model_design_roles(g).is_empty()
             && g["evaluation"]["verdict"].as_str().is_some_and(|s|!s.is_empty())
             && g["evaluation"]["metrics"]["eligible"].is_boolean()
+            && g["evaluation"]["measurementScope"]=="frozen_native_cases_only"
+            && g["evaluation"]["pairedCases"].as_u64().is_some_and(|n|
+                n>=crate::engine::rsi::MIN_PAIRED_CASES as u64)
+            && g["evaluation"]["evidenceSha256"].as_str().is_some_and(|s|
+                s.len()==64 && s.bytes().all(|c|c.is_ascii_hexdigit()))
 }
 
 /// Direct evidence that the accepted child rewrote the implementation of

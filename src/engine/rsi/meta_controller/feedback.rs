@@ -129,14 +129,15 @@ pub(crate) fn feedback(policy:&Value,generation:&Value)->Value {
     }
     let probability=policy["forecast"]["acceptanceProbability"]
         .as_f64().filter(|p|p.is_finite()&&*p>=0.0&&*p<=1.0);
-    let assessed=generation["evaluation"]["verdict"].as_str().is_some()
-        && generation["evaluation"]["metrics"]["eligible"].is_boolean();
+    let assessed=paired_outcome_observed(generation);
     let observed=if assessed{Some(independent_adoption(generation))}else{None};
     let brier=match(probability,observed){
         (Some(p),Some(success))=>Some((p-if success{1.0}else{0.0}).powi(2)),
         _=>None
     };
-    let class=observed_class(generation);
+    // An unpaired environment failure is not an observed categorical
+    // quality label; do not let it poison future Brier calibration.
+    let class=if assessed{observed_class(generation)}else{None};
     let categorical_brier=class.and_then(|actual|{
         let probs=&policy["forecast"]["failurePosterior"];
         let mut error=0.0;
