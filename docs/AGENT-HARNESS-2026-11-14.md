@@ -56,3 +56,9 @@
 - *Progress Drift: Auditing False Progress in Long-Horizon LLM Agents*, 2026년 — https://aclanthology.org/2026.aacl-short.22.pdf
 
 본 문서의 연결 관계는 2026-11-14 소스 변경에 근거하며, 외부 논문 수치를 DOMINION 실측 성능으로 전용하지 않는다.
+
+## 소스 변경의 명시적 사용자 승인 및 원본 적용 (서브3)
+
+- `GoalWorkbench → GET /api/goals/:id/changes → goal_git::changes → reviewed_patch`가 미리보기 Git 패치와 SHA-256을 제공하며 미추적 파일을 표시합니다. 큰 패치(96KiB 초과)는 이 경로로 승인하지 않고 PR 검토가 필요합니다.
+- 사용자 확인 뒤 `POST /api/goals/:id/apply`에서 SHA-256 64자리를 전달합니다. `goal_git::apply_reviewed`는 작업 완료 상태, Git 원본 HEAD, 원본 무변경 상태, 미추적 파일, 진행 중 작업, 패치의 SHA를 재검증한 다음 `git apply --check`를 거쳐 원본에 적용합니다. 적용 후 다시 diff SHA를 검사하고 감사·영수증을 저장합니다.
+- 이 작업은 명시적 승인 없이는 원본에 쓰지 않습니다. 원격 배포나 PR 자동 병합을 수행하지 않으며, 승인 패치의 실제 사용 성공률은 별도 검증 대상입니다.
