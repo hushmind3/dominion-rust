@@ -156,6 +156,13 @@ pub async fn list_jobs(State(state): State<AppState>) -> Json<Value> {
         .map(video::public_job)
         .collect::<Vec<_>>()))
 }
+/// Pure, uncharged quote. The same calculation is repeated at job admission.
+pub async fn quote_job(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
+    match video::paid_quote(&state,&body) {
+        Ok(quote)=>Json(quote).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message),
+    }
+}
 pub async fn create_job(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     match video::enqueue(&state, &body) {
         Ok(j) => (StatusCode::ACCEPTED, Json(j)).into_response(),
