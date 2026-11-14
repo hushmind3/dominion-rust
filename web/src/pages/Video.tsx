@@ -5,11 +5,12 @@ import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} fr
 import {openOAuth,post} from '../api'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
+import {FilmRetake} from './video/FilmRetake'
 
 type Workflow={id:string;name:string;bytes:number}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number;qualityReceipt?:{verified?:boolean;width?:number;height?:number;durationSeconds?:number;hasAudio?:boolean}}}
-type VideoEngine='native'|'comfyui'|'omni'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasVideoKey?:boolean;omniModel?:string;omniResolution?:string};native?:{available:boolean};quality?:{available:boolean;method?:string};comfy:{reachable:boolean;available?:boolean};omni?:{available:boolean;model?:string;targetDurationSeconds?:number};workflows:Workflow[];jobs:VideoJob[]}
+type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;ltxFilm?:boolean;result?:{bytes:number;qualityReceipt?:{verified?:boolean;width?:number;height?:number;durationSeconds?:number;hasAudio?:boolean}}}
+type VideoEngine='native'|'comfyui'|'omni'|'ltx'
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasVideoKey?:boolean;hasLtxKey?:boolean;omniModel?:string;omniResolution?:string};native?:{available:boolean};quality?:{available:boolean;method?:string};comfy:{reachable:boolean;available?:boolean};omni?:{available:boolean;model?:string;targetDurationSeconds?:number};ltx?:{available:boolean;audio?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -26,6 +27,10 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [omniKey,setOmniKey]=useState(''),[omniModel,setOmniModel]=useState('gemini-omni-1.2-flash'),[omniResolution,setOmniResolution]=useState('1080p')
+ const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-fast'),
+       [ltxQuality,setLtxQuality]=useState('1080p'),[ltxStyle,setLtxStyle]=useState('cinematic')
+ const [ltxFilm,setLtxFilm]=useState(false),[ltxScenes,setLtxScenes]=useState(''),
+       [ltxConsent,setLtxConsent]=useState(false),[ltxPaidConsent,setLtxPaidConsent]=useState(false)
  const [cinematic,setCinematic]=useState(true)
  const [retryBadShot,setRetryBadShot]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
@@ -45,9 +50,13 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const engine=engineChoice??video.value.config.engine
  const usingComfy=engine==='comfyui'
  const usingOmni=engine==='omni'
- const providerReady=usingOmni?Boolean(video.value.omni?.available):usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
+ const usingLtx=engine==='ltx'
+ const providerReady=usingLtx?Boolean(video.value.ltx?.available):usingOmni?Boolean(video.value.omni?.available):usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
  const ready=providerReady&&Boolean(video.value.quality?.available)
- const maxDuration=usingOmni?8:usingComfy?(cinematic?120:9):180
+ const ltxMaxClip=ltxModel==='ltx-2-5-fast'&&['720p','1080p'].includes(ltxQuality)?20:10
+ const maxDuration=usingLtx?(ltxFilm?ltxMaxClip*6:ltxMaxClip):usingOmni?8:usingComfy?(cinematic?120:9):180
+ const ltxClipCount=ltxFilm?Math.ceil(seconds/ltxMaxClip):1
+ const ltxPlannedScenes=ltxScenes.trim().split('\n').map(line=>line.trim()).filter(Boolean)
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{setOmniModel(video.value.config.omniModel||'gemini-omni-1.2-flash');setOmniResolution(video.value.config.omniResolution||'1080p')},[video.value.config.omniModel,video.value.config.omniResolution])
  useEffect(()=>{
@@ -66,11 +75,20 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{await openOAuth('youtube')}catch(e){setError(t('vid.youtubeFailed',{error:(e as Error).message}))}
  }
  const changeEngine=async(next:VideoEngine)=>{
+  if(next==='ltx'){setSeconds(8);setLtxConsent(false);setLtxPaidConsent(false)}
   if(next==='omni'){setSeconds(8);setRatio(current=>current==='1:1'?'16:9':current)}
   if(savingConfig)return;
   setEngine(next);setSavingConfig(true);setError('');
   try{await post('/api/video/config',{engine:next,comfyUrl:comfyUrl.trim()||video.value.config.comfyUrl});await video.reload()}
   catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
+ }
+ const saveLtx=async()=>{
+  if(savingConfig||!ltxKey.trim())return
+  setSavingConfig(true);setError('')
+  try{
+   await post('/api/video/config',{engine:'ltx',ltxApiKey:ltxKey.trim()})
+   setLtxKey('');await video.reload()
+  }catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
  const saveComfy=async()=>{
   if(savingConfig)return;
@@ -102,6 +120,14 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const generate=async()=>{
   if(!ready||!prompt.trim()||generating)return;
   const requestedSeed=Number(seed);
+  if(usingLtx&&(
+    !ltxPaidConsent || !Number.isInteger(seconds) || seconds>maxDuration ||
+    (ltxFilm?(seconds<12||seconds%2!==0||ltxClipCount>6||ltxClipCount*6>seconds||
+       !ltxConsent||(ltxPlannedScenes.length>0&&ltxPlannedScenes.length!==ltxClipCount)):
+       (seconds<6||seconds%2!==0))
+   )){
+   setError('LTX 유료 생성 동의·영상 길이·장면 수를 확인하세요.');return
+  }
   if((!usingOmni&&(!Number.isInteger(seconds)||seconds<3||seconds>maxDuration))||
    (usingComfy&&(!seed.trim()||!Number.isSafeInteger(requestedSeed)||requestedSeed < -1||!Number.isInteger(fps)||fps<1||fps>60))){
    setError(t('vid.checkValues'));return;
@@ -112,6 +138,9 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     engine,title,brief:prompt,aspectRatio:ratio,duration:usingOmni?8:seconds,
     cinematic:usingComfy&&cinematic,badShotRetries:usingComfy&&cinematic&&retryBadShot?1:0,
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
+    ...(usingLtx?{ltxModel,ltxQuality,ltxStyle,confirmPaidGeneration:ltxPaidConsent,
+      ...(ltxFilm?{ltxFilm:true,confirmPaidMultiShot:ltxConsent,scenes:ltxPlannedScenes}:{}),
+    }:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
