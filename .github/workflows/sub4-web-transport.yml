@@ -1,0 +1,25 @@
+name: Sub4 React-to-Rust transport
+
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'web/src/api.ts'
+      - 'web/src/chat-stream.ts'
+      - 'scripts/sub4-web-chat-stream.test.mjs'
+      - '.github/workflows/sub4-web-transport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-transport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: React SSE decoder regression
+        run: node --experimental-strip-types --test scripts/sub4-web-chat-stream.test.mjs

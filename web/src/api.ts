@@ -1,6 +1,6 @@
 import {t} from './i18n'
 import {translateError} from './i18n/errors'
-import {DominionSDK, DominionSDKError} from '../../sdk/typescript/src/index'
+import {decodeChatEvents, ChatStreamError} from './chat-stream'
 
 export type RecordItem = {id:string;name?:string;createdAt?:string;updatedAt?:string;[key:string]:any}
 export type Provider = RecordItem & {name:string;baseUrl:string;kind:string;enabled:boolean;hasKey?:boolean;model?:string;learning?:boolean;reflection?:boolean;reflectionModel?:string;accountId?:string;costPerMillionInputKrw?:number|null;costPerMillionOutputKrw?:number|null}
@@ -14,10 +14,8 @@ export function koreanReasoningEnabled(){
  try{return localStorage.getItem(koreanReasoningKey)!=='0'}catch{return true}
 }
 let authToken = ''
-const nativeAgentSDK = new DominionSDK()
 export function setAuthToken(value: string) {
  authToken = value.trim()
- nativeAgentSDK.setToken(authToken)
 }
 
 function apiFetch(url: string, init: RequestInit = {}) {
@@ -84,19 +82,30 @@ export type ChatRequest = {
  reasoningLanguage?: string; reasoningEffort?: string; thinking?: boolean;
 }
 
-// The regular Chat UI uses the same first-party SDK stream decoder exposed
-// to external clients. DOMINION's Rust harness remains the executor.
+// React uses its small browser transport directly. No JS/TS agent SDK
+// is part of the DOMINION application runtime or Rust inference loop.
 export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) => void, signal: AbortSignal) {
+ const response = await apiFetch('/api/chat',{
+  method:'POST', body:JSON.stringify(data), signal, headers:{Accept:'text/event-stream'},
+ })
+ if (!response.ok) {
+  let reason='HTTP '+response.status
+  try {
+   const body=await response.text()
+   const parsed=JSON.parse(body) as {error?:unknown}
+   if(typeof parsed.error==='string')reason=translateError(parsed.error)
+  } catch { /* Keep status if a proxy returns non-JSON. */ }
+  throw new ApiError(response.status,reason)
+ }
  try {
-  for await (const event of nativeAgentSDK.streamChat(data, signal)) {
-   onEvent(event as StreamEvent)
+  for await (const event of decodeChatEvents(response)) {
+   onEvent(event)
    if (event.type === 'done') return
   }
  } catch (error) {
-  if (error instanceof DominionSDKError) {
-   const message = error.message === 'DOMINION stream interrupted before done'
-    ? t('chat.streamInterrupted') : translateError(error.message)
-   throw new ApiError(error.status, message)
+  if (error instanceof ChatStreamError) {
+   throw new ApiError(0, error.message==='DOMINION stream interrupted before done'
+    ? t('chat.streamInterrupted') : error.message)
   }
   throw error
  }

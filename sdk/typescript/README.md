@@ -68,3 +68,7 @@ npm run check
 The existing React UI directly uses this SDK's `streamChat` parser via `web/src/api.ts`, so SDK streaming is exercised in the regular product path.
 
 Validation levels: standalone source and tests are committed; full Rust+React integration tests and real-provider completion measurements remain separate.
+
+## Optional external client only
+
+DOMINION React uses `web/src/api.ts` and `web/src/chat-stream.ts` directly. It no longer imports this optional TypeScript SDK. This package is for external JS/TS consumers; the runtime and first-party Rust SDK remain Rust.

@@ -8,6 +8,15 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Browser transport / native Rust core
+
+The shipped React app talks to \`POST /api/chat\` through its own
+\`web/src/api.ts\` and \`web/src/chat-stream.ts\` SSE transport. The browser
+does **not** need or import \`sdk/typescript\`; that optional package is for
+external JavaScript consumers. React/Vite still uses Node.js during build,
+not at runtime. Native autonomous decisions and tools remain in
+\`src/engine/\`; \`sdk/rust\` is the first-party Rust client/MCP tool host.
+
 ## 2026-11-14 DOMINION Rust-native Agent SDK (primary)
 
 The first-party **Rust crate** is at [sdk/rust](sdk/rust/README.md).
