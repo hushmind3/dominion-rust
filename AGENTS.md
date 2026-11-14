@@ -119,3 +119,10 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - `goal_control.rs::complete`: planner/reviewer calls are attributed to session usage; observed budget admission is not a guaranteed pre-charge estimate.
 - `db.rs::Store::edit_manual_memory`: one locked SQLite transaction guards provenance/status/current text and records audit with update. Client does not get to mutate scope, ownership or learned evidence.
 - Real Chrome CDP Rust smoke: opt-in `DOMINION_BROWSER_E2E=1`; generic cargo test does not require a working sandbox/remote debugging port.
+
+### Sub1 durable receipts and fresh verification (2026-11-14)
+
+- `run_quiet_outcome` no longer trusts a `tool_end` event as an accepted operation: `tool_dispatch` emits exact `operationId`, and the collector hydrates only committed `execution_operation` rows with `status=completed`. The full runId/opSeq/time chronology is kept for multi-iteration goals.
+- `verification::fresh_command_matches`: a successful `command_succeeded` test receipt is stale after a later source mutation, even in another goal iteration. A fresh test after that mutation may satisfy it. Missing chronology fails closed when there are successful writes.
+- Coding requests under `tool.discovery` core/query-relevant policies keep `code_search` and surgical editors. Noncoding requests retain smaller original schemas.
+- Multi-turn mock model integration actually runs workspace_write then shell_exec and exercises the real goal completion/verification path; it does not certify long-horizon real-model performance. Full explanation: `docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md`.
