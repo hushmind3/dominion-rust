@@ -198,8 +198,12 @@ fn reuse_other_shots(ctx:&JobContext,input:&Value,dir:&Path)->Result<(),String>{
         std::fs::create_dir_all(&to).map_err(|e|e.to_string())?;
         std::fs::copy(from.join("output.mp4"),to.join("output.mp4"))
             .map_err(|e|e.to_string())?;
+        let copied_sha=file_sha(&to.join("output.mp4"))?;
+        if receipt["outputSha256"].as_str()!=Some(copied_sha.as_str()){
+            return Err("needs_review: 장면 복사 도중 영상 SHA가 변경됐습니다. 유료 요청을 중단합니다.".into());
+        }
         let mut reused=receipt;
-        reused["outputSha256"]=json!(file_sha(&to.join("output.mp4"))?);
+        reused["outputSha256"]=json!(copied_sha);
         reused["reused"]=json!(true);
         reused["reusedFromJobId"]=json!(source_id);
         persist_receipt(&to,&reused)?;
