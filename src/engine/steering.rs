@@ -1,6 +1,6 @@
 //! Durable native chat steering at the next model-step boundary.
 //!
-//! Inspired by DeepSeek Harness's two-lane inbox (next-step/next-turn),
+//! Inspired by DeepSeek Harness's step-boundary inbox,
 //! implemented independently against DOMINION's own SQLite store and Rust
 //! model loop. Only an explicit owner/SDK/API call can enqueue a correction.
 //! A model output, tool result or retrieved document cannot submit a steer.
@@ -40,6 +40,16 @@ pub fn enqueue(state: &AppState, session_id: &str, instruction: &str) -> Result<
 /// and status transition cannot duplicate the owner's instruction on replay.
 /// This is called at the next **real model step**, never by the model itself.
 pub fn drain_at_step(state: &AppState, session_id: &str) -> Result<Vec<Value>, String> {
+    Ok(drain_at_step_with_ids(state,session_id)?
+        .into_iter().map(|(_,message)|message).collect())
+}
+
+/// Return stable identity separately from the provider-facing message.
+/// A crash after the message insert but before status commit must not append
+/// the already-historical instruction a second time in the same model prompt.
+pub fn drain_at_step_with_ids(
+    state: &AppState,session_id:&str
+) -> Result<Vec<(String,Value)>, String> {
     let mut queued = state.store.all("chat_steer").into_iter()
         .filter(|item| item["sessionId"].as_str() == Some(session_id)
             && item["status"] == "queued")
@@ -78,7 +88,7 @@ pub fn drain_at_step(state: &AppState, session_id: &str) -> Result<Vec<Value>, S
         state.bus.record("chat_steer", &delivered);
         state.bus.message(&persisted);
         state.store.audit("chat.owner_steered", json!({"sessionId":session_id,"steerId":id}));
-        injected.push(json!({"role":"user","content":instruction}));
+        injected.push((id.to_string(),json!({"role":"user","content":instruction})));
     }
     Ok(injected)
 }
