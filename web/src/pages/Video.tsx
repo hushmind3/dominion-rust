@@ -151,7 +151,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    setError(t('vid.checkValues'));return;
   }
   if(usingLtx&&ltxFilm){
-   const scripted=filmShots.trim().split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean)
+   const scripted=filmShots.trim().split(/\r?\n/).map(s=>s.trim()).filter(Boolean)
    if(scripted.length&&scripted.length!==estimatedFilmShots){
     setError('장면별 연출은 유료 장면 수와 정확히 일치해야 합니다.');return
    }
@@ -167,7 +167,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24,
      ltxFilm,confirmPaidMultiShot,technicalGate,
      ...(ltxFilm?{filmAnchor:filmAnchor.trim(),
-       scenes:filmShots.trim().split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean)}:{}),
+       scenes:filmShots.trim().split(/\r?\n/).map(s=>s.trim()).filter(Boolean)}:{}),
      approvedPaidQuote:true,maxUsdCents:paidQuote?.totalUsdCents,
      quoteDigest:paidQuote?.quoteDigest}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
@@ -259,7 +259,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
           placeholder="같은 검은 코트의 주인공, 비 오는 서울 야경, 푸른 네온, 같은 목소리"/></FormField>
         <FormField label="장면별 연출 · 선택" hint={`장면당 1줄, 설정하면 정확히 ${estimatedFilmShots}줄이어야 합니다.`}>
          <TextArea rows={3} value={filmShots} onChange={e=>setFilmShots(e.target.value)}
-          placeholder={'첫 장면: 도로를 내려다보는 와이드샷\\n둘째 장면: 인물을 따라가는 카메라'}/></FormField>
+          placeholder={'첫 장면: 도로를 내려다보는 와이드샷\n둘째 장면: 인물을 따라가는 카메라'}/></FormField>
        </div>}
        {ltxFilm&&<div className="rounded-lg border border-[#E7E0D5] bg-white p-3 text-[11px] text-[#6B6258]">
         <p>현재 길이에 필요한 예상 유료 생성 <strong>{estimatedFilmShots}회</strong> · 최대 6개 장면. 각 장면의 실제 기술 검수를 기록하고 재시작 시 완료 영수증을 재사용합니다. 추가 모델 호출이나 시각적 연속성 보장은 포함하지 않습니다.</p>
