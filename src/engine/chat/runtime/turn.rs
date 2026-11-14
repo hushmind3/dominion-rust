@@ -1,5 +1,6 @@
 //! turn: isolated native chat runtime responsibility; preserve executable RSI behavior.
 use super::*;
+use futures_util::StreamExt;
 
 /// Number of leading tool calls eligible to overlap before the first
 /// exclusive/unknown side-effect barrier. Preserves the model's ordering.
@@ -1624,10 +1625,12 @@ pub(super) async fn run_turn_body(
             request.agent_id.as_deref(),
             None,
         );
+        // The read-first ordering policy intentionally changes call order,
+        // so it must not be combined with the model-order parallel scheduler.
         if combination
             .as_ref()
             .and_then(|algorithm| algorithm["implementation"].as_str())
-            == Some("parallel-reads")
+            == Some("parallel-reads") && ordering_kernel != "read-first"
         {
             // Never move a read ahead of an earlier model-ordered write.
             // Exclusive/unknown calls are barriers, as in DeepSeek Harness.
@@ -1711,7 +1714,11 @@ pub(super) async fn run_turn_body(
                         }
                     }
                 }
-                let results = futures_util::future::join_all(futures).await;
+                // A bounded pool prevents model-generated read fan-out
+                // from overwhelming local files, web tools or provider limits.
+                // buffered() preserves the original call order of results.
+                let results = futures_util::stream::iter(futures)
+                    .buffered(4).collect::<Vec<_>>().await;
                 // A dispatch can complete while the tool itself failed
                 // (`Ok((value, false, content))`). Combination credit requires
                 // every combined read to actually succeed.
