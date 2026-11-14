@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react'
 import {ArrowRight,Check,Play,RefreshCw,Square,Target} from 'lucide-react'
 import {post} from '../../api'
+import {GoalChanges} from './GoalChanges'
 import {Button,SelectInput,TextArea,TextInput} from '../../components/Primitives'
 import {StatusPill} from '../../components/StatusPill'
 import {FormField,Notice,Panel,Subheading,useRemote} from '../../components/UI'
@@ -170,7 +171,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
        {goal.metrics.usage&&<p className="mt-3 text-[11px] text-[#5C544A]">모델 호출 {goal.metrics.usage.calls??0}회 · 기록된 토큰 {(goal.metrics.usage.totalTokens??0).toLocaleString()}개 · 추정 사용량 호출 {goal.metrics.usage.estimatedCalls??0}회</p>}
        <p className="mt-1 text-[10px] text-[#8A8176]">기록된 사용량 기준이며 미보고 캐시·실제 결제액은 추정하지 않습니다.</p>
       </section>}
-      {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>}
+      <GoalChanges goalId={goal.id} finished={!running(goal.status)}/>
+      {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>
      </div>}
     </Panel>
    })}
