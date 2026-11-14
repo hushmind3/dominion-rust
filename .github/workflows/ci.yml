@@ -27,6 +27,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm ci --prefix web
       - run: node --test scripts/champion-ui-menu.test.mjs
+      - run: node --test scripts/champion-system-contract.test.mjs
+      - run: python3 -m unittest discover -s scripts/benchmark -p 'test_*.py'
+      - run: npm install --prefix sdk/typescript --no-audit --no-fund
+      - run: npm test --prefix sdk/typescript
+      - run: cargo test --manifest-path sdk/rust/Cargo.toml --all-targets
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
       - run: bash -n scripts/rsi-lab.sh
