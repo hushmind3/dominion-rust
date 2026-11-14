@@ -634,6 +634,7 @@ pub(super) async fn run_turn_body(
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut read_loop_guard=ReadLoopGuard::default();
+    let mut recent_tool_names=recent_room_tools(state,session_id);
     let mut failed_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut environment_version = 0u64;
@@ -766,7 +767,22 @@ pub(super) async fn run_turn_body(
                         .clamp(4_000, 60_000)
                 })
                 .unwrap_or(60_000);
-            round_tools = trim_tool_definitions(round_tools, budget);
+            let source_count=round_tools.len();
+            let source_bytes=round_tools.iter().map(|tool|
+                serde_json::to_string(tool).unwrap_or_default().len()).sum::<usize>();
+            round_tools=budgeted_tool_definitions(
+                round_tools,budget,&request.input,&recent_tool_names);
+            if source_count>round_tools.len()&&round==0 {
+                let selected_bytes=round_tools.iter().map(|tool|
+                    serde_json::to_string(tool).unwrap_or_default().len()).sum::<usize>();
+                state.store.audit("harness.tool_schema_budget",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "candidateTools":source_count,"visibleTools":round_tools.len(),
+                    "candidateSchemaBytes":source_bytes,"visibleSchemaBytes":selected_bytes,
+                    "budgetBytes":budget,"strategy":"dominion-relevance-v1",
+                    "measuredInputTokens":null
+                }));
+            }
         }
         if session["rsiRun"]==true && session["rsiSystemEvolution"]!=true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
@@ -1982,6 +1998,9 @@ pub(super) async fn run_turn_body(
                 "round":round,"reason":error
             }));
             return Err(format!("도구 실행 기록의 원자성 검사가 실패했습니다: {error}"));
+        }
+        for call in &completion.tool_calls {
+            recent_tool_names.insert(call.name.to_lowercase());
         }
         match read_loop_guard.observe(
             &completion.tool_calls,&messages[tool_round_message_start..]
