@@ -99,7 +99,7 @@ pub async fn portfolio(State(state):State<AppState>)->Json<Value>{
         let mut completed_steps=0_u64;
         for job in jobs.iter().filter(|job|job["kind"]=="workflow"){
             let def=job.pointer("/workflowState/definition").filter(|d|d.is_object())
-                .or_else(||workflows.iter().find(|wf|wf["id"]==job["input"]["workflowId"]).copied());
+                .or_else(||workflows.iter().find(|wf|wf["id"]==job["input"]["workflowId"]));
             let Some(steps)=def.and_then(|d|d["steps"].as_array()) else {continue;};
             for (index,step) in steps.iter().enumerate(){
                 if step["agentId"].as_str()!=Some(id){continue;}

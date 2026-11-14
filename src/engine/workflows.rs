@@ -1,5 +1,5 @@
 use crate::engine::jobs::JobContext;
-use crate::engine::{chat::TurnRequest, run_quiet};
+use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification};
 use serde_json::{json, Value};
 
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
@@ -118,7 +118,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             .get("prompt")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        let prompt = render(template, &payload, previous);
+        let prompt = render_with_steps(template,&payload,previous,&outputs);
         if prompt.trim().is_empty() {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
@@ -153,21 +153,77 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
-        let message = match run_quiet(state, &request).await {
-            Ok(Some(message)) => message,
-            Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
-            Err(_) if state.is_cancelled(&session_id) => {
-                return Ok(
-                    json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
-                )
-            }
-            Err(error) => return Err(error),
+        // The goal harness already hydrates *committed* SQLite operation
+        // receipts; reuse it for workflows instead of trusting transient
+        // "tool_end" UI events or agent prose.
+        let (outcome, stats)=run_quiet_outcome(state,&request).await;
+        if state.is_cancelled(&session_id){
+            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                "outputs":outputs,"status":"cancelled"}));
+        }
+        let valid_actions=stats.evidence.iter()
+            .filter(|e|verification::is_action_evidence(e)).collect::<Vec<_>>();
+        let action_receipts=valid_actions.iter().filter_map(|e|
+            e["id"].as_str().map(str::to_string)).take(30).collect::<Vec<_>>();
+        let successful_receipts=stats.evidence.iter()
+            .filter_map(|e|e["id"].as_str().map(str::to_string))
+            .take(30).collect::<Vec<_>>();
+        let requires_proof=step["requireActionProof"]==true;
+        let mut needs_review=outcome.as_ref().is_err() && !stats.evidence.is_empty();
+        let mut reason=outcome.as_ref().err().cloned().unwrap_or_default();
+        if requires_proof && valid_actions.is_empty(){
+            needs_review=true;
+            reason=format!("{step_name} 단계의 실제 변경·실행 도구 영수증이 없습니다. 에이전트의 완료 선언만으로 다음 단계에 넘길 수 없습니다.");
+        }
+        // A provider may return an ordinary final answer despite an
+        // unresolved external write. Do not continue the next collaborator.
+        if state.store.all("execution_operation").iter().any(|op|
+            op["sessionId"].as_str()==Some(&session_id)
+            && (op["outcomeUnknown"]==true
+                || matches!(op["status"].as_str(),Some("running"|"interrupted"))
+                || matches!(op["effectState"].as_str(),Some("needs_review"|"unknown")))
+        ){
+            needs_review=true;
+            reason="미확정 외부 작업이 남아 있습니다. 중복 실행 방지를 위해 다음 협업 단계를 차단했습니다.".into();
+        }
+        if needs_review{
+            context.checkpoint(json!({
+                "workflowState":{"sessionId":session_id,"outputs":outputs,
+                    "definition":definition,"inFlight":true,
+                    "needsReviewReason":reason,"activeStepIndex":index,
+                    "verifiedActionReceipts":action_receipts}
+            }))?;
+            state.store.audit("workflow.step_needs_review",json!({
+                "workflowId":workflow_id,"jobId":context.job_id,
+                "stepIndex":index,"reason":reason,
+                "verifiedActionReceiptIds":action_receipts
+            }));
+            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                "outputs":outputs,"status":"needs_review",
+                "failedStepIndex":index,"reason":reason,
+                "verifiedActionReceipts":action_receipts}));
+        }
+        let message=match outcome{
+            Ok(Some(message))=>message,
+            Ok(None)=>return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
+            Err(error)=>return Err(error),
         };
+        let receipt_summary=valid_actions.iter().take(20).map(|e|json!({
+            "operationId":e["id"],"tool":verification::tool_name(e),
+            "path":e.pointer("/arguments/path"),"exitCode":e.pointer("/result/exitCode")
+        })).collect::<Vec<_>>();
         outputs.push(json!({
             "stepId": step.get("id"),
+            "agentId":step.get("agentId"),
             "name": step_name,
             "content": message.get("content").cloned().unwrap_or(json!("")),
             "messageId": message.get("id"),
+            "verifiedActionCount":valid_actions.len(),
+            "successfulToolReceiptIds":successful_receipts,
+            "verifiedActionReceiptIds":action_receipts,
+            "actionReceipts":receipt_summary,
+            "toolErrors":stats.tool_errors,
+            "requiresActionProof":requires_proof,
         }));
 
         context.checkpoint(json!({
@@ -229,11 +285,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 
+    let usage=state.store.session_usage(&session_id);
     Ok(json!({
         "workflowId": workflow_id,
         "sessionId": session_id,
         "outputs": outputs,
         "status": status,
+        "sessionUsage":usage,
+        "verifiedActionCount":outputs.iter()
+            .map(|output|output["verifiedActionCount"].as_u64().unwrap_or(0)).sum::<u64>(),
+        "completedSteps":outputs.len(),
+        "isProviderBilledCostKnown":false,
     }))
 }
 
@@ -243,6 +305,34 @@ fn optional(value: &Value, key: &str) -> Option<String> {
         .and_then(|item| item.as_str())
         .filter(|item| !item.is_empty())
         .map(str::to_string)
+}
+
+/// 1-indexed {{step:N}} inserts a *specific* previous collaborator's output
+/// without asking the model to reproduce all earlier turns. Substitution is
+/// one pass and non-recursive (malicious placeholders in model text stay text).
+fn render_with_steps(template:&str,input:&str,previous:&str,outputs:&[Value])->String{
+    let mut result=String::with_capacity(template.len().min(16000));
+    let mut rest=template;
+    while let Some(offset)=rest.find("{{"){
+        result.push_str(&rest[..offset]);rest=&rest[offset..];
+        if let Some(next)=rest.strip_prefix("{{input}}"){
+            result.push_str(input);rest=next;
+        }else if let Some(next)=rest.strip_prefix("{{previous}}"){
+            result.push_str(previous);rest=next;
+        }else if let Some(right)=rest.strip_prefix("{{step:"){
+            if let Some(end)=right.find("}}"){
+                let index=right[..end].parse::<usize>().ok().filter(|n|*n>0);
+                if let Some(value)=index.and_then(|n|outputs.get(n-1))
+                    .and_then(|row|row["content"].as_str()){
+                    result.push_str(&value.chars().take(12000).collect::<String>());
+                    rest=&right[end+2..];
+                    continue;
+                }
+            }
+            result.push_str("{{");rest=&rest[2..];
+        }else{result.push_str("{{");rest=&rest[2..];}
+    }
+    result.push_str(rest);result
 }
 
 /// `{{input}}` is the run payload, `{{previous}}` the last step output.
@@ -271,7 +361,18 @@ pub fn render(template: &str, input: &str, previous: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{render,render_with_steps};
+    use serde_json::json;
+    #[test]
+    fn named_previous_step_reference_keeps_other_steps_out_of_prompt(){
+        let done=vec![json!({"content":"A"}),json!({"content":"B {{step:1}}"})];
+        assert_eq!(render_with_steps("use {{step:1}} not {{step:2}}",
+            "unused","previous",&done),"use A not B {{step:1}}");
+        assert_eq!(render_with_steps("{{step:3}}", "", "", &done),"{{step:3}}");
+        assert_eq!(render_with_steps("{{input}} {{previous}}",
+            "{{step:1}}","literal",&done),"{{step:1}} literal");
+    }
+
 
     #[test]
     fn substitutions_do_not_interpret_placeholder_text_in_payloads() {
