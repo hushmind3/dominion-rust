@@ -36,6 +36,103 @@ pub(crate) fn final_report(state:&AppState, goal:&Value, status:&str, gaps:&[Str
     })
 }
 
+/// Aggregates actual durable outcomes, not mocked review claims. Every
+/// terminal goal is in the denominator; a "completed" label without a
+/// matching server final-audit receipt is NOT a verified success.
+/// Missing token/cache/billing evidence is null or counted as missing, never 0.
+pub(crate) fn aggregate(state:&AppState)->Value {
+    use std::collections::BTreeMap;
+    let mut terminal=0u64;
+    let mut active=0u64;
+    let mut verified=0u64;
+    let mut unknown_audits=0u64;
+    let mut zero_usage=0u64;
+    let mut observed_calls=0u64;
+    let mut estimated_calls=0u64;
+    let mut total_tokens=0u64;
+    let mut measured_tokens=0u64;
+    let mut measured_goals=0u64;
+    let mut observed_cache_calls=0u64;
+    let mut cached_tokens=0u64;
+    let mut cache_measured_tokens=0u64;
+    let mut duration_ms=Vec::new();
+    let mut by_status:BTreeMap<String,u64>=BTreeMap::new();
+    let mut failures=BTreeMap::<String,u64>::new();
+    for goal in state.store.all("goal") {
+        let status=goal["status"].as_str().unwrap_or("unknown");
+        *by_status.entry(status.to_string()).or_default()+=1;
+        if !matches!(status,"completed"|"failed"|"cancelled"|"needs_review"){
+            active+=1;
+            continue;
+        }
+        terminal+=1;
+        let report=&goal["metrics"];
+        let receipt=report["source"]=="goal_final_audit_v1"
+            && report["status"]==status;
+        if !receipt {unknown_audits+=1;}
+        if receipt&&report["verifiedCompleted"]==true&&status=="completed"
+            && report["unmetGapCount"].as_u64()==Some(0)
+        {
+            verified+=1;
+        } else {
+            let reason=if !receipt {"missing_final_audit"}
+                else if status=="completed" {"unverified_completion"}
+                else {status};
+            *failures.entry(reason.to_string()).or_default()+=1;
+        }
+        if let Some(ms)=report["durationMs"].as_u64(){duration_ms.push(ms);}
+        let session=goal["sessionId"].as_str().unwrap_or("");
+        if session.is_empty(){zero_usage+=1;continue;}
+        let usage=state.store.session_usage(session);
+        let calls=usage["calls"].as_u64().unwrap_or(0);
+        if calls==0 {zero_usage+=1;continue;}
+        observed_calls+=calls;
+        let estimates=usage["estimatedCalls"].as_u64().unwrap_or(0);
+        estimated_calls+=estimates;
+        total_tokens=total_tokens.saturating_add(usage["totalTokens"].as_u64().unwrap_or(0));
+        if estimates==0 {
+            measured_goals+=1;
+            measured_tokens=measured_tokens.saturating_add(usage["totalTokens"].as_u64().unwrap_or(0));
+        }
+        observed_cache_calls+=usage["cacheReportedCalls"].as_u64().unwrap_or(0);
+        cached_tokens+=usage["cachedPromptTokens"].as_u64().unwrap_or(0);
+        cache_measured_tokens+=usage["cacheMeasuredPromptTokens"].as_u64().unwrap_or(0);
+    }
+    duration_ms.sort_unstable();
+    let median=duration_ms.get(duration_ms.len()/2).copied();
+    json!({
+        "source":"durable_goal_audit_aggregate_v1",
+        "observedGoalCount":terminal+active,
+        "terminalGoals":terminal,
+        "activeGoals":active,
+        "verifiedCompletions":verified,
+        "verifiedSuccessRate":if terminal==0 {Value::Null}
+            else {json!(verified as f64/terminal as f64)},
+        "unknownOrLegacyAuditCount":unknown_audits,
+        "byStatus":by_status,
+        "failureCategories":failures,
+        "medianObservedDurationMs":median,
+        "modelUsage":{
+            "goalsWithoutUsage":zero_usage,
+            "observedCalls":observed_calls,
+            "estimatedCalls":estimated_calls,
+            "reportedTotalTokens":if observed_calls==0 {Value::Null}
+                else {json!(total_tokens)},
+            "strictlyMeasuredGoalCount":measured_goals,
+            "strictlyMeasuredTokens":if measured_goals==0 {Value::Null}
+                else {json!(measured_tokens)},
+            "cacheReportedCalls":observed_cache_calls,
+            "cachedPromptTokens":if observed_cache_calls==0 {Value::Null}
+                else {json!(cached_tokens)},
+            "cacheHitRateFromReportedCalls":if cache_measured_tokens==0 {Value::Null}
+                else {json!(cached_tokens as f64/cache_measured_tokens as f64)}
+        },
+        "actualProviderBillingKrw":Value::Null,
+        "measurement":"Counts persisted production goals; not an isolated benchmark. Provider bills require external invoice reconciliation.",
+        "recordedAt":chrono::Utc::now().to_rfc3339(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
