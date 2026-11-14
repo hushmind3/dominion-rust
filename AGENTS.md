@@ -85,3 +85,11 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - `tools.rs::execute`: 실제 네이티브 ToolContext의 workspace를 session/goal에 귀속된 worktree로 강제하며 파일의 절대 경로 도구를 차단합니다. `chat/runtime/turn.rs`에서도 해당 도구를 모델에게 숨깁니다. `tools/gateway.rs::delegate`가 Goal ID와 worktree 메타를 자식 Session에 계승하고 `jobs.rs::run_prompt`가 자식 LLM 컨텍스트도 workdir로 바꿉니다.
 - `api/goals.rs` ↔ `web/src/pages/workflows/GoalConsole.tsx`/`GoalChanges.tsx`: opt-in 입력·진행 상태·diff·원본 적용 승인·작업공간 폐기를 사용자에게 제공합니다. 결과가 남은 worktree를 Goal 삭제로 유실하지 않게 방어합니다.
 - 비적용 범위: OS 수준 프로세스 샌드박스와 shell 절대 경로 차단, 비추적 파일 자동 게시, 서로 다른 worktree를 동시에 쓰는 여러 코딩 에이전트의 무인 충돌 병합, RSI 동결 평가 우회. `isolateWorktree=false` 기존 워크스페이스 작업은 유지합니다.
+
+
+## 2026-11-14: 영상 영수증·선택 재생성·RSI 사용자 목표 신호
+
+- 영상 생성 진입점: `src/api/video.rs::{create_job,scene_diagnostics,retake_scene}` ↔ `src/engine/video.rs::{enqueue,film_scenes,enqueue_retake,run}`. `src/engine/video/quality.rs`는 실제 ffprobe 기반 기술 검수 결과와 미검증 상태를 구분하고, 사용자가 엄격 검수를 선택했다면 유료 호출 전 ffprobe 설치를 검사합니다.
+- LTX 동결 샷: `src/engine/video/film.rs::{spec,run,saved_receipt,reuse_other_shots,scenes,retake_input}`. 성공 장면 `clip-XX/output.mp4`와 `receipt.json`은 파일 SHA-256을 대조해 재사용하며, 불확실한 유료 상태에서는 동일 호출을 자동 재전송하지 않습니다. FFmpeg stream-copy로 완성 영상 `output.mp4`를 구성합니다. 사용자가 승인한 호출 개수만큼만 신규 장면 결제가 시도됩니다. 중복 요청의 작업 ID는 `jobs::enqueue_once`로 원자적으로 중복 방지합니다.
+- 프런트: `web/src/pages/Video.tsx`의 LTX 멀티샷 동의/FFprobe 엄격 검수 및 `web/src/pages/video/FilmRetake.tsx`의 장면별 SHA·예상 추가 호출·선택 재생성 동의. 비추적/미검증 품질이나 실제 청구액을 확인된 산출물로 주장하지 않습니다.
+- RSI 목표 성공/실패 신호: `src/engine/rsi_scan.rs::report` → `rsi_scan/goal_signals.rs::collect` → `rsi/system/frontier.rs::architecture_frontier` → 모델 설계 단계. 단지 조사 우선순위 입력으로 전달하며 독립 동결 평가·승인 채택 우회는 허용하지 않습니다. 사용자 목표 프롬프트·비밀·코드 내용은 신호에 넣지 않습니다.
