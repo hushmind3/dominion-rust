@@ -409,6 +409,40 @@ mod tests{
      assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
          "fn original() {}");
  }
+ #[tokio::test]
+ async fn exact_export_includes_new_files_without_staging_original_index(){
+     use std::process::Command as StdCommand;
+     let root=std::env::temp_dir().join(format!("dominion-benchmark-patch-{}",uuid::Uuid::new_v4()));
+     std::fs::create_dir_all(&root).unwrap();
+     let git=|args:&[&str]|->String{
+         let result=StdCommand::new("git").current_dir(&root)
+             .args(args).output().unwrap();
+         assert!(result.status.success(),"git {:?}: {}",args,
+             String::from_utf8_lossy(&result.stderr));
+         String::from_utf8(result.stdout).unwrap()
+     };
+     git(&["init","-q"]);
+     git(&["config","user.name","DOMINION Test"]);
+     git(&["config","user.email","test@example.invalid"]);
+     std::fs::write(root.join("old.txt"),"before\n").unwrap();
+     git(&["add","old.txt"]);
+     git(&["commit","-qm","baseline"]);
+     let base=git(&["rev-parse","HEAD"]).trim().to_string();
+     std::fs::write(root.join("old.txt"),"after\n").unwrap();
+     std::fs::write(root.join("new.txt"),"new file\n").unwrap();
+     let status_before=git(&["status","--porcelain"]);
+     let index_before=git(&["ls-files","--stage"]);
+     let (patch,count)=complete_export_patch(&root,&base).await.unwrap();
+     let text=String::from_utf8(patch).unwrap();
+     assert_eq!(count,1);
+     assert!(text.contains("diff --git a/new.txt b/new.txt"));
+     assert!(text.contains("diff --git a/old.txt b/old.txt"));
+     assert!(text.contains("+new file"));
+     assert_eq!(git(&["status","--porcelain"]),status_before);
+     assert_eq!(git(&["ls-files","--stage"]),index_before);
+     assert_eq!(std::fs::read_to_string(root.join("old.txt")).unwrap(),"after\n");
+     let _=std::fs::remove_dir_all(&root);
+ }
  #[test]
  fn rejects_attacker_selected_ids(){
      let root=std::env::temp_dir();
