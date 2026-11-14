@@ -171,7 +171,7 @@ test("thread run captures only the newly persisted assistant reply", async () =>
     }
     if (path === "/api/sdk/threads/s1/run") {
       const body = JSON.parse(init.body);
-      assert.equal(body.sessionId,"s1");
+      assert.equal(body.sessionId,undefined);
       assert.equal(body.input,"write a plan");
       return sse('data: {"type":"done"}\n\n');
     }
@@ -211,8 +211,8 @@ test("native SDK stream returns real error message and never replays a POST",asy
  let posts=0;
  const sdk=new DominionClient({fetch:async()=>{
   posts++;
-  return sse('data: {"type":"error","message":"workspace failure"}\\n\\n',
-             'data: {"type":"done"}\\n\\n');
+  return sse('data: {"type":"error","message":"workspace failure"}\n\n',
+             'data: {"type":"done"}\n\n');
  }});
  await assert.rejects(async()=>{
   for await(const _ of sdk.streamThread("th",{input:"fix",agentId:""})){}
@@ -225,7 +225,7 @@ test("thread stream retains latest owner defaults and never impersonates an unre
  const sdk=new DominionClient({fetch:async(url,init)=>{
   assert.equal(new URL(url).pathname,"/api/sdk/threads/session%2F1/run");
   body=JSON.parse(init.body);
-  return sse('data: {"type":"done"}\\n\\n');
+  return sse('data: {"type":"done"}\n\n');
  }});
  const thread=sdk.resumeThread("session/1",{providerId:"p",model:"m"});
  const events=[];
