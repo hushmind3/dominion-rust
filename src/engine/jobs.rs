@@ -55,6 +55,42 @@ impl JobContext {
         }
     }
 
+    /// Finalize a worker result only if this job is *still running* and its
+    /// owner has not requested cancellation. Check-and-patch is one SQLite
+    /// operation, so a cancellation racing with model/tool completion cannot
+    /// be overwritten by a late "completed" report.
+    ///
+    /// Unlike ordinary progress checkpoints, a terminal transition changes
+    /// status. It must not use `checkpoint` after an owner cancellation.
+    fn settle(&self, patch: Value) -> Result<Option<Value>, String> {
+        let current = self.state.store.get("job", &self.job_id)
+            .ok_or("종료할 작업을 찾을 수 없습니다.")?;
+        if current["status"] != "running" || current["cancelRequested"] == true {
+            return Ok(None);
+        }
+        let expected = json!({
+            "status": "running",
+            "cancelRequested": current["cancelRequested"],
+        });
+        match self.state.store.patch_if_fields("job", &self.job_id, &expected, &patch) {
+            Some(saved) => {
+                self.state.bus.record("job", &saved);
+                Ok(Some(saved))
+            }
+            None => {
+                let updated = self.state.store.get("job", &self.job_id);
+                if updated.as_ref().is_some_and(|value|
+                    value["status"] != "running" || value["cancelRequested"] == true
+                ) {
+                    // The owner cancelled or another worker already settled it.
+                    Ok(None)
+                } else {
+                    Err("작업 종료 결과를 영구 저장하지 못했습니다.".into())
+                }
+            }
+        }
+    }
+
     pub fn checkpoint(&self, patch: Value) -> Result<(), String> {
         let job = self
             .state
@@ -456,21 +492,44 @@ async fn run_job(state: AppState, job: Value) {
                 .and_then(Value::as_str)
                 .filter(|status| matches!(*status, "needs_review" | "cancelled" | "failed"))
                 .unwrap_or("completed");
-            context.patch(json!({
+            match context.settle(json!({
                 "status": status,
                 "result": result,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
                 "events": context.events.lock().unwrap().clone(),
-            }));
-            state.store.audit(
-                &format!("job.{status}"),
-                json!({ "jobId": job_id, "kind": kind }),
-            );
+            })) {
+                Ok(Some(_)) => {
+                    state.store.audit(
+                        &format!("job.{status}"),
+                        json!({ "jobId": job_id, "kind": kind }),
+                    );
+                }
+                Ok(None) => {
+                    // A later worker result cannot supersede an explicit
+                    // owner cancellation or a previously committed terminal.
+                    state.store.audit("job.late_result_discarded", json!({
+                        "jobId": job_id, "kind": kind, "attemptedStatus": status,
+                    }));
+                }
+                Err(error) => {
+                    state.store.audit("job.settlement_failed", json!({
+                        "jobId": job_id, "kind": kind, "error": error,
+                    }));
+                }
+            }
         }
         Err(error) => {
             if error.starts_with("deferred:") {
-                context.patch(json!({"status":"queued","availableAt":(chrono::Utc::now()+chrono::Duration::seconds(1)).to_rfc3339(),
-                    "attempts":job["attempts"].as_u64().unwrap_or(1).saturating_sub(1),"error":error}));
+                if let Err(error) = context.settle(json!({
+                    "status":"queued",
+                    "availableAt":(chrono::Utc::now()+chrono::Duration::seconds(1)).to_rfc3339(),
+                    "attempts":job["attempts"].as_u64().unwrap_or(1).saturating_sub(1),
+                    "error":error,
+                })) {
+                    state.store.audit("job.defer_failed", json!({
+                        "jobId": job_id, "error": error,
+                    }));
+                }
                 return;
             }
             let status = if error.starts_with("needs_review:") {
@@ -480,17 +539,30 @@ async fn run_job(state: AppState, job: Value) {
             } else {
                 "failed"
             };
-            context.patch(json!({
+            match context.settle(json!({
                 "status": status,
                 "error": error,
                 "finishedAt": chrono::Utc::now().to_rfc3339(),
                 "events": context.events.lock().unwrap().clone(),
-            }));
-            goal_status::on_error(&state,&job,status,&error);
-            state.store.audit(
-                "job.failed",
-                json!({ "jobId": job_id, "kind": kind, "error": error }),
-            );
+            })) {
+                Ok(Some(_)) => {
+                    goal_status::on_error(&state,&job,status,&error);
+                    state.store.audit(
+                        "job.failed",
+                        json!({ "jobId": job_id, "kind": kind, "error": error }),
+                    );
+                }
+                Ok(None) => {
+                    state.store.audit("job.late_error_discarded", json!({
+                        "jobId":job_id,"kind":kind,"attemptedStatus":status,
+                    }));
+                }
+                Err(settlement_error) => {
+                    state.store.audit("job.settlement_failed", json!({
+                        "jobId":job_id,"kind":kind,"error":settlement_error,
+                    }));
+                }
+            }
         }
     }
 }
@@ -1032,6 +1104,52 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn worker_finalization_persists_completed_and_failure_states() {
+        let state = temp_state();
+        let job = enqueue(&state,"video",json!({"engine":"native"})).unwrap();
+        let id = job["id"].as_str().unwrap();
+        state.store.patch_if("job", id,"status", &json!("queued"),
+            &json!({"status":"running"})).unwrap();
+        let context = JobContext::new(state.clone(), id.to_string());
+        let completed = context.settle(json!({
+            "status":"completed",
+            "result":{"outputUrl":"/api/video/jobs/test/content"},
+            "finishedAt":"2026-11-14T00:00:00Z",
+        })).unwrap().unwrap();
+        assert_eq!(completed["status"],"completed");
+        assert_eq!(state.store.get("job",id).unwrap()["result"]["outputUrl"],
+            "/api/video/jobs/test/content");
+        // Late duplicate workers cannot rewrite a completed receipt.
+        assert!(context.settle(json!({"status":"failed"})).unwrap().is_none());
+        assert_eq!(state.store.get("job",id).unwrap()["status"],"completed");
+        let _=std::fs::remove_dir_all(&state.config.data_dir);
+    }
+
+    #[test]
+    fn owner_cancel_wins_over_late_video_goal_or_rsi_worker_results() {
+        let state = temp_state();
+        for kind in ["goal","video","rsi_evolve","room","workflow","prompt"] {
+            let job = enqueue(&state, kind, json!({})).unwrap();
+            let id = job["id"].as_str().unwrap().to_string();
+            state.store.patch_if("job", &id, "status", &json!("queued"),
+                &json!({"status":"running"})).unwrap();
+            let context = JobContext::new(state.clone(), id.clone());
+            let cancelled = state.store.patch_if("job", &id,"status",&json!("running"),
+                &json!({"status":"cancelled","cancelRequested":true})).unwrap();
+            assert_eq!(cancelled["status"],"cancelled");
+            assert!(context.settle(json!({"status":"completed","result":{"falseReceipt":true}}))
+                .unwrap().is_none());
+            assert!(context.settle(json!({"status":"failed","error":"stale tool error"}))
+                .unwrap().is_none());
+            let final_state = state.store.get("job",&id).unwrap();
+            assert_eq!(final_state["status"],"cancelled");
+            assert!(final_state["result"].is_null());
+            assert!(final_state["error"].is_null());
+        }
+        let _=std::fs::remove_dir_all(&state.config.data_dir);
     }
 
     #[test]
