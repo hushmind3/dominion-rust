@@ -571,6 +571,40 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_two_tool_turn_replays_true_result_and_one_unconfirmed_effect(){
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"chat:partial"}));
+        state.store.write_message(&json!({
+            "session_id":"chat:partial","role":"user","content":"파일 2개 읽고 결과 저장"
+        }));
+        state.store.write_message(&json!({
+            "session_id":"chat:partial","role":"assistant","content":"",
+            "tool_calls":[
+                {"id":"call-1","type":"function","function":{"name":"workspace_read","arguments":"{}"}},
+                {"id":"call-2","type":"function","function":{"name":"shell_exec","arguments":"{}"}}
+            ]
+        }));
+        state.store.write_message(&json!({
+            "session_id":"chat:partial","role":"tool",
+            "tool_call_id":"call-1","content":"actual file content"
+        }));
+        let persisted=state.store.try_messages("chat:partial").unwrap();
+        let rendered=history(&state,"chat:partial",None,None).unwrap();
+        let source=rendered.iter().position(|row|row["tool_calls"].is_array()).unwrap();
+        assert_eq!(rendered[source+1]["role"],"tool");
+        assert_eq!(rendered[source+1]["content"],"actual file content");
+        assert_eq!(rendered[source+2]["tool_call_id"],"call-2");
+        let unresolved:Value=serde_json::from_str(
+            rendered[source+2]["content"].as_str().unwrap()
+        ).unwrap();
+        assert_eq!(unresolved["effectUnknown"],true);
+        assert_eq!(unresolved["requiresInspection"],true);
+        assert_eq!(persisted.len(),state.store.try_messages("chat:partial").unwrap().len(),
+            "replay must not write synthetic results to durable SQLite history");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn room_history_preserves_stored_reasoning_for_provider_specific_replay() {
         let (state, dir) = state();
         state
