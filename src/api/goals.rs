@@ -65,53 +65,47 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
 
     for key in ["executor","reviewer","planner"] { if body.get(key).is_some_and(|v|!v.is_object()){return error(StatusCode::BAD_REQUEST,"실행자·검토자·계획자는 객체로 지정하세요.");} }
     for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
-    let Some(record) = state.store.put(
-        "goal",
-        &json!({
-            "taskId": uuid::Uuid::new_v4().to_string(),
-            "goal": text,
-            "successCriteria": criteria,
-            "isolateWorktree":body["isolateWorktree"].as_bool().unwrap_or(false),
-            "executor": executor,
-            "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
-            "planner":body.get("planner").cloned().unwrap_or(json!({})),
-            "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
-            "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
-            "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
-            "replans":0,"planHistory":[],"reviewHistory":[],
-            "status": "queued",
-            "iterations": 0,
-            "maxIterations": max_iterations,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
-        }),
-    ) else {
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "목표를 저장할 수 없습니다.",
-        );
-    };
-    state.bus.record("goal", &record);
-    let goal_id = record
-        .get("id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
-    let Some(job) = crate::engine::jobs::enqueue(&state, "goal", json!({ "goalId": goal_id })) else {
-        // Never report an autonomous goal as queued without a durable worker.
-        if let Some(saved) = state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),&json!({
-            "status":"failed","phase":"enqueue_failed","error":"목표 작업을 등록하지 못했습니다."
-        })) {state.bus.record("goal",&saved);}
-        return error(StatusCode::INTERNAL_SERVER_ERROR,"목표 작업을 등록하지 못했습니다.");
-    };
-    // Persist the same worker identity that the UI uses for cancellation,
-    // progress and post-crash reconciliation.
-    let job_id = job["id"].clone();
-    let saved = state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),
-        &json!({"jobId":job_id})).unwrap_or(record);
-    state.bus.record("goal",&saved);
-    let mut payload = saved;
-    payload["jobId"] = job_id;
-    Json(payload).into_response()
+    // An autonomous goal and its runnable worker are ONE durable intent.
+    // Never expose a queued goal whose job is absent, or a worker with no
+    // matching goal. The initial enqueue used three independent DB writes;
+    // process death between any two could orphan a goal or strand cancellation.
+    let goal_id=uuid::Uuid::new_v4().to_string();
+    let job_id=uuid::Uuid::new_v4().to_string();
+    let queued_at=chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true);
+    let goal=json!({
+        "id":goal_id,
+        "taskId":uuid::Uuid::new_v4().to_string(),
+        "jobId":job_id,
+        "goal":text,
+        "successCriteria":criteria,
+        "isolateWorktree":body["isolateWorktree"].as_bool().unwrap_or(false),
+        "executor":executor,
+        "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
+        "planner":body.get("planner").cloned().unwrap_or(json!({})),
+        "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
+        "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
+        "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
+        "replans":0,"planHistory":[],"reviewHistory":[],
+        "status":"queued","iterations":0,"maxIterations":max_iterations,
+        "createdAt":chrono::Utc::now().to_rfc3339(),
+    });
+    let job=json!({
+        "id":job_id,
+        "kind":"goal","status":"queued","queuedAt":queued_at,
+        "input":{"goalId":goal_id},"attempts":0,
+        "stepIndex":0,"stepTotal":0,"events":[],
+    });
+    let records=vec![("goal".to_string(),goal.clone()),("job".to_string(),job.clone())];
+    if state.store.transaction(&records).is_err(){
+        return error(StatusCode::INTERNAL_SERVER_ERROR,
+            "목표와 작업을 원자적으로 등록하지 못했습니다.");
+    }
+    // Publish only after COMMIT. Event consumers can immediately resolve both
+    // records with their finalized cross-references.
+    state.bus.record("goal",&goal);
+    state.bus.record("job",&job);
+    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id,"goalId":goal_id}));
+    Json(goal).into_response()
 }
 
 /// Cancel the durable goal and its worker, not just the frontend button.
