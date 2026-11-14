@@ -172,8 +172,8 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
                 (i==index||needs_payment.get(i)==Some(&true))
                     .then(||shot["duration"].as_u64()).flatten()).collect::<Vec<_>>();
             if let Ok(quote)=super::pricing::quote_durations(
-                job["input"]["ltxModel"].as_str().unwrap_or(""),
-                job["input"]["ltxQuality"].as_str().unwrap_or(""),&pending){
+                job["input"]["ltxModel"].as_str().unwrap_or("ltx-2-5-pro"),
+                job["input"]["ltxQuality"].as_str().unwrap_or("1080p"),&pending){
                 item["estimatedRetakeKrw"]=quote["estimatedKrw"].clone();
                 item["quoteReferenceFxAsOf"]=quote["fxAsOf"].clone();
             }else{
