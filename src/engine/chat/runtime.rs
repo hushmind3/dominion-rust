@@ -277,6 +277,15 @@ async fn run_turn_with_policy(
         _ = wait_cancelled(state, &session_id, generation) => Err("실행이 중단되었습니다.".into()),
     };
     finish_attempt(state, &execution_id, &result, &metrics);
+    // Steering instructions that arrived after the last model boundary
+    // remain durable owner messages but must not be reported as applied.
+    let deferred=super::owner_inbox::defer_unclaimed(state,&execution_id);
+    if deferred>0 {
+        state.store.audit("owner.steer.deferred",json!({
+            "sessionId":session_id,"executionId":execution_id,"count":deferred,
+        }));
+        let _=tx.send(json!({"type":"owner_steer_deferred","count":deferred}));
+    }
     close_pending_approvals(state, &session_id);
 
     if request.auto_learning {
