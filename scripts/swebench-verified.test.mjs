@@ -4,7 +4,8 @@ import {mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {capturePatch,validateInstance,prediction,metrics,parseJsonl} from './swebench-verified.mjs';
+import {capturePatch,validateInstance,prediction,metrics,parseJsonl,
+  measuredRecovery,estimatedKrw} from './swebench-verified.mjs';
 
 const fixture = {
   instance_id:'django__django-12345',
@@ -56,6 +57,42 @@ test('prediction is official schema with real patch and no claimed pass rate',()
   assert.equal(stat.patchBytes,Buffer.byteLength(patch));
   assert.equal(stat.officialSWEbenchVerdict,null);
   assert.equal(stat.goalVerifiedByNativeHarness,false);
+});
+
+test('real Rust operation receipts measure tool recovery, not adjacent unrelated success',()=>{
+  const ops=[
+    {runId:'r1',opSeq:1,tool:'workspace_replace_range',status:'failed',
+      arguments:{path:'src/agent.rs'},result:{error:'stale SHA'}},
+    {runId:'r1',opSeq:2,tool:'workspace_read_range',status:'completed',
+      arguments:{path:'src/agent.rs'},result:{content:'actual source'}},
+    {runId:'r1',opSeq:3,tool:'workspace_replace_range',status:'completed',
+      arguments:{path:'src/agent.rs'},result:{written:true},
+      toolReceipt:{verified:true}},
+    {runId:'r1',opSeq:4,tool:'shell_exec',status:'failed',
+      arguments:{command:'cargo test'},result:{error:'failed'}},
+    {runId:'r2',opSeq:5,tool:'shell_exec',status:'completed',
+      arguments:{command:'cargo test'},result:{exitCode:0}},
+  ];
+  const stats=measuredRecovery(ops);
+  assert.equal(stats.observedToolCalls,5);
+  assert.equal(stats.failedToolCalls,2);
+  assert.equal(stats.recoveredToolFailures,1,
+    'a successful shell from another run is not evidence of recovery');
+  assert.equal(stats.toolFailureRecoveryRate,0.5);
+  assert.equal(measuredRecovery([{runId:'r1',opSeq:1,tool:'shell_exec',
+    status:'completed',result:{exitCode:0}}]).toolFailureRecoveryRate,null);
+  const summary=metrics({receipt:{tokenUsage:{calls:4,promptTokens:3000,
+    completionTokens:1000,totalTokens:4000,estimatedCalls:1}}},[],500,'patch',
+    ops,{promptPerMillionKrw:6000,completionPerMillionKrw:12000});
+  assert.equal(summary.executedToolCalls,5);
+  assert.equal(summary.recoveredToolFailures,1);
+  assert.equal(summary.modelCalls,4);
+  assert.equal(summary.estimatedProviderCostKrw,30);
+  assert.equal(summary.actualProviderBillingKrw,null);
+  assert.equal(summary.officialSWEbenchVerdict,null);
+  assert.equal(estimatedKrw({},null),null);
+  assert.throws(()=>estimatedKrw({promptTokens:10},
+    {promptPerMillionKrw:-1,completionPerMillionKrw:20}),/Pricing/);
 });
 
 test('dataset JSONL is parsed without accepting malformed lines',()=>{
