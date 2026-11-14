@@ -127,16 +127,13 @@ pub struct Session {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCreate {
     #[serde(default)]
     pub title: Option<String>,
     #[serde(flatten)]
     pub selection: ModelSelection,
-}
-impl Default for SessionCreate {
-    fn default() -> Self { Self { title: None, selection: ModelSelection::default() } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

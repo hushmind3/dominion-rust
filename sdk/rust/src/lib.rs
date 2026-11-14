@@ -24,11 +24,13 @@
 
 mod client;
 mod error;
+pub mod mcp;
 mod streaming;
 mod types;
 
 pub use client::{DominionClient, DominionThread, GoalHandle, ThreadResult};
 pub use error::{DominionError, Result};
+pub use mcp::{McpTool, ToolRegistry};
 pub use streaming::{ChatStream, EventStream};
 pub use types::{
     ChatEvent, ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,

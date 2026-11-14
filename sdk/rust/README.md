@@ -96,6 +96,28 @@ The SDK resumes with the last delivered sequence, rejects inconsistent IDs,
 and removes duplicate events on reconnection. If the client falls behind the
 server's 500-record replay window, reconcile by fetching current goal/job state.
 
+## First-party Rust MCP tool plugins and hooks
+
+The SDK includes a **real Rust stdio MCP server**, not a vendor runtime or a JSON-only example. Build the bundled native executable:
+
+```bash
+cargo build --manifest-path sdk/rust/Cargo.toml --bin dominion-sdk-tool-server
+```
+
+Register it using Dominion's existing `POST /api/mcp` record API, with absolute `command` path:
+
+```json
+{"name":"Rust SDK Tools","enabled":true,"transport":"stdio","command":"/absolute/path/to/dominion-sdk-tool-server","args":[],"approval":true}
+```
+
+The Rust backend's `StdioSession` performs the handshake and resolves
+`mcp__rust_sdk_tools__word_count` through `tools/list` and `tools/call`.
+Use `ToolRegistry::register` to implement custom async Rust tools and
+optional `before_tool`/`after_tool` host hooks. The model never gets to
+register a callback or modify approval policy just by naming one.
+
+The subprocess wire path is tested in `tests/mcp_stdio.rs`.
+
 ## Actual scope
 
 - Native `DominionClient` Rust type, authenticated HTTP and error classification
@@ -115,5 +137,4 @@ model execution or genuine provider invoices.
 
 This release is a **Rust SDK client for the native runtime**, not an in-process
 embedded engine library. A separate Rust server must be running.
-Out-of-process custom tool callback registration and an ACP server transport
-are further native engine extensions, not falsely advertised as present.
+Native Rust callbacks are available via MCP stdio. In-process engine embedding\nand ACP transport are still separate enhancements.

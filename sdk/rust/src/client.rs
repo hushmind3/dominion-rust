@@ -327,7 +327,7 @@ impl DominionThread {
         while let Some(event) = stream.next().await { events.push(event?); }
         let message = self.messages().await?.into_iter()
             .filter(|m| m.role == "assistant" && !seen.contains(&m.id))
-            .last();
+            .next_back();
         let final_response = message.as_ref().map_or_else(String::new, |m| m.content.clone());
         Ok(ThreadResult { final_response, message, events })
     }
