@@ -13,6 +13,7 @@ mod omni;
 mod quality;
 mod ltx;
 mod film;
+mod pricing;
 use sha2::Digest;
 use std::{
     path::{Path, PathBuf},
@@ -34,6 +35,11 @@ pub fn config(state: &AppState) -> Value {
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
     value["hasLtxKey"] = json!(state.store.has_secret("video:ltx-api"));
     value
+}
+/// Owner preview, recomputed by enqueue and again before a billable call.
+pub fn paid_quote(state:&AppState,body:&Value)->Result<Value,String>{
+    if body["engine"]!="ltx" {return Err("LTX 영상 견적만 지원합니다.".into());}
+    pricing::quote(&config(state),body)
 }
 pub fn quality_available(state:&AppState)->bool {
     quality::available(&config(state))
@@ -99,7 +105,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"qualityReceipt":job["result"]["qualityReceipt"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"costQuote":job["input"]["costQuote"],"maxEstimatedKrw":job["input"]["maxEstimatedKrw"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"qualityReceipt":job["result"]["qualityReceipt"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -225,6 +231,14 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
             body["confirmedPaidCallCount"].as_u64()!=Some(expected_calls) {
             return Err(format!("유료 영상 생성 예상 호출 {expected_calls}회를 정확히 확인해야 합니다."));
         }
+        let quote=pricing::quote(&input["config"],&input)?;
+        let ceiling=body["maxEstimatedKrw"].as_u64();
+        let expected_krw=quote["estimatedKrw"].as_u64().unwrap_or(u64::MAX);
+        if body["approvedPaidQuote"]!=true || ceiling.is_none_or(|limit|limit<expected_krw){
+            return Err(format!("LTX 예상 원화 생성비 {expected_krw}원을 확인하고 해당 금액 이상의 상한을 승인하세요."));
+        }
+        input["costQuote"]=quote;
+        input["maxEstimatedKrw"]=json!(ceiling.unwrap_or(0));
         input["paidCallCount"] = json!(expected_calls);
     }
     jobs::enqueue(state, "video", input)
@@ -567,6 +581,23 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
+    // Work may sit in a durable queue across pricing table releases. Never
+    // submit a paid request when the refreshed estimate exceeds owner consent.
+    if input["engine"]=="ltx" {
+        let quote=if input["retake"].is_object(){
+            let durations=input["retake"]["newPaidDurations"].as_array()
+                .ok_or("장면 재생성 원가 기준이 없습니다.")?
+                .iter().map(|v|v.as_u64().ok_or("장면 길이 형식 오류"))
+                .collect::<Result<Vec<_>,_>>()?;
+            pricing::quote_durations(input["ltxModel"].as_str().unwrap_or(""),
+                input["ltxQuality"].as_str().unwrap_or(""),&durations)?
+        }else{pricing::quote(&input["config"],input)?};
+        if quote["priceVersion"]!=input["costQuote"]["priceVersion"] ||
+            quote["estimatedKrw"].as_u64().unwrap_or(u64::MAX)>
+                input["maxEstimatedKrw"].as_u64().unwrap_or(0) {
+            return Err("needs_review: 영상 참조 견적이 변경되었거나 승인액을 초과했습니다. 유료 호출을 하지 않습니다.".into());
+        }
+    }
     let result = if input["engine"]=="ltx" && input["ltxFilm"]==true {
         film::run(ctx,input,&dir).await
     } else if input["engine"]=="ltx" {
