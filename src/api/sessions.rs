@@ -45,8 +45,21 @@ pub async fn session_messages(
 pub async fn session_usage(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<Value> {
-    Json(state.store.session_usage(&id))
+) -> Response {
+    // Owner goal usage includes every delegated model session. An ordinary
+    // chat remains a per-session usage query for backwards compatibility.
+    let goal_root=state.store.get("session",&id)
+        .and_then(|session|session["goalId"].as_str().map(str::to_owned))
+        .and_then(|goal_id|state.store.get("goal",&goal_id))
+        .is_some_and(|goal|goal["sessionId"].as_str()==Some(id.as_str()));
+    if goal_root {
+        return match state.store.session_tree_usage(&id) {
+            Ok(usage)=>Json(usage).into_response(),
+            Err(cause)=>error(StatusCode::INTERNAL_SERVER_ERROR,&format!(
+                "목표와 하위 에이전트의 토큰 사용량을 읽을 수 없습니다: {cause}")),
+        };
+    }
+    Json(state.store.session_usage(&id)).into_response()
 }
 
 pub async fn rename_session(
