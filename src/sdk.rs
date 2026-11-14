@@ -270,6 +270,17 @@ impl DominionSdk {
         engine::steering::enqueue(&self.state, session_id, instruction)
     }
 
+    /// Change the live autonomous goal, not just the generated plan.
+    /// Its new checks and independent baselines become authoritative at the
+    /// next Rust executor turn boundary.
+    pub fn redirect_goal(
+        &self, goal_id: &str, expected_revision:u64, objective:&str, criteria:&Value,
+    ) -> Result<Value, String> {
+        engine::owner_objective::submit(
+            &self.state, goal_id, expected_revision, objective, criteria,
+        ).map_err(|error|format!("goal objective revision: {error:?}"))
+    }
+
     /// Register a provider using the same encrypted secret store as the app.
     /// The API key is not persisted in the provider JSON record.
     pub fn register_provider(

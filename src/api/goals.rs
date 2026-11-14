@@ -164,6 +164,29 @@ pub async fn discard_workspace(State(state):State<AppState>,Path(id):Path<String
     }
 }
 
+/// Redirect the goal itself, not just its plan. The owner supplies the exact
+/// new objective and optionally new deterministic acceptance criteria; old
+/// tool receipts are never reused as proof for the revised objective.
+pub async fn revise_objective(
+    State(state):State<AppState>, Path(id):Path<String>, Json(body):Json<Value>,
+)->Response {
+    let Some(expected)=body["expectedRevision"].as_u64() else{
+        return error(StatusCode::BAD_REQUEST,"현재 목표 수정 버전이 필요합니다.");
+    };
+    let Some(objective)=body["goal"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"새 목표 원문이 필요합니다.");
+    };
+    let criteria=body.get("successCriteria").cloned().unwrap_or_else(||json!([]));
+    use crate::engine::owner_objective::RevisionError;
+    match crate::engine::owner_objective::submit(&state,&id,expected,objective,&criteria){
+        Ok(row)=>(StatusCode::ACCEPTED,Json(row)).into_response(),
+        Err(RevisionError::Missing)=>error(StatusCode::NOT_FOUND,"목표가 없습니다."),
+        Err(RevisionError::Invalid)=>error(StatusCode::BAD_REQUEST,"목표 또는 검증 조건이 유효하지 않습니다."),
+        Err(RevisionError::Immutable)=>error(StatusCode::CONFLICT,"실행 중인 목표만 수정할 수 있습니다."),
+        Err(RevisionError::Conflict)=>error(StatusCode::CONFLICT,"목표가 변경됐습니다. 새 버전으로 다시 요청하세요."),
+    }
+}
+
 /// Running goal owner steering is queued until the next safe executor turn.
 /// This does not alter the frozen acceptance checks or currently running tools.
 pub async fn steer_goal(State(state):State<AppState>,Path(id):Path<String>,
