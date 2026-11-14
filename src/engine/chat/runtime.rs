@@ -40,6 +40,9 @@ mod tool_catalog;
 use tool_catalog::{tool_is_read_only,mark_tool_argument_signal,
     normalize_tool_arguments,tool_name,recent_room_tools,select_room_tools,
     select_tool_definitions,trim_tool_definitions};
+#[path = "runtime/loop_guard.rs"]
+mod loop_guard;
+use loop_guard::{ReadLoopGuard,RepeatDecision};
 #[path = "runtime/dispatch.rs"]
 mod dispatch;
 use dispatch::{frozen_replacements,run_frozen_replacements,dispatch_tool_call,record_soft_tool_error};

@@ -623,6 +623,7 @@ pub(super) async fn run_turn_body(
     let mut finished = false;
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut read_loop_guard=ReadLoopGuard::default();
     let mut failed_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut environment_version = 0u64;
@@ -1837,6 +1838,36 @@ pub(super) async fn run_turn_body(
                 *counter += 1;
                 *counter
             };
+            // A third identical local read with two matching real results
+            // is a stuck model, not fresh evidence. Return a truthful denied
+            // tool result under the original call ID; never replay stale bytes
+            // or fabricate a completed execution_operation.
+            if session["rsiRun"]!=true {
+                match read_loop_guard.decision(&call.name,&call_key,
+                    &current_fingerprint,environment_version,repeat) {
+                    RepeatDecision::Refuse | RepeatDecision::Stop => {
+                        let stop=repeat>=5;
+                        let error=format!(
+                            "같은 로컬 파일 관측이 변동 없는 환경에서 {}회 반복되었습니다. 다른 파일/범위/도구로 진행하세요.",
+                            repeat);
+                        record_soft_tool_error(state,tx,session_id,request,execution_id,
+                            &call.name,&call.id,&error,metrics);
+                        messages.push(json!({"role":"tool","tool_call_id":call.id,
+                            "content":json!({"error":error,"loopGuard":true,
+                                "priorSuccessfulObservations":2,
+                                "newToolExecution":false}).to_string()}));
+                        state.store.audit("chat.read_loop_guard",json!({
+                            "sessionId":session_id,"executionId":execution_id,
+                            "tool":call.name,"attempts":repeat,"terminated":stop,
+                            "noEffectReplayed":true}));
+                        if stop {
+                            return Err("동일한 파일 관측이 반복되어 무한 루프를 중단했습니다.".into());
+                        }
+                        continue;
+                    }
+                    RepeatDecision::Allow => {}
+                }
+            }
             if repeat > 2 {
                 // Repeated calls are an observation, not a hard stop. The model
                 // sees the same real result and decides whether to change tack.
@@ -1875,6 +1906,13 @@ pub(super) async fn run_turn_body(
             )
             .await?;
             ordering_used = true;
+            // Record actual observations only AFTER the tool gateway returns.
+            // Denials, fabricated outputs and failed calls never teach the
+            // loop guard that an unchanged file was truly observed.
+            if session["rsiRun"]!=true {
+                read_loop_guard.observe(&call.name,&call_key,&current_fingerprint,
+                    environment_version,&tool_content,ok);
+            }
             if !ok {
                 ordering_ok = false;
             } else if call.name=="workspace_read_range" {

@@ -148,6 +148,11 @@ pub(super) fn failure_observation(
                     "exists": true,
                     "isDir": metadata.is_dir(),
                     "len": metadata.len(),
+                    // Equal-sized edits still change the observable state.
+                    // File mtime is part of the retry/loop fingerprint.
+                    "modifiedUnixNanos": metadata.modified().ok()
+                        .and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d|d.as_nanos().to_string()),
                 }),
             );
         } else {
