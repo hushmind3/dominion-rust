@@ -18,6 +18,7 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+use sha2::{Digest,Sha256};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -106,7 +107,8 @@ pub fn public_job(job: &Value) -> Value {
     };
     json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":storyboard,"filmCompleted":job["videoState"]["filmCompleted"],
     "cinematic":job["input"]["cinematic"],"shotProgress":job["videoState"]["shotIndex"],
-    "shotCount":job["videoState"]["shotCount"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
+    "shotCount":job["videoState"]["shotCount"],"film":job["input"]["render"]["film"],
+    "retake":job["input"]["retake"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -201,6 +203,9 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         let clip_count = validated["film"]["clips"].as_array().map(Vec::len).unwrap_or(1);
         if clip_count > 1 && ffmpeg_from_config(&cfg).is_none() {
             return Err("장편 AI 영상 합성에 FFmpeg가 필요합니다.".into());
+        }
+        if clip_count > 1 && (!technical_gate || quality::executable(&cfg).is_none()) {
+            return Err("다중 유료 LTX 클립은 생성 전에 FFprobe 기술 검증을 활성화해야 합니다.".into());
         }
         Some(validated)
     } else { None };
@@ -606,6 +611,43 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 }
+/// Reveal a bounded, local clip manifest; never expose cloud credentials.
+pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"잘못된 영상 ID")?;
+    let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
+    film::scenes(state,&job)
+}
+/// SHA-guarded, idempotent NEW job for exactly one paid replacement clip.
+/// Unchanged clips are copied and verified, not resubmitted to LTX.
+pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"잘못된 영상 ID")?;
+    if body.as_object().is_none_or(|map|map.keys().any(|k|
+        !matches!(k.as_str(),"index"|"expectedSha256"|"prompt"|
+            "confirmedPaidCallCount"|"confirmNewPaidCalls"))){
+        return Err("지원하지 않는 재생성 설정이 포함됐습니다.".into());
+    }
+    if body["confirmNewPaidCalls"]!=true{
+        return Err("유료 영상 생성 1회에 동의해야 합니다.".into());
+    }
+    let source=state.store.get("job",id).ok_or("원본 영상이 없습니다.")?;
+    let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
+    let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA가 없습니다.")?;
+    let calls=body["confirmedPaidCallCount"].as_u64()
+        .ok_or("추가 유료 호출 횟수를 확인하세요.")?;
+    let input=film::retake_input(state,&source,index,digest,body["prompt"].as_str(),calls)?;
+    let fingerprint=input["retake"]["fingerprint"].as_str()
+        .ok_or("재생성 고유키가 없습니다.")?;
+    let hash=Sha256::digest(fingerprint.as_bytes());
+    let mut bytes=[0u8;16];
+    bytes.copy_from_slice(&hash[..16]);
+    bytes[6]=(bytes[6]&0x0f)|0x40;
+    bytes[8]=(bytes[8]&0x3f)|0x80;
+    let job_id=uuid::Uuid::from_bytes(bytes).to_string();
+    let saved=jobs::enqueue_once(state,&job_id,"video",input)
+        .ok_or("장면 재생성 작업 등록에 실패했습니다.")?;
+    Ok(public_job(&saved))
+}
+
 pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     output_path(state, id)?;
     let video = state.store.get("job", id).ok_or("영상이 없습니다.")?;
