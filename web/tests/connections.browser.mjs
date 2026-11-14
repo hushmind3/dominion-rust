@@ -94,6 +94,10 @@ async function run(){
  await page.getByText('Corrected memory').waitFor()
  assert.deepEqual(edits,[{text:'Corrected memory',expectedText:'Original memory'}])
 
+ await page.goto(base+'/#/goals')
+ await page.getByText('자율 목표 에이전트').waitFor()
+ assert.equal(await page.locator('nav button').filter({hasText:'자율 목표'}).count(),1)
+
  await page.goto(base+'/#/chat')
  await sleep(16_000) // more than the previous 15-second unsolicited-alert cadence
  assert.equal(await page.getByText('자기개선 한 번 해볼까요?').count(),0)
