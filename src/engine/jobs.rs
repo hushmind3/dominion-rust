@@ -724,7 +724,15 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
     // A detached worktree protects the running DOMINION checkout. The worker
     // captures the real diff and verifier evidence before removing that copy.
     let mut scoped_state = context.state.clone();
-    if let Some(worktree)=&rsi_workspace {scoped_state.config.workspace=worktree.path.clone();}
+    if let Some(worktree)=&rsi_workspace {
+        scoped_state.config.workspace=worktree.path.clone();
+    } else {
+        // A delegated prompt belonging to a goal must use the same checked
+        // out source as its parent. Never fall back to the live checkout.
+        scoped_state.config.workspace=
+            crate::engine::goal_workspace::workspace_for_session(
+                &context.state,&session_id)?;
+    }
     // Source-driven induction is an independently identified generator,
     // not a synthetic model tool call. Its real patch follows the SAME
     // verifier, paired frozen holdout and descendant adoption pipeline.
