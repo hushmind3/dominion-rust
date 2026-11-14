@@ -1,37 +1,35 @@
-# 외부 Agent SDK 기술조사 및 실모델 증거 게이트 (2026-11-14)
+# 외부 에이전트 기술의 참고 원칙과 도미니언 자체 엔진 개선 (2026-11-14)
 
-## 관찰된 문제
-기존 DOMINION의 `/goal`은 채팅 명령인데 별도 메뉴·성과 페이지가 개발/평가 자원을 차지했다. 이번 커밋부터 사이드바/라우트는 제거하고 /goal 명령과 SQLite 감사·인간승인 로직만 유지한다. 무엇보다 이미 존재하는 공식 에이전트 런타임과 성능을 비교하지 않은 채 사내 도구 루프만 쌓아온 문제를 분리한다.
+## 소유·실행 원칙
 
-## 2026년 실제 공개 소스
+**도미니언은 외부 Copilot, Claude Code, Codex SDK의 실행기나 정책 엔진을 호출하는 래퍼가 아니다.** 연구·GitHub 구현은 설계 참고 자료로만 활용한다. 런타임의 에이전트 판단, 작업 계획, 도구 선택·호출, 모델/Provider 라우팅, 실행 승인, 감사/복구, 기억·RSI는 `src/engine` 및 `src/api`가 책임진다. 고정 가중치 공개 모델과 사용자의 API 모델은 도미니언 자체 gateway로 실행한다.
 
-| 프레임워크 | 재사용 가능한 능력 | Rust 제품에서의 채택 판단 |
-|---|---|---|
-| [GitHub Copilot SDK](https://github.com/github/copilot-sdk) | **2026-06-02 GA**, Rust 공식 크레이트 `github-copilot-sdk`, Copilot CLI 기반 도구/계획/파일 편집/세션/하위 에이전트/MCP/권한 핸들러/BYOK | **우선 실모델 비교 대상**. Rust 네이티브 호출 가능. Copilot 인증 또는 BYOK 필요하며 오픈소스 SDK≠무료 무제한 모델 |
-| [Swiftide](https://docs.rs/swiftide/latest/swiftide/) | Rust 도구 루프, 타이핑된 작업 그래프, 라이프사이클 훅, MCP, OTel, RAG, pause/resume | 기존 도미니온 Rust 에이전트 런타임에 부분 대체/통합 가능한 후보. CLI/모델과 결합 전 실능력 비교 |
-| [OpenAI Agents SDK JS/TS](https://github.com/openai/openai-agents-js) | Handoffs, sessions, MCP, guards, tracing, sandbox agent | TypeScript 별도 런타임이므로 Rust 본체 완전 교체보다 격리된 비교 어댑터 |
-| [Pydantic AI](https://github.com/pydantic/pydantic-ai) | typed capabilities + Temporal/DBOS/Restate 등 durable execution 지원 | Python 서비스 의존·운영 복잡도 고려, 재시작/요청 저널링의 비교 기준 |
-| [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | 여러 모델/역할, 순차·병렬·handoff·group graph | Python/.NET/Go 위주; Rust 본체에 기법을 반영하되 외부 프로세스 통합비 비교 |
-| [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) | Claude Code agent runtime, 도구, CLI 및 세션 | 별도 런타임·실서비스 비용과 재배포 약관 확인 후 선택 |
+### 2026년 외부 기술에서 참고할 **개념** (소스 재사용/의존 없음)
 
-## 실제 SDK 호출 파일
-`tools/copilot-sdk-probe`는 **본체와 분리된 별도 Cargo 실행기**다. README에 SDK 문서만 링크한 게 아니라 `Client::start → create_session → send_and_wait → get_events → disconnect → stop`을 실제 SDK API로 호출한다.
+| 참고 프로젝트 | 참고할 기법 | 도미니언 자체 구현 위치 | 채택 경계 |
+|---|---|---|---|
+| [GitHub Copilot SDK](https://github.com/github/copilot-sdk) | 대화 턴의 도구 이벤트, 세션 식별, 승인 흐름, 복구 이벤트 | `chat/runtime/turn.rs`, `tool_execution.rs`, `effect.rs`, `run_state.rs` | **Copilot CLI, SDK, 실행 정책 미사용** |
+| [Swiftide](https://github.com/bosun-ai/swiftide) | 도구 정의를 작업 맥락에 맞춰 노출하고 실행 전후를 관측 | `chat/runtime/tool_selection.rs`, `algorithms.rs`, `tools.rs` | Rust 도미니언 내부 알고리즘 독립 유지 |
+| [OpenAI Agents SDK](https://github.com/openai/openai-agents-js) | 도구/에이전트 전환 추적, 발언 라우팅, 출력 검증 경계 | `rooms/speakers.rs`, `workflows.rs`, `verification.rs` | OpenAI SDK/정책/세션 의존 없음 |
+| [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | 단계 분기·역할 할당·협업 결과 합성·체크포인트 | `workflows.rs`, `rooms.rs`, `jobs.rs` | 런타임 교체 없이 독립 구현 |
+| [Pydantic AI](https://github.com/pydantic/pydantic-ai) | durable execution, 단계별 구조화 결과, 복구 | `jobs.rs`, `db.rs`, `lease.rs` | Python/외부 스케줄러 필수 아님 |
 
-- 본체 기본 빌드에 추가 종속성 없음. Rust 1.94 이상 필요. Copilot SDK 1.0.34 패키지와 인증(또는 BYOK 모델 키)이 별도로 필요하다. 기본 빌드는 SDK CLI를 번들하지 않으므로 `COPILOT_CLI_PATH`에 사용자 설치 CLI를 지정하거나 `cargo run --features bundled-cli`을 사용한다.
-- 테스트할 때 임의로 생성한 정확한 마커를 `proof.txt`에만 기록하며 모델 프롬프트에는 정답을 싣지 않는다.
-- 읽기 `view`만 SDK 권한으로 허용한다. shell/edit/MCP/원격 변경은 차단한다. 승인 범위를 넓히려면 별도의 격리·인간승인 연동이 필요하다.
-- 한 번의 실모델 호출에서 최종 **루트 에이전트** 응답에 마커가 존재해야 성공이다. 도구 내용·중간 응답·서브에이전트 발언은 정답 증거로 사용하지 않는다.
-- 실행 이벤트 수, SDK 오류, 경과 시간, 관측된 도구 이벤트 수, 제공된 usage 이벤트를 JSON으로 저장한다. 사용량 이벤트가 없다면 실제 토큰·청구 금액은 `null`/미계측으로 구분하며 허위 절감률을 주장하지 않는다.
-- 인증이나 유료 모델을 자동 실행하지 않는다. `DOMINION_SDK_EVAL_ALLOW_MODEL_CALLS=1` 명시가 필요하다.
-- 이 프로브는 **읽기 도구 오라클 1문제**다. 코딩 에이전트 품질·임의 외부작업 안전을 증명하지 않는다. 병렬 실모델 과제, 동일 모델/프롬프트/토큰 예산, 파일 수정 독립 오라클은 후속 실험이다.
+## 이번에 직접 구현한 개선: 작업 의도 기반 도구 스키마 예산 편성
 
-실행 (사용자 계정의 Copilot CLI 인증 또는 BYOK가 선행돼야 함):
+이전에는 도구 스키마가 모델 context budget을 넘기면 **원본 등록 순서대로** 스키마를 넣었다. 예를 들어 앞의 영상 도구 스키마가 900바이트이고 전체 예산이 400바이트이면 뒤의 셸·파일 도구가 충분히 작아도 사라질 수 있었다. 스키마 등록 순서가 모델의 실제 작업 능력을 결정하는 오류다.
 
-```bash
-DOMINION_SDK_EVAL_ALLOW_MODEL_CALLS=1 \
-DOMINION_SDK_EVAL_MODEL="<Copilot runtime supported model>" \
-DOMINION_SDK_EVAL_OUTPUT=./sdk-probe-result.json \
-cargo run --release --manifest-path tools/copilot-sdk-probe/Cargo.toml --features bundled-cli
-```
+`src/engine/chat/runtime/tool_selection.rs::trim_tool_definitions`는 다음처럼 도미니언 자체에서 개선했다.
 
-※ SDK 코드와 Rust 기반 probe가 존재하는 것만으로 제품 엔진 성능 점수를 올릴 수 없다. 실제 실행·성공·비용 데이터를 획득한 뒤 SDK를 도미니온의 지원 백엔드로 편입할지 결정한다. SDK 내부 임의 도구 실행의 성공 보고를 기존 `execution_operation` SQLite 권한/감사와 동치로 취급하는 것은 금지한다.
+1. 맥락 예산 안에 전체 도구가 들어가면 어떤 도구도 생략하지 않고 원래 순서를 유지한다.
+2. 넘칠 때만 **현재 턴의 한국어/영어 요청 의도**, 고유 도구명, 도구 설명 단어를 점수화한다. 파일 편집·읽기·셸 검증·웹 검색·기억·위임에 따라 관련 도구에 우선권을 준다.
+3. 점수가 같으면 작은 스키마부터 선택해 비용을 아낀다. 최종적으로 원래 상대 순서를 지켜 provider에 전달한다.
+4. 첫 도구가 너무 커서 나머지가 모두 빠지는 문제를 제거하고, 전체가 예산보다 큰 경우 가장 작은 유효 도구를 유지한다.
+5. 이는 도구를 허가하거나 실행하지 않는다. 기존 읽기 전용 위임·RSI 허용 도구·권한 검사 및 실제 실행 영수증 로직은 그대로 유지된다.
+
+원본 등록 순서 때문에 관련 셸·파일 도구가 사라지는 경우, 충분한 예산의 무회귀, 모든 스키마 초과, 이름 없는 스키마 제외까지 테스트한다. **외부 SDK/모델/CLI 의존성은 0개**다.
+
+## 검증 수준과 후속 과제
+
+- Rust 컴파일/테스트 CI 통과 여부와 별개로 실모델 완수율 개선을 주장하지 않는다. 동일 작업·모델에서 스키마 토큰, 선택된 도구, 실제 작업 완수율, 도구 실패, 캐시 재사용, 실제 청구 비용까지 비교해야 정식 최적화로 인정한다.
+- 모델 지능의 향상은 타사 실행 엔진을 붙여 얻지 않는다. 자체 planner·tool selector·feedback·memory·RSI의 결과로 증명한다.
+- `/goal`은 채팅 명령이다. 별도 제품 메뉴는 제거했고 오래된 북마크는 활동 화면으로 연결된다.

@@ -750,7 +750,7 @@ pub(super) async fn run_turn_body(
                         .clamp(4_000, 60_000)
                 })
                 .unwrap_or(60_000);
-            round_tools = trim_tool_definitions(round_tools, budget);
+            round_tools = trim_tool_definitions(round_tools, budget, &request.input);
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;

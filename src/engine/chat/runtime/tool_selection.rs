@@ -341,18 +341,155 @@ pub(super) fn select_tool_definitions(
         .collect()
 }
 
-pub(super) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
-    let mut kept = Vec::new();
-    let mut used = 0usize;
-    for definition in definitions {
-        let size = serde_json::to_string(&definition)
-            .map(|text| text.len())
-            .unwrap_or(0);
-        if used + size > budget && !kept.is_empty() {
-            continue;
-        }
-        used += size;
-        kept.push(definition);
+/// Scores schemas against the task, not against an SDK-defined agent profile.
+/// This runs only when all schemas exceed the model's context allocation.
+/// Capability is never granted by selection: policy gates execute afterwards.
+fn tool_schema_relevance(definition: &Value, task: &str) -> i32 {
+    let name = tool_name(definition).to_lowercase();
+    if name.is_empty() {
+        return i32::MIN;
     }
-    kept
+    let query = task.to_lowercase();
+    let mut score = if query.contains(&name) { 120 } else { 0 };
+    let description = serde_json::to_string(definition)
+        .unwrap_or_default()
+        .to_lowercase();
+    for token in query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .take(50)
+    {
+        if name.contains(token) {
+            score += 20;
+        } else if description.contains(token) {
+            score += 2;
+        }
+    }
+    let intent = |terms: &[&str]| terms.iter().any(|term| query.contains(term));
+    let is_read = name.contains("read") || name.contains("list") || name.contains("search");
+    let is_edit = name.contains("write") || name.contains("replace") || name.contains("edit");
+    let is_shell = name.contains("shell") || name.contains("terminal") || name.contains("exec");
+    if intent(&["파일", "폴더", "읽", "코드", "소스", "repo", "file", "read"]) && is_read {
+        score += 24;
+    }
+    if intent(&["수정", "변경", "고쳐", "작성", "구현", "편집", "write", "edit", "fix"]) {
+        if is_edit {
+            score += 44;
+        } else if is_read {
+            score += 20;
+        }
+    }
+    if intent(&["실행", "테스트", "빌드", "검증", "컴파일", "run", "test", "build"]) && is_shell {
+        score += 42;
+    }
+    if intent(&["검색", "최신", "웹", "찾아", "search", "browse", "web"]) 
+        && (name.contains("search") || name.contains("fetch") || name.contains("browser"))
+    {
+        score += 30;
+    }
+    if intent(&["기억", "회상", "memory", "recall"]) && name.contains("memory") {
+        score += 35;
+    }
+    if intent(&["위임", "협업", "하위", "delegate", "agent"]) 
+        && (name.contains("delegate") || name.contains("task"))
+    {
+        score += 35;
+    }
+    score
+}
+
+/// Native task-aware packing of tool schemas into the provider's remaining
+/// context. An oversized irrelevant first schema must not hide the only tool
+/// able to perform the task. Unconstrained tasks keep the original order.
+pub(super) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize, task: &str) -> Vec<Value> {
+    let sizes = definitions
+        .iter()
+        .map(|definition| serde_json::to_string(definition).map(|s| s.len()).unwrap_or(0))
+        .collect::<Vec<_>>();
+    if sizes.iter().sum::<usize>() <= budget {
+        return definitions;
+    }
+    let mut ranked = definitions
+        .iter()
+        .enumerate()
+        .filter(|(_, definition)| !tool_name(definition).is_empty())
+        .map(|(index, definition)| (index, tool_schema_relevance(definition, task), sizes[index]))
+        .collect::<Vec<_>>();
+    // When relevance is equal, shorter definitions make more room for later
+    // tools; original position is the stable final tie breaker.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)).then_with(|| a.0.cmp(&b.0)));
+    let mut selected = std::collections::HashSet::new();
+    let mut used = 0usize;
+    for &(index, _, size) in &ranked {
+        if size <= budget.saturating_sub(used) {
+            selected.insert(index);
+            used += size;
+        }
+    }
+    if selected.is_empty() {
+        // If not even one schema fits, preserve the shortest usable tool
+        // rather than the previous behavior of always preserving the first.
+        if let Some((index, _, _)) = ranked.iter().min_by_key(|x| x.2) {
+            selected.insert(*index);
+        }
+    }
+    definitions
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, definition)| selected.contains(&index).then_some(definition))
+        .collect()
+}
+
+#[cfg(test)]
+mod tool_packing_tests {
+    use super::*;
+
+    fn schema(name: &str, extra_bytes: usize) -> Value {
+        json!({"type":"function","function":{
+            "name":name,"description":"x".repeat(extra_bytes),
+            "parameters":{"type":"object","properties":{}}
+        }})
+    }
+
+    #[test]
+    fn relevant_native_tool_survives_context_pressure() {
+        let definitions = vec![
+            schema("video_render", 900),
+            schema("shell_exec", 24),
+            schema("workspace_read", 24),
+        ];
+        let selected = trim_tool_definitions(definitions, 400, "프로젝트 테스트를 실행하고 검증해");
+        let names: Vec<_> = selected.iter().map(tool_name).collect();
+        assert!(names.contains(&"shell_exec"));
+        assert!(names.contains(&"workspace_read") || selected.len() == 1);
+        assert!(!names.contains(&"video_render"));
+    }
+
+    #[test]
+    fn unrestricted_context_preserves_order_and_all_capabilities() {
+        let definitions = vec![schema("video_render", 14),schema("shell_exec",14)];
+        assert_eq!(trim_tool_definitions(definitions.clone(), 10000, "안녕"), definitions);
+    }
+
+    #[test]
+    fn first_oversized_schema_does_not_poison_tool_choice() {
+        let selected = trim_tool_definitions(
+            vec![schema("unrelated", 4000),schema("workspace_write", 32)],
+            400,
+            "파일을 수정해",
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(tool_name(&selected[0]), "workspace_write");
+    }
+
+    #[test]
+    fn malformed_tool_without_a_name_is_not_prioritized() {
+        let chosen = trim_tool_definitions(
+            vec![json!({"type":"function","description":"write file"}),schema("workspace_write",40)],
+            10,
+            "파일을 수정해",
+        );
+        assert_eq!(chosen.len(), 1);
+        assert_eq!(tool_name(&chosen[0]), "workspace_write");
+    }
 }
