@@ -5,6 +5,23 @@
 모델은 OpenAI 호환 HTTP API로 호출하고, Discord는 공식 REST v10으로 연결합니다.
 이번 변경은 Cargo 의존성을 추가하지 않습니다. `web/`의 Node 도구는 UI 빌드에 사용합니다.
 
+## SDK와 엔진의 분리 (2026-11-14)
+
+```text
+외부 TypeScript 프로그램 / React UI
+    → sdk/typescript/src/index.ts (DominionSDK)
+    → HTTP /api/sessions, /api/chat(SSE), /api/goals, /api/events(SSE), /api/approvals
+    → src/api/{sessions,chat,goals,system,approvals}.rs
+    → src/engine/{chat,goals,jobs,tools,mcp,verification,learning}.rs
+    → SQLite 실행 원장·체크포인트 / Provider / 로컬 모델
+```
+
+SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라이브러리**입니다. `DominionThread.runStreamed`는 현재 Rust 세션으로 직접 턴을 보내고, `run`은 완료 이벤트 이후 저장된 `messageId`의 실제 assistant 메시지를 읽습니다. `DominionGoal`은 독립적으로 살아 있는 목표 작업 ID를 재사용합니다. `watchEvents({after})`는 전역 이벤트 버스의 durable `seq`를 이어서 읽습니다. 승인과 취소는 기존 API에 도달하며 새로운 외부 SDK 정책 계층이 없습니다.
+
+사용자 최종 메시지는 검색된 기억/경험 앞에 묻히지 않습니다. 모델 입력의 근거 자료는 `context::place_retrieval_before_latest_user`에서 최신 사용자 메시지 앞에 삽입하며, 서버는 해당 자료를 사용자의 새 지시로 저장하지 않습니다. 실질적인 도구 승인·검증·실행 관리는 Rust 엔진이 유지합니다.
+
+컴파일/SDK 단위 테스트/실모델 검증은 서로 다른 수준의 증거이며, 문서만으로 완료 판정을 내리지 않습니다.
+
 ## 기억과 학습
 
 `memory.rs`가 기억의 소유권과 검색을 결정하고, `learning.rs`가 검증된 원문을 저장합니다.
