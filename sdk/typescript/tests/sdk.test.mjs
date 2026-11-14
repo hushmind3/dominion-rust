@@ -161,15 +161,15 @@ test("thread run captures only the newly persisted assistant reply", async () =>
   const sdk = new DominionClient({fetch: async (url,init) => {
     const path = new URL(url).pathname;
     calls.push(path);
-    if (path === "/api/sessions") return json({id:"s1",title:"agent"});
-    if (path === "/api/sessions/s1/messages") {
+    if (path === "/api/sdk/threads") return json({id:"s1",title:"agent"});
+    if (path === "/api/sdk/threads/s1/history") {
       reads++;
       const prior = [{id:"old",session_id:"s1",role:"assistant",content:"old answer"}];
       return json(reads === 1 ? prior : [...prior,{
         id:"fresh",session_id:"s1",role:"assistant",content:"new answer",
       }]);
     }
-    if (path === "/api/chat") {
+    if (path === "/api/sdk/threads/s1/run") {
       const body = JSON.parse(init.body);
       assert.equal(body.sessionId,"s1");
       assert.equal(body.input,"write a plan");
@@ -183,11 +183,57 @@ test("thread run captures only the newly persisted assistant reply", async () =>
   assert.equal(result.finalResponse,"new answer");
   assert.equal(result.message.id,"fresh");
   assert.deepEqual(calls,[
-    "/api/sessions","/api/sessions/s1/messages","/api/chat","/api/sessions/s1/messages",
+    "/api/sdk/threads","/api/sdk/threads/s1/history","/api/sdk/threads/s1/run","/api/sdk/threads/s1/history",
   ]);
 });
 
 test("SDK validates base URL and never injects credentials into the URL", () => {
   assert.throws(() => new DominionClient({baseUrl:"file:///tmp/demo"}), TypeError);
   assert.throws(() => new DominionClient({baseUrl:"https://admin:pass@example.com"}), TypeError);
+});
+
+test("native SDK steering is sent once to the active Rust thread, without a new run",async()=>{
+ const calls=[];
+ const sdk=new DominionClient({fetch:async(url,init)=>{
+  calls.push({url:new URL(url).pathname,method:init.method,body:JSON.parse(init.body||"{}")});
+  return json({id:"steer-1",status:"queued",sessionId:"th"});
+ }});
+ const thread=sdk.resumeThread("th");
+ const receipt=await thread.steer("변경: 기존 계획 중단하고 테스트를 먼저 실행");
+ assert.equal(receipt.status,"queued");
+ assert.deepEqual(calls,[{
+  url:"/api/sdk/threads/th/steer",method:"POST",
+  body:{instruction:"변경: 기존 계획 중단하고 테스트를 먼저 실행"}
+ }]);
+});
+
+test("native SDK stream returns real error message and never replays a POST",async()=>{
+ let posts=0;
+ const sdk=new DominionClient({fetch:async()=>{
+  posts++;
+  return sse('data: {"type":"error","message":"workspace failure"}\\n\\n',
+             'data: {"type":"done"}\\n\\n');
+ }});
+ await assert.rejects(async()=>{
+  for await(const _ of sdk.streamThread("th",{input:"fix",agentId:""})){}
+ },e=>e instanceof DominionProtocolError&&e.message.includes("workspace failure"));
+ assert.equal(posts,1);
+});
+
+test("thread stream retains latest owner defaults and never impersonates an unrelated session",async()=>{
+ let body;
+ const sdk=new DominionClient({fetch:async(url,init)=>{
+  assert.equal(new URL(url).pathname,"/api/sdk/threads/session%2F1/run");
+  body=JSON.parse(init.body);
+  return sse('data: {"type":"done"}\\n\\n');
+ }});
+ const thread=sdk.resumeThread("session/1",{providerId:"p",model:"m"});
+ const events=[];
+ for await(const event of thread.runStreamed("run tests"))events.push(event);
+ assert.deepEqual(events.map(x=>x.type),["done"]);
+ assert.equal(body.providerId,"p");
+ assert.equal(body.model,"m");
+ assert.equal(body.input,"run tests");
+ assert.equal(body.toolsEnabled,true);
+ assert.equal(body.sessionId,undefined);
 });
