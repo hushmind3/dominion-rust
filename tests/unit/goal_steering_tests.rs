@@ -31,3 +31,24 @@ fn concurrent_owner_revisions_require_fresh_compare_and_swap(){
     assert!(matches!(submit(&state,"goal",2,""),Err(SteeringError::Invalid)));
     drop(state);std::fs::remove_dir_all(dir).unwrap();
 }
+
+
+#[test]
+fn direct_instruction_has_its_own_durable_kind_and_supersedes_earlier_plan() {
+    let (state,dir)=fixture();
+    state.store.put("goal",&json!({"id":"owner-task","status":"running",
+        "plan":"old model plan","planRevision":0,"appliedPlanRevision":0})).unwrap();
+    let plan=submit(&state,"owner-task",0,"model plan").unwrap();
+    assert_eq!(plan["kind"],"plan");
+    let edit=submit_instruction(&state,"owner-task",1,"사용자 최신 지시를 먼저 수행").unwrap();
+    assert_eq!(edit["kind"],"instruction");
+    let (revision,content,kind)=pending_command(&state,"owner-task",0).unwrap();
+    assert_eq!(revision,2);
+    assert_eq!(content,"사용자 최신 지시를 먼저 수행");
+    assert_eq!(kind,SteeringKind::Instruction);
+    assert!(pending_command(&state,"owner-task",2).is_none());
+    assert!(matches!(submit_instruction(&state,"owner-task",1,"old"),Err(SteeringError::Conflict)));
+    assert_eq!(state.store.get("goal","owner-task").unwrap()["plan"],
+        "old model plan","an in-flight model plan is never silently overwritten");
+    drop(state); std::fs::remove_dir_all(dir).unwrap();
+}
