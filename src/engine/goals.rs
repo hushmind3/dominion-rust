@@ -118,6 +118,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .as_array()
         .cloned()
         .unwrap_or_default();
+    let mut progress_history=goal["progressHistory"].as_array().cloned().unwrap_or_default();
     let mut stalled = job["goalState"]["stalled"].as_u64().unwrap_or(0) as usize;
     // Soft cap applies to actual executor session usage, not auxiliary planner
     // and reviewer calls. A single in-flight call can exceed this cap.
@@ -384,6 +385,22 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         gaps.sort();
         gaps.dedup();
         let complete = complete && gaps.is_empty();
+        // Final successful and budget-exhausted turns must be counted too:
+        // the completion branch exits before the next replan decision.
+        if turn_progress.advanced(){stalled=0;}
+        else {stalled=stalled.saturating_add(1);}
+        let row=json!({"iteration":index+1,
+            "freshActionReceipts":turn_progress.new_actions,
+            "clearedAcceptanceGaps":turn_progress.cleared_checks,
+            "toolErrors":turn_progress.tool_errors,
+            "advanced":turn_progress.advanced(),
+            "stalled":stalled});
+        progress_history.push(row.clone());
+        if progress_history.len()>64{
+            progress_history.drain(..progress_history.len()-64);
+        }
+        patch_goal(state,goal_id,json!({"stalled":stalled,
+            "lastProgress":row,"progressHistory":progress_history}));
         patch_goal(
             state,
             goal_id,
@@ -402,14 +419,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             gaps.push(format!("실행 모델 토큰 예산 소진: {used}/{max_executor_tokens}. 추가 요청 전 검토가 필요합니다."));
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
-        if turn_progress.advanced(){stalled=0;}
-        else {stalled=stalled.saturating_add(1);}
-        patch_goal(state,goal_id,json!({"stalled":stalled,
-            "lastProgress":{"iteration":index+1,
-                "freshActionReceipts":turn_progress.new_actions,
-                "clearedAcceptanceGaps":turn_progress.cleared_checks,
-                "toolErrors":turn_progress.tool_errors,
-                "advanced":turn_progress.advanced()}}));
+
         if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
