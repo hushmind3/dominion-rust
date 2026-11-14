@@ -588,6 +588,85 @@ mod inference_tests {
         assert_eq!(checks[0]["type"], "file_changed");
     }
 
+
+    #[test]
+    fn later_source_edits_invalidate_previous_successful_tests() {
+        let checked=json!({"type":"command_succeeded","command":"cargo test"});
+        let cmd=|seq:u64|json!({
+            "tool":"shell_exec","runId":"run-1","opSeq":seq,
+            "arguments":{"command":"cargo test"},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:01:00Z",
+            "finishedAt":"2026-11-14T10:01:10Z"
+        });
+        let write=|seq:u64|json!({
+            "tool":"workspace_replace_range","runId":"run-1","opSeq":seq,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T10:01:01Z",
+            "finishedAt":"2026-11-14T10:01:02Z"
+        });
+        assert!(fresh_command_matches(&[write(1),cmd(2)],"cargo test"));
+        assert!(!fresh_command_matches(&[cmd(1),write(2)],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),write(2),cmd(3)],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),json!({
+            "tool":"workspace_read","runId":"run-1","opSeq":2,
+            "result":{"content":"read-only"}
+        })],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),json!({
+            "tool":"workspace_write","runId":"run-1","opSeq":2,
+            "result":{"success":false}
+        })],"cargo test"));
+        assert_eq!(checked["command"],"cargo test");
+    }
+
+    #[test]
+    fn multi_iteration_tests_require_a_new_check_after_newer_source_write() {
+        let (state,root)={
+            let root=std::env::temp_dir().join(format!("goal-stale-check-{}",uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let config=crate::config::Config{
+                port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()
+            };
+            let state=crate::state::AppState::new(config.clone(),
+                crate::db::Store::open(&config.db_path()).unwrap(),
+                crate::vault::Vault::open(&config.key_path()));
+            (state,root)
+        };
+        let test=json!({
+            "tool":"shell_exec","runId":"old-run","opSeq":3,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:00:00Z","finishedAt":"2026-11-14T10:01:00Z"
+        });
+        let later_edit=json!({
+            "tool":"workspace_write","runId":"new-run","opSeq":1,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T10:02:00Z","finishedAt":"2026-11-14T10:02:01Z"
+        });
+        let criteria=json!([{"type":"command_succeeded","command":"cargo test"}]);
+        let gaps=acceptance_gaps(&state,"run tests",&criteria,&[test.clone(),later_edit.clone()]);
+        assert_eq!(gaps.len(),1,"{gaps:?}");
+        assert!(gaps[0].contains("다시 실행"),"{gaps:?}");
+        let new_test=json!({
+            "tool":"terminal_exec","runId":"third-run","opSeq":1,
+            "arguments":{"command":"cargo","args":["test"]},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:03:00Z","finishedAt":"2026-11-14T10:03:20Z"
+        });
+        assert!(acceptance_gaps(&state,"run tests",&criteria,
+            &[test,later_edit,new_test]).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsequenced_writes_fail_closed_but_failed_writes_do_not() {
+        let ok=json!({"tool":"shell_exec","arguments":{"command":"npm test"},
+            "result":{"exitCode":0}});
+        let changed=json!({"tool":"workspace_write","result":{"written":true}});
+        assert!(!fresh_command_matches(&[ok.clone(),changed.clone()],"npm test"));
+        let failed=json!({"tool":"workspace_write","result":{"error":"permission denied"}});
+        assert!(fresh_command_matches(&[ok,failed],"npm test"));
+    }
+
     #[test]
     fn multiple_outputs_are_still_inferred_without_a_read_verb() {
         let checks = infer_criteria("a.txt와 b.txt를 만들어줘");
