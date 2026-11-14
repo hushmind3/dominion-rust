@@ -5,6 +5,7 @@ mod ltx;
 mod film;
 mod pricing;
 mod quality;
+mod visual;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -639,6 +640,13 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
                 require_audio,input["technicalGate"]==true).await
                 .map_err(|e|format!("needs_review: 생성된 영상 기술 검수 실패: {e}. 결과 파일은 보존되며 자동 재구매하지 않습니다."))?;
             value["technicalQuality"]=technical;
+            // A real decoded-frame sample reveals black/frozen intervals that
+            // ffprobe's container inspection cannot. Warning only; creative
+            // cuts/stills are not semantic failures, and paid clips never
+            // auto-regenerate on a diagnostic failure.
+            value["visualSignals"]=visual::inspect(&input["config"],
+                &dir.join("output.mp4"),
+                input["duration"].as_u64().unwrap_or(15)).await;
             value["bytes"] = json!(bytes);
             value["outputUrl"] = json!(format!("/api/video/jobs/{}/content", ctx.job_id));
             progress(ctx, "completed", 100)?;
