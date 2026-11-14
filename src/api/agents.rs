@@ -20,6 +20,24 @@ pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) 
     {
         return error(StatusCode::BAD_REQUEST, "에이전트 이름이 필요합니다.");
     }
+    // A preferred skill is an INSTALLED capability, not a marketplace entry.
+    // Validate at write-time so an agent never advertises a non-existent tool.
+    if let Some(ids)=body.get("preferredSkillIds") {
+        let Some(ids)=ids.as_array().filter(|v|v.len()<=8) else {
+            return error(StatusCode::BAD_REQUEST,"에이전트 선택 스킬은 최대 8개 배열입니다.");
+        };
+        let mut seen=std::collections::HashSet::new();
+        for id in ids {
+            let Some(id)=id.as_str().filter(|s|!s.is_empty()) else {
+                return error(StatusCode::BAD_REQUEST,"스킬 ID가 올바르지 않습니다.")
+            };
+            if !seen.insert(id) || state.store.get("skill",id)
+                .is_none_or(|skill|skill["enabled"]==false||skill["status"]=="draft"){
+                return error(StatusCode::BAD_REQUEST,
+                    "선택한 스킬이 설치되지 않았거나 비활성 상태입니다.")
+            }
+        }
+    }
     let saved = match state.store.put("agent", &body) {
         Some(record) => record,
         None => return error(StatusCode::BAD_REQUEST, "에이전트를 저장할 수 없습니다."),
