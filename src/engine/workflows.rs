@@ -2,6 +2,9 @@ use crate::engine::jobs::JobContext;
 use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification};
 use serde_json::{json, Value};
 
+#[path = "workflows/repair.rs"]
+mod repair;
+
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
 /// previous step's output is substituted into `{{previous}}`, and progress is
 /// persisted on the job so a restart can resume from the last finished step.
@@ -132,106 +135,156 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Err(format!("{step_name} 단계의 지시문이 비어 있습니다."));
         }
 
-        context.checkpoint(json!({
-            "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": true, "activeStepIndex": index },
-        }))?;
-        let request = TurnRequest {
-            session_id: Some(session_id.clone()),
-            input: prompt.clone(),
-            agent_id: optional(step, "agentId"),
-            provider_id: optional(step, "providerId"),
-            model: optional(step, "model"),
-            attachment_ids: Vec::new(),
-            tools_enabled: true,tools_execution_enabled: true,
-            thinking: None,
-            auto_learning: false,
-            reasoning_effort: None,
-            reasoning_language: None,
-            system_override: Some(format!(
-                "You are executing step {} of the workflow \"{}\". \
-                 Produce the step result directly and concisely.",
-                index + 1,
-                workflow
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("Workflow")
-            )),
-            task_id: None,
-            parent_task_id: None,
-            task_revision: None,
-            verification_owner: None,
-        };
-
+        let verified_step=checks.as_array().is_some_and(|rows|!rows.is_empty());
+        let max_attempts=repair::max_attempts(step,verified_step);
         let before_usage=state.store.session_usage(&session_id);
-        let (turn,stats)=run_quiet_outcome(state, &request).await;
-        let message = match turn {
-            Ok(Some(message)) => message,
-            Err(_) if state.is_cancelled(&session_id) => {
+        let mut evidence=Vec::<Value>::new();
+        let mut successful_message:Option<Value>=None;
+        let mut previous_failures=Vec::<String>::new();
+        let mut repair_history=Vec::<Value>::new();
+        let mut tool_error_count=0usize;
+        let mut attempts=0usize;
+        for attempt in 1..=max_attempts {
+            if state.is_cancelled(&session_id){
                 return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
-                    "outputs":outputs,"status":"cancelled"}))
+                    "outputs":outputs,"status":"cancelled"}));
             }
-            other => {
-                let reason=match other{
-                    Ok(None)=>format!("{step_name} 단계가 빈 응답을 반환했습니다."),
-                    Err(error)=>error,
-                    Ok(Some(_))=>unreachable!(),
-                };
-                let unknown=state.store.session_has_uncertain_effects(&session_id)
-                    .unwrap_or(true);
-                // Chat's own deterministic acceptance can fail *before*
-                // workflow-level verification is reached. That must preserve
-                // an inspectable needs_review job and stop the next agent,
-                // rather than throwing a generic failed job with no gap.
-                if checks.as_array().is_some_and(|rows|!rows.is_empty()) || unknown{
-                    let mut failures=vec![reason.chars().take(600).collect::<String>()];
-                    if unknown{
-                        failures.push("외부 도구 효과가 확정되지 않아 재실행하지 않습니다.".into());
-                    }
-                    context.checkpoint(json!({
-                        "workflowState":{"sessionId":session_id,"outputs":outputs,
-                            "definition":definition,"inFlight":false,
-                            "failedStepIndex":index,"verificationGaps":failures},
-                        "stepIndex":index,"stepTotal":total,
-                    }))?;
-                    state.store.audit("workflow.step_needs_review",json!({
-                        "workflowId":workflow_id,"jobId":context.job_id,
-                        "stepIndex":index,"gaps":failures,"unknownEffects":unknown,
-                    }));
-                    return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
-                        "outputs":outputs,"status":"needs_review",
-                        "failedStepIndex":index,"verificationGaps":failures}));
-                }
-                return Err(reason);
-            }
-        };
-        // Side effects are an execution truth, not a model claim. Never hand
-        // uncertain external work to the next agent as a finished result.
-        let unresolved=state.store.session_has_uncertain_effects(&session_id)?;
-        // Legacy conversational workflow steps still return text without
-        // demanding a write. Only owner-authored explicit checks opt into
-        // deterministic artifact gating.
-        let gaps=if checks.as_array().is_some_and(|rows|!rows.is_empty()){
-            verification::acceptance_gaps_for_workspace(
-                state,&state.config.workspace,&prompt,&checks,&stats.evidence)
-        }else{Vec::new()};
-        if unresolved || !gaps.is_empty(){
-            let failures=if unresolved {
-                vec!["외부 도구 결과가 미확정입니다. 실행 이력을 직접 점검하세요.".to_string()]
-            }else{gaps};
+            let attempt_prompt=repair::repair_prompt(&prompt,attempt,max_attempts,&previous_failures);
+            // Persist an in-flight receipt *before* invoking another model or
+            // tool. Process crashes cannot blindly replay a side effect.
             context.checkpoint(json!({
                 "workflowState":{"sessionId":session_id,"outputs":outputs,
-                    "definition":definition,"inFlight":false,
-                    "failedStepIndex":index,"verificationGaps":failures},
-                "stepIndex":index,"stepTotal":total,
+                    "definition":definition,"inFlight":true,
+                    "activeStepIndex":index,"activeAttempt":attempt,
+                    "repairHistory":repair_history},
             }))?;
-            state.store.audit("workflow.step_needs_review",json!({
-                "workflowId":workflow_id,"jobId":context.job_id,
-                "stepIndex":index,"gaps":failures,"unknownEffects":unresolved
+            let request=TurnRequest{
+                session_id:Some(session_id.clone()),
+                input:attempt_prompt,
+                agent_id:optional(step,"agentId"),
+                provider_id:optional(step,"providerId"),
+                model:optional(step,"model"),
+                attachment_ids:Vec::new(),
+                tools_enabled:true,tools_execution_enabled:true,
+                thinking:None,auto_learning:false,
+                reasoning_effort:None,reasoning_language:None,
+                system_override:Some(format!(
+                    "You are executing step {} of the workflow \"{}\". \
+                     Complete the original user task, using tools for actual \
+                     artifact changes and evidence.",
+                    index+1,workflow.get("name").and_then(Value::as_str).unwrap_or("Workflow")
+                )),
+                task_id:None,parent_task_id:None,task_revision:None,
+                // One owner of verification: the workflow's Rust gate.
+                // Avoid a second, conflicting model-based chat review.
+                verification_owner:verified_step.then(||"parent".to_string()),
+            };
+            let (turn,stats)=run_quiet_outcome(state,&request).await;
+            attempts=attempt;
+            tool_error_count+=stats.tool_errors.len();
+            for item in &stats.evidence {
+                let id=item.get("id").and_then(Value::as_str);
+                if id.is_none() || !evidence.iter().any(|old|
+                    old.get("id").and_then(Value::as_str)==id){
+                    evidence.push(item.clone());
+                }
+            }
+            if state.is_cancelled(&session_id){
+                return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                    "outputs":outputs,"status":"cancelled"}));
+            }
+            let unknown=match state.store.session_has_uncertain_effects(&session_id){
+                Ok(value)=>value,
+                Err(error)=>{
+                    previous_failures=vec![format!("도구 상태 조회 실패: {error}")];
+                    true
+                }
+            };
+            if unknown {
+                if previous_failures.is_empty(){
+                    previous_failures.push("외부 도구 결과가 미확정입니다. 기존 결과를 확인해야 합니다.".to_string());
+                }
+                context.checkpoint(json!({
+                    "workflowState":{"sessionId":session_id,"outputs":outputs,
+                        "definition":definition,"inFlight":false,
+                        "failedStepIndex":index,"activeAttempt":attempt,
+                        "verificationGaps":previous_failures,
+                        "repairHistory":repair_history},
+                    "stepIndex":index,"stepTotal":total
+                }))?;
+                state.store.audit("workflow.step_needs_review",json!({
+                    "workflowId":workflow_id,"jobId":context.job_id,
+                    "stepIndex":index,"attempts":attempt,
+                    "gaps":previous_failures,"unknownEffects":true
+                }));
+                return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                    "outputs":outputs,"status":"needs_review",
+                    "failedStepIndex":index,"attempts":attempt,
+                    "verificationGaps":previous_failures}));
+            }
+            // Re-read real files after each turn. Previous successful tool
+            // effects count; a model's prose never clears a predicate.
+            let mut gaps=if verified_step {
+                verification::acceptance_gaps_for_workspace(
+                    state,&state.config.workspace,&prompt,&checks,&evidence)
+            }else{Vec::new()};
+            let turn_message=match turn{
+                Ok(Some(message))=>Some(message),
+                Ok(None)=>{
+                    gaps.push(format!("{step_name} 단계가 빈 응답을 반환했습니다."));
+                    None
+                }
+                Err(error)=>{
+                    gaps.push(format!("모델/도구 실행 오류: {}",error.chars().take(600).collect::<String>()));
+                    None
+                }
+            };
+            // A later failed tool is relevant feedback if the requested
+            // artifacts are still missing; verified output wins otherwise.
+            if verified_step&&!gaps.is_empty(){
+                gaps.extend(stats.tool_errors.iter().take(5).map(|err|
+                    format!("실패한 도구: {}",err.chars().take(450).collect::<String>())));
+            }
+            if gaps.is_empty(){
+                successful_message=turn_message;
+                break;
+            }
+            if !verified_step {
+                return Err(gaps.join("\n"));
+            }
+            repair_history.push(json!({
+                "attempt":attempt,"verificationGaps":gaps,
+                "toolErrorCount":stats.tool_errors.len(),
+                "recordedModelCalls":state.store.session_usage(&session_id)["calls"],
             }));
-            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
-                "outputs":outputs,"status":"needs_review",
-                "failedStepIndex":index,"verificationGaps":failures}));
+            if attempt==max_attempts {
+                context.checkpoint(json!({
+                    "workflowState":{"sessionId":session_id,"outputs":outputs,
+                        "definition":definition,"inFlight":false,
+                        "failedStepIndex":index,"activeAttempt":attempt,
+                        "verificationGaps":gaps,"repairHistory":repair_history},
+                    "stepIndex":index,"stepTotal":total
+                }))?;
+                state.store.audit("workflow.step_needs_review",json!({
+                    "workflowId":workflow_id,"jobId":context.job_id,
+                    "stepIndex":index,"attempts":attempt,"gaps":gaps,
+                    "unknownEffects":false,
+                }));
+                return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                    "outputs":outputs,"status":"needs_review",
+                    "failedStepIndex":index,"attempts":attempt,
+                    "verificationGaps":gaps,"repairHistory":repair_history}));
+            }
+            // Continue the same agent session with bounded, concrete feedback,
+            // instead of abandoning the owner's task after the first miss.
+            previous_failures=gaps;
+            context.emit(json!({"type":"workflow_step_repair",
+                "stepIndex":index,"stepName":step_name,
+                "attempt":attempt+1,"maxAttempts":max_attempts,
+                "remainingGaps":previous_failures.len()}));
         }
+        let message=successful_message.ok_or_else(||
+            format!("{step_name} 단계가 완료 응답을 반환하지 않았습니다."))?;
         let after_usage=state.store.session_usage(&session_id);
         let usage_delta=|key:&str|after_usage[key].as_u64().unwrap_or(0)
             .saturating_sub(before_usage[key].as_u64().unwrap_or(0));
@@ -240,9 +293,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 "verified"
             }else{"unchecked"},
             "criteriaCount":checks.as_array().map_or(0,Vec::len),
-            "operationIds":stats.evidence.iter().filter_map(|v|v["id"].as_str())
+            "attempts":attempts,
+            "repairAttempts":attempts.saturating_sub(1),
+            "repairHistory":repair_history,
+            "operationIds":evidence.iter().filter_map(|v|v["id"].as_str())
                 .collect::<Vec<_>>(),
-            "toolErrorCount":stats.tool_errors.len(),
+            "toolErrorCount":tool_error_count,
             "modelCalls":usage_delta("calls"),
             "totalTokens":usage_delta("totalTokens"),
             "usageEstimated":after_usage["estimatedCalls"].as_u64().unwrap_or(0)>
