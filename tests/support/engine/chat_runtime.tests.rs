@@ -689,6 +689,32 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
+    fn budgeted_coding_goals_keep_search_and_surgical_editing() {
+        let definitions=["workspace_list","workspace_read","workspace_write",
+            "code_search","workspace_replace_range","workspace_replace_function",
+            "web_search","github_api"].into_iter().map(|name|
+            json!({"type":"function","function":{"name":name,"description":"tool"}})
+        ).collect::<Vec<_>>();
+        for strategy in [
+            json!({"implementation":"core"}),
+            json!({"implementation":"query-relevant","parameters":{"extra":0}}),
+        ] {
+            let code=select_tool_definitions(definitions.clone(),
+                "Fix a Rust bug in src/engine/goals.rs", &strategy);
+            let names=code.iter().map(tool_name).collect::<Vec<_>>();
+            for needed in ["code_search","workspace_replace_range",
+                "workspace_replace_function","workspace_read"] {
+                assert!(names.contains(&needed),"{strategy}: missing {needed}: {names:?}");
+            }
+            let casual=select_tool_definitions(definitions.clone(),
+                "오늘 일정 이야기해 주세요",&strategy);
+            let casual_names=casual.iter().map(tool_name).collect::<Vec<_>>();
+            assert!(!casual_names.contains(&"code_search"));
+            assert!(!casual_names.contains(&"workspace_replace_function"));
+        }
+    }
+
+    #[test]
     fn room_tool_selection_is_zero_for_casual_and_exact_for_actions() {
         let definitions = vec![
             json!({"type":"function","function":{"name":"workspace_read","description":"Read a workspace file"}}),
