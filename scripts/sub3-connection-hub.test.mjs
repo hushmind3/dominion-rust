@@ -217,3 +217,16 @@ test('Issue 9 scheduled workflow occurrences use durable idempotency not duplica
  assert.match(activity,/input\?\.workflowId/)
  assert.match(home,/\/api\/workflow-artifacts/)
 })
+
+test('workflow evidence references real persisted session operation IDs, not model text',()=>{
+ const db=source('src/db.rs')
+ const engine=source('src/engine/workflows.rs')
+ const artifact=source('src/engine/workflows/artifacts.rs')
+ const ui=source('web/src/pages/Workflows.tsx')
+ assert.match(db,/pub fn session_execution_operations/)
+ assert.match(engine,/state\.store\.session_execution_operations\(&session_id\)/)
+ assert.match(engine,/operation\["status"\]=="completed"/)
+ assert.match(engine,/verification::is_action_evidence\(operation\)/)
+ assert.match(artifact,/toolOperationIds/)
+ assert.match(ui,/DB operation IDs/)
+})
