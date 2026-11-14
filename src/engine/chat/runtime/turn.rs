@@ -222,6 +222,10 @@ pub(super) async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
+    // Preserve the full native/MCP catalog before a learned schema-selection
+    // policy defers tools. Actual authorization filters are applied to BOTH
+    // catalogs before any search is made available.
+    let mut discovery_catalog = tool_definitions.clone();
     let is_room = session["roomId"].is_string();
     if is_room && request.tools_enabled && request.tools_execution_enabled {
         let recent = recent_room_tools(state, session_id);
@@ -246,7 +250,19 @@ pub(super) async fn run_turn_body(
     if session["delegatedReadOnly"]==true {
         tool_definitions.retain(|definition|
             tools::read_only_delegation_tool(tool_name(definition)));
+        discovery_catalog.retain(|definition|
+            tools::read_only_delegation_tool(tool_name(definition)));
     }
+    if session["rsiRun"]==true {
+        discovery_catalog.retain(|definition|
+            tools::rsi_allowed(tool_name(definition)));
+    }
+    let dynamic_tool_discovery = !is_room
+        && session["rsiRun"]!=true
+        && request.tools_enabled && request.tools_execution_enabled
+        && !discovery_catalog.is_empty();
+    let mut revealed_tool_names=restore_revealed(state,execution_id,&discovery_catalog);
+    let mut discovery_search_calls=0usize;
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::super::room_context::compile(
@@ -782,8 +798,13 @@ pub(super) async fn run_turn_body(
             let source_count=round_tools.len();
             let source_bytes=round_tools.iter().map(|tool|
                 serde_json::to_string(tool).unwrap_or_default().len()).sum::<usize>();
-            round_tools=budgeted_tool_definitions(
-                round_tools,budget,&request.input,&recent_tool_names);
+            round_tools=if dynamic_tool_discovery {
+                discoverable_tool_menu(&discovery_catalog,&round_tools,
+                    budget,&request.input,&recent_tool_names,&revealed_tool_names)
+            } else {
+                budgeted_tool_definitions(
+                    round_tools,budget,&request.input,&recent_tool_names)
+            };
             if source_count>round_tools.len()&&round==0 {
                 let selected_bytes=round_tools.iter().map(|tool|
                     serde_json::to_string(tool).unwrap_or_default().len()).sum::<usize>();
@@ -1771,6 +1792,45 @@ pub(super) async fn run_turn_body(
                     continue;
                 }
             };
+            if call.name==TOOL_SEARCH_NAME {
+                // A discovered capability is made available only to a LATER
+                // model step. This synthetic action does not invoke any
+                // effectful native/MCP tool or broaden the permission scope.
+                discovery_search_calls+=1;
+                let query=arguments["query"].as_str().unwrap_or("");
+                let limit=arguments["limit"].as_u64().unwrap_or(4).clamp(1,6) as usize;
+                let (matches,names)=if discovery_search_calls<=4 {
+                    discover_tools(&discovery_catalog,query,limit,&revealed_tool_names)
+                }else{(Vec::new(),Vec::new())};
+                for name in &names {
+                    if revealed_tool_names.len()<20 {revealed_tool_names.insert(name.clone());}
+                }
+                if let Some(mut execution)=state.store.get("execution",execution_id){
+                    execution["revealedToolNames"]=json!(revealed_tool_names);
+                    execution["toolDiscoverySearches"]=json!(discovery_search_calls);
+                    state.store.put("execution",&execution)
+                        .ok_or("동적 도구 발견 상태를 저장하지 못했습니다.")?;
+                }
+                let content=json!({"query":query,"matches":matches,
+                    "revealedForNextTurn":names,
+                    "searchBudgetExhausted":discovery_search_calls>4,
+                    "searchedAuthorizedCatalogOnly":true}).to_string();
+                let saved=state.store.write_message(&json!({
+                    "session_id":session_id,"role":"tool","content":content,
+                    "tool_call_id":call.id,
+                    "metadata":{"authorKind":"tool","executionId":execution_id,
+                        "discovery":true}
+                })).ok_or("도구 발견 결과를 영속화하지 못했습니다.")?;
+                state.bus.message(&saved);
+                messages.push(json!({"role":"tool","tool_call_id":call.id,
+                    "content":content}));
+                state.store.audit("harness.native_tool_discovery",json!({
+                    "executionId":execution_id,"sessionId":session_id,
+                    "matched":names.len(),"attempt":discovery_search_calls,
+                    "visibleNextTurn":revealed_tool_names.len()
+                }));
+                continue;
+            }
             let completed_operations = state
                 .store
                 .all("execution_operation")
