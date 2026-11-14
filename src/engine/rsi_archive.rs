@@ -37,9 +37,15 @@ pub(crate) fn parent_metrics(state: &AppState, candidate: &Value, base: &str) ->
         .then_some(metrics)
 }
 
-fn fitness(metrics: &Value) -> Option<BTreeMap<String, f64>> {
+fn fitness(metrics: &Value, plan: &[Value]) -> Option<BTreeMap<String, f64>> {
+    // A sealed holdout may approve or reject a candidate but must NOT
+    // inform the next mutation parent through a Pareto ranking.
+    let training = plan.iter().filter(|case|case["holdout"]!=true)
+        .filter_map(|case|case["id"].as_str()).collect::<BTreeSet<_>>();
     let mut result = BTreeMap::new();
     for case in metrics["measurements"].as_array()? {
+        let id=case["id"].as_str()?;
+        if !training.contains(id){continue;}
         for metric in case["metrics"].as_array()? {
             let before = metric["baseline"].as_f64()?;
             let after = metric["candidate"].as_f64()?;
@@ -141,7 +147,7 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
     (candidate["evaluation"]["evidenceSha256"] == pair["evidenceSha256"])
         .then_some(())?;
     let niche=behavioral_niche(&metrics,plan);
-    Some((id.clone(),fitness(&metrics)?,niche))
+    Some((id.clone(),fitness(&metrics,plan)?,niche))
 }
 
 /// Atomic per-candidate archive insertion, independent of next-parent
@@ -404,10 +410,14 @@ mod tests {
         ]});
         let niche=behavioral_niche(&measurements,&cases);
         assert_eq!(niche,"train:quality/score");
+        let original_fitness=fitness(&measurements,&cases).unwrap();
+        assert!(!original_fitness.contains_key("private/score"));
         let mut altered=measurements;
         altered["measurements"][0]["metrics"][0]["candidate"]=json!(0.0);
         assert_eq!(behavioral_niche(&altered,&cases),niche,
             "holdout measurement must not affect future selection");
+        assert_eq!(fitness(&altered,&cases).unwrap(),original_fitness,
+            "withheld cases must not change Pareto rank or exploration choice");
         let empty=vec![json!({"id":"private","holdout":true})];
         assert_eq!(behavioral_niche(&altered,&empty),"train:neutral");
     }
