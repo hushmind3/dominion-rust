@@ -7,7 +7,7 @@ use std::{path::Path,fs};
 
 const COMPONENTS: &[(&str,&[&str])] = &[
     ("algorithms",&["src/engine/algorithms.rs","src/engine/rooms/economy.rs","src/engine/rooms/speakers.rs","src/engine/router.rs","src/engine/rsi_evolve.rs","src/engine/reasoning.rs"]),
-    ("harness",&["src/engine/jobs.rs","src/engine/rsi/evaluation/worktree.rs","src/engine/chat.rs","src/engine/rooms.rs","src/engine/chat/room_context.rs","src/engine/decompose.rs","src/engine/goals.rs","src/engine/goal_control.rs","src/engine/goal_git.rs","src/engine/goal_feedback.rs","src/engine/goals/report.rs","src/engine/goals/git.rs","src/state.rs","src/engine/verification.rs"]),
+    ("harness",&["src/engine/jobs.rs","src/engine/rsi/evaluation/worktree.rs","src/engine/chat.rs","src/engine/rooms.rs","src/engine/chat/room_context.rs","src/engine/decompose.rs","src/engine/goals.rs","src/engine/goal_control.rs","src/engine/goal_steering.rs","src/engine/goal_git.rs","src/engine/goal_feedback.rs","src/engine/goals/report.rs","src/engine/goals/git.rs","src/state.rs","src/engine/verification.rs"]),
     ("memory",&["src/engine/memory.rs","src/engine/room_state.rs","src/engine/room_knowledge.rs"]),
     ("learning",&["src/engine/learning.rs","src/engine/experience.rs","src/engine/goal_feedback.rs","src/engine/procedure.rs"]),
     ("tools",&["src/engine/tools.rs","src/engine/tools/batch.rs","src/engine/video.rs","src/engine/video/comfy.rs","src/engine/video/cinematic.rs","src/engine/video/runway.rs","src/engine/video/shot_plan.rs","src/engine/video/kling4.rs","src/engine/video/frame_anchor.rs","src/engine/video/quality.rs","src/engine/browser.rs","src/engine/mcp.rs"]),
