@@ -428,17 +428,23 @@ fn execute_nodes<'a>(
                         continue;
                     }
                     let mut futures = Vec::new();
-                    // The same remaining budget must NOT be cloned into
-                    // every parallel executor. Each child gets a disjoint
-                    // quota; combined model/tool calls cannot exceed parent.
+                    // Split both the tool budget and durable opSeq namespace.
+                    // Parallel children must never reuse the same operation
+                    // sequence, even if they finish in a different order.
+                    let mut reserved_end=op_seq;
                     for (child_index, child) in children.clone().into_iter().enumerate() {
+                        let branch_budget=budget.partition(child_index, children.len());
+                        let child_start=reserved_end;
+                        reserved_end=reserved_end.saturating_add(
+                            branch_budget.remaining_tool_slots() as u64
+                        );
                         futures.push(execute_nodes(
                             ctx,
                             vec![child],
                             resolved.clone(),
                             checkpoint.clone(),
-                            budget.partition(child_index, children.len()),
-                            op_seq,
+                            branch_budget,
+                            child_start,
                             depth + 1,
                             false,
                             true,
@@ -477,6 +483,9 @@ fn execute_nodes<'a>(
                         messages.extend(frame.messages);
                         paused |= frame.paused;
                     }
+                    // A later operation must start AFTER all reserved branch
+                    // ranges, including slots left unused by an early exit.
+                    op_seq=op_seq.max(reserved_end);
                     resolved["last"] = Value::Object(parallel_last);
                     checkpoint["pendingOperationIds"] = json!([]);
                     checkpoint["resolvedInputs"] = resolved.clone();

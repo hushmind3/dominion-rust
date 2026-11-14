@@ -93,6 +93,13 @@ impl BudgetLedger {
         }
     }
 
+    /// Number of executable tool operations the branch may still issue.
+    /// Also reserves a nonoverlapping durable opSeq interval for each
+    /// parallel sibling, independent of tool completion order.
+    pub fn remaining_tool_slots(&self) -> usize {
+        self.max_tools.saturating_sub(self.tools)
+    }
+
     /// Adds the usage of a completed branch back into this ledger.
     pub fn merge_usage(&mut self, branch: &Self) {
         self.rounds = self.rounds.saturating_add(branch.rounds);
@@ -163,6 +170,28 @@ mod tests {
         }
         assert_eq!(parent.snapshot()["tools"], 11);
         assert!(!parent.charge_tool());
+    }
+
+    #[test]
+    fn independent_parallel_tool_budgets_reserve_disjoint_operation_sequences() {
+        let budget=BudgetLedger::new(8,11,Duration::from_secs(60));
+        let mut cursor=91u64;
+        let mut ranges=Vec::new();
+        for index in 0..4 {
+            let branch=budget.partition(index,4);
+            let reserved=branch.remaining_tool_slots() as u64;
+            ranges.push((cursor,cursor+reserved));
+            cursor+=reserved;
+        }
+        assert_eq!(cursor,102);
+        assert!(ranges.windows(2).all(|windows|windows[0].1==windows[1].0));
+        let mut unique=std::collections::BTreeSet::new();
+        for (start,end) in ranges {
+            for op in start+1..=end {
+                assert!(unique.insert(op),"parallel siblings cannot reuse opSeq");
+            }
+        }
+        assert_eq!(unique.len(),11);
     }
 
     #[test]

@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Native Rust parallel operation identity
+
+The parallel program interpreter now reserves a **non-overlapping opSeq
+range for every child**, sized by its allocated executable-tool budget.
+This fixes an actual execution-trace ambiguity: independent siblings
+previously inherited the same parent sequence and could emit duplicate
+sequence numbers. The next serial operation starts beyond the entire
+reserved region, including unused slots. Rust regression tests prove the
+intervals do not overlap and preserve the total tool budget.
+
 ## 2026-11-14 RSI experiment selection: independent evidence and exploration
 
 `src/engine/rsi/meta/experiment_evolution.rs` now counts **distinct
