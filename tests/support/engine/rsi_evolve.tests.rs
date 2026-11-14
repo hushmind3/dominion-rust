@@ -1635,6 +1635,9 @@ mod tests {
             "jobId": job, "attempt": attempt, "domain": domain, "accepted": accepted,
             "generatorCommit": commit, "domainSelection": "algorithm_active",
             "tokens": tokens, "elapsedMs": elapsed,
+            "evaluationProfileSha256":"e".repeat(64),
+            "objectiveId":"1".repeat(64),
+            "pairedMeasured":true,
             "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
         })
     }
@@ -1654,6 +1657,9 @@ mod tests {
             "generatorCommit": commit, "domainSelection": "algorithm_trial",
             "searchStrategy": {"id": candidate, "mode": "trial"},
             "tokens": tokens, "elapsedMs": elapsed,
+            "evaluationProfileSha256":"e".repeat(64),
+            "objectiveId":"1".repeat(64),
+            "pairedMeasured":true,
             "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
         })
     }
@@ -2347,6 +2353,49 @@ mod tests {
         assert_eq!(mode, "algorithm_active");
         assert_eq!(strategy["mode"], "active");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rsi_trial_frozen_evaluator_and_objective_are_required_for_support() {
+        let baseline=active_generation("baseline",1,"context",false,"head-a",1200,100);
+        let mut trial=trial_generation("trial",2,"context",true,"head-a",900,80,"algo");
+        let candidate=json!({"rsiTrial":{"trials":[]}});
+        assert!(comparable_trial_baseline(&[baseline.clone()],&trial,&candidate).is_some());
+        assert_eq!(trial_verdict(&trial,&baseline).0,"supported");
+        trial["evaluationProfileSha256"]=json!("f".repeat(64));
+        assert!(comparable_trial_baseline(&[baseline.clone()],&trial,&candidate).is_none());
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
+        trial["evaluationProfileSha256"]=baseline["evaluationProfileSha256"].clone();
+        trial["objectiveId"]=json!("2".repeat(64));
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
+        trial["objectiveId"]=baseline["objectiveId"].clone();
+        trial["pairedMeasured"]=json!(false);
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive",
+            "a broken verifier must not be scored as a failed agent");
+        trial["pairedMeasured"]=json!(true);
+        trial["evaluation"]=Value::Null;
+        assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
+    }
+
+    #[test]
+    fn unscorable_rsi_trial_cannot_activate_algorithm() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"objective-unscorable",
+            "implementation":"expression","parameters":{"expression":"novelty"},
+            "source":"rsi-generated"
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        queue_search_trial(&state,&candidate,&active,&[],"context","campaign",1);
+        let baseline=active_generation("control",1,"context",false,"head-b",1000,100);
+        let mut trial=trial_generation("candidate",2,"context",true,"head-b",500,50,id);
+        trial["pairedMeasured"]=json!(false);
+        let result=record_trial_outcome(&state,id,&trial,&[baseline]);
+        assert_eq!(result["status"],"inconclusive");
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search")
+            .unwrap()["id"],active["id"]);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
