@@ -189,6 +189,7 @@ pub async fn save(
                 input["input"].as_str().is_some_and(|text|text.len()<=16_000)
                     && input["workflowId"].as_str().is_some_and(|id|
                         state.store.get("workflow",id).is_some())
+                    && (body["enabled"]!=true || body["confirmRecurringModelCosts"]==true)
             }
             _ => false,
         };
