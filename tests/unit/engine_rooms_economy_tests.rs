@@ -49,3 +49,34 @@ fn unlimited_room_and_new_owner_exchange_preserve_correct_boundaries() {
     assert!(budget_spent(300,metering_baseline(&fresh,610),910));
     assert!(!budget_spent(300,910,900)); // accounting restored to an older cursor
 }
+
+#[test]
+fn per_exchange_metrics_only_include_measured_work_since_frozen_baseline() {
+    let original=json!({
+        "calls":5,"promptTokens":1000,"completionTokens":200,"totalTokens":1200,
+        "estimatedCalls":1,"cachedPromptTokens":150,
+        "cacheEligiblePromptTokens":400,"cacheReportedCalls":2
+    });
+    let observed=json!({
+        "calls":8,"promptTokens":1700,"completionTokens":370,"totalTokens":2070,
+        "estimatedCalls":1,"cachedPromptTokens":350,
+        "cacheEligiblePromptTokens":1000,"cacheReportedCalls":4
+    });
+    let delta=observed_delta(&original,&observed);
+    assert_eq!(delta["calls"],3);
+    assert_eq!(delta["promptTokens"],700);
+    assert_eq!(delta["completionTokens"],170);
+    assert_eq!(delta["totalTokens"],870);
+    assert_eq!(delta["cachedPromptTokens"],200);
+    assert_eq!(delta["cacheReportedCalls"],2);
+    assert_eq!(delta["scope"],"one-room-exchange");
+}
+#[test]
+fn migrated_job_only_knows_original_total_tokens_not_other_usage() {
+    let original=json!({"totalTokens":300});
+    let observed=json!({"totalTokens":450,"calls":8,"cachedPromptTokens":150});
+    let delta=observed_delta(&original,&observed);
+    assert_eq!(delta["totalTokens"],150);
+    assert!(delta["calls"].is_null());
+    assert!(delta["cachedPromptTokens"].is_null());
+}
