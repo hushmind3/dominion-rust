@@ -44,7 +44,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     let commands=body["verifyCommands"].as_array().cloned().unwrap_or_default();
     if commands.len()>4 || commands.iter().any(|v|v.as_str().is_none_or(|cmd|{
         cmd.trim().is_empty() || cmd.len()>180 || cmd.chars().any(char::is_control)
-            || cmd.contains([';','|','&','>','<','\u{60}'])
+            || cmd.chars().any(|ch|matches!(ch,';'|'|'|'&'|'>'|'<'|'`'))
     })) {
         return error(StatusCode::BAD_REQUEST,"검증 명령은 최대 4개, 개당 180자 이하여야 합니다.");
     }
