@@ -49,7 +49,13 @@ impl GoalControl {
         if self.is_cancelled() {
             return Err(cancelled());
         }
-        let completion = llm::complete(&self.context.state, provider, model, system, prompt);
+        // Planners, reviewers and replanners are actual billable goal work.
+        // Attribute their usage to the durable goal session; otherwise the
+        // goal receipt reports executor-only tokens and hides helper overhead.
+        let completion = llm::complete_for_session(
+            &self.context.state, provider, model, system, prompt,
+            &self.session_id
+        );
         tokio::pin!(completion);
         loop {
             tokio::select! {
