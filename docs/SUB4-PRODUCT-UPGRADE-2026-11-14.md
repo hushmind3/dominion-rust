@@ -116,3 +116,7 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 - `JobContext::checkpoint`는 **중첩 JSON을 얕게 덮어쓰는** 저장 API다. `video/runway.rs::merge_video_state`와 `checkpoint_video`는 유료 원격 작업 중 변경하지 않은 `scenes`, `shotPlans`, `taskIds`, `completedClips`를 보존하면서 `inFlight`·`remoteTaskId`의 명시 변경을 적용한다. 해당 단계는 `tests/unit/video_checkpoint_merge_tests.rs`에 독립 단위 계약으로 작성했다(미실행). 이 수정은 SQLite의 전역 patch 동작을 변경하지 않는다.
 - `src/engine/rsi_system.rs::COMPONENTS`에 실제 사용 중인 `rooms/economy.rs`, `rooms/speakers.rs`, `router.rs`, `rooms.rs`, `chat/room_context.rs`를 알고리즘·하네스 소스로, `video/{runway,shot_plan,kling4,frame_anchor}.rs`를 도구 능력 소스로 반영했다. 실행 소스 검색에도 `video`와 `rooms` 책임 분류를 추가했다.
 - 이는 실제 모델 후손이 **제품 기능과 개선 방법을 함께 탐색할 수 있게 소스 지도를 확장한 변경**이다. 동결 평가를 통과한 실험 채택, 후손 빌드, 실제 영상 품질 증가의 완료 증거를 생성하거나 점수를 가산하지 않았다.
+
+## 9. 자율 목표 실행·증거·장기 복구 (에이전트 25점 기준)
+
+기존 `goals.rs` 계획→실행→검토→재계획 폐회로에 `goals/report.rs::build`의 최종 기계적 검증과 파일 SHA-256 보고를 더했다. 별도 `Goals.tsx` UI를 사이드바와 API에 연결해 목표 입력, 실행 상태, 계획 버전, 실도구 결과, 검증 산출물, 중단, 대기 중 계획 변경, 외부 결과 수동 확인 후 재개를 제공한다. `verification.rs`는 `delegate_task` 및 `task_result` 완료 하위 도구 성공만 상위 목표에 귀속하고, `tools.rs` 위임 작업 수/활성 수 제한으로 급격한 모델 호출 확장을 줄인다. 자세한 소스 경로·검증 경계·후속 개선은 [자율 에이전트 통합 지도](SUB4-AUTONOMOUS-AGENT-2026-11-14.md)에 기록했다. **코드 소스 확인 및 커밋만 완료, 실행·CI·유료 모델 평가 미실행.**
