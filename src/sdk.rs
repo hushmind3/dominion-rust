@@ -558,7 +558,7 @@ mod tests {
         ).unwrap();
         let session = sdk.create_session("owner-steering").unwrap();
         let session_id = session["id"].as_str().unwrap().to_owned();
-        let options = TurnOptions::new("Run the native echo tool to write and verify its result")
+        let options = TurnOptions::new("What exact value does the registered native echo tool return?")
             .with_session(&session_id)
             .with_provider("p");
 
