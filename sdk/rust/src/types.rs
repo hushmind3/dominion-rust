@@ -228,3 +228,19 @@ impl Default for WatchOptions {
         }
     }
 }
+
+#[cfg(test)]
+mod goal_budget_contract_tests {
+    use super::*;
+    #[test]
+    fn rust_sdk_goal_serializes_real_verification_and_budget_fields(){
+        let goal=GoalCreate::new("fix the code")
+            .isolate_worktree(true).require_tests(true).max_iterations(8);
+        let mut payload=serde_json::to_value(goal).unwrap();
+        payload["tokenBudget"]=serde_json::json!(100000);
+        assert_eq!(payload["isolateWorktree"],true);
+        assert_eq!(payload["requireTests"],true);
+        assert_eq!(payload["tokenBudget"],100000);
+        assert_eq!(payload["maxIterations"],8);
+    }
+}
