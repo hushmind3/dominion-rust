@@ -626,3 +626,7 @@ The editable experiment allocator now credits a prior source-policy revision onl
 ### 2026-11-14: 실제 도구 영수증 및 변경 후 테스트 재검증
 
 단계가 긴 코딩 Goal은 테스트가 한번 성공했다는 이유로 이후 소스 변경까지 검증했다고 볼 수 없습니다. `engine/mod.rs::run_quiet_outcome`이 `tool_end` 이벤트와 정확한 DB `execution_operation`을 연결해 `runId/opSeq/startedAt/finishedAt`를 보존하고, `verification.rs::fresh_command_matches`가 마지막 소스 변경 뒤의 성공 검증만 인정합니다. 원본 영수증 없는 이벤트는 증거로 사용하지 않습니다. 코딩 목표의 저예산 도구 선택 정책에서도 소스 검색과 국소 수정 도구를 보존합니다. [실행 경로·검증 및 한계](docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md).
+
+### 2026-11-14: LTX-2.5 영상 유료 견적·승인 제어
+
+LTX-2.5 신규 영상 및 일부 장면 재생성은 `POST /api/video/quote` 또는 `/api/video/jobs/:id/scenes`의 **서버 계산 견적**을 프론트에 원화 참고액으로 표시한 뒤, `approvedPaidQuote`·`maxUsdCents`·`quoteDigest`의 승인을 받아야 영상 작업이 영속 큐에 등록됩니다. 가격은 공식 LTX 2.5 Fast/Pro 720p~4K 초당 목록가의 2026-11-14 스냅샷이며 원화는 2026-11-13 참조 환율을 사용합니다. 정확한 실제 청구액이나 영상 시청 품질을 보증하지 않으며, 기존 LTX 장면별 SHA 재사용·FFprobe 검수·미확정 결제 중지 구조를 유지합니다. [실제 과금 경로·테스트](docs/SUB1-VIDEO-PAID-QUOTE-2026-11-14.md).
