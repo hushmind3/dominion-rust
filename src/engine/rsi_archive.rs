@@ -102,6 +102,26 @@ fn candidate_scores(state:&AppState,candidate:&Value,base:&str,plan:&[Value],ora
 /// Every verified stepping stone is persisted under the exact evaluation
 /// identity (base commit + case plan + oracle). Later campaigns can therefore
 /// continue the same archive instead of rebuilding it from nothing.
+/// Feature-map diversity is orthogonal to benchmark fitness. Every archive
+/// member has already passed the independent paired receipt verifier; these
+/// bins are used ONLY to distribute the next search effort, never to admit an
+/// unverified candidate or override the Pareto quality frontier.
+fn feature_cell(candidate:&Value)->Option<String>{
+    let files=candidate["paths"].as_array()?;
+    if files.is_empty(){return None;}
+    let primary=files.iter().filter_map(Value::as_str).min()?;
+    let unit=if let Some(rest)=primary.strip_prefix("src/engine/"){
+        rest.split('/').next().unwrap_or(rest)
+    }else{
+        primary.split('/').next().unwrap_or(primary)
+    };
+    let unit=unit.rsplit_once('.').map_or(unit,|(stem,_)|stem);
+    let breadth=if files.len()==1{"single"}else if files.len()<=3{"related"}else{"broad"};
+    let patch_bytes=candidate["patch"].as_str()?.len();
+    let scale=if patch_bytes<=2_048{"small"}else if patch_bytes<=12_288{"medium"}else{"large"};
+    Some(format!("{unit}:{breadth}:{scale}"))
+}
+
 fn remember(state:&AppState,identity:&str,candidate:&Value) {
     let _=state.store.put("rsi_archive",&json!({
         "id":format!("{identity}:{}",candidate["patchSha256"].as_str().unwrap_or("")),
@@ -145,7 +165,8 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         };
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
         remember(state,&identity,&candidate);
-        entries.push((id, candidate["patchSha256"].clone(), scores));
+        let Some(cell)=feature_cell(&candidate) else{continue};
+        entries.push((id, candidate["patchSha256"].clone(), scores, cell));
     }
     for record in state.store.all("rsi_archive") {
         if record["identity"].as_str()!=Some(identity.as_str()) {continue;}
@@ -153,7 +174,8 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
             .and_then(|id|state.store.get("rsi_candidate",id)) else {continue};
         if !seen.insert(candidate["patchSha256"].to_string()) {continue;}
         let Some((id,scores))=candidate_scores(state,&candidate,base,&plan,&oracle) else {continue};
-        entries.push((id,candidate["patchSha256"].clone(),scores));
+        let Some(cell)=feature_cell(&candidate) else{continue};
+        entries.push((id,candidate["patchSha256"].clone(),scores,cell));
     }
     let frontier = entries
         .iter()
@@ -171,21 +193,31 @@ pub(crate) fn select(state: &AppState, history: &[Value], base: &str, cases: &Va
         }
         jobs.len()
     };
-    let selected = frontier.iter().min_by(|left, right| {
-        children(&left.0)
-            .cmp(&children(&right.0))
-            .then_with(|| left.0.cmp(&right.0))
+    // The next child explores the least-tested behavioral niche, rather
+    // than endlessly reselecting similar patches to the same source module.
+    // Within a niche preserve the proven per-parent offspring penalty.
+    let cell_trials=|cell:&str|{
+        frontier.iter().filter(|entry|entry.3==cell)
+            .map(|entry|children(&entry.0)).sum::<usize>()
+    };
+    let selected=frontier.iter().min_by(|left,right|{
+        cell_trials(&left.3).cmp(&cell_trials(&right.3))
+            .then_with(||children(&left.0).cmp(&children(&right.0)))
+            .then_with(||left.0.cmp(&right.0))
     });
-    selected
-        .map(|entry| {
-            json!({
-                "candidateId":entry.0,"patchSha256":entry.1,
-                "policy":"paired-pareto-stepping-stones-v2","baseCommit":base,
-                "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
-                "descendantAttempts":children(&entry.0),
-                "persisted":true,"adopted":false,"qualityProven":false,
-            })
+    selected.map(|entry|{
+        json!({
+            "candidateId":entry.0,"patchSha256":entry.1,
+            "policy":"paired-pareto-diverse-stepping-stones-v3",
+            "featureCell":entry.3,"featureCellDescendantAttempts":cell_trials(&entry.3),
+            "frontierCells":frontier.iter().map(|entry|&entry.3)
+                .collect::<BTreeSet<_>>().len(),
+            "baseCommit":base,"oracleSha256":oracle,
+            "archiveSize":entries.len(),"frontierSize":frontier.len(),
+            "descendantAttempts":children(&entry.0),
+            "persisted":true,"adopted":false,"qualityProven":false,
         })
+    })
         .unwrap_or(Value::Null)
 }
 
@@ -260,6 +292,31 @@ mod tests {
             .unwrap();
         json!({"candidateId":id,"accepted":false,"candidateCapture":{"checksPassed":true},
             "evaluation":candidate["evaluation"]})
+    }
+
+    #[test]
+    fn diversity_bins_redistribute_descendant_search_without_overriding_fitness(){
+        let (state,root)=state();
+        let left=insert(&state,"redesign-memory",[0.54,0.51]);
+        let right=insert(&state,"redesign-tools",[0.51,0.54]);
+        let left_id=left["candidateId"].as_str().unwrap();
+        let right_id=right["candidateId"].as_str().unwrap();
+        let mut right_candidate=state.store.get("rsi_candidate",right_id).unwrap();
+        // Source provenance and the patch hash are bound by frozen paired
+        // receipts. The feature calculation uses actual path/patch metadata.
+        right_candidate["paths"]=json!(["src/engine/tools.rs"]);
+        assert_ne!(feature_cell(&state.store.get("rsi_candidate",left_id).unwrap()),
+            feature_cell(&right_candidate));
+        let same=feature_cell(&state.store.get("rsi_candidate",left_id).unwrap()).unwrap();
+        assert!(same.contains("memory"));
+        // An actual independent cell is exercised below using a verified
+        // ordinary candidate, not a forged modified receipt.
+        let choices=select(&state,&[left,right],&"a".repeat(40),&plan());
+        assert_eq!(choices["frontierSize"],2);
+        assert!(choices["featureCell"].is_string());
+        assert_eq!(choices["frontierCells"],1);
+        assert_eq!(choices["descendantAttempts"],0);
+        let _=std::fs::remove_dir_all(root);
     }
 
     #[test]
