@@ -176,8 +176,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // Side effects are an execution truth, not a model claim. Never hand
         // uncertain external work to the next agent as a finished result.
         let unresolved=state.store.session_has_uncertain_effects(&session_id)?;
-        let gaps=verification::acceptance_gaps_for_workspace(
-            state,&state.config.workspace,&prompt,&checks,&stats.evidence);
+        // Legacy conversational workflow steps still return text without
+        // demanding a write. Only owner-authored explicit checks opt into
+        // deterministic artifact gating.
+        let gaps=if checks.as_array().is_some_and(|rows|!rows.is_empty()){
+            verification::acceptance_gaps_for_workspace(
+                state,&state.config.workspace,&prompt,&checks,&stats.evidence)
+        }else{Vec::new()};
         if unresolved || !gaps.is_empty(){
             let failures=if unresolved {
                 vec!["외부 도구 결과가 미확정입니다. 실행 이력을 직접 점검하세요.".to_string()]
