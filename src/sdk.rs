@@ -531,6 +531,53 @@ mod tests {
         (sdk, root)
     }
 
+    #[tokio::test]
+    async fn native_sdk_goal_admission_cancellation_and_receipt_follow_engine_contract() {
+        let (sdk, root) = fresh();
+        let mut invalid = GoalOptions::new("Fix the repository");
+        invalid.max_iterations = 0;
+        assert!(sdk.enqueue_goal(invalid).is_err());
+        assert!(sdk.state.store.all("goal").is_empty());
+        assert!(sdk.state.store.all("job").is_empty());
+
+        let goal = sdk.enqueue_goal(GoalOptions::new("Fix the repository")).unwrap();
+        let id = goal["id"].as_str().unwrap();
+        let job_id = goal["jobId"].as_str().unwrap();
+        assert_eq!(goal["status"], "queued");
+        assert_eq!(goal["isolateWorktree"], true);
+        let job = sdk.job(job_id).unwrap();
+        assert_eq!(job["kind"], "goal");
+        assert_eq!(job["input"]["goalId"], id);
+        assert_eq!(sdk.goal(id).unwrap()["jobId"], job_id);
+        assert!(sdk.goal_receipt(id).is_none(),
+            "a queued goal must never expose a speculative success receipt");
+
+        let cancelled = sdk.cancel_goal(id).unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        let settled = sdk.wait_job(job_id, std::time::Duration::from_millis(200))
+            .await.unwrap();
+        assert_eq!(settled["status"], "cancelled");
+        assert_eq!(sdk.goal(id).unwrap()["status"], "cancelled");
+        assert!(sdk.cancel_goal(id).is_err(),
+            "a stale owner cancellation cannot replay against a settled job");
+        assert!(sdk.goal_receipt(id).is_none());
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn native_sdk_job_wait_is_bounded_without_workers() {
+        let (sdk, root) = fresh();
+        let goal = sdk.enqueue_goal(GoalOptions::new("Wait for external worker")).unwrap();
+        let job_id = goal["jobId"].as_str().unwrap();
+        assert!(sdk.wait_job(job_id, std::time::Duration::from_millis(20))
+            .await.unwrap_err().contains("timed out"));
+        assert_eq!(sdk.job(job_id).unwrap()["status"], "queued");
+        sdk.cancel_goal(goal["id"].as_str().unwrap()).unwrap();
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn native_sdk_owns_durable_session_and_provider_secrets() {
         let (sdk, root) = fresh();
