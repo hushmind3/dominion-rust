@@ -313,8 +313,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             evidence.drain(..evidence.len() - 120);
         }
         let after_checks=acceptance_gaps(state,&text,&criteria,&evidence);
-        step_progress=crate::engine::goal_progress::advanced(
-            &before_evidence,&evidence,&before_checks,&after_checks);
+        step_progress=crate::engine::goal_progress::advanced_with_policy(
+            &before_evidence,&evidence,&before_checks,&after_checks,
+            crate::engine::verification::looks_actionable(&text));
         patch_goal(
             state,
             goal_id,
