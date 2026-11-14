@@ -682,3 +682,15 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 - **검증 수준:** Rust 순수 알고리즘/회귀 테스트가 추가됐으며, [서브2 GitHub CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)와 실모델 평가를 구분합니다. 아직 개선 전후 실모델 완수율·토큰 감소·청구액을 측정했다고 주장하지 않습니다.
 
 [**외부 SDK 실제 소스 경로와 도미니언 고유 구현의 1:1 대응, 호출도, 테스트/한계**](docs/architecture/SUB2-NATIVE-AGENT-ALGORITHMS-2026-11-14.md). `/goal`은 필요할 때 채팅에 쓰는 기존 명령어로 유지하며 별도 메뉴는 만들지 않습니다.
+
+
+## 2026-11-14 · 서브2: Rust 고유 워크플로 검증 실패 자동 수정
+
+기존 워크플로는 명시적 파일 검증 조건이 실패하면 첫 시도에서 중단돼 후속 에이전트의 산출물 완수를 막았습니다. 이제 **원본 사용자 지시를 그대로 유지**하면서 실제 파일·도구 실패 원인을 같은 에이전트의 다음 턴에 전달하고, Rust 엔진이 다시 독립 검증합니다.
+
+- `Workflows.tsx → POST /api/workflows → jobs.rs → workflows.rs → chat::run_quiet_outcome → verification.rs`: 파일 검증 조건이 있는 단계만 기본 최대 3회(사용자 설정 1~4회) 시도합니다. 검증된 결과를 받은 후에만 다음 에이전트에게 전달하며, 과거 대화형 단계는 이전대로 단일 실행·`unchecked` 상태를 유지합니다.
+- 중복 심판 제거: 명시적 단계 검증은 `verification_owner:"parent"`로 워크플로 Rust 파일 검증기가 단독 담당합니다. 자식 채팅 검증기가 작업 성공 이전에 별도로 탈락시키지 않습니다. 실패 메모와 누적 도구 영수증, 시도 횟수·실제 기록된 모델 사용량을 보존합니다.
+- 중복 효과·재시작: 매 도구 턴 전 SQLite `inFlight`를 기록하며 미확정 외부 효과나 재시작 후 중단 단계는 사용자에게 상태 점검을 맡기고 **자동 재실행하지 않습니다**. 이는 작업 내용의 거부/허용 정책이 아니라 이미 실행된 도구를 중복 사용하지 않기 위한 실행 상태 처리입니다.
+- 모의 Provider 통합 검증: 첫 턴이 `WRONG` 파일을 쓴 뒤 실제 실패 피드백을 받고 `EXPECTED`로 복구한 경우만 후속 단계가 진행되도록 회귀 테스트를 추가했습니다. 실모델/실청구액/성공률은 별도로 검증해야 합니다. 외부 SDK 의존성은 추가하지 않았습니다.
+
+[실제 호출도·테스트·참고 문헌 및 한계](docs/architecture/SUB2-ISSUE9-CROSS-MENU-2026-11-14.md) · [서브2 CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)
