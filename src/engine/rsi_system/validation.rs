@@ -98,7 +98,12 @@ mod tests {
         let index_id=meta["id"].as_str().unwrap();
         let sha=format!("{:x}",Sha256::digest(fs::read(root.join(file)).unwrap()));
         let row=json!({"path":file,"sourceSha256":sha});
-        assert!(validate_source_entry(&state,&root,index_id,&row,"sourceSha256").is_ok());
+        let initial=validate_source_entry(&state,&root,index_id,&row,"sourceSha256");
+        assert!(initial.is_ok(),"initial index validation failed: {initial:?}; index={:?}; meta={:?}; cachedRecords={:?}",
+            crate::engine::code_index::indexed_source_hash(&state,index_id,file),
+            meta,state.store.all("code_index_file").iter()
+                .take(2).map(|entry|json!({"id":entry["id"],"path":entry["path"],
+                    "hash":entry["hash"],"indexId":entry["indexId"]})).collect::<Vec<_>>());
         state.store.remove("code_index_file",&format!("{index_id}:{file}"));
         assert!(crate::engine::code_index::indexed_source_hash(&state,index_id,file).is_none());
         assert!(validate_source_entry(&state,&root,index_id,&row,"sourceSha256").is_ok());
