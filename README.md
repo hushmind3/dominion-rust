@@ -719,3 +719,8 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 ### 2026-11-14 기억 직접 편집 (서브4)
 
 `web/src/pages/Memory.tsx`의 사용자가 직접 작성한 활성 기억은 카드에서 수정하고 저장할 수 있다. `POST /api/memories/:id/edit` → `api/collections.rs::action` → `Store::patch_if`로 이전 텍스트를 비교해 원자적으로 수정한다. scope/agentId/검증/출처와 저장 ID를 유지하고 변경 시각을 기록한다. 학습 추출 기억은 원본 증거를 유지하기 위해 UI에서 직접 편집을 제공하지 않으며, 서버도 해당 수정 요청을 거부한다. 저장 후 클라이언트 기억 목록을 재조회해 새 검색에 반영한다. 백엔드 회귀 테스트에 충돌·출처 격리·scope 보존을 기록했다(실행/CI는 별도).
+
+
+### 서브4 프론트 전체 메뉴 · API · 엔진 검증 지도
+
+2026-11-14 심판 이슈 #8을 반영한 **4개 카테고리 / 15개 메뉴(자율 목표 포함)**, 연결 채널 3개 탭, 기억 편집·RSI 알람 조정, 화면→API→엔진→산출물·복구 경로, 실제 실행 전/후 검증 구분은 [SUB4-FRONTEND-COVERAGE-2026-11-14.md](docs/SUB4-FRONTEND-COVERAGE-2026-11-14.md)에 기록했다. 해당 지도는 정적 소스 검토와 12개 JS assertion 통과를 기준으로 작성했으며 브라우저 E2E·Rust/TS 빌드는 미실행이다.
