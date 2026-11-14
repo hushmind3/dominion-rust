@@ -72,6 +72,10 @@ fn runnable(state:&AppState,definition:&Value)->Result<Value,String>{
             .or_else(||agent["model"].as_str().filter(|s|!s.is_empty()))
             .or_else(||provider["model"].as_str().filter(|s|!s.is_empty()))
             .ok_or_else(||format!("제공자 {provider_id}에서 실행할 모델을 선택하세요."))?;
+        // Clone borrowed identifiers before mutating the JSON step; frozen
+        // admission values must not borrow the editable definition.
+        let provider_id=provider_id.to_string();
+        let model=model.to_string();
         step["providerId"]=json!(provider_id);
         step["model"]=json!(model);
     }
