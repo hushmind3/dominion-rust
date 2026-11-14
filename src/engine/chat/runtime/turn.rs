@@ -817,7 +817,25 @@ pub(super) async fn run_turn_body(
                         .clamp(4_000, 60_000)
                 })
                 .unwrap_or(60_000);
+            let offered_count = round_tools.len();
+            let offered_bytes = round_tools.iter()
+                .map(|definition|serde_json::to_string(definition)
+                    .map(|text|text.len()).unwrap_or(0)).sum::<usize>();
             round_tools = trim_tool_definitions(round_tools, budget);
+            if round_tools.len() != offered_count {
+                let selected_bytes = round_tools.iter()
+                    .map(|definition|serde_json::to_string(definition)
+                        .map(|text|text.len()).unwrap_or(0)).sum::<usize>();
+                // Exact serialized bytes, NOT vendor-billed tokens. Leave the
+                // provider's reported usage/cache counters authoritative.
+                state.store.audit("tool.schema_budget",json!({
+                    "executionId":execution_id,"sessionId":session_id,
+                    "budgetBytes":budget,"offeredBytes":offered_bytes,
+                    "selectedBytes":selected_bytes,
+                    "offeredCount":offered_count,"selectedCount":round_tools.len(),
+                    "selectedTools":round_tools.iter().map(tool_name).collect::<Vec<_>>()
+                }));
+            }
         }
         if session["rsiRun"]==true && session["rsiSystemEvolution"]!=true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
