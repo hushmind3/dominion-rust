@@ -1362,6 +1362,25 @@ pub(super) async fn run_turn_body(
             }
         }
 
+        // Direct owner steering wins over a model response prepared with an
+        // older plan. Check after usage accounting but before persisting any
+        // suggested tool calls or accepting a stale final answer.
+        if request.verification_owner.as_deref() == Some("parent") {
+            if let Some(goal_id) = crate::engine::goal_plan::pending_owner_steer(
+                state, session_id, request.task_id.as_deref()
+            ) {
+                state.store.audit("goal.owner_steer_before_tools",json!({
+                    "goalId":goal_id,"sessionId":session_id,
+                    "executionId":execution_id,"round":round,
+                    "supersededProposals":completion.tool_calls.len(),
+                    "phase":"after_model_before_tool_commit"
+                }));
+                let _=tx.send(json!({"type":"goal_owner_steer_pending",
+                    "goalId":goal_id,"executionId":execution_id}));
+                return Err(format!("owner_steer_pending:{goal_id}"));
+            }
+        }
+
         if completion.tool_calls.is_empty() && !force_final
             && request.verification_owner.as_deref()==Some("parent")
             && autonomous_code_task(task_input(&session,&request.input))
@@ -1782,6 +1801,32 @@ pub(super) async fn run_turn_body(
         let mut ordering_used = false;
         let mut ordering_ok = true;
         for (call_index, call) in round_calls.iter().enumerate() {
+            // Unlike tool text or a model-generated "instruction", a queued
+            // /api/goals/:id/plan update is a genuine OWNER action. Stop any
+            // obsolete proposals at the next tool boundary, including after
+            // earlier calls in this batch completed. Record paired skipped
+            // tool outputs so strict model providers can resume cleanly.
+            if request.verification_owner.as_deref() == Some("parent") {
+                if let Some(goal_id) = crate::engine::goal_plan::pending_owner_steer(
+                    state, session_id, request.task_id.as_deref()
+                ) {
+                    let skipped=round_calls.iter().skip(call_index)
+                        .map(|proposal|(proposal.id.clone(),proposal.name.clone()))
+                        .collect::<Vec<_>>();
+                    crate::engine::goal_plan::record_superseded_tool_results(
+                        state,session_id,execution_id,request.agent_id.as_deref(),&skipped
+                    )?;
+                    state.store.audit("goal.owner_steer_before_tools",json!({
+                        "goalId":goal_id,"sessionId":session_id,
+                        "executionId":execution_id,"round":round,
+                        "supersededProposals":skipped.len(),
+                        "phase":"between_tool_dispatches"
+                    }));
+                    let _=tx.send(json!({"type":"goal_owner_steer_pending",
+                        "goalId":goal_id,"executionId":execution_id}));
+                    return Err(format!("owner_steer_pending:{goal_id}"));
+                }
+            }
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
             if !budget.charge_proposal() {

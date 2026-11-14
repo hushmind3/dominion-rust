@@ -354,6 +354,23 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
 
             (turn_error, stats.tool_errors)
         };
+        // A direct owner revision invalidates the previous model's proposed
+        // next actions, not the goal or any already committed evidence.
+        // No reviewer/model retry is charged on an obsolete plan; the next
+        // iteration consumes the owner's override through goal_plan CAS.
+        if turn_error.as_deref().is_some_and(|error|
+            error.starts_with("owner_steer_pending:")
+        ) {
+            patch_goal(state,goal_id,json!({
+                "phase":"owner_steering","gaps":gaps,
+                "evidence":evidence,"iterations":index+1
+            }));
+            context.emit(json!({
+                "type":"goal_owner_steer_next_iteration","goalId":goal_id,
+                "iteration":index+1,"evidenceCount":evidence.len()
+            }));
+            continue;
+        }
         let gate_gaps = acceptance_gaps(&scoped_state, &text, &criteria, &evidence);
         let turn_progress=progress::measure(
             &before_evidence,&evidence,&before_check_gaps,&gate_gaps,tool_errors.len()
