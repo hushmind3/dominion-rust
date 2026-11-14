@@ -54,7 +54,7 @@ Home / Activity / Workflows:
     incomplete verification gaps -> inspect/re-run manually
 ```
 
-**New capability, not a new menu:** Installed reusable skills now determine the actual model context of specific agents. Those agents can pass checked artifacts through multi-agent workflow steps. The same verified workflow can run periodically, with its completed job traced across the home/workflow/activity surfaces.
+**New capability, not a new menu:** Installed reusable skills now determine the actual model context of specific agents. Those agents can pass checked artifacts through multi-agent workflow steps. The same verified workflow can run periodically, with its completed job traced across the home/workflow/activity surfaces. The Developer tool can start a checked workflow against the exact same engine workspace, passing the real Git branch, HEAD and changed-file list as input. Growth displays recorded per-agent verified steps and token usage, without inventing a learning gain.
 
 **Backwards compatibility:** Agents without a `skillIds` field retain the legacy shared-skill context; opening and saving an edited agent gives it an explicit selection (empty means none). Existing workflow steps without acceptance checks remain conversational with `verification.status=unchecked`. The scheduler preserves old `prompt` and `meeting` kinds and their existing engine dispatch.
 
@@ -71,18 +71,18 @@ Home / Activity / Workflows:
 | Agents | Roles and model selection | Persisted assigned active skill IDs and direct verified-workflow entry | `Agents.tsx → POST /api/agents → Store → chat context` | Skill efficacy per task and permission profiles |
 | Video | LTX/Comfy scenes, clip receipts, editing | Inherited, unchanged this iteration | Existing video engine; no new visual measurements | Subjective quality, motion coherence, voice & actual bills |
 | Connections | MCP, installed skill catalog and channels | Active installed skills link directly to binding into an agent | `SkillsPanel.tsx → #/agents?skill=` | Automatic MCP authentication checks, capability health |
-| Memory | Scoped recall, active/editable entries, growth | Skill assignment coexists with memory scope, no new memory engine | `memory::visible` remains mandatory | Learning/retention measured across sessions |
+| Memory | Scoped recall, active/editable entries, growth | Growth panel now attributes **actual verified workflow artifacts and usage per agent** without presenting these as self-improvement | `Growth.tsx → /api/jobs → job.result.outputs[].verification` plus `memory::visible` | Learning/retention measured across sessions |
 | Goal | Planning, verified tool receipts, recovery | Inherited, unchanged this iteration | Existing atomic admission/resume; no new menu credit | Large independently verified task pass@1 |
 | Automations | Periodic prompt/meeting tasks | **New workflow scheduling** with exactly-once due-slot admission and running overlap prevention | `Operations.tsx → collections.rs → jobs.rs → db/automation_claim.rs`; SQLite rollback tests | Notifications, retry policy/threshold/owner approval on failure |
 | Activity | Jobs, operations, audit | Display scheduled workflow source and verified steps/recorded token counts | `Operations.tsx → /api/jobs` current persisted job result | Actual provider-bill attribution |
 | RSI | Isolated candidates, evaluations and descendants | Inherited; no change to frozen independent evaluator | Existing RSI remains separate from workflow success | Genuine multi-generation adopted model-led improvement |
 | Settings | Policy, provider accounts, backup | Inherited; policy still gates tool calls | Existing `policy` and backup endpoints | End-to-end restore and bounded spending |
 | Workflows | Agent steps and `{{previous}}` passing | **New verified handoff** with server-approved per-step criteria, durable tool IDs, tokens, explicit gaps, links to automation | `Workflows.tsx → collections.rs → workflows.rs → run_quiet_outcome → verification.rs → job result` | Human-approved retry from safe checkpoints, independent real-model runs |
-| Developer | Git, diff, preview, job runs | Inherited, unchanged this iteration | Existing Git workspaces and developer UI | Unified tested patch deliveries, CI artifact navigation |
+| Developer | Git, diff, preview, job runs | **Verified multi-agent test runs for the attached Git source**, with strict sourceDir===engine.workspace preflight, Git changed file paths and HEAD included as run input | `Developer.tsx → /api/status + /api/dev/diff + /api/workflows/:id/run → workflow job receipts` | Real patch applicability and CI artifact delivery, OS-level path isolation |
 
 ## Verification tiers; do not confuse them
 
-- **Static:** Changes are committed to the named sub2 branch, not shared by other branches unless merged.
+- **Static:** Changes are committed to the named sub2 branch, not shared by other branches unless merged. The Developer preflight compares configured folder paths on the client; backend workflow tools still follow their original approvals and workspace restrictions, so this is not an OS security sandbox.
 - **Deterministic:** Rust tests check agent-only skill context and an actual mocked-provider workflow path with file writes versus read-only/no-artifact outcomes. Scheduler tests inspect real SQLite transactions, due-slot idempotency, no overlapping jobs and injected rollback. Web typecheck/build validates views; Node independent-oracle tests are inherited.
 - **Live:** **No paid API or external model was invoked by the tests above.** The mocked-provider workflow test is native HTTP→engine→tool→SQLite→artifact verification, not a new real-model reliability benchmark.
 - **Measured:** Workflow outputs retain `modelCalls`, `totalTokens`, `usageEstimated`, and source operation IDs. Recorded token use can be incomplete/estimated; **no verified KRW bill, savings percentage, or actual audiovisual quality** is attributed.
