@@ -120,6 +120,31 @@ pub fn enqueue_once(state: &AppState, id: &str, kind: &str, input: Value) -> Opt
         .filter(|existing| existing["kind"] == kind && existing["input"] == candidate["input"])
 }
 
+/// A resumed goal must be queued with its completed-iteration checkpoint in
+/// the same insert, before any worker can claim it. Patching the checkpoint
+/// after enqueue is a race that may replay a previous external tool operation.
+pub fn enqueue_goal_resume(
+    state: &AppState, id: &str, goal_id: &str, checkpoint: Value,
+    step_index: u64, step_total: u64,
+) -> Option<Value> {
+    let candidate = json!({
+        "id":id,"kind":"goal","input":{"goalId":goal_id,"resumeAfterReview":true},
+        "status":"queued","queuedAt":chrono::Utc::now().to_rfc3339_opts(
+            chrono::SecondsFormat::Micros,true),
+        "attempts":0,"stepIndex":step_index,"stepTotal":step_total,
+        "goalState":checkpoint,"events":[]
+    });
+    if let Some(saved) = state.store.put_if_absent("job", &candidate) {
+        state.bus.record("job",&saved);
+        state.store.audit("job.queued",json!({
+            "kind":"goal","jobId":id,"resumeAfterReview":true
+        }));
+        return Some(saved);
+    }
+    // Never turn a conflicting historic job into a fresh queued execution.
+    None
+}
+
 pub fn cancel_rsi_children(state: &AppState, campaign: &str) {
     for child in state.store.all("job") {
         if child["kind"] != "rsi_generation" || child["input"]["rsiCampaignId"] != campaign
