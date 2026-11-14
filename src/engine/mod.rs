@@ -1,6 +1,7 @@
 pub mod goal_control;
 pub(crate) mod goal_review;
 pub(crate) mod goal_verification;
+pub(crate) mod text_intent;
 pub(crate) mod goal_metrics;
 pub(crate) mod goal_plan;
 pub(crate) mod goal_intake;
