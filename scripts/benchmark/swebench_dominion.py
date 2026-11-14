@@ -339,7 +339,9 @@ def main() -> int:
     if args.max_workers < 1 or args.poll_interval <= 0 or args.max_replans < 0:
         parser.error("max-workers, poll-interval and max-replans must be valid")
     args.output.mkdir(parents=True, exist_ok=True)
-    tasks = [json.loads(line) for line in args.tasks_jsonl.read_text().splitlines()
+    tasks_source = args.tasks_jsonl.resolve()
+    tasks_source_hash = hashlib.sha256(tasks_source.read_bytes()).hexdigest()
+    tasks = [json.loads(line) for line in tasks_source.read_text().splitlines()
              if line.strip()]
     if args.max_instances > 0:
         tasks = tasks[:args.max_instances]
@@ -347,6 +349,22 @@ def main() -> int:
         parser.error("No official instances selected; refusing an empty benchmark")
     if len({row["instance_id"] for row in tasks}) != len(tasks):
         parser.error("Duplicate instance IDs are forbidden")
+    # Compare products only under a pinned binary, exact task cohort and
+    # matching limits; never store credentials or provider secrets in the run.
+    manifest = {
+        "datasetClaim": DATASET,
+        "datasetRowsSha256": tasks_source_hash,
+        "instanceIds": [row["instance_id"] for row in tasks],
+        "binarySha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
+        "modelName": args.model_name, "model": args.model,
+        "providerId": args.provider_id, "tokenBudget": args.token_budget,
+        "maxIterations": args.max_iterations, "maxReplans": args.max_replans,
+        "timeoutSeconds": args.timeout, "maxWorkers": args.max_workers,
+        "officialDockerRequested": bool(args.run_official),
+        "note": "This manifest identifies input bytes, not an independently confirmed official dataset origin",
+    }
+    (args.output / "run-manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     preds, receipts = [], []
     with tempfile.TemporaryDirectory(prefix="dominion-swebench-") as temp:
         for index, row in enumerate(tasks):
@@ -366,6 +384,8 @@ def main() -> int:
             (args.output / "traces.jsonl").write_text(
                 "".join(json.dumps(r, ensure_ascii=False)+"\n" for r in receipts))
     summary = {"dataset": DATASET, "model": args.model_name,
+               "binarySha256": manifest["binarySha256"],
+               "datasetRowsSha256": tasks_source_hash,
                "attemptedInstances": len(tasks),
                "nonemptyPatches": sum(bool(p["model_patch"]) for p in preds),
                "officialResolved": None, "officialEvaluated": False,
