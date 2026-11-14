@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {Play,RefreshCw,Square,RotateCcw,FileCode2,FolderTree,CheckCircle2,AlertTriangle,ShieldCheck} from 'lucide-react'
+import {Play,RefreshCw,Square,RotateCcw,FileCode2,FolderTree,CheckCircle2,AlertTriangle,ShieldCheck,Trash2} from 'lucide-react'
 import {get,post,resolveApproval} from '../api'
 import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {Panel,useRemote} from './UI'
@@ -9,6 +9,7 @@ type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
  id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;finalSummary?:string;
  jobId?:string;sessionId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
+ isolateWorktree?:boolean;gitWorktree?:{path?:string;baseCommit?:string;discarded?:boolean;mode?:string};
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
  resumeHistory?:{at:string;resolutionNote:string}[];
@@ -23,6 +24,7 @@ export function GoalConsole(){
  const [goalText,setGoalText]=useState('')
  const [agentId,setAgentId]=useState('')
  const [checkPath,setCheckPath]=useState('')
+ const [isolateWorktree,setIsolateWorktree]=useState(false)
  const [maxTokens,setMaxTokens]=useState(80000)
  const [selected,setSelected]=useState('')
  const [busy,setBusy]=useState(false)
@@ -46,7 +48,8 @@ export function GoalConsole(){
   try{
    const criteria=checkPath.trim()?[{type:'file_exists',path:checkPath.trim()}]:[]
    const result=await post<Goal>('/api/goals',{goal:goalText.trim(),executor:{agentId:executor},
-    maxIterations:16,maxReplans:6,replanAfter:2,maxExecutorTokens:maxTokens,successCriteria:criteria})
+    maxIterations:16,maxReplans:6,replanAfter:2,maxExecutorTokens:maxTokens,
+    isolateWorktree,successCriteria:criteria})
    setSelected(result.id);setGoalText('');setCheckPath('');setNotice('목표를 자율 실행 대기열에 등록했습니다.')
    await reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
@@ -82,11 +85,23 @@ export function GoalConsole(){
    setNotice('사용자 수정 계획을 다음 작업에 적용했습니다.');setEditingPlan(false);await reload()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const discardWorktree=async()=>{
+  if(!chosen?.gitWorktree||busy||running(chosen.status))return
+  if(!window.confirm('이 목표의 격리 Git 작업폴더와 커밋하지 않은 파일을 영구 폐기합니다. 원본 폴더는 유지됩니다. 폐기할까요?'))return
+  setBusy(true);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(chosen.id)+'/discard',{confirmation:'DISCARD_GOAL_WORKTREE'})
+   setDiff(null);setNotice('격리 Git 작업폴더를 폐기했습니다. 원본 체크아웃은 유지됩니다.');await reload()
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const showDiff=async()=>{
   if(!chosen||busy)return
   setBusy(true);setError('')
-  try{const data=await get<{diff:string;note?:string}>('/api/goals/'+encodeURIComponent(chosen.id)+'/diff')
-   setDiff({id:chosen.id,text:data.diff||data.note||'변경된 추적 파일의 diff가 없습니다.'})}
+  try{const data=await get<{diff:string;note?:string;workspaceMode?:string;status?:string;untracked?:string;baseCommit?:string}>('/api/goals/'+encodeURIComponent(chosen.id)+'/diff')
+   const summary=data.workspaceMode==='isolated'
+    ?'격리된 Git 작업폴더 · 기준 커밋 '+(data.baseCommit||'')+'\n상태:\n'+(data.status||'없음')+'\n추적되지 않은 파일:\n'+(data.untracked||'없음')+'\n\n'
+    :''
+   setDiff({id:chosen.id,text:summary+(data.diff||data.note||'변경된 추적 파일의 diff가 없습니다.')})}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  return <Panel className="mb-5 p-5">
@@ -109,6 +124,10 @@ export function GoalConsole(){
      <TextInput aria-label="결과 검증할 파일(선택)" value={checkPath} onChange={e=>setCheckPath(e.target.value)}
       placeholder="산출물 파일 경로 · 선택"/>
     </div>
+    <label className="flex items-start gap-2 text-xs text-[#61574A]">
+     <input type="checkbox" checked={isolateWorktree} onChange={e=>setIsolateWorktree(e.target.checked)}/>
+     <span>Git 전용 작업폴더에서 실행 · 원본 파일과 분리 (깨끗한 Git 저장소에서만 시작 가능)</span>
+    </label>
     <label className="block text-xs text-[#7C7469]">실행 모델 토큰 예산 (다음 턴 진입 제한)
      <TextInput type="number" min={5000} max={2000000} value={maxTokens}
       onChange={e=>setMaxTokens(Math.max(5000,Math.min(2000000,Number(e.target.value)||80000)))}/>
@@ -128,9 +147,12 @@ export function GoalConsole(){
     {chosen?<><div className="flex flex-wrap items-center gap-2">
      <strong className="text-xs text-[#3A342D]">{chosen.status} · {chosen.phase||'queued'}</strong>
      <span className="text-[11px] text-[#7C7469]">반복 {chosen.iterations||0}/{chosen.maxIterations||16}</span>
+     {chosen.isolateWorktree&&<span className="text-[11px] text-[#7C7469]">Git 격리 {chosen.gitWorktree?.discarded?'· 폐기됨':'· 보존 중'}</span>}
      {chosen.planScore?.total!==undefined&&<span className="text-[11px] text-[#7C7469]">계획 품질 지표 {Math.round(chosen.planScore.total*100)}%</span>}
      {running(chosen.status)&&<Button variant="danger" size="sm" onClick={()=>void stop()} disabled={busy}><Square size={13}/> 중단</Button>}
-     <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy}><FileCode2 size={13}/> Diff 확인</Button>
+     <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy||chosen.gitWorktree?.discarded}><FileCode2 size={13}/> Diff 확인</Button>
+     {chosen.isolateWorktree&&chosen.gitWorktree&&!chosen.gitWorktree.discarded&&!running(chosen.status)&&
+      <Button size="sm" variant="danger" onClick={()=>void discardWorktree()} disabled={busy}><Trash2 size={13}/> 격리 폴더 폐기</Button>}
     </div>
      {subtasks.value.length>0&&<details open className="rounded-xl border border-[#E7E0D5] p-3">
       <summary className="cursor-pointer text-xs font-semibold">서브에이전트 실행 {subtasks.value.length}건</summary>

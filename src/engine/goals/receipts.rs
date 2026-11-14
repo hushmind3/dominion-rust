@@ -23,6 +23,8 @@ pub(super) fn record(ctx:&JobContext,id:&str,status:&str,goal:&Value,evidence:&[
         "artifactCount":artifact_count,
         "iterations":goal["iterations"],"replans":goal["replans"],
         "maxExecutorTokens":goal["maxExecutorTokens"],
+        "workspaceMode":if goal["isolateWorktree"]==true{"detached_git_worktree"}else{"shared_workspace"},
+        "workspaceBaseCommit":goal["gitWorktree"]["baseCommit"],
         "reviewerCallsAvoided":goal["reviewHistory"].as_array()
             .map(|rows|rows.iter().filter(|row|row["skippedForDeterministicGap"]==true).count())
             .unwrap_or(0),

@@ -15,12 +15,17 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
-pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");};
+    if matches!(goal["status"].as_str(),Some("queued"|"running")){
+        return error(StatusCode::CONFLICT,"실행 중인 목표는 먼저 중단하세요.");
+    }
+    if goal["isolateWorktree"]==true && goal["gitWorktree"]["discarded"]!=true{
+        return error(StatusCode::CONFLICT,"격리 작업공간의 변경사항을 확인하고 별도로 폐기한 뒤 기록을 삭제하세요.");
+    }
     state.store.remove("goal", &id);
-    state
-        .bus
-        .emit(json!({ "type": "record", "kind": "goal", "removed": id }));
-    Json(json!({ "ok": true }))
+    state.bus.emit(json!({"type":"record","kind":"goal","removed":id}));
+    Json(json!({"ok":true})).into_response()
 }
 
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
@@ -32,6 +37,9 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .to_string();
     if text.is_empty() {
         return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
+    }
+    if body.get("isolateWorktree").is_some_and(|value|!value.is_boolean()){
+        return error(StatusCode::BAD_REQUEST,"Git 작업공간 격리 옵션은 true 또는 false여야 합니다.");
     }
     let criteria = body
         .get("successCriteria")
@@ -64,6 +72,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "iterations": 0,
             "maxIterations": max_iterations,
             "maxExecutorTokens":body["maxExecutorTokens"].as_u64().unwrap_or(80000),
+            "isolateWorktree":body["isolateWorktree"]==true,
             "createdAt": chrono::Utc::now().to_rfc3339(),
         }),
     ) else {
@@ -103,6 +112,10 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     if !state.begin_session(&lock_id){return error(StatusCode::CONFLICT,"목표 복구가 진행 중입니다.");}
     let _guard=state.session_guard(&lock_id);
     let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");};
+    if goal["isolateWorktree"]==true
+        && engine::goal_workspace::workspace_for_goal(&state,&goal).is_err(){
+        return error(StatusCode::CONFLICT,"이 목표의 Git 작업공간이 제거되거나 변경되어 자동 재개할 수 없습니다.");
+    }
     if !matches!(goal["status"].as_str(),Some("needs_review"|"failed"|"cancelled")){
         return error(StatusCode::CONFLICT,"검토·실패·중단된 목표만 이어서 실행할 수 있습니다.");
     }
@@ -198,6 +211,19 @@ pub async fn goal_diff(State(state):State<AppState>,Path(id):Path<String>)->Resp
     match engine::goals::diff_for_goal(&state,&id).await{
         Ok(result)=>Json(result).into_response(),
         Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}
+
+/// Destructive operation is explicitly opt-in, and never touches the source
+/// checkout. The owner must inspect the diff before discarding local edits.
+pub async fn discard_workspace(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    if body["confirmation"]!="DISCARD_GOAL_WORKTREE"{
+        return error(StatusCode::BAD_REQUEST,"격리 작업공간 폐기 확인 문자열이 필요합니다.");
+    }
+    match engine::goal_workspace::discard(&state,&id).await{
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message)
     }
 }
 
