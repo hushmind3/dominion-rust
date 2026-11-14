@@ -2,6 +2,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+#[path = "db/usage_tree.rs"]
+mod usage_tree;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinalizeOutcome {
