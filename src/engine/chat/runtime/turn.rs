@@ -1896,7 +1896,7 @@ pub(super) async fn run_turn_body(
                             "tool":call.name,"attempts":repeat,"terminated":stop,
                             "noEffectReplayed":true}));
                         if stop {
-                            return Err("동일한 파일 관측이 반복되어 무한 루프를 중단했습니다.".into());
+                            return Err("동일한 파일 관측 반복으로 도구 루프 제한에 도달했습니다.".into());
                         }
                         continue;
                     }
