@@ -54,6 +54,7 @@ pub(super) fn build(state:&AppState, goal:&Value)->Value {
         "successfulToolEvidence":successful,
         "toolEvidenceRecorded":evidence.len(),
         "operations":operations,
+        "gitChanges":super::git::report(&state.config.workspace,&goal["gitBaseline"]),
         "sessionUsage":goal["sessionId"].as_str().filter(|id|!id.is_empty())
             .map(|id|state.store.session_usage(id)).unwrap_or(Value::Null),
         "tokenBudget":goal["tokenBudget"],
