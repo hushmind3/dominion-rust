@@ -69,8 +69,9 @@ pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
     }
     let prompt = required_arg(args, "prompt")?;
     let read_only = args["readOnly"].as_bool().unwrap_or(false);
-    let parent_goal=ctx.store.get("session",ctx.session_id)
-        .map(|parent|parent["goalId"].clone()).unwrap_or(Value::Null);
+    let parent=ctx.store.get("session",ctx.session_id).unwrap_or(Value::Null);
+    let parent_goal=parent["goalId"].clone();
+    let parent_worktree=parent["goalWorktree"].clone();
     let agent = ctx
         .state
         .store
