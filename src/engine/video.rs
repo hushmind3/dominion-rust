@@ -8,9 +8,12 @@ use crate::{
     state::AppState,
 };
 use serde_json::{json, Value};
+use sha2::Digest;
 
 #[path = "video/ltx.rs"]
 mod ltx;
+#[path = "video/film.rs"]
+mod film;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -91,7 +94,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"technicalQuality":job["result"]["technicalQuality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -139,7 +142,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
             return Err("지원하지 않는 LTX 모델입니다.".into());
         }
         ltx::resolution(aspect,ltx_quality)?;
-        if !ltx::valid_duration(ltx_model,ltx_quality,duration) {
+        if body["ltxFilm"]!=true && !ltx::valid_duration(ltx_model,ltx_quality,duration) {
             return Err("LTX 2.5 모델·화질별 지원 영상 길이를 확인하세요.".into());
         }
         ltx::cinematic_prompt(brief,ltx_style)?;
@@ -168,13 +171,21 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
-    let input = json!({
+    let mut input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "ltxModel":ltx_model,"ltxQuality":ltx_quality,"ltxStyle":ltx_style,
+        "ltxFilm":engine=="ltx"&&body["ltxFilm"]==true,
+        "confirmPaidMultiShot":body["confirmPaidMultiShot"]==true,
+        "technicalGate":body["technicalGate"]==true,
+        "scenes":body.get("scenes").cloned().unwrap_or(Value::Null),
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
+    if input["ltxFilm"]==true {
+        let plan=film::spec(&input,&input["config"])?;
+        input["render"]=plan;
+    }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -198,6 +209,7 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let input = &job["input"];
     let result = match input["engine"].as_str().unwrap_or("native") {
         "comfyui" => comfy::comfy(ctx,input,&dir).await,
+        "ltx" if input["ltxFilm"]==true => film::run(ctx,input,&dir).await,
         "ltx" => ltx::render(ctx,input,&dir).await,
         _ => native::native(ctx,input,&dir).await,
     };
@@ -241,6 +253,39 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 }
+/// Read-only scene diagnostics including SHA-256 for owner-pinned retakes.
+pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 영상 작업 ID")?;
+    let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
+    film::scenes(state,&job)
+}
+
+/// A retake is a NEW durable video job, never a replay of an uncertain paid
+/// submission. Deterministic job IDs make double-clicks/idempotent retries
+/// refer to the same billable work rather than creating another order.
+pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 원본 영상 ID")?;
+    let source=state.store.get("job",id).ok_or("원본 영상 작업을 찾지 못했습니다.")?;
+    if body["confirmNewPaidCalls"]!=true {
+        return Err("장면 재생성으로 발생하는 추가 유료 API 호출에 동의해야 합니다.".into());
+    }
+    let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
+    let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA-256이 없습니다.")?;
+    let count=body["confirmedPaidCallCount"].as_u64().ok_or("추가 결제 장면 수에 동의해야 합니다.")?;
+    let input=film::retake_input(state,&source,index,digest,
+        body["prompt"].as_str(),count)?;
+    let fingerprint=input["retake"]["fingerprint"].as_str().ok_or("재생성 식별자가 없습니다.")?;
+    let raw=sha2::Sha256::digest(fingerprint.as_bytes());
+    let mut bytes=[0u8;16];
+    bytes.copy_from_slice(&raw[..16]);
+    bytes[6]=(bytes[6]&0x0f)|0x40;
+    bytes[8]=(bytes[8]&0x3f)|0x80;
+    let job_id=uuid::Uuid::from_bytes(bytes).to_string();
+    let job=jobs::enqueue_once(state,&job_id,"video",input)
+        .ok_or("재생성 작업을 저장하지 못했습니다.")?;
+    Ok(public_job(&job))
+}
+
 #[cfg(test)]
 #[path = "video/tests.rs"]
 mod tests;
