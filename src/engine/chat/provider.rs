@@ -2123,9 +2123,9 @@ mod tests {
     fn repeated_identical_reads_are_omitted_only_from_model_copy() {
         let text="actual source line\n".repeat(95);
         let original=vec![
-            json!({"role":"assistant","tool_calls":[{"id":"r1","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"assistant","tool_calls":[{"id":"r1","function":{"name":"workspace_read","arguments":"{\"path\":\"src/main.rs\"}"}}]}),
             json!({"role":"tool","tool_call_id":"r1","content":text}),
-            json!({"role":"assistant","tool_calls":[{"id":"r2","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"assistant","tool_calls":[{"id":"r2","function":{"name":"workspace_read","arguments":"{\"path\":\"src/main.rs\"}"}}]}),
             json!({"role":"tool","tool_call_id":"r2","content":text}),
         ];
         let mut window=original.clone();
@@ -2141,11 +2141,11 @@ mod tests {
         let x="A".repeat(1000);
         let y="B".repeat(1000);
         let mut messages=vec![
-            json!({"role":"assistant","tool_calls":[{"id":"a","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"assistant","tool_calls":[{"id":"a","function":{"name":"workspace_read","arguments":"{\"path\":\"src/main.rs\"}"}}]}),
             json!({"role":"tool","tool_call_id":"a","content":x}),
-            json!({"role":"assistant","tool_calls":[{"id":"b","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/lib.rs\\"}"}}]}),
+            json!({"role":"assistant","tool_calls":[{"id":"b","function":{"name":"workspace_read","arguments":"{\"path\":\"src/lib.rs\"}"}}]}),
             json!({"role":"tool","tool_call_id":"b","content":x}),
-            json!({"role":"assistant","tool_calls":[{"id":"c","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"assistant","tool_calls":[{"id":"c","function":{"name":"workspace_read","arguments":"{\"path\":\"src/main.rs\"}"}}]}),
             json!({"role":"tool","tool_call_id":"c","content":y}),
         ];
         assert_eq!(deduplicate_repeated_file_reads(&mut messages),0);
