@@ -95,6 +95,17 @@ overlap 중복, 보존 초과 신호, abort, retry 제한, 401 중단.
 구분한다. 실제 원화 청구액과 공급자 미보고 캐시 적중은 추정하지 않는다.
 테스트는 `tests/unit/engine_rooms_economy_tests.rs`에 있다.
 
+## 5. 목표 대기 SDK의 중복 실행 방지
+
+`DominionGoal.waitForTerminal()`은 이벤트 관찰만을 자동화한다.
+최초와 이후 목표 관련 이벤트마다 `GET /api/goals/:id`의 정본을
+조회해 완료 상태를 판정한다. 오래된 SSE 기록의 완료 메시지가
+현재 실행 중인 목표를 완료로 잘못 처리하지 않으며,
+보존 기간 초과 `replay_gap`에도 현재 상태를 재조회한다.
+`AbortSignal`은 SDK 관찰만 끝내고 실제 목표 실행은 별도 `cancel()`
+권한 요청이 있어야 중단한다. 단위 테스트는 TypeScript SDK 자체
+테스트 파일에 있다.
+
 ## 입증 경계
 
 기존 코드의 실행 경로와 본 변경의 단위/FFmpeg 합성 테스트를 따로 기록한다.
