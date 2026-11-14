@@ -9,8 +9,9 @@ type Agent={id:string;name:string;model?:string}
 type CheckResult={type?:string;path?:string|null;command?:string|null;passed?:boolean;gaps?:string[]}
 type Artifact={path:string;bytes:number;sha256?:string;hashOmitted?:boolean}
 type GitChanges={baselineHead?:string;currentHead?:string;initialStatus?:string;currentStatus?:string;changedFiles?:{change:string;path:string}[];diffStat?:string;diffPreview?:string|null;diffPreviewTruncated?:boolean}
+type IsolatedChanges={goalId:string;branch:string;baseCommit:string;status:string;diff:string;untracked?:string;untrackedPreviews?:{path:string;bytes:number;content?:string;previewOmitted?:boolean}[];reviewIncomplete?:boolean;truncated?:boolean;reviewDigest:string}
 type GoalReport={gitChanges?:GitChanges|null;accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;tokenBudget?:number;sessionUsage?:{calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;cachedPromptTokens?:number};operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
-type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;jobId?:string;sessionId?:string;plan?:string;
+type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;jobId?:string;sessionId?:string;plan?:string;isolateWorktree?:boolean;gitWorktree?:{path:string;branch:string;baseCommit:string;rolledBack?:boolean;applied?:boolean;appliedCommit?:string};
  iterations?:number;maxIterations?:number;tokenBudget?:number;replans?:number;planHistory?:{version:number;plan:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  evidence?:unknown[];gaps?:string[];acceptanceChecks?:unknown[];finalReport?:GoalReport}
@@ -24,6 +25,8 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
  const [agentId,setAgentId]=useState('')
  const [kind,setKind]=useState<VerifyKind>('auto')
  const [tokenBudget,setTokenBudget]=useState(150000)
+ const [isolateWorktree,setIsolateWorktree]=useState(true)
+ const [changes,setChanges]=useState<IsolatedChanges|null>(null)
  const [criterion,setCriterion]=useState('')
  const [selectedId,setSelectedId]=useState('')
  const [editedPlan,setEditedPlan]=useState('')
@@ -56,7 +59,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
    if(kind!=='auto'&&!criterion.trim())throw new Error('검증 조건을 입력하세요.')
    const data=await post<Goal>('/api/goals',{goal:goalText.trim(),
     executor:agentId?{agentId}:{},successCriteria:criteria,
-    maxIterations:16,maxReplans:6,replanAfter:2,tokenBudget})
+    maxIterations:16,maxReplans:6,replanAfter:2,tokenBudget,isolateWorktree})
    setSelectedId(data.id);setGoalText('');setCriterion('')
    await goals.reload();setNotice('목표를 등록하고 자율 실행 대기열에 넣었습니다.')
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
@@ -88,8 +91,30 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
   try{await del('/api/goals/'+encodeURIComponent(selected.id));setSelectedId('');setJob(null);await goals.reload()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const reviewChanges=async()=>{
+  if(!selected||busy)return
+  setBusy(true);setError('');setChanges(null)
+  try{setChanges(await get<IsolatedChanges>('/api/goals/'+encodeURIComponent(selected.id)+'/changes'))}
+  catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const applyReviewed=async()=>{
+  if(!selected||!changes||busy||changes.reviewIncomplete||changes.truncated)return
+  if(!confirm('검토한 Git 변경을 원본 브랜치에 fast-forward 반영하시겠습니까? 원본 HEAD와 파일 상태가 목표 시작 시점과 같아야 합니다.'))return
+  setBusy(true);setError('')
+  try{await post('/api/goals/'+encodeURIComponent(selected.id)+'/apply',{reviewDigest:changes.reviewDigest,acknowledgeReview:true})
+   setChanges(null);await goals.reload();setNotice('검토한 격리 브랜치 변경을 원본에 반영했습니다.')}
+  catch(e){setError((e as Error).message);setChanges(null)}finally{setBusy(false)}
+ }
+ const discardReviewed=async()=>{
+  if(!selected||busy||!confirm('격리 작업공간의 미반영 변경을 폐기하시겠습니까? 원본 저장소는 유지됩니다.'))return
+  setBusy(true);setError('')
+  try{await post('/api/goals/'+encodeURIComponent(selected.id)+'/discard',{})
+   setChanges(null);await goals.reload();setNotice('격리 작업공간을 제거하고 원본 저장소를 유지했습니다.')}
+  catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const report=selected?.finalReport||job?.result?.finalReport
  const active=selected?.status==='queued'||selected?.status==='running'
+ useEffect(()=>{setChanges(null)},[selected?.id])
  return <div className="mx-auto w-full max-w-[1380px] px-5 py-5 sm:px-7 lg:pb-8">
   <Headline eyebrow="AUTONOMOUS AGENT" title="자율 목표 실행" description="목표 하나로 분석 → 계획 → 도구 실행 → 검증 → 실패 수정 → 결과물 전달. 완료 판정은 실제 도구와 최종 검증 조건으로 결정합니다." actions={<Button variant="ghost" onClick={()=>void goals.reload()}><RefreshCw size={15}/> 새로고침</Button>}/>
   {error&&<Notice message={error}/>}
@@ -101,6 +126,8 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
      <FormField label="무엇을 완성할까요?"><TextArea rows={5} value={goalText} onChange={e=>setGoalText(e.target.value)} placeholder="예: 이 프로젝트의 로그인 오류를 찾아 수정하고 검증 결과를 보고해 주세요."/></FormField>
      <FormField label="실행 담당 에이전트"><SelectInput value={agentId} onChange={e=>setAgentId(e.target.value)}><option value="">기본 실행 모델 사용</option>{agents.value.map(agent=><option key={agent.id} value={agent.id}>{agent.name}{agent.model?' · '+agent.model:''}</option>)}</SelectInput></FormField>
      <FormField label="완료 검증 조건"><SelectInput value={kind} onChange={e=>setKind(e.target.value as VerifyKind)}><option value="auto">요청에서 자동 추론</option><option value="file_exists">파일 존재</option><option value="file_changed">파일 변경</option><option value="command_succeeded">명령어 성공 (실제 실행 로그)</option></SelectInput></FormField>
+     <label className="flex items-center gap-2 text-xs font-medium"><input type="checkbox" checked={isolateWorktree} onChange={e=>setIsolateWorktree(e.target.checked)}/> 🛡️ 코딩 목표 Git worktree 격리 (기본 사용)</label>
+     <p className="text-[11px] text-[#8A8176]">Git 루트·깨끗한 원본 작업공간이 필요합니다. 에이전트는 별도 checkout에서 파일을 수정하고, 원본 반영은 변경 검토 후 직접 승인합니다. OS 보안 샌드박스는 아닙니다.</p>
      <FormField label="목표 실행 토큰 예산" hint={undefined}><TextInput type="number" min={0} max={2000000} step={10000} value={tokenBudget} onChange={e=>setTokenBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
      <p className="text-[11px] leading-5 text-[#8A8176]">기본 15만 토큰. 0은 제한 없음. Provider가 기록한 세션 실행 사용량을 기준으로 다음 턴을 제한하며, 별도 계획·검토 호출의 전체 청구액 상한은 아닙니다.</p>
      {kind!=='auto'&&<FormField label={kind==='command_succeeded'?'검증 명령어':'워크스페이스 파일 경로'}><TextInput value={criterion} onChange={e=>setCriterion(e.target.value)} placeholder={kind==='command_succeeded'?'cargo test': 'src/main.rs'}/></FormField>}
@@ -125,6 +152,26 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
        {!active&&<Button variant="ghost" disabled={busy} onClick={()=>void remove()}><Trash2 size={14}/> 기록 삭제</Button>}</div>
       {job?.error&&<Notice message={job.error}/>}
      </Panel>
+     {selected.isolateWorktree&&<Panel className="space-y-3 p-5">
+      <h3 className="text-sm font-bold">🛡️ Git 격리 작업공간</h3>
+      <p className="text-xs text-[#7C7469]">{selected.gitWorktree?.branch||'작업공간 준비 중'} · 기준 {selected.gitWorktree?.baseCommit?.slice(0,10)||'—'}</p>
+      <p className="break-all text-[11px] text-[#8A8176]">{selected.gitWorktree?.path||'원본 checkout을 직접 수정하지 않습니다.'}</p>
+      <div className="flex flex-wrap gap-2">
+       {selected.gitWorktree&&!selected.gitWorktree.rolledBack&&<Button variant="secondary" disabled={busy} onClick={()=>void reviewChanges()}>변경 미리보기</Button>}
+       {!active&&selected.gitWorktree&&!selected.gitWorktree.applied&&!selected.gitWorktree.rolledBack&&<Button variant="ghost" disabled={busy} onClick={()=>void discardReviewed()}>격리 변경 폐기</Button>}
+      </div>
+      {selected.gitWorktree?.applied&&<p className="text-xs text-emerald-700">원본 브랜치 반영 완료 · {selected.gitWorktree.appliedCommit?.slice(0,12)}</p>}
+      {selected.gitWorktree?.rolledBack&&<p className="text-xs text-[#8A8176]">격리 작업공간 폐기됨 · 원본 유지</p>}
+      {changes&&<div className="space-y-2 rounded-lg border border-[#EEE5D9] p-3 text-xs">
+       <p className="font-semibold">검토할 Git 변경 · {changes.branch}</p>
+       <p className="text-[#8A8176]">원본 기준 {changes.baseCommit.slice(0,10)} · 검토 영수증 {changes.reviewDigest.slice(0,16)}…</p>
+       {changes.status&&<pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded bg-[#FAF7F1] p-2">{changes.status}</pre>}
+       {changes.diff&&<details open><summary className="cursor-pointer font-semibold">수정·삭제 파일 diff</summary><pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded bg-[#FAF7F1] p-2">{changes.diff}</pre></details>}
+       {!!changes.untrackedPreviews?.length&&<details open><summary className="cursor-pointer font-semibold">새 파일 내용 {changes.untrackedPreviews.length}개</summary>{changes.untrackedPreviews.map((file,i)=><div className="mt-2" key={i}><strong>{file.path} · {file.bytes}바이트</strong>{file.content!==undefined?<pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all rounded bg-[#FAF7F1] p-2">{file.content}</pre>:<p className="text-amber-700">미리보기 생략 · 자동 반영 불가</p>}</div>)}</details>}
+       {(changes.truncated||changes.reviewIncomplete)&&<p className="text-amber-700">일부 변경 내용이 생략돼 원본 반영을 차단했습니다. 변경 범위를 줄여 다시 검토하세요.</p>}
+       {!active&&['completed','needs_review'].includes(selected.status)&&!changes.truncated&&!changes.reviewIncomplete&&!selected.gitWorktree?.applied&&<Button disabled={busy||!changes.reviewDigest} onClick={()=>void applyReviewed()}><Check size={14}/> 이 변경을 검토하고 원본에 반영</Button>}
+      </div>}
+     </Panel>}
      <Panel className="space-y-3 p-5"><h3 className="flex items-center gap-2 text-sm font-bold"><Wrench size={16}/> 작업 계획 · {selected.planHistory?.length||0}개 버전</h3>
       {selected.status==='queued'?<><TextArea rows={6} value={editedPlan} onChange={e=>setEditedPlan(e.target.value)} placeholder="선택 사항: 실행 전에 계획을 직접 입력하거나 수정하세요. 비우면 계획 모델이 작성합니다."/><Button disabled={busy||!editedPlan.trim()} onClick={()=>void savePlan()}><Check size={14}/> 계획 저장</Button></>:<pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-[#FAF7F1] p-4 text-xs leading-6">{selected.plan||'계획 작성 대기 중'}</pre>}
       {!!selected.planHistory?.length&&<details className="text-xs text-[#7C7469]"><summary className="cursor-pointer">재계획 이력</summary>{selected.planHistory.map((item,i)=><div key={i} className="mt-2 border-l-2 border-[#E9D6C5] pl-3"><strong>계획 v{item.version}</strong><pre className="mt-1 whitespace-pre-wrap">{item.plan}</pre></div>)}</details>}
