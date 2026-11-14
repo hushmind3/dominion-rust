@@ -90,7 +90,7 @@ export function MemoryPage(){
     </div>
     <div className="flex flex-col gap-3">{filtered.map(m=><Panel key={m.id} className="min-w-0 p-4">
      <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{t(statusLabels[statusOf(m)] ?? 'memory.status.excluded')}</span><span className="ml-auto"/>
-      {m.source==='user'&&<Button size="icon" variant="ghost" disabled={busy} onClick={()=>{setEditing({id:m.id,text:m.text,expectedText:m.text});setError('');setNotice('')}} aria-label={t('memory.edit')} title={t('memory.edit')}><Pencil size={16}/></Button>}
+      {m.source==='user'&&statusOf(m)==='active'&&<Button size="icon" variant="ghost" disabled={busy} onClick={()=>{setEditing({id:m.id,text:m.text,expectedText:m.text});setError('');setNotice('')}} aria-label={t('memory.edit')} title={t('memory.edit')}><Pencil size={16}/></Button>}
       <Button size="icon" variant="ghost" disabled={busy} onClick={()=>void drop(m.id)} aria-label={t('memory.delete')}><Trash2 size={16}/></Button></div>
      {editing?.id===m.id?<div className="space-y-3">
        <TextArea rows={5} aria-label={t('memory.edit')} value={editing.text} onChange={e=>setEditing(current=>current?.id===m.id?{...current,text:e.target.value}:current)}/>
