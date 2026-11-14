@@ -596,7 +596,7 @@ pub(crate) fn compile(
     );
     // The date is current runtime data, not a reason to invalidate the bot's
     // reusable identity prefix at midnight.
-    history.push(json!({"role":"user","_dominion_frame":format!("runtime-date:{}",chrono::Local::now().format("%Y-%m-%d")),"content":format!(
+    super::owner_intent::insert_context_before_owner(&mut history, json!({"role":"user","_dominion_origin":"runtime-data","_dominion_frame":format!("runtime-date:{}",chrono::Local::now().format("%Y-%m-%d")),"content":format!(
         "[Runtime metadata, not a participant message or new request] Current date: {}",
         chrono::Local::now().format("%Y-%m-%d")
     )}));
