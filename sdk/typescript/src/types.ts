@@ -20,6 +20,11 @@ export interface Goal extends DominionRecord {
   gaps?: string[];
   evidence?: unknown[];
 }
+export interface OwnerDirective {
+  text:string;
+  mode:"append"|"replace";
+  requestId:string;
+}
 export interface GoalCreate {
   goal: string;
   successCriteria?: Record<string, unknown>[];

@@ -5,7 +5,7 @@ import {
 import type {TransportOptions} from "./transport.js";
 import type {
   Approval, ChatEvent, ChatRequest, ChatResult, DominionRecord, EventWatchOptions,
-  Goal, GoalCreate, Job, Message, ModelSelection, RequestOptions, ServerEvent,
+  Goal, GoalCreate, Job, Message, ModelSelection, OwnerDirective, RequestOptions, ServerEvent,
   Session, SessionCreate, WaitOptions,
 } from "./types.js";
 
@@ -41,6 +41,18 @@ export class DominionClient {
     /** Changes the owner's plan at the next safe execution boundary. */
     steer: (id: string, plan: string, options?: RequestOptions) =>
       this.transport.json<Goal>(`/api/goals/${idPart(id)}/plan`, "POST", {plan}, options),
+    direct: (id: string, input: OwnerDirective, options?: RequestOptions) => {
+      if (!input.requestId || !/^[A-Za-z0-9_-]{1,100}$/.test(input.requestId))
+        throw new TypeError("Invalid stable owner requestId");
+      if (!input.text?.trim() || !["append","replace"].includes(input.mode))
+        throw new TypeError("Owner directive requires text and append/replace mode");
+      return this.transport.json<Goal>(`/api/goals/${idPart(id)}/steer`,
+        "POST", input, options);
+    },
+    appendInstruction: (id: string, text: string, requestId: string, options?: RequestOptions) =>
+      this.goals.direct(id, {text,mode:"append",requestId}, options),
+    replacePlan: (id: string, text: string, requestId: string, options?: RequestOptions) =>
+      this.goals.direct(id, {text,mode:"replace",requestId}, options),
     /** Does not conceal uncertain external effects: caller must explicitly acknowledge. */
     resume: (id: string, acknowledgeUnknownEffects: true, options?: RequestOptions) =>
       this.transport.json<Goal>(`/api/goals/${idPart(id)}/resume`, "POST", {acknowledgeUnknownEffects}, options),

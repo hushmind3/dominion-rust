@@ -191,3 +191,22 @@ test("SDK validates base URL and never injects credentials into the URL", () => 
   assert.throws(() => new DominionClient({baseUrl:"file:///tmp/demo"}), TypeError);
   assert.throws(() => new DominionClient({baseUrl:"https://admin:pass@example.com"}), TypeError);
 });
+
+test("durable owner steering passes exact instruction, mode and stable requestId",async()=>{
+ const requests=[];
+ const sdk=new DominionClient({fetch:async(url,init)=>{
+   requests.push({path:new URL(url).pathname,body:JSON.parse(init.body)});
+   return json({id:"g",goal:"test",status:"running"});
+ }});
+ await sdk.goals.appendInstruction("g","Read the sources first","owner-100");
+ await sdk.goals.replacePlan("g","Use a new implementation","owner-101");
+ assert.deepEqual(requests,[
+  {path:"/api/goals/g/steer",body:{
+    text:"Read the sources first",mode:"append",requestId:"owner-100"}},
+  {path:"/api/goals/g/steer",body:{
+    text:"Use a new implementation",mode:"replace",requestId:"owner-101"}}
+ ]);
+ assert.throws(()=>sdk.goals.direct("g",{
+   text:"inject",mode:"append",requestId:"../../invalid"
+ }),TypeError);
+});
