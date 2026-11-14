@@ -363,3 +363,91 @@ fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod owner_memory_edit_tests {
+    use super::*;
+
+    fn state() -> (AppState,std::path::PathBuf) {
+        let dir=std::env::temp_dir().join(format!("dominion-owner-memory-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config {
+            port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()
+        };
+        let store=crate::db::Store::open(&config.db_path()).unwrap();
+        let vault=crate::vault::Vault::open(&config.key_path());
+        (AppState::new(config,store,vault),dir)
+    }
+
+    #[tokio::test]
+    async fn owner_edit_is_atomic_and_keeps_trusted_metadata() {
+        let (state,dir)=state();
+        state.store.put("memory",&json!({
+            "id":"manual","text":"before","source":"user","status":"active",
+            "scope":"agent","agentId":"agent-7","partitionKey":"local",
+            "verification":"source_quote","evidenceQuote":"previous quote",
+            "sourceMessageIds":["previous-msg"]
+        })).unwrap();
+        let uri=||OriginalUri("/api/memories/manual/edit".parse().unwrap());
+        let changed=action(State(state.clone()),uri(),Json(json!({
+            "text":"after","expectedText":"before"
+        }))).await;
+        assert_eq!(changed.status(),StatusCode::OK);
+        let stored=state.store.get("memory","manual").unwrap();
+        assert_eq!(stored["text"],"after");
+        assert_eq!(stored["source"],"user");
+        assert_eq!(stored["scope"],"agent");
+        assert_eq!(stored["agentId"],"agent-7");
+        assert_eq!(stored["partitionKey"],"local");
+        assert!(stored["verification"].is_null());
+        assert!(stored["evidenceQuote"].is_null());
+        assert!(stored["sourceMessageIds"].is_null());
+        assert_eq!(stored["revision"],1);
+        assert_eq!(stored["editHistory"].as_array().unwrap().len(),1);
+        let stale=action(State(state.clone()),uri(),Json(json!({
+            "text":"overwrite","expectedText":"before"
+        }))).await;
+        assert_eq!(stale.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","manual").unwrap()["text"],"after");
+        let forged=action(State(state.clone()),uri(),Json(json!({
+            "text":"hacked","expectedText":"after","scope":"shared"
+        }))).await;
+        assert_eq!(forged.status(),StatusCode::BAD_REQUEST);
+        let generic=save(State(state.clone()),
+            OriginalUri("/api/memories/manual".parse().unwrap()),
+            Json(json!({"id":"manual","text":"hacked","source":"learn"}))).await;
+        assert_eq!(generic.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","manual").unwrap()["scope"],"agent");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn learned_and_archived_memories_cannot_be_owner_edited() {
+        let (state,dir)=state();
+        for (id,source,status) in [
+            ("learned","learn","active"),
+            ("archived","user","archived"),
+            ("deleted","user","deleted")
+        ] {
+            state.store.put("memory",&json!({
+                "id":id,"text":"original","source":source,"status":status
+            })).unwrap();
+            let path=format!("/api/memories/{id}/edit");
+            let reply=action(State(state.clone()),OriginalUri(path.parse().unwrap()),
+                Json(json!({"text":"changed","expectedText":"original"}))).await;
+            assert_eq!(reply.status(),StatusCode::CONFLICT);
+            assert_eq!(state.store.get("memory",id).unwrap()["text"],"original");
+        }
+        let created=save(State(state.clone()),
+            OriginalUri("/api/memories".parse().unwrap()),
+            Json(json!({"text":"new manual","source":"user","scope":"shared",
+                "status":"active"}))).await;
+        assert_eq!(created.status(),StatusCode::OK);
+        assert_eq!(state.store.all("memory").len(),4);
+        let fabricated=save(State(state.clone()),
+            OriginalUri("/api/memories".parse().unwrap()),
+            Json(json!({"text":"fake learned","source":"learn"}))).await;
+        assert_eq!(fabricated.status(),StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
