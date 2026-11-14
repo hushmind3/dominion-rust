@@ -61,6 +61,17 @@ async fn owner_plan_edits_are_durable_but_cannot_change_a_running_goal(){
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[tokio::test]
+async fn queued_goal_cancel_immediately_sets_parent_status(){
+    let (state,dir)=fixture("queued",false);
+    state.store.patch_if("job","prior","status",&json!("needs_review"),
+        &json!({"status":"queued"}));
+    let stopped=crate::api::jobs::cancel(State(state.clone()),Path("prior".into())).await;
+    assert_eq!(stopped.status(),StatusCode::OK);
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"cancelled");
+    assert_eq!(state.store.get("job","prior").unwrap()["status"],"cancelled");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[tokio::test]
 async fn cancellation_can_be_resumed_only_after_old_job_is_terminal(){
     let (state,dir)=fixture("cancelled",false);
     state.cancel_session("goal-session");
