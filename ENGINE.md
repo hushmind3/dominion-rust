@@ -224,3 +224,12 @@ official Docker grading. No live model score or paid cost is inferred from
 mock-provider tests.
 
 Verified promotion and disposal also have native Rust SDK entry points: `sdk::DominionSdk::apply_goal_patch` and `discard_goal_worktree`, calling the same native `goal_workspace::apply_reviewed/discard` as REST, without separate SDK authority.
+
+
+SWE-bench Verified evidence integration: `scripts/sub2-swebench-verified.mjs`
+walks the session parent-child graph for token and tool-operation accounting,
+enforces source SHA equality with the official SWE-bench evaluator's
+`patch.diff`, and can import later external Docker `report.json` artifacts
+without invoking a model. Missing or corrupted official reports cannot
+silently become certified solved instances. The runner records exact evaluated
+instance IDs, resource limits and provenance.
