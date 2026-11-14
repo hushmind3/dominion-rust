@@ -47,6 +47,31 @@ class ExactPatchContract(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 runner.validated_patch(invalid, self.base)
 
+    def test_instance_ids_cannot_escape_scratch_root(self):
+        for unsafe in ("..", "../../outside", "/root/private", "folder/../private"):
+            scratch = runner.instance_scratch_name(unsafe)
+            self.assertTrue(scratch.startswith("case-"))
+            self.assertNotIn("/", scratch)
+            self.assertNotIn(".", scratch)
+            self.assertEqual(len(scratch), 29)
+        self.assertEqual(runner.instance_scratch_name("x"),
+                         runner.instance_scratch_name("x"))
+        self.assertNotEqual(runner.instance_scratch_name("x"),
+                            runner.instance_scratch_name("y"))
+        for invalid in ("", "x" * 1025):
+            with self.assertRaises(ValueError):
+                runner.instance_scratch_name(invalid)
+
+    def test_repository_owner_and_name_reject_path_or_url_injection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for unsafe in ("../escape", "owner/..", "owner/bad@host",
+                           "owner/repo?x=1", "owner/name\\\\with-slash"):
+                with self.subTest(repo=unsafe), self.assertRaises(ValueError):
+                    runner.checkout({"repo":unsafe,"base_commit":"a" * 40},
+                                    root / "mirror", root / "work", True)
+                self.assertFalse((root / "work").exists())
+
     def test_invalid_commit_blocks_checkout_before_git_network(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
