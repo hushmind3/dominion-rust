@@ -66,3 +66,5 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - 크래시 복구: `goal_review.rs::snapshot/replayable`는 **도구 완료 후** 영속화된 검토만 재시도할 수 있게 합니다. 실행 중 작업, 레거시 체크포인트는 실행 결과를 알 수 없으므로 자동 재실행하지 않습니다. `jobs::recover`는 목표 최종 결정이 이미 저장된 경우 Job을 그 결정에 맞춰 정합화합니다.
 - `goal_verification.rs::inferred_checks`는 명시적인 테스트 요청에 대해서만 검증 조건을 요구합니다. 실제 검증 명령이 성공하지 않은 경우 목표를 완료 처리하지 않습니다. 이 모듈은 도구 자체를 호출하지 않습니다.
 - 관련 테스트 소스: `engine/goals/tests.rs`, `engine/jobs/tests.rs`, `engine/goal_review.rs`, `engine/goal_verification.rs`. 기존 inline 테스트를 이동하였지만 실행하지 않았습니다.
+
+- **추가 자율 목표 핵심**: `goal_intake.rs::inspect`(manifest와 bounded project inventory), `goal_plan.rs::apply_owner_override`(사용자 계획을 다음 안전한 턴 시작에 CAS 소비), `goal_metrics.rs::final_report`(실제 증거와 audit 토큰 계측). `POST /api/goals/:id/plan`은 사용자의 목표 완료 검증 조건이나 도구 권한을 수정하지 않습니다. `GoalConsole.tsx`는 해당 조작·관측의 실제 UI입니다.
