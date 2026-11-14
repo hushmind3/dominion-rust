@@ -237,3 +237,21 @@ pub async fn discard_worktree(
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
+pub async fn promote_worktree(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response{
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if goal["isolateWorktree"]!=true {
+        return error(StatusCode::BAD_REQUEST,"격리 작업공간을 사용하지 않는 목표입니다.");
+    }
+    let Some(digest)=body["expectedPatchSha256"].as_str() else {
+        return error(StatusCode::BAD_REQUEST,
+            "변경 미리보기의 SHA-256과 명시적 승인 내용이 필요합니다.");
+    };
+    match engine::goal_workspace::promote(&state,&goal,digest).await {
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
