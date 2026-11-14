@@ -10,12 +10,39 @@ use crate::engine::verification::{
 use std::path::PathBuf;
 use crate::state::AppState;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 #[path = "goals/report.rs"]
 mod report;
 #[path = "goals/git.rs"]
 mod git;
 #[path = "goals/progress.rs"]
 mod progress;
+
+// Resolve only the goal's own session tree. An unresolved tool from an
+// unrelated chat/room must never stop an autonomous goal.
+fn in_goal_session_tree(state:&AppState,session:&str,root:&str)->bool {
+    let mut cursor=session.to_string();
+    let mut seen=HashSet::new();
+    for _ in 0..=16 {
+        if cursor==root {return true;}
+        if cursor.is_empty()||!seen.insert(cursor.clone()) {return false;}
+        let Some(saved)=state.store.get("session",&cursor) else {return false;};
+        cursor=saved["parentSessionId"].as_str().unwrap_or("").to_owned();
+    }
+    false
+}
+
+fn unknown_new_goal_operations(state:&AppState,session:&str,previous:&HashSet<String>)->Vec<String>{
+    state.store.all("execution_operation").into_iter()
+        .filter(|op|op["sessionId"].as_str()
+            .is_some_and(|sid|in_goal_session_tree(state,sid,session)))
+        .filter(|op|op["id"].as_str().is_some_and(|id|!previous.contains(id)))
+        .filter(|op|op["outcomeUnknown"]==true
+            || matches!(op["status"].as_str(),Some("running"|"interrupted"))
+            || matches!(op["effectState"].as_str(),Some("needs_review"|"unknown")))
+        .filter_map(|op|op["id"].as_str().map(str::to_string))
+        .take(20).collect()
+}
 
 /// The model proposes and reviews work; the Rust harness owns completion,
 /// checkpoints and the deterministic acceptance checks.
@@ -260,6 +287,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // Freeze real evidence and acceptance gaps BEFORE this turn. A model
         // cannot reset the stall counter by merely saying "progress".
         let evidence_before=evidence.clone();
+        // Snapshot before this executor turn, so a previously acknowledged
+        // uncertain operation cannot be confused with a new side effect.
+        let operation_ids_before=state.store.all("execution_operation").iter()
+            .filter_map(|op|op["id"].as_str().map(str::to_string))
+            .collect::<HashSet<_>>();
         let gate_before=crate::engine::verification::acceptance_gaps_in(
             &workdir,&text,&criteria,&evidence_before);
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
@@ -281,23 +313,32 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        if turn_error.is_some()
+        let unknown_new=unknown_new_goal_operations(
+            state,&session_id,&operation_ids_before);
+        let prior_unknown_on_error=turn_error.is_some()
             && state.store.all("execution_operation").iter().any(|op| {
-                state
-                    .store
-                    .get("execution", op["runId"].as_str().unwrap_or(""))
-                    .is_some_and(|run| run["sessionId"] == session_id)
-                    && (op["outcomeUnknown"] == true
-                        || matches!(op["status"].as_str(), Some("running" | "interrupted")))
-            })
-        {
-            return Ok(finish(
-                context,
-                goal_id,
-                "needs_review",
-                vec!["중단된 도구의 외부 결과를 확인해야 합니다. 자동 재실행하지 않습니다.".into()],
-                turn_error,
-            ));
+                op["sessionId"].as_str().is_some_and(|sid|
+                    in_goal_session_tree(state,sid,&session_id))
+                    && (op["outcomeUnknown"]==true
+                        || matches!(op["status"].as_str(),Some("running"|"interrupted")))
+            });
+        if !unknown_new.is_empty() || prior_unknown_on_error {
+            // Even a successful model turn is not authorization to proceed
+            // while this turn's external write may have landed. Preserve
+            // previously committed safe receipts for the owner's review.
+            evidence.extend(stats.evidence.iter().filter(|item|successful_evidence(item)).cloned());
+            if evidence.len()>120 {evidence.drain(..evidence.len()-120);}
+            gaps.push("새로운 외부 작업 결과가 불확실합니다. 실행 영수증과 외부 상태를 직접 확인하기 전에는 다음 도구 호출을 시작하지 않습니다.".into());
+            patch_goal(state,goal_id,json!({"phase":"needs_review",
+                "iterations":index+1,"evidence":evidence,"sessionId":session_id,
+                "gaps":gaps,"unknownOperationIds":unknown_new}));
+            context.checkpoint(json!({"goalState":{"sessionId":session_id,
+                "nextIteration":index+1,"inFlight":false,"reviewPending":false,
+                "evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
+            state.store.audit("goal.unknown_external_effect",json!({
+                "goalId":goal_id,"newOperationIds":unknown_new,
+                "modelTurnError":turn_error.is_some()}));
+            return Ok(finish(context,goal_id,"needs_review",gaps,turn_error));
         }
         if let Some(message) = message {
             transcript.push_str(&format!(
@@ -866,6 +907,32 @@ mod tests {
             std::fs::remove_dir_all(outside).unwrap();
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn only_new_unresolved_effects_from_the_goal_tree_block_progress() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"goal-session"})).unwrap();
+        state.store.put("session",&json!({"id":"child","parentSessionId":"goal-session"})).unwrap();
+        state.store.put("session",&json!({"id":"unrelated"})).unwrap();
+        let past=json!({"id":"past","sessionId":"goal-session","status":"interrupted"});
+        state.store.put("execution_operation",&past).unwrap();
+        let old=["past".to_string()].into_iter().collect::<HashSet<_>>();
+        assert!(unknown_new_goal_operations(&state,"goal-session",&old).is_empty());
+        state.store.put("execution_operation",&json!({"id":"side-effect",
+            "sessionId":"child","status":"completed","effectState":"needs_review"})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"unrelated-effect",
+            "sessionId":"unrelated","status":"running"})).unwrap();
+        assert_eq!(unknown_new_goal_operations(&state,"goal-session",&old),
+            vec!["side-effect".to_string()]);
+        state.store.put("execution_operation",&json!({"id":"verified",
+            "sessionId":"goal-session","status":"completed",
+            "effectState":"verified","outcomeUnknown":false})).unwrap();
+        let problems=unknown_new_goal_operations(&state,"goal-session",&old);
+        assert_eq!(problems.len(),1);
+        state.store.put("execution_operation",&json!({"id":"uncertain",
+            "sessionId":"goal-session","status":"running"})).unwrap();
+        assert_eq!(unknown_new_goal_operations(&state,"goal-session",&old).len(),2);
+        let _=std::fs::remove_dir_all(dir);
     }
     #[tokio::test]
     async fn missing_job_checkpoint_prevents_any_model_execution() {
