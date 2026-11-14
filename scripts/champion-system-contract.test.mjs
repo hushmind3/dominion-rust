@@ -105,7 +105,7 @@ test('real autonomous goals enforce last successful test, source SHA progress an
   'goal_test_gaps','observed_artifact_changes',
   'materially_advanced','diagnosis::classify',
   'strict_goal_rejects_model_claims',
-  'failureDiagnosis','goal_token_budget'])
+  'failureDiagnosis','material_progress'])
  check('src/engine/goals/progress.rs',[
   'observed_artifact_changes','strict_coding_progress_requires_real_artifact_change'])
  check('src/engine/goals/diagnosis.rs',[
