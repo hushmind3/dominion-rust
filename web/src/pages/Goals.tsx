@@ -16,7 +16,7 @@ type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;j
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  evidence?:unknown[];gaps?:string[];acceptanceChecks?:unknown[];finalReport?:GoalReport}
 type Job={id:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;result?:{status?:string;finalReport?:GoalReport}}
-type GoalMetrics={source:string;proofLevel:string;totalGoals:number;settledGoals:number;internalAcceptedGoals:number;pendingOrRunningGoals:number;completedWithoutValidJobOrAcceptance:number;
+type GoalMetrics={source:string;proofLevel:string;totalGoals:number;settledGoals:number;internalAcceptedGoals:number;deliveredToSourceGoals:number;acceptedAwaitingGitApply:number;pendingOrRunningGoals:number;completedWithoutValidJobOrAcceptance:number;
  internalAcceptanceRateAmongSettled:number|null;totalIterations:number;totalReplans:number;
  usage:{calls:number;estimatedCalls:number;totalTokens:number;cachedPromptTokens:number;cacheEligiblePromptTokens:number;
   sessionsWithAudit:number;goalsWithoutSession:number;sessionsWithoutUsageAudit:number;sharedSessionLinks:number;
@@ -140,6 +140,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
     <div><p className="text-[#8A8176]">기록된 모델 토큰</p><p className="text-lg font-bold">{metrics.value.usage.totalTokens.toLocaleString('ko-KR')}</p></div>
     <div><p className="text-[#8A8176]">내부 통과 1건당 토큰</p><p className="text-lg font-bold">{metrics.value.usage.recordedTokensPerInternalAccepted===null?'계측 불충분':Math.round(metrics.value.usage.recordedTokensPerInternalAccepted).toLocaleString('ko-KR')}</p></div>
    </div>
+   <p className="text-[11px] leading-5 text-[#8A8176]">내부 검증 통과 {metrics.value.internalAcceptedGoals}건 중 원본 반영·비격리 결과 {metrics.value.deliveredToSourceGoals}건, 격리 변경 검토 후 반영 대기 {metrics.value.acceptedAwaitingGitApply}건입니다. 통과와 납품을 구분합니다.</p>
    <p className="text-[11px] leading-5 text-[#8A8176]">총 {metrics.value.totalGoals}개 목표 · 진행 중 {metrics.value.pendingOrRunningGoals}개 · 재계획 {metrics.value.totalReplans}회 · 모델 호출 {metrics.value.usage.calls}회 (추정 사용량 {metrics.value.usage.estimatedCalls}회)</p>
    <p className="text-[11px] leading-5 text-[#8A8176]">캐시 보고 입력 {metrics.value.usage.cachedPromptTokens.toLocaleString('ko-KR')}/{metrics.value.usage.cacheEligiblePromptTokens.toLocaleString('ko-KR')}토큰. 사용량 로그 없는 세션 {metrics.value.usage.sessionsWithoutUsageAudit}개, 세션 누락 {metrics.value.usage.goalsWithoutSession}개. 공급자 실제 청구액: 계측되지 않음.</p>
    <p className="text-[11px] font-semibold leading-5 text-[#9A5947]">이 수치는 로컬 SQLite의 목표·실행 작업·모델 감사 로그에 기반한 내부 실행 관측입니다. 실모델 독립 벤치마크나 외부 작업 완수율 인증이 아닙니다.</p>

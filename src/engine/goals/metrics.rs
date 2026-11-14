@@ -29,6 +29,8 @@ pub fn snapshot(state:&AppState)->Result<Value,String>{
     let mut rows=Vec::<Value>::new();
     let mut seen_sessions=HashSet::<String>::new();
     let mut accepted=0_u64;
+    let mut delivered=0_u64;
+    let mut accepted_waiting_for_apply=0_u64;
     let mut settled_count=0_u64;
     let mut incomplete_acceptance=0_u64;
     let mut usage_sessions=0_u64;
@@ -52,7 +54,14 @@ pub fn snapshot(state:&AppState)->Result<Value,String>{
         if is_settled{settled_count+=1;}
         let job=goal["jobId"].as_str().and_then(|id|jobs_by_id.get(id).copied());
         let checked=observed_success(goal,job);
-        if checked {accepted+=1;}
+        if checked {
+            accepted+=1;
+            // A verified diff in an isolated worktree is not yet the delivered
+            // source. Keep user-approved Git adoption separate.
+            if goal["isolateWorktree"]==true && goal["gitWorktree"]["applied"]!=true {
+                accepted_waiting_for_apply+=1;
+            }else{delivered+=1;}
+        }
         if status=="completed" && !checked {incomplete_acceptance+=1;}
         total_replans=total_replans.saturating_add(count(goal,"replans"));
         total_iterations=total_iterations.saturating_add(count(goal,"iterations"));
@@ -99,11 +108,17 @@ pub fn snapshot(state:&AppState)->Result<Value,String>{
                 row_tokens=Some(this_tokens);
                 row_estimated=Some(this_estimated);
             }
-        }else{missing_session+=1;}
+        }else if is_settled || count(goal,"iterations")>0 {
+            // A newly queued goal has not yet generated any provider calls;
+            // absence of a session at admission is not missing telemetry.
+            missing_session+=1;
+        }
         rows.push(json!({
             "goalId":goal["id"],"status":status,"jobId":goal["jobId"],
             "jobStatus":job.map(|job|job["status"].clone()),
             "internalAccepted":checked,
+            "deliveredToSource":checked
+                && (goal["isolateWorktree"]!=true ||goal["gitWorktree"]["applied"]==true),
             "verificationRecorded":goal["finalReport"].is_object(),
             "iterations":goal["iterations"],"replans":goal["replans"],
             "sessionId":session,
@@ -134,6 +149,8 @@ pub fn snapshot(state:&AppState)->Result<Value,String>{
         "statusCounts":status_counts,
         "settledGoals":settled_count,
         "internalAcceptedGoals":accepted,
+        "deliveredToSourceGoals":delivered,
+        "acceptedAwaitingGitApply":accepted_waiting_for_apply,
         "completedWithoutValidJobOrAcceptance":incomplete_acceptance,
         "pendingOrRunningGoals":goals.len().saturating_sub(settled_count as usize),
         "internalAcceptanceRateAmongSettled":rate,
@@ -158,7 +175,8 @@ pub fn snapshot(state:&AppState)->Result<Value,String>{
         "rowsTruncated":goals.len()>80,
         "notes":[
             "완수율은 저장된 목표의 현재 상태 중 완료·실패·취소·검토 대기만 분모로 계산합니다. 대기·실행 중 목표는 별도로 표시합니다.",
-            "내부 성공은 목표 최종 검증과 일치하는 완료된 실행 작업이 모두 있어야 합니다. 외부 벤치마크 또는 실모델 완주 인증이 아닙니다.",
+            "내부 성공은 목표 최종 검증과 일치하는 완료된 실행 작업이 모두 있어야 합니다. 격리된 Git 변경은 사용자 원본 반영 전까지 납품 성과로 세지 않습니다.",
+            "외부 벤치마크 또는 실모델 완주 인증이 아닙니다.",
             "토큰은 세션별 model.usage 감사 로그 기반입니다. 추정 사용량은 별도 집계하며 공급자 실제 청구액은 알 수 없습니다.",
             "토큰/내부성공은 실패·진행 중 작업의 기록 토큰도 포함합니다. 세션·사용량이 누락되면 분모 보장이 없어 null로 표시합니다."
         ]
@@ -219,6 +237,37 @@ mod tests {
         assert_eq!(result["usage"]["cacheEligiblePromptTokens"],10);
         assert_eq!(result["usage"]["recordedTokensPerInternalAccepted"],60.0);
         assert!(result["usage"]["actualBilledKrw"].is_null());
+        let _=std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn git_isolation_acceptance_does_not_automatically_mean_delivered_code(){
+        let (state,dir)=fixture();
+        state.store.put("goal",&json!({"id":"isolate","status":"completed",
+            "isolateWorktree":true,"gitWorktree":{"applied":false},
+            "jobId":"j","sessionId":"s","finalReport":{"accepted":true}})).unwrap();
+        state.store.put("job",&json!({"id":"j","kind":"goal",
+            "status":"completed","input":{"goalId":"isolate"}})).unwrap();
+        state.store.audit("model.usage",json!({"sessionId":"s",
+            "totalTokens":40,"promptTokens":30,"completionTokens":10}));
+        let before=snapshot(&state).unwrap();
+        assert_eq!(before["internalAcceptedGoals"],1);
+        assert_eq!(before["deliveredToSourceGoals"],0);
+        assert_eq!(before["acceptedAwaitingGitApply"],1);
+        state.store.patch_if("goal","isolate","status",&json!("completed"),
+            &json!({"gitWorktree":{"applied":true}})).unwrap();
+        let after=snapshot(&state).unwrap();
+        assert_eq!(after["deliveredToSourceGoals"],1);
+        assert_eq!(after["acceptedAwaitingGitApply"],0);
+        let _=std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn newly_queued_unstarted_goal_is_not_missing_token_telemetry(){
+        let (state,dir)=fixture();
+        state.store.put("goal",&json!({"id":"queued","status":"queued",
+            "jobId":"j","iterations":0})).unwrap();
+        let result=snapshot(&state).unwrap();
+        assert_eq!(result["usage"]["goalsWithoutSession"],0);
+        assert_eq!(result["usage"]["completeAttribution"],true);
         let _=std::fs::remove_dir_all(dir);
     }
     #[test]

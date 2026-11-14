@@ -762,3 +762,5 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 - 목표 세션·사용량이 누락되거나 같은 세션을 여러 목표가 공유하면 `completeAttribution=false` 및 1건당 토큰 `null`로 표시한다. 공급자 청구 원화 비용은 제공되지 않았으므로 `actualBilledKrw=null`이며 절감률/가성비를 임의 산출하지 않는다.
 - 프론트 `GoalsPage`는 15초 간격으로 실측 원장을 새로고침하되 독립 벤치마크 실적이 아닌 **로컬 운영 관측**이라고 명시한다.
 - 계약 회귀: 목표·작업·검증 세 조건, 진행 중 분모 제외, 실패/추정 토큰 포함, 캐시 보고 분리, 측정 누락 시 1건당 비용 비표시. 제품 사용 전/후 성능 비교에는 동등한 작업·모델·예산의 재실행과 외부 독립 검증, 실청구 영수증이 여전히 필요하다.
+
+- 격리 Git 목표에서 최종 검증이 통과해도 `gitWorktree.applied=true`가 아니라면 납품 성과로 세지 않는다. `internalAcceptedGoals`, `deliveredToSourceGoals`, `acceptedAwaitingGitApply`를 별도 제시한다. 아직 실행하지 않은 `queued` 목표는 사용량 로그 부재가 정상이므로 비용 누락 경고에서 제외한다.
