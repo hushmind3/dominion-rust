@@ -218,6 +218,65 @@ pub(crate) async fn reviewed_patch(state:&AppState,id:&str)->Result<Value,String
             && !matches!(goal["status"].as_str(),Some("queued"|"running")),
         "notice":"Preview digest binds exact Git patch bytes; untracked files are not silently omitted."}))
 }
+/// Reconstruct a disposable Git index from the frozen baseline so new files
+/// are included as intent-to-add WITHOUT mutating the goal's real index.
+async fn complete_export_patch(work:&Path,base:&str)->Result<(Vec<u8>,usize),String>{
+    let index=std::env::temp_dir().join(format!(
+        "dominion-export-index-{}",uuid::Uuid::new_v4()));
+    let operation=async {
+        let mut tree=Command::new("git");
+        let result=tree.current_dir(work).env("GIT_INDEX_FILE",&index)
+            .args(["read-tree",base]).kill_on_drop(true).output().await
+            .map_err(|e|e.to_string())?;
+        if !result.status.success(){
+            return Err("Cannot initialize isolated export index".to_string());
+        }
+        let mut list=Command::new("git");
+        let listed=list.current_dir(work)
+            .args(["ls-files","--others","--exclude-standard","-z"])
+            .kill_on_drop(true).output().await.map_err(|e|e.to_string())?;
+        if !listed.status.success()||listed.stdout.len()>65536{
+            return Err("Cannot enumerate new worktree files".into());
+        }
+        let mut names=Vec::new();
+        for raw in listed.stdout.split(|byte|*byte==0).filter(|raw|!raw.is_empty()){
+            let name=std::str::from_utf8(raw)
+                .map_err(|_|"Non-UTF8 path in generated worktree")?;
+            let valid=!name.is_empty()&&name.len()<=500
+                &&std::path::Path::new(name).components()
+                    .all(|component|matches!(component,std::path::Component::Normal(_)));
+            if !valid{return Err("Unsafe generated file path".into());}
+            names.push(name);
+        }
+        if names.len()>128{return Err("Too many new files for bounded patch export".into());}
+        if !names.is_empty(){
+            let mut stage=Command::new("git");
+            stage.current_dir(work).env("GIT_INDEX_FILE",&index)
+                .args(["add","-N","--"]).args(&names)
+                .kill_on_drop(true);
+            let result=stage.output().await.map_err(|e|e.to_string())?;
+            if !result.status.success(){
+                return Err("Cannot include all new files in isolated export".into());
+            }
+        }
+        let mut diff=Command::new("git");
+        diff.current_dir(work).env("GIT_INDEX_FILE",&index)
+            .args(["diff","--binary","--no-ext-diff","--no-color",base])
+            .kill_on_drop(true);
+        let result=diff.output().await.map_err(|e|e.to_string())?;
+        if !result.status.success(){return Err("Cannot export complete source diff".into());}
+        if result.stdout.len()>MAX_APPLY_PATCH{
+            return Err("Generated patch exceeds 512 KiB".into());
+        }
+        Ok((result.stdout,names.len()))
+    };
+    let result=tokio::time::timeout(Duration::from_secs(45),operation).await
+        .map_err(|_|"Complete patch export timed out".to_string())?;
+    let _=std::fs::remove_file(&index);
+    let _=std::fs::remove_file(index.with_extension("lock"));
+    result
+}
+
 /// Untruncated, hash-bound Git patch from a STOPPED isolated task.
 /// External SWE-bench graders need exact patch bytes; display-only /diff
 /// intentionally clips at LIMIT and must never be used for evaluation.
@@ -235,17 +294,13 @@ pub(crate) async fn export_patch(state:&AppState,id:&str)->Result<Value,String>{
     let base=goal["gitWorktree"]["baseCommit"].as_str()
         .filter(|s|s.len()==40&&s.bytes().all(|c|c.is_ascii_hexdigit()))
         .ok_or("Missing frozen source commit")?;
-    let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
-    if !untracked.trim().is_empty(){
-        return Err("Untracked generated files are not part of a complete Git diff".into());
-    }
-    let bytes=full_patch(&work,base).await?;
+    let (bytes,new_files)=complete_export_patch(&work,base).await?;
     let patch=String::from_utf8(bytes.clone())
         .map_err(|_|"Non-UTF8 patch cannot be exported as JSON".to_string())?;
     Ok(json!({"goalId":id,"baseCommit":base,
         "modelPatch":patch,"bytes":bytes.len(),"sha256":digest(&bytes),
-        "complete":true,"untrackedFiles":0,
-        "source":"isolated_git_binary_diff_after_terminal_goal_v1"}))
+        "complete":true,"untrackedFiles":new_files,
+        "source":"isolated_git_worktree_complete_patch_v2"}))
 }
 
 /// The owner passes a digest from /diff. No force, reset, checkout or shell.
