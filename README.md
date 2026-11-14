@@ -580,3 +580,12 @@ The editable experiment allocator now credits a prior source-policy revision onl
 5. `/api/goals/:id/worktree/discard` → `goal_workspace::discard`: 진행 중인 목표/하위 작업에는 거부하며, 명시적 요청이 있을 때만 격리 worktree를 폐기합니다. 이미 원본에 적용된 변경은 삭제하지 않고, 미반영 결과를 폐기한 경우에만 Goal의 완료 판정을 무효화합니다.
 
 **경계:** Git worktree는 소스 파일의 분리이지 운영체제 샌드박스가 아닙니다. 허용된 셸·외부 앱·MCP는 승인 정책을 따르며 임의 셸 명령이 절대경로를 사용할 수 있다는 한계가 있습니다. 서로 다른 코드 작성 서브에이전트의 충돌 자동 병합이나 실모델 작업 완수율까지 증명한 것은 아닙니다. 자체 RSI 후보의 동결 평가·채택 통로와 일반 Goal의 opt-in Git 격리는 별개입니다. [자율 목표 실행 경로 전체](docs/AUTONOMOUS-AGENT-2026-11-14.md).
+
+
+### 2026-11-14: 저비용 멀티샷 영상·기술 검수·선택 장면 재생성
+
+- **일반 영상 생성**: `POST /api/video/jobs` → `video::enqueue` → `jobs::run_job` → `video::run`. 최종 MP4의 실제 ffprobe 스트림·해상도·화면비·시간·오디오를 `video/quality.rs`에서 검사하고 결과를 저장합니다. ffprobe를 찾지 못하면 검증됐다고 꾸미지 않고 `not_verified`로 표시합니다. 엄격 검수 선택 시 API 비용 발생 **전에** 설치 여부를 확인합니다.
+- **LTX-2.5 영화 모드**: `ltxFilm:true`, `confirmPaidMultiShot:true` 요청 → `video/film.rs::spec`에서 유료 2~6개 샷의 장면 프롬프트·길이·모델·해상도를 동결 → 순서대로 유료 생성 → 각 MP4의 SHA-256·API 영수증·ffprobe 결과를 `receipt.json`으로 저장 → 유효한 완료 장면은 재사용 → FFmpeg stream-copy로 납품 MP4 제작. 네트워크·품질 불확실 시 해당 장면 파일을 보존하고 **자동 중복 결제하지 않습니다**. 장편 연결에 FFmpeg가 필요합니다.
+- **선택 장면 재제작**: `GET /api/video/jobs/:id/scenes` → 영상 UI의 `FilmRetake`에서 결과 SHA·미완성 뒤쪽 장면 수·예상 신규 유료 호출 수 확인 → 명시적 동의 → `POST /api/video/jobs/:id/retake` → `jobs::enqueue_once`의 결정적 작업 ID → 신규 작업이 이전 정상 장면의 MP4/영수증을 검증 후 복사하고 선택 장면 및 아직 없는 장면만 유료 호출합니다. 원본 유료 영상과 영수증은 보존됩니다. 기존 파일과 영수증이 불일치하면 재구매 없이 사용자 검토가 필요합니다.
+- **RSI 연구 입력**: `rsi_scan::report` → `rsi_scan/goal_signals.rs::collect`가 사용자 목표의 반복 실패와 실제 성공 영수증 수를 통계로 수집 → `rsi/system/frontier.rs`에서 실제 소스 개선 목표 연구에 활용합니다. 사용자 자유 텍스트·파일 내용은 전달하지 않습니다. 작업 성공 통계는 **독립 RSI 평가/채택 기록으로 사용하지 않습니다**.
+- 기술 검수는 재생 메타데이터 검사이며 영상의 의미·시청 품질·인물/장면 일관성을 증명하지 않습니다. 유료 API 실제 청구액과 유료 모델 RSI 자율 다세대 개선은 아직 실증되지 않았습니다.
