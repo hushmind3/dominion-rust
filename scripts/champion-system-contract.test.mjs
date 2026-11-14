@@ -54,3 +54,47 @@ test('video: technical inspection -> each SHA-linked scene -> owner UI',()=>{
  check('src/engine/video/film.rs',['saved_receipt','reviewRecommended','visualDiagnostics'])
  check('web/src/pages/video/FilmRetake.tsx',['reviewRecommended','visualDiagnostics'])
 })
+
+test('public SDK packages hit native Dominion API and preserve owner steering',()=>{
+ check('sdk/typescript/src/client.ts',[
+  '/api/sdk/threads','streamThread','threads.steer','client.threads.history',
+  'new DominionStreamInterrupted'])
+ check('sdk/typescript/src/transport.ts',[
+  'X-Dominion-Token','decodeSse','async sse','abort'])
+ check('sdk/typescript/tests/sdk.test.mjs',[
+  'native SDK steering','native SDK stream','/api/sdk/threads'])
+ check('sdk/rust/src/client.rs',[
+  'create_sdk_thread','stream_sdk_thread','steer_sdk_thread',
+  'run_native_streamed','run_native'])
+ check('sdk/rust/src/mcp.rs',['pub struct ToolRegistry','serve_stdio'])
+ check('sdk/rust/tests/sdk.rs',[
+  'native_rust_sdk_thread_lifecycle_steers','native_rust_sdk_reports_actual_sse_error_message'])
+})
+
+test('RSI reflective feedback reaches the compiled descendant and never replaces the independent judge',()=>{
+ check('src/engine/rsi_evolve.rs',['mod failure_feedback'])
+ check('src/engine/rsi/learning/failure_feedback.rs',[
+  'fn reflective_feedback','pairedMeasured','pairedRevalidated',
+  'classification','rootCauseProven'])
+ check('src/engine/rsi/execution/guards.rs',[
+  'failure_feedback::reflective_feedback','measuredCounterexamplesDelivered'])
+ check('src/engine/rsi/execution/worker.rs',[
+  'rsi_system::revalidated_history','fit_worker_prompt'])
+ check('src/engine/rsi/execution/generation_receipt.rs',['workerFeedbackPlan'])
+ check('src/engine/rsi/evaluation/candidate_selection.rs',['rsi_worktree::compare_at'])
+})
+
+test('real coding evaluation uses complete Git patches and official task-level grading',()=>{
+ check('src/api/mod.rs',['/api/goals/:id/patch','export_goal_patch'])
+ check('src/engine/goal_git.rs',[
+  'complete_export_patch','GIT_INDEX_FILE','--binary',
+  'isolated_git_worktree_complete_patch_v2',
+  'exact_export_includes_new_files_without_staging_original_index'])
+ check('scripts/benchmark/swebench_dominion.py',[
+  'princeton-nlp/SWE-bench_Verified',
+  'official_score','resolved_ids','base_commit',
+  'swebench.harness.run_evaluation','validated_patch'])
+ check('scripts/benchmark/test_swebench_dominion.py',[
+  'test_official_score_requires_exact_cohort',
+  'test_complete_new_file_patch_is_admissible'])
+})
