@@ -236,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals/:id/changes", get(goals::changes))
         .route("/api/goals/:id/undo", post(goals::undo_change))
         .route("/api/goals/:id/worktree/discard", post(goals::discard_worktree))
+        .route("/api/goals/:id/worktree/promote", post(goals::promote_worktree))
         // approvals
         .route(
             "/api/approvals",
