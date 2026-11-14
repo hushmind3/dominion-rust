@@ -48,3 +48,9 @@
 - 유료 실모델의 종단 간 실행, 사용자 시청 영상 품질, 독립 RSI 개선, 원화 실청구 절감률은 이번 코드만으로 실증한 것이 아니다. 저사양 로컬/클라우드 모델 선택 정책은 유지한다.
 
 **실행 정의 동결과 단계 ID**: 직접 시작하거나 자동화로 예약한 작업의 `input.definition`을 등록 시점에 저장한다. 워크플로 정의가 이후 수정·삭제돼도 기존 job은 동결된 단계를 사용한다. UI에서 저장하는 단계에 `uuid` ID를 부여하고 중복을 거부해 checkpoints/영수증의 출처가 흐려지지 않게 한다. `workflow.cancelled`와 `workflow.completed` 감사 이벤트는 실제 최종 상태로 분리한다.
+
+### 저장·조회 비용 및 실제 실행 증거 강화
+
+- `Store::session_execution_operations(sessionId)`는 워크플로 단계 직전과 직후의 영속 `execution_operation`을 DB에서 읽어 추가된 작업 ID만 추린다. `status=completed` 및 `verification::is_action_evidence` 조건을 통과한 도구 작업만 단계의 성공으로 집계하고 `toolOperationIds`를 최종 아티팩트 `stepReceipts`에 보존한다. 화면의 원문 보기에도 해당 작업 ID가 표시된다.
+- `GET /api/workflow-artifacts`는 최대 100건의 ID·180자 미리보기·SHA·원본 작업·토큰 메타데이터만 전송하고 대형 본문은 보내지 않는다. `GET /api/workflow-artifacts/:id`를 실제 원문 보기·Markdown 다운로드 시 요청한다. 브라우저의 목록 로드에서 100 × 256KiB의 본문 재전송을 피한다.
+- 검증 범위: SQLite 영속 작업 조회 테스트, 위 API/UI 경로에 대한 Node 정적 회귀. **실제 모델 도구 실행을 포함한 장기 E2E 측정, 명시적 유료 과금 증빙, 동시 다중 사용자 벤치마크는 별도 운영 검증 대상**이다.
