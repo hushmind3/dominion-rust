@@ -8,7 +8,7 @@ use crate::state::AppState;
 use serde_json::{json, Value};
 use std::path::Path;
 
-const EVAL_VERSION: &str = "algorithm-eval-v1";
+const EVAL_VERSION: &str = "algorithm-eval-v2";
 
 fn algorithm(kind: &str, implementation: &str, parameters: Value) -> Value {
     json!({
@@ -310,6 +310,17 @@ fn multiagent_conflict() -> Value {
     )
 }
 
+fn tool_routing() -> Value {
+    let rows=crate::engine::chat::evaluate_tool_routing();
+    dimension(
+        "tool.routing",
+        "도구 실행 성과 기반 라우팅",
+        "matched_routing_accuracy",
+        &rows,
+        "recency-biased",
+    )
+}
+
 fn dimension(kind: &str, label: &str, metric: &str, rows: &[Value], baseline: &str) -> Value {
     let mut winner = rows
         .first()
@@ -393,6 +404,7 @@ pub fn run(state: &AppState) -> Value {
         memory_importance(),
         decomposition(),
         multiagent_conflict(),
+        tool_routing(),
     ];
     for dimension in dimensions.iter_mut() {
         let kind = dimension["kind"].as_str().unwrap_or("").to_string();
@@ -435,7 +447,7 @@ pub fn run(state: &AppState) -> Value {
         "active": active_by_kind,
         "dimensions": dimensions,
         "improvedDimensions": improved,
-        "totalDimensions": 4,
+        "totalDimensions": dimensions.len(),
     });
     if let Some(saved) = state.store.put("algorithm_eval", &report) {
         state.bus.record("algorithm_eval", &saved);
@@ -520,6 +532,11 @@ mod tests {
             dimension("multiagent.conflict")["winner"],
             "evidence-first"
         );
+        let routing = dimension("tool.routing");
+        assert_eq!(routing["winner"], "outcome-aware");
+        assert!(routing["winnerValue"].as_f64().unwrap() >
+            routing["baselineValue"].as_f64().unwrap());
+        assert_eq!(report["totalDimensions"], 5);
         let importance = dimension("memory.importance");
         assert!(
             importance["winnerValue"].as_f64().unwrap()
