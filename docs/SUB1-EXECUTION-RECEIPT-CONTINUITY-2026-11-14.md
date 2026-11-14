@@ -34,3 +34,13 @@
 - [Long-Horizon Software Engineering Agents (2026)](https://longhorizonswe.github.io/): 이어지는 작업의 retained functionality와 conformance 평가.
 - [PROBE (2026)](https://arxiv.org/abs/2605.08717): 실패 원인과 실제 다음 시도를 연결하는 구조화된 복구.
 - [Sourcegraph CodeScaleBench (2026)](https://github.com/sourcegraph/CodeScaleBench/blob/public/docs/technical_reports/TECHNICAL_REPORT.md): 코드 탐색 도구의 접근 방식과 비용/성과 차이.
+
+## 2026-11-14 확장: 실질 진전 기반 재계획
+
+서브2의 성공 원칙을 서브1의 기존 `goals.rs` 실행 경로에 독립 적용했습니다.
+
+- `src/engine/goals/progress.rs::measure`: 이전 실제 도구 영수증과 새 영수증의 고유 행동 서명 차이, Rust 결정적 검증 조건 미충족 수의 감소, 실제 도구 오류 수를 비교합니다. 모델의 "성공했다"는 텍스트는 진전으로 보지 않습니다.
+- `goals.rs::run`: 목표 실행 전의 `acceptance_gaps`와 실행 후의 `acceptance_gaps`를 각각 계산하고, 새 성공 작업 또는 검증 조건 해소가 있으면 `stalled = 0`. 실질 진전이 없는 반복에서만 `stalled`를 증가시켜 `replanAfter`에 도달합니다. `reviewHistory`, `goal_progress` 이벤트 및 체크포인트에 계측값을 보존합니다.
+- `verification::is_action_evidence`: `workspace_replace`, `workspace_replace_range`, `workspace_replace_function`도 소스 변경 영수증으로 인정하므로 국소 코드 수정은 진전으로 기록됩니다.
+- 회귀 테스트: 동일 파일 재쓰기 반복, 실제 새 파일 수정, 실패한 도구, 검증 조건 해소, 국소 수정 영수증을 구별합니다.
+- 기록된 증거가 없어도 수행했다고 말하는 모델의 설명만으로 정체 횟수를 초기화하지 않으며, 확인되지 않은 외부 효과의 자동 재실행 금지는 그대로입니다. 이 계측은 실모델 작업 완수율 실측과 구별됩니다.
