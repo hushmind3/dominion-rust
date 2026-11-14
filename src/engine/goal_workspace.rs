@@ -45,7 +45,9 @@ fn checked_path(state:&AppState,id:&str,goal:&Value)->Result<PathBuf,String>{
         return Err("격리 작업공간 경로가 올바르지 않습니다.".into());
     }
     let root=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
-    if info["source"].as_str()!=root.to_str(){
+    if info["source"].as_str()!=root.to_str() && root!=canonical {
+        // A scoped AppState may already point at the same verified goal
+        // worktree. Other checkouts must never be treated as its source.
         return Err("현재 원본 저장소와 격리 작업의 시작 저장소가 다릅니다.".into());
     }
     Ok(canonical)
