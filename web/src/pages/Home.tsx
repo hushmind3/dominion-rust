@@ -16,21 +16,23 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
  const workflows=useRemote<any[]>('/api/workflows',[])
  const goalMetrics=useRemote<any|null>('/api/goals/metrics',null,false)
- const goals=useRemote<any[]>('/api/goals',[])
  const automation=useRemote<any[]>('/api/automations',[])
  const enabledProviders=providers.value.filter(p=>p.enabled)
  const authenticatedProviders=enabledProviders.filter((p:any)=>p.hasKey||p.local).length
  const recent=[...jobs.value].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,6)
  const busy=jobs.value.filter(j=>['queued','running','planning','reviewing','repairing'].includes(j.status)).length
- const pendingReview=goals.value.filter(g=>g.status==='needs_review')
- const activeGoals=goals.value.filter(g=>g.status==='queued'||g.status==='running')
+ // The metrics endpoint is a bounded projection; don't download every
+ // goal's evidence/transcript JSON merely to render dashboard counters.
+ const pendingReview=Number(goalMetrics.value?.statusCounts?.needs_review||0)
+ const activeGoals=Number(goalMetrics.value?.statusCounts?.queued||0)
+   +Number(goalMetrics.value?.statusCounts?.running||0)
  const readyProvider=authenticatedProviders>0
  const nextAction: {title:string;detail:string;page:Destination}= !readyProvider?
    {title:'모델 제공자 연결',detail:'먼저 API 키 또는 로컬 모델을 연결하세요.',page:'models'}:
    !agents.value.length?
    {title:'실행 에이전트 만들기',detail:'모델을 담당할 역할·도구 지침을 지정하세요.',page:'agents'}:
-   pendingReview.length?
-   {title:'검토 대기 작업 확인',detail:`${pendingReview.length}개 목표의 외부 작업 상태나 Git 변경을 검토해야 합니다.`,page:'goals'}:
+   pendingReview>0?
+   {title:'검토 대기 작업 확인',detail:`${pendingReview}개 목표의 외부 작업 상태나 Git 변경을 검토해야 합니다.`,page:'goals'}:
    !workflows.value.length?
    {title:'에이전트 협업 워크플로 만들기',detail:'단계별 에이전트를 배치해 실제 도구 영수증이 있는 결과물을 만드세요.',page:'workflows'}:
    {title:'완성된 워크플로 실행·자동화',detail:'에이전트의 공동 결과물을 실행하고 반복 예약하세요.',page:'automations'}
@@ -58,7 +60,7 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
     <span>연결된 모델 {authenticatedProviders}/{enabledProviders.length}</span>
     <span>실행 에이전트 {agents.value.length}개</span>
     <span>워크플로 {workflows.value.length}개 · 예약 {automation.value.filter(a=>a.enabled).length}개</span>
-    <span>목표 진행 {activeGoals.length}개 · 검토 {pendingReview.length}개</span>
+    <span>목표 진행 {activeGoals}개 · 검토 {pendingReview}개</span>
    </div>
    {goalMetrics.value&&<p className="mt-2 text-[11px] text-[#7C7469]">내부 검증 통과 {goalMetrics.value.internalAcceptedGoals||0}건 · Git 원본 반영/비격리 {goalMetrics.value.deliveredToSourceGoals||0}건 · 기록 토큰 {Number(goalMetrics.value.usage?.totalTokens||0).toLocaleString('ko-KR')}. 실제 모델 독립 벤치마크나 유료 청구 총액은 아닙니다.</p>}
   </section>
