@@ -185,6 +185,11 @@ pub async fn save(
                         state.store.get("room", id).is_some()
                     })
             }
+            "workflow" => {
+                input["input"].as_str().is_some_and(|text|text.len()<=16_000)
+                    && input["workflowId"].as_str().is_some_and(|id|
+                        state.store.get("workflow",id).is_some())
+            }
             _ => false,
         };
         let interval = body["intervalMinutes"].as_i64().unwrap_or(0);
@@ -192,7 +197,7 @@ pub async fn save(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
-                    "error": "자동화는 유형에 맞는 작업 내용·에이전트 또는 회의실·1분 이상 간격이 필요합니다."
+                    "error": "자동화에는 등록된 에이전트·회의실·워크플로 등 유효한 실행 대상과 1분 이상 간격이 필요합니다."
                 })),
             )
                 .into_response();
