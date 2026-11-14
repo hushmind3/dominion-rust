@@ -591,6 +591,39 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 }
+/// Read-only scene diagnostics including SHA-256 for owner-pinned retakes.
+pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 영상 작업 ID")?;
+    let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
+    film::scenes(state,&job)
+}
+
+/// A retake is a NEW durable video job, never a replay of an uncertain paid
+/// submission. Deterministic job IDs make double-clicks/idempotent retries
+/// refer to the same billable work rather than creating another order.
+pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 원본 영상 ID")?;
+    let source=state.store.get("job",id).ok_or("원본 영상 작업을 찾지 못했습니다.")?;
+    if body["confirmNewPaidCalls"]!=true {
+        return Err("장면 재생성으로 발생하는 추가 유료 API 호출에 동의해야 합니다.".into());
+    }
+    let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
+    let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA-256이 없습니다.")?;
+    let count=body["confirmedPaidCallCount"].as_u64().ok_or("추가 결제 장면 수에 동의해야 합니다.")?;
+    let input=film::retake_input(state,&source,index,digest,
+        body["prompt"].as_str(),count)?;
+    let fingerprint=input["retake"]["fingerprint"].as_str().ok_or("재생성 식별자가 없습니다.")?;
+    let raw=sha2::Sha256::digest(fingerprint.as_bytes());
+    let mut bytes=[0u8;16];
+    bytes.copy_from_slice(&raw[..16]);
+    bytes[6]=(bytes[6]&0x0f)|0x40;
+    bytes[8]=(bytes[8]&0x3f)|0x80;
+    let job_id=uuid::Uuid::from_bytes(bytes).to_string();
+    let job=jobs::enqueue_once(state,&job_id,"video",input)
+        .ok_or("재생성 작업을 저장하지 못했습니다.")?;
+    Ok(public_job(&job))
+}
+
 pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     output_path(state, id)?;
     let video = state.store.get("job", id).ok_or("영상이 없습니다.")?;
