@@ -357,3 +357,60 @@ fn parses_function_wrapper_and_missing_closing_tag() {
     assert_eq!(calls[0].0, "workspace_read");
     assert!(calls[0].1.contains("a.txt"));
 }
+
+
+#[tokio::test]
+async fn native_text_tool_call_executes_dominion_real_read_with_policy_and_receipt() {
+    use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
+    use std::sync::{Arc,Mutex};
+    let captured=Arc::new(Mutex::new(Vec::<Value>::new()));
+    async fn model(State(captured):State<Arc<Mutex<Vec<Value>>>>,
+        Json(body):Json<Value>)->axum::response::Response {
+        let observed=body["messages"].as_array().is_some_and(|messages|
+            messages.iter().any(|m|m["role"]=="tool"));
+        captured.lock().unwrap().push(body);
+        let answer=if observed {
+            "Real tool output was observed; task read is finished.".to_string()
+        } else {
+            r#"<tool_call>{"name":"workspace_read","arguments":{"path":"fixture.txt"}}</tool_call>"#.to_string()
+        };
+        let content=format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":{"content":answer}}]}),
+            json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{
+                "prompt_tokens":130,"completion_tokens":40,"total_tokens":170}}));
+        ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],content).into_response()
+    }
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr=listener.local_addr().unwrap();
+    let app=Router::new().route("/chat/completions",post(model))
+        .with_state(captured.clone());
+    let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+    let state=temp_state();
+    std::fs::write(state.config.workspace.join("fixture.txt"),"grounded real bytes").unwrap();
+    state.store.put("provider",&json!({"id":"native-text-fixture",
+        "enabled":true,"baseUrl":format!("http://{addr}"),
+        "model":"qwen-fixture","toolMode":"native"}));
+    state.store.put("session",&json!({"id":"native-read-fixture",
+        "providerId":"native-text-fixture"}));
+    let request=TurnRequest::from_value(&json!({
+        "sessionId":"native-read-fixture","providerId":"native-text-fixture",
+        "input":"Read fixture.txt with the workspace_read tool and report what it contains.",
+        "toolsEnabled":true,"toolsExecutionEnabled":true,"autoLearning":false,
+        "thinking":false,
+    })).unwrap();
+    let (tx,_rx)=tokio::sync::mpsc::unbounded_channel();
+    let result=tokio::time::timeout(Duration::from_secs(15),
+        run_turn(&state,&request,&tx)).await.unwrap().unwrap();
+    assert!(result.is_some(),"model turn did not persist a final response");
+    let operations=state.store.all("execution_operation");
+    assert!(operations.iter().any(|op|
+        op["tool"]=="workspace_read"
+        && op["status"]=="completed"),
+        "A text tool envelope must pass through the real policy/operation gateway: {operations:?}");
+    assert!(captured.lock().unwrap().iter().any(|body|
+        body["messages"].as_array().is_some_and(|messages|
+            messages.iter().any(|m|m["role"]=="tool"))),
+        "The model must receive a real tool response before completion");
+    server.abort();
+    let _=std::fs::remove_dir_all(&state.config.data_dir);
+}
