@@ -3,11 +3,30 @@
   "version": "0.1.0",
   "type": "module",
   "description": "First-party JavaScript/TypeScript SDK for the native DOMINION Rust agent engine",
-  "exports": { ".": { "types": "./index.d.mts", "import": "./index.mjs" } },
+  "exports": {
+    ".": {
+      "types": "./index.d.mts",
+      "import": "./index.mjs"
+    },
+    "./mcp": {
+      "types": "./mcp-server.d.mts",
+      "import": "./mcp-server.mjs"
+    }
+  },
   "types": "./index.d.mts",
-  "files": ["index.mjs", "index.d.mts", "README.md"],
+  "files": [
+    "index.mjs",
+    "index.d.mts",
+    "mcp-server.mjs",
+    "mcp-server.d.mts",
+    "README.md"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test index.test.mjs" },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test index.test.mjs mcp-server.test.mjs"
+  },
   "license": "Apache-2.0"
 }
