@@ -132,7 +132,8 @@ async fn capture_patch(state:&AppState,work:&Path,base:&str)->Result<PatchFile,S
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let _file=options.open(&path).map_err(|e|e.to_string())?;
+    let protected=options.open(&path).map_err(|e|e.to_string())?;
+    drop(protected); // allow Git to truncate the private patch on Windows
     let mut temporary=PatchFile{path:path.clone(),digest:String::new(),bytes:0};
     let arg=format!("--output={}",path.to_string_lossy());
     git(work,&["diff","--no-ext-diff","--binary",&arg,base]).await?;
