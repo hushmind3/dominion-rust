@@ -2323,3 +2323,54 @@ pub(super) async fn run_turn_body(
     Ok(Some(saved))
 }
 
+
+#[cfg(test)]
+mod owner_steering_turn_tests {
+    use super::*;
+    use crate::{config::Config, db::Store, vault::Vault};
+
+    #[test]
+    fn newer_owner_instruction_replaces_old_plan_and_acceptance_at_step_boundary() {
+        let dir=std::env::temp_dir().join(format!("dominion-steer-turn-{}",
+            uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=AppState::new(config,Store::open(&dir.join("db.sqlite")).unwrap(),
+            Vault::open(&dir.join("key")));
+        state.store.put("session",&json!({"id":"chat:test"}));
+        state.store.put("execution",&json!({
+            "id":"run-1","sessionId":"chat:test","status":"running"
+        }));
+        let source=super::super::super::owner_inbox::enqueue(
+            &state,"chat:test","Rust 하네스 알고리즘을 구현해라").unwrap();
+        let mut messages=vec![
+            json!({"role":"system","content":"active identity"}),
+            json!({"role":"system","content":"Internal execution plan. old objective"}),
+            json!({"role":"user","content":"old objective"}),
+        ];
+        let (tx,mut rx)=tokio::sync::mpsc::unbounded_channel();
+        let mut metadata=json!({"replyToMessageId":"old"});
+        let mut acceptance=None;
+        let mut current=Some("old".to_string());
+        let mut input="old objective".to_string();
+        let mut minimum=0;
+        assert!(absorb_owner_steering(&state,&json!({"id":"chat:test"}),
+            "chat:test","run-1",&tx,&mut messages,&mut metadata,
+            &mut acceptance,&mut current,&mut input,&mut minimum,3));
+        assert_eq!(input,"Rust 하네스 알고리즘을 구현해라");
+        assert_eq!(minimum,3);
+        assert_eq!(metadata["replyToMessageId"],source["messageId"]);
+        assert!(acceptance.is_some());
+        assert!(!messages.iter().any(|item|
+            item["content"].as_str().is_some_and(|text|
+                text.starts_with("Internal execution plan. old"))));
+        assert_eq!(messages.last().unwrap()["content"],input);
+        assert_eq!(rx.try_recv().unwrap()["type"],"owner_steer_applied");
+        assert_eq!(state.store.get("execution","run-1").unwrap()["planSuperseded"],true);
+        assert!(!absorb_owner_steering(&state,&json!({"id":"chat:test"}),
+            "chat:test","run-1",&tx,&mut messages,&mut metadata,
+            &mut acceptance,&mut current,&mut input,&mut minimum,4));
+        let _=std::fs::remove_dir_all(dir);
+    }
+}
