@@ -38,6 +38,9 @@ pub(super) fn record(ctx:&JobContext,id:&str,status:&str,goal:&Value,evidence:&[
             .map(|rows|rows.iter().filter(|row|row["skippedForDeterministicGap"]==true).count())
             .unwrap_or(0),
         "planScore":goal["planScore"],"usage":usage,
+        "usageIncludesGoalHelperCalls":true,
+        "providerBillingVerified":false,
+        "usageCaveat":"Provider usage may be estimated or absent. Paid KRW and local compute power are not independently measured.",
         "start":goal["startedAt"],
         "at":chrono::Utc::now().to_rfc3339(),
         "isIndependentBenchmark":false,
