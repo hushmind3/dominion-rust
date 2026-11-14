@@ -850,3 +850,5 @@ under the same exact goal token cap; invalid iteration, token, task and time
 limits fail before model calls. Official benchmark success and diagnostic
 repair observations are separately recorded. See
 [2026 native SDK integration](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
+
+Rust SDK worktree lifecycle: `apply_goal_patch(goal_id, expected_patch_sha256).await` and `discard_goal_worktree(goal_id, "DISCARD_GOAL_WORKTREE").await` call the existing independently verifying Rust source manager. The SDK does not auto-merge or silently discard user files.
