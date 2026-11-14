@@ -136,7 +136,7 @@ use research_learning::{research_artifacts, proposed_algorithms, adaptive_search
 
 #[path = "rsi/evaluation/trials.rs"]
 mod evaluation_trials;
-use evaluation_trials::{comparable_trial_baseline, trial_verdict, record_trial_outcome};
+use evaluation_trials::{available_trial_baseline, comparable_trial_baseline, trial_verdict, record_trial_outcome};
 pub(crate) use research_learning::{preserve_failed_research, remember_research, reuse_research};
 
 #[path = "rsi/execution/generation.rs"]
