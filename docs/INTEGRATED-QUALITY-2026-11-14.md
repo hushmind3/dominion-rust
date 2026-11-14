@@ -74,3 +74,10 @@
 ### 2026-11-14 자율 에이전트 추가 구현
 
 `GoalConsole` → `api/goals` → `jobs::enqueue` → `goals::run`의 기존 목표 오케스트레이터에 `goal_intake`(작업 공간 조사), `goal_review`(검토만 안전하게 재실행), `goal_verification`(요청된 테스트의 실제 성공 영수증), `goal_plan`(사용자 실행 중 계획 개입), `goal_metrics`(독립 완료 계측)을 연결했습니다. 이 연결은 실제 Goal 레코드와 Job 체크포인트에 저장되며, 검사할 수 없는 실행은 자동 재생하지 않습니다. [자율 에이전트 심사 지도](AUTONOMOUS-AGENT-2026-11-14.md).
+
+
+### 현재 자율 에이전트 확장 경로: 병렬 조사와 Git 영수증
+
+`delegate_tasks` → `tools/batch.rs` → `gateway::delegate` → `jobs::start_now`와 `task_result`를 연결했습니다. 독립 조사에는 읽기 전용 세션 권한을 부여하고 `chat/runtime`의 Tool Schema·네이티브/MCP/결정적 실행을 동시에 제약합니다. 복수 소스 편집 작업을 같은 Workspace에서 병렬 실행하지 않습니다.
+
+`goals::run` 도구 실행 전에 `goal_changes::baseline`을 기록하고 `GoalConsole`의 `GoalChanges`에서 `/api/goals/:id/changes`로 실제 diff를 보며, 사용자가 명시적으로 선택한 파일에 한해 `undo`의 Git HEAD·clean baseline·성공 영수증·SHA·동시 작업 검사 후 복원합니다. [상세 엔진 설명](AUTONOMOUS-AGENT-2026-11-14.md).
