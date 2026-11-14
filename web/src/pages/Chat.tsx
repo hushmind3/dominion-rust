@@ -279,6 +279,21 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(busy&&text!=='/stop')return;
    await executeCommand(text);return;
   }
+  // A running model turn accepts the owner's next instruction instead of
+  // disabling input until the previous model finishes. The Rust engine keeps
+  // it durable and applies it at the next safe model-step boundary.
+  if(stream.current&&busy){
+   const target=turnSession||current;
+   if(!target){setError('현재 실행 세션이 준비되지 않았습니다.');return;}
+   const instruction=input;
+   try{
+    await post('/api/sessions/'+encodeURIComponent(target)+'/steer',{instruction});
+    setInput(previous=>previous===instruction?'':previous);
+    setCommandInfo('새 사용자 지시가 저장됐습니다. 다음 실행 단계에 반영합니다.');
+    setError('');
+   }catch(e){setError(translateError((e as Error).message));}
+   return;
+  }
   if(stream.current||selectedSession?.roomId||(current&&sessions.loading))return;
   if(providerId&&!selectedProvider){setError(t('chat.err.agentApi'));return;}
   if(!providerId){setError(t('chat.err.connectApi'));return;}
@@ -428,8 +443,8 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
        </div>
       </div>
       <div className="ml-auto flex items-center gap-2">
-       <span className="hidden text-[10px] text-[#9C9388] sm:inline">{t('chat.enterHint')}</span>
-       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={busy||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t('chat.send')}>{busy?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button>
+       <span className="hidden text-[10px] text-[#9C9388] sm:inline">{busy?'실행 중 입력 → 다음 단계에 즉시 전달':t('chat.enterHint')}</span>
+       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={(busy&&!turnSession&&!current)||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={busy?'현재 작업에 새 명령 전달':t('chat.send')}>{busy?<CornerDownLeft size={18}/>:<ArrowUp size={19}/>}</Button>
       </div>
      </div>
     </form></div><div className="mt-2 text-center text-[10px] text-[#9C9388]">{t('chat.reasoningNote')}</div>
