@@ -471,6 +471,20 @@ pub fn usage_from(value: &Value) -> Usage {
     }
 }
 
+/// Price references are entered by the owner in KRW per million tokens.
+/// Unknown tariffs, a missing input/output split, cache discounts and billing
+/// credits are *never* silently inferred. The receipt is a quote, not a bill.
+fn quoted_usage_krw(state:&AppState,provider_id:&str,prompt:u64,completion:u64)->Option<f64>{
+    if prompt==0 && completion==0{return None;}
+    let record=state.store.get("provider",provider_id)?;
+    let a=record["costPerMillionInputKrw"].as_f64()?;
+    let b=record["costPerMillionOutputKrw"].as_f64()?;
+    if !a.is_finite()||!b.is_finite()||a<0.0||b<0.0||
+        a>100_000_000.0||b>100_000_000.0{return None;}
+    let quote=(prompt as f64*a+completion as f64*b)/1_000_000.0;
+    quote.is_finite().then_some((quote*100.0).round()/100.0)
+}
+
 /// Records per-call usage with enough identity to attribute cost later. Audit
 /// records are append-only and do not mutate provider configuration.
 pub fn record_usage(
@@ -497,6 +511,9 @@ pub fn record_usage(
             "promptTokens": usage.prompt_tokens,
             "completionTokens": usage.completion_tokens,
             "totalTokens": usage.total_tokens,
+            "costQuoteKrw":quoted_usage_krw(state,&route.id,usage.prompt_tokens,usage.completion_tokens),
+            "costQuoteBasis":"owner_declared_tariff_no_cache_discount",
+            "actualBilledKrw":Value::Null,
         }),
     );
 }
@@ -530,6 +547,9 @@ pub fn record_usage_tokens(
             "completionTokens": completion_tokens,
             "totalTokens": total_tokens,
             "estimated": estimated,
+            "costQuoteKrw":quoted_usage_krw(state,provider_id,prompt_tokens,completion_tokens),
+            "costQuoteBasis":"owner_declared_tariff_no_cache_discount",
+            "actualBilledKrw":Value::Null,
         }),
     );
 }
@@ -577,6 +597,20 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn declared_krw_quote_is_auditable_but_missing_price_is_unknown(){
+        let state=state();
+        state.store.put("provider",&json!({"id":"p","model":"unit",
+            "costPerMillionInputKrw":1000.0,
+            "costPerMillionOutputKrw":2000.0})).unwrap();
+        assert_eq!(quoted_usage_krw(&state,"p",1000,500),Some(2.0));
+        assert_eq!(quoted_usage_krw(&state,"p",0,0),None);
+        assert_eq!(quoted_usage_krw(&state,"missing",1000,500),None);
+        state.store.put("provider",&json!({"id":"p","model":"unit",
+            "costPerMillionInputKrw":1000.0})).unwrap();
+        assert_eq!(quoted_usage_krw(&state,"p",1000,500),None);
     }
 
     #[test]
