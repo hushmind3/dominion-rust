@@ -70,3 +70,19 @@
 | TypeScript 프로덕션 빌드·Rust 통합 CI | **이번 변경분 미실행** | GitHub Actions 이후 확인 필요 |
 
 기존 정상 기능과 오류/승인/로그를 보존하는 것이 목적이며, 단순히 팝업을 숨겨 오류를 침묵시키는 방식으로 처리하지 않았습니다.
+
+
+## 2026-11-14: 자율 실행 증거·원가 계약 최신화
+
+| UI/API 진입점 | 실행 엔진·영속 경로 | 지켜야 하는 불변 조건 |
+| --- | --- | --- |
+| /api/goals POST | api/goals.rs → Store::transaction(goal,job) → jobs worker | 목표만 저장하고 실행 작업이 누락되는 상태 금지 |
+| 자율 목표 실행 | engine/goals.rs → goals/progress.rs → verification.rs | 새 성공한 도구 효과 또는 정량적으로 해소된 검증 조건만 진전. 소스 수정 뒤 통과한 과거 테스트 영수증은 재사용 금지 |
+| 실패 후 이어가기 | api/goals.rs → job.goalState.reviewedUnknownOpIds → Store::session_has_uncertain_effects_except | 사용자 검토로 승인한 과거 operation ID만 예외, 새 미확정 외부 효과는 다시 차단; 과거 감사 기록은 보존 |
+| 새 LTX 영상 | Video.tsx → POST /api/video/quote → video/pricing.rs → POST /api/video/jobs | 서버가 계산한 모델/화질/영상 길이/건수/버전 견적 fingerprint 및 최대 원화 승인액이 일치해야 큐에 등록 |
+| LTX 유료 전송 | video/ltx.rs → JobContext checkpoint → 원격 POST | 가격표 버전과 누적 원화 참조 견적을 매 호출 직전 재검증하고 노출·예약·중복방지 체크포인트를 하나의 저장 동작으로 처리 |
+| 클립별 재생성 | FilmRetake.tsx → /api/video/jobs/:id/scenes → /retake → film.rs | 해당 클립의 SHA 영수증·원화 견적·최대 승인액을 다시 검증하고 기존 클립 재사용 후 새 유료 호출만 허용 |
+
+**참고 가격:** LTX 2.5 2026-09-08 공개 참고 단가, 2026-11-13 참고 환산 1달러=1,336원. 상세 가격표와 한계는 README에 명시했습니다. 이 견적은 공급자의 최신 확정 청구액이 아니고 가격 변경에 대한 실시간 감시를 제공하지 않습니다. 과금 정산, 영상 시청 품질, 실제 장기 실모델 완주에 관한 운영 증거는 별도로 필요합니다.
+
+**테스트 위치:** engine/verification.rs의 마지막 수정 이후 검증 통과 판정, goals/progress.rs의 중복 수행 구분, api/goals.rs의 원자적 생성과 검토 재개, video/pricing.rs의 서버 견적 상한, scripts/champion-ui-menu.test.mjs의 UI–API–엔진 연결. CLI와 브라우저 실조작 검증 여부는 GitHub Actions 실행 기록과 구분합니다.
