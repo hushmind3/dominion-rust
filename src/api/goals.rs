@@ -215,6 +215,9 @@ pub async fn discard_worktree(
     }
     match engine::goal_workspace::discard(&state,&goal).await {
         Ok(receipt)=>{
+            // A promoted patch is already present in the owner checkout:
+            // deleting its disposable worktree must NOT invalidate success.
+            if goal["promotion"]["applied"]!=true {
             if let Some(current)=state.store.get("goal",&id) {
                 let mut metrics=current["metrics"].clone();
                 if metrics.is_object(){
@@ -231,6 +234,7 @@ pub async fn discard_worktree(
                             engine::episode::goal_outcome("needs_review"),&gaps);
                     }
                 }
+            }
             }
             Json(receipt).into_response()
         },
