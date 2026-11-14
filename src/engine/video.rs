@@ -14,6 +14,8 @@ use sha2::Digest;
 mod ltx;
 #[path = "video/film.rs"]
 mod film;
+#[path = "video/cinematic.rs"]
+mod cinematic;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -94,7 +96,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"technicalQuality":job["result"]["technicalQuality"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"cinematic":job["input"]["cinematic"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"technicalQuality":job["result"]["technicalQuality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -175,6 +177,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "ltxModel":ltx_model,"ltxQuality":ltx_quality,"ltxStyle":ltx_style,
+        "cinematic":engine=="comfyui"&&body["cinematic"]==true,
         "ltxFilm":engine=="ltx"&&body["ltxFilm"]==true,
         "confirmPaidMultiShot":body["confirmPaidMultiShot"]==true,
         "technicalGate":body["technicalGate"]==true,
@@ -186,6 +189,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         let plan=film::spec(&input,&input["config"])?;
         input["render"]=plan;
     }
+    if input["cinematic"]==true {cinematic::preflight(&input)?;}
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -208,6 +212,7 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
     let result = match input["engine"].as_str().unwrap_or("native") {
+        "comfyui" if input["cinematic"]==true => cinematic::render(ctx,input,&dir).await,
         "comfyui" => comfy::comfy(ctx,input,&dir).await,
         "ltx" if input["ltxFilm"]==true => film::run(ctx,input,&dir).await,
         "ltx" => ltx::render(ctx,input,&dir).await,
