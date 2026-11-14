@@ -95,6 +95,7 @@ pub async fn save(
             .filter(|value| !value.is_empty() && value.chars().count()<=4096)
         else { return invalid(); };
         if body.get("id").is_some()
+            || id_from_uri(&uri).is_some()
             || body.get("source").is_some_and(|v|v!="user")
             || body.get("status").is_some_and(|v|v!="active")
             || body.as_object().is_some_and(|obj| obj.keys().any(|key|
@@ -428,6 +429,10 @@ mod owner_memory_edit_tests {
         let bypass=create(&state,json!({"id":"learned","text":"hijack",
             "source":"user","status":"active"})).await;
         assert_eq!(bypass.status(),StatusCode::BAD_REQUEST);
+        let direct_uri="/api/memories/learned".parse().unwrap();
+        let direct=save(State(state.clone()),OriginalUri(direct_uri),
+            Json(json!({"text":"override"}))).await;
+        assert_eq!(direct.status(),StatusCode::BAD_REQUEST);
         let spoof=create(&state,json!({"text":"fabricated provenance",
             "source":"learn"})).await;
         assert_eq!(spoof.status(),StatusCode::BAD_REQUEST);
