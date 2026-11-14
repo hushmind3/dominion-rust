@@ -292,13 +292,25 @@ export function importOfficialVerdicts(receipts,predictions,model,logsRoot){
       row.officialGradeSource='empty_prediction_not_evaluated';
       continue;
     }
-    const path=join(logsRoot,model.replaceAll('/','__'),
-      row.instance_id,'report.json');
+    const instanceDir=join(logsRoot,model.replaceAll('/','__'),
+      row.instance_id);
+    const path=join(instanceDir,'report.json');
     if(!existsSync(path)){
       row.officialSolved=null;
       row.officialGradeSource='missing_official_instance_report';
       continue;
     }
+    // Upstream SWE-bench saves the *submitted model patch* in patch.diff
+    // alongside report.json. Without matching those bytes a cached report
+    // from another run can give a completely different patch a false win.
+    const gradedPatch=join(instanceDir,'patch.diff');
+    if(!existsSync(gradedPatch)){
+      row.officialSolved=null;
+      row.officialGradeSource='missing_evaluator_patch_evidence';
+      continue;
+    }
+    demand(SHA(readFileSync(gradedPatch))===row.patchSha256,
+      'official evaluator graded a different patch for '+row.instance_id);
     try{
       const doc=JSON.parse(readFileSync(path,'utf8'));
       const result=doc?.[row.instance_id];
@@ -318,6 +330,8 @@ export function importOfficialRun(reportPath,logsRoot){
   demand(isAbsolute(reportPath)&&isAbsolute(logsRoot),
     'use absolute benchmark report and official evaluator log paths');
   const run=JSON.parse(readFileSync(reportPath,'utf8'));
+  demand(resolve(logsRoot).split(/[\\/]/).at(-1)===run.runId,
+    'official logs must belong to the exact unique benchmark run ID');
   demand(run?.dataset==='princeton-nlp/SWE-bench_Verified'
     &&typeof run.runId==='string'
     &&/^dominion-swe-[0-9]+-[a-f0-9]{8}$/.test(run.runId),
