@@ -84,7 +84,10 @@ export class DominionTransport {
       const response = await this.fetchImpl(this.url(path), {
         method, headers: this.headers(body, accept),
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: controller.signal, cache: "no-store",
+        // SSE keeps the original signal attached after headers arrive;
+        // otherwise cancelling a long-running turn would stop neither
+        // the socket nor the consuming async iterator.
+        signal: streaming ? options.signal : controller.signal, cache: "no-store",
       });
       if (!response.ok) {
         const raw = (await response.text()).slice(0, 4_096);
