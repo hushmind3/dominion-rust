@@ -312,3 +312,23 @@ async fn native_rust_sdk_reports_actual_sse_error_message() {
         if message.contains("compiler failed")));
     handle.abort();
 }
+
+#[tokio::test]
+async fn rust_sdk_capability_discovery_is_get_only() {
+    let app=Router::new().route("/api/sdk/info",get(|| async {
+        Json(json!({"protocol":"dominion-native-agent","apiVersion":1,
+            "engine":"rust","transports":["http_json","sse"],
+            "capabilities":["native_threads","durable_goals"],
+            "semantics":{"runPostIdempotent":false,
+                "disconnectCancelsExecution":false,
+                "eventReplayGetIdempotent":true,
+                "externalToolApproval":"engine_enforced"}}))
+    }));
+    let (base,handle)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let info=sdk.sdk_info().await.unwrap();
+    assert_eq!(info["apiVersion"],1);
+    assert_eq!(info["semantics"]["runPostIdempotent"],false);
+    assert_eq!(info["capabilities"][0],"native_threads");
+    handle.abort();
+}
