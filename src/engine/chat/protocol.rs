@@ -187,7 +187,7 @@ fn parse_qwen_style_tool_calls(
     for frame in frames.split(FUNCTION).take(64) {
         let Some((raw_name, raw_args)) = frame.split_once(ARGS) else { continue };
         let name = raw_name.trim();
-        if name.is_empty() || name.contains(['\n', '\r'])
+        if name.is_empty() || name.contains('\n') || name.contains('\r')
             || (!known.is_empty() && !known.contains(name)) {
             continue;
         }
