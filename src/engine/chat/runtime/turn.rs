@@ -804,6 +804,28 @@ pub(super) async fn run_turn_body(
         } else {
             tool_definitions.clone()
         };
+        // DOMINION native routing: inspect current-turn durable tool statuses,
+        // narrow only the already-authorized catalog, retain the original
+        // ordering for prompt-cache reuse. Internal RSI and group-room policies
+        // retain their own isolated tool menus.
+        if !is_room && session["rsiRun"]!=true && !round_tools.is_empty() {
+            let observations=state.store.session_execution_operations(session_id)?
+                .into_iter()
+                .filter(|operation|operation["runId"]==execution_id)
+                .collect::<Vec<_>>();
+            if let Some(route)=super::tool_route::select(
+                &round_tools,task_input(&session,&request.input),round,&observations
+            ){
+                let retained=route.tools.iter().map(tool_name).collect::<Vec<_>>();
+                state.store.audit("tool.native_route",json!({
+                    "sessionId":session_id,"executionId":execution_id,"round":round,
+                    "stage":route.stage,"candidateCount":route.candidate_count,
+                    "selectedCount":retained.len(),"selectedTools":retained,
+                    "source":"dominion-native","externalHarness":false,
+                }));
+                round_tools=route.tools;
+            }
+        }
         if !round_tools.is_empty() {
             let budget = provider
                 .context_tokens
@@ -1529,10 +1551,19 @@ pub(super) async fn run_turn_body(
         {
             let read_calls = round_calls
                 .iter()
-                .filter(|call| tool_is_read_only(&call.name))
+                // A provider may hallucinate a tool that was never in the
+                // actual round catalog. Never execute it in parallel.
+                .filter(|call|tool_is_read_only(&call.name)
+                    && round_tools.iter().any(|schema|tool_name(schema)==call.name))
                 .cloned()
                 .collect::<Vec<_>>();
-            if read_calls.len() >= 2 {
+            let valid_read_count=read_calls.iter().filter(|call|
+                serde_json::from_str::<Value>(&call.arguments).is_ok()).count();
+            // All parallel reads must charge the same proposal/execution
+            // budget as sequential dispatch. Admission is all-or-nothing so
+            // a failed batch reservation falls back to the bounded serial loop.
+            if read_calls.len() >= 2
+                && budget.reserve_batch(read_calls.len(),valid_read_count) {
                 // Only this applicable run owns a combination usage record;
                 // a single read is not a combination measurement.
                 let _ = crate::engine::algorithms::choose_for_agent(
@@ -1636,6 +1667,33 @@ pub(super) async fn run_turn_body(
                 || state.cancellation_generation(session_id) != generation
             {
                 return Err("실행이 중단되었습니다.".into());
+            }
+            // The model may only invoke a schema that was advertised in this
+            // exact turn. This does not prevent tools from becoming available
+            // in a later round after routing expands.
+            if session["rsiRun"] != true
+                && !round_tools.iter().any(|definition|
+                    tool_name(definition)==call.name)
+            {
+                let offered=round_tools.iter().map(tool_name)
+                    .take(20).collect::<Vec<_>>();
+                let error=format!(
+                    "도구 '{}'는 이번 라운드의 제공 목록에 없습니다.                      다른 제공된 도구를 선택하거나 실제로 불가능한 이유를 답하세요.                      제공된 도구: {}",
+                    call.name,offered.join(", ")
+                );
+                record_soft_tool_error(
+                    state,tx,session_id,request,execution_id,
+                    &call.name,&call.id,&error,metrics,
+                );
+                state.store.audit("tool.unadvertised_blocked",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"name":call.name,"available":offered,
+                }));
+                messages.push(json!({
+                    "role":"tool","tool_call_id":call.id,
+                    "content":json!({"error":error,"unadvertisedTool":true}).to_string(),
+                }));
+                continue;
             }
             if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
                 let error = format!(
