@@ -1,3 +1,4 @@
+use sha2::Digest;
 //! OpenAI-compatible provider resolution, native thinking controls and HTTP streaming.
 use super::{protocol::SseBuffer, Completion, ProviderRef, ToolCall, TurnRequest, MAX_TOOL_CALLS};
 use crate::state::AppState;
