@@ -34,6 +34,7 @@ pub fn outputs(state: &AppState) -> Vec<Value> {
 pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let cfg = video::config(&state);
     let executable = video::ffmpeg(&state);
+    let quality_ready = video::quality_available(&state);
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
     let omni = cfg["hasVideoKey"] == true;
@@ -47,6 +48,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
         "available": executable.is_some() || comfy || omni,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
+        "quality":{"available":quality_ready,"method":"ffprobe","visualSemanticReview":false},
         "comfy": {"reachable": reachable, "available": comfy},
         "omni": {"available": omni, "model":cfg["omniModel"], "targetDurationSeconds":8},
         "engines": [
