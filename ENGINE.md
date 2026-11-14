@@ -1,5 +1,19 @@
 # DOMINION 자체 Rust 엔진
 
+## 2026-11-15 서브1 — 실행 중 소스 범위 확인
+
+`src/engine/goals.rs::run` → `goal_focus::capture`(소유자 원문과
+acceptance check에 직접 등장한 파일의 초기 SHA 저장) →
+`goal_focus::view`(각 실행 회차 직전 새 디스크 상태 조회) →
+`chat::TurnRequest`(작은 UTF-8 원문, 미변경 파일 목록 제공) →
+기존 도구 승인/실행 → `verification::acceptance_gaps` →
+독립 reviewer / repair / replan 흐름입니다. 작업 재개 시 초기 기준선은
+보존하며 AI의 주장만으로 성공을 인정하지 않습니다. 대형 파일은
+기존 부분 읽기·SHA 검증 교체 도구로 이동합니다. 
+동작은 2026-11-14 Qwen3 4B 실모델 평가의 부분 수정 실패를 겨냥했고,
+새 실모델 점수는 실제 검증 완료 전까지 주장하지 않습니다.
+
+
 2026-11-15 공식 벤치마크 비교기: scripts/swebench-official-compare.mjs
 는 실행기 manifest.json / records.jsonl / predictions.jsonl 과 Docker
 logs/evaluation/RUN-ID/run.json 및 각 report.json 을 대조합니다.
