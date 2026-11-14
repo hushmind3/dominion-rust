@@ -9,7 +9,7 @@ import {GrowthDashboard} from './memory/Growth'
 
 type Memory={
  id:string;text:string;scope?:string;agentId?:string;sessionId?:string;partitionKey?:string;
- status?:string;retrievalEligible:boolean;source?:string;createdAt?:string;lastUsedAt?:string;
+ status?:string;retrievalEligible:boolean;source?:string;revision?:number;createdAt?:string;lastUsedAt?:string;
  importance?:number;verification?:string;sourceMessageIds?:string[];evidenceQuote?:string;
  forgetReason?:string;archiveReason?:string;expiresAt?:string;
 }
@@ -64,7 +64,7 @@ export function MemoryPage(){
    // Only the expected old text and replacement travel to Rust; the store
    // owns source/scope/provenance, revisioning and concurrency checks.
    await post('/api/memories/'+encodeURIComponent(memory.id)+'/edit',{
-    expectedText:memory.text,text:editing.text.trim()
+    expectedText:memory.text,expectedRevision:memory.revision??0,text:editing.text.trim()
    })
    setEditing(null);setNotice(t('memory.updated'));await memories.reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
