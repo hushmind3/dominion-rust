@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {ArrowRight,Check,Play,RefreshCw,Square,Target} from 'lucide-react'
+import {ArrowRight,Check,Play,RefreshCw,RotateCw,Square,Target} from 'lucide-react'
 import {post} from '../../api'
 import {GoalChanges} from './GoalChanges'
 import {Button,SelectInput,TextArea,TextInput} from '../../components/Primitives'
@@ -10,7 +10,7 @@ type Agent={id:string;name:string;model?:string;providerId?:string}
 type Goal={
  id:string;jobId?:string;goal:string;status:string;phase?:string;plan?:string;
  isolateWorktree?:boolean;gitWorktree?:{path?:string;branch?:string;rolledBack?:boolean};
- iterations?:number;maxIterations?:number;replans?:number;sessionId?:string;
+ iterations?:number;maxIterations?:number;replans?:number;resumeCount?:number;sessionId?:string;
  createdAt?:string;gaps?:string[];evidence?:unknown[];
  planHistory?:{version:number;plan:string;reason?:unknown}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps?:string[];evidenceCount?:number}[];
@@ -33,6 +33,7 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const [isolateWorktree,setIsolateWorktree]=useState(false)
  const [criteria,setCriteria]=useState('[]')
  const [iterations,setIterations]=useState(12)
+ const [tokenBudget,setTokenBudget]=useState(150000)
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
  const [message,setMessage]=useState('')
@@ -59,19 +60,31 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
     executor:{agentId:executor},
     ...(plannerId?{planner:{agentId:plannerId}}:{}),
     ...(reviewerId?{reviewer:{agentId:reviewerId}}:{}),
-    successCriteria:checks,maxIterations:iterations,
+    successCriteria:checks,maxIterations:iterations,tokenBudget,
     isolateWorktree})
    setGoalText('');setSelected(created.id);setMessage('목표가 작업 큐에 등록됐습니다. 계획과 검증 결과를 아래에서 추적할 수 있습니다.')
    await Promise.all([goals.reload(),jobs.reload()])
   }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
  }
- const cancel=async(goal:Goal,jobId?:string)=>{
-  if(!jobId||busy)return
-  setBusy(true);setError('')
-  try{await post('/api/jobs/'+jobId+'/cancel',{});await Promise.all([goals.reload(),jobs.reload()])}
-  catch(e){setError((e as Error).message)}
-  finally{setBusy(false)}
+ const cancel=async(goal:Goal)=>{
+  if(busy)return
+  setBusy(true);setError('');setMessage('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/cancel',{})
+   setMessage('목표와 영속 작업에 중단을 요청했습니다.')
+   await Promise.all([goals.reload(),jobs.reload()])
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const resume=async(goal:Goal)=>{
+  if(busy||!window.confirm('이전 실행의 파일·외부 작업 결과를 확인하셨습니까? 알 수 없는 외부 변경은 자동 반복하지 않습니다. 확인 후 새 실행으로 이어가시겠습니까?'))return
+  setBusy(true);setError('');setMessage('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/resume',{acknowledgeUnknownEffects:true})
+   setMessage('이전 실행의 검증 기록을 보존하고 새 작업을 등록했습니다. 시작 전 외부 결과를 다시 확인합니다.')
+   setSelected(goal.id)
+   await Promise.all([goals.reload(),jobs.reload()])
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  const submitPlan=async(goal:Goal)=>{
   const next=planDrafts[goal.id]?.trim()
@@ -107,6 +120,10 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
      <FormField label="최대 실행 단계"><TextInput type="number" min={1} max={64} value={iterations}
       onChange={e=>setIterations(Math.max(1,Math.min(64,Number(e.target.value)||1)))}/></FormField>
     </div>
+     <FormField label="목표 토큰 상한 (0 = 제한 없음)" hint="실행·계획·검토 호출의 관측 사용량을 합산합니다. 진행 중 호출은 잔여 한도를 넘을 수 있습니다.">
+      <TextInput type="number" min={0} max={2000000} step={1000} value={tokenBudget}
+       onChange={e=>setTokenBudget(Math.max(0,Math.min(2000000,Number(e.target.value)||0)))}/>
+     </FormField>
     <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-[#E7E0D5] p-3 text-[12px]">
      <TextInput type="checkbox" checked={isolateWorktree}
       onChange={e=>setIsolateWorktree(e.target.checked)} className="mt-0.5"/>
@@ -150,7 +167,8 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
        </small>
       </button>
       <StatusPill status={goal.status}>{goal.status}</StatusPill>
-      {running(goal.status)&&<Button size="sm" variant="danger" disabled={busy} onClick={()=>void cancel(goal,job?.id||goal.jobId)}><Square size={12}/> 중단</Button>}
+      {running(goal.status)&&<Button size="sm" variant="danger" disabled={busy} onClick={()=>void cancel(goal)}><Square size={12}/> 중단</Button>}
+      {['failed','needs_review'].includes(goal.status)&&<Button size="sm" variant="secondary" disabled={busy||((goal.resumeCount||0)>=12)} onClick={()=>void resume(goal)}><RotateCw size={12}/> 검토 후 이어가기</Button>
       {goal.sessionId&&<Button size="sm" variant="ghost" onClick={()=>openSession(goal.sessionId!)}>대화 기록 <ArrowRight size={13}/></Button>}
      </div>
      {expanded&&<div className="mt-3 grid gap-3 border-t border-[#EFE9DF] pt-3">
