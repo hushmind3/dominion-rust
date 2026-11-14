@@ -128,6 +128,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let (plan_provider, plan_model) = role_model(state, &planner, &provider_id, &model);
     let max_replans = goal["maxReplans"].as_u64().unwrap_or(6).min(16) as usize;
     let replan_after = goal["replanAfter"].as_u64().unwrap_or(2).clamp(1, 8) as usize;
+    let token_budget=goal["tokenBudget"].as_u64().unwrap_or(150_000);
     let mut replans = goal["replans"].as_u64().unwrap_or(0) as usize;
     let mut plan_history = goal["planHistory"].as_array().cloned().unwrap_or_default();
     let mut progress_history=goal["progressHistory"].as_array().cloned().unwrap_or_default();
@@ -367,6 +368,22 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
+        }
+        // One owner-approved cap covers the planner, executor, reviewer,
+        // replanner and all delegated descendant sessions. Check immediately
+        // before starting another provider turn; estimated usage counts too.
+        let observed=state.store.session_tree_usage(&session_id)?;
+        let spent=observed["totalTokens"].as_u64().unwrap_or(token_budget);
+        if spent.saturating_add(256)>token_budget {
+            gaps.push(format!(
+                "목표 전체 토큰 예산 {token_budget}에 도달했습니다. 관측 {spent}토큰 (하위 에이전트 포함)."
+            ));
+            patch_goal(state,goal_id,json!({
+                "tokenBudgetExhausted":true,
+                "observedGoalTreeTokens":spent,
+                "goalTreeSessionCount":observed["sessions"]
+            }));
+            return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,
             "inFlight":true,"appliedPlanRevision":applied_plan_revision,
