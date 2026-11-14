@@ -3590,6 +3590,44 @@ fn a_typed_execution_program_takes_the_failure_branch() {
     );
 }
 
+/// A failure inside a typed sequence is not a success for its parent.
+/// The actual Rust program interpreter must keep both failed receipts and
+/// pending child nodes, rather than reporting the enclosing sequence complete.
+#[test]
+fn a_nested_program_failure_propagates_to_durable_repair() {
+    let _serial = serial();
+    let (port, _) = scripted_provider(|_| {
+        vec![json!({"choices":[{"delta":{"content":"The nested program failed."},"finish_reason":"stop"}]})]
+    });
+    let app = TestApp::new_with_env(port, "native", &[("DOMINION_BENCHMARK", "1")]);
+    app.post("/api/policy", &json!({"autoApproveAll":true}));
+    let program = json!({
+        "revision":"nested-failure-v1",
+        "nodes":[
+            {"type":"sequence","id":"parent-sequence","nodes":[
+                {"type":"call_tool","id":"failed-shell","tool":"shell_exec",
+                 "inputs":{"command":"exit 7"},"onFailure":"revise"},
+                {"type":"call_tool","id":"never-run","tool":"workspace_write",
+                 "inputs":{"path":"should-not-exist.txt","content":"WRONG"}}
+            ]}
+        ]
+    });
+    let activated=app.post("/api/benchmark/policies/state",
+        &json!({"slot":"execution","name":"nested-failure-check",
+            "parameters":{"program":program}}));
+    assert_eq!(activated["active"]["status"],"active","{activated}");
+    let _stream=app.chat(&json!({"input":"should-not-exist.txt 파일은 만들지 말고 실패 결과를 검토해줘",
+        "autoLearning":false}));
+    assert!(!app._root.join("should-not-exist.txt").exists());
+    let executions=app.get("/api/executions");
+    let checkpoint=&executions[0]["programCheckpoint"];
+    assert_ne!(checkpoint["status"],"completed","{checkpoint}");
+    let completed=checkpoint["completedOperationIds"].as_array().cloned().unwrap_or_default();
+    assert!(!completed.contains(&json!("parent-sequence")),"{checkpoint}");
+    assert!(!completed.contains(&json!("never-run")),"{checkpoint}");
+    assert_eq!(checkpoint["programFailure"]["nodeId"],"failed-shell","{checkpoint}");
+}
+
 /// Builds a verifiable evidence bundle: 10 pairs, baseline fails, treatment succeeds.
 fn evidence_bundle(pairs: u64, baseline_ok: bool, treatment_ok: bool) -> Value {
     let mut trials = Vec::new();
