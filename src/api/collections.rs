@@ -303,14 +303,23 @@ pub async fn action(
                     Json(json!({"error":"기억 변경을 저장하지 못했습니다."}))).into_response(),
             }
         },
-        ("workflow", "run") => enqueue_job(
-            &state,
-            "workflow",
-            json!({
-                "workflowId": id,
-                "input": body.get("input").cloned().unwrap_or(json!("")),
-            }),
-        ),
+        ("workflow", "run") => {
+            if state.store.get("workflow",&id).is_none() {
+                return (StatusCode::NOT_FOUND,Json(json!({
+                    "error":"실행할 워크플로를 찾지 못했습니다."
+                }))).into_response();
+            }
+            let (input,source)=match crate::engine::workflows::resolve_run_input(&state,&body){
+                Ok(data)=>data,
+                Err(message)=>return (StatusCode::BAD_REQUEST,
+                    Json(json!({"error":message}))).into_response(),
+            };
+            let budget=body["tokenBudget"].as_u64().unwrap_or(0).min(2_000_000);
+            enqueue_job(&state,"workflow",json!({
+                "workflowId":id,"input":input,"sourceArtifact":source,
+                "tokenBudget":budget
+            }))
+        },
         ("room", "run") => enqueue_job(
             &state,
             "room",
