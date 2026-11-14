@@ -148,8 +148,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let control=crate::engine::goal_control::GoalControl::new(context,goal_id,&session_id);
     let workspace_view=project::inspect(&workspace);
     let workspace_context=project::prompt(&workspace_view);
-    let (code_view,source_context)=code_navigation::collect(state,&workspace,&text).await;
-    let workspace_context=format!("{workspace_context}\n\n소스 코드 네비게이션 데이터:\n{source_context}");
+    let (mut code_view,source_context)=code_navigation::collect(state,&workspace,&text).await;
+    let mut workspace_context=format!("{workspace_context}\n\n소스 코드 네비게이션 데이터:\n{source_context}");
     goal["sessionId"] = json!(session_id);
     goal["status"] = json!("running");
     goal["phase"] = json!("plan");
@@ -250,6 +250,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or(0) as usize;
 
     for index in start..max_iterations {
+        let mut refreshed_objective=false;
         if control.is_cancelled(){
             return Ok(finish(context,goal_id,"cancelled",gaps,None));
         }
@@ -265,6 +266,20 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             applied_objective_revision=adopted.revision;
             text=adopted.objective;
             criteria=adopted.acceptance;
+            // New intent may target entirely different files. Recompute
+            // goal-aware source navigation and send it on THIS next step,
+            // not only at the old periodic five-turn refresh boundary.
+            let (next_code_view,next_source_context)=
+                code_navigation::collect(state,&workspace,&text).await;
+            code_view=next_code_view;
+            let refreshed_project=project::inspect(&workspace);
+            workspace_context=format!("{}\n\n소스 코드 네비게이션 데이터:\n{}",
+                project::prompt(&refreshed_project),next_source_context);
+            patch_goal(state,goal_id,json!({
+                "workspaceInspection":refreshed_project,
+                "codeNavigation":code_view,
+            }));
+            refreshed_objective=true;
             evidence.clear();
             gaps.clear();
             diagnostic_history.clear();
@@ -361,7 +376,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // and periodically refreshed for long loops. Subsequent requests
         // can reuse persisted chat history, avoiding the same 10K+ character
         // navigation payload in every paid provider input.
-        let scoped_project_context=if index==start || index%5==0{
+        let scoped_project_context=if index==start || index%5==0 || refreshed_objective {
             workspace_context.as_str()
         }else{
             "프로젝트 구성·소스 위치는 기존 세션의 최초 조사 기록을 참조하세요.             현 소스 확인이 필요하면 파일 읽기 도구를 사용하세요."
