@@ -814,3 +814,5 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 - 병렬 읽기도 직렬 호출처럼 예산/취소를 검사하고 공개된 도구만 실행한다. 관련 모의 스키마 테스트는 `tool_discovery.rs`에 있다. 외부 기술과 설계 차이는 [연구 문서](docs/AGENT-SDK-REUSE-2026-11-14.md)를 참고한다.
 
 - 지연 검색의 전체 인덱스는 초기에 노출된 일부 도구가 아니라 **권한 필터를 통과한 설치된 전체 네이티브/MCP 도구**다. tool.discovery=core처럼 첫 턴에 MCP가 숨겨졌어도 실행 중 검색해서 공개 가능하다. 룸의 비작업 발언에는 기존 툴 비노출을 유지한다.
+
+- [Pydantic AI Harness](https://github.com/pydantic/pydantic-ai)의 source-aware compaction 구조를 참고해 **도미니언 자체** `engine/chat/provider.rs`에 과부하 상태에서만 작동하는 파일 읽기 중복 제거를 구현했다. 파일/범위/도구 인자와 원문 바이트가 정확히 같을 때 이전 관측 내용을 모델 전송본에서만 줄이고, SQLite 원본·도구 호출 ID·최신 관측·서로 다른 파일 버전은 보존한다. 모델 호출이 필요 없는 비용 최적화다.

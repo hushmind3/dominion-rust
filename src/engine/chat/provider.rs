@@ -405,6 +405,60 @@ fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -> String {
     prefix
 }
 
+/// Suppress byte-identical repeated reads only in a provider request that
+/// already exceeds its context allocation. The SQLite message and operation
+/// receipts are never rewritten. A read result is deduplicated only when the
+/// *same tool with the same resource arguments* returned identical bytes later.
+/// This intentionally does NOT erase a prior file version after a later edit.
+fn deduplicate_repeated_file_reads(messages:&mut [Value])->usize {
+    use std::collections::HashMap;
+    let mut identities=HashMap::<String,String>::new();
+    for message in messages.iter().filter(|m|m["role"]=="assistant") {
+        for call in message["tool_calls"].as_array().into_iter().flatten() {
+            let Some(id)=call["id"].as_str() else {continue};
+            let Some(name)=call["function"]["name"].as_str() else {continue};
+            if !matches!(name,"workspace_read"|"workspace_read_range"|"file_read") {
+                continue;
+            }
+            let arguments=call["function"]["arguments"].as_str()
+                .and_then(|s|serde_json::from_str::<Value>(s).ok())
+                .or_else(||call["function"]["arguments"].as_object().map(|_|call["function"]["arguments"].clone()))
+                .unwrap_or(Value::Null);
+            let Some(path)=arguments["path"].as_str() else {continue};
+            // Range reads must match their range too: equal text at different
+            // offsets does not prove identical context or line provenance.
+            identities.insert(id.to_owned(),format!(
+                "{name}|{path}|{}|{}",
+                arguments["startLine"],arguments["endLine"],
+            ));
+        }
+    }
+    let mut latest=HashMap::<String,(String,String)>::new();
+    let mut reclaimed=0usize;
+    for message in messages.iter_mut().rev().filter(|m|m["role"]=="tool") {
+        let Some(id)=message["tool_call_id"].as_str() else {continue};
+        let Some(identity)=identities.get(id) else {continue};
+        let Some(original)=message["content"].as_str() else {continue};
+        if original.len()<768 {continue;}
+        if serde_json::from_str::<Value>(original)
+            .ok().is_some_and(|result|result.get("error").is_some()){
+            continue;
+        }
+        let snapshot=original.to_owned();
+        if let Some((newer_id,newer_content))=latest.get(identity){
+            if *newer_content==snapshot{
+                reclaimed+=snapshot.len();
+                message["content"]=json!(format!(
+                    "[Repeated file observation omitted in model context: identical to newer tool call {newer_id}; original result and verification are preserved in the execution record.]"
+                ));
+                continue;
+            }
+        }
+        latest.insert(identity.clone(),(id.to_string(),snapshot));
+    }
+    reclaimed
+}
+
 /// Prepare a different model's copy from the original, unabridged tool
 /// observations. No 6k/20k/80k magic limits or local/cloud distinction.
 fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars: usize) {
@@ -414,6 +468,15 @@ fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars
         .saturating_add(512);
     let mut available = input_char_capacity(tokens, provider.max_output_tokens)
         .saturating_sub(fixed);
+    // An identical older file read need not pay the context cost again.
+    // Delay this zero-LLM optimization until there is actual provider context
+    // pressure; otherwise preserve cacheable history byte for byte.
+    let tool_chars=messages.iter().filter(|m|m["role"]=="tool")
+        .filter_map(|m|m["content"].as_str())
+        .map(escaped_content_chars).sum::<usize>();
+    if tool_chars>available {
+        deduplicate_repeated_file_reads(messages);
+    }
     // Preserve the most recent observation; old tool outputs get the
     // remaining space, with each tool-call ID kept intact.
     for message in messages.iter_mut().rev() {
@@ -2055,6 +2118,41 @@ mod tests {
         assert_eq!(original[1]["content"].as_str().unwrap().chars().count(), 40_000);
     }
 
+
+    #[test]
+    fn repeated_identical_reads_are_omitted_only_from_model_copy() {
+        let text="actual source line\n".repeat(95);
+        let original=vec![
+            json!({"role":"assistant","tool_calls":[{"id":"r1","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"r1","content":text}),
+            json!({"role":"assistant","tool_calls":[{"id":"r2","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"r2","content":text}),
+        ];
+        let mut window=original.clone();
+        assert!(deduplicate_repeated_file_reads(&mut window)>0);
+        assert!(window[1]["content"].as_str().unwrap().contains("Repeated file observation omitted"));
+        assert_eq!(window[3]["content"],original[3]["content"]);
+        assert_eq!(window[1]["tool_call_id"],"r1");
+        assert_eq!(original[1]["content"],original[3]["content"]);
+    }
+
+    #[test]
+    fn source_versions_and_different_files_are_never_deduplicated(){
+        let x="A".repeat(1000);
+        let y="B".repeat(1000);
+        let mut messages=vec![
+            json!({"role":"assistant","tool_calls":[{"id":"a","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"a","content":x}),
+            json!({"role":"assistant","tool_calls":[{"id":"b","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/lib.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"b","content":x}),
+            json!({"role":"assistant","tool_calls":[{"id":"c","function":{"name":"workspace_read","arguments":"{\\"path\\":\\"src/main.rs\\"}"}}]}),
+            json!({"role":"tool","tool_call_id":"c","content":y}),
+        ];
+        assert_eq!(deduplicate_repeated_file_reads(&mut messages),0);
+        assert_eq!(messages[1]["content"],"A".repeat(1000));
+        assert_eq!(messages[3]["content"],"A".repeat(1000));
+        assert_eq!(messages[5]["content"],"B".repeat(1000));
+    }
     #[test]
     fn json_escaped_tool_output_respects_provider_budget() {
         let original = "\"\n\\세션".repeat(120);
