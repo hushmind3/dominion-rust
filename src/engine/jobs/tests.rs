@@ -368,3 +368,46 @@ fn goal_review_recovery_never_replays_unknown_external_effect_from_goal_session(
     assert_eq!(state.store.get("job","j").unwrap()["status"],"needs_review");
     assert_eq!(state.store.get("goal","g").unwrap()["status"],"needs_review");
 }
+
+#[test]
+fn recurring_multi_agent_workflow_runs_once_per_slot_and_freezes_model(){
+    let state=temp_state();
+    state.store.put("provider",&json!({"id":"p","enabled":true,"model":"local-v1"}));
+    state.store.put("agent",&json!({"id":"a","name":"writer",
+        "providerId":"p","model":"local-v1"}));
+    state.store.put("workflow",&json!({"id":"w","name":"draft/review",
+        "steps":[{"id":"step-one","name":"write","agentId":"a","prompt":"{{input}}"}]}));
+    let due=(chrono::Utc::now()-chrono::Duration::seconds(8)).to_rfc3339();
+    state.store.put("automation",&json!({"id":"auto1","enabled":true,
+        "kind":"workflow","input":{"workflowId":"w","input":"report"},
+        "intervalMinutes":10,"nextAt":due}));
+    schedule_automations(&state);
+    let jobs=state.store.all("job");
+    assert_eq!(jobs.len(),1);
+    assert_eq!(jobs[0]["kind"],"workflow");
+    assert_eq!(jobs[0]["input"]["definition"]["steps"][0]["model"],"local-v1");
+    assert_eq!(jobs[0]["input"]["automationId"],"auto1");
+    assert_eq!(jobs[0]["input"]["scheduledAt"],due);
+    let first=jobs[0]["id"].as_str().unwrap().to_string();
+    schedule_automations(&state);
+    assert_eq!(state.store.count("job"),1,"normal scheduler ticks never duplicate work");
+    // Emulate process crash immediately after paid job insert, but before
+    // writing nextAt. A recurring slot must reuse its existing job.
+    let current=state.store.get("automation","auto1").unwrap();
+    state.store.patch_if("automation","auto1","nextAt",&current["nextAt"],
+        &json!({"nextAt":due}));
+    schedule_automations(&state);
+    assert_eq!(state.store.count("job"),1);
+    assert_eq!(state.store.get("automation","auto1").unwrap()["lastJobId"],first);
+    // A newly due slot with disabled provider cannot silently queue API work.
+    state.store.patch_if("provider","p","id",&json!("p"),
+        &json!({"enabled":false}));
+    let current=state.store.get("automation","auto1").unwrap();
+    state.store.patch_if("automation","auto1","nextAt",&current["nextAt"],
+        &json!({"nextAt":(chrono::Utc::now()-chrono::Duration::seconds(1)).to_rfc3339()}));
+    schedule_automations(&state);
+    assert_eq!(state.store.count("job"),1);
+    assert_eq!(state.store.get("automation","auto1").unwrap()["enabled"],false);
+    assert_eq!(state.store.get("automation","auto1").unwrap()["status"],"needs_review");
+    let _=std::fs::remove_dir_all(state.config.data_dir.clone());
+}
