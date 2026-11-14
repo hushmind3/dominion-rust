@@ -8,6 +8,8 @@ use crate::engine::verification::{
 };
 #[cfg(test)]
 use std::path::PathBuf;
+#[cfg(test)]
+use crate::engine::verification::{acceptance_gaps, baseline_checks};
 use crate::state::AppState;
 use serde_json::{json, Value};
 

@@ -344,6 +344,49 @@ mod tests{
         let _=std::fs::remove_dir_all(root);
     }
     #[tokio::test]
+    async fn reviewed_patch_requires_exact_digest_and_clean_source(){
+        let (state,root,source)=setup();
+        let id=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":id,"status":"queued",
+            "isolateWorktree":true})).unwrap();
+        prepare(&state,&id).await.unwrap();
+        let goal=state.store.get("goal",&id).unwrap();
+        let work=workspace_for_goal(&state,&goal).unwrap();
+        std::fs::write(work.join("src.txt"),"reviewed change").unwrap();
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
+        assert!(!preview(&state,&id).await.unwrap()["canApply"].as_bool().unwrap());
+        state.store.patch_if("goal",&id,"status",&json!("queued"),
+            &json!({"status":"completed"})).unwrap();
+        let review=changes(&state,&id).await.unwrap();
+        assert_eq!(review["canApply"],true);
+        let sha=review["patchSha256"].as_str().unwrap();
+        assert!(apply_reviewed(&state,&id,&"0".repeat(64)).await.is_err());
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
+        std::fs::write(work.join("untracked.tmp"),"review me separately").unwrap();
+        assert_eq!(preview(&state,&id).await.unwrap()["canApply"],false);
+        assert!(apply_reviewed(&state,&id,sha).await.is_err());
+        std::fs::remove_file(work.join("untracked.tmp")).unwrap();
+        let receipt=apply_reviewed(&state,&id,sha).await.unwrap();
+        assert_eq!(receipt["verified"],true);
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"reviewed change");
+        assert!(apply_reviewed(&state,&id,sha).await.is_err());
+        discard(&state,&id).await.unwrap();
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn worktree_path_is_outside_default_nested_runtime(){
+        let (state,root,source)=setup();
+        let nested=source.join("runtime");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut local=state.clone();
+        local.config.data_dir=nested;
+        let id=uuid::Uuid::new_v4().to_string();
+        let chosen=goal_path(&local,&id).unwrap();
+        assert!(!chosen.starts_with(source));
+        assert!(chosen.file_name().unwrap().to_str().unwrap()==id);
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
     async fn missing_or_dirty_git_source_does_not_create_a_worktree(){
         let (state,root,source)=setup();
         let id=uuid::Uuid::new_v4().to_string();
