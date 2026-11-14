@@ -344,6 +344,26 @@ mod goal_resume_api_tests {
     }
 
     #[tokio::test]
+    async fn goal_creation_atomically_persists_runnable_job() {
+        let (state,dir)=state();
+        let response=create_goal(State(state.clone()),Json(json!({
+            "goal":"edit two files and verify","maxIterations":4,
+            "successCriteria":[{"type":"file_exists","path":"build.out"}]
+        }))).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        let goal=state.store.all("goal").into_iter().next().unwrap();
+        let id=goal["id"].as_str().unwrap();
+        let job_id=goal["jobId"].as_str().unwrap();
+        assert_eq!(job_id,format!("goal-job-{id}"));
+        let job=state.store.get("job",job_id).unwrap();
+        assert_eq!(job["status"],"queued");
+        assert_eq!(job["kind"],"goal");
+        assert_eq!(job["input"]["goalId"],id);
+        assert_eq!(goal["status"],"queued");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn resume_starts_at_completed_checkpoint_and_preserves_old_job() {
         let (state,dir)=state();
         state.store.put("session",&json!({"id":"session-1"})).unwrap();
