@@ -133,3 +133,9 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - `video::enqueue` recomputes cost and requires `approvedPaidQuote=true`, `maxUsdCents >= quote.totalUsdCents`, and `quoteDigest` matching model/quality/duration/clip lengths/audio/pricing version. No paid LTX job without owner-approved ceiling. The job preserves cost quote and cap.
 - `film::retake_quote` costs only the selected clip plus missing clips, excluding SHA-verified sibling outputs. `video::enqueue_retake` independently revalidates the monetary limit; `FilmRetake` exposes it before consent. Legacy Runway remains separately priced/unquoted: do not copy LTX pricing to Runway.
 - Reference: `docs/SUB1-VIDEO-PAID-QUOTE-2026-11-14.md`. Do not interpret paid clip count, FFprobe validation or local mock CI as charged invoice or human-rated continuity.
+
+### Sub1 2026-11-14: evidence-based autonomous replanning
+
+- `src/engine/goals/progress.rs::measure` compares new successful tool action signatures and cleared Rust acceptance gaps across a goal iteration. The model's progress claims are never a stall-reset signal.
+- `engine/goals.rs::run` uses the measured `TurnProgress` to reset `stalled` only on verified advancement and checkpoint progress counters. Replans are triggered by consecutive unproductive turns, preserving progress through normal multi-file work.
+- `verification::is_action_evidence` includes surgical `workspace_replace(_range|_function)` edits and no longer treats them as read-only operations.
