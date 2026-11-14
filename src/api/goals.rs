@@ -101,7 +101,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         state.store.audit("goal.enqueue_failed",json!({"goalId":goal_id,"jobId":job_id}));
         return error(StatusCode::INTERNAL_SERVER_ERROR,"목표가 보존됐지만 실행 작업 등록에 실패했습니다. 목표 목록에서 상태를 확인하세요.");
     }
-    let Some(saved)=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
+    let Some(saved)=state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),
         &json!({"jobId":job_id})) else {
         return error(StatusCode::CONFLICT,"실행 작업은 등록됐지만 목표 상태가 먼저 변경됐습니다.");
     };
@@ -184,6 +184,8 @@ pub async fn resume_goal(
             "finishedAt":null,"error":null,"finalReport":null})) else {
         return error(StatusCode::CONFLICT,"목표가 다른 요청에서 변경됐습니다.");
     };
+    // Clear a prior session cancellation before the queued worker can start.
+    if let Some(session)=saved["sessionId"].as_str(){state.clear_cancel(session);}
     let created=crate::engine::jobs::enqueue_goal_resume(
         &state,&new_job_id,&id,checkpoint,next_iteration,next_max);
     if created.is_none() {
@@ -193,7 +195,6 @@ pub async fn resume_goal(
         if let Some(restored)=restored {state.bus.record("goal",&restored);}
         return error(StatusCode::INTERNAL_SERVER_ERROR,"이어가기 작업을 등록하지 못했습니다.");
     }
-    if let Some(session)=saved["sessionId"].as_str(){state.clear_cancel(session);}
     state.bus.record("goal",&saved);
     state.store.audit("goal.owner_reviewed_resume",json!({
         "goalId":id,"jobId":new_job_id,"previousJobId":old_job_id,
