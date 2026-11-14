@@ -14,6 +14,9 @@ type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:stri
  videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;
  technicalGate?:boolean;film?:{paidCallCount?:number;clips?:unknown[]};storyboard?:string[]}
 type VideoEngine='native'|'comfyui'|'runway'|'ltx'
+type PaidQuote={quoteDigest:string;totalUsdCents:number;referenceKrw:number;
+ billableSeconds:number;paidCalls:number;model:string;quality:string;
+ pricingAsOf:string;fxAsOf:string;pricingUrl:string}
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasRunwayKey?:boolean;hasLtxKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean};ltx?:{available:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
@@ -32,6 +35,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[runwayKey,setRunwayKey]=useState(''),[ltxKey,setLtxKey]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [videoQuality,setVideoQuality]=useState<'720p'|'1080p'|'1440p'|'4k'>('1080p'),[ltxModel,setLtxModel]=useState<'ltx-2-5-fast'|'ltx-2-5-pro'>('ltx-2-5-pro'),[shotMode,setShotMode]=useState<'auto'|'custom'>('auto'),[customShots,setCustomShots]=useState(''),[generateAudio,setGenerateAudio]=useState(true)
  const [ltxFilm,setLtxFilm]=useState(false),[confirmPaidMultiShot,setConfirmPaidMultiShot]=useState(false),[technicalGate,setTechnicalGate]=useState(false)
+ const [paidQuote,setPaidQuote]=useState<PaidQuote|null>(null),[approvePaid,setApprovePaid]=useState(false),[quoting,setQuoting]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -57,6 +61,18 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const estimatedFilmShots=ltxFilm?Math.ceil(seconds/ltxClipMax):1
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):usingRunway?Boolean(video.value.runway?.available):usingLtx?Boolean(video.value.ltx?.available):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:usingRunway?15:usingLtx?ltxDurations[ltxDurations.length-1]:180
+ // Approval is bound to an exact server-side snapshot, not just clip count.
+ useEffect(()=>{setPaidQuote(null);setApprovePaid(false)},
+  [usingLtx,videoQuality,ltxModel,ltxFilm,seconds,ratio,generateAudio])
+ const previewPaidQuote=async()=>{
+  setQuoting(true);setError('');setApprovePaid(false);setPaidQuote(null)
+  try{
+   setPaidQuote(await post<PaidQuote>('/api/video/quote',{
+    engine:'ltx',videoModel:ltxModel,videoQuality,duration:seconds,
+    aspectRatio:ratio,fps:24,ltxFilm,generateAudio
+   }))
+  }catch(e){setError((e as Error).message)}finally{setQuoting(false)}
+ }
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{
   if(usingRunway&&['1440p','4k'].includes(videoQuality))setVideoQuality('1080p')
@@ -118,6 +134,9 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  }
  const generate=async()=>{
   if(!ready||!prompt.trim()||generating)return;
+  if(usingLtx&&(!paidQuote||!approvePaid)){
+   setError('모델·해상도·초수의 서버 견적을 확인하고 금액을 승인해 주세요.');return;
+  }
   const requestedSeed=Number(seed);
   const scenes=customShots.split(/\r?\n/).map(scene=>scene.trim()).filter(Boolean);
   if(usingRunway&&shotMode==='custom'&&(scenes.length<3||scenes.length>5||
@@ -134,7 +153,9 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingRunway?{videoQuality,shotMode,scenes:shotMode==='custom'?scenes:[],generateAudio}:{}),
     ...(usingLtx?{videoModel:ltxModel,videoQuality,generateAudio,fps:24,
-     ltxFilm,confirmPaidMultiShot,technicalGate}:{}),
+     ltxFilm,confirmPaidMultiShot,technicalGate,
+     approvedPaidQuote:true,maxUsdCents:paidQuote?.totalUsdCents,
+     quoteDigest:paidQuote?.quoteDigest}:{}),
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
    }));
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
@@ -225,6 +246,23 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        </div>}
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={technicalGate}
         onChange={e=>setTechnicalGate(e.target.checked)}/> FFprobe 기술 검수 필수 (로컬 FFprobe 설치 필요)</label>
+       <div className="rounded-lg border border-[#D8CFC2] bg-white p-3 text-xs text-[#5C544A]">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+         <strong>유료 영상 예상 원가 · 서버 견적</strong>
+         <Button variant="secondary" size="sm" disabled={quoting} onClick={()=>void previewPaidQuote()}>
+          {quoting?'견적 계산 중':'현재 설정으로 견적 확인'}
+         </Button>
+        </div>
+        {paidQuote?<div className="mt-2 grid gap-2">
+         <p>예상 상한 <strong className="text-base">{paidQuote.referenceKrw.toLocaleString('ko-KR')}원</strong>
+          {' '}· {paidQuote.paidCalls}회 생성 · 총 {paidQuote.billableSeconds}초</p>
+         <p className="text-[11px] leading-5 text-[#7C7469]">2026년 {paidQuote.pricingAsOf} 기준 공개 가격 · 환율 기준일 {paidQuote.fxAsOf}. 실제 청구액·세금·환율 변동은 별도이며 계획 모델 호출료는 포함하지 않습니다.</p>
+         <label className="flex items-start gap-2 text-[11px]">
+          <input type="checkbox" checked={approvePaid} onChange={e=>setApprovePaid(e.target.checked)}/>
+          <span>위 설정의 예상 유료 원가와 금액 상한을 확인했습니다. 서버가 가격·영상 설정이 달라졌다고 판단하면 생성이 차단됩니다.</span>
+         </label>
+        </div>:<p className="mt-2 text-[11px] text-[#7C7469]">유료 API 호출 전에 모델·초수·해상도별 금액을 확인해야 합니다. 금액은 요금표 기준 예상치입니다.</p>}
+       </div>
       </div>}
       {usingRunway&&<div className="grid gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -235,7 +273,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        <label className="flex items-center gap-2 text-xs text-[#5C544A]"><input type="checkbox" checked={generateAudio} onChange={e=>setGenerateAudio(e.target.checked)}/> AI 음향·음성 함께 생성</label>
       </div>}
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:usingRunway?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Runway 유료 API로 영상·사운드를 생성합니다. 결과만 로컬에 저장됩니다.':'설정에서 Runway API 키를 등록하세요.'}</p>:usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'LTX 유료 API에서 영상·오디오를 생성하고 완성된 MP4만 저장합니다.':'설정에서 LTX API 키를 등록하세요.'}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()||(usingLtx&&ltxFilm&&!confirmPaidMultiShot)} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:usingRunway?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'Runway 유료 API로 영상·사운드를 생성합니다. 결과만 로컬에 저장됩니다.':'설정에서 Runway API 키를 등록하세요.'}</p>:usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'LTX 유료 API에서 영상·오디오를 생성하고 완성된 MP4만 저장합니다.':'설정에서 LTX API 키를 등록하세요.'}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()||(usingLtx&&(!paidQuote||!approvePaid||(ltxFilm&&!confirmPaidMultiShot)))} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
