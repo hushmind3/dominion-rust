@@ -71,3 +71,51 @@ fn retake_consent_counts_only_missing_and_target_shots(){
     drop(state);
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn retake_quote_counts_only_selected_and_unrendered_shots(){
+    let home=std::env::temp_dir().join(format!("film-priced-retake-{}",uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let cfg=Config{port:0,data_dir:home.clone(),web_dir:home.join("web"),
+        workspace:home.clone()};
+    let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+        Vault::open(&cfg.key_path()));
+    let clips=vec![
+        json!({"duration":10,"render":{"prompt":"scene zero"}}),
+        json!({"duration":6,"render":{"prompt":"scene one"}}),
+        json!({"duration":6,"render":{"prompt":"scene two"}})
+    ];
+    let job=state.store.put("job",&json!({"kind":"video","status":"needs_review",
+        "input":{"engine":"ltx","ltxFilm":true,"videoModel":"ltx-2-5-fast",
+            "videoQuality":"1080p","generateAudio":true,
+            "render":{"film":{"clips":clips}}}})).unwrap();
+    let id=job["id"].as_str().unwrap();
+    let root=super::super::directory(&state,id).unwrap();
+    for index in 0..2 {
+        let dir=root.join(format!("clip-{index:02}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("output.mp4"),vec![b'a'+index as u8;2048]).unwrap();
+        let sha=file_sha(&dir.join("output.mp4")).unwrap();
+        persist_receipt(&dir,&json!({"outputSha256":sha,
+            "quality":{"status":"technical_pass"}})).unwrap();
+    }
+    let manifest=super::super::film_scenes(&state,id).unwrap();
+    let target=&manifest["clips"][0];
+    assert_eq!(target["expectedPaidCalls"],2);
+    assert_eq!(target["retakeQuote"]["billableSeconds"],16); // 10 + 6, not 22
+    assert_eq!(target["retakeQuote"]["totalUsdCents"],208);
+    assert_eq!(target["retakeQuote"]["referenceKrw"],2779);
+    let original=target["outputSha256"].as_str().unwrap();
+    let mut request=json!({"index":0,"expectedSha256":original,
+        "confirmedPaidCallCount":2,"confirmNewPaidCalls":true,
+        "approvedPaidQuote":true,
+        "maxUsdCents":207,"quoteDigest":target["retakeQuote"]["quoteDigest"]});
+    assert!(super::super::enqueue_retake(&state,id,&request).is_err());
+    request["maxUsdCents"]=json!(208);
+    let spawned=super::super::enqueue_retake(&state,id,&request).unwrap();
+    let raw=state.store.get("job",spawned["id"].as_str().unwrap()).unwrap();
+    assert_eq!(raw["input"]["paidQuote"]["billableSeconds"],16);
+    assert_eq!(raw["input"]["paidApprovalMaxUsdCents"],208);
+    assert_ne!(raw["id"],job["id"]);
+    let _=std::fs::remove_dir_all(home);
+}
