@@ -95,8 +95,9 @@ fn apply_journal(
         if item["status"]!="pending" || item["source"]!="owner" {continue;}
         let text=item["text"].as_str()?.trim();
         let seq=item["seq"].as_u64()?;
-        let mode=item["mode"].as_str()?;
-        let proposed=match mode {
+        let mode=item["mode"].as_str()?.to_string();
+        let directive_id=item["id"].clone();
+        let proposed=match mode.as_str() {
             "replace" => text.to_string(),
             "append" => format!("{revised}\n\n[사용자 추가 지시 #{seq}]\n{text}"),
             _ => return None,
@@ -114,7 +115,7 @@ fn apply_journal(
         item["appliedAt"]=json!(chrono::Utc::now().to_rfc3339());
         next_history.push(json!({
             "version":next_history.len(),"plan":revised,"reason":"owner_directive",
-            "directiveId":item["id"],"directiveSeq":seq,"mode":mode,
+            "directiveId":directive_id,"directiveSeq":seq,"mode":mode,
             "at":chrono::Utc::now().to_rfc3339()
         }));
     }

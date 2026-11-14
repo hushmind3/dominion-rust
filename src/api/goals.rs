@@ -258,8 +258,8 @@ pub async fn update_plan(
 pub async fn steer_goal(
     State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>,
 ) -> Response {
-    let mode=body["mode"].as_str().unwrap_or("append");
-    enqueue_owner_text(state,id,body,mode,"text").await
+    let mode=body["mode"].as_str().unwrap_or("append").to_string();
+    enqueue_owner_text(state,id,body,&mode,"text").await
 }
 
 async fn enqueue_owner_text(
