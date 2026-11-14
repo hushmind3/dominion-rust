@@ -214,8 +214,18 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
-    if ltx_film {
-        input["render"]=film::spec(&input,&input["config"])?;
+    if engine=="ltx" {
+        if ltx_film {
+            input["render"]=film::spec(&input,&input["config"])?;
+        }
+        let expected_calls=if ltx_film {
+            input["render"]["film"]["paidCallCount"].as_u64().unwrap_or(u64::MAX)
+        } else {1};
+        if expected_calls==0 || expected_calls>6 ||
+            body["confirmedPaidCallCount"].as_u64()!=Some(expected_calls) {
+            return Err(format!("유료 영상 생성 예상 호출 {expected_calls}회를 정확히 확인해야 합니다."));
+        }
+        input["paidCallCount"] = json!(expected_calls);
     }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
