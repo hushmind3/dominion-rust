@@ -1116,8 +1116,10 @@ async fn stream_completion_once_body(
 mod protocols;
 use protocols::{
     anthropic_message_text,anthropic_messages,anthropic_tools,
-    codex_tools,codex_function_call_item,codex_tool_calls,codex_input,
-    codex_terminal_error,
+    codex_tools,codex_input,
+};
+pub(super) use protocols::{
+    codex_function_call_item,codex_tool_calls,codex_terminal_error
 };
 
 /// Codex/ChatGPT subscription models speak the Responses API on a different
