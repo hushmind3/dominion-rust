@@ -102,3 +102,15 @@ test('paid LTX video and partial retake use server-priced, digest-bound consent'
  assert.ok(pricing.includes('quoteDigest'))
  assert.ok(pricing.includes('https://docs.ltx.io/pricing'))
 })
+
+test('goal replans use real source-edit receipts and acceptance improvement',()=>{
+ const engine=read('src/engine/goals.rs')
+ const progress=read('src/engine/goals/progress.rs')
+ const verify=read('src/engine/verification.rs')
+ assert.ok(engine.includes('progress::measure('))
+ assert.ok(engine.includes('turn_progress.advanced()'))
+ assert.ok(engine.includes('stalled.saturating_add(1)'))
+ assert.ok(progress.includes('verification::is_action_evidence'))
+ assert.ok(progress.includes('cleared_checks'))
+ assert.ok(verify.includes('"workspace_replace_function" => true'))
+})
