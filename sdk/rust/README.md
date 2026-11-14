@@ -42,8 +42,12 @@ let goal = sdk.start_goal(
 let final_record = goal.wait(WaitOptions::default()).await?;
 println!("status={} evidence={:?}", final_record.status, final_record.evidence);
 
-// New owner instruction can steer the next plan boundary:
-let _ = goal.steer("Read the sources and create a passing test").await;
+// Append a durable instruction; retries use the same request ID.
+let _ = goal.append_instruction(
+    "Read the sources and create a passing test", "instruction-check-001",
+).await?;
+// Replacing the entire plan is an explicit, separately recorded directive:
+// let _ = goal.replace_plan("Investigate a different method","instruction-002").await?;
 // A review-pending goal can resume after owner acknowledges unknown effects:
 // let _ = goal.resume(true).await?;
 # Ok(()) }
@@ -121,7 +125,7 @@ The subprocess wire path is tested in `tests/mcp_stdio.rs`.
 ## Actual scope
 
 - Native `DominionClient` Rust type, authenticated HTTP and error classification
-- Autonomous goals: create/list/get, plan steering, explicit resume, cancel,
+- Autonomous goals: create/list/get, idempotent append/replace owner steering, explicit resume, cancel,
   bounded polling, persisted change/evidence retrieval
 - Prompt jobs: create/get/list/wait/cancel
 - Durable session/thread create/fork/resume/stream/persisted answer

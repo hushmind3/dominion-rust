@@ -153,6 +153,16 @@ impl DominionClient {
     pub async fn steer_goal(&self, id: &str, plan: &str) -> Result<Goal> {
         self.json(Method::POST, &["goals", id, "plan"], Some(json!({"plan":plan}))).await
     }
+    /// Durable next-step owner input. Supply a stable request ID so a caller
+    /// can safely retry an ambiguous network timeout without duplicate work.
+    pub async fn direct_goal(
+        &self, id:&str, text:&str, replace_plan:bool, request_id:&str,
+    )->Result<Goal>{
+        self.json(Method::POST,&["goals",id,"steer"],Some(json!({
+            "text":text,"mode":if replace_plan{"replace"}else{"append"},
+            "requestId":request_id,
+        }))).await
+    }
     /// The server requires the owner's explicit acknowledgement of unknown
     /// side effects, and only resumes a review-pending/failed goal.
     pub async fn resume_goal(&self, id: &str, acknowledge_unknown_effects: bool) -> Result<Goal> {
@@ -281,6 +291,14 @@ impl GoalHandle {
     }
     pub async fn steer(&self, plan: &str) -> Result<Goal> {
         self.client.steer_goal(&self.id, plan).await
+    }
+    /// Add an instruction without removing the previous plan.
+    pub async fn append_instruction(&self,text:&str,request_id:&str)->Result<Goal>{
+        self.client.direct_goal(&self.id,text,false,request_id).await
+    }
+    /// Replace the approach while keeping the goal's acceptance checks.
+    pub async fn replace_plan(&self,text:&str,request_id:&str)->Result<Goal>{
+        self.client.direct_goal(&self.id,text,true,request_id).await
     }
     pub async fn cancel(&self) -> Result<Goal> {
         self.client.cancel_goal(&self.id).await

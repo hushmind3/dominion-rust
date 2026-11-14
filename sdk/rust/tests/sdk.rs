@@ -50,6 +50,13 @@ async fn rust_goal_api_is_typed_and_authorized_and_can_be_steered() {
             assert_eq!(body["plan"], "Read files, patch, then test");
             Json(goal("g1", "running"))
         }))
+        .route("/api/goals/:id/steer", post(|Path(id): Path<String>, Json(body): Json<Value>| async move {
+            assert_eq!(id, "g1");
+            assert_eq!(body["text"], "Add a regression check");
+            assert_eq!(body["mode"], "append");
+            assert_eq!(body["requestId"], "instruction-42");
+            Json(goal("g1", "running"))
+        }))
         .route("/api/goals/:id/cancel", post(|Path(id): Path<String>| async move {
             assert_eq!(id, "g1");
             Json(goal("g1", "cancelled"))
@@ -70,6 +77,8 @@ async fn rust_goal_api_is_typed_and_authorized_and_can_be_steered() {
     assert_eq!(created.id, "g1");
     let goal_handle = sdk.goal_handle(created.id);
     assert_eq!(goal_handle.steer("Read files, patch, then test").await.unwrap().status, "running");
+    assert_eq!(goal_handle.append_instruction("Add a regression check", "instruction-42")
+        .await.unwrap().status,"running");
     assert_eq!(goal_handle.cancel().await.unwrap().status, "cancelled");
     assert_eq!(goal_handle.resume(true).await.unwrap().status, "queued");
     handle.abort();
