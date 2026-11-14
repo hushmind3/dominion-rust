@@ -1,6 +1,6 @@
 //! Durable LTX multi-clip film generation; no local model or GPU.
 //! Each paid submission is checkpointed. Uncertain requests are never retried.
-use super::{director, ffmpeg_from_config, ltx};
+use super::{director, ffmpeg_from_config, ltx, quality};
 use crate::engine::jobs::JobContext;
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -69,6 +69,10 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     let ffmpeg = ffmpeg_from_config(&input["config"])
         .ok_or("장편 영상 합성에 FFmpeg가 필요합니다.")?;
     let mut receipts = Vec::new();
+    let mut clip_quality = Vec::new();
+    let gate=input["technicalGate"]==true;
+    let aspect=input["aspectRatio"].as_str().unwrap_or("9:16");
+    let audio=input["render"]["generate_audio"]==true;
     for (index, clip) in clips.iter().enumerate() {
         ctx.checkpoint(json!({}))?;
         let duration = clip["duration"].as_u64().ok_or("장면 길이가 없습니다.")?;
@@ -87,6 +91,15 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
                 "progress":5+80*index/clips.len(),
                 "videoState":{"filmClip":index+1,"filmTotal":clips.len(),"inFlight":false}}))?;
             receipts.push(ltx::run(ctx,&frozen,&clip_dir).await?);
+        }
+        // Check every charged scene BEFORE stitching or touching the next
+        // paid request. An invalid scene remains on disk for review, so
+        // restarted work cannot silently buy it a second time.
+        if gate {
+            let report=quality::inspect(&input["config"],&clip_dir.join("output.mp4"),
+                duration,aspect,audio).await
+                .map_err(|e|format!("needs_review: Scene {} paid output is preserved, but ffprobe verification failed: {e}. Do not resubmit without owner action.",index+1))?;
+            clip_quality.push(report);
         }
         ctx.checkpoint(json!({"phase":"rendering",
             "progress":5+80*(index+1)/clips.len(),
@@ -119,7 +132,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     Ok(json!({"engine":"ltx","mode":"film","model":input["render"]["model"],
         "duration":input["render"]["film"]["duration"],"shots":clips.len(),
         "providerReceipts":receipts,"audio":input["render"]["generate_audio"],
-        "quality":input["render"]["quality"]}))
+        "quality":input["render"]["quality"],"clipTechnicalQuality":clip_quality}))
 }
 
 #[cfg(test)]

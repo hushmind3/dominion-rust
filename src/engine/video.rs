@@ -6,6 +6,8 @@ mod ltx;
 mod director;
 #[path = "video/film.rs"]
 mod film;
+#[path = "video/quality.rs"]
+mod quality;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -164,6 +166,13 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
+    // Freeze the owner's technical proof preference before remote billing.
+    // LTX defaults to an actual ffprobe gate, native cards remain opt-in.
+    let technical_gate=body["technicalGate"].as_bool()
+        .or(cfg["technicalGate"].as_bool()).unwrap_or(engine=="ltx");
+    if technical_gate && quality::executable(&cfg).is_none(){
+        return Err("영상 검수용 ffprobe가 필요합니다. FFmpeg와 ffprobe를 같은 경로에 설치하거나 기술 검수를 명시적으로 해제하세요.".into());
+    }
     let ltx_spec = if engine == "ltx" {
         let validated = film::spec(body, &cfg, duration)?;
         let clip_count = validated["film"]["clips"].as_array().map(Vec::len).unwrap_or(1);
@@ -175,6 +184,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
+        "technicalGate":technical_gate,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
@@ -537,6 +547,17 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
             if bytes < 100 {
                 return Err("생성된 영상이 비어 있습니다.".into());
             }
+            // A provider's "completed" status is not proof that its paid
+            // media file has the requested streams, length, ratio and audio.
+            let technical=if input["technicalGate"]==true {
+                quality::inspect(&input["config"],&dir.join("output.mp4"),
+                    input["duration"].as_u64().unwrap_or(15),
+                    input["aspectRatio"].as_str().unwrap_or("9:16"),
+                    input["engine"]=="ltx" && input["render"]["generate_audio"]==true)
+                    .await.map_err(|error|format!("needs_review: Media technical verification failed: {error}. Already paid render is preserved for owner review; do not submit again automatically."))?
+            }else{json!({"verified":false,"reason":"technical-gate-disabled"})};
+            ctx.checkpoint(json!({"videoState":{"finalTechnicalQuality":technical}}))?;
+            value["technicalQuality"]=technical;
             value["bytes"] = json!(bytes);
             value["outputUrl"] = json!(format!("/api/video/jobs/{}/content", ctx.job_id));
             progress(ctx, "completed", 100)?;
