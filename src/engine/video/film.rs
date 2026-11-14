@@ -272,6 +272,11 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
             receipts.push(previous);
             continue;
         }
+        let uncertain=ctx.state.store.get("job",&ctx.job_id)
+            .is_some_and(|job|job["videoState"]["inFlight"]==true);
+        if uncertain {
+            return Err("needs_review: 이전 유료 생성 요청이 완료됐는지 알 수 없습니다. 자동으로 다시 과금하지 않습니다.".into());
+        }
         let mut frozen=input.clone();
         frozen["render"]=clip["render"].clone();
         let duration=clip["duration"].as_u64().ok_or("장면 길이가 없습니다.")?;
@@ -279,11 +284,6 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
             "videoState":{"inFlight":false,"filmClip":index+1,"filmTotal":clips.len()}}))?;
         frozen["brief"]=clip["render"]["prompt"].clone();
         frozen["duration"]=clip["duration"].clone();
-        let uncertain=ctx.state.store.get("job",&ctx.job_id)
-            .is_some_and(|job|job["videoState"]["inFlight"]==true);
-        if uncertain {
-            return Err("needs_review: 이전 유료 생성 요청이 완료됐는지 알 수 없습니다. 자동으로 다시 과금하지 않습니다.".into());
-        }
         let remote=ltx::render(ctx,&frozen,&dir_clip).await?;
         // At this boundary the paid output already exists. A failed probe
         // must preserve it for inspection, not submit an extra paid request.
