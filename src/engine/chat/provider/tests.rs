@@ -229,6 +229,22 @@
     }
 
     #[test]
+    fn small_context_keeps_last_compiler_failure_and_stable_full_output_hash(){
+        let output=format!("$ cargo test\n{}\nerror[E0308]: mismatched types at src/main.rs:12\nerror: could not compile project\n",
+            "building dependency\n".repeat(2400));
+        let clipped=clip_tool_for_provider(&output,520);
+        let digest=format!("{:x}",sha2::Sha256::digest(output.as_bytes()));
+        assert!(escaped_content_chars(&clipped)<=520);
+        assert!(clipped.starts_with("$ cargo test"));
+        assert!(clipped.contains("error[E0308]: mismatched types"));
+        assert!(clipped.contains("error: could not compile project"));
+        assert!(clipped.contains(&digest));
+        assert_eq!(clipped,clip_tool_for_provider(&output,520));
+        assert_eq!(clip_tool_for_provider(&output,200_000),output,
+            "large context providers must see the original unabridged evidence");
+    }
+
+    #[test]
     fn json_escaped_tool_output_respects_provider_budget() {
         let original = "\"\n\\세션".repeat(120);
         let clipped = clip_tool_for_provider(&original, 160);
