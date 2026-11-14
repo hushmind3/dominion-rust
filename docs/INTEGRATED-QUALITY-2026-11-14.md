@@ -94,3 +94,12 @@
 영상: `POST /api/video/jobs` → `video::enqueue` → `film::spec`(사용자 다중 유료 호출 수 동의) → `film::run`(각 샷의 SHA/영수증/ffprobe) → FFmpeg stream-copy → `quality::inspect`(최종 스트림 품질) → `public_job`에서 실제 결과 공개. `GET scenes` → `POST retake`는 정확한 기존 SHA·신규 유료 호출 수 동의·`jobs::enqueue_once` 중복 방지를 검사하고 유효한 샷만 재사용합니다. 실패한 유료 호출의 불확실한 상태를 자동 재전송하지 않습니다.
 
 RSI: `rsi_scan::report`의 `goal_signals::collect`가 최근 실제 목표의 반복 실패·확인된 성공 수를 연구 신호로 제공하며, `rsi/system/frontier`가 사용합니다. 이것은 **동결 독립 평가의 점수나 채택이 아닙니다**. 영상/RSI 실제 모델 사용 비용 및 시각적 품질 측정은 별도입니다.
+
+
+## Sub1: 그룹 도구 메뉴 정밀화와 측정 경계 (2026-11-14)
+
+- **실호출**: `api/rooms.rs` → `chat/runtime/entry.rs` → `chat/runtime/turn.rs` → `select_room_tools` → `room_context::compile` → provider / tool dispatcher.
+- **선택 정책**: 한국어 명령형 어간·영어 완전 단어를 분리하여 우연한 문자열 포함의 도구 활성화를 억제한다. 코드 검사(`code_search`, `workspace_read_range`)와 명시적 코드 수정(`workspace_replace_range`, `workspace_replace_function`)을 분류한다. 과거 도구 이력은 `계속/이어/마저/continue/resume`와 같은 이어하기 신호에만 가점을 준다. 기존 승인·worktree·delegation·RSI 안전 필터는 `turn.rs` 후단에 그대로 유지한다.
+- **새 관측**: `execution.toolSelection`의 `catalogCount`, `selectedCount`, `catalogSchemaBytes`, `selectedSchemaBytes`는 순수 JSON 스키마 바이트 비교다. provider 토큰 청구·캐시 적중·최종 전송 스키마·과금원가가 아니라는 경계를 명시한다.
+- **회귀 근거**: `tests/support/engine/chat_runtime.tests.rs`에 일상 영어 false-positive 방지, 명시적 영어 작업, 신주제/이어하기, 코드 편집 도구 선택 테스트를 추가했다. 연결의 정적 검토이며 CI·실모델 수행/원가 절감 입증은 아직 수행하지 않았다.
+
