@@ -105,6 +105,62 @@ export function parseSSEFrame(frame: string): string | undefined {
   return data.length ? data.join('\n') : undefined
 }
 
+/**
+ * Decoder shared by transient turn events and the durable replayable event bus.
+ * For a turn, the Rust done event is mandatory; for the bus, EOF is allowed.
+ */
+async function* decodeEventStream(response: Response, requireDone: boolean): AsyncGenerator<AgentEvent> {
+  if (!response.ok) {
+    throw new DominionSDKError(response.status, normalizedError(await response.text(), response.status))
+  }
+  if (!response.body || !response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
+    throw new DominionSDKError(response.status, 'Expected a DOMINION event stream')
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const {done, value} = await reader.read()
+      buffer += decoder.decode(value || new Uint8Array(), {stream: !done})
+      let match: RegExpExecArray | null
+      while ((match = /\r?\n\r?\n/.exec(buffer)) !== null) {
+        const frame = buffer.slice(0, match.index)
+        buffer = buffer.slice(match.index + match[0].length)
+        if (frame.length > 4_194_304) {
+          throw new DominionSDKError(0, 'DOMINION event frame exceeds 4 MiB')
+        }
+        const data = parseSSEFrame(frame)
+        if (data === undefined || data.trim() === '') continue
+        let event: AgentEvent
+        try {
+          event = JSON.parse(data) as AgentEvent
+        } catch {
+          throw new DominionSDKError(0, 'Malformed DOMINION event JSON')
+        }
+        if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
+          throw new DominionSDKError(0, 'Malformed DOMINION event envelope')
+        }
+        yield event
+        if (requireDone && event.type === 'done') return
+      }
+      if (buffer.length > 4_194_304) {
+        throw new DominionSDKError(0, 'DOMINION event frame exceeds 4 MiB')
+      }
+      if (done) {
+        if (requireDone) throw new DominionSDKError(0, 'DOMINION stream interrupted before done')
+        if (buffer.trim() && !buffer.trimStart().startsWith(':')) {
+          throw new DominionSDKError(0, 'DOMINION event stream ended during a frame')
+        }
+        return
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+}
+
 /** HTTP is transport only; the autonomous agent loop lives in DOMINION Rust. */
 export class DominionSDK {
   private readonly baseUrl: string
@@ -226,53 +282,22 @@ export class DominionSDK {
       signal,
       headers: {Accept: 'text/event-stream'},
     })
-    if (!response.ok) {
-      const body = await response.text()
-      throw new DominionSDKError(response.status, normalizedError(body, response.status))
-    }
-    if (!response.body || !response.headers.get('Content-Type')?.startsWith('text/event-stream')) {
-      throw new DominionSDKError(response.status, 'Expected a DOMINION event stream')
-    }
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let finished = false
-    try {
-      while (!finished) {
-        const {done, value} = await reader.read()
-        buffer += decoder.decode(value || new Uint8Array(), {stream: !done})
-        let match: RegExpExecArray | null
-        while ((match = /\r?\n\r?\n/.exec(buffer)) !== null) {
-          const frame = buffer.slice(0, match.index)
-          buffer = buffer.slice(match.index + match[0].length)
-          const data = parseSSEFrame(frame)
-          if (data === undefined || data.trim() === '') continue
-          let event: AgentEvent
-          try {
-            event = JSON.parse(data) as AgentEvent
-          } catch {
-            throw new DominionSDKError(0, 'Malformed DOMINION event JSON')
-          }
-          if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
-            throw new DominionSDKError(0, 'Malformed DOMINION event envelope')
-          }
-          yield event
-          if (event.type === 'done') {
-            finished = true
-            break
-          }
-        }
-        if (buffer.length > 4_194_304) {
-          throw new DominionSDKError(0, 'DOMINION event frame exceeds 4 MiB')
-        }
-        if (done && !finished) {
-          throw new DominionSDKError(0, 'DOMINION stream interrupted before done')
-        }
-      }
-    } finally {
-      await reader.cancel().catch(() => {})
-      reader.releaseLock()
-    }
+    yield* decodeEventStream(response, true)
+  }
+
+  /**
+   * Durable record/approval/job updates from Rust /api/events.
+   * After disconnect, pass the greatest observed event.seq as 'after'.
+   * No transparent retries or automatic repeated actions.
+   */
+  async *watchEvents(options: {after?: number; signal?: AbortSignal} = {}): AsyncGenerator<AgentEvent> {
+    const after = options.after ?? 0
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error('after must be a nonnegative integer')
+    const response = await this.send('/api/events?after=' + after, {
+      signal: options.signal,
+      headers: {Accept: 'text/event-stream'},
+    })
+    yield* decodeEventStream(response, false)
   }
 }
 
