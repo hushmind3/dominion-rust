@@ -463,13 +463,19 @@ fn fit_provider_context(
     let budget = (capacity as usize).saturating_sub(reserve)
         .saturating_sub(reserved_schema_tokens)
         .saturating_sub(128);
-    let estimated = |rows: &[Value]| super::room_context::input_estimate(rows, tools);
+    // Native tool schemas are already counted inside input_estimate.
+    // Compatibility providers receive the text manual instead.
+    let counted_tools = if provider.tool_mode=="compat" { &[][..] } else { tools };
+    let estimated = |rows: &[Value]| super::room_context::input_estimate(rows, counted_tools);
     let before = estimated(messages);
     // Existing newest-first clipping remains the first, least lossy step.
     let originals = messages.iter().filter(|row|row["role"]=="tool")
         .map(|row|row["content"].as_str().unwrap_or("").to_owned())
         .collect::<Vec<_>>();
-    fit_tool_context(provider, messages, reserved_schema_tokens.saturating_mul(4));
+    let wire_schema_chars=if provider.tool_mode=="compat" {
+        reserved_schema_tokens.saturating_mul(4)
+    } else {tools.iter().map(|tool|tool.to_string().chars().count()).sum()};
+    fit_tool_context(provider, messages, wire_schema_chars);
     let clipped_tools = messages.iter().filter(|row|row["role"]=="tool")
         .map(|row|row["content"].as_str().unwrap_or(""))
         .zip(originals.iter()).filter(|(now, old)|*now!=old.as_str()).count();
@@ -524,18 +530,17 @@ fn fit_provider_context(
         .map(|(start,_,_)|*start).collect::<std::collections::HashSet<_>>();
     let mut removed=vec![false;messages.len()];
     let mut omitted=0usize;
+    let mut current_estimate=estimated(messages);
     for &(start,end,_) in &frames {
-        if estimated(messages) <= budget { break; }
+        if current_estimate <= budget { break; }
         if recent_users.contains(&start) || recent_tool_batches.contains(&start)
             || recent_frames.contains(&start) { continue; }
         for slot in removed.iter_mut().take(end).skip(start) { *slot=true; }
         // Recompute against the visible context, not the original full list.
         let retained = messages.iter().enumerate().filter(|(i,_)|!removed[*i])
             .map(|(_,row)|row.clone()).collect::<Vec<_>>();
-        if retained.len()<messages.len() {
-            omitted+=end-start;
-        }
-        if estimated(&retained)<=budget { break; }
+        omitted+=end-start;
+        current_estimate=estimated(&retained);
     }
     if omitted>0 {
         *messages=messages.iter().enumerate().filter(|(i,_)|!removed[*i])
