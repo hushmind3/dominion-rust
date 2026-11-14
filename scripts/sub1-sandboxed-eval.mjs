@@ -5,10 +5,16 @@
  * https://nodejs.org/api/permissions.html (2026 Node 24)
  */
 import {spawnSync} from "node:child_process";
-import {join,resolve} from "node:path";
+import {join,resolve,sep} from "node:path";
+import {realpathSync} from "node:fs";
 
 export function sandboxedModuleOracle(relative,workspace){
- const file=resolve(join(workspace,relative));
+ let file;
+ try{
+  const allowed=realpathSync(workspace);
+  file=realpathSync(resolve(join(workspace,relative)));
+  if(!file.startsWith(allowed+sep))return false;
+ }catch{return false}
  const test=[
   "import {pathToFileURL} from 'node:url';",
   "const m=await import(pathToFileURL(process.argv[1]).href);",
