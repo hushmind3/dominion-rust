@@ -164,7 +164,7 @@ def execution_metrics(base: str, token: str | None, goal: dict) -> dict:
                 break
             offset += 1000
         metrics.update(tool_operation_metrics(operations))
-    except (RuntimeError, URLError, KeyError):
+    except (RuntimeError, URLError, KeyError, TypeError, ValueError):
         pass  # Leave the metric unknown; never count a failed query as zero.
     return metrics
 
