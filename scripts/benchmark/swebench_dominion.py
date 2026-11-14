@@ -284,6 +284,21 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
     return prediction, receipt
 
 
+def official_evaluator_command(
+    output: Path, run_id: str, max_workers: int, instance_ids: list[str]
+) -> list[str]:
+    """The authoritative grader must evaluate exactly this task cohort."""
+    if not instance_ids or len(set(instance_ids)) != len(instance_ids):
+        raise ValueError("Official evaluator needs a nonempty unique cohort")
+    return [
+        sys.executable, "-m", "swebench.harness.run_evaluation",
+        "--dataset_name", DATASET, "--split", "test",
+        "--predictions_path", str(output / "predictions.jsonl"),
+        "--max_workers", str(max_workers), "--run_id", run_id,
+        "--instance_ids", *instance_ids,
+    ]
+
+
 def official_score(report: dict, expected_instances: set[str]) -> dict:
     """Only score the exact submitted instance IDs from the official judge."""
     if not isinstance(report, dict) or report.get("schema_version") != 2:
@@ -417,15 +432,16 @@ def main() -> int:
     summary["totalToolCallsObserved"] = sum(
         r["metrics"]["toolCalls"] for r in witnessed)
     if args.run_official:
-        run_id = "dominion_" + hashlib.sha256(
-            (args.model_name + (args.output/"predictions.jsonl").read_text()).encode()
-        ).hexdigest()[:12]
-        # Distinct run id for every changed patch set prevents SWE-bench's
-        # cached report from masquerading as a fresh evaluation.
-        command = [sys.executable,"-m","swebench.harness.run_evaluation",
-                   "--dataset_name", DATASET, "--split","test",
-                   "--predictions_path",str(args.output/"predictions.jsonl"),
-                   "--max_workers",str(args.max_workers),"--run_id",run_id]
+        run_id = "dominion_" + hashlib.sha256((
+            args.model_name + manifest["binarySha256"] + tasks_source_hash +
+            (args.output / "predictions.jsonl").read_text()
+        ).encode()).hexdigest()[:16]
+        # SWE-bench caches by run_id and instance_id. Pin both the patch set
+        # AND the agent binary/task cohort, not just the displayed model name.
+        command = official_evaluator_command(
+            args.output, run_id, args.max_workers,
+            [row["instance_id"] for row in tasks])
+        summary["officialRunId"] = run_id
         done = subprocess.run(command,cwd=args.output,check=False)
         summary["officialExitCode"] = done.returncode
         # The official evaluator has shipped both report layouts. Keep the
