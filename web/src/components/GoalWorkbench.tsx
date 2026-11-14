@@ -66,6 +66,16 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
   try{await post('/api/jobs/'+job.id+'/cancel',{});await goals.reload();onJobsChanged()}
   catch(reason){setError((reason as Error).message)}finally{setBusy(false)}
  }
+ const resume=async()=>{
+  if(!selected||busy||!['failed','needs_review'].includes(selected.status))return
+  if(!window.confirm('이전 실행의 파일·Git·외부 작업 상태를 직접 확인하셨습니까? 확인 후 기존 세션을 유지한 새 목표 작업을 등록합니다.'))return
+  setBusy(true);setError('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(selected.id)+'/resume',
+    {acknowledgeUnknownEffects:true})
+   setDiff(null);await goals.reload();onJobsChanged()
+  }catch(reason){setError((reason as Error).message)}finally{setBusy(false)}
+ }
  const loadDiff=async()=>{
   if(!selected)return
   setBusy(true);setError('')
@@ -142,6 +152,8 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
       {selected.gitWorktree?.path&&!selected.gitWorktree?.rolledBack&&!active(selected.status)&&
        <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void discard()}>로컬 되돌리기</Button>}
       {active(selected.status)&&<Button size="sm" variant="secondary" disabled={busy} onClick={()=>void stop()}><Square size={12}/> 중단</Button>}
+      {['failed','needs_review'].includes(selected.status)&&
+       <Button size="sm" variant="secondary" disabled={busy} onClick={()=>void resume()}><Play size={12}/> 검토 후 재개</Button>}
      </div>
     </div>
     <p className="mt-2 break-words text-[12px] font-medium">{selected.goal}</p>
