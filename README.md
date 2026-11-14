@@ -623,6 +623,7 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 
 심판 재심사에서 `dominion-sub2`는 **68/100**(영상 5/15, 자율 에이전트 19/25)이었습니다. 이는 변경 전 HEAD `7fbc8a9`의 심사 점수이며 **변경 후 점수는 심판의 독립 재평가 전까지 주장하지 않습니다.**
 
+- **실행 중 목표 조향:** `GoalConsole.tsx → POST /api/goals/:id/steer → goal_steering.rs → goals.rs::run` 경로에서 새로운 사용자 계획을 다음 실행 턴 경계에 반영합니다. 요청은 기대 버전·상태를 원자적으로 검사하고, 현재 진행 중인 도구 작업·승인·검증 조건은 변경하지 않습니다. 적용 대기 상태와 실제 적용 영수증은 각각 표시·감사합니다.
 - **독립 자율 목표:** `web/src/components/WorkspaceShell.tsx`, `web/src/pages/Goals.tsx`, `web/src/App.tsx`에서 사이드바 작업공간에 **자율 목표**를 추가하여 전체 **15개 메뉴**로 변경. 홈의 `GoalConsole`와 **동일한** 목표·실행·계획 수정·승인·중단·재개·Git SHA 검토 및 적용 경로를 사용합니다. 기존 백엔드 목표 엔진은 중복하지 않습니다.
 - **클라우드 LTX 2.5 멀티샷:** `engine/video/{film,ltx,quality}.rs` 및 `api/video.rs`를 통해 **2~6개**의 유료 장면을 작업 계획으로 동결하고, 각 장면 완료 시 SHA-256 영수증과 ffprobe 기술 검수 결과를 기록합니다. 정상 장면은 재사용하며 과금 결과가 불확실한 호출은 자동 재제출하지 않습니다. 장면별 미리보기, SHA가 고정된 선택적 재생성, 재생성 호출 수에 대한 별도 동의를 `web/src/pages/video/FilmRetake.tsx`에 구현했습니다. 결합은 FFmpeg를 사용합니다.
 - **로컬 ComfyUI 멀티샷:** `engine/video/cinematic.rs`에 장면 계획, 시각적 연속성 지시, 최대 15개 장면, FFmpeg 1080p 최종 편집, 장면 영수증과 검수·재사용을 연결했습니다. 기존 `comfy.rs`의 `/prompt`·`/history`·`/view`와 함께 동작하고 `Video.tsx`에서 선택할 수 있습니다. 업로드한 워크플로에 `{{prompt}}`와 `{{duration}}`이 필요합니다. 로컬 GPU/CPU 원가 및 실제 제작 품질은 별도 측정 대상입니다.
