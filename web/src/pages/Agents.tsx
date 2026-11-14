@@ -314,7 +314,7 @@ export function AgentsPage() {
             </div>
             <h3>{a.name}</h3>
             {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
-            {a.preferredSkillIds?.length>0&&<p className="text-[11px] text-[#6C6155]">
+            {(a.preferredSkillIds?.length||0)>0&&<p className="text-[11px] text-[#6C6155]">
               연결된 스킬: {(a.preferredSkillIds||[]).map(id=>skills.value.find(sk=>sk.id===id)?.name||'삭제된 스킬').join(' · ')}
             </p>}
             <p className="line-clamp-2" title={a.description || ""}>{a.description || t('agents.noDescription')}</p>
