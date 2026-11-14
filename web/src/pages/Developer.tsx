@@ -23,9 +23,13 @@ export function DeveloperPage(){
  const loc=useLocale()
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
  const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
+ const engine=useRemote<{workspace:string}>('/api/status',{workspace:''})
+ const workflows=useRemote<any[]>('/api/workflows',[])
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
+ const [flowId,setFlowId]=useState(''),[flowInput,setFlowInput]=useState('')
+ const [flowJob,setFlowJob]=useState<any|null>(null),[flowBusy,setFlowBusy]=useState(false)
  const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState('')
  useEffect(()=>{setSourceDir(status.value.config.sourceDir||'');setRepoUrl(status.value.config.repoUrl||'');setBranch(status.value.config.branch||'main')},[status.value.config.sourceDir,status.value.config.repoUrl,status.value.config.branch])
  useEffect(()=>{
@@ -42,6 +46,27 @@ export function DeveloperPage(){
   },1200)
   return()=>clearInterval(timer)
  },[jobId])
+ const verifiedFlows=workflows.value.filter(f=>f.steps?.some((step:any)=>step.acceptanceChecks?.length>0))
+ const sameWorkspace=Boolean(status.value.config.sourceDir)&&
+    status.value.config.sourceDir===engine.value.workspace
+ useEffect(()=>{
+  if(!flowJob?.id||['completed','failed','cancelled','needs_review'].includes(flowJob.status))return
+  let live=true
+  const timer=setInterval(async()=>{try{
+    const current=await get<any>('/api/jobs/'+flowJob.id)
+    if(live)setFlowJob(current)
+  }catch(e){if(live)setError((e as Error).message)}},1500)
+  return()=>{live=false;clearInterval(timer)}
+ },[flowJob?.id,flowJob?.status])
+ const launchVerifiedFlow=async()=>{
+  if(!sameWorkspace||!flowId||flowBusy)return
+  setFlowBusy(true);setError('')
+  try{
+    const job=await post<any>('/api/workflows/'+encodeURIComponent(flowId)+'/run',{input:flowInput})
+    setFlowJob(job)
+    setMessage('검증 워크플로를 실행 작업으로 등록했습니다. 완료·보류 결과를 실제 영수증으로 확인하세요.')
+  }catch(e){setError((e as Error).message)}finally{setFlowBusy(false)}
+ }
  const loadDiff=async()=>{try{setDiff(await get<DiffResult>('/api/dev/diff'))}catch(e){setError((e as Error).message)}}
  const run=async(kind:string,body:Record<string,unknown>={})=>{
   if(busy)return;
@@ -110,6 +135,31 @@ export function DeveloperPage(){
      <Subheading title={t('dev.changes')} extra={<div className="flex items-center gap-2"><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void loadDiff()}><RefreshCw size={12}/> {t('dev.refresh')}</Button><span className="text-[11px] text-[#8A8176]">{t('dev.count',{count:diff?.count||0})}</span></div>}/>
      <div className="mb-3 flex gap-2"><TextInput value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder={t('dev.commitMessage')}/><Button variant="secondary" className="shrink-0 whitespace-nowrap" disabled={!diff?.count} onClick={()=>void commit()}><GitCommit size={14}/> {t('dev.commit')}</Button></div>
      {diff?.changes.length?<div className="grid max-h-[420px] gap-2 overflow-auto">{diff.changes.map(change=><details key={change.path} className="rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-2"><summary className="cursor-pointer text-[11px] font-semibold text-[#5C544A]">{change.status} · {change.path}</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-4 text-[#3A342D]">{change.patch}</pre></details>)}</div>:<p className="text-[11px] text-[#8A8176]">{t('dev.noChanges')}</p>}
+    </Panel>
+    <Panel className="min-w-0 p-5">
+      <Subheading title="개발 변경사항 검증 워크플로" extra={<a href="#/workflows" className="text-[11px] font-semibold text-[#A94E30] underline">워크플로 편집</a>}/>
+      <p className="mb-3 text-[11px] text-[#8A8176]">기존 개발 작업을 다중 에이전트 검증으로 연결합니다. 실제 파일 검증 조건이 있는 워크플로만 표시하며, 소스 폴더와 실행 워크스페이스가 일치해야 실행합니다.</p>
+      <div className="grid gap-2">
+        <FormField label="검증 워크플로">
+          <select className="w-full rounded-xl border border-[#E7E0D5] bg-white px-3 py-2 text-xs" value={flowId} onChange={e=>setFlowId(e.target.value)}>
+            <option value="">저장된 검증 워크플로 선택</option>
+            {verifiedFlows.map(flow=><option value={flow.id} key={flow.id}>{flow.name} · {flow.steps?.length||0}단계</option>)}
+          </select>
+        </FormField>
+        <FormField label="테스트·수정할 작업 지시문">
+          <TextInput value={flowInput} onChange={e=>setFlowInput(e.target.value)} placeholder="변경사항 조사 → 테스트 → 산출물 검증"/>
+        </FormField>
+        {s.config.sourceDir!==engine.value.workspace&&<p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">소스 폴더와 엔진 작업 폴더가 일치하지 않습니다. 잘못된 프로젝트에서 도구를 실행하지 않도록 보호 중입니다. 소스: {s.config.sourceDir||'미설정'} / 실행: {engine.value.workspace||'확인 불가'}</p>}
+        <Button variant="primary" disabled={!s.exists||!sameWorkspace||!flowId||flowBusy} onClick={()=>void launchVerifiedFlow()}>
+          <TestTube2 size={14}/>{flowBusy?'등록 중':'실제 다중 에이전트 검증 실행'}
+        </Button>
+        {flowJob&&<div className="rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2"><strong>작업 {flowJob.id?.slice(0,8)}</strong><StateTag online={flowJob.status==='completed'}>{flowJob.status}</StateTag></div>
+          {flowJob.result?.verificationSummary&&<p className="mt-1">검증 통과 {flowJob.result.verificationSummary.verifiedSteps}단계 · 기록 토큰 {flowJob.result.verificationSummary.totalTokensRecorded||0}</p>}
+          {flowJob.result?.verificationGaps?.map((gap:string,i:number)=><p key={i} className="mt-1 text-amber-900">검토 필요: {gap}</p>)}
+          <a href="#/workflows" className="mt-2 inline-block text-[#A94E30] underline">각 단계 산출물과 원본 영수증 열기</a>
+        </div>}
+      </div>
     </Panel>
    </div>
    <div className="grid min-w-0 gap-4">
