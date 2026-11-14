@@ -70,3 +70,33 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_index_is_repaired_without_ever_accepting_changed_source(){
+        let root=std::env::temp_dir().join(format!("rsi-index-repair-{}",uuid::Uuid::new_v4()));
+        let file="src/engine/chat/runtime/intent.rs";
+        fs::create_dir_all(root.join("src/engine/chat/runtime")).unwrap();
+        fs::write(root.join(file),"pub fn stable() {}").unwrap();
+        let cfg=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(cfg.clone(),
+            crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        let meta=crate::engine::code_index::refresh(&state,&root).unwrap();
+        let index_id=meta["id"].as_str().unwrap();
+        let sha=format!("{:x}",Sha256::digest(fs::read(root.join(file)).unwrap()));
+        let row=json!({"path":file,"sourceSha256":sha});
+        assert!(validate_source_entry(&state,&root,index_id,&row,"sourceSha256").is_ok());
+        state.store.remove("code_index_file",&format!("{index_id}:{file}"));
+        assert!(crate::engine::code_index::indexed_source_hash(&state,index_id,file).is_none());
+        assert!(validate_source_entry(&state,&root,index_id,&row,"sourceSha256").is_ok());
+        fs::write(root.join(file),"pub fn changed() {}").unwrap();
+        let error=validate_source_entry(&state,&root,index_id,&row,"sourceSha256")
+            .unwrap_err();
+        assert!(error.contains("on-disk SHA differs"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
