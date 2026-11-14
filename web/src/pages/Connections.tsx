@@ -61,15 +61,19 @@ export function ConnectionsPage({initialSection='channels'}:{initialSection?:'ch
   setError('');
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
+ const selectSection=(next:'channels'|'extensions'|'capabilities')=>{
+  setSection(next)
+  window.history.replaceState(null,'','#/connections'+(next==='channels'?'':'?section='+next))
+ }
  const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
-  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
-  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
-  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
+  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>selectSection('channels')}>채널 연결</Button>
+  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>selectSection('extensions')}>MCP · 스킬</Button>
+  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>selectSection('capabilities')}>역량 마켓</Button>
  </div>;
  if(section!=='channels'){
   return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
    {sectionTabs}
-   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>setSection(page==='extensions'?'extensions':'channels')}/>}
+   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>selectSection(page==='extensions'?'extensions':'channels')}/>}
   </div>
  }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
