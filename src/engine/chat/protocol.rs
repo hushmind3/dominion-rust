@@ -93,6 +93,12 @@ pub fn parse_text_tool_calls_known(
         cleaned = dsml_cleaned;
     }
 
+    // Qwen-Agent's ✿FUNCTION✿ / ✿ARGS✿ protocol is emitted by some
+    // locally hosted models despite an OpenAI-compatible transport.
+    if let Some((calls, prose)) = parse_qwen_style_tool_calls(&cleaned, known) {
+        return (calls, prose);
+    }
+
     // A small model often forgets the closing tag. Parse the remainder too.
     if let Some(start) = cleaned.find("<tool_call>") {
         if !cleaned[start..].contains("</tool_call>") {
@@ -166,6 +172,79 @@ pub fn parse_text_tool_calls_known(
     (calls, cleaned.trim().to_string())
 }
 
+/// Qwen's legacy text-function dialect is not the OpenAI native tools wire
+/// protocol. Parse *only* an explicit FUNCTION/ARGS frame; never guess that
+/// ordinary prose (or an unadvertised name) authorizes tool execution.
+/// The caller still checks the current-round schema, approval and budget.
+fn parse_qwen_style_tool_calls(
+    content: &str,
+    known: &std::collections::HashSet<String>,
+) -> Option<(Vec<(String, String)>, String)> {
+    const FUNCTION: &str = "✿FUNCTION✿:";
+    const ARGS: &str = "✿ARGS✿:";
+    let (prose, frames) = content.split_once(FUNCTION)?;
+    let mut calls = Vec::new();
+    for frame in frames.split(FUNCTION).take(64) {
+        let Some((raw_name, raw_args)) = frame.split_once(ARGS) else { continue };
+        let name = raw_name.trim();
+        if name.is_empty() || name.contains(['\n', '\r'])
+            || (!known.is_empty() && !known.contains(name)) {
+            continue;
+        }
+        let end = ["✿RESULT✿", "✿RETURN✿"]
+            .iter()
+            .filter_map(|token| raw_args.find(token))
+            .min()
+            .unwrap_or(raw_args.len());
+        // No permissive JSON5 or guessed arguments: a malformed call is an
+        // observation error, not a reason to execute an unintended command.
+        let Ok(args) = serde_json::from_str::<Value>(raw_args[..end].trim()) else {
+            continue;
+        };
+        if args.is_object() {
+            calls.push((name.to_string(), args.to_string()));
+        }
+    }
+    Some((calls, prose.trim().to_string()))
+}
+
+#[cfg(test)]
+mod qwen_tool_call_tests {
+    use super::*;
+    fn known(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+    #[test]
+    fn parses_qwen_multiple_real_calls_with_valid_json() {
+        let (calls, text) = parse_text_tool_calls_known(
+            "먼저 소스를 확인합니다.\n✿FUNCTION✿: workspace_read\n✿ARGS✿: {\"path\":\"src/main.rs\"}\n✿FUNCTION✿: code_search\n✿ARGS✿: {\"query\":\"parse\"}\n✿RETURN✿",
+            &known(&["workspace_read", "code_search"]),
+        );
+        assert_eq!(text, "먼저 소스를 확인합니다.");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "workspace_read");
+        assert_eq!(serde_json::from_str::<Value>(&calls[0].1).unwrap()["path"], "src/main.rs");
+        assert_eq!(calls[1].0, "code_search");
+    }
+    #[test]
+    fn strips_unknown_or_malformed_qwen_calls_without_executing_them() {
+        let (calls, text) = parse_text_tool_calls_known(
+            "설명\n✿FUNCTION✿: shell_exec\n✿ARGS✿: {\"command\":\"echo test\"}\n✿FUNCTION✿: workspace_read\n✿ARGS✿: malformed",
+            &known(&["workspace_read"]),
+        );
+        assert!(calls.is_empty());
+        assert_eq!(text, "설명");
+    }
+    #[test]
+    fn normal_prose_and_quoted_json_do_not_become_qwen_tool_calls() {
+        let (calls, text) = parse_text_tool_calls_known(
+            "도구가 아닌 설명: {\"name\":\"shell_exec\"}입니다.",
+            &known(&["workspace_read"]),
+        );
+        assert!(calls.is_empty());
+        assert!(text.contains("도구가 아닌 설명"));
+    }
+}
 fn json_objects(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
