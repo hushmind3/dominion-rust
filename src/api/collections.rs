@@ -327,14 +327,10 @@ pub async fn action(
                 }))).into_response(),
             }
         },
-        ("workflow", "run") => enqueue_job(
-            &state,
-            "workflow",
-            json!({
-                "workflowId": id,
-                "input": body.get("input").cloned().unwrap_or(json!("")),
-            }),
-        ),
+        ("workflow", "run") => match crate::engine::workflows::enqueue_run(&state,&id,&body){
+            Ok(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),
+            Err(message)=>(StatusCode::BAD_REQUEST,Json(json!({"error":message}))).into_response(),
+        },
         ("room", "run") => enqueue_job(
             &state,
             "room",
