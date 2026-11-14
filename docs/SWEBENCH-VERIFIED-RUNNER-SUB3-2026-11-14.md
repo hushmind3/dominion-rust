@@ -49,3 +49,22 @@ python -m swebench.harness.run_evaluation \
 2026년 공개된 SWE-bench Verified는 문제/정답이 공개된 평가라는 한계가 알려져 있으므로, **동일 조건 비교를 위한 참고 점수**로 사용한다. 프런티어 수행 능력을 평가할 때에는 처음 보는 내부 개발 과제·오염 위험이 낮은 홀드아웃 사례도 별도로 유지한다. 두 평가 점수를 합산하거나 정답 패치를 모델 입력에 노출하지 않는다.
 
 완수율, 실패 복구율, 비용/성능 비교는 **공식 평가 결과 + 본 드라이버의 실행 추적**을 같은 `instance_id` 기준으로 결합한 뒤 계산해야 한다. 테스트 단위 계약: `node --test scripts/swebench-verified.test.mjs`. 이는 오라클을 속이는 단위 테스트가 아니라 **실제 Git 명령으로 수정된 파일과 새 파일이 패치에 포함되는지** 검사한다. 유료 모델/공식 Docker 채점은 자동 CI에서 실행하지 않는다.
+
+## 2026-11-15 · 실패 복구율 근거 강화 (서브3)
+
+`scripts/swebench-verified.mjs::measuredRecovery`는 Rust `verification::successful_evidence`에
+준하는 실패 판정을 사용합니다. `status=completed`여도 셸 `exitCode != 0`,
+`result.success=false`, `result.isError=true`, 비어 있지 않은 `result.error`,
+수정 도구의 `written != true`는 성공이 아닙니다. `interrupted/running/outcomeUnknown`은
+제3 범주인 `unknownToolOutcomes`로 따로 세며, 실패 복구율의 분모/분자에 임의로 넣지 않습니다.
+
+`recoveredToolFailures`은 동일 runId의 뒤따른 실행 순서로만 인정합니다.
+실패한 코드 편집에는 **같은 대상의 성공한 쓰기**가 필요하고,
+실패한 셸 명령에는 **동일한 명령·작업 폴더의 종료코드 0**이 필요합니다.
+실패 후 파일을 읽는 행위나 무관한 빌드 성공은 복구가 아닙니다.
+단위 회귀는 `scripts/swebench-verified.test.mjs`에 있습니다.
+별개로 독립 Docker evaluator만 공식 SWE-bench 해결률을 판정합니다.
+
+참조: SWE-bench 2026 평가 CLI는 `swebench eval verified -p predictions.jsonl
+--run-id <unique-run-id>`이며, 서로 다른 패치 비교에 동일 run-id를 재사용하면 캐시가
+잘못된 결과를 반환할 수 있습니다. https://github.com/SWE-bench/SWE-bench/blob/main/README.md

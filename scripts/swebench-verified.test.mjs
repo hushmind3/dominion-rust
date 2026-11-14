@@ -95,6 +95,42 @@ test('real Rust operation receipts measure tool recovery, not adjacent unrelated
     {promptPerMillionKrw:-1,completionPerMillionKrw:20}),/Pricing/);
 });
 
+test('recovery telemetry rejects failed commands, no-op writes and read-only false recoveries',()=>{
+  const readOnly=measuredRecovery([
+    {runId:'run',opSeq:1,tool:'workspace_replace_range',status:'failed',
+      arguments:{path:'src/main.rs'},result:{error:'stale source hash'}},
+    {runId:'run',opSeq:2,tool:'workspace_read_range',status:'completed',
+      arguments:{path:'src/main.rs'},result:{content:'latest source'}}
+  ]);
+  assert.equal(readOnly.failedToolCalls,1);
+  assert.equal(readOnly.recoveredToolFailures,0,
+    'reading a file again never proves an edit succeeded');
+  const commands=measuredRecovery([
+    {runId:'run',opSeq:3,tool:'shell_exec',status:'completed',
+      arguments:{command:'cargo test'},result:{exitCode:101}},
+    {runId:'run',opSeq:4,tool:'shell_exec',status:'completed',
+      arguments:{command:'cargo fmt'},result:{exitCode:0}},
+    {runId:'run',opSeq:5,tool:'shell_exec',status:'completed',
+      arguments:{command:'cargo test'},result:{exitCode:0}},
+    {runId:'run',opSeq:6,tool:'workspace_replace_range',status:'completed',
+      arguments:{path:'src/main.rs'},result:{written:false,unchanged:true}},
+    {runId:'run',opSeq:7,tool:'workspace_read_range',status:'interrupted',
+      arguments:{path:'src/main.rs'},result:{content:'incomplete'},outcomeUnknown:true}
+  ]);
+  assert.equal(commands.failedToolCalls,2,'failed cargo and no-op write are failures');
+  assert.equal(commands.successfulToolCalls,2);
+  assert.equal(commands.recoveredToolFailures,1,
+    'only the later successful identical cargo test is recovery');
+  assert.equal(commands.unknownToolOutcomes,1);
+  assert.equal(commands.toolFailureRecoveryRate,0.5);
+  assert.equal(measuredRecovery([{runId:'r',opSeq:1,tool:'shell_exec',
+    status:'completed',arguments:{command:'cargo test'},result:{exitCode:5}}])
+    .successfulToolCalls,0);
+  assert.equal(measuredRecovery([{runId:'r',opSeq:1,tool:'shell_exec',
+    status:'completed',arguments:{command:'cargo test'},result:{exitCode:0}}])
+    .toolFailureRecoveryRate,null);
+});
+
 test('dataset JSONL is parsed without accepting malformed lines',()=>{
   assert.deepEqual(parseJsonl('{"instance_id":"x"}\n\n{"instance_id":"y"}\n')
     .map(row=>row.instance_id),['x','y']);

@@ -70,35 +70,65 @@ export function measuredRecovery(operations) {
     .filter(op=>op && typeof op==='object')
     .sort((a,b)=>String(a.runId||'').localeCompare(String(b.runId||''))
       || (Number(a.opSeq)||0)-(Number(b.opSeq)||0));
-  // A successful tool invocation is not the same as a verified external
-  // side effect. Shell/network actions can succeed without a verifiable
-  // readback; count their actual calls, but never call them "verified edits".
-  const successful=op=>op.status==='completed' && !op.result?.error;
-  const failed=op=>['failed','denied','error','needs_review'].includes(op.status);
+  const writeTools=new Set(['workspace_write','workspace_replace',
+    'workspace_replace_range','file_write']);
+  const commandTools=new Set(['shell_exec','terminal_exec']);
+  const executionFailed=op=>{
+    const result=op.result;
+    if(!result || typeof result!=='object')return false;
+    if(result.error!=null || result.isError===true || result.success===false)return true;
+    if(result.exitCode!==undefined && result.exitCode!==null
+      && (!Number.isSafeInteger(result.exitCode)||result.exitCode!==0))return true;
+    if(writeTools.has(op.tool) && result.written!==true)return true;
+    return false;
+  };
+  // Interrupted/outcome-unknown operations may have produced external effects.
+  // Neither a failure nor a success is inferred from an uncertain operation.
+  const uncertain=op=>op.outcomeUnknown===true
+    || ['running','interrupted'].includes(op.status);
+  const successful=op=>!uncertain(op)&&op.status==='completed'
+    && op.result!=null && !executionFailed(op);
+  const failed=op=>!uncertain(op)
+    && (['failed','denied','error','needs_review'].includes(op.status)
+      || (op.status==='completed'&&executionFailed(op)));
   const attempted=rows.filter(op=>successful(op)||failed(op));
-  const errors=attempted.filter(failed);
-  const recovered=errors.filter((error)=>{
-    const path=error.arguments?.path ?? error.arguments?.cwd;
-    return rows.some(next=>{
-      if(next.runId!==error.runId
-        || (Number(next.opSeq)||0)<=(Number(error.opSeq)||0)
-        || !successful(next))return false;
-      if(path) {
-        return (next.arguments?.path ?? next.arguments?.cwd)===path;
-      }
-      return next.tool===error.tool;
-    });
+  const failures=attempted.filter(failed);
+  const sameTarget=(first,next)=>{
+    const prior=first.arguments||{};
+    const later=next.arguments||{};
+    // A read after a failed write is investigation, not a recovered edit.
+    if(writeTools.has(first.tool))return writeTools.has(next.tool)
+      && typeof prior.path==='string' && prior.path.length>0
+      && later.path===prior.path && next.result?.written===true;
+    if(commandTools.has(first.tool))return next.tool===first.tool
+      && typeof prior.command==='string' && prior.command.length>0
+      && later.command===prior.command
+      && (later.cwd??'')===(prior.cwd??'');
+    const path=prior.path??prior.cwd;
+    if(path!=null)return next.tool===first.tool
+      && (later.path??later.cwd)===path;
+    return next.tool===first.tool
+      && JSON.stringify(later)===JSON.stringify(prior);
+  };
+  const recovered=failures.filter(error=>{
+    const seq=error.opSeq;
+    if(typeof error.runId!=='string'||!error.runId
+      ||!Number.isSafeInteger(seq)||seq<0)return false;
+    return rows.some(next=>next.runId===error.runId
+      && Number.isSafeInteger(next.opSeq)&&next.opSeq>seq
+      && successful(next)&&sameTarget(error,next));
   }).length;
   return {
     observedToolCalls:attempted.length,
     successfulToolCalls:attempted.filter(successful).length,
-    failedToolCalls:errors.length,
+    failedToolCalls:failures.length,
     recoveredToolFailures:recovered,
+    unknownToolOutcomes:rows.filter(uncertain).length,
     verifiedToolEffects:attempted.filter(op=>successful(op)
       && op.effectState==='verified' && op.toolReceipt?.verified===true).length,
-    // null is not 100% when there were no tool failures to recover.
-    toolFailureRecoveryRate:errors.length===0 ? null :
-      recovered/errors.length,
+    // No failure observations means no measured recovery rate, not 100%.
+    toolFailureRecoveryRate:failures.length===0 ? null :
+      recovered/failures.length,
   };
 }
 
