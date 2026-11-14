@@ -151,6 +151,29 @@ test('approval and durable goal APIs use native server contracts', async () => {
   assert.deepEqual(seen[2][2], {plan:'execute updated plan',expectedRevision:3})
 })
 
+test('MCP configuration flows into the native engine rather than a third-party SDK', async () => {
+  const calls = []
+  const sdk = new DominionSDK({fetch: async (url, init) => {
+    const payload = typeof init.body === 'string' ? JSON.parse(init.body) : null
+    calls.push([url, init.method || 'GET', payload])
+    if (url === '/api/mcp' && init.method === 'POST') {
+      return asJson({id:'mcp-1',name:payload.name,transport:payload.transport,enabled:true})
+    }
+    if (url === '/api/mcp') return asJson([{id:'mcp-1',name:'lab',transport:'http'}])
+    if (url === '/api/mcp/discover') return asJson([{name:'mcp__lab__query'}])
+    if (url === '/api/mcp/mcp-1' && init.method === 'DELETE') return asJson({ok:true})
+    throw new Error('Unexpected route ' + url)
+  }})
+  const saved = await sdk.registerMcpServer({name:'lab',transport:'http',url:'http://127.0.0.1:9999/mcp',apiKey:'secret'})
+  assert.equal(saved.id,'mcp-1')
+  assert.equal(saved.apiKey,undefined)
+  assert.equal((await sdk.mcpServers()).length,1)
+  assert.equal((await sdk.discoverMcpTools())[0].name,'mcp__lab__query')
+  await sdk.removeMcpServer('mcp-1')
+  assert.equal(calls[0][2].url,'http://127.0.0.1:9999/mcp')
+  assert.equal(calls[3][1],'DELETE')
+})
+
 test('non-2xx responses return typed errors without accidental successful result', async () => {
   const sdk = new DominionSDK({fetch: async () => asJson({error:'not allowed'}, 403)})
   await assert.rejects(
