@@ -221,6 +221,29 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())
     }
 
+    /// Verification requires both passing and later failing tool operations,
+    /// including operations from earlier resumed goal turns. Query SQLite
+    /// directly instead of materializing every agent's entire operation log.
+    /// If the history exceeds the bounded limit, fail closed rather than
+    /// accidentally accepting a stale test after dropping an old write.
+    pub fn session_execution_operations(&self,session_id:&str)->Result<Vec<Value>,String>{
+        let conn=self.conn.lock().unwrap();
+        let mut statement=conn.prepare(
+            "SELECT data,id,created_at,updated_at FROM records
+             WHERE kind='execution_operation'
+                AND json_extract(data,'$.sessionId')=?1
+             ORDER BY created_at,id LIMIT 1001"
+        ).map_err(|error|error.to_string())?;
+        let rows=statement.query_map([session_id],record_from_row)
+            .map_err(|error|error.to_string())?;
+        let results=rows.collect::<Result<Vec<_>,_>>()
+            .map_err(|error|error.to_string())?;
+        if results.len()>1000{
+            return Err("실행 기록이 검증 한도 1000개를 초과했습니다. 검증 기록을 별도 점검하세요.".into());
+        }
+        Ok(results)
+    }
+
     /// Error-preserving variant for the new learning/finalization paths.
     /// `all` remains for React-facing compatibility, but new paths must not
     /// interpret a database error as an empty collection.
