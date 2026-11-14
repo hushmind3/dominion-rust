@@ -24,6 +24,7 @@ export function GrowthDashboard(){
  useLocale()
  const synergy=useRemote<Synergy>('/api/synergy',{agents:[],sharedMethods:[],algorithmStats:[]})
  const usage=useRemote<Usage>('/api/model-usage',{groups:[]})
+ const workflowJobs=useRemote<any[]>('/api/jobs',[])
  const transfer=useRemote<Transfer>('/api/transfer',{principles:[],rules:[],usages:[],learningCases:[]})
  const policies=useRemote<Policy[]>('/api/policies',[])
  const searches=useRemote<any[]>('/api/policy-searches',[])
@@ -39,6 +40,32 @@ export function GrowthDashboard(){
  const calls=number(usage.value.calls)
  const tokens=number(usage.value.totalTokens)
  const groups=(usage.value.groups||[]).slice(0,10)
+ // Evidence from persisted job results, not a hypothetical learning gain.
+ const verifiedSteps=workflowJobs.value.filter(job=>job.kind==='workflow')
+  .flatMap(job=>(job.result?.outputs||[]).map((step:any)=>({
+    agentId:step.agentId,jobId:job.id,status:step.verification?.status,
+    calls:step.verification?.modelCalls,tokens:step.verification?.totalTokens,
+    operations:step.verification?.operationIds?.length||0
+  }))).filter((step:any)=>step.agentId&&step.status==='verified')
+ const reviewSteps=workflowJobs.value.filter(job=>job.kind==='workflow'&&job.status==='needs_review')
+  .map(job=>{const ix=job.result?.failedStepIndex
+    const steps=job.workflowState?.definition?.steps||[]
+    return {agentId:Number.isInteger(ix)?steps[ix]?.agentId:null,jobId:job.id}
+  }).filter(step=>step.agentId)
+ const workflowAgents=[...new Set([
+   ...verifiedSteps.map(row=>row.agentId as string),
+   ...reviewSteps.map(row=>row.agentId as string)
+ ])].map(id=>{
+   const passed=verifiedSteps.filter(row=>row.agentId===id)
+   const blocked=reviewSteps.filter(row=>row.agentId===id)
+   return {id,name:synergy.value.agents?.find(a=>a.id===id)?.name||id,
+     passed:passed.length,blocked:blocked.length,
+     calls:passed.reduce((n,row)=>n+number(row.calls),0),
+     tokens:passed.reduce((n,row)=>n+number(row.tokens),0),
+     operations:passed.reduce((n,row)=>n+number(row.operations),0),
+     jobs:new Set([...passed,...blocked].map(row=>row.jobId)).size
+   }
+ }).sort((a,b)=>b.passed+b.blocked-a.passed-a.blocked).slice(0,12)
  return <div className="mt-3 grid gap-4">
   <Notice message={synergy.error||usage.error||transfer.error||policies.error||searches.error||experiments.error}/>
   <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
@@ -60,6 +87,15 @@ export function GrowthDashboard(){
      {guidance?.text&&<p className="mt-1 text-[11px] text-[#5C544A]">{t('growth.guidance',{text:guidance.text})}</p>}
     </div>
    })}</div>}
+  </Panel>
+
+  <Panel className="min-w-0 p-4">
+   <Subheading title="에이전트별 실제 워크플로 검증 기록" extra={<a href="#/workflows" className="text-[11px] font-semibold text-[#A94E30] underline">워크플로 열기</a>}/>
+   <p className="mb-3 text-[11px] text-[#8A8176]">저장된 작업에서 실제 검증 통과한 단계와 검토 보류된 단계를 구분합니다. 실모델 지능 향상이나 비용 절감 실적을 뜻하지 않습니다.</p>
+   {workflowAgents.length?<div className="grid gap-2">{workflowAgents.map(agent=><div key={agent.id} className="rounded-lg border border-[#EFE9DF] p-3 text-xs">
+     <div className="flex flex-wrap items-center gap-2"><a href="#/agents" className="font-bold text-[#4A443C] underline">{agent.name}</a><span className="text-[#63745B]">검증 통과 {agent.passed}단계</span>{agent.blocked>0&&<span className="text-amber-800">검토 보류 {agent.blocked}단계</span>}</div>
+     <p className="mt-1 text-[11px] text-[#8A8176]">도구 영수증 {agent.operations}개 · 모델 호출 {agent.calls}회 · 기록 토큰 {agent.tokens.toLocaleString()} · 실행 작업 {agent.jobs}건</p>
+   </div>)}</div>:<p className="text-[11px] text-[#8A8176]">검증 조건이 있는 워크플로 작업 기록이 아직 없습니다.</p>}
   </Panel>
 
   <Panel className="min-w-0 p-4">
