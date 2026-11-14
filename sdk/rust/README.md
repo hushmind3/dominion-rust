@@ -4,6 +4,16 @@
 Source: `sdk/rust`. This is **not** the TypeScript SDK and does not call
 Codex/Copilot/Claude SDKs to execute work.
 
+## Native thread control
+
+`DominionClient::create_sdk_thread`, `DominionThread::run_native_streamed`,
+`DominionThread::run_native`, `DominionThread::steer`, and
+`DominionClient::sdk_thread_history` talk to the server's native
+`/api/sdk/threads` surface. The older generic `/api/chat` and sessions
+APIs remain supported. The same Rust scheduler, tools, provider and
+SQLite records execute both, without another third-party agent harness.
+SSE interruptions and remote model errors are not retried as new runs.
+
 ## Build / test
 
 ```bash
