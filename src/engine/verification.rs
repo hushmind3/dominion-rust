@@ -317,7 +317,9 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
         return false;
     }
     match tool_name(item) {
-        "workspace_write" | "file_write" => true,
+        "workspace_write" | "file_write"
+        | "workspace_replace" | "workspace_replace_range"
+        | "workspace_replace_function" => true,
         "shell_exec" | "terminal_exec" => {
             let args = item
                 .get("arguments")
@@ -579,6 +581,21 @@ mod inference_tests {
             assert!(looks_actionable(phrase), "missed action: {phrase}");
             assert!(!infer_criteria(phrase).is_empty());
         }
+    }
+
+    #[test]
+    fn surgical_source_edits_are_actual_action_receipts() {
+        for tool in ["workspace_replace","workspace_replace_range",
+            "workspace_replace_function","workspace_write"] {
+            let item=json!({"tool":tool,"status":"completed",
+                "arguments":{"path":"src/lib.rs","old":"a","new":"b"},
+                "result":{"written":true}});
+            assert!(is_action_evidence(&item),"{tool} must count as source edit");
+        }
+        assert!(!is_action_evidence(&json!({
+            "tool":"workspace_replace_range","status":"failed",
+            "result":{"success":false}
+        })));
     }
 
     #[test]
