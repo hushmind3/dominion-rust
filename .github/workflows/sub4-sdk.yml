@@ -1,0 +1,29 @@
+name: Sub4 DOMINION native Agent SDK
+
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'sdk/typescript/**'
+      - 'web/src/api.ts'
+      - 'web/vite.config.ts'
+      - '.github/workflows/sub4-sdk.yml'
+  workflow_dispatch:
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install SDK dependencies
+        working-directory: sdk/typescript
+        run: npm install --no-audit --no-fund
+      - name: Typecheck and execute isolated SDK protocol tests
+        working-directory: sdk/typescript
+        run: npm run check
