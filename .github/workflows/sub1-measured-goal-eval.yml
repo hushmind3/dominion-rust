@@ -1,0 +1,110 @@
+name: Sub1 measured real-model goal completion
+
+# Trigger once when this workflow is added; manual reruns are supported.
+# Subsequent source commits do NOT silently start long model inference.
+on:
+  push:
+    branches: [dominion-sub1]
+    paths: [.github/workflows/sub1-measured-goal-eval.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sub1-measured-goal-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  measured-goals:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      DOMINION_PORT: "44329"
+      DOMINION_BENCHMARK: "1"
+      DOMINION_JOB_WORKERS: "1"
+      DOMINION_EXPERIMENT_SCHEDULER: "0"
+      DOMINION_BACKUP_INTERVAL_SECS: "0"
+      DOMINION_BASE: http://127.0.0.1:44329
+      BENCH_MODEL: qwen3:4b-instruct-2507-q4_K_M
+      BENCH_PROVIDER_ID: sub1-local-eval
+      BENCH_TASK_TIMEOUT_MS: "480000"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "20m"
+    steps:
+      - name: Checkout exact model-evaluation source revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust stable and cache dependencies
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Syntax-check external-oracle evaluator and compile real DOMINION
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node --check scripts/sub1-measured-goal-eval.mjs
+          cargo build --release --locked --bin dominion-rust
+
+      - name: Install actual local Ollama runtime and Qwen3 4B instruct
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh -o "$RUNNER_TEMP/ollama-install.sh"
+          sh "$RUNNER_TEMP/ollama-install.sh"
+          sudo systemctl disable --now ollama || true
+          nohup ollama serve > "$RUNNER_TEMP/sub1-ollama.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull "$BENCH_MODEL"
+          ollama list
+
+      - name: Start a benchmark-marked isolated engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/dominion-goal-measurement"
+          mkdir -p "$ROOT/data" "$ROOT/workspace"
+          printf 'disposable benchmark only\n' > "$ROOT/.dominion-benchmark-sentinel"
+          echo "BENCH_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "BENCH_REPORT=$ROOT/live-goals.json" >> "$GITHUB_ENV"
+          echo "DOMINION_DATA=$ROOT/data" >> "$GITHUB_ENV"
+          echo "DOMINION_WORKSPACE=$ROOT/workspace" >> "$GITHUB_ENV"
+          echo "DOMINION_ENGINE_INSTANCE=goal-eval-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          DOMINION_DATA="$ROOT/data" \
+            DOMINION_WORKSPACE="$ROOT/workspace" \
+            DOMINION_ENGINE_INSTANCE="goal-eval-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            nohup ./target/release/dominion-rust > "$ROOT/engine.log" 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -fsS "$DOMINION_BASE/api/health" >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS "$DOMINION_BASE/api/health" >/dev/null
+          curl -fsS "$DOMINION_BASE/api/benchmark/identity"
+
+      - name: Measure actual goal tool turns against private host oracle
+        run: |
+          set -euo pipefail
+          node scripts/sub1-measured-goal-eval.mjs
+          node -e 'const x=require(process.env.BENCH_REPORT); if (!x.summary || x.summary.totalCases!==2) process.exit(1); console.log(JSON.stringify(x.summary))'
+
+      - name: Preserve full evidence and model logs regardless of outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sub1-measured-goals-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/dominion-goal-measurement/live-goals.json
+            ${{ runner.temp }}/dominion-goal-measurement/engine.log
+            ${{ runner.temp }}/sub1-ollama.log
