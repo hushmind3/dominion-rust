@@ -87,3 +87,10 @@
 ### Git worktree 실격리 및 승격(2026-11-14)
 
 `goal_workspace.rs`에서 opt-in 목표별 소스 격리·리뷰·원본 승인 반영·폐기 경로를 구현했습니다. 이 목표와 관련한 계획·파일 baseline·도구·검증, 자식 에이전트의 `jobs::run_prompt`까지 격리 경로를 사용합니다. `goals::run`과 `tools::execute`가 양쪽에서 경로를 검사하며 유실된 격리 공간은 원본으로 전환하지 않습니다. 원본 반영은 완료 검증·HEAD/clean·미추적 파일 없음·정확한 패치 SHA·사용자 확인이 있어야 하고, 기존 파일 단위 undo와 공존합니다. [완전 실행 지도](AUTONOMOUS-AGENT-2026-11-14.md#8-goal별-git-격리와-검토-후-승인-반영-추가-개발).
+
+
+### 2026-11-14 추가: 영상 품질·유료 작업 원가 통제 및 RSI 연구 신호
+
+영상: `POST /api/video/jobs` → `video::enqueue` → `film::spec`(사용자 다중 유료 호출 수 동의) → `film::run`(각 샷의 SHA/영수증/ffprobe) → FFmpeg stream-copy → `quality::inspect`(최종 스트림 품질) → `public_job`에서 실제 결과 공개. `GET scenes` → `POST retake`는 정확한 기존 SHA·신규 유료 호출 수 동의·`jobs::enqueue_once` 중복 방지를 검사하고 유효한 샷만 재사용합니다. 실패한 유료 호출의 불확실한 상태를 자동 재전송하지 않습니다.
+
+RSI: `rsi_scan::report`의 `goal_signals::collect`가 최근 실제 목표의 반복 실패·확인된 성공 수를 연구 신호로 제공하며, `rsi/system/frontier`가 사용합니다. 이것은 **동결 독립 평가의 점수나 채택이 아닙니다**. 영상/RSI 실제 모델 사용 비용 및 시각적 품질 측정은 별도입니다.
