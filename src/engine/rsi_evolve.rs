@@ -45,6 +45,8 @@ use planner_context::{verified_candidate_id, identical_failed_patch, matching_pr
 mod learning_methods;
 use learning_methods::{method_session_running, applicable_methods, method_reuse_decision, record_method_feedback, research_artifacts};
 pub(crate) use learning_methods::{propose_method, configure_method_session, method_strategies, collect_method_executions, preserve_failed_research, remember_research};
+#[path = "rsi/learning/failure_feedback.rs"]
+mod failure_feedback;
 #[path = "rsi/learning/trials.rs"]
 mod learning_trials;
 use learning_trials::{proposed_algorithms, adaptive_search_expression, recovery_search_expression, queue_adaptive_search_trial, queue_search_trial, pending_trial_candidate, comparable_trial_baseline, trial_verdict, record_trial_outcome};
