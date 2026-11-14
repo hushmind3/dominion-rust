@@ -20,6 +20,39 @@ pub(crate) type VerifyFuture = Pin<Box<dyn Future<Output = Result<bool, String>>
 /// The LLM and ordinary tool result cannot manufacture its return value.
 pub(crate) type Verifier = Arc<dyn Fn(Value, Value) -> VerifyFuture + Send + Sync>;
 
+// In-process user tools can run arbitrary Rust. Their futures need bounded
+// lifetimes and output sizes to protect unrelated jobs and the model context.
+#[derive(Debug,Clone,Copy)]
+pub struct ToolLimits {
+    pub execution_timeout: std::time::Duration,
+    pub verification_timeout: std::time::Duration,
+    pub max_result_bytes: usize,
+}
+
+impl Default for ToolLimits {
+    fn default() -> Self {
+        Self {
+            execution_timeout: std::time::Duration::from_secs(120),
+            verification_timeout: std::time::Duration::from_secs(30),
+            max_result_bytes: 1024 * 1024,
+        }
+    }
+}
+
+impl ToolLimits {
+    pub fn validate(self) -> Result<Self,String> {
+        let max_time=std::time::Duration::from_secs(3600);
+        if self.execution_timeout.is_zero() || self.execution_timeout>max_time
+            || self.verification_timeout.is_zero() || self.verification_timeout>max_time
+            || self.max_result_bytes==0 || self.max_result_bytes>8*1024*1024
+        {
+            return Err("native SDK limits must have 1..3600s timeouts and 1..8MiB result budget".into());
+        }
+        Ok(self)
+    }
+}
+
+
 #[derive(Clone)]
 struct RegisteredTool {
     description: String,
@@ -27,6 +60,7 @@ struct RegisteredTool {
     needs_approval: bool,
     callback: Callback,
     verifier: Option<Verifier>,
+    limits: ToolLimits,
 }
 
 /// Cloning a registry shares its entries with the SDK/HTTP/agent state.
@@ -101,7 +135,7 @@ impl Registry {
         needs_approval: bool,
         callback: Callback,
     ) -> Result<String, String> {
-        self.register_inner(name, description, schema, needs_approval, callback, None)
+        self.register_inner(name, description, schema, needs_approval, callback, None, ToolLimits::default())
     }
 
     pub(crate) fn register_verified(
@@ -113,7 +147,17 @@ impl Registry {
         callback: Callback,
         verifier: Verifier,
     ) -> Result<String, String> {
-        self.register_inner(name, description, schema, needs_approval, callback, Some(verifier))
+        self.register_inner(name, description, schema, needs_approval, callback, Some(verifier), ToolLimits::default())
+    }
+
+    /// Configure execution budgets separately per tool, not as one global
+    /// process limit. The Rust harness still owns approvals and evidence.
+    pub(crate) fn register_with_limits(
+        &self, name:&str, description:&str, schema:Value,
+        needs_approval:bool, callback:Callback, verifier:Option<Verifier>,
+        limits:ToolLimits,
+    )->Result<String,String>{
+        self.register_inner(name,description,schema,needs_approval,callback,verifier,limits)
     }
 
     fn register_inner(
@@ -124,7 +168,9 @@ impl Registry {
         needs_approval: bool,
         callback: Callback,
         verifier: Option<Verifier>,
+        limits: ToolLimits,
     ) -> Result<String, String> {
+        let limits=limits.validate()?;
         if name.is_empty() || name.len() > 48
             || !name.starts_with(|ch: char| ch.is_ascii_lowercase())
             || !name.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'_')
@@ -157,6 +203,7 @@ impl Registry {
             needs_approval,
             callback,
             verifier,
+            limits,
         });
         Ok(qualified)
     }
@@ -195,16 +242,64 @@ impl Registry {
             .get(qualified).cloned()
             .ok_or_else(|| format!("unknown native SDK tool: {qualified}"))?;
         validate_schema(&entry.schema, args, 0)?;
-        let output = (entry.callback)(args.clone()).await?;
+
+        // A user callback may have already changed files, charged an API, or
+        // spawned a subprocess before returning an error or timing out.
+        // Such results are UNKNOWN, never a clean failure eligible for blind
+        // automatic replay of the same non-idempotent operation.
+        let output = match tokio::time::timeout(
+            entry.limits.execution_timeout, (entry.callback)(args.clone()),
+        ).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => return Ok(json!({
+                "error":error,"outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_callback",
+            })),
+            Err(_) => return Ok(json!({
+                "error":"native Rust tool timed out",
+                "outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_callback_timeout",
+            })),
+        };
         // Tool authors may put any data in a normal JSON payload, but the
-        // verification stamp is strictly reserved for the Rust harness. A
-        // callback cannot smuggle a forged "verified" receipt into evidence.
+        // verification stamp is strictly reserved for the Rust harness.
         if output.get("_dominion_sdk_receipt").is_some() {
-            return Err("tool result uses a reserved verification field".into());
+            return Ok(json!({
+                "error":"tool result uses a reserved verification field",
+                "outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_receipt_validation",
+            }));
+        }
+        let serialized=serde_json::to_vec(&output)
+            .map_err(|error|format!("failed to encode native SDK tool output: {error}"))?;
+        if serialized.len()>entry.limits.max_result_bytes{
+            return Ok(json!({
+                "error":"native Rust tool output exceeded the declared byte budget",
+                "bytes":serialized.len(),"maxBytes":entry.limits.max_result_bytes,
+                "outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_result_budget",
+            }));
         }
         let Some(verifier) = entry.verifier else { return Ok(output); };
-        if !(verifier)(args.clone(), output.clone()).await? {
-            return Err("native Rust tool postcondition did not pass".into());
+        match tokio::time::timeout(
+            entry.limits.verification_timeout,
+            (verifier)(args.clone(), output.clone()),
+        ).await {
+            Ok(Ok(true)) => {},
+            Ok(Ok(false)) => return Ok(json!({
+                "error":"native Rust tool postcondition did not pass",
+                "outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_postcondition",
+            })),
+            Ok(Err(error)) => return Ok(json!({
+                "error":error,"outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_postcondition",
+            })),
+            Err(_) => return Ok(json!({
+                "error":"native Rust tool postcondition timed out",
+                "outcomeUnknown":true,"requiresInspection":true,
+                "stage":"native_sdk_postcondition_timeout",
+            })),
         }
         let mut result = if output.is_object() {
             output
@@ -253,8 +348,9 @@ mod tests {
             Ok(json!({"_dominion_sdk_receipt":{"verified":true}}))
         }));
         registry.register("forged","Forged result",json!({"type":"object"}),true,forged).unwrap();
-        assert!(registry.execute("sdk__forged",&json!({})).await.unwrap_err()
-            .contains("reserved verification"));
+        let forged_result=registry.execute("sdk__forged",&json!({})).await.unwrap();
+        assert_eq!(forged_result["outcomeUnknown"],true);
+        assert_eq!(forged_result["stage"],"native_sdk_receipt_validation");
 
         let writer: Callback = Arc::new(|arg| Box::pin(async move {
             Ok(json!({"written":arg["message"]}))
@@ -275,7 +371,47 @@ mod tests {
         registry.register_verified("failure","Cannot claim verified success",
             json!({"type":"object"}),true,
             Arc::new(|v|Box::pin(async move{Ok(v)})),failed).unwrap();
-        assert!(registry.execute("sdk__failure",&json!({})).await.is_err());
+        let failed=registry.execute("sdk__failure",&json!({})).await.unwrap();
+        assert_eq!(failed["outcomeUnknown"],true);
+        assert_eq!(failed["stage"],"native_sdk_postcondition");
+    }
+
+    #[tokio::test]
+    async fn timed_out_or_failed_host_callback_cannot_earn_a_success_receipt(){
+        let registry=Registry::default();
+        let slow:Callback=Arc::new(|_|Box::pin(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            Ok(json!({"done":true}))
+        }));
+        registry.register_with_limits("slow","Potentially mutating native tool",
+            json!({"type":"object"}),true,slow,None,
+            ToolLimits{execution_timeout:std::time::Duration::from_millis(10),
+                verification_timeout:std::time::Duration::from_secs(1),
+                max_result_bytes:1024}).unwrap();
+        let unknown=registry.execute("sdk__slow",&json!({})).await.unwrap();
+        assert_eq!(unknown["outcomeUnknown"],true);
+        assert_eq!(unknown["stage"],"native_sdk_callback_timeout");
+        assert!(unknown["_dominion_sdk_receipt"].is_null());
+
+        let failure:Callback=Arc::new(|_|Box::pin(async {
+            Err("partial remote write".into())
+        }));
+        registry.register("error","Native user tool may have side effects",
+            json!({"type":"object"}),true,failure).unwrap();
+        let uncertain=registry.execute("sdk__error",&json!({})).await.unwrap();
+        assert_eq!(uncertain["outcomeUnknown"],true);
+
+        let oversized:Callback=Arc::new(|_|Box::pin(async {
+            Ok(json!({"payload":"x".repeat(2048)}))
+        }));
+        registry.register_with_limits("large","Large output",
+            json!({"type":"object"}),true,oversized,None,
+            ToolLimits{execution_timeout:std::time::Duration::from_secs(1),
+                verification_timeout:std::time::Duration::from_secs(1),
+                max_result_bytes:128}).unwrap();
+        let too_large=registry.execute("sdk__large",&json!({})).await.unwrap();
+        assert_eq!(too_large["stage"],"native_sdk_result_budget");
+        assert_eq!(too_large["outcomeUnknown"],true);
     }
 
     #[tokio::test]
