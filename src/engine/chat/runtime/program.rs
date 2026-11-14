@@ -73,7 +73,13 @@ async fn execute_program_tool(
     )
     .await?;
     checkpoint["pendingOperationIds"] = json!([]);
-    mark_program_completed(checkpoint, node_id);
+    // A failed effect may need a new plan. Recording it as completed before
+    // interpreting its receipt makes replacePendingNodes impossible.
+    // Explicit onFailure=continue means the owner intended a best-effort
+    // operation and deliberately accepts its failure as a settled step.
+    if tool_succeeded(&result) || node["onFailure"] == "continue" {
+        mark_program_completed(checkpoint, node_id);
+    }
     if !checkpoint["observationRefs"].is_object() {
         checkpoint["observationRefs"] = json!({});
     }
@@ -228,7 +234,7 @@ fn execute_nodes<'a>(
                     .await?;
                     let failed = !tool_succeeded(&result);
                     resolved["last"] = result.clone();
-                    if failed && node["onFailure"].as_str() == Some("revise") {
+                    if failed && node["onFailure"].as_str() != Some("continue") {
                         let failure = json!({
                             "nodeId": node_id,
                             "tool": node["tool"],
@@ -595,7 +601,28 @@ fn execute_nodes<'a>(
                         persist,
                     )
                     .await?;
-                    resolved["last"] = result;
+                    let failed = !tool_succeeded(&result);
+                    resolved["last"] = result.clone();
+                    if failed && node["onFailure"].as_str() != Some("continue") {
+                        let failure = json!({
+                            "nodeId": node_id,
+                            "tool": "delegate_task",
+                            "result": result,
+                            "observation": failure_observation(
+                                ctx.state, "delegate_task", &node["inputs"],
+                                result["error"].as_str().unwrap_or("delegated task failed"),
+                            ),
+                        });
+                        checkpoint["programFailure"] = failure.clone();
+                        checkpoint["resolvedInputs"] = resolved.clone();
+                        if persist {
+                            save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
+                        }
+                        return Ok(ProgramFrame {
+                            resolved, checkpoint, budget, op_seq, messages,
+                            paused: false, failure: Some(failure),
+                        });
+                    }
                 }
                 "loop" => {
                     let body = node["body"].as_array().cloned().unwrap_or_default();
@@ -965,4 +992,38 @@ pub(super) async fn run_program(
         )
     }));
     Ok(messages)
+}
+
+
+#[cfg(test)]
+mod program_effect_receipt_tests {
+    use super::*;
+    #[test]
+    fn failed_tool_operation_remains_pending_for_repair_instead_of_being_sealed() {
+        let fail=json!({"error":"tool executable missing"});
+        let mut checkpoint=crate::engine::program::new_checkpoint(
+            &json!({"revision":"v1","nodes":[
+                {"id":"write","type":"call_tool","tool":"workspace_write","inputs":{"path":"a","content":"b"}}
+            ]})
+        );
+        assert!(!tool_succeeded(&fail));
+        if tool_succeeded(&fail) {
+            mark_program_completed(&mut checkpoint,"write");
+        }
+        assert!(!crate::engine::program::checkpoint_skip_completed(&checkpoint,"write"));
+        // The actual repair function must permit replacing this failed node,
+        // but refuse to touch one that settled successfully.
+        let p=json!({"revision":"v1","nodes":[
+            {"id":"write","type":"call_tool","tool":"workspace_write","inputs":{"path":"a","content":"b"}}
+        ]});
+        let revision=json!({"baseRevision":"v1","reason":"repair bad tool input",
+            "replacePendingNodes":[{"id":"write","type":"call_tool",
+                "tool":"workspace_write","inputs":{"path":"a","content":"fixed"}}]});
+        let available=vec!["workspace_write".to_string()];
+        assert!(crate::engine::program::apply_revision_proposal(
+            &p,&checkpoint,&revision,&available,64,"replace").is_ok());
+        mark_program_completed(&mut checkpoint,"write");
+        assert!(crate::engine::program::apply_revision_proposal(
+            &p,&checkpoint,&revision,&available,64,"replace").is_err());
+    }
 }
