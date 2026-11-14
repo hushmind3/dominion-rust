@@ -5,10 +5,12 @@ import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} fr
 import {openOAuth,post} from '../api'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
+import {FilmRetake} from './video/FilmRetake'
 
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;
  shotCount?:number;shotProgress?:number;
+ film?:{clips?:unknown[]};
  result?:{bytes:number;attemptedGenerations?:number;
  technicalQuality?:{verified:boolean;width:number;height:number;durationSeconds:number};
  shotResults?:{index:number;reused:boolean;technicalRetries:number}[]}}
@@ -246,6 +248,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        영상 생성 {videoJob.result.attemptedGenerations}회 · 실제 제작비는 연결된 환경에 따라 달라집니다.
       </p>}
       {videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
+    {videoJob?.film?.clips&&videoJob.film.clips.length>1&&
+     <FilmRetake jobId={videoJob.id} onCreated={job=>{
+      setVideoSubmission(job as VideoJob);
+      void video.reload();
+     }}/>}
     <Panel className="min-w-0 p-5"><Subheading title={t('vid.upload')} extra={<span className="text-[11px] text-[#8A8176]">{selectedOutput?t('vid.fileReady'):t('vid.pickFile')}</span>}/><div className="grid gap-3"><FormField label={t('vid.videoFile')} hint={t('vid.generatedNote')}><div className="flex flex-col gap-2">{outputs.value.length?<SelectInput value={selectedOutput?.id||''} onChange={e=>{
  const picked=outputs.value.find(item=>item.id===e.target.value);
  if(!picked)return;
