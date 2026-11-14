@@ -107,7 +107,7 @@ class ExactPatchContract(unittest.TestCase):
                     "base_commit":"a" * 40,
                     "problem_statement":"Synthetic fixture. Not a SWE-bench result."}
             rows = work / "fixture.jsonl"
-            rows.write_text(json.dumps(task) + "\\n", encoding="utf-8")
+            rows.write_text(json.dumps(task) + "\n", encoding="utf-8")
             command = [
                 sys.executable, str(ROOT),
                 "--tasks-jsonl", str(rows), "--binary", str(binary),
