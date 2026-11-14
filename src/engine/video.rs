@@ -635,7 +635,21 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
 pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
     uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 영상 작업 ID")?;
     let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
-    film::scenes(state,&job)
+    let mut manifest=film::scenes(state,&job)?;
+    let quotes=manifest["clips"].as_array().cloned().unwrap_or_default()
+        .iter().enumerate().map(|(index,shot)|{
+            if shot["canRetake"]==true {
+                film::retake_quote(&job,&manifest,index).ok()
+            } else {None}
+        }).collect::<Vec<_>>();
+    if let Some(shots)=manifest["clips"].as_array_mut(){
+        for (shot,quote) in shots.iter_mut().zip(quotes.into_iter()){
+            shot["retakeQuote"]=quote.unwrap_or(Value::Null);
+            // Inability to quote is itself a spending blocker.
+            if shot["retakeQuote"].is_null(){shot["canRetake"]=json!(false);}
+        }
+    }
+    Ok(manifest)
 }
 
 /// A retake is a NEW durable video job, never a replay of an uncertain paid
@@ -650,8 +664,13 @@ pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>
     let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
     let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA-256이 없습니다.")?;
     let count=body["confirmedPaidCallCount"].as_u64().ok_or("추가 결제 장면 수에 동의해야 합니다.")?;
-    let input=film::retake_input(state,&source,index,digest,
+    let manifest=film::scenes(state,&source)?;
+    let quote=film::retake_quote(&source,&manifest,index)?;
+    pricing::approved(body,&quote)?;
+    let mut input=film::retake_input(state,&source,index,digest,
         body["prompt"].as_str(),count)?;
+    input["paidQuote"]=quote;
+    input["paidApprovalMaxUsdCents"]=body["maxUsdCents"].clone();
     let fingerprint=input["retake"]["fingerprint"].as_str().ok_or("재생성 식별자가 없습니다.")?;
     let raw=sha2::Sha256::digest(fingerprint.as_bytes());
     let mut bytes=[0u8;16];
