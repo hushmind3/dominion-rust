@@ -149,6 +149,10 @@ export function SkillsPanel(p:Props){
               >
                 {t('sp.export')}
               </a>
+              {x.enabled&&x.status!=="draft"&&<a
+                href={"#/agents?skill="+encodeURIComponent(x.id)}
+                className="inline-flex items-center gap-1 rounded-lg border border-[#D8C8AF] px-2 py-1 text-[11px] font-semibold text-[#A94E30] hover:bg-[#F7F2EA]"
+              >에이전트에 배정 <ArrowRight size={13}/></a>}
               <Button onClick={() => setSkillEdit(x)}>
                 {t('sp.edit')} <ArrowRight size={15} />
               </Button>
