@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 mod goal_resume;
 #[path = "db/usage_tree.rs"]
 mod usage_tree;
+#[path = "db/delegation.rs"]
+mod delegation;
 #[path = "db/automation_claim.rs"]
 mod automation_claim;
 
