@@ -567,48 +567,35 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         .store
         .get("agent", &agent_id)
         .ok_or_else(|| format!("위임 대상 에이전트를 찾을 수 없습니다: {agent_id}"))?;
-    // Delegated work has a separate model context and therefore a separate
-    // token bill. Bound outstanding workers and lifetime fan-out per parent
-    // session before creating another child task.
-    let delegated=ctx.store.all("job").into_iter().filter(|job|{
-        job["kind"]=="prompt" && job["input"]["delegation"]==true
-            && job["input"]["parentSessionId"].as_str()==Some(ctx.session_id)
-    }).collect::<Vec<_>>();
-    if delegated.len()>=MAX_DELEGATED_JOBS_PER_SESSION {
-        return Err("이 세션의 위임 작업 한도에 도달했습니다. 기존 결과를 통합하세요.".into());
-    }
-    if delegated.iter().filter(|job|
-        matches!(job["status"].as_str(),Some("queued"|"running"))
-    ).count()>=MAX_ACTIVE_DELEGATED_JOBS {
-        return Err("동시 위임 4개가 실행 중입니다. task_result로 완료를 확인한 후 위임하세요.".into());
+    // Admission belongs to the durable store, not a best-effort count()
+    // followed by separate writes. Concurrent agent turns share a transaction
+    // even across Dominion processes pointing to the same SQLite database.
+    if ctx.state.is_cancelled(ctx.session_id) {
+        return Err("상위 세션이 중단되어 새 위임을 생성할 수 없습니다.".into());
     }
     let wait = args["wait"].as_bool().unwrap_or(true);
     let timeout = args["timeoutSeconds"]
         .as_u64()
         .unwrap_or(90)
         .clamp(5, 300);
-
-    let session = ctx
-        .state
-        .store
-        .put(
-            "session",
-            &json!({
-                "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
-                "agentId": agent_id,
-                "providerId": agent["providerId"],
-                "model": agent["model"],
-                "parentSessionId": ctx.session_id,
-                "delegated": true,
-                "delegatedReadOnly":read_only,
-            }),
-        )
-        .ok_or("위임 세션을 만들 수 없습니다.")?;
-    let session_id = session["id"].as_str().unwrap_or("").to_string();
-    let job = crate::engine::jobs::enqueue(
-        ctx.state,
-        "prompt",
-        json!({
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let session = json!({
+        "id": session_id,
+        "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
+        "agentId": agent_id,
+        "providerId": agent["providerId"],
+        "model": agent["model"],
+        "parentSessionId": ctx.session_id,
+        "delegated": true,
+        "delegatedReadOnly": read_only,
+    });
+    let job = json!({
+        "id": job_id,
+        "kind": "prompt",
+        "status": "queued",
+        "queuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        "input": {
             "prompt": prompt,
             "agentId": agent_id,
             "providerId": agent["providerId"],
@@ -619,11 +606,26 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
             "parentSessionId": ctx.session_id,
             "parentAgentId": ctx.agent_id,
             "delegation": true,
-            "delegatedReadOnly":read_only,
-        }),
-    )
-    .ok_or("위임 작업을 만들 수 없습니다.")?;
-    let job_id = job["id"].as_str().unwrap_or("").to_string();
+            "delegatedReadOnly": read_only,
+        },
+        "attempts": 0,
+        "stepIndex": 0,
+        "stepTotal": 0,
+        "events": [],
+    });
+    ctx.store.reserve_delegation(
+        ctx.session_id, &session, &job,
+        MAX_DELEGATED_JOBS_PER_SESSION, MAX_ACTIVE_DELEGATED_JOBS
+    )?;
+    // Publish only after both records have committed; failed admission has no
+    // observable job, session, audit receipt or spawned worker.
+    let persisted = ctx.store.get("job", &job_id)
+        .ok_or("위임 작업 기록이 사라졌습니다.")?;
+    ctx.state.bus.record("job", &persisted);
+    ctx.state.store.audit("job.queued", json!({
+        "kind": "prompt", "jobId": job_id,
+        "parentSessionId": ctx.session_id, "atomicAdmission": true
+    }));
     crate::engine::jobs::start_now(ctx.state.clone(), job_id.clone());
 
     if !wait {
