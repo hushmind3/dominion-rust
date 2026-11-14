@@ -17,11 +17,12 @@ fn parallel_tool_messages<T>(
     responses: Vec<Option<String>>,
     call_id: impl Fn(&T) -> &str,
 ) -> Vec<Value> {
+    let missing = json!({"error":"missing parallel tool result"}).to_string();
     calls.iter().enumerate().map(|(index, call)| json!({
         "role":"tool",
         "tool_call_id":call_id(call),
         "content":responses.get(index).and_then(Option::as_deref).unwrap_or(
-            "{\\"error\\":\\"missing parallel tool result\\"}"
+            missing.as_str()
         )
     })).collect()
 }
@@ -51,12 +52,13 @@ mod parallel_read_order_tests {
         assert_eq!(messages[0]["content"],"result-a");
         assert!(messages[1]["content"].as_str().unwrap().contains("missing parallel tool result"));
         assert_eq!(messages[2]["content"],"result-c");
+        let bad = json!({"error":"bad arguments"}).to_string();
         let mixed = super::parallel_tool_messages(&calls,
-            vec![Some("{\\"error\\":\\"bad arguments\\"}".into()),
-                 Some("success".into()),Some("later".into())],|call|*call);
+            vec![Some(bad.clone()), Some("success".into()),
+                Some("later".into())],|call|*call);
         assert_eq!(mixed[0]["tool_call_id"],"a");
         assert_eq!(mixed[1]["tool_call_id"],"b");
-        assert_eq!(mixed[0]["content"],"{\\"error\\":\\"bad arguments\\"}");
+        assert_eq!(mixed[0]["content"],bad);
     }
 
     #[test]
