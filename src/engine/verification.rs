@@ -635,6 +635,68 @@ mod inference_tests {
     use super::*;
 
     #[test]
+    fn source_edits_after_a_passing_test_invalidate_old_evidence(){
+        let test=|sequence:u64|json!({
+            "tool":"shell_exec","runId":"run-one","opSeq":sequence,
+            "arguments":{"command":"cargo test"},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T11:01:00Z",
+            "finishedAt":"2026-11-14T11:01:10Z"
+        });
+        let write=|sequence:u64|json!({
+            "tool":"workspace_replace_range","runId":"run-one","opSeq":sequence,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T11:01:01Z",
+            "finishedAt":"2026-11-14T11:01:02Z"
+        });
+        assert!(fresh_command_matches(&[write(1),test(2)],"cargo test"));
+        assert!(!fresh_command_matches(&[test(1),write(2)],"cargo test"));
+        assert!(fresh_command_matches(&[test(1),write(2),test(3)],"cargo test"));
+        let stale=json!([{"type":"command_succeeded","command":"cargo test"}]);
+        let gaps=acceptance_gaps_in(Path::new("."),"run tests",&stale,
+            &[test(1),write(2)]);
+        assert_eq!(gaps.len(),1);
+        assert!(gaps[0].contains("다시 실행"),"{gaps:?}");
+        assert!(acceptance_gaps_in(Path::new("."),"run tests",&stale,
+            &[test(1),write(2),test(3)]).is_empty());
+    }
+
+    #[test]
+    fn later_edit_in_another_execution_requires_a_new_test(){
+        let old=json!({"tool":"terminal_exec","runId":"old","opSeq":5,
+            "arguments":{"command":"cargo","args":["test"]},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T12:00:00Z",
+            "finishedAt":"2026-11-14T12:00:25Z"});
+        let later=json!({"tool":"workspace_write","runId":"new","opSeq":1,
+            "result":{"written":true},
+            "startedAt":"2026-11-14T12:10:00Z",
+            "finishedAt":"2026-11-14T12:10:01Z"});
+        assert!(!fresh_command_matches(&[old.clone(),later.clone()],"cargo test"));
+        let fresh=json!({"tool":"shell_exec","runId":"after","opSeq":1,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T12:11:00Z",
+            "finishedAt":"2026-11-14T12:11:15Z"});
+        assert!(fresh_command_matches(&[old,later,fresh],"cargo test"));
+    }
+
+    #[test]
+    fn read_only_failed_or_unsequenced_tools_do_not_forge_latest_test(){
+        let checked=json!({"tool":"shell_exec",
+            "arguments":{"command":"npm test"},"result":{"exitCode":0}});
+        let read=json!({"tool":"workspace_read","result":{"content":"same"}});
+        let failed=json!({"tool":"workspace_write",
+            "result":{"error":"permission denied"}});
+        let nochange=json!({"tool":"workspace_replace_range",
+            "result":{"written":false}});
+        assert!(fresh_command_matches(
+            &[checked.clone(),read,failed,nochange],"npm test"));
+        let unsequenced=json!({"tool":"workspace_write",
+            "result":{"written":true}});
+        assert!(!fresh_command_matches(&[checked,unsequenced],"npm test"));
+    }
+
+    #[test]
     fn pr_completion_needs_real_successful_github_receipt(){
         let created=json!({"tool":"github_api",
             "arguments":{"method":"POST","path":"/repos/owner/repo/pulls"},
