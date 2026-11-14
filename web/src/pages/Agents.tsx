@@ -324,6 +324,7 @@ export function AgentsPage() {
               </span>
               {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}{a.skillIds&&<span className="text-[11px]">전담 스킬 {a.skillIds.length}개 · {a.skillIds.map(id=>skills.value.find(skill=>skill.id===id)?.name||"비활성 스킬").join(", ")||"없음"}</span>}
               <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
+              <a href={"#/workflows?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#776249] hover:underline">이 에이전트로 검증 워크플로 만들기 <ArrowRight size={13}/></a>
             </div>
           </Panel>
         ))}
