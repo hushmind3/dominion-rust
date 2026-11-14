@@ -23,6 +23,6 @@ jobs:
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
       - run: node --test scripts/sub2-goal-eval.test.mjs
-      - run: node --test sdk/index.test.mjs
+      - run: node --test sdk/index.test.mjs sdk/mcp-server.test.mjs
       - run: bash -n scripts/rsi-lab.sh
       - run: cargo test --release
