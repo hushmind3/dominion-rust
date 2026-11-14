@@ -989,8 +989,18 @@ pub(super) async fn run_turn_body(
         // assistant/system rewrite. Never interrupt an in-flight tool body.
         // Apply it at the next model-step boundary before the request is built.
         if !is_room {
-            for steering_message in crate::engine::steering::drain_at_step(state,session_id)? {
-                messages.push(steering_message);
+            for (steer_id,steering_message) in
+                crate::engine::steering::drain_at_step_with_ids(state,session_id)?
+            {
+                // If a crash occurred after durable message insert but
+                // before queue settlement, history() already loaded this ID.
+                // A later correction with identical text has a different ID
+                // and remains an independent owner instruction.
+                let already_in_history=messages.iter().any(|message|
+                    message["id"].as_str()==Some(steer_id.as_str()));
+                if !already_in_history {
+                    messages.push(steering_message);
+                }
             }
         }
         let wire_messages = messages.clone();
