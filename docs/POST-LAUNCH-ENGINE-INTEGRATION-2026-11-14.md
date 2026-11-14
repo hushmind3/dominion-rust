@@ -47,6 +47,7 @@
 
 - **재현 증거:** 2026-11-14 [실모델 RSI workflow run 43537617763](https://github.com/hushmind3/dominion-rust/actions/runs/43537617763)는 GitHub Actions job 자체는 성공했지만, 내부 \`rsi_evolve\`는 \`needs_review\`, \`modelCalls:0\`, \`attempts:0\`, \`acceptedGenerations:0\`으로 종료했습니다. 원인은 \`src/engine/chat/runtime/intent.rs\`에 대해 \`현재 소스와 다른 탐색 근거\`라는 소스 검증 오류였습니다. 이 run을 재귀적 개선 성공 증거로 사용하지 않습니다.
 - **수정:** \`rsi/execution/generation_preparation.rs::prepare_generation_input\`은 실험 소스의 \`code_index::refresh\`를 저장하고, 재빌드된 \`rsi/planner/descendant.rs::plan_generation_from_file\`이 후손 시스템 청사진을 산출합니다. 감독 측 \`rsi/execution/compiled_planning.rs::plan_compiled_descendant\`는 \`rsi_system/validation.rs::validate_plan_evidence\`에서 원본 SHA와 인덱스 SHA를 비교합니다.
+- **근본 원인 수정:** `code_index::collect_files`가 폴더명이 `runtime`이면 실제 `src/engine/chat/runtime` Rust 모듈까지 제외해 계획 단계의 SHA 근거가 저장되지 않았습니다. 이제 코드 경로 안의 `runtime`·`tmp` 모듈을 스캔하며, 회귀 테스트에서 실제 모듈이 DB 인덱스에 영속화되는지 확인합니다.
 - **결함 분류:** 감독 검증은 **원본 파일의 SHA-256이 계획과 다르면 무조건 거부**하고, 원본이 계획과 일치하지만 영속 인덱스가 누락/오래된 경우에만 같은 실험 checkout을 다시 인덱싱하도록 수정했습니다. 재구성 후 인덱스 ID·파일 SHA와 현재 파일 SHA를 다시 대조하고, 하나라도 불일치하면 여전히 실패합니다. 독립 평가·채택 기준은 그대로입니다.
 - **회귀 테스트:** \`rsi_system/validation.rs\`에 인덱스 레코드 삭제 후 복구와 실제 파일 변조 거절을 함께 검증하는 테스트를 추가했습니다. \`.github/workflows/sub3-live-model-cycle.yml\`의 push 감시 범위에 \`src/engine/rsi/**\`와 \`src/engine/rsi_system/**\`을 추가했습니다.
 - **확인 한계:** 이 수정이 0회 시작 문제를 완전히 해결했는지는 새로운 독립 실행 기록의 \`modelCalls\`·\`attempts\`·generation evidence가 실제로 증가하는지 확인해야 합니다. 자율 개선 성공/채택 여부는 그 이후 별도 평가 결과로만 판단합니다.
