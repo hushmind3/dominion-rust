@@ -5,6 +5,8 @@ const en: Record<LocaleKey, string> = {
   'nav.group.operations': 'Operations',
   'nav.group.advanced': 'Advanced',
   'nav.home': 'Dashboard',
+  'nav.goals': 'Autonomous goals',
+  'dashboard.shortcut.goals.desc': 'Plan, execute, verify, resume and review Git changes',
   'nav.chat': 'Chat',
   'nav.rooms': 'Group rooms',
   'nav.models': 'Models',
