@@ -49,6 +49,26 @@ pub async fn session_usage(
     Json(state.store.session_usage(&id))
 }
 
+/// Owner-supplied live instruction; the executor consumes it before its next
+/// model/tool decision. Not an agent, plugin or provider-generated message.
+pub async fn steer_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(text) = body["input"].as_str().or_else(||body["text"].as_str()) else {
+        return error(StatusCode::BAD_REQUEST,"input 또는 text 문자열이 필요합니다.");
+    };
+    match engine::chat::enqueue_owner_steer(&state,&id,text) {
+        Ok(saved) => (StatusCode::ACCEPTED,Json(saved)).into_response(),
+        Err(message) if message.contains("찾을 수 없습니다") =>
+            error(StatusCode::NOT_FOUND,&message),
+        Err(message) if message.contains("현재 실행 중인") =>
+            error(StatusCode::CONFLICT,&message),
+        Err(message) => error(StatusCode::BAD_REQUEST,&message),
+    }
+}
+
 pub async fn rename_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
