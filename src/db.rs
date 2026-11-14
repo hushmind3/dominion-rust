@@ -443,6 +443,70 @@ impl Store {
         Some(record)
     }
 
+    /// One database transaction checks the original text AND provenance before
+    /// changing owner-authored memory. The audit row commits with the edit,
+    /// leaving no half-applied history if the process crashes.
+    ///
+    /// None means absent, stale, inactive or non-owner-authored; callers can
+    /// distinguish missing records for HTTP 404 outside this transaction.
+    pub fn edit_owner_memory(
+        &self,
+        id: &str,
+        expected_text: &str,
+        new_text: &str,
+    ) -> Result<Option<Value>, String> {
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        let current = tx.query_row(
+            "SELECT data,id,created_at,updated_at FROM records WHERE kind='memory' AND id=?1",
+            [id],
+            record_from_row,
+        ).optional().map_err(|error| error.to_string())?;
+        let Some(mut current) = current else { return Ok(None); };
+        if current["source"] != "user"
+            || current["status"] != "active"
+            || current["text"].as_str() != Some(expected_text)
+        {
+            return Ok(None);
+        }
+        if expected_text == new_text {
+            return Ok(Some(current));
+        }
+
+        let version = current["ownerEditVersion"].as_u64().unwrap_or(0)
+            .saturating_add(1);
+        current["text"] = json!(new_text);
+        current["ownerEditVersion"] = json!(version);
+        let updated = tx.execute(
+            "UPDATE records SET data=?2, updated_at=datetime('now')
+             WHERE kind='memory' AND id=?1",
+            params![id, current.to_string()],
+        ).map_err(|error| error.to_string())?;
+        if updated != 1 { return Err("owner memory row vanished during edit".into()); }
+        // Audit contains no raw memory content. The old and new versions remain
+        // private to the scoped record while the event proves the edit occurred.
+        let detail=json!({
+            "memoryId":id,
+            "scope":current["scope"],
+            "agentId":current["agentId"],
+            "source":"user",
+            "version":version,
+            "oldChars":expected_text.chars().count(),
+            "newChars":new_text.chars().count()
+        });
+        tx.execute(
+            "INSERT INTO audit(id,event,detail) VALUES(?1,'memory.owner_edited',?2)",
+            params![uuid::Uuid::new_v4().to_string(),detail.to_string()],
+        ).map_err(|error| error.to_string())?;
+        let result = tx.query_row(
+            "SELECT data,id,created_at,updated_at FROM records WHERE kind='memory' AND id=?1",
+            [id],
+            record_from_row,
+        ).map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(Some(result))
+    }
+
     pub fn patch_records(&self, kind: &str, ids: &[String], patch: &Value) -> Option<Vec<Value>> {
         let patch = patch.as_object()?;
         let mut conn = self.conn.lock().unwrap();
