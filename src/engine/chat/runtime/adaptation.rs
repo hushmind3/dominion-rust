@@ -126,8 +126,8 @@ pub(super) async fn run_harness_nodes(
 /// The actual file digest closes a same-size, same-timestamp edit hole in
 /// recovery and repeated-read admission. Limit reads to 1 MiB to avoid
 /// turning a cheap retry preflight into an unbounded disk scan.
-fn observable_path_state(path: &std::path::Path, metadata: &std::fs::Metadata) -> Value {
-    let content_sha = if metadata.is_file() && metadata.len() <= 1024 * 1024 {
+fn observable_path_state(path: &std::path::Path, metadata: &std::fs::Metadata, hash_allowed: bool) -> Value {
+    let content_sha = if hash_allowed && metadata.is_file() && metadata.len() <= 1024 * 1024 {
         std::fs::read(path).ok().map(|data|
             format!("{:x}",Sha256::digest(&data)))
     } else { None };
@@ -159,7 +159,10 @@ pub(super) fn failure_observation(
             state.config.workspace.join(value)
         };
         if let Ok(metadata) = std::fs::metadata(&path) {
-            path_state.insert(key.to_string(),observable_path_state(&path,&metadata));
+            let hash_allowed=std::fs::canonicalize(&path).ok().zip(
+                std::fs::canonicalize(&state.config.workspace).ok())
+                .is_some_and(|(target,root)|target.starts_with(root));
+            path_state.insert(key.to_string(),observable_path_state(&path,&metadata,hash_allowed));
         } else {
             path_state.insert(key.to_string(), json!({"exists": false}));
         }
@@ -461,14 +464,26 @@ mod snapshot_tests {
         std::fs::create_dir_all(&root).unwrap();
         let file=root.join("target.txt");
         std::fs::write(&file,b"STATE-A").unwrap();
-        let first=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        let first=observable_path_state(&file,&std::fs::metadata(&file).unwrap(),true);
         std::fs::write(&file,b"STATE-B").unwrap();
-        let second=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        let second=observable_path_state(&file,&std::fs::metadata(&file).unwrap(),true);
         assert_eq!(first["len"],second["len"]);
         assert_ne!(first["contentSha256"],second["contentSha256"]);
         assert_eq!(first["exists"],true);
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn external_path_metadata_must_not_trigger_content_reads(){
+        let root=std::env::temp_dir().join(format!("dominion-read-outside-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file=root.join("secret");
+        std::fs::write(&file,b"PRIVATE").unwrap();
+        let state=observable_path_state(&file,&std::fs::metadata(&file).unwrap(),false);
+        assert!(state["contentSha256"].is_null());
+        assert_eq!(state["len"],7);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn large_file_does_not_trigger_unbounded_hash_read(){
         let root=std::env::temp_dir().join(format!("dominion-read-large-{}",uuid::Uuid::new_v4()));
@@ -476,7 +491,7 @@ mod snapshot_tests {
         let file=root.join("large");
         let handle=std::fs::File::create(&file).unwrap();
         handle.set_len(1024*1024+1).unwrap();
-        let state=observable_path_state(&file,&std::fs::metadata(&file).unwrap());
+        let state=observable_path_state(&file,&std::fs::metadata(&file).unwrap(),true);
         assert!(state["contentSha256"].is_null());
         std::fs::remove_dir_all(root).unwrap();
     }
