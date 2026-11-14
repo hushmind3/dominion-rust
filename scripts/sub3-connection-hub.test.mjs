@@ -1,0 +1,66 @@
+// Source-contract regressions. Does not replace a real browser/API smoke run.
+// Run: node --test scripts/sub3-connection-hub.test.mjs
+import {readFileSync,existsSync} from 'node:fs'
+import {join} from 'node:path'
+import {fileURLToPath} from 'node:url'
+import {test} from 'node:test'
+import assert from 'node:assert/strict'
+
+const root=join(fileURLToPath(new URL('..',import.meta.url)))
+const source=path=>readFileSync(join(root,path),'utf8')
+const shell=source('web/src/components/WorkspaceShell.tsx')
+const app=source('web/src/App.tsx')
+const hub=source('web/src/pages/Connections.tsx')
+const chat=source('web/src/pages/Chat.tsx')
+
+test('one sidebar entry owns all three connection capabilities',()=>{
+ const navigation=shell.split('export const navigation:')[1]?.split('const items=')[0]||''
+ assert.equal((navigation.match(/id:'[^']+'/g)||[]).length,14,'all 14 current menu entries remain')
+ assert.equal((navigation.match(/id:'connections'/g)||[]).length,1)
+ assert.doesNotMatch(navigation,/id:'extensions'|id:'capabilities'/)
+ assert.match(navigation,/id:'memory'/)
+ assert.match(hub,/채널 연결/)
+ assert.match(hub,/MCP · 스킬/)
+ assert.match(hub,/역량 마켓/)
+ assert.match(hub,/function ChannelConnectionsPanel\(/)
+})
+
+test('legacy deep links reach the correct connection tab',()=>{
+ assert.match(app,/const legacy=name==='extensions'\|\|name==='capabilities'/)
+ assert.match(app,/page:\(legacy\?'connections'/)
+ assert.match(app,/connectionSection=/)
+ assert.match(app,/<ConnectionsPage initialSection=\{connectionSection\}/)
+ assert.match(hub,/useEffect\(\(\)=>setSection\(initialSection\),\[initialSection\]\)/)
+ assert.match(hub,/#\/connections.*section=/)
+})
+
+test('hidden extension pages load on demand without dropping installation APIs',()=>{
+ assert.match(hub,/lazy\(\(\)=>import\('\.\/Extensions'\)/)
+ assert.match(hub,/lazy\(\(\)=>import\('\.\/Capabilities'\)/)
+ const extensions=source('web/src/pages/Extensions.tsx')
+ const capabilities=source('web/src/pages/Capabilities.tsx')
+ for(const endpoint of ['/api/mcp','/api/skills','/api/skill-catalog','/api/mcp/catalog'])
+  assert.ok(extensions.includes(endpoint),endpoint)
+ for(const endpoint of ['/api/capabilities','/api/channels/catalog'])
+  assert.ok(capabilities.includes(endpoint),endpoint)
+ assert.ok(hub.includes('/api/channels/catalog'))
+ assert.ok(hub.includes('/api/oauth/connections'))
+})
+
+test('autonomous RSI alert and 15-second polling are removed, explicit repair stays',()=>{
+ assert.doesNotMatch(app,/ImprovementNotice/)
+ assert.equal(existsSync(join(root,'web/src/components/ImprovementNotice.tsx')),false)
+ const manual=source('web/src/components/ImprovementIssue.ts')
+ assert.doesNotMatch(manual,/setInterval|rsi\/signals|Notification|toast/)
+ assert.match(manual,/\/api\/rsi\/issues/)
+ assert.match(chat,/import \{openImprovementIssue\} from ["']\.\.\/components\/ImprovementIssue["']/)
+ assert.match(chat,/자기개선으로 수정/)
+})
+
+test('memory still appears as a first-class connected product feature',()=>{
+ assert.match(app,/<MemoryPage\/>/)
+ const page=source('web/src/pages/Memory.tsx')
+ assert.match(page,/\/api\/memories/)
+ assert.match(page,/LearningRecords/)
+ assert.match(page,/GrowthDashboard/)
+})
