@@ -9,6 +9,7 @@ type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
  id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;finalSummary?:string;
  jobId?:string;sessionId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
+ planRevision?:number;appliedOwnerPlanRevision?:number;ownerPlan?:{plan:string;revision:number;submittedAt?:string};
  isolateWorktree?:boolean;gitWorktree?:{path?:string;baseCommit?:string;discarded?:boolean;mode?:string;appliedAt?:string};
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
@@ -84,6 +85,17 @@ export function GoalConsole(){
   try{await post('/api/goals/'+encodeURIComponent(chosen.id)+'/plan',{plan:planDraft.trim()});
    setNotice('사용자 수정 계획을 다음 작업에 적용했습니다.');setEditingPlan(false);await reload()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const steerPlan=async()=>{
+  if(!chosen||chosen.status!=='running'||busy||!planDraft.trim())return
+  setBusy(true);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(chosen.id)+'/steer',{
+    expectedRevision:chosen.planRevision||0,plan:planDraft.trim()
+   })
+   setNotice('방향 변경 요청을 저장했습니다. 다음 안전한 실행 턴부터 새 계획을 사용합니다.')
+   setEditingPlan(false);await reload()
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  const applyWorktree=async()=>{
   if(!chosen||busy||!diff||diff.id!==chosen.id||!diff.canApply||!diff.patchSha256)return
@@ -187,10 +199,12 @@ export function GoalConsole(){
       </div>)}</div>}
      {chosen.plan&&<details open><summary className="cursor-pointer text-xs font-semibold">실행 계획</summary>
        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#FAF7F1] p-3 text-xs">{chosen.plan}</pre>
-       {['queued','failed','needs_review','cancelled'].includes(chosen.status)&&<div className="mt-2 space-y-2">
-        <Button size="sm" variant="secondary" onClick={()=>{setPlanDraft(chosen.plan||'');setEditingPlan(!editingPlan)}}>계획 직접 수정</Button>
-        {editingPlan&&<><TextArea rows={5} value={planDraft} onChange={e=>setPlanDraft(e.target.value)}/>
-          <Button size="sm" disabled={!planDraft.trim()||busy} onClick={()=>void savePlan()}>수정한 계획 저장</Button></>}
+       {chosen.ownerPlan&&chosen.ownerPlan.revision>(chosen.appliedOwnerPlanRevision||0)&&<p className="mt-2 rounded-lg bg-[#F2EADF] p-2 text-xs text-[#5C544A]">다음 턴 반영 대기 · 변경 버전 {chosen.ownerPlan.revision}. 현재 도구 작업과 검증 조건은 변경되지 않습니다.</p>}
+       {['queued','running','failed','needs_review','cancelled'].includes(chosen.status)&&<div className="mt-2 space-y-2">
+        <Button size="sm" variant="secondary" onClick={()=>{setPlanDraft(chosen.ownerPlan?.plan||chosen.plan||'');setEditingPlan(!editingPlan)}}>{chosen.status==='running'?'실행 중 방향 수정':'계획 직접 수정'}</Button>
+        {editingPlan&&<><TextArea rows={5} value={planDraft} maxLength={chosen.status==='running'?6000:8000} onChange={e=>setPlanDraft(e.target.value)}/>
+          <p className="text-[11px] text-[#7C7469]">{chosen.status==='running'?'현재 도구 호출은 변경하지 않습니다. 다음 실행 턴 시작 전에 원자적으로 반영하며 승인·검증 조건도 유지합니다.':'재개 전에 변경된 계획을 저장합니다.'}</p>
+          <Button size="sm" disabled={!planDraft.trim()||busy} onClick={()=>void (chosen.status==='running'?steerPlan():savePlan())}>{chosen.status==='running'?'다음 턴부터 새 계획 적용':'수정한 계획 저장'}</Button></>}
        </div>}
      </details>}
      {chosen.finalSummary&&<details open><summary className="cursor-pointer text-xs font-semibold">{chosen.status==='completed'?'에이전트 결과 보고':'마지막 에이전트 실행 보고'}</summary>
