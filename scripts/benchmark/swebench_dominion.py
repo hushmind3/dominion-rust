@@ -158,12 +158,13 @@ def execution_metrics(base: str, token: str | None, goal: dict) -> dict:
 
 
 def validated_patch(payload: dict, expected_base: str) -> str:
-    if payload.get("source") != "isolated_git_binary_diff_after_terminal_goal_v1":
+    if payload.get("source") != "isolated_git_worktree_complete_patch_v2":
         raise ValueError("Expected exact isolated Git worktree evidence")
     if payload.get("complete") is not True or payload.get("baseCommit") != expected_base:
         raise ValueError("Patch origin or completeness mismatch")
-    if payload.get("untrackedFiles") != 0:
-        raise ValueError("Missing untracked files from patch")
+    untracked = payload.get("untrackedFiles")
+    if not isinstance(untracked,int) or untracked < 0 or untracked > 128:
+        raise ValueError("Invalid count of included new files")
     patch = payload.get("modelPatch")
     if not isinstance(patch, str):
         raise ValueError("Exact modelPatch must be a string")
