@@ -134,8 +134,10 @@ pub(super) fn select_generation_strategy(
             }).and_then(|row|row["domain"].as_str());
             let domain=pinned.map(str::to_string)
                 .unwrap_or_else(||select_domain(&algorithm, history, objective));
-            let generation = json!({"domain":domain,"generatorCommit":generator_commit});
-            if comparable_trial_baseline(history, &generation, &algorithm).is_some() {
+            // The new worker has not run yet, so its evaluation profile,
+            // objective digest and paired receipt cannot exist at planning
+            // time. Match these again at the immutable post-run verdict.
+            if available_trial_baseline(history,generator_commit,&domain,&algorithm) {
                 return (domain, "algorithm_trial", search_strategy(&algorithm, "trial"));
             }
             // A barren control cannot supply paired quality evidence, even
