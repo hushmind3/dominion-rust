@@ -1,0 +1,14 @@
+[package]
+name = "dominion-agent-sdk-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license = "Apache-2.0"
+
+# Completely separate binary: the DOMINION production binary and Cargo.lock
+# remain untouched. SDK experiments must not silently replace its tool policy.
+[dependencies]
+github-copilot-sdk = "1.0.34"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
