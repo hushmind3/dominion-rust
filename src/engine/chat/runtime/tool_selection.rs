@@ -344,7 +344,7 @@ pub(super) fn select_tool_definitions(
 /// Scores schemas against the task, not against an SDK-defined agent profile.
 /// This runs only when all schemas exceed the model's context allocation.
 /// Capability is never granted by selection: policy gates execute afterwards.
-fn tool_schema_relevance(definition: &Value, task: &str) -> i32 {
+pub(super) fn tool_schema_relevance(definition: &Value, task: &str) -> i32 {
     let name = tool_name(definition).to_lowercase();
     if name.is_empty() {
         return i32::MIN;

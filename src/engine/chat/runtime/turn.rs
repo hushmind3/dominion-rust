@@ -234,6 +234,13 @@ pub(super) async fn run_turn_body(
             tools::rsi_allowed(tool_name(definition))
             && rsi_successor_tool_allowed(&session["rsiSuccessorStage"],tool_name(definition)));
     }
+    // Capability boundaries are applied above. The native search catalog is
+    // scoped to the same authorization and has no external execution backend.
+    let discovery_catalog = tool_definitions.clone();
+    let mut revealed_tool_names = restore_revealed(state, execution_id, &discovery_catalog);
+    let mut discovery_search_calls = 0usize;
+    let dynamic_tool_discovery = session["rsiRun"] != true
+        && request.tools_enabled && request.tools_execution_enabled;
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::super::room_context::compile(
@@ -750,7 +757,10 @@ pub(super) async fn run_turn_body(
                         .clamp(4_000, 60_000)
                 })
                 .unwrap_or(60_000);
-            round_tools = trim_tool_definitions(round_tools, budget, &request.input);
+            round_tools = search_tool_definitions_for_round(
+                &discovery_catalog, &request.input, budget, &revealed_tool_names,
+                dynamic_tool_discovery,
+            );
         }
         if session["rsiRun"]==true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
@@ -1444,7 +1454,8 @@ pub(super) async fn run_turn_body(
         {
             let read_calls = round_calls
                 .iter()
-                .filter(|call| tool_is_read_only(&call.name))
+                .filter(|call| tool_is_read_only(&call.name)
+                    && round_tools.iter().any(|definition|tool_name(definition)==call.name))
                 .cloned()
                 .collect::<Vec<_>>();
             if read_calls.len() >= 2 {
@@ -1456,6 +1467,19 @@ pub(super) async fn run_turn_body(
                     request.agent_id.as_deref(),
                     Some(execution_id),
                 );
+                // Parallel reads must consume exactly the same proposal and
+                // execution budget as serial tools. Cancellation is checked
+                // before spawning any in-flight futures.
+                for _ in &read_calls {
+                    if !budget.charge_proposal() || !budget.charge_tool() {
+                        return Err("병렬 도구 호출 예산을 초과했습니다.".into());
+                    }
+                }
+                if state.is_cancelled(session_id)
+                    || state.cancellation_generation(session_id) != generation
+                {
+                    return Err("실행이 중단되었습니다.".into());
+                }
                 let base_seq = op_seq;
                 op_seq += read_calls.len() as u64;
                 let mut futures = Vec::new();
@@ -1532,7 +1556,7 @@ pub(super) async fn run_turn_body(
                         state, execution_id, "recovery.strategy", ok,
                     );
                 }
-                round_calls.retain(|call| !tool_is_read_only(&call.name));
+                round_calls.retain(|call| !read_calls.iter().any(|handled|handled.id==call.id));
             }
         }
         let mut ordering_used = false;
@@ -1568,6 +1592,65 @@ pub(super) async fn run_turn_body(
                     "role":"tool","tool_call_id":call.id,
                     "content":json!({"error":error,"unadvertisedRsiTool":true}).to_string()
                 }));
+                continue;
+            }
+            // Never execute a tool omitted from this model round. Provider
+            // text-tool fallbacks and native tool JSON follow the same gate.
+            if !round_tools.iter().any(|definition|tool_name(definition)==call.name) {
+                let error=format!("현재 모델 턴에서 '{}' 도구는 공개되지 않았습니다. 필요한 도구가 있으면 dominion_tool_search로 검색하세요.",call.name);
+                record_soft_tool_error(state,tx,session_id,request,execution_id,
+                    &call.name,&call.id,&error,metrics);
+                messages.push(json!({"role":"tool","tool_call_id":call.id,
+                    "content":json!({"error":error,"unadvertisedTool":true}).to_string()}));
+                continue;
+            }
+            if call.name == TOOL_SEARCH_NAME {
+                if discovery_search_calls >= 4 {
+                    let msg=json!({"error":"이 작업에서 도구 검색은 4회까지 허용됩니다. 이미 공개된 도구를 사용하거나 현재 가능한 범위를 보고하세요."});
+                    messages.push(json!({"role":"tool","tool_call_id":call.id,"content":msg.to_string()}));
+                    continue;
+                }
+                if !budget.charge_tool() {
+                    return Err("도구 검색 실행 예산을 초과했습니다.".into());
+                }
+                discovery_search_calls+=1;
+                let parsed=serde_json::from_str::<Value>(&call.arguments).unwrap_or(Value::Null);
+                let query=parsed["query"].as_str().unwrap_or("");
+                let limit=parsed["limit"].as_u64().unwrap_or(4).clamp(1,6) as usize;
+                let (matches,names)=search_catalog(
+                    &discovery_catalog,query,limit,&revealed_tool_names,
+                );
+                let mut newly_revealed=Vec::new();
+                for name in names {
+                    if revealed_tool_names.len()>=20 {break;}
+                    if revealed_tool_names.insert(name.clone()) {newly_revealed.push(name);}
+                }
+                let outcome=json!({
+                    "source":"dominion-native-tool-search","query":query,
+                    "matches":matches,"newlyRevealed":newly_revealed,
+                    "toolSchemasAvailableNextTurn":true,
+                    "message":if matches.is_empty(){"검색된 도구가 없습니다. 다른 동작을 계획하세요."}else{"다음 턴에서 공개된 도구를 직접 호출할 수 있습니다."}
+                });
+                if let Some(mut exec)=state.store.get("execution",execution_id){
+                    exec["revealedToolNames"]=json!(revealed_tool_names.iter().collect::<Vec<_>>());
+                    exec["toolDiscoverySearches"]=json!(discovery_search_calls);
+                    state.store.put("execution",&exec)
+                        .ok_or("도구 검색 체크포인트를 저장하지 못했습니다.")?;
+                }
+                state.store.audit("agent.native_tool_discovery",json!({
+                    "executionId":execution_id,"sessionId":session_id,
+                    "query":query,"newlyRevealed":newly_revealed,
+                    "matches":matches.len()
+                }));
+                let saved=state.store.write_message(&json!({
+                    "session_id":session_id,"role":"tool",
+                    "content":outcome.to_string(),"tool_call_id":call.id,
+                    "agent_id":request.agent_id,
+                    "metadata":{"authorKind":"tool","executionId":execution_id,"discovery":true}
+                })).ok_or("도구 검색 결과를 저장하지 못했습니다.")?;
+                state.bus.message(&saved);
+                messages.push(json!({"role":"tool","tool_call_id":call.id,
+                    "content":outcome.to_string()}));
                 continue;
             }
             let mut arguments = match serde_json::from_str::<Value>(&call.arguments) {

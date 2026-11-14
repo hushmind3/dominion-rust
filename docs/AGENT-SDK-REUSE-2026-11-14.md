@@ -33,3 +33,24 @@
 - Rust 컴파일/테스트 CI 통과 여부와 별개로 실모델 완수율 개선을 주장하지 않는다. 동일 작업·모델에서 스키마 토큰, 선택된 도구, 실제 작업 완수율, 도구 실패, 캐시 재사용, 실제 청구 비용까지 비교해야 정식 최적화로 인정한다.
 - 모델 지능의 향상은 타사 실행 엔진을 붙여 얻지 않는다. 자체 planner·tool selector·feedback·memory·RSI의 결과로 증명한다.
 - `/goal`은 채팅 명령이다. 별도 제품 메뉴는 제거했고 오래된 북마크는 활동 화면으로 연결된다.
+
+## 2026-11-14 소스 수준 대조: SDK의 *구조만* 도미니언 실행기에서 재구현
+
+깃허브 실제 구현 비교:
+- [Pydantic AI `toolsets/_tool_search.py`](https://github.com/pydantic/pydantic-ai/blob/main/pydantic_ai_slim/pydantic_ai/toolsets/_tool_search.py): 사용 가능한 목록과 모델에게 공개된 도구를 분리하고, 검색을 통해 공개하며, 컨텍스트 압축 후 가시성을 되살림. 특히 검색 가능한 것과 별도 권한 검사가 필요한 것을 분리한다.
+- [OpenAI Agents SDK `run_internal/run_loop.py`](https://github.com/openai/openai-agents-python/blob/main/src/agents/run_internal/run_loop.py) · [`tool_execution.py`](https://github.com/openai/openai-agents-python/blob/main/src/agents/run_internal/tool_execution.py): tool/handoff/final 구분, 승인과 인터럽트 이후 정확한 단계 재개, tool task 취소/settle.
+- [Copilot Rust SDK `session.rs`](https://github.com/github/copilot-sdk/blob/main/rust/src/session.rs): 도구 검색 등록, 세션 이벤트 버퍼, idle waiter cleanup, cancel-safe 결과 대기. **CLI/SDK 실행 엔진을 도미니언에 가져오지 않는다**.
+- [Swiftide context-compression](https://github.com/bosun-ai/swiftide/blob/main/swiftide-agents-contrib/src/hooks/context_compression.rs): 계획·Git diff·원본 사용자 지시 보존, 과도한 도구 결과 압축 시 최신 관측 보존.
+- [Microsoft Agent Framework progressive disclosure](https://github.com/microsoft/agent-framework/blob/main/python/samples/02-agents/mcp/mcp_progressive_disclosure.py): MCP 도구의 검색·공개 분리, 필요시 상세 스키마 제공.
+- [Claude Agent SDK session resume](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/session_resume.py): 세션 상태 재구성/재개시 도구·인증·임시 경로 분리.
+- [Anthropic advanced tool use](https://www.anthropic.com/research/advanced-tool-use): 광범위한 스키마의 초기 노출 대신 도구 검색으로 필요시 스키마를 불러오는 접근.
+
+**구현:** `src/engine/chat/runtime/tool_discovery.rs` 신규, `turn.rs`와 `runtime.rs` 실제 모델 턴에 연결.
+
+- 새 외부 SDK 없이 이미 허가된 **네이티브 + 설치 MCP 도구 목록**에서만 검색한다. 기존 `delegatedReadOnly`/RSI 제한 이후의 카탈로그이므로 검색이 권한 확대가 될 수 없다.
+- 큰 카탈로그에 한해 `dominion_tool_search`라는 **도미니언 내부 함수 도구**를 모델에게 보여주고, 첫 턴에는 작업 적합한 작은 스키마를 선택한다. 작업 도중 검색을 요청하면 기능명과 한정된 설명을 도구 메시지로 반환한 다음 **다음 추론 턴에 실제 스키마를 추가**한다.
+- 공개된 도구명은 실행 체크포인트에 저장하고 다음 턴부터 우선 노출한다. 한 턴에 검색은 최대 4회, 총 공개 20개. 외부 효과나 API 호출 없이 검색이 동작한다.
+- 제공하지 않은 도구를 모델이 만들어 호출해도 실행하지 않는다. 이전에는 병렬 읽기 경로에서 광고되지 않은 도구가 바로 실행될 가능성이 있었으므로 스키마 경계 검사와 병렬 예산/취소를 같은 턴에 강화한다.
+- 언어가 다른 한국어 요청도 Github/파일/웹/기억 등 의도 별칭을 이용해 적합한 이름을 찾는다.
+- 이 경로는 모델 품질을 이미 증명한 것이 아니라, 기존에는 불가능했던 **실행 중 도구 발견→스키마 공개→호출** 경로가 실제 Rust 함수로 연결됐다는 뜻이다. 실모델 벤치마크 수치는 별도.
+

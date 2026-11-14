@@ -38,6 +38,10 @@ use self::adaptation::{attempt_model_adaptation, environment_fingerprint, failur
 mod tool_selection;
 use self::tool_selection::{mark_tool_argument_signal, normalize_tool_arguments, recent_room_tools, restore_program_state, select_room_tools, select_tool_definitions, tool_is_read_only, tool_name, trim_tool_definitions};
 
+#[path = "runtime/tool_discovery.rs"]
+mod tool_discovery;
+use self::tool_discovery::{search_tool_definitions_for_round, search_catalog, restore_revealed, TOOL_SEARCH_NAME};
+
 #[path = "runtime/program.rs"]
 mod program;
 use self::program::{run_program};
