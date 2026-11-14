@@ -233,3 +233,9 @@ enforces source SHA equality with the official SWE-bench evaluator's
 without invoking a model. Missing or corrupted official reports cannot
 silently become certified solved instances. The runner records exact evaluated
 instance IDs, resource limits and provenance.
+
+
+`scripts/sub2-swebench-compare.mjs` implements case-matched official
+SWE-bench trial comparisons, refusing missing grades or cherry-picked case
+sets. It reports paired wins and cost accounting and labels a controlled
+harness comparison only when the model and recorded budgets match.
