@@ -449,31 +449,37 @@ pub(super) fn render_history(
                     .iter()
                     .take_while(|row| row["role"] == "tool" && row["agent_id"].as_str() == agent_id)
                     .collect();
-                let valid = calls.len() == results.len()
-                    && calls.iter().zip(&results).all(|(call, result)| {
-                        call["id"].as_str().is_some() && call["id"] == result["tool_call_id"]
+                // A process may exit after only some tool responses reach
+                // SQLite. The old all-or-nothing check discarded even real
+                // successful results. Repair the provider-bound transcript
+                // alone, never the stored source or effect ledger.
+                if let Some(chain) = super::history_repair::replay(calls, &results) {
+                    let mut assistant = json!({
+                        "role":"assistant","content":content,"tool_calls":calls
                     });
-                if valid {
-                    let mut assistant = json!({"role":"assistant","content":content,"tool_calls":calls});
                     if let Some(reasoning) = stored_reasoning(message) {
                         assistant["reasoning_content"] = json!(reasoning);
                     }
                     out.push(assistant);
-                    out.extend(results.iter().map(|row| {
-                        let content = row["content"].as_str().unwrap_or("");
-                        let content = if is_room && content.chars().count() > 2_000 {
-                            format!(
-                                "{}… [도구 출력 {}자 생략]",
-                                content.chars().take(2_000).collect::<String>(),
-                                content.chars().count()
-                            )
-                        } else {
-                            content.to_string()
-                        };
-                        json!({"role":"tool", "tool_call_id":row["tool_call_id"],"content":content,"_dominion_frame":row["id"]})
+                    out.extend(chain.results.into_iter().map(|mut row| {
+                        if is_room {
+                            if let Some(text) = row["content"].as_str() {
+                                if text.chars().count()>2_000 {
+                                    row["content"]=json!(format!(
+                                        "{}… [도구 출력 {}자 생략]",
+                                        text.chars().take(2_000).collect::<String>(),
+                                        text.chars().count()
+                                    ));
+                                }
+                            }
+                        }
+                        row
                     }));
+                    // Consume original tool rows, including orphan/duplicate
+                    // responses, so strict providers see exactly one reply
+                    // for each advertised assistant tool-call ID.
                     index += results.len();
-                } else if !content.trim().is_empty() {
+            } else if !content.trim().is_empty() {
                     out.push(json!({"role":"assistant","content":format!("{content}\n[이전 도구 실행이 중단되어 결과를 확인할 수 없습니다.]")}));
                 }
             } else if !content.trim().is_empty() {
