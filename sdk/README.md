@@ -140,3 +140,7 @@ DOMINION Rust MCP client, and the stateless `2026-07-28` request metadata format
 No external CLI or third-party agent execution policy is installed. New tools may
 take up to the Rust MCP client's 120-second discovery cache to appear.
 Run `node --test sdk/index.test.mjs sdk/mcp-server.test.mjs`.
+
+### Live owner steering
+
+`await sdk.session(sessionId).steer('새 방향: ...')` submits the exact owner instruction to the native Rust durable step inbox. This does not spawn a competing chat run or import a third-party policy. If the current model turn has finished, the instruction remains queued for the next native turn.

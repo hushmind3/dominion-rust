@@ -164,3 +164,7 @@ does not claim a paid-model autonomous coding benchmark was completed.
 - https://github.com/bytedance/deer-flow
 - https://github.com/QwenLM/Qwen-Agent
 - https://github.com/FoundationAgents/OpenManus
+
+### Owner control is product-visible, not only backend code
+
+`web/src/pages/Chat.tsx` now allows the submit button to send a literal correction while the current session is streaming. While idle it sends a normal chat input; while busy it calls `/api/sessions/:id/steer` and awaits the queued receipt. The next Rust model step emits `owner_steer` so the UI can display that the correction was actually incorporated. The JS transport offers `sessions.steer` for other products while the real engine remains Rust. No second chat stream is started when a correction is submitted.

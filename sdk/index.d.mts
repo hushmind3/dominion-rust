@@ -32,6 +32,7 @@ export class DominionClient {
     stream(input: string, config?: Omit<ChatRequest, 'sessionId' | 'input'>, options?: RequestOptions): AsyncGenerator<StreamEvent>;
     run(input: string, config?: Omit<ChatRequest, 'sessionId' | 'input'>, options?: RequestOptions): Promise<{ text: string; reasoning: string; events: StreamEvent[]; done: StreamEvent | null }>;
     cancel(options?: RequestOptions): Promise<JsonObject>;
+    steer(instruction: string, options?: RequestOptions): Promise<JsonObject>;
   };
   sessions: {
     list(options?: RequestOptions): Promise<Session[]>;
@@ -40,6 +41,7 @@ export class DominionClient {
     messages(id: string, options?: RequestOptions): Promise<JsonObject[]>;
     usage(id: string, options?: RequestOptions): Promise<JsonObject>;
     cancel(id: string, options?: RequestOptions): Promise<JsonObject>;
+    steer(id: string, instruction: string, options?: RequestOptions): Promise<JsonObject>;
     fork(id: string, options?: RequestOptions): Promise<Session>;
     compact(id: string, config: JsonObject, options?: RequestOptions): Promise<JsonObject>;
   };

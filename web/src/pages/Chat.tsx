@@ -43,6 +43,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [serverUsage,setServerUsage]=useState(0);
  const approvals=useRemote<Approval[]>('/api/approvals',[]);
  const [input,setInput]=useState('');
+ const [steeringBusy,setSteeringBusy]=useState(false);
  const [agentChoice,setAgentChoice]=useState<{scope?:string;id:string}>();
  const [override,setOverride]=useState<ModelOverride>();
  const defaultAgent=agents.value.find(agent=>agent.id==='general')||agents.value[0];
@@ -278,7 +279,23 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(busy&&text!=='/stop')return;
    await executeCommand(text);return;
   }
-  if(stream.current||selectedSession?.roomId||(current&&sessions.loading))return;
+  if(stream.current){
+   // One active session receives owner corrections at native model boundaries,
+   // without starting a competing chat stream or rewriting the original task.
+   if(!current||turnSession!==current||steeringBusy)return;
+   setSteeringBusy(true);setError('');
+   try{
+    await post('/api/sessions/'+encodeURIComponent(current)+'/steer',
+     {instruction:input});
+    setInput(previous=>previous===input?'':previous);
+    setCommandInfo('새 지시를 저장했습니다. 현재 모델 요청이 끝난 뒤 다음 실행 단계에 반영됩니다.');
+    setSlashOpen(false);
+   }catch(error){
+    setError(translateError((error as Error).message));
+   }finally{setSteeringBusy(false);}
+   return;
+  }
+  if(selectedSession?.roomId||(current&&sessions.loading))return;
   if(providerId&&!selectedProvider){setError(t('chat.err.agentApi'));return;}
   if(!providerId){setError(t('chat.err.connectApi'));return;}
   if(!model){setError(t('chat.err.pickModel'));return;}
@@ -316,6 +333,10 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     if(event.type==='tool_end')setToolStatus(t('chat.tool.done',{name:event.name}));
     if(event.type==='tool_error')setToolStatus(t('chat.tool.error',{error:translateError(event.error)}));
     if(event.type==='goal_progress')setToolStatus(t('chat.tool.goal',{event:event.event,status:event.status}));
+    if(event.type==='owner_steer'){
+     setCommandInfo('사용자의 수정 지시가 실제 모델 실행 단계에 반영됐습니다.');
+     void transcript.reload();
+    }
     if(event.type==='error')throw Error(event.message);
    },controller.signal);
   }catch(e){
@@ -412,7 +433,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     <div className="relative">
     {slashOpen&&<SlashMenu items={slashItems} active={slashActive} onChoose={chooseSlash}/>}
     <form onSubmit={send} className="overflow-visible rounded-2xl border border-[#E1D9CC] bg-[#FFFDF9] shadow-[0_8px_30px_rgba(36,33,29,.08)] focus-within:border-[#C96442] focus-within:ring-4 focus-within:ring-[#C96442]/10">
-     <TextArea ref={inputRef} rows={1} placeholder={t("chat.inputPlaceholder")} value={input} onChange={e=>{const next=e.target.value;setInput(next);setSlashOpen(next.startsWith('/')&&!next.includes('\n'));setSlashActive(0);const el=e.currentTarget;el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px'}} onKeyDown={appendKey} aria-controls="dominion-slash-menu" aria-expanded={slashOpen} className="!min-h-[64px] !resize-none !rounded-2xl !border-0 !bg-[#FFFDF9] !px-5 !pb-0 !pt-4 !text-[15px] !leading-7 !shadow-none !ring-0 focus:!ring-0"/>
+     <TextArea ref={inputRef} rows={1} placeholder={busy&&turnSession===current?'실행 중 새 지시를 입력하세요. 다음 모델 단계에 반영합니다.':t("chat.inputPlaceholder")} value={input} onChange={e=>{const next=e.target.value;setInput(next);setSlashOpen(next.startsWith('/')&&!next.includes('\n'));setSlashActive(0);const el=e.currentTarget;el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px'}} onKeyDown={appendKey} aria-controls="dominion-slash-menu" aria-expanded={slashOpen} className="!min-h-[64px] !resize-none !rounded-2xl !border-0 !bg-[#FFFDF9] !px-5 !pb-0 !pt-4 !text-[15px] !leading-7 !shadow-none !ring-0 focus:!ring-0"/>
      <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2 pt-1">
       <div className="flex flex-wrap items-center gap-1">
        <div className="relative">
@@ -428,7 +449,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
       </div>
       <div className="ml-auto flex items-center gap-2">
        <span className="hidden text-[10px] text-[#9C9388] sm:inline">{t('chat.enterHint')}</span>
-       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={busy||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t('chat.send')}>{busy?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button>
+       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={(busy&&(!current||turnSession!==current||steeringBusy))||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={busy?'실행 중 사용자 지시 변경':'메시지 보내기'} aria-label={busy?'실행 중 사용자 지시 변경':'메시지 보내기'}>{steeringBusy?<LoaderCircle size={18} className="animate-spin"/>:busy?<CornerDownLeft size={18}/>:<ArrowUp size={19}/>}</Button>
       </div>
      </div>
     </form></div><div className="mt-2 text-center text-[10px] text-[#9C9388]">{t('chat.reasoningNote')}</div>

@@ -54,6 +54,7 @@ export class DominionClient {
       messages: (sessionId, options) => this.request('GET', `/api/sessions/${id(sessionId)}/messages`, undefined, options),
       usage: (sessionId, options) => this.request('GET', `/api/sessions/${id(sessionId)}/usage`, undefined, options),
       cancel: (sessionId, options) => this.request('POST', `/api/sessions/${id(sessionId)}/cancel`, {}, options),
+      steer: (sessionId, instruction, options) => this.request('POST', `/api/sessions/${id(sessionId)}/steer`, { instruction }, options),
       fork: (sessionId, options) => this.request('POST', `/api/sessions/${id(sessionId)}/fork`, {}, options),
       compact: (sessionId, config, options) => this.request('POST', `/api/sessions/${id(sessionId)}/compact`, config, options),
     };
@@ -200,6 +201,7 @@ export class DominionClient {
       stream: (input, config = {}, options) => this.chat.stream({ ...config, sessionId, input }, options),
       run: (input, config = {}, options) => this.chat.run({ ...config, sessionId, input }, options),
       cancel: options => this.sessions.cancel(sessionId, options),
+      steer: (instruction, options) => this.sessions.steer(sessionId, instruction, options),
     };
   }
   async waitJob(jobId, { intervalMs = 400, signal, maxPolls = 300 } = {}) {

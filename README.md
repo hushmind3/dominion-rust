@@ -792,3 +792,7 @@ The code-path map, cross-domain owner/cancellation/evidence contract, component
 integration gaps, 2026 US/China source comparison and peer-branch transfer
 candidates live in [DOMINION integrated system engineering](docs/architecture/DOMINION-FRONTIER-INTEGRATED-SYSTEM-SUB2-2026-11-14.md).
 The goal is an end-to-end verified working product, not just a standalone SDK.
+
+#### Chat UI: change direction while the model is working
+
+During an active chat turn the send control becomes **실행 중 사용자 지시 변경**: the input sends a verbatim correction to `POST /api/sessions/:id/steer`. The Rust model loop acknowledges delivery through `owner_steer` streaming events. It does not open a second competing chat turn or discard the original tool results. The optional JS SDK mirrors this through `sessions.steer` / `session(id).steer`.

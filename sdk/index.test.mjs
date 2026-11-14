@@ -71,3 +71,17 @@ test('SDK forwards owner goal unaltered without third-party policy decisions', a
   await sdk.goals.create(input);
   assert.deepEqual(captured, input);
 });
+
+test('owner steering sends literal correction to the native Rust inbox', async () => {
+  let request;
+  const sdk = client(async (url, options) => {
+    request = { url, ...options };
+    return response({ id: 'steer-1', status: 'queued' });
+  });
+  const exact = '  지금은 이전 계획 중단.\n새 목표를 우선해 주세요.  ';
+  const result = await sdk.session('session-one').steer(exact);
+  assert.equal(request.url, 'http://localhost:4317/api/sessions/session-one/steer');
+  assert.equal(request.method, 'POST');
+  assert.deepEqual(JSON.parse(request.body), { instruction: exact });
+  assert.equal(result.status, 'queued');
+});
