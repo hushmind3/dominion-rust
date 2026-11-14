@@ -84,6 +84,39 @@ pub async fn save(
             .into_response();
     }
     let mut body = body;
+    if kind == "memory" {
+        // Never let the generic collection upsert overwrite an existing
+        // memory or forge learned evidence. Owner edits use the checked,
+        // audited /api/memories/:id/edit endpoint instead.
+        let invalid = || (StatusCode::BAD_REQUEST,
+            Json(json!({"error":"직접 작성한 기억의 내용과 범위만 등록할 수 있습니다."})))
+            .into_response();
+        let Some(text) = body["text"].as_str().map(str::trim)
+            .filter(|value| !value.is_empty() && value.chars().count()<=4096)
+        else { return invalid(); };
+        if body.get("id").is_some()
+            || body.get("source").is_some_and(|v|v!="user")
+            || body.get("status").is_some_and(|v|v!="active")
+            || body.as_object().is_some_and(|obj| obj.keys().any(|key|
+                !["text","source","status","scope","agentId"].contains(&key.as_str())))
+        {
+            return invalid();
+        }
+        let scope=body["scope"].as_str().unwrap_or("shared");
+        let agent_id=body["agentId"].as_str();
+        if !matches!(scope,"shared"|"global"|"agent")
+            || (scope=="agent" && agent_id.is_none_or(|id|
+                state.store.get("agent",id).is_none()))
+            || (scope!="agent" && agent_id.is_some()) {
+            return invalid();
+        }
+        body=if scope=="agent" {
+            json!({"text":text,"source":"user","status":"active","scope":"agent",
+                "agentId":agent_id.unwrap_or_default()})
+        }else{
+            json!({"text":text,"source":"user","status":"active","scope":scope})
+        };
+    }
     if kind == "mcp" {
         let id = body
             .get("id")
@@ -236,6 +269,39 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
+        ("memory", "edit") => {
+            let bad=|message:&str| (StatusCode::BAD_REQUEST,
+                Json(json!({"error":message}))).into_response();
+            let Some(fields)=body.as_object() else {
+                return bad("수정 내용을 객체로 제출하세요.");
+            };
+            if fields.len()!=2 || !fields.contains_key("expectedText")
+                || !fields.contains_key("text") {
+                return bad("text 및 expectedText 항목만 제출하세요.");
+            }
+            let Some(previous)=body["expectedText"].as_str() else {
+                return bad("수정 전 기억 내용이 필요합니다.");
+            };
+            let Some(new_text)=body["text"].as_str().map(str::trim)
+                .filter(|value| !value.is_empty() && value.chars().count()<=4096)
+            else { return bad("기억 내용은 1~4096자여야 합니다."); };
+            match state.store.edit_owner_memory(&id,previous,new_text) {
+                Ok(Some(updated)) => {
+                    state.bus.record("memory",&updated);
+                    Json(updated).into_response()
+                }
+                Ok(None) if state.store.get("memory",&id).is_none() => {
+                    (StatusCode::NOT_FOUND,
+                        Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response()
+                }
+                Ok(None) => {
+                    (StatusCode::CONFLICT,
+                        Json(json!({"error":"기억이 변경됐거나 직접 등록한 활성 기억이 아닙니다. 목록을 새로고침하세요."}))).into_response()
+                }
+                Err(_message) => (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error":"기억 변경을 저장하지 못했습니다."}))).into_response(),
+            }
+        },
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
