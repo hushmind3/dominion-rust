@@ -91,10 +91,21 @@ pub(super) async fn render(ctx: &JobContext, input: &Value, dir: &Path) -> Resul
         .build().map_err(|e| e.to_string())?;
     let body = json!({"model":model,"prompt":prompt,"duration":duration,
         "resolution":size,"fps":24,"generate_audio":true});
-    // After the durable inFlight checkpoint, the POST must never be retried
-    // blindly: a lost response may correspond to an already billed generation.
+    // Exposure is the estimated amount submitted, NOT the actual charged
+    // amount. Freeze it before the HTTP request and audit without credentials.
+    let clip_quote=super::pricing::quote_durations(model,quality,&[duration])?;
     ctx.checkpoint(json!({"phase":"submitting","progress":5,
-        "videoState":{"inFlight":true,"provider":"ltx","model":model}}))?;
+        "videoState":{"inFlight":true,"provider":"ltx","model":model,
+            "estimatedAttemptKrw":clip_quote["estimatedKrw"],
+            "priceVersion":clip_quote["priceVersion"],
+            "fxAsOf":clip_quote["fxAsOf"],"actualBilledKrw":null}}))?;
+    ctx.state.store.audit("video.paid_submit_attempt",json!({
+        "jobId":ctx.job_id,"provider":"ltx","model":model,
+        "duration":duration,"quality":quality,
+        "estimatedAttemptKrw":clip_quote["estimatedKrw"],
+        "priceVersion":clip_quote["priceVersion"],"actualBilledKrw":null
+    }));
+    // A lost HTTP response may already represent paid work: no blind replay.
     let response = client.post(ENDPOINT).bearer_auth(&key).json(&body).send().await
         .map_err(|_| "needs_review: LTX 제출 결과가 불확실합니다. 과금 기록을 확인하세요.")?;
     if !response.status().is_success() {
