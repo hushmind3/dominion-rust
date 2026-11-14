@@ -8,10 +8,17 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 
 pub(super) fn build(state:&AppState, goal:&Value)->Value {
-    let workdir=match crate::engine::goal_git::workspace_for_goal(state,goal) {
-        Ok(path)=>path,
-        Err(reason)=>return json!({"accepted":false,"gaps":[reason],
-            "checks":[],"artifacts":[],"operations":[],"gitChanges":null}),
+    // Standalone verification remains available for ordinary non-isolated
+    // goals and in-memory test contracts without a persisted goal ID.
+    // Explicitly isolated goals never fall back to the shared checkout.
+    let workdir=if goal["isolateWorktree"]!=true && goal["gitWorktree"].is_null(){
+        state.config.workspace.clone()
+    }else{
+        match crate::engine::goal_git::workspace_for_goal(state,goal) {
+            Ok(path)=>path,
+            Err(reason)=>return json!({"accepted":false,"gaps":[reason],
+                "checks":[],"artifacts":[],"operations":[],"gitChanges":null}),
+        }
     };
     let evidence=goal["evidence"].as_array().cloned().unwrap_or_default();
     let intent=goal["goal"].as_str().unwrap_or("");
