@@ -62,3 +62,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 ### Paid media checkpoint persistence and executable product frontier (2026-11-14)
 
 `video/runway.rs::{merge_video_state,checkpoint_video}` preserves the full paid clip ledger and frozen shot plan across the job store's shallow nested patch behavior. Test source `tests/unit/video_checkpoint_merge_tests.rs` is authored but not executed. `rsi_system.rs::{COMPONENTS,discovered_architecture_sources}` now inventories group speaker-economy, room context and actual video generation source under algorithm/harness/tool roles. These are independent mutable capability source paths, not method-source RSI proof nor holdout success receipts.
+
+### Autonomous goal proof, child delegation and owner-reviewed recovery (2026-11-14)
+
+`pages/Goals.tsx` → `api/goals.rs::{create_goal,edit_plan,cancel_goal,resume_goal}` → `jobs::{enqueue_once,run_job}` → `goals.rs::run` → `goal_control.rs` → `chat::TurnRequest` → `tools.rs`/MCP/browser → `verification.rs` and `goals/report.rs::build` → `goal`/job result `finalReport` → `pages/Goals.tsx`. Completion must pass the final deterministic verifier. Child `delegate_task`/`task_result` only contribute actual successfully completed child tools; no-op source writes and unfinished children are excluded. New job after manually acknowledged external state preserves session, plan, evidence, root task id. The change does not modify independently frozen RSI evaluation; see [full agent integration and limits](SUB4-AUTONOMOUS-AGENT-2026-11-14.md).
