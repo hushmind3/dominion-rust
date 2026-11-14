@@ -12,7 +12,7 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const agents=useRemote<Agent[]>('/api/agents',[])
  const jobs=useRemote<any[]>('/api/jobs',[])
- const artifacts=useRemote<{id:string;workflowId:string;createdAt:string;content:string;usage?:{totalTokens?:number}}[]>('/api/workflow-artifacts',[])
+ const artifacts=useRemote<{id:string;workflowId:string;createdAt:string;preview:string;usage?:{totalTokens?:number}}[]>('/api/workflow-artifacts',[])
  const channels=useRemote<any[]>('/api/channels',[])
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
  const enabledProviders=providers.value.filter(p=>p.enabled)
@@ -63,7 +63,7 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
    {artifacts.value.length?<div className="grid gap-2 p-4 sm:grid-cols-2">
     {artifacts.value.slice(0,4).map(a=><Button type="button" key={a.id} onClick={()=>navigate('workflows')}
      className="min-w-0 rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-3 text-left hover:border-[#C96442]">
-      <strong className="block truncate text-xs">{a.content.slice(0,84)||'워크플로 결과'}</strong>
+      <strong className="block truncate text-xs">{a.preview.slice(0,84)||'워크플로 결과'}</strong>
       <span className="mt-1 block text-[11px] text-[#7C7469]">{a.createdAt?.slice(0,10)||''} · 사용량 {a.usage?.totalTokens??0}토큰 · 열기</span>
      </Button>)}
    </div>:<p className="px-4 py-4 text-xs text-[#8A8176]">아직 완료한 협업 워크플로 결과가 없습니다. 에이전트를 선택해 조사→검토 워크플로를 시작할 수 있습니다.</p>}
