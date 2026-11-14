@@ -517,9 +517,17 @@ async fn github_api(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String
     let status = response.status().as_u16();
     let text = response.text().await.unwrap_or_default();
     let parsed: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!(text));
+    // HTTP 4xx/5xx responses are NOT successful tool actions. The previous
+    // envelope returned Ok even when GitHub denied a push/PR operation.
+    if !(200..300).contains(&status){
+        return Err(format!("GitHub API HTTP {status}: {}",
+            parsed.to_string().chars().take(900).collect::<String>()));
+    }
     Ok(json!({
         "status": status,
         "body": parsed.to_string().chars().take(20_000).collect::<String>(),
+        "prNumber": parsed["number"],
+        "prUrl": parsed["html_url"],
     }))
 }
 
