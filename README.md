@@ -18,6 +18,15 @@
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 서브3 · Issue #9 전 제품 연결 고도화 (2026-11-14)
+
+**사용자 과업의 엔드투엔드 경로:** `에이전트 관리 → 조사/검토 워크플로 생성 → 워크플로 실행·도구/모델 이용 → SQLite 불변 SHA-256 산출물·원본 메시지/세션/에이전트 영수증 → 다른 워크플로 입력으로 재사용 → 자동화에서 예약 반복 → 홈/워크플로에서 결과 조회·Markdown 다운로드`. 기존 MCP/스킬 실행 권한과 모델/도구 선택 경로를 그대로 재사용하며 네이티브 Rust+SQLite로 수행합니다.
+
+- **새 데이터 실체:** `workflow_artifact`(최종 원문·SHA-256·stepReceipts·model.usage·원본 job/flow/session). `workflows/artifacts.rs::create/resolve_run_input`은 기존 job 결과를 덮어쓰지 않고, 재사용 시 저장된 SHA를 다시 검증합니다. `/api/workflow-artifacts`로 결과를 조회하며 UI는 원문 보기/Markdown 저장/다른 작업에 다시 투입을 지원합니다.
+- **기능적 협업:** `POST /api/agents/:id/workflow`에서 실제 등록 에이전트로 조사/검토 2단계 워크플로를 생성합니다. `workflows.rs::run`은 실제 `run_quiet_outcome` 모델/도구 실행 결과를 단계별 체크포인트에 기록하고, 요청 시 `requireActionEvidence`로 성공한 도구 행동 없이는 완료 처리하지 않습니다. 실행당 토큰 상한을 넘으면 다음 모델 호출을 시작하지 않습니다.
+- **반복 실행의 부작용 제한:** 자동화 등록 UI/API가 `workflow` 실행을 직접 지원합니다. 예약 회차의 automation ID+nextAt 해시로 내구성 job ID를 만들고 `enqueue_once`로 동일 예약 회차의 중복 모델 job 삽입을 막습니다. 각 회차는 새 최종 산출물을 남기며, 유료 API 전체에 대한 정확한 실청구액 보장으로 혼동하지 않습니다.
+- **검증:** 영속 결과 충돌 차단·SHA 원문 재사용·변조 거부·2역할 workflow 생성·동일 예약 회차의 중복 작업 삽입 방지를 Rust 테스트로 확인하도록 추가하고, Agents/Workflows/Automations/Home 화면→API→엔진을 프론트 회귀 테스트에서 연결 검토합니다. 외부 유료 실모델의 완수율과 실제 절감액은 여전히 별도로 측정해야 합니다. [15개 메뉴별 변경·실행 근거·남은 항목](docs/PRODUCT-JOURNEY-SUB3-2026-11-14.md).
+
 ## 서브3 · 재심사 후 에이전트 실행 무결성 (2026-11-14)
 
 - **최신 소스에서 실제 검증:** `verification::fresh_command_matches`가 SQLite `execution_operation`의 도구 실행 순서·시간 영수증을 활용합니다. 테스트 후 새 코드 수정이 있으면 이전 테스트 성공은 무효화되고, 현재 소스의 동일 테스트를 다시 통과해야 목표 완료가 가능합니다. 목표가 테스트까지 요구하면 실제 프로젝트 manifest에서 최대 2개의 검증 명령을 완료 조건으로 등록합니다.
