@@ -1,0 +1,16 @@
+{
+  "name": "dominion-copilot-sdk-baseline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "eval": "node runner.mjs",
+    "test": "node --test runner.test.mjs"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.33"
+  }
+}
