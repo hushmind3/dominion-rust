@@ -204,21 +204,35 @@ pub async fn resume_goal(
     history.push(json!({"jobId":job_id,"previousJobId":goal["jobId"],
         "previousStatus":goal["status"],"startIteration":next_iteration,
         "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
-    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],&json!({
+    // Atomic adoption: a restarted process must never observe a queued goal
+    // without the matching durable worker, or a worker without its checkpoint.
+    let mut updated=goal.clone();
+    let patch=json!({
         "status":"queued","phase":"resume","jobId":job_id,"resumeCount":next,
         "resumeHistory":history,"resumeCheckpoint":checkpoint,"maxIterations":next_max,
         "finishedAt":null,"metrics":null,"error":null
-    })) else {
-        return error(StatusCode::CONFLICT, "목표가 다른 작업에서 변경됐습니다.");
-    };
-    let result=crate::engine::jobs::enqueue_once(&state,&job_id,"goal",
-        json!({"goalId":id,"resumeAfterReview":true}));
-    if result.is_none() {
-        if let Some(rolled)=state.store.patch_if("goal",&id,"jobId",&json!(job_id),&json!({
-            "status":"needs_review","phase":"resume_enqueue_failed",
-            "error":"재개 작업 등록 실패","jobId":goal["jobId"]
-        })) {state.bus.record("goal",&rolled);}
-        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    });
+    for (key,value) in patch.as_object().expect("resume patch object") {
+        updated[key]=value.clone();
+    }
+    let queued_job=json!({
+        "id":job_id,"kind":"goal","input":{"goalId":id,"resumeAfterReview":true},
+        "status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
+    match state.store.transaction_if_status(
+        "goal",&id,goal["status"].as_str().unwrap_or(""),
+        &[("goal".to_string(),updated.clone()),("job".to_string(),queued_job.clone())],
+    ) {
+        Ok(true)=>{},
+        Ok(false)=>return error(StatusCode::CONFLICT,"목표가 다른 작업에서 변경됐습니다."),
+        Err(_)=>return error(StatusCode::INTERNAL_SERVER_ERROR,
+            "목표 및 재개 작업을 함께 저장하지 못했습니다."),
+    }
+    let saved=state.store.get("goal",&id).unwrap_or(updated);
+    if let Some(job)=state.store.get("job",&job_id) {
+        state.bus.record("job",&job);
     }
     if let Some(session) = saved["sessionId"].as_str() {
         state.clear_cancel(session);
