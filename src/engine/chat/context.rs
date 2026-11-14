@@ -173,38 +173,39 @@ fn context_block_with_manifest(
     let (memories, mut items) =
         crate::engine::memory::context_block_with_manifest_at(state, &scope, query, execution_id);
 
-    let mut skills = state
-        .store
-        .all("skill")
-        .into_iter()
-        .filter(|skill| crate::engine::memory::visible(skill, &scope))
-        .filter(|skill| skill.get("status").and_then(Value::as_str) != Some("draft"))
-        .filter(|skill| skill.get("enabled").and_then(|v| v.as_bool()) != Some(false))
-        .filter_map(|skill| {
-            let id = skill.get("id").and_then(|v| v.as_str())?.to_string();
-            let name = skill.get("name").and_then(|v| v.as_str())?.to_string();
-            let instructions = skill
-                .get("instructions")
-                .or_else(|| skill.get("description"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .chars()
-                .take(700)
-                .collect::<String>();
-            items.push(json!({
-                "kind": "skill",
-                "id": id,
-                "name": name,
-                "revision": crate::engine::memory::stable_id(&[
-                    skill["id"].as_str().unwrap_or(""),
-                    skill["instructions"].as_str().unwrap_or(""),
-                    skill["updatedAt"].as_str().unwrap_or(""),
-                ]),
-            }));
-            Some((name, instructions))
-        })
+    // Agent-assigned installed skills take precedence over arbitrary global
+    // catalogue order. This is a real injection into private chat, rooms and
+    // workflow tool turns (all share this context builder), not a UI label.
+    let selected=agent_id.and_then(|id|state.store.get("agent",id))
+        .and_then(|a|a["preferredSkillIds"].as_array().cloned())
+        .unwrap_or_default().into_iter()
+        .filter_map(|id|id.as_str().map(str::to_string))
         .collect::<Vec<_>>();
-    skills.truncate(5);
+    let mut installed=state.store.all("skill").into_iter()
+        .filter(|skill|crate::engine::memory::visible(skill,&scope))
+        .filter(|skill|skill["status"]!="draft"&&skill["enabled"]!=false)
+        .collect::<Vec<_>>();
+    installed.sort_by_key(|skill|{
+        let id=skill["id"].as_str().unwrap_or("");
+        selected.iter().position(|p|p==id).unwrap_or(usize::MAX)
+    });
+    let mut skills=Vec::new();
+    for skill in installed.into_iter().take(5){
+        let Some(id)=skill["id"].as_str() else {continue};
+        let Some(name)=skill["name"].as_str() else {continue};
+        let instructions=skill["instructions"].as_str()
+            .or_else(||skill["description"].as_str()).unwrap_or("")
+            .chars().take(700).collect::<String>();
+        let preferred=selected.iter().any(|x|x==id);
+        items.push(json!({
+            "kind":"skill","id":id,"name":name,"preferredByAgent":preferred,
+            "revision":crate::engine::memory::stable_id(&[
+                id,skill["instructions"].as_str().unwrap_or(""),
+                skill["updatedAt"].as_str().unwrap_or("")
+            ]),
+        }));
+        skills.push((name.to_string(),instructions));
+    }
 
     let mut reliability = Vec::new();
     for stat in state.store.all("tool_stat") {
