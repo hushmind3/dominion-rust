@@ -624,7 +624,9 @@ pub(super) async fn run_turn_body(
     let mut prompt_tokens_total: u64 = 0;
     let mut completion_tokens_total: u64 = 0;
     let mut cached_prompt_tokens_total: u64 = 0;
+    let mut cache_write_tokens_total: u64 = 0;
     let mut cache_reporting_complete = true;
+    let mut cache_write_reporting_complete = true;
     let mut usage_estimated = false;
     let started_at = std::time::Instant::now();
     metrics.lock().unwrap().context_elapsed_ms = turn_started.elapsed().as_millis() as u64;
@@ -1082,6 +1084,13 @@ pub(super) async fn run_turn_body(
         } else {
             cache_reporting_complete = false;
         }
+        if completion.usage_exact{
+            if let Some(writes)=completion.cache_write_tokens{
+                cache_write_tokens_total=cache_write_tokens_total.saturating_add(
+                    writes.min(call_prompt.saturating_sub(
+                        completion.cached_prompt_tokens.unwrap_or(0))));
+            }else{cache_write_reporting_complete=false;}
+        }else{cache_write_reporting_complete=false;}
         let call_total = if completion.usage > 0 {
             completion.usage
         } else {
@@ -1092,6 +1101,11 @@ pub(super) async fn run_turn_body(
             if let Some(mut execution)=state.store.get("execution",execution_id) {
                 execution["inputContext"]["providerPromptTokens"]=json!(prompt_tokens_total);
                 execution["inputContext"]["providerCachedPromptTokens"]=if cache_reporting_complete {json!(cached_prompt_tokens_total)} else {Value::Null};
+                execution["inputContext"]["providerCacheWriteTokens"]=if cache_write_reporting_complete {json!(cache_write_tokens_total)} else {Value::Null};
+                execution["inputContext"]["providerOrdinaryInputTokens"]=if cache_reporting_complete&&cache_write_reporting_complete {
+                    json!(prompt_tokens_total.saturating_sub(cached_prompt_tokens_total)
+                        .saturating_sub(cache_write_tokens_total))
+                }else{Value::Null};
                 execution["inputContext"]["providerNewPromptTokens"]=if cache_reporting_complete {json!(prompt_tokens_total.saturating_sub(cached_prompt_tokens_total))} else {Value::Null};
                 execution["inputContext"]["providerOutputTokens"]=json!(completion_tokens_total);
                 execution["inputContext"]["providerUsageExact"]=json!(!usage_estimated);
@@ -1995,6 +2009,11 @@ pub(super) async fn run_turn_body(
     metadata["usage"] = json!({
         "promptTokens": prompt_tokens_total,
         "cachedPromptTokens": if cache_reporting_complete { json!(cached_prompt_tokens_total) } else { Value::Null },
+        "cacheWriteTokens": if cache_write_reporting_complete {json!(cache_write_tokens_total)} else {Value::Null},
+        "ordinaryInputTokens": if cache_reporting_complete&&cache_write_reporting_complete {
+            json!(prompt_tokens_total.saturating_sub(cached_prompt_tokens_total)
+                .saturating_sub(cache_write_tokens_total))
+        }else{Value::Null},
         "uncachedPromptTokens": if cache_reporting_complete { json!(prompt_tokens_total.saturating_sub(cached_prompt_tokens_total)) } else { Value::Null },
         "completionTokens": completion_tokens_total,
         "totalTokens": total_tokens,

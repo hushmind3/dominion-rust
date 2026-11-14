@@ -182,6 +182,10 @@ struct Completion {
     completion_tokens: u64,
     // None means the provider did not report cache usage, not a cache miss.
     cached_prompt_tokens: Option<u64>,
+    // Cache writes are already included in input tokens (not surcharges).
+    cache_write_tokens: Option<u64>,
+    cache_write_30m_tokens: Option<u64>,
+    cache_write_12h_tokens: Option<u64>,
     usage_exact: bool,
     first_delta_ms: Option<u64>,
 }

@@ -402,6 +402,9 @@ fn preserve_reflection_history(messages: Vec<Value>) -> (Vec<Value>, bool) {
     (out, filled)
 }
 
+#[path = "provider/cache_usage.rs"]
+mod cache_usage;
+
 pub(super) fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
     usage.pointer("/prompt_tokens_details/cached_tokens").and_then(Value::as_u64)
         .or_else(|| usage.pointer("/input_tokens_details/cached_tokens").and_then(Value::as_u64))
@@ -586,6 +589,9 @@ fn fill_estimated_usage(messages:&[Value],tools:&[Value],completion:&mut Complet
         completion.completion_tokens=output;
         completion.usage=prompt.saturating_add(output);
         completion.cached_prompt_tokens=None;
+    completion.cache_write_tokens=None;
+    completion.cache_write_30m_tokens=None;
+    completion.cache_write_12h_tokens=None;
     }
 }
 
@@ -760,6 +766,7 @@ async fn stream_completion_once(
     let (projected, projection)=super::continuity::project(state,provider,messages,&ordered_tools,session_id,&mut continuity);
     let mut completion=stream_completion_once_body(state,client,provider,&projected,&ordered_tools,
         request,session_id,tx,convert_native_history,&mut continuity).await?;
+    cache_usage::audit(state,&provider.id,&provider.model,session_id,&completion);
     completion.projection=projection;
     completion.continuity=Some(continuity);
     Ok(completion)
@@ -953,7 +960,7 @@ async fn stream_completion_once_body(
                 return Err(format!("모델 오류: {error}"));
             }
             if let Some(usage) = piece.get("usage").filter(|value| value.is_object()) {
-                completion.cached_prompt_tokens = cached_prompt_tokens(usage);
+                cache_usage::observe(&mut completion,usage);
                 let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
                 let generated = usage.get("completion_tokens").and_then(Value::as_u64);
                 if let Some(total) = usage.get("total_tokens").and_then(Value::as_u64) {
@@ -1585,7 +1592,7 @@ async fn stream_codex_once(
                 }
                 "response.completed" => {
                     if let Some(usage) = piece["response"]["usage"].as_object() {
-                        completion.cached_prompt_tokens = cached_prompt_tokens(&json!(usage));
+                        cache_usage::observe(&mut completion,&json!(usage));
                         completion.prompt_tokens =
                             usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0);
                         completion.completion_tokens =
@@ -1843,6 +1850,7 @@ async fn stream_anthropic_once(
     completion.tool_calls = calls;
     completion.prompt_tokens = input_tokens.saturating_add(cache_read_tokens).saturating_add(cache_write_tokens);
     completion.cached_prompt_tokens = cache_read_reported.then_some(cache_read_tokens);
+    completion.cache_write_tokens=Some(cache_write_tokens);
     completion.completion_tokens = output_tokens;
     completion.usage = completion.prompt_tokens + output_tokens;
     completion.usage_exact = input_reported&&output_reported;
