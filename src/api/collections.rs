@@ -415,6 +415,17 @@ mod owner_memory_edit_tests {
         }))).await;
         assert_eq!(stale.status(),StatusCode::CONFLICT);
         assert_eq!(state.store.get("memory","manual").unwrap()["text"],"after");
+        // ABA: the visible text returns to the old string, but the revision
+        // has advanced, so a stale editor still cannot overwrite the record.
+        let reverted=action(State(state.clone()),uri(),Json(json!({
+            "text":"before","expectedText":"after","expectedRevision":1
+        }))).await;
+        assert_eq!(reverted.status(),StatusCode::OK);
+        let aba=action(State(state.clone()),uri(),Json(json!({
+            "text":"stale overwrite","expectedText":"before","expectedRevision":0
+        }))).await;
+        assert_eq!(aba.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","manual").unwrap()["revision"],2);
         let forged=action(State(state.clone()),uri(),Json(json!({
             "text":"hacked","expectedText":"after","expectedRevision":1,"scope":"shared"
         }))).await;
