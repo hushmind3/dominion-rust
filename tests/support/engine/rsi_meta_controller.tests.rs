@@ -48,6 +48,42 @@ mod tests {
         assert!(valid_policy(&baseline,0));
     }
     #[test]
+    fn duplicated_archived_frozen_pair_does_not_amplify_rsi_penalty() {
+        let frontier=vec![
+            json!({"role":"memory","domain":"memory","path":"src/engine/memory.rs","sourceBytes":1}),
+            json!({"role":"tools","domain":"tools","path":"src/engine/tools.rs","sourceBytes":1})
+        ];
+        let pair=json!({
+            "jobId":"g1","candidateId":"candidate-a","generatorCommit":"a".repeat(40),
+            "evaluationProfileSha256":"b".repeat(64),"pairedMeasured":true,
+            "metaPolicy":{"revision":"d".repeat(64),"target":{"role":"memory"}},
+            "compiledPlanExecuted":{"source":"running_compiled_descendant_binary",
+                "generatorCommit":"a".repeat(40),"metaRevision":"d".repeat(64)},
+            "systemDesign":{"source":"model_authored_system_design",
+                "generatorCommit":"a".repeat(40),"generationJobId":"g1",
+                "component":"memory","targetFiles":["src/engine/memory.rs"],
+                "hypothesis":"Independently modify memory lookup and measure tool quality"},
+            "changedSourcePaths":["src/engine/memory.rs"],
+            "evaluation":{"source":"server_invoked_local_paired_git_worktrees",
+                "metrics":{"eligible":false,"verdict":"regressed","measurements":[
+                    {"id":"h1","domain":"tools","holdout":true,
+                        "baselinePass":true,"candidatePass":false},
+                    {"id":"h1","domain":"tools","holdout":true,
+                        "baselinePass":true,"candidatePass":false}
+                ]}}
+        });
+        let once=generalization_evidence(&[pair.clone()],&frontier,
+            "memory","src/engine/memory.rs","memory");
+        let twice=generalization_evidence(&[pair.clone(),pair],&frontier,
+            "memory","src/engine/memory.rs","memory");
+        assert_eq!(once["observedCases"],1);
+        assert_eq!(once["observedRegressions"],1);
+        assert_eq!(twice["observedCases"],1);
+        assert_eq!(twice["observedRegressions"],1);
+        assert_eq!(once["selectionAdjustment"],twice["selectionAdjustment"]);
+    }
+
+    #[test]
     fn joint_and_unpaired_source_changes_cannot_claim_generalization() {
         let frontier=vec![
             json!({"role":"memory","domain":"memory",

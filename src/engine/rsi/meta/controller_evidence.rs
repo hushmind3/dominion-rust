@@ -74,6 +74,9 @@ pub(super) fn generalization_evidence(
         }
     }
     let mut domains=std::collections::BTreeMap::<String,(u64,u64,u64)>::new();
+    // Archived retries of one independent evaluation are correlated, not
+    // additional performance evidence for the next descendant's search.
+    let mut observed_pairs=BTreeSet::<(String,String)>::new();
     for generation in history {
         if !crate::engine::rsi_principle_learning::independent_trial(generation)
             || generation["candidateId"].as_str().is_none()
@@ -83,11 +86,18 @@ pub(super) fn generalization_evidence(
         }
         let actual=crate::engine::rsi_interaction::actual_roles(generation,frontier);
         if actual.len()!=1 || actual[0]!=role {continue;}
+        let Some(id)=generation["candidateId"].as_str() else {continue};
+        let Some(profile)=generation["evaluationProfileSha256"].as_str() else {continue};
+        if !observed_pairs.insert((id.to_owned(),profile.to_owned())) {continue;}
+        let mut seen_cases=BTreeSet::<(String,String)>::new();
         for case in generation["evaluation"]["metrics"]["measurements"]
             .as_array().into_iter().flatten() {
             if case["holdout"]!=true {continue;}
             let Some(domain)=case["domain"].as_str() else{continue};
             if family(domain)==family(target_domain) {continue;}
+            let case_id=case["id"].as_str().filter(|id|!id.is_empty())
+                .map(str::to_owned).unwrap_or_else(||case.to_string());
+            if !seen_cases.insert((domain.to_owned(),case_id)){continue;}
             let (Some(before),Some(after))=
                 (case["baselinePass"].as_bool(),case["candidatePass"].as_bool())
                 else{continue};
