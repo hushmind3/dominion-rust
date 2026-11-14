@@ -895,6 +895,13 @@ mod tests {
         tool: &'static str,
         text: &str,
     ) -> (Value, AppState, PathBuf, usize) {
+        execute_mock_goal_with_test_policy(tool,text,false).await
+    }
+    async fn execute_mock_goal_with_test_policy(
+        tool: &'static str,
+        text: &str,
+        require_tests:bool,
+    ) -> (Value, AppState, PathBuf, usize) {
         use std::sync::atomic::Ordering;
         let (state, dir) = state();
         std::fs::write(dir.join("input.txt"), "a real readable file").unwrap();
@@ -903,7 +910,8 @@ mod tests {
             .put("policy", &json!({"id":"default","autoApproveAll":true}));
         let (port, calls, server) = mock_provider(tool).await;
         state.store.put("provider",&json!({"id":"mock","name":"mock","baseUrl":format!("http://127.0.0.1:{port}/v1"),"model":"test","enabled":true,"toolMode":"native"}));
-        state.store.put("goal",&json!({"id":"g","goal":text,"maxIterations":1,"executor":{"providerId":"mock","model":"test"}}));
+        state.store.put("goal",&json!({"id":"g","goal":text,"maxIterations":1,
+            "requireTests":require_tests,"executor":{"providerId":"mock","model":"test"}}));
         let job = state
             .store
             .put(
@@ -930,6 +938,18 @@ mod tests {
         assert_eq!(result["evidence"][0]["tool"], "workspace_read");
         assert!(!result["gaps"].as_array().unwrap().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn strict_goal_rejects_model_claims_when_no_real_post_edit_test_ran(){
+        let (result,state,dir,_calls)=execute_mock_goal_with_test_policy(
+            "workspace_write","write report.txt",true).await;
+        assert_eq!(std::fs::read_to_string(dir.join("report.txt")).unwrap(),
+            "verified content");
+        assert_eq!(result["status"],"needs_review");
+        assert!(result["gaps"].as_array().unwrap().iter().any(|gap|
+            gap.as_str().is_some_and(|text|text.contains("테스트 실행 증거"))));
+        assert_eq!(state.store.get("goal","g").unwrap()["requireTests"],true);
+        let _=std::fs::remove_dir_all(dir);
     }
     #[tokio::test]
     async fn successful_goal_has_actual_file_evidence_and_durable_checkpoint() {
