@@ -381,3 +381,92 @@ pub async fn promote_worktree(
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
+
+
+#[cfg(test)]
+mod sub1_goal_lifecycle_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+    fn state() -> (AppState,std::path::PathBuf) {
+        let dir=std::env::temp_dir().join(format!("sub1-goal-resume-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        (state,dir)
+    }
+    #[tokio::test]
+    async fn reviewed_resume_is_idempotent_and_carries_only_committed_evidence() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"s"}));
+        state.store.put("goal",&json!({"id":"g","goal":"complete task",
+            "status":"needs_review","phase":"needs_review","sessionId":"s",
+            "iterations":4,"maxIterations":4,"jobId":"prior","evidence":[{"tool":"test"}],
+            "gaps":["check external effects"],"successCriteria":[{"type":"file_exists","path":"a"}]}));
+        state.store.put("job",&json!({"id":"prior","kind":"goal",
+            "input":{"goalId":"g"},"status":"needs_review",
+            "goalState":{"nextIteration":4,"inFlight":true,
+                "transcript":"previous completion","stalled":2}}));
+        let missing_ack=resume_goal(State(state.clone()),Path("g".into()),
+            Json(json!({"acknowledgeUnknownEffects":false}))).await;
+        assert_eq!(missing_ack.status(),StatusCode::BAD_REQUEST);
+        let resumed=resume_goal(State(state.clone()),Path("g".into()),
+            Json(json!({"acknowledgeUnknownEffects":true}))).await;
+        assert_eq!(resumed.status(),StatusCode::OK);
+        let goal=state.store.get("goal","g").unwrap();
+        assert_eq!(goal["status"],"queued");
+        assert_eq!(goal["phase"],"resume");
+        assert_eq!(goal["maxIterations"],12);
+        assert_eq!(goal["resumeCount"],1);
+        assert_eq!(goal["resumeCheckpoint"]["nextIteration"],4);
+        assert_eq!(goal["resumeCheckpoint"]["priorInFlight"],true);
+        assert_eq!(goal["resumeCheckpoint"]["evidence"][0]["tool"],"test");
+        assert_eq!(goal["successCriteria"][0]["path"],"a");
+        let new_job_id=goal["jobId"].as_str().unwrap();
+        assert_ne!(new_job_id,"prior");
+        assert_eq!(state.store.get("job",new_job_id).unwrap()["input"]["resumeAfterReview"],true);
+        assert_eq!(state.store.get("job","prior").unwrap()["status"],"needs_review");
+        assert_eq!(resume_goal(State(state.clone()),Path("g".into()),
+            Json(json!({"acknowledgeUnknownEffects":true}))).await.status(),
+            StatusCode::CONFLICT);
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn owner_cancel_stops_goal_and_queued_job_without_losing_review() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"s"}));
+        state.store.put("goal",&json!({"id":"g","status":"queued","sessionId":"s",
+            "jobId":"goal-job-g","goal":"cancel it"}));
+        state.store.put("job",&json!({"id":"goal-job-g","kind":"goal",
+            "input":{"goalId":"g"},"status":"queued"}));
+        let cancelled=cancel_goal(State(state.clone()),Path("g".into())).await;
+        assert_eq!(cancelled.status(),StatusCode::OK);
+        assert_eq!(state.store.get("goal","g").unwrap()["status"],"cancelled");
+        let job=state.store.get("job","goal-job-g").unwrap();
+        assert_eq!(job["status"],"cancelled");
+        assert_eq!(job["cancelRequested"],true);
+        assert!(state.is_cancelled("s"));
+        assert_eq!(cancel_goal(State(state.clone()),Path("g".into())).await.status(),
+            StatusCode::CONFLICT);
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_active_and_terminal_prior_jobs() {
+        let (state,dir)=state();
+        state.store.put("goal",&json!({"id":"g","status":"needs_review",
+            "iterations":1,"maxIterations":4,"goal":"continue"}));
+        state.store.put("job",&json!({"id":"old","kind":"goal",
+            "input":{"goalId":"g"},"status":"running"}));
+        assert_eq!(resume_goal(State(state.clone()),Path("g".into()),
+            Json(json!({"acknowledgeUnknownEffects":true}))).await.status(),StatusCode::CONFLICT);
+        state.store.patch_if("job","old","status",&json!("running"),
+            &json!({"status":"failed"}));
+        state.store.patch_if("goal","g","status",&json!("needs_review"),
+            &json!({"status":"completed"}));
+        assert_eq!(resume_goal(State(state.clone()),Path("g".into()),
+            Json(json!({"acknowledgeUnknownEffects":true}))).await.status(),StatusCode::CONFLICT);
+        let _=std::fs::remove_dir_all(dir);
+    }
+}
