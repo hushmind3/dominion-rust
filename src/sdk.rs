@@ -626,6 +626,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_sdk_patch_apply_and_worktree_discard_require_owner_proof() {
+        let (sdk, root) = fresh();
+        let goal = sdk.enqueue_goal(GoalOptions::new("Write a verified source patch")).unwrap();
+        let id = goal["id"].as_str().unwrap();
+        assert!(sdk.apply_goal_patch(id, "not-a-hash").await.is_err());
+        assert!(sdk.discard_goal_worktree(id, "").await.is_err());
+        // An unstarted goal has no source patch; an arbitrary correct-format
+        // hash is still not sufficient to claim an applied source change.
+        assert!(sdk.apply_goal_patch(id, &"a".repeat(64)).await.is_err());
+        assert_eq!(sdk.goal(id).unwrap()["status"], "queued");
+        sdk.cancel_goal(id).unwrap();
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn native_goal_resume_creates_new_job_without_reusing_old_receipt() {
         let (sdk, root) = fresh();
         // The first attempt can be cancelled before any worktree was
