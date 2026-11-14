@@ -186,6 +186,8 @@ fn progress(ctx: &JobContext, phase: &str, percent: u64) -> Result<(), String> {
 mod native;
 #[path = "video/comfy.rs"]
 mod comfy;
+#[path = "video/quality.rs"]
+mod quality;
 #[path = "video/upload.rs"]
 mod upload;
 pub use upload::{enqueue_upload, upload};
@@ -207,6 +209,17 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
             if bytes < 100 {
                 return Err("생성된 영상이 비어 있습니다.".into());
             }
+            // Every backend's output reaches this gate. A cloud render that
+            // fails technical inspection is NOT automatically resubmitted:
+            // its original paid remote job must remain inspectable by the owner.
+            let technical=quality::inspect(
+                &input["config"],&dir.join("output.mp4"),
+                input["duration"].as_u64(),
+                input["aspectRatio"].as_str().unwrap_or("16:9"),
+                input["engine"]=="ltx",
+            ).await.map_err(|e|format!("needs_review: 영상 기술 검수 실패: {e}"))?;
+            ctx.checkpoint(json!({"videoState":{"technicalQuality":technical}}))?;
+            value["technicalQuality"]=technical;
             value["bytes"] = json!(bytes);
             value["outputUrl"] = json!(format!("/api/video/jobs/{}/content", ctx.job_id));
             progress(ctx, "completed", 100)?;
