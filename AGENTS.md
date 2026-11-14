@@ -102,3 +102,10 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 
 그룹 도구 의도와 목표 테스트 완료조건의 영문 단어 경계는 이제 `src/engine/text_intent.rs`가 단일 구현입니다. `src/engine/goal_verification.rs`의 `asks_for_tests`에서도 사용하므로 단어 목록을 변경할 때 의도하지 않은 완료 게이트와 실제 테스트 요청을 함께 검증합니다.
 
+
+## 2026-11-14 Sub1: front-end merger and quiet RSI contract
+
+- `web/src/components/WorkspaceShell.tsx::navigation`: 4 groups/14 visible menus; the only extensions sidebar entry aside from memory is `connections`. The former `extensions`/`capabilities` pages are rendered as tabs inside `web/src/pages/Connections.tsx`, not deleted. `web/src/App.tsx::locationState` upgrades old hash links to the selected tab.
+- Never mount an unsolicited self-improvement recommendation from root `App.tsx`/main bootstrap; leave progress/failure/audit in RSI/Activity screens. Do not remove approvals or real failures to achieve quiet UI.
+- Direct memory editing is owner-authored only: `web/src/pages/Memory.tsx` → `POST /api/memories/:id/edit` in `src/api/collections.rs`. Compare expected source text, preserve scope, reject learned provenance edits. Tests live in `collections.rs`.
+- Full menu/API/engine paths and validation gaps: `docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md`; static CI contract: `scripts/verify-frontend-navigation.mjs`. Do not claim browser event testing from static checks.
