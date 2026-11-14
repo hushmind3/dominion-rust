@@ -7,7 +7,7 @@ import {Panel,useRemote} from './UI'
 type Agent={id:string;name:string;providerId?:string;model?:string}
 type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
- id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;
+ id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;finalSummary?:string;
  jobId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
@@ -128,6 +128,9 @@ export function GoalConsole(){
         {editingPlan&&<><TextArea rows={5} value={planDraft} onChange={e=>setPlanDraft(e.target.value)}/>
           <Button size="sm" disabled={!planDraft.trim()||busy} onClick={()=>void savePlan()}>수정한 계획 저장</Button></>}
        </div>}
+     </details>}
+     {chosen.finalSummary&&<details open><summary className="cursor-pointer text-xs font-semibold">{chosen.status==='completed'?'에이전트 결과 보고':'마지막 에이전트 실행 보고'}</summary>
+      <pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#FAF7F1] p-3 text-xs">{chosen.finalSummary}</pre>
      </details>}
      <div className="text-xs"><strong className="flex items-center gap-1"><CheckCircle2 size={14}/> 검증된 산출물</strong>
       {chosen.deliverables?.files?.length?<div className="mt-2 space-y-1">{(chosen.deliverables?.files||[]).map(item=><div key={item.path} className="break-all rounded bg-[#FAF7F1] p-2">

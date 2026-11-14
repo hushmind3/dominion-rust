@@ -469,11 +469,19 @@ fn finish(
     let proof=prior["evidence"].as_array().cloned().unwrap_or_default();
     let deliverables=artifacts::collect(&context.state,&proof);
     let receipt=receipts::record(context,id,status,&prior,&proof,&deliverables);
+    let last_answer=prior["sessionId"].as_str().map(|session|
+        context.state.store.messages(session).into_iter().rev()
+            .find(|message|message["role"]=="assistant"
+                && message["content"].as_str().is_some_and(|text|!text.trim().is_empty()))
+            .and_then(|message|message["content"].as_str()
+                .map(|text|text.chars().take(4000).collect::<String>())))
+        .flatten();
     patch_goal(
         &context.state,
         id,
         json!({"status":status,"phase":if status=="completed" {"complete"} else {status},"gaps":gaps,"error":error,"finishedAt":chrono::Utc::now().to_rfc3339(),
-            "deliverables":deliverables,"executionReceipt":receipt}),
+            "deliverables":deliverables,"executionReceipt":receipt,
+            "finalSummary":last_answer}),
     );
     let goal = context
         .state
@@ -528,7 +536,7 @@ fn finish(
     context.emit(json!({"type":"goal_finished","goalId":id,"status":status}));
     json!({"goalId":id,"status":status,"sessionId":goal.get("sessionId"),"iterations":goal.get("iterations"),"evidence":goal.get("evidence"),"gaps":gaps,
         "deliverables":goal.get("deliverables"),"planScore":goal.get("planScore"),
-        "executionReceipt":goal.get("executionReceipt")})
+        "executionReceipt":goal.get("executionReceipt"),"finalSummary":goal.get("finalSummary")})
 }
 
 pub fn parse_review(text: &str) -> (bool, Vec<String>) {
