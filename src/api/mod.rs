@@ -236,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals/:id/diff",get(goals::goal_diff))
         .route("/api/goals/:id/plan",post(goals::edit_plan))
         .route("/api/goals/:id/approvals",get(goals::goal_approvals))
+        .route("/api/goals/:id/subtasks",get(goals::goal_subtasks))
         // approvals
         .route(
             "/api/approvals",

@@ -14,6 +14,7 @@ type Goal={
  resumeHistory?:{at:string;resolutionNote:string}[];
 }
 type GoalApproval={id:string;tool:string;args?:unknown;status:string;sessionId?:string}
+type Subtask={id:string;status:string;agentId?:string;hasResult?:boolean;error?:string}
 const running=(status:string)=>['queued','running'].includes(status)
 
 export function GoalConsole(){
@@ -35,6 +36,7 @@ export function GoalConsole(){
  const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
  const approvals=useRemote<GoalApproval[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/approvals':null,[])
  const pendingApprovals=approvals.value.filter(item=>item.status==='pending')
+ const subtasks=useRemote<Subtask[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/subtasks':null,[])
  const available=agents.value.filter(a=>a.providerId&&a.model)
  const executor=available.find(a=>a.id===agentId)?.id||available[0]?.id||''
  const reload=async()=>{await goals.reload()}
@@ -130,6 +132,14 @@ export function GoalConsole(){
      {running(chosen.status)&&<Button variant="danger" size="sm" onClick={()=>void stop()} disabled={busy}><Square size={13}/> 중단</Button>}
      <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy}><FileCode2 size={13}/> Diff 확인</Button>
     </div>
+     {subtasks.value.length>0&&<details open className="rounded-xl border border-[#E7E0D5] p-3">
+      <summary className="cursor-pointer text-xs font-semibold">서브에이전트 실행 {subtasks.value.length}건</summary>
+      <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">{subtasks.value.map(task=><div key={task.id} className="flex items-center gap-2 rounded-lg bg-[#FAF7F1] p-2 text-xs">
+       <span className="min-w-0 flex-1 truncate">{agents.value.find(agent=>agent.id===task.agentId)?.name||task.agentId||'하위 에이전트'}</span>
+       <strong>{task.status}</strong>{task.error&&<span className="truncate text-rose-600" title={task.error}>실패 기록</span>}
+      </div>)}</div>
+      <p className="mt-2 text-[11px] text-[#8A8176]">완료된 위임 작업도 부모 목표의 검증을 자동 통과하지 않습니다.</p>
+     </details>}
      {pendingApprovals.length>0&&<div className="space-y-2 rounded-xl border border-[#EED9CC] bg-[#FFF9F5] p-3">
       <strong className="flex items-center gap-2 text-xs text-[#3A342D]"><ShieldCheck size={15}/> 실행 승인 대기 {pendingApprovals.length}건</strong>
       {pendingApprovals.map(item=><div key={item.id} className="rounded-lg border border-[#E7E0D5] bg-white p-3 text-xs">

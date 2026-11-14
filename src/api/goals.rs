@@ -265,3 +265,30 @@ pub async fn goal_approvals(State(state):State<AppState>,Path(id):Path<String>)-
         .take(32).collect::<Vec<_>>();
     Json(json!(pending)).into_response()
 }
+
+/// Real delegated jobs initiated through the existing delegate_task tool.
+/// This is a read-only team monitor; the parent remains the only authority
+/// for deciding whether a subtask result satisfies the actual goal contract.
+pub async fn goal_subtasks(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    let Some(root)=goal["sessionId"].as_str().filter(|s|!s.is_empty())else{
+        return Json(json!([])).into_response();
+    };
+    let mut jobs=state.store.all("job").into_iter()
+        .filter(|job|job["kind"]=="prompt" && job["input"]["delegation"]==true)
+        .filter(|job|job["input"]["parentSessionId"].as_str().is_some_and(|parent|
+            belongs_to_goal(&state,parent,root)))
+        .collect::<Vec<_>>();
+    jobs.sort_by(|a,b|b["queuedAt"].as_str().cmp(&a["queuedAt"].as_str()));
+    let report=jobs.into_iter().take(32).map(|job|json!({
+        "id":job["id"],"status":job["status"],"agentId":job["input"]["agentId"],
+        "sessionId":job["input"]["sessionId"],"parentSessionId":job["input"]["parentSessionId"],
+        "startedAt":job["startedAt"],"queuedAt":job["queuedAt"],
+        "finishedAt":job["finishedAt"],"error":job["error"],
+        "hasResult":job["result"].is_object(),
+        "isVerifiedGoalCompletion":false
+    })).collect::<Vec<_>>();
+    Json(json!(report)).into_response()
+}
