@@ -120,8 +120,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or_default();
     let mut progress_history=goal["progressHistory"].as_array().cloned().unwrap_or_default();
     let mut stalled = job["goalState"]["stalled"].as_u64().unwrap_or(0) as usize;
-    // Soft cap applies to actual executor session usage, not auxiliary planner
-    // and reviewer calls. A single in-flight call can exceed this cap.
+    // The soft goal token cap covers executor turns AND session-attributed
+    // planner/reviewer/replanner usage. One in-flight call can exceed it.
     let max_executor_tokens=goal["maxExecutorTokens"].as_u64().unwrap_or(80_000);
     let max_iterations = goal
         .get("maxIterations")
