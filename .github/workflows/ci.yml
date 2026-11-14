@@ -43,6 +43,8 @@ jobs:
       - run: npm run build --prefix web
       - run: node --check scripts/rsi-lab.mjs
       - run: node --test scripts/rsi-lab.test.mjs
+      - run: node --check scripts/swebench-verified.mjs
+      - run: node --test scripts/swebench-verified.test.mjs
       - run: node --test scripts/sub3-connection-hub.test.mjs
       # Linux/macOS run the complete release test suite. Existing Windows
       # fixture cleanup uses POSIX unlink semantics with live SQLite handles;
