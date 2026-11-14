@@ -80,6 +80,19 @@ fn paths(root:&Path,goal:&Value)->Vec<String>{
 async fn current_head(root:&Path)->Result<String,String>{
     Ok(parse_text(git(root,&["rev-parse","--verify","HEAD"]).await?)?.trim().into())
 }
+async fn tracked_blob_size(root:&Path,head:&str,path:&str)->Result<u64,String>{
+    let listing=parse_text(git(root,&["ls-tree","-r",head,"--",path]).await?)?;
+    let (metadata,actual)=listing.lines().next().and_then(|line|line.split_once('\t'))
+        .ok_or("작업 시작 커밋에 추적된 파일이 없습니다.")?;
+    if actual!=path {return Err("Git 파일 경로가 일치하지 않습니다.".into());}
+    let mode=metadata.split_whitespace().next().unwrap_or("");
+    if !matches!(mode,"100644"|"100755"){
+        return Err("Git 원본이 일반 파일이 아닙니다.".into());
+    }
+    let spec=format!("{head}:{path}");
+    parse_text(git(root,&["cat-file","-s",&spec]).await?)?.trim()
+        .parse::<u64>().map_err(|_|"Git 원본 크기를 확인할 수 없습니다.".into())
+}
 
 pub(crate) async fn preview(state:&AppState,goal:&Value)->Result<Value,String>{
     let root=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
@@ -99,11 +112,14 @@ pub(crate) async fn preview(state:&AppState,goal:&Value)->Result<Value,String>{
             },
             _=>(String::new(),false),
         };
+        let tracked=tracked_blob_size(&root,&head,&relative).await
+            .is_ok_and(|size|size<=MAX_UNDO_BYTES);
         files.push(json!({"path":relative,"diff":diff.chars().take(MAX_DIFF_BYTES).collect::<String>(),
             "currentSha256":sha,
-            "canUndo":clean&&same_head&&regular&&!sha.is_empty(),
+            "canUndo":clean&&same_head&&regular&&!sha.is_empty()&&tracked,
             "undoReason":if !clean {"baseline_not_clean"} else if !same_head {"head_changed"}
-                else if !regular {"missing_or_large_file"} else {""}}));
+                else if !regular {"missing_or_large_file"} else if !tracked {"untracked_or_unsupported"}
+                else {""}}));
     }
     Ok(json!({"goalId":goal["id"],"head":head,"sameHead":same_head,
         "baselineClean":clean,"files":files,
@@ -148,9 +164,8 @@ pub(crate) async fn undo(state:&AppState,goal:&Value,raw:&str,expected:&str)->Re
     if digest!=expected.to_ascii_lowercase(){
         return Err("미리보기 이후 내용이 변경됐습니다. 다시 비교해야 합니다.".into());
     }
+    let size=tracked_blob_size(&root,head,&target).await?;
     let spec=format!("{head}:{target}");
-    let size=parse_text(git(&root,&["cat-file","-s",&spec]).await?)?
-        .trim().parse::<u64>().map_err(|_|"Git 원본 크기를 읽지 못했습니다.")?;
     if size>MAX_UNDO_BYTES {
         return Err("Git 원본 파일이 복원 크기 제한을 초과합니다.".into());
     }
