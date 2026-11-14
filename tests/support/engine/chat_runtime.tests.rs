@@ -847,7 +847,7 @@ mod harness_tool_selection_tests {
         let tools = (0..30)
             .map(|index| json!({"type":"function","function":{"name":format!("tool{index}"),"description":"x".repeat(100)}}))
             .collect::<Vec<_>>();
-        let kept = trim_tool_definitions(tools, 2_000);
+        let kept = trim_tool_definitions(tools, 2_000, "").unwrap();
         assert!(!kept.is_empty());
         assert!(kept.len() < 30);
         let total = kept
