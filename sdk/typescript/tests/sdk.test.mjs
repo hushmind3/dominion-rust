@@ -212,3 +212,83 @@ test('owner steering rejects empty corrections before network dispatch', () => {
   const goal = new DominionSDK({fetch: async () => {throw Error('must not dispatch')}}).resumeGoal('test')
   assert.throws(() => goal.steerInstruction(' ', 1), /owner instruction cannot be empty/)
 })
+
+test('resilient SSE recovers after EOF using last durable seq without replaying writes', async () => {
+  const urls = []
+  const sdk = new DominionSDK({fetch: async (url) => {
+    urls.push(url)
+    if (urls.length === 1) return eventResponse([bytes(
+      'data: {"type":"record","seq":20,"kind":"job"}\n\n',
+    )])
+    if (urls.length === 2) return eventResponse([bytes(
+      'data: {"type":"record","seq":20,"kind":"job"}\n\n' +
+      'data: {"type":"record","seq":21,"kind":"goal"}\n\n',
+    )])
+    throw Error('unexpected third connection')
+  }})
+  const observed = []
+  for await (const event of sdk.watchEventsResilient({after: 19, reconnectDelayMs: 0})) {
+    observed.push(event.seq)
+    if (observed.length === 2) break
+  }
+  assert.deepEqual(observed, [20, 21])
+  assert.deepEqual(urls, ['/api/events?after=19', '/api/events?after=20'])
+})
+
+test('resilient SSE surfaces server retention gaps and keeps cursor on durable events only', async () => {
+  const sdk = new DominionSDK({fetch: async (url) => {
+    assert.equal(url, '/api/events?after=1')
+    return eventResponse([bytes(
+      'event: replay_gap\n' +
+      'data: {"type":"replay_gap","after":1,"firstAvailableSeq":99,"requiresStateRefresh":true}\n\n' +
+      'id: 99\n' +
+      'data: {"type":"record","seq":99,"kind":"goal"}\n\n',
+    )])
+  }})
+  const observed = []
+  for await (const event of sdk.watchEventsResilient({after: 1, reconnectDelayMs: 0})) {
+    observed.push(event)
+    if (observed.length === 2) break
+  }
+  assert.deepEqual(observed.map(event => event.type), ['replay_gap', 'record'])
+  assert.equal(observed[0].requiresStateRefresh, true)
+  assert.equal(observed[1].seq,99)
+})
+
+test('resilient SSE aborts cleanly and never reconnects after cancellation', async () => {
+  let calls = 0
+  const abort = new AbortController()
+  const sdk = new DominionSDK({fetch: async () => {
+    calls++
+    return eventResponse([bytes('data: {"type":"record","seq":1}\n\n')])
+  }})
+  const received = []
+  for await (const event of sdk.watchEventsResilient({signal: abort.signal, reconnectDelayMs: 0})) {
+    received.push(event.seq)
+    abort.abort()
+  }
+  assert.deepEqual(received,[1])
+  assert.equal(calls,1)
+})
+
+test('resilient SSE limits repeated empty reconnects and stops on authentication failure', async () => {
+  let attempts=0
+  const sdk = new DominionSDK({fetch: async () => {
+    attempts++
+    return eventResponse([bytes(': keepalive\n\n')])
+  }})
+  await assert.rejects(async () => {
+    for await (const _ of sdk.watchEventsResilient({reconnectDelayMs:0,maxReconnects:1})) {}
+  }, /retry limit/)
+  assert.equal(attempts,2)
+  let denied=0
+  const auth = new DominionSDK({fetch: async () => {
+    denied++
+    return asJson({error:'token invalid'},401)
+  }})
+  await assert.rejects(async () => {
+    for await (const _ of auth.watchEventsResilient({reconnectDelayMs:0})) {}
+  }, error => error instanceof DominionSDKError && error.status===401)
+  assert.equal(denied,1)
+})
+
