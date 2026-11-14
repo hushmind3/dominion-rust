@@ -112,6 +112,9 @@ pub(super) async fn render(
         request["render"]["frames"] = json!(shot.seconds *
             input["render"]["fps"].as_u64().unwrap_or(16));
         request["render"]["seed"] = json!(shot.seed);
+        // Raw ComfyUI shots may be SD; the stitched export alone must meet
+        // the final 1080p minimum. Validate raw shots at their configured size.
+        request["cinematic"]=json!(false);
         let clip = subdir.join("output.mp4");
         // An already verified clip is reusable after an interrupted edit.
         // This is critical: retries must not re-bill earlier successful shots.
