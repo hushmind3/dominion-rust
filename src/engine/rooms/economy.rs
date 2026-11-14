@@ -40,6 +40,26 @@ pub(super) fn budget_spent(token_budget:u64,baseline:u64,observed_total:u64)->bo
     token_budget>0 && observed_total.saturating_sub(baseline)>=token_budget
 }
 
+/// Subtract the immutable first-call receipt from current session totals.
+/// Missing baseline fields remain null rather than being advertised as zero.
+/// Cache totals are provider-reported evidence, not an actual KRW invoice.
+pub(super) fn observed_delta(baseline:&Value,current:&Value)->Value {
+    let mut out=serde_json::Map::new();
+    for key in [
+        "calls", "promptTokens", "completionTokens", "totalTokens",
+        "estimatedCalls", "cachedPromptTokens", "cacheEligiblePromptTokens",
+        "cacheReportedCalls",
+    ] {
+        let delta=baseline[key].as_u64().and_then(|start|{
+            current[key].as_u64().map(|observed|observed.saturating_sub(start))
+        });
+        out.insert(key.into(),delta.map(serde_json::json).unwrap_or(Value::Null));
+    }
+    out.insert("scope".into(),Value::String("one-room-exchange".into()));
+    out.insert("cacheCoverage".into(),Value::String("reported-only".into()));
+    Value::Object(out)
+}
+
 /// The owner's explicit roster/round request, @mentions and "all" messages
 /// must not be silently turned into a cheap one-speaker exchange. The mode
 /// is intentionally opt-in per room with new rooms defaulting to adaptive.
