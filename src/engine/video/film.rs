@@ -8,7 +8,7 @@ use sha2::{Digest,Sha256};
 use std::{io::{Read,Write},path::Path,time::Duration};
 
 const MAX_CLIPS:usize=6;
-fn split_duration(total:u64,maximum:u64)->Result<Vec<u64>,String>{
+pub(super) fn split_duration(total:u64,maximum:u64)->Result<Vec<u64>,String>{
     if total<12||total%2!=0||maximum<6||maximum%2!=0 {
         return Err("장편 영상은 12초 이상의 짝수 길이를 요청하세요.".into());
     }
@@ -28,7 +28,7 @@ fn split_duration(total:u64,maximum:u64)->Result<Vec<u64>,String>{
     }
     Ok(parts)
 }
-fn max_clip(model:&str,quality:&str,fps:u64)->Result<u64,String>{
+pub(super) fn max_clip(model:&str,quality:&str,fps:u64)->Result<u64,String>{
     if !matches!(fps,24|48){return Err("LTX FPS는 24 또는 48만 허용됩니다.".into());}
     match model {
         "ltx-2-5-pro"=>Ok(10),
