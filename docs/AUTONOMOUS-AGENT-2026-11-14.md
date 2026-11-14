@@ -103,3 +103,16 @@
 `src/engine/goal_workspace.rs` 테스트는 실제 임시 Git repo에 worktree를 만들고, 네이티브 `workspace_write`가 원본이 아니라 격리 공간을 변경하는지, 절대경로 파일 도구가 거부되는지, 폐기 후 원본이 불변인지, 틀린 SHA의 게시가 거부되는지, 맞는 SHA로 명시적 원본 반영이 되는지 검증하도록 작성했습니다. 테스트 코드가 존재한다는 사실과 CI에서 테스트가 실제 통과했다는 사실은 구분합니다.
 
 **격리의 범위:** Git 파일 복사본 및 워크스페이스-relative 도구의 경계입니다. OS 프로세스, 외부 브라우저, 셸 명령 내부의 절대 경로는 강제 격리가 아니며 기존 사용자 승인에 맡깁니다. 여러 코딩 에이전트의 동시 쓰기 및 자동 conflict-resolve는 본 구현 범위가 아닙니다. 참고한 2026년 사례: [Claude Code 병렬 worktree 충돌 논의](https://github.com/anthropics/claude-code/issues/34645) (2026년 3월), [격리와 통합 레인 분석](https://blog.restatolabs.com/claude-code-git-parallel-workflows/) (2026년 8월).
+
+
+## 9. RSI에 실제 사용자 목표 관측 연결
+
+`rsi_scan.rs::report`는 기존 실패 작업·실행·RSI 비용 누수뿐 아니라 `rsi_scan/goal_signals.rs::collect`를 호출합니다. 이는 최근 Goal 64개 중 작업/검증 실패 유형이 반복된 경우 실제 Goal ID·상태·도구 증거 수·재계획 수·기록된 토큰 수만 bounded evidence로 제공하고, 다음 `rsi/system/frontier.rs` 및 `system/agenda.rs`의 소스 후보 연구 우선순위에 반영합니다. 사용자 목표 원문·실행 로그·코드 내용은 신호에 포함하지 않습니다. `verifiedCompleted` 통계는 **사용자 목표 완수 결과**이며 RSI의 동결된 독립 쌍 평가·세대 채택 증거와 분리합니다.
+
+## 10. 멀티샷 영상·기술 검수·선택적 유료 재생성
+
+`video::enqueue`가 LTX 영화 모드의 유료 샷 수와 명시적 동의를 검증하고, `film::spec`은 총 길이 12~120초(지원 모델/해상도/최대 6샷 범위)에서 샷별 프롬프트·길이·해상도를 동결합니다. `film::run`은 `ltx::run`을 **샷별로** 호출하고, 각 출력의 SHA-256·제공자 영수증·FFprobe 결과를 `clip-XX/receipt.json`에 영속화합니다. 기술 검사에 실패하면 비용이 이미 발생한 출력물을 남기고 신규 호출을 멈춥니다. 정상 장면이 있으면 동일 SHA의 파일만 재사용하고, 합성은 FFmpeg stream-copy로 수행합니다. 최종 영상은 `quality::inspect`로 다시 검사합니다.
+
+`GET /api/video/jobs/:id/scenes`로 샷별 SHA·품질 상태·예상 신규 유료 호출 수를 조회하고, UI `FilmRetake`에서 동의한 뒤 `POST /api/video/jobs/:id/retake`로 새 Job을 생성합니다. `video::enqueue_retake`는 선택한 샷의 SHA·명시적으로 승인한 신규 호출 수를 검증하고 결정적 UUID를 생성해 `jobs::enqueue_once`로 이중 클릭/중복 요청을 묶습니다. 새 Job의 `film::reuse_other_shots`는 기존 원본 영수증을 SHA 대조 후 복제하고 필요한 샷만 호출합니다. 원본의 효과가 불명확한 샷은 자동 재구매하지 않습니다.
+
+2026년 공개 근거: [LTX-2.5 지원 범위](https://docs.ltx.io/models/ltx-2-5), [LTX 공식 API 변경](https://docs.ltx.io/api-changelog) (2026-08-11), [LTX 과금 구조](https://docs.ltx.io/pricing). 플랫폼에서 **직접 검증된 항목은 ffprobe 미디어 스트림·시간·화면비·오디오 유무**입니다. 실제 영상의 시각적 연출·등장인물/음성 일관성, 개별 시청 품질, 청구액 대장과 실모델 RSI 성과는 별도 실증 대상입니다.
