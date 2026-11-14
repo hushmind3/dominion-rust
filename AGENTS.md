@@ -109,3 +109,5 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - Never mount an unsolicited self-improvement recommendation from root `App.tsx`/main bootstrap; leave progress/failure/audit in RSI/Activity screens. Do not remove approvals or real failures to achieve quiet UI.
 - Direct memory editing is owner-authored only: `web/src/pages/Memory.tsx` → `POST /api/memories/:id/edit` in `src/api/collections.rs`. Compare expected source text, preserve scope, reject learned provenance edits. Tests live in `collections.rs`.
 - Full menu/API/engine paths and validation gaps: `docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md`; static CI contract: `scripts/verify-frontend-navigation.mjs`. Do not claim browser event testing from static checks.
+
+실제 브라우저 연결 채널/기억/자기개선 비방해 UI smoke는 `web/tests/connections.browser.mjs`; 필요하면 `.github/workflows/sub1-ui-browser-smoke.yml`을 workflow_dispatch로 실행합니다. 기본 push CI는 API/타입/빌드 테스트만 하며 Chromium 설치나 브라우저 통과를 가장하지 않습니다.
