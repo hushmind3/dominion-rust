@@ -4,7 +4,7 @@ import {Activity,BookOpenText,Bot,ChevronDown,ChevronRight,Clapperboard,Code2,Co
 import {Button,TextInput} from './Primitives'
 import {t,type LocaleKey,useLocale} from '../i18n'
 
-export type PageId='home'|'chat'|'video'|'models'|'agents'|'rooms'|'workflows'|'goals'|'memory'|'capabilities'|'extensions'|'connections'|'automations'|'activity'|'settings'|'developer'|'rsi'
+export type PageId='home'|'chat'|'video'|'models'|'agents'|'rooms'|'workflows'|'memory'|'capabilities'|'extensions'|'connections'|'automations'|'activity'|'settings'|'developer'|'rsi'
 type NavItem={id:PageId;label:LocaleKey;icon:typeof House}
 export const navigation:{title:LocaleKey;items:NavItem[];collapsible?:boolean}[]=[
  {title:'nav.group.workspace',items:[{id:'home',label:'nav.home',icon:House},{id:'chat',label:'nav.chat',icon:MessageSquare},{id:'rooms',label:'nav.rooms',icon:UsersRound},{id:'models',label:'nav.models',icon:Cpu},{id:'agents',label:'nav.agents',icon:Bot},{id:'video',label:'nav.video',icon:Clapperboard}]},
