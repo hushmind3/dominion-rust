@@ -77,6 +77,8 @@ test('refuse fake grader outputs, missing receipts and tampered native patch',as
         await assert.rejects(readOfficialRun(q.path,q.logs),/patch hash mismatch/)
         const good=q.predictions.map(JSON.stringify).join('\n')+'\n'
         await writeFile(join(q.path,'predictions.jsonl'),good)
+        await writeFile(join(q.logs,'dominion-rust__model',ids[0],'report.json'),
+            JSON.stringify({[ids[0]]:{resolved:true}}))
         await rm(join(q.logs,'dominion-rust__model',ids[1],'report.json'))
         await assert.rejects(readOfficialRun(q.path,q.logs),/Missing official Docker report/)
     }finally{await rm(root,{recursive:true,force:true})}
