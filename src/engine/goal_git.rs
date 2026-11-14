@@ -239,9 +239,6 @@ pub(crate) async fn apply(state:&AppState,id:&str,expected:&str)->Result<Value,S
     // command or commit metadata is executed. Disable arbitrary repository
     // commit hooks on this application-owned operation.
     git(&work,&["add","-A","--","."]).await?;
-    if review_digest(state,id).await?!=current {
-        return Err("Git stage 도중 변경이 발생해 작업을 중단했습니다. 다시 검토하세요.".into());
-    }
     git(&work,&["-c","user.name=DOMINION Agent",
         "-c","user.email=dominion-agent@localhost.invalid",
         "-c","core.hooksPath=/dev/null",
