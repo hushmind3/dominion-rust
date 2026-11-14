@@ -116,7 +116,12 @@ export interface RsiEvolutionRequest {
   providerId: string;
   model: string;
   selectionPolicy?: RsiSelectionPolicy;
-  limits?: Record<string, unknown>;
+  /** Rust controller bounded generations (1..100, default 3). */
+  maxAttempts?: number;
+  /** Total campaign tokens; 0 means no limit, otherwise 1000..2_000_000. */
+  tokenBudget?: number;
+  /** Max campaign seconds; 0 means no limit, otherwise 60..7200. */
+  timeBudgetSeconds?: number;
   focusFiles?: string[];
   continueFrom?: string;
   methodAblation?: boolean;

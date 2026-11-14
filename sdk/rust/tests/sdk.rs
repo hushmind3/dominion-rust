@@ -271,7 +271,7 @@ async fn rust_rsi_sdk_launches_native_campaign_once_and_watches_without_side_eff
             assert_eq!(body["mode"],"continuous");
             assert_eq!(body["confirmation"],"START_RSI_EVOLUTION");
             assert_eq!(body["selectionPolicy"],"automatic");
-            assert_eq!(body["limits"]["maxGenerations"],2);
+            assert_eq!(body["maxAttempts"],2);
             Json(json!({"id":"rsi-1","kind":"rsi_evolve","status":"queued"}))
         }))
         .route("/api/rsi/campaigns/:id", get(|State(count): State<(Arc<AtomicUsize>,Arc<AtomicUsize>)>,
@@ -289,7 +289,7 @@ async fn rust_rsi_sdk_launches_native_campaign_once_and_watches_without_side_eff
     let job=sdk.start_rsi_evolution(
         RsiEvolutionRequest::new("native-provider","model-x","improve recovery")
             .selection_policy(RsiSelectionPolicy::Automatic)
-            .limits(json!({"maxGenerations":2}))
+            .max_attempts(2)
     ).await.unwrap();
     assert_eq!(job.id,"rsi-1");
     let result=sdk.wait_rsi_campaign(&job.id,WaitOptions {

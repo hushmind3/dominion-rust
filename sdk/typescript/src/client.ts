@@ -83,6 +83,9 @@ export class DominionClient {
     start: (input: RsiEvolutionRequest, options?: RequestOptions) => {
       if (!input.providerId?.trim() || !input.model?.trim())
         throw new TypeError("RSI requires an explicit provider and model");
+      if (input.maxAttempts !== undefined &&
+          (!Number.isInteger(input.maxAttempts) || input.maxAttempts < 1 || input.maxAttempts > 100))
+        throw new TypeError("RSI maxAttempts must be an integer from 1 to 100");
       if (input.selectionPolicy !== undefined &&
           !["manual","automatic"].includes(input.selectionPolicy))
         throw new TypeError("Invalid RSI selection policy");

@@ -240,7 +240,11 @@ pub struct RsiEvolutionRequest {
     pub model: String,
     pub selection_policy: RsiSelectionPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limits: Option<Value>,
+    pub max_attempts: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_budget_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_files: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -254,15 +258,24 @@ impl RsiEvolutionRequest {
         Self {
             provider_id: provider_id.into(), model: model.into(),
             request: request.into(), selection_policy: RsiSelectionPolicy::Manual,
-            limits: None, focus_files: None, continue_from: None, method_ablation: None,
+            max_attempts: None, token_budget: None, time_budget_seconds: None,
+            focus_files: None, continue_from: None, method_ablation: None,
         }
     }
     pub fn selection_policy(mut self, policy: RsiSelectionPolicy) -> Self {
         self.selection_policy = policy;
         self
     }
-    pub fn limits(mut self, limits: Value) -> Self {
-        self.limits = Some(limits);
+    pub fn max_attempts(mut self, attempts: u64) -> Self {
+        self.max_attempts = Some(attempts);
+        self
+    }
+    pub fn token_budget(mut self, tokens: u64) -> Self {
+        self.token_budget = Some(tokens);
+        self
+    }
+    pub fn time_budget_seconds(mut self, seconds: u64) -> Self {
+        self.time_budget_seconds = Some(seconds);
         self
     }
     pub fn focus_files(mut self, paths: Vec<String>) -> Self {

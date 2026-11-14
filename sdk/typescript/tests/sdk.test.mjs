@@ -228,13 +228,13 @@ test("RSI SDK launches native Rust campaign once and read-only polls proof", asy
   }});
   const started=await sdk.rsi.start({
     request:"improve recovery",providerId:"native",model:"m",selectionPolicy:"automatic",
-    limits:{maxGenerations:2},
+    maxAttempts:2,
   });
   assert.equal(started.kind,"rsi_evolve");
   assert.equal(calls[0].body.mode,"continuous");
   assert.equal(calls[0].body.confirmation,"START_RSI_EVOLUTION");
   assert.equal(calls[0].body.selectionPolicy,"automatic");
-  assert.equal(calls[0].body.limits.maxGenerations,2);
+  assert.equal(calls[0].body.maxAttempts,2);
   const finished=await sdk.rsi.wait(started.id,{pollIntervalMs:100,timeoutMs:5000});
   assert.equal(finished.status,"needs_review");
   assert.equal(finished.recursiveProof.closedLoopObserved,false);
