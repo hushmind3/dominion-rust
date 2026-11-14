@@ -209,6 +209,12 @@ pub(super) async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
+    // Catalog size is captured before relevance and worktree/delegation gates.
+    // These are serialized schema bytes, not provider-billed token savings.
+    let catalog_tool_count = tool_definitions.len();
+    let catalog_schema_bytes: usize = tool_definitions.iter()
+        .map(|tool| serde_json::to_string(tool).unwrap_or_default().len())
+        .sum();
     let is_room = session["roomId"].is_string();
     if is_room && request.tools_enabled && request.tools_execution_enabled {
         let recent = recent_room_tools(state, session_id);
@@ -502,6 +508,18 @@ pub(super) async fn run_turn_body(
         .collect::<Vec<_>>();
     if let Some(mut execution) = state.store.get("execution", execution_id) {
         execution["discoveredTools"] = json!(discovered_tool_names);
+        execution["toolSelection"] = json!({
+            "policy": if is_room { "room-intent" } else if session["rsiRun"] == true {
+                "rsi-guarded"
+            } else { "task-discovery" },
+            "catalogCount": catalog_tool_count,
+            "selectedCount": tool_definitions.len(),
+            "catalogSchemaBytes": catalog_schema_bytes,
+            "selectedSchemaBytes": tool_definitions.iter()
+                .map(|tool| serde_json::to_string(tool).unwrap_or_default().len())
+                .sum::<usize>(),
+            "measurement": "serialized-schema-bytes-before-provider-budget",
+        });
         execution["budgetChecked"] = json!(true);
         state.store.put("execution", &execution);
     }
