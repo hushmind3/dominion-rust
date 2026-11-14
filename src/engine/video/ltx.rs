@@ -134,7 +134,12 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
             else { attempt.stop() }
         }))
         .build().map_err(|e|e.to_string())?;
+    // Persist potential billing exposure and the uncertain-effects guard in
+    // ONE job checkpoint before the non-idempotent paid POST.
+    let attempts=ctx.state.store.get("job",&ctx.job_id)
+        .and_then(|job|job["paidSubmissionAttempts"].as_u64()).unwrap_or(0);
     ctx.checkpoint(json!({"phase":"submitting","progress":5,
+        "paidSubmissionAttempts":attempts.saturating_add(1),
         "videoState":{"inFlight":true,"provider":"ltx","submitted":false}}))?;
     let response = client.post(API).bearer_auth(&secret).json(&json!({
         "prompt":spec["prompt"],"model":model,"duration":spec["duration"],
