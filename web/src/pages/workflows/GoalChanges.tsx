@@ -32,9 +32,9 @@ export function GoalChanges({goalId,finished}:{goalId:string;finished:boolean}){
   {preview.error&&<Notice message={preview.error}/>}
   {error&&<Notice message={error}/>}
   {info&&<p className="mt-2 text-xs text-emerald-700">{info}</p>}
-  {!preview.baselineClean&&<p className="mt-2 text-[11px] text-amber-700">작업 시작 전 변경 사항이 있거나 Git 기준점을 만들 수 없어 자동 복원이 제한됩니다.</p>}
-  {preview.sameHead===false&&<p className="mt-2 text-[11px] text-amber-700">작업 시작 후 Git HEAD가 이동했습니다. 자동 되돌리기가 제한됩니다.</p>}
-  {(preview.files||[]).map(file=><details key={file.path} className="mt-3 border-t border-[#EFE9DF] pt-3">
+  {!preview.value.baselineClean&&<p className="mt-2 text-[11px] text-amber-700">작업 시작 전 변경 사항이 있거나 Git 기준점을 만들 수 없어 자동 복원이 제한됩니다.</p>}
+  {preview.value.sameHead===false&&<p className="mt-2 text-[11px] text-amber-700">작업 시작 후 Git HEAD가 이동했습니다. 자동 되돌리기가 제한됩니다.</p>}
+  {(preview.value.files||[]).map(file=><details key={file.path} className="mt-3 border-t border-[#EFE9DF] pt-3">
    <summary className="cursor-pointer break-all text-xs font-semibold">{file.path}</summary>
    {file.diff?<pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#24211D] p-3 text-[11px] leading-5 text-[#F8F3E8]">{file.diff}</pre>:
     <p className="mt-2 text-[11px] text-[#8A8176]">현재 Git HEAD와 비교해 표시할 추적 파일 diff가 없습니다.</p>}
@@ -45,7 +45,7 @@ export function GoalChanges({goalId,finished}:{goalId:string;finished:boolean}){
      <small className="text-[10px] text-amber-700">자동 되돌리기 제한: {file.undoReason||(!finished?'목표 진행 중':'검증 불가')}</small>}
    </div>
   </details>)}
-  {!preview.files?.length&&!preview.loading&&<p className="mt-3 text-[11px] text-[#8A8176]">현재까지 성공한 수정 도구가 기록한 파일이 없습니다.</p>}
+  {!preview.value.files?.length&&!preview.loading&&<p className="mt-3 text-[11px] text-[#8A8176]">현재까지 성공한 수정 도구가 기록한 파일이 없습니다.</p>}
   <p className="mt-3 text-[10px] leading-5 text-[#8A8176]">Git 저장소의 수정 파일을 성공 도구 기록과 대조합니다. 직접 실행한 외부 명령의 변경 사항과 동시 작업은 별도 검토가 필요합니다.</p>
  </div>
 }
