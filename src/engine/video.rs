@@ -18,6 +18,8 @@ mod frame_anchor;
 mod kling4;
 #[path = "video/quality.rs"]
 mod quality;
+#[path = "video/visual_scan.rs"]
+mod visual_scan;
 #[path = "video/comfy.rs"]
 mod comfy;
 #[path = "video/cinematic.rs"]
@@ -148,6 +150,10 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if cinematic && engine!="comfyui" {
         return Err("멀티샷 생성은 ComfyUI 작업공간에서 지원합니다.".into());
     }
+    let visual_gate=body["visualQualityGate"].as_bool().unwrap_or(cinematic);
+    if body.get("visualQualityGate").is_some_and(|value|!value.is_boolean()) {
+        return Err("프레임 결함 검수 옵션의 타입이 유효하지 않습니다.".into());
+    }
     let retries=body["badShotRetries"].as_u64().unwrap_or(0);
     if body.get("badShotRetries").is_some_and(|value|value.as_u64().is_none())
         || retries>1 {
@@ -221,7 +227,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     }
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
-        "cinematic":cinematic, "badShotRetries":retries,"scenes":supplied_scenes,
+        "cinematic":cinematic, "badShotRetries":retries,
+        "visualQualityGate":cinematic && visual_gate,"scenes":supplied_scenes,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "costQuote":cost_quote,
         "maxCreditsMicro":if engine=="runway" {body["maxCreditsMicro"].clone()} else {Value::Null},
