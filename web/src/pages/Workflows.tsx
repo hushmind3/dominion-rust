@@ -74,7 +74,10 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
    <option key={skill.id} value={skill.id}>{skill.name}</option>)}
  </SelectInput></FormField>
  <FormField label="에이전트 실행 엔진">
-  <SelectInput value={step.harness||'native'} onChange={e=>setStep(i,{harness:e.target.value as 'native'|'copilot-sdk'})}>
+  <SelectInput value={step.harness||'native'} onChange={e=>setStep(i,{
+    harness:e.target.value as 'native'|'copilot-sdk',
+    sdkProvider:step.sdkProvider||'ollama',sdkTools:step.sdkTools||'read_only'
+   })}>
    <option value="native">도미니온 기본 Rust 엔진</option>
    <option value="copilot-sdk">GitHub Copilot SDK · 공식 Rust 하네스(선택 설치)</option>
   </SelectInput>
