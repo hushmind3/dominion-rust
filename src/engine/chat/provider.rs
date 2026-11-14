@@ -426,27 +426,48 @@ fn clip_tool_for_provider(text: &str, allowed_encoded_chars: usize) -> String {
     if escaped_content_chars(text) <= allowed_encoded_chars {
         return text.to_owned();
     }
-    const NOTICE: &str = "\n… [this model's context is full; see stored execution_operation]";
-    let notice_size = escaped_content_chars(NOTICE);
+    // Causal tails are critical: compiler/test diagnostics usually occur at
+    // the *end* of a long stream, after thousands of harmless progress lines.
+    // An LLM which sees only the original prefix cannot repair the failure.
+    // This is a per-provider projection; the real tool evidence is not edited.
+    const SHORT_NOTICE:&str="\n… [this model's context is full; see stored execution_operation]";
+    let hash=format!("{:x}",sha2::Sha256::digest(text.as_bytes()));
+    let full_notice=format!("\n… [tool output elided; sha256={hash}; see stored execution_operation]\n");
+    let notice=if escaped_content_chars(&full_notice)+40<=allowed_encoded_chars{
+        full_notice.as_str()
+    }else{
+        SHORT_NOTICE
+    };
+    let notice_size=escaped_content_chars(notice);
     if allowed_encoded_chars < notice_size {
-        return if allowed_encoded_chars > 0 { "…".to_string() } else { String::new() };
+        return if allowed_encoded_chars>0{"…".into()}else{String::new()};
     }
-    let mut prefix = String::new();
-    let mut used = 0usize;
-    for ch in text.chars() {
-        let width = match ch {
-            '"' | '\\' | '\n' | '\r' | '\t' | '\u{0008}' | '\u{000c}' => 2,
-            '\u{0000}'..='\u{001f}' => 6,
-            _ => 1,
-        };
-        if used.saturating_add(width) > allowed_encoded_chars - notice_size {
-            break;
-        }
-        prefix.push(ch);
-        used += width;
+    let space=allowed_encoded_chars-notice_size;
+    // Keep some command context (start) and the definitive error/exit lines
+    // (end). No whitespace/JSON rewriting or synthetic tool success.
+    let head_allowance=space*2/5;
+    let tail_allowance=space-head_allowance;
+    let encoded_width=|ch:char|match ch {
+        '"'|'\\'|'\n'|'\r'|'\t'|'\u{0008}'|'\u{000c}'=>2,
+        '\u{0000}'..='\u{001f}'=>6,
+        _=>1
+    };
+    let mut head=String::new();
+    let mut used=0usize;
+    for ch in text.chars(){
+        let width=encoded_width(ch);
+        if used.saturating_add(width)>head_allowance{break;}
+        head.push(ch);used+=width;
     }
-    prefix.push_str(NOTICE);
-    prefix
+    let mut tail_rev=Vec::new();
+    let mut used=0usize;
+    for ch in text.chars().rev(){
+        let width=encoded_width(ch);
+        if used.saturating_add(width)>tail_allowance{break;}
+        tail_rev.push(ch);used+=width;
+    }
+    let tail=tail_rev.into_iter().rev().collect::<String>();
+    format!("{head}{notice}{tail}")
 }
 
 /// Prepare a different model's copy from the original, unabridged tool
