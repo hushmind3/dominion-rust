@@ -1,5 +1,12 @@
 # dominion-rust
 
+2026-11-15: Added scripts/swebench-official-compare.mjs to compare original
+independent Docker grader receipts for two identical Verified issue sets.
+Model, provider, limits, tool approval and sealed Git identity are audited.
+Native completion claims never replace official report.json. See
+[the benchmark guide](docs/SWE-BENCH-RUNNER.md).
+
+
 ## 2026-11-15 공유 에이전트 토큰 예산
 
 GoalRunner의 토큰 상한은 부모·자식·손자 위임 세션 전체에 적용되며,

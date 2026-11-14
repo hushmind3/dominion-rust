@@ -1,5 +1,14 @@
 # DOMINION 자체 Rust 엔진
 
+2026-11-15 공식 벤치마크 비교기: scripts/swebench-official-compare.mjs
+는 실행기 manifest.json / records.jsonl / predictions.jsonl 과 Docker
+logs/evaluation/RUN-ID/run.json 및 각 report.json 을 대조합니다.
+코드 수정 실제 patch SHA256, 작업 집합, Git 베이스 SHA, 제공자 모델,
+토큰·시간 예산, 도구 승인 및 격리 상태를 확인하고 paired 승패를 계산합니다.
+미채점 비공백 패치는 채점에 포함하지 않고 오류로 반환하며, 측정되지
+않은 토큰과 제공자 청구액은 추측하지 않습니다.
+
+
 ## 2026-11-15 공동 목표 원가 상한
 
 `tools/gateway.rs::delegate`가 부여한 `parentSessionId`·`delegated`

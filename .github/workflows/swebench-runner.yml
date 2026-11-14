@@ -4,6 +4,7 @@ on:
     branches: [dominion-sub1]
     paths:
       - 'scripts/swebench-dominion*.mjs'
+      - 'scripts/swebench-official-compare*.mjs'
       - 'scripts/lib/swebench-source.mjs'
       - 'docs/SWE-BENCH-RUNNER.md'
       - '.github/workflows/swebench-runner.yml'
@@ -17,3 +18,4 @@ jobs:
         with:
           node-version: '22'
       - run: node --test scripts/swebench-dominion.tests.mjs
+      - run: node --test scripts/swebench-official-compare.test.mjs

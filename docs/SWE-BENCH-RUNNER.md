@@ -111,3 +111,40 @@ model-proposed shell code if `shell_exec` or `terminal_exec` is included.
 **Execute the runner itself inside your own container/VM** before granting
 shell execution for untrusted SWE-bench repository tests. A Git worktree is not
 an operating-system sandbox.
+
+
+## 2026-11-15: same-task independent Docker comparison
+
+Run the native prediction producer with --dataset verified and the exact
+official Verified test-set JSONL. Use identical model, provider type and URL,
+max token budget, iteration and replanning limits, timeout, tool approvals
+and source isolation for both versions. Then independently grade each output
+using the official Docker evaluator, with DIFFERENT unique run IDs. The
+upstream runner caches results by run ID and case; do not reuse an old run ID
+for a changed patch.
+
+The comparator reads manifest.json, records.jsonl and predictions.jsonl
+from each Dominion run; and run.json plus each original report.json from
+the upstream logs/evaluation/RUN-ID directory. It verifies exact native
+patch bytes and SHA-256, identical instance lists and original Git commits,
+dataset identity, grading split and report booleans. Missing reports for
+nonempty patches are errors, not zero scores or fabricated successes.
+
+Example command (replace paths with actual generated files):
+
+    node scripts/swebench-official-compare.mjs \
+      --left benchmark/runs/base --left-logs logs/evaluation/base-eval \
+      --right benchmark/runs/candidate --right-logs logs/evaluation/candidate-eval
+
+Output reports paired wins/losses, official resolved fraction, native model
+tokens, tool calls and separate condition-match flags. The controlled
+harness-comparison flag becomes false if the provider/model, budgets,
+approved tools, or sealed Git repository mode differs. Missing usage remains
+null. Native completed goals and nonempty patches do NOT become scored solves.
+
+For official 2026 CLI paths and per-instance result structure:
+https://www.swebench.com/SWE-bench/guides/evaluation/
+https://www.swebench.com/SWE-bench/reference/cli/
+
+Verified is a historically exposed public benchmark; supplement with
+SWE-bench Pro and fresh independent issue suites.
