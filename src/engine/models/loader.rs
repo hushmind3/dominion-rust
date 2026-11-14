@@ -519,4 +519,3 @@ pub fn unload(state: &AppState) -> Value {
     json!({ "status": "idle" })
 }
 
-/// Hugging Face search, mapped to the shape the model explorer expects.

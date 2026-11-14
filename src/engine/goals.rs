@@ -323,6 +323,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             None=>(false,Vec::new()),
         };
         gaps = review_gaps;
+        let skipped_for_deterministic_gap = !gate_gaps.is_empty();
         gaps.extend(gate_gaps);
         if let Some(error) = turn_error {
             gaps.push(format!("실행 단계 오류: {error}"));
@@ -339,7 +340,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 .map(|error| format!("실패한 도구: {error}")),
         );
         review_history.push(json!({"iteration":index+1,"role":"reviewer","providerId":review_provider,"model":review_model,
-            "skippedForDeterministicGap":!gate_gaps.is_empty(),"complete":complete,"gaps":gaps,
+            "skippedForDeterministicGap":skipped_for_deterministic_gap,"complete":complete,"gaps":gaps,
             "evidenceCount":evidence.len(),"at":chrono::Utc::now().to_rfc3339()}));
         patch_goal(state, goal_id, json!({"reviewHistory":review_history}));
         gaps.sort();

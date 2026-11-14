@@ -1,5 +1,6 @@
 //! OpenAI-compatible SSE transport and usage metering; provider and cache identity remain defined by the shared gateway.
 use super::*;
+use super::adapters::anthropic_message_text;
 
 pub(crate) async fn stream_completion(
     state: &AppState,
@@ -149,8 +150,8 @@ pub(super) async fn stream_completion_once(
     let ordered_tools=tools.to_vec();
     let settings=json!({"thinking":request.thinking,"effort":request.reasoning_effort,
         "tools":ordered_tools,"toolMode":provider.tool_mode});
-    let mut continuity=super::continuity::prepare(state,provider,request,session_id,&instructions,&settings)?;
-    let (projected, projection)=super::continuity::project(state,provider,messages,&ordered_tools,session_id,&mut continuity);
+    let mut continuity=super::super::continuity::prepare(state,provider,request,session_id,&instructions,&settings)?;
+    let (projected, projection)=super::super::continuity::project(state,provider,messages,&ordered_tools,session_id,&mut continuity);
     let mut completion=stream_completion_once_body(state,client,provider,&projected,&ordered_tools,
         request,session_id,tx,convert_native_history,&mut continuity).await?;
     completion.projection=projection;
@@ -168,12 +169,12 @@ pub(super) async fn stream_completion_once_body(
         let source=provider.base_url.strip_prefix("cli://").ok_or("CLI 제공자 주소가 올바르지 않습니다.")?;
         let mut projected=messages.to_vec();
         if !tools.is_empty(){
-            let manual=super::protocol::tool_manual(tools,&request.input).await;
+            let manual=super::super::protocol::tool_manual(tools,&request.input).await;
             projected.insert(0,json!({"role":"system","content":manual}));
         }
         let content=crate::engine::cli_model::generate(source,&provider.model,&projected).await?;
         if state.is_cancelled(session_id){return Err("실행이 중단되었습니다.".into());}
-        let (calls,visible)=super::protocol::parse_text_tool_calls(&content);
+        let (calls,visible)=super::super::protocol::parse_text_tool_calls(&content);
         let mut completed=Completion::default();
         completed.content=visible;
         completed.tool_calls=calls.into_iter().map(|(name,arguments)|ToolCall{id:uuid::Uuid::new_v4().to_string(),name,arguments}).collect();
@@ -202,7 +203,7 @@ pub(super) async fn stream_completion_once_body(
     let started = std::time::Instant::now();
     let compatible = provider.tool_mode == "compat";
     let manual = if compatible && !tools.is_empty() {
-        Some(super::protocol::tool_manual(tools, &request.input).await)
+        Some(super::super::protocol::tool_manual(tools, &request.input).await)
     } else {
         None
     };
@@ -281,7 +282,7 @@ pub(super) async fn stream_completion_once_body(
     )
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", provider.api_key));
-    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
+    let response=super::super::continuity::send(state,provider,builder,&body,continuity,super::super::continuity::CacheWire::Key).await?;
 
     crate::engine::gateway::verify_benchmark_route(&response)?;
 

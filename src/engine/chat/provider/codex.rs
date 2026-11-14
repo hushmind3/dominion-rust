@@ -1,5 +1,6 @@
 //! Authenticated Codex Responses streaming transport; provider and cache identity remain defined by the shared gateway.
 use super::*;
+use super::adapters::{codex_input,codex_tools};
 
 pub(super) async fn stream_codex_once(
     state: &AppState,
@@ -52,8 +53,8 @@ pub(super) async fn stream_codex_once(
     // Prefer the incremental websocket transport: the identity/persona
     // instructions are still sent every call, but the accumulated transcript
     // is replaced by the new suffix while the connection holds the chain.
-    let ws_body=super::continuity::hinted_body(state,provider,&body,continuity,super::continuity::CacheWire::Key);
-    let websocket = super::codex_ws::stream(
+    let ws_body=super::super::continuity::hinted_body(state,provider,&body,continuity,super::super::continuity::CacheWire::Key);
+    let websocket = super::super::codex_ws::stream(
         state,
         provider,
         account_id,
@@ -68,7 +69,7 @@ pub(super) async fn stream_codex_once(
     match websocket {
         Ok(outcome) => {
             if continuity["wireHintSent"]==true {
-                super::continuity::note_hint(state,provider,super::continuity::CacheWire::Key,true,200);
+                super::super::continuity::note_hint(state,provider,super::super::continuity::CacheWire::Key,true,200);
                 continuity["cacheHintAcceptance"]=json!(true);
             }
             let mut completion = outcome.completion;
@@ -88,19 +89,19 @@ pub(super) async fn stream_codex_once(
             );
             return Ok(completion);
         }
-        Err(super::codex_ws::WsError::Fatal(message)) => return Err(message),
-        Err(super::codex_ws::WsError::HintRejected(reason)) => {
-            super::continuity::note_hint(state,provider,super::continuity::CacheWire::Key,false,400);
+        Err(super::super::codex_ws::WsError::Fatal(message)) => return Err(message),
+        Err(super::super::codex_ws::WsError::HintRejected(reason)) => {
+            super::super::continuity::note_hint(state,provider,super::super::continuity::CacheWire::Key,false,400);
             continuity["incrementalTransport"]=json!({"wire":"http","mode":"full-fallback","fallbackReason":reason});
         }
-        Err(super::codex_ws::WsError::Fallback(reason)) => {
+        Err(super::super::codex_ws::WsError::Fallback(reason)) => {
             continuity["incrementalTransport"] = json!({
                 "wire":"http",
                 "mode":"full-fallback",
                 "fallbackReason":reason,
-                "sentInputTokens":super::room_context::estimate(&json!(body["input"]).to_string()),
-                "fullInputTokens":super::room_context::estimate(&json!(body["input"]).to_string()),
-                "instructionTokens":super::room_context::estimate(&json!(body["instructions"]).to_string()),
+                "sentInputTokens":super::super::room_context::estimate(&json!(body["input"]).to_string()),
+                "fullInputTokens":super::super::room_context::estimate(&json!(body["input"]).to_string()),
+                "instructionTokens":super::super::room_context::estimate(&json!(body["instructions"]).to_string()),
                 "modelCalls":0
             });
             state.store.audit(
@@ -119,7 +120,7 @@ pub(super) async fn stream_codex_once(
         .header("session_id", continuity["transportSessionId"].as_str().unwrap_or(""))
         .header("x-client-request-id", continuity["cacheKey"].as_str().unwrap_or(""))
         .header("Content-Type", "application/json");
-    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Key).await?;
+    let response=super::super::continuity::send(state,provider,builder,&body,continuity,super::super::continuity::CacheWire::Key).await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();

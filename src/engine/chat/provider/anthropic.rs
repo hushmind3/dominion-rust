@@ -1,5 +1,6 @@
 //! Anthropic Messages SSE and cache usage transport; provider and cache identity remain defined by the shared gateway.
 use super::*;
+use super::adapters::{anthropic_messages,anthropic_tools};
 
 pub(super) async fn stream_anthropic_once(
     state: &AppState,
@@ -47,7 +48,7 @@ pub(super) async fn stream_anthropic_once(
         .header("Content-Type", "application/json")
         .header("x-api-key", &provider.api_key)
         .header("anthropic-version", "2023-06-01");
-    let response=super::continuity::send(state,provider,builder,&body,continuity,super::continuity::CacheWire::Ephemeral).await?;
+    let response=super::super::continuity::send(state,provider,builder,&body,continuity,super::super::continuity::CacheWire::Ephemeral).await?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();

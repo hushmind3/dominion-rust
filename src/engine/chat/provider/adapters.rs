@@ -283,5 +283,3 @@ pub(crate) fn codex_terminal_error(piece: &Value) -> Option<String> {
     Some(format!("Codex: {message}"))
 }
 
-/// Codex/ChatGPT subscription models speak the Responses API on a different
-/// host and require the OAuth account id, not an API key.

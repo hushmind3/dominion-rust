@@ -1,5 +1,6 @@
 //! Split from src/engine/chat/provider.rs; regression coverage only.
     use super::*;
+    use super::adapters::{codex_input,codex_tools,anthropic_message_text};
 
     #[test]
     fn codex_input_preserves_attachment_text_and_images() {
