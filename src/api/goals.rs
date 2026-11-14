@@ -46,78 +46,16 @@ pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) 
     Json(json!({"ok":true})).into_response()
 }
 
+/// REST adapter shares exact admission, validation, transaction and
+/// runtime with the in-process Rust SDK. No second goal planner is involved.
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let text = body
-        .get("goal")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if text.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
+    match engine::goals::enqueue_goal(&state, &body) {
+        Ok(goal) => Json(goal).into_response(),
+        Err(engine::goals::GoalEnqueueError::Invalid(message)) =>
+            error(StatusCode::BAD_REQUEST, &message),
+        Err(engine::goals::GoalEnqueueError::Storage(message)) =>
+            error(StatusCode::INTERNAL_SERVER_ERROR, &message),
     }
-    if body.get("isolateWorktree").is_some_and(|value|!value.is_boolean()){
-        return error(StatusCode::BAD_REQUEST,"Git 작업공간 격리 옵션은 true 또는 false여야 합니다.");
-    }
-    let criteria = body
-        .get("successCriteria")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    if let Err(message) = engine::goals::validate_criteria(&criteria) {
-        return error(StatusCode::BAD_REQUEST, &message);
-    }
-    let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
-    let max_iterations = body
-        .get("maxIterations")
-        .cloned()
-        .unwrap_or_else(|| json!(16));
-
-    for key in ["executor","reviewer","planner"] { if body.get(key).is_some_and(|v|!v.is_object()){return error(StatusCode::BAD_REQUEST,"실행자·검토자·계획자는 객체로 지정하세요.");} }
-    for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8),("maxExecutorTokens",5000,2000000)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
-    // Persist the goal and its runnable job together. Inserting the goal
-    // first and enqueuing later could leave a permanently queued ghost goal
-    // when SQLite rejects the job write (disk full / corrupted database).
-    // Dispatch events only after the transaction commits successfully.
-    let goal_id=uuid::Uuid::new_v4().to_string();
-    let job_id=uuid::Uuid::new_v4().to_string();
-    let queued_at=chrono::Utc::now().to_rfc3339_opts(
-        chrono::SecondsFormat::Micros,true);
-    let goal=json!({
-        "id":goal_id,"jobId":job_id,
-        "taskId":uuid::Uuid::new_v4().to_string(),
-        "goal":text,"successCriteria":criteria,"executor":executor,
-        "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
-        "planner":body.get("planner").cloned().unwrap_or(json!({})),
-        "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
-        "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
-        "replans":0,"planHistory":[],"reviewHistory":[],
-        "status":"queued","iterations":0,
-        "maxIterations":max_iterations,
-        "maxExecutorTokens":body["maxExecutorTokens"].as_u64().unwrap_or(80000),
-        "isolateWorktree":body["isolateWorktree"]==true,
-        "createdAt":chrono::Utc::now().to_rfc3339()
-    });
-    let job=json!({
-        "id":job_id,"kind":"goal","status":"queued",
-        "queuedAt":queued_at,"input":{"goalId":goal_id},
-        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
-    });
-    if let Err(cause)=state.store.transaction(&[
-        ("goal".to_string(),goal.clone()),
-        ("job".to_string(),job.clone())
-    ]){
-        state.store.audit("goal.enqueue_failed",json!({
-            "error":cause,"goalId":goal_id,"jobId":job_id
-        }));
-        return error(StatusCode::INTERNAL_SERVER_ERROR,
-            "목표와 실행 작업을 함께 저장하지 못했습니다. 재시도할 수 있습니다.");
-    }
-    let record=state.store.get("goal",&goal_id).unwrap_or(goal);
-    let job_record=state.store.get("job",&job_id).unwrap_or(job);
-    state.bus.record("goal",&record);
-    state.bus.record("job",&job_record);
-    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id}));
-    Json(record).into_response()
 }
 
 #[path = "goals/recovery.rs"]
