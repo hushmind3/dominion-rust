@@ -328,14 +328,16 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let resume_guidance=if resumed_after_review {
         "\n\n[검토 후 재개] 이전 도구 호출의 외부 결과가 불확실할 수 있습니다. 이전 명령/파일 쓰기를 반복하지 마세요. 먼저 읽기 전용 도구로 현재 Git 변경, 파일 상태와 외부 실행 기록을 재확인한 뒤 남은 작업만 수행하세요."
     } else {""};
-    // Prior observed failures are bounded evidence hints, not owner messages
-    // or a substitute for independently checking the current source.
-    let previous_diagnosis=state.store.get("goal",goal_id)
-        .map(|g|g["failureDiagnosis"].clone()).unwrap_or(Value::Null);
-    let resume_guidance=format!("{resume_guidance}\nLast tool/verifier failure attribution (not proven cause): {}",
-        tail(&previous_diagnosis.to_string(),2400));
-
     for index in start..max_iterations {
+        // Refresh the diagnosis at every new model turn, not only at resume.
+        // These are compact factual observations, not a new owner directive.
+        let previous_diagnosis=state.store.get("goal",goal_id)
+            .map(|g|g["failureDiagnosis"].clone()).unwrap_or(Value::Null);
+        let repair_guidance=if previous_diagnosis.is_null(){String::new()}else{
+            format!("\nLast actual tool/verifier failure attribution (unproven cause): {}",
+                tail(&previous_diagnosis.to_string(),2400))
+        };
+        let resume_guidance=format!("{resume_guidance}{repair_guidance}");
         let previous_evidence=evidence.clone();
         let before_artifacts=state.store.get("goal",goal_id)
             .and_then(|row|row["artifacts"].as_array().cloned())
