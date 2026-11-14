@@ -997,6 +997,14 @@ pub fn choose_for_agent(
                 && algorithm["implementation"]
                     .as_str()
                     .is_some_and(|implementation| kernel_exists(kind, implementation))
+                // recency-biased is a diagnostic comparison kernel. The
+                // deterministic matched evaluation demonstrates that it
+                // promotes failed tools; do not give it live user traffic
+                // through unreviewed UCB exploration. Owners may explicitly
+                // activate it, and validated challengers remain selectable.
+                && !(kind == "tool.routing"
+                    && algorithm["implementation"] == "recency-biased"
+                    && algorithm["status"] == "available")
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
