@@ -294,6 +294,10 @@ pub(crate) fn successful_evidence(item: &Value) -> bool {
     if item.get("status").and_then(Value::as_str) == Some("failed")
         || result.get("isError").and_then(Value::as_bool) == Some(true)
         || result.get("success").and_then(Value::as_bool) == Some(false)
+        || (matches!(tool_name(item),
+            "workspace_write" | "file_write" | "workspace_replace"
+            | "workspace_replace_range" | "workspace_replace_function")
+            && result.get("written").and_then(Value::as_bool) == Some(false))
         || result
             .get("error")
             .map(|value| !value.is_null())
@@ -595,6 +599,11 @@ mod inference_tests {
         assert!(!is_action_evidence(&json!({
             "tool":"workspace_replace_range","status":"failed",
             "result":{"success":false}
+        })));
+        assert!(!is_action_evidence(&json!({
+            "tool":"workspace_replace_function","status":"completed",
+            "arguments":{"path":"src/lib.rs"},
+            "result":{"written":false}
         })));
     }
 
