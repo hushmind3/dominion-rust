@@ -44,6 +44,9 @@ pub(crate) async fn deterministic_tool(
     op_seq: u64,
     metrics: &std::sync::Mutex<Metrics>,
 ) -> Result<(Value, Value), String> {
+    if !crate::engine::tools::delegation_allows(&state.store,session_id,tool) {
+        return Err("읽기 전용 조사 작업은 결정적 수정 실행을 사용할 수 없습니다.".into());
+    }
     let mut operations = state
         .store
         .all("execution_operation")
@@ -220,6 +223,7 @@ pub(crate) async fn run_frozen_replacements(
 ) -> Result<Option<Value>, String> {
     if !request.tools_enabled
         || !request.tools_execution_enabled
+        || state.store.get("session",session_id).is_some_and(|s|s["delegatedReadOnly"]==true)
         || std::env::var("DOMINION_DETERMINISTIC_REPLACEMENT").as_deref() == Ok("0")
     {
         return Ok(None);
@@ -372,6 +376,9 @@ pub(crate) async fn dispatch_tool_call(
     procedure_strategy: Option<&str>,
     procedure_revision: Option<&str>,
 ) -> Result<(Value, bool, String), String> {
+    if !crate::engine::tools::delegation_allows(&state.store,session_id,&call.name) {
+        return Err("읽기 전용 조사 에이전트는 변경 및 MCP 도구 호출 권한이 없습니다.".into());
+    }
     let argument_strategy = crate::engine::algorithms::choose_for_agent(
         state,
         "tool.arguments",
