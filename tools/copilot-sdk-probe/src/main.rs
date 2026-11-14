@@ -76,6 +76,8 @@ async fn main()->Result<(),Box<dyn std::error::Error>>{
     ))?;
     let mut cfg=SessionConfig::default();
     cfg.working_directory=Some(sandbox.clone());
+    // This is a fresh disposable fixture directory, not the user's repo.
+    cfg.trust_working_directory=Some(github_copilot_sdk::types::WorkingDirectoryTrust::Session);
     cfg.available_tools=Some(vec!["view".into()]);
     cfg.enable_host_git_operations=Some(false);
     cfg.enable_file_hooks=Some(false);
@@ -135,12 +137,11 @@ async fn main()->Result<(),Box<dyn std::error::Error>>{
 mod tests {
     use super::*;
     fn event(t:&str,content:&str,agent_id:Option<&str>)->github_copilot_sdk::SessionEvent{
-        github_copilot_sdk::SessionEvent{
-            id:"event-1".into(),timestamp:"2026-11-14T00:00:00Z".into(),
-            parent_id:None,ephemeral:None,agent_id:agent_id.map(str::to_string),
-            debug_cli_received_at_ms:None,debug_ws_forwarded_at_ms:None,
-            event_type:t.into(),data:json!({"content":content})
-        }
+        serde_json::from_value(json!({
+            "id":"event-1","timestamp":"2026-11-14T00:00:00Z",
+            "parentId":null,"agentId":agent_id,
+            "type":t,"data":{"content":content}
+        })).expect("SDK session event shape")
     }
     #[test]
     fn oracle_cannot_be_spoofed_by_tool_or_subagent(){

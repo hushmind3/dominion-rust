@@ -9,6 +9,11 @@ license = "Apache-2.0"
 # Completely separate binary: the DOMINION production binary and Cargo.lock
 # remain untouched. SDK experiments must not silently replace its tool policy.
 [dependencies]
-github-copilot-sdk = "1.0.34"
+github-copilot-sdk = { version = "=1.0.34", default-features = false }
+
+[features]
+# Default build never downloads or embeds a Copilot CLI binary.
+default = []
+bundled-cli = ["github-copilot-sdk/bundled-cli"]
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"

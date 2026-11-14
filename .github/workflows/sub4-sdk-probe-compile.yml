@@ -1,0 +1,17 @@
+name: Sub4 Agent SDK compile and oracle unit tests
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'tools/copilot-sdk-probe/**'
+      - '.github/workflows/sub4-sdk-probe-compile.yml'
+  workflow_dispatch:
+jobs:
+  sdk-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile real SDK adaptor and verify oracle boundary (no model calls)
+        run: cargo test --manifest-path tools/copilot-sdk-probe/Cargo.toml

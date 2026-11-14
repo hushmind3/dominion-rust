@@ -17,7 +17,7 @@
 ## 실제 SDK 호출 파일
 `tools/copilot-sdk-probe`는 **본체와 분리된 별도 Cargo 실행기**다. README에 SDK 문서만 링크한 게 아니라 `Client::start → create_session → send_and_wait → get_events → disconnect → stop`을 실제 SDK API로 호출한다.
 
-- 본체 기본 빌드에 추가 종속성 없음. Rust 1.94 이상 필요. Copilot SDK 1.0.34 패키지와 인증(또는 BYOK 모델 키)이 별도로 필요하다.
+- 본체 기본 빌드에 추가 종속성 없음. Rust 1.94 이상 필요. Copilot SDK 1.0.34 패키지와 인증(또는 BYOK 모델 키)이 별도로 필요하다. 기본 빌드는 SDK CLI를 번들하지 않으므로 `COPILOT_CLI_PATH`에 사용자 설치 CLI를 지정하거나 `cargo run --features bundled-cli`을 사용한다.
 - 테스트할 때 임의로 생성한 정확한 마커를 `proof.txt`에만 기록하며 모델 프롬프트에는 정답을 싣지 않는다.
 - 읽기 `view`만 SDK 권한으로 허용한다. shell/edit/MCP/원격 변경은 차단한다. 승인 범위를 넓히려면 별도의 격리·인간승인 연동이 필요하다.
 - 한 번의 실모델 호출에서 최종 **루트 에이전트** 응답에 마커가 존재해야 성공이다. 도구 내용·중간 응답·서브에이전트 발언은 정답 증거로 사용하지 않는다.
@@ -31,7 +31,7 @@
 DOMINION_SDK_EVAL_ALLOW_MODEL_CALLS=1 \
 DOMINION_SDK_EVAL_MODEL="<Copilot runtime supported model>" \
 DOMINION_SDK_EVAL_OUTPUT=./sdk-probe-result.json \
-cargo run --release --manifest-path tools/copilot-sdk-probe/Cargo.toml
+cargo run --release --manifest-path tools/copilot-sdk-probe/Cargo.toml --features bundled-cli
 ```
 
 ※ SDK 코드와 Rust 기반 probe가 존재하는 것만으로 제품 엔진 성능 점수를 올릴 수 없다. 실제 실행·성공·비용 데이터를 획득한 뒤 SDK를 도미니온의 지원 백엔드로 편입할지 결정한다. SDK 내부 임의 도구 실행의 성공 보고를 기존 `execution_operation` SQLite 권한/감사와 동치로 취급하는 것은 금지한다.
