@@ -40,7 +40,7 @@ class FilmConcatSmoke(unittest.TestCase):
                     "-c:a", "aac", "-b:a", "32k", str(root / f"{color}.mp4"))
             playlist = root / "clips.txt"
             playlist.write_text(
-                "file 'blue.mp4'\\nfile 'red.mp4'\\n", encoding="utf-8")
+                "file 'blue.mp4'\nfile 'red.mp4'\n", encoding="utf-8")
             staged = root / "output.part.mp4"
             self.command(
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
