@@ -72,6 +72,25 @@ class ExactPatchContract(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):
                 runner.official_score(invalid,cohort)
 
+    def test_operation_metrics_include_failed_and_uncertain_attempts(self):
+        events = [
+            {"id":"op1", "status":"completed"},
+            {"id":"op2", "status":"failed"},
+            {"id":"op3", "status":"interrupted"},
+            {"id":"op4", "status":"completed"},
+        ]
+        counts = runner.tool_operation_metrics(events)
+        self.assertEqual(counts["toolCalls"],4)
+        self.assertEqual(counts["successfulToolCalls"],2)
+        self.assertEqual(counts["failedToolCalls"],1)
+        self.assertEqual(counts["uncertainToolCalls"],1)
+
+    def test_no_operations_is_measured_zero_not_fabricated_success(self):
+        counts = runner.tool_operation_metrics([])
+        self.assertEqual(counts["toolCalls"],0)
+        self.assertEqual(counts["failedToolCalls"],0)
+        self.assertEqual(counts["successfulToolCalls"],0)
+
     def test_swe_bench_verified_is_pinned_not_user_label(self):
         self.assertEqual(runner.DATASET, "princeton-nlp/SWE-bench_Verified")
         self.assertNotEqual(runner.DATASET, "princeton-nlp/SWE-bench_Lite")
