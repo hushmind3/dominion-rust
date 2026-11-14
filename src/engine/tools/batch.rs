@@ -4,12 +4,15 @@ use super::*;
 
 const MAX_RESEARCH:usize=4;
 
+pub(super) fn research_tool_allowed(name:&str)->bool{
+    matches!(name,
+        "workspace_list"|"workspace_read"|"workspace_read_range"|
+        "code_search"|"web_search"|"http_fetch"|"memory_search"|
+        "task_status"|"task_result")
+}
 pub(super) fn allows(store:&Store,session_id:&str,name:&str)->bool{
     !store.get("session",session_id).is_some_and(|s|s["delegatedReadOnly"]==true)
-        || matches!(name,
-            "workspace_list"|"workspace_read"|"workspace_read_range"|
-            "code_search"|"web_search"|"http_fetch"|"memory_search"|
-            "task_status"|"task_result")
+        || research_tool_allowed(name)
 }
 pub(super) async fn delegate_many(ctx:&ToolContext<'_>,args:&Value)->Result<Value,String>{
     let tasks=args["tasks"].as_array().ok_or("조사 작업 배열이 없습니다.")?;
@@ -86,7 +89,7 @@ mod tests{
         let good=["workspace_read","workspace_read_range","code_search","task_result"];
         let bad=["workspace_write","workspace_replace","shell_exec","file_write",
             "github_api","mcp__external__mutate","delegate_task","delegate_tasks","browser_control"];
-        for name in good{assert!(matches!(name,"workspace_read"|"workspace_read_range"|"code_search"|"task_result"));}
-        for name in bad{assert!(!matches!(name,"workspace_read"|"workspace_read_range"|"code_search"|"task_result"));}
+        for name in good{assert!(research_tool_allowed(name));}
+        for name in bad{assert!(!research_tool_allowed(name));}
     }
 }

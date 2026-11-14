@@ -4,6 +4,13 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+#[path = "tools/batch.rs"]
+mod batch;
+/// Model schemas and native/MCP dispatch share this capability boundary.
+pub(crate) fn delegation_allows(store:&Store,session_id:&str,name:&str)->bool{
+    batch::allows(store,session_id,name)
+}
+
 /// Everything a tool needs in order to run. Tools are pure Rust: no Node,
 /// no sidecar process.
 pub struct ToolContext<'a> {
@@ -164,6 +171,13 @@ pub fn definitions() -> Vec<Value> {
             "domain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Arguments can bind a prior node result via $node.field. Include concrete postconditions."})
         }), vec!["name","domain","verification"])),
+        tool("delegate_tasks", "Launch up to 4 independent read-only research agents in parallel; only the parent may edit files.", object(json!({
+            "tasks":json!({"type":"array","minItems":1,"maxItems":4,"items":{"type":"object",
+                "properties":{"agentId":text("Research agent id"),"prompt":text("Independent read-only investigation")},
+                "required":["agentId","prompt"],"additionalProperties":false}}),
+            "wait":json!({"type":"boolean","description":"Wait for all replies (default false)"}),
+            "timeoutSeconds":json!({"type":"integer","minimum":5,"maximum":300})
+        }),vec!["tasks"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
             "prompt": text("Task instructions"),
@@ -215,6 +229,9 @@ pub async fn execute(
     args: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
+    if !delegation_allows(ctx.store,ctx.session_id,name){
+        return Err("읽기 전용 조사 에이전트는 변경·실행·재위임 도구를 사용할 수 없습니다.".into());
+    }
     let isolated_rsi = ctx.store.get("session",ctx.session_id)
         .is_some_and(|s|s["rsiRun"]==true);
     if isolated_rsi && !rsi_allowed(name) {
@@ -534,6 +551,7 @@ pub async fn execute(
             Ok(crate::engine::unsafe_audit::audit_path(&path))
         }
         "delegate_task" => delegate(ctx, args).await,
+        "delegate_tasks" => batch::delegate_many(ctx,args).await,
         "task_status" => task_payload(ctx, args, false),
         "task_result" => task_payload(ctx, args, true),
         "account_status" => Ok(json!({
@@ -610,6 +628,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     }
     let prompt = required_arg(args, "prompt")?;
     let inherited_goal=crate::engine::goal_workspace::goal_for_session(ctx.state,ctx.session_id)?;
+    let readonly=args["readOnly"]==true;
     let agent = ctx
         .state
         .store
@@ -633,6 +652,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
                 "goalId": inherited_goal,
+                "delegatedReadOnly": readonly,
                 "delegated": true,
             }),
         )
@@ -652,6 +672,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
             "parentSessionId": ctx.session_id,
             "parentAgentId": ctx.agent_id,
             "delegation": true,
+            "delegatedReadOnly": readonly,
         }),
     )
     .ok_or("위임 작업을 만들 수 없습니다.")?;

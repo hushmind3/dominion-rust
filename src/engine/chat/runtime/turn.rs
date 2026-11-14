@@ -204,6 +204,12 @@ pub(super) async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
+    // Capability attenuation is not a prompt. This same allowlist is enforced
+    // by native execute() and MCP dispatch, even for forged tool calls.
+    if session["delegatedReadOnly"]==true {
+        tool_definitions.retain(|schema|
+            tools::delegation_allows(&state.store,session_id,tool_name(schema)));
+    }
     let is_room = session["roomId"].is_string();
     if is_room && request.tools_enabled && request.tools_execution_enabled {
         let recent = recent_room_tools(state, session_id);
