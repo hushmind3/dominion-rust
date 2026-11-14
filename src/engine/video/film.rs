@@ -85,7 +85,7 @@ pub(super) fn spec(input:&Value,cfg:&Value)->Result<Value,String>{
         "model":model,"quality":quality,"fps":fps}))
 }
 
-fn file_sha(path:&Path)->Result<String,String>{
+pub(super) fn file_sha(path:&Path)->Result<String,String>{
     let mut f=std::fs::File::open(path).map_err(|e|e.to_string())?;
     let mut hash=Sha256::new();
     let mut buffer=[0u8;32*1024];
@@ -96,7 +96,7 @@ fn file_sha(path:&Path)->Result<String,String>{
     }
     Ok(format!("{:x}",hash.finalize()))
 }
-fn saved_receipt(dir:&Path)->Result<Option<Value>,String>{
+pub(super) fn saved_receipt(dir:&Path)->Result<Option<Value>,String>{
     let path=dir.join("output.mp4");
     let receipt=dir.join("receipt.json");
     if !path.exists() && !receipt.exists(){return Ok(None);}
@@ -114,7 +114,7 @@ fn saved_receipt(dir:&Path)->Result<Option<Value>,String>{
     }
     Ok(Some(parsed))
 }
-fn persist_receipt(dir:&Path,receipt:&Value)->Result<(),String>{
+pub(super) fn persist_receipt(dir:&Path,receipt:&Value)->Result<(),String>{
     let tmp=dir.join("receipt.part.json");
     let mut file=std::fs::File::create(&tmp).map_err(|e|e.to_string())?;
     file.write_all(receipt.to_string().as_bytes()).map_err(|e|e.to_string())?;
