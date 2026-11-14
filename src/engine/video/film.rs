@@ -164,6 +164,19 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
         let others_unknown=unknown_indices.iter().any(|other|*other!=index);
         item["canRetake"]=json!(terminal&&target_exists&&!others_unknown);
         item["expectedPaidCalls"]=json!(1+missing);
+        if item["canRetake"]==true {
+            let pending=planned.iter().enumerate().filter_map(|(i,shot)|
+                (i==index||clips.get(i).is_some_and(|c|c["receiptVerified"]!=true))
+                    .then(||shot["duration"].as_u64()).flatten()).collect::<Vec<_>>();
+            if let Ok(quote)=super::pricing::quote_durations(
+                job["input"]["ltxModel"].as_str().unwrap_or(""),
+                job["input"]["ltxQuality"].as_str().unwrap_or(""),&pending){
+                item["estimatedRetakeKrw"]=quote["estimatedKrw"].clone();
+                item["quoteReferenceFxAsOf"]=quote["fxAsOf"].clone();
+            }else{
+                item["canRetake"]=json!(false);
+            }
+        }
     }
     Ok(json!({"jobId":id,"status":job["status"],"film":true,
         "unknownEffect":unknown,"clips":clips,
