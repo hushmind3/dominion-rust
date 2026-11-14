@@ -124,17 +124,141 @@ pub(crate) fn workspace_for_session(state:&AppState,session_id:&str)->Result<Pat
     let goal=state.store.get("goal",&id).ok_or("목표 기록이 삭제됐습니다.")?;
     workspace_for_goal(state,&goal)
 }
+// Digest of the FULL reviewable patch, not the display-clipped diff.
+// Binary/non-UTF8 and overly large changes require external Git/PR review.
+const MAX_REVIEW_PATCH:usize=128*1024;
+static APPLY_LOCK:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
+async fn patch_bytes(root:&Path,base:&str)->Result<Vec<u8>,String>{
+    let output=tokio::time::timeout(Duration::from_secs(30),
+        Command::new("git").current_dir(root)
+            .args(["diff","--binary","--no-ext-diff","--no-textconv","--no-color",base])
+            .stdin(Stdio::null()).kill_on_drop(true).output())
+        .await.map_err(|_|"변경 패치 검토 시간 초과".to_string())?
+        .map_err(|e|e.to_string())?;
+    if !output.status.success(){return Err(format!("Git 변경 조회 실패: {}",
+        String::from_utf8_lossy(&output.stderr).chars().take(300).collect::<String>()));}
+    if output.stdout.len()>MAX_REVIEW_PATCH{
+        return Err("검토할 Git 변경이 128KiB를 넘어 PR 검토가 필요합니다.".into());
+    }
+    std::str::from_utf8(&output.stdout).map_err(|_|"텍스트로 검토할 수 없는 Git 패치입니다.")?;
+    Ok(output.stdout)
+}
+async fn apply_patch(root:&Path,patch:&[u8],check:bool)->Result<(),String>{
+    use tokio::io::AsyncWriteExt;
+    let mut child=Command::new("git");
+    child.current_dir(root).args(["apply","--binary","--whitespace=nowarn"]);
+    if check{child.arg("--check");}
+    let mut process=child.arg("-")
+        .stdin(Stdio::piped()).stdout(Stdio::piped())
+        .stderr(Stdio::piped()).kill_on_drop(true)
+        .spawn().map_err(|e|e.to_string())?;
+    let mut stdin=process.stdin.take().ok_or("Git 패치 입력을 열지 못했습니다.")?;
+    let result=tokio::time::timeout(Duration::from_secs(30),async{
+        stdin.write_all(patch).await.map_err(|e|e.to_string())?;
+        drop(stdin);
+        process.wait_with_output().await.map_err(|e|e.to_string())
+    }).await.map_err(|_|"Git 변경 적용 제한 시간 초과".to_string())??;
+    if !result.status.success(){
+        return Err(format!("Git 패치 적용 거부: {}",
+            String::from_utf8_lossy(&result.stderr).chars().take(500).collect::<String>()));
+    }
+    Ok(())
+}
+pub(crate) async fn preview(state:&AppState,id:&str)->Result<Value,String>{
+    let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    if goal["isolateWorktree"]!=true{return Err("Git 격리 목표가 아닙니다.".into());}
+    let work=workspace_for_goal(state,&goal)?;
+    let base=goal["gitWorktree"]["baseCommit"].as_str().ok_or("기준 커밋이 없습니다.")?;
+    let patch=patch_bytes(&work,base).await?;
+    let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
+    let sha=format!("{:x}",Sha256::digest(&patch));
+    Ok(json!({"patchSha256":sha,"patchBytes":patch.len(),
+        "canApply":!patch.is_empty() && untracked.trim().is_empty()
+            && goal["gitWorktree"]["appliedAt"].is_null()
+            && matches!(goal["status"].as_str(),
+                Some("completed"|"failed"|"cancelled"|"needs_review")),
+        "untracked":untracked,"diff":std::str::from_utf8(&patch).unwrap_or(""),
+        "requiresExplicitOwnerApply":true,
+        "reviewIncludesAllTrackedBytes":true}))
+}
+/// Owner-confirmed, exact-SHA-pinned promotion of one reviewed patch to the
+/// original clean checkout. Never force-reset, merge, stage or auto-commit.
+pub(crate) async fn apply_reviewed(state:&AppState,id:&str,expected:&str)->Result<Value,String>{
+    if expected.len()!=64||!expected.bytes().all(|b|b.is_ascii_hexdigit()){
+        return Err("검토한 전체 패치의 SHA-256(64자리)이 필요합니다.".into());
+    }
+    let _guard=APPLY_LOCK.lock().await;
+    let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    if !matches!(goal["status"].as_str(),Some("completed"|"failed"|"cancelled"|"needs_review")){
+        return Err("실행이 끝난 목표만 원본에 반영할 수 있습니다.".into());
+    }
+    if goal["gitWorktree"]["appliedAt"].is_string(){
+        return Err("이미 원본에 적용한 목표입니다.".into());
+    }
+    let work=workspace_for_goal(state,&goal)?;
+    // Other jobs can write the shared source checkout; the owner must stop
+    // them before promotion. This guard is in addition to Git's --check.
+    if state.store.all("job").iter().any(|job|
+        matches!(job["status"].as_str(),Some("queued"|"running"))
+        && job["kind"]!="learn"){
+        return Err("다른 실행 작업을 종료한 뒤 변경을 적용하세요.".into());
+    }
+    let root=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
+    if goal["gitWorktree"]["source"].as_str()!=root.to_str(){
+        return Err("원본 Git 저장소 경로가 변경됐습니다.".into());
+    }
+    let base=goal["gitWorktree"]["baseCommit"].as_str().ok_or("기준 커밋이 없습니다.")?;
+    if git(&root,&["rev-parse","HEAD"]).await?.trim()!=base{
+        return Err("원본 HEAD가 변경됐습니다. 변경을 다시 검토하세요.".into());
+    }
+    if !git(&root,&["status","--porcelain","--untracked-files=all"]).await?.trim().is_empty(){
+        return Err("원본 체크아웃이 깨끗하지 않아 덮어쓰기를 거부했습니다.".into());
+    }
+    if !git(&work,&["ls-files","--others","--exclude-standard"]).await?.trim().is_empty(){
+        return Err("격리 폴더의 미추적 파일은 적용 대상에 포함되지 않습니다. 먼저 검토하세요.".into());
+    }
+    let patch=patch_bytes(&work,base).await?;
+    if patch.is_empty(){return Err("원본에 적용할 추적 파일 변경이 없습니다.".into());}
+    let actual=format!("{:x}",Sha256::digest(&patch));
+    if actual!=expected.to_ascii_lowercase(){
+        return Err("검토 이후 패치가 변경됐습니다. Diff와 SHA-256을 다시 확인하세요.".into());
+    }
+    apply_patch(&root,&patch,true).await?;
+    if git(&root,&["rev-parse","HEAD"]).await?.trim()!=base
+        || !git(&root,&["status","--porcelain","--untracked-files=all"]).await?.trim().is_empty(){
+        return Err("적용 직전에 원본 Git 상태가 변경됐습니다.".into());
+    }
+    apply_patch(&root,&patch,false).await?;
+    let observed=patch_bytes(&root,base).await?;
+    if format!("{:x}",Sha256::digest(&observed))!=actual{
+        state.store.audit("goal.apply_review_mismatch",
+            json!({"goalId":id,"expectedPatchSha256":actual}));
+        return Err("패치를 적용했으나 최종 해시가 다릅니다. 원본을 직접 확인하세요.".into());
+    }
+    let applied_at=chrono::Utc::now().to_rfc3339();
+    let receipt=json!({"goalId":id,"baseCommit":base,"patchSha256":actual,
+        "patchBytes":patch.len(),"appliedAt":applied_at,
+        "verified":true,"sourceCheckoutUpdated":true,"automaticCommit":false});
+    let mut workspace=goal["gitWorktree"].clone();
+    workspace["appliedAt"]=json!(applied_at);
+    let saved=state.store.patch_if("goal",id,"status",&goal["status"],
+        &json!({"gitWorktree":workspace,"gitApply":receipt}))
+        .ok_or("적용은 끝났지만 영수증 저장에 실패했습니다. 재실행하지 말고 파일을 직접 확인하세요.")?;
+    state.bus.record("goal",&saved);
+    state.store.audit("goal.reviewed_patch_applied",receipt.clone());
+    Ok(receipt)
+}
 pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표 기록이 없습니다.")?;
     let workspace=workspace_for_goal(state,&goal)?;
     if goal["isolateWorktree"]!=true{return Err("Git 격리를 선택하지 않은 목표입니다.".into());}
     let base=goal["gitWorktree"]["baseCommit"].as_str().ok_or("기준 커밋이 없습니다.")?;
     let status=git(&workspace,&["status","--short"]).await?;
-    let diff=git(&workspace,&["diff","--no-ext-diff","--no-textconv","--no-color",base]).await?;
-    let untracked=git(&workspace,&["ls-files","--others","--exclude-standard"]).await?;
+    let review=preview(state,id).await?;
     Ok(json!({"goalId":id,"workspaceMode":"isolated","baseCommit":base,
-        "status":status,"diff":diff,"untracked":untracked,
-        "truncated":diff.chars().count()>=DIFF_LIMIT}))
+        "status":status,"diff":review["diff"],"untracked":review["untracked"],
+        "patchSha256":review["patchSha256"],"patchBytes":review["patchBytes"],
+        "canApply":review["canApply"],"truncated":false}))
 }
 pub(crate) async fn discard(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표 기록이 없습니다.")?;
