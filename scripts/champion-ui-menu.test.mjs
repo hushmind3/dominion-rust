@@ -25,6 +25,9 @@ const videoApi=source('src/api/video.rs')
 const videoEngine=source('src/engine/video.rs')
 const filmEngine=source('src/engine/video/film.rs')
 const ltxEngine=source('src/engine/video/ltx.rs')
+const verification=source('src/engine/verification.rs')
+const progress=source('src/engine/goals/progress.rs')
+const pricing=source('src/engine/video/pricing.rs')
 const store=source('src/db.rs')
 
 test('one public connections sidebar item, retaining memory, RSI and champion goals',()=>{
@@ -127,4 +130,41 @@ test('paid cinematic retake runs through UI, SHA-bound owner API and deduplicate
  assert.match(videoEngine,/paidSubmissionAttempts":job\["paidSubmissionAttempts"\]/)
  assert.match(video,/videoJob\.paidSubmissionAttempts/)
  assert.match(videoEngine,/clip_count > 1 && \(!technical_gate/)
+})
+
+test('passing command receipt expires after a later successful source edit',()=>{
+ assert.ok(verification.includes('fn source_mutation('))
+ assert.ok(verification.includes('fn test_stale_after_write('))
+ assert.ok(verification.includes('fresh_command_matches('))
+ assert.ok(verification.includes('last source write')||
+           verification.includes('다시 실행하세요'))
+ assert.ok(verification.includes('later_source_edits_invalidate_previous_successful_tests'))
+})
+
+test('goal admission is atomic and stalls depend on real tool effects',()=>{
+ assert.ok(goalApi.includes('state.store.transaction(&['))
+ assert.ok(goalApi.includes('("goal".to_string(),goal.clone())'))
+ assert.ok(goalApi.includes('("job".to_string(),job.clone())'))
+ assert.ok(progress.includes('new_actions'))
+ assert.ok(progress.includes('cleared_checks'))
+ assert.ok(goals.includes('progress::measure('))
+ assert.ok(goals.includes('session_has_uncertain_effects_except('))
+ assert.ok(store.includes('uncertain_session_operation_ids('))
+ assert.ok(goalApi.includes('reviewedUnknownOpIds'))
+ assert.ok(goalJobs.includes('enqueue_goal_resume'))
+})
+
+test('LTX price quotes bind KRW ceiling, revision and paid POST reservations',()=>{
+ assert.ok(router.includes('/api/video/quote'))
+ assert.ok(videoApi.includes('video::paid_quote'))
+ assert.ok(video.includes("post<{referenceKrw:number;fingerprint:string;"))
+ assert.ok(video.includes('request.approvedQuoteFingerprint=quote.fingerprint'))
+ assert.ok(filmRetake.includes('maxApprovedKrw:shot.expectedQuote.referenceKrw'))
+ assert.ok(pricing.includes('PRICE_REVISION'))
+ assert.ok(pricing.includes('referenceKrw'))
+ assert.ok(pricing.includes('approvedQuoteFingerprint'))
+ assert.ok(videoEngine.includes('pricing::approved(&quote,body)'))
+ assert.ok(ltxEngine.includes('paidReservedKrw'))
+ assert.ok(ltxEngine.includes('next>ceiling'))
+ assert.ok(ltxEngine.includes('price_version_matches'))
 })
