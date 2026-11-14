@@ -511,6 +511,51 @@ pub(crate) fn fresh_command_matches(evidence: &[Value], command: &str) -> bool {
     })
 }
 
+/// A coding test only counts when the command succeeded AND no later
+/// source-changing tool invalidated the result. This check consults tool
+/// receipts, not an assistant's reported test status or scraped console text.
+pub(crate) fn fresh_code_validation(evidence:&[Value])->bool{
+    fn is_test_command(item:&Value)->bool{
+        if !matches!(tool_name(item),"shell_exec"|"terminal_exec")
+            || !successful_evidence(item){return false;}
+        let args=item.get("arguments").or_else(||item.get("args"))
+            .unwrap_or(&Value::Null);
+        let mut command=string(args,"command");
+        if tool_name(item)=="terminal_exec"{
+            for arg in args["args"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str){
+                command.push(' ');
+                command.push_str(arg);
+            }
+        }
+        let words=command.split_whitespace().collect::<Vec<_>>();
+        match words.as_slice(){
+            ["cargo","test",..] | ["cargo","check",..] | ["cargo","clippy",..] |
+            ["cargo","build",..] | ["pytest",..] | ["python","-m","pytest",..] |
+            ["python3","-m","pytest",..] | ["go","test",..] |
+            ["npm","test",..] | ["npm","run","test",..] |
+            ["npm","run","typecheck",..] | ["npm","run","build",..] |
+            ["pnpm","test",..] | ["pnpm","run","test",..] |
+            ["pnpm","run","build",..] | ["yarn","test",..] |
+            ["make","test",..] | ["tsc","--noEmit",..] |
+            ["npx","tsc","--noEmit",..] => true,
+            _=>false,
+        }
+    }
+    evidence.iter().filter(|item|is_test_command(item)).any(|test|{
+        !evidence.iter().filter(|item|source_mutation(item))
+            .any(|edit|test_stale_after_write(test,edit))
+    })
+}
+
+/// In autonomous coding jobs with requireTests=true, a reviewer's text
+/// cannot replace at least one real, post-edit build/test command receipt.
+pub(crate) fn coding_test_gaps(evidence:&[Value],require_tests:bool)->Vec<String>{
+    if require_tests && !fresh_code_validation(evidence){
+        vec!["마지막 소스 수정 이후 성공한 실제 빌드·테스트 실행 증거가 없습니다. 코드를 확인하고 해당 저장소의 테스트/빌드 명령을 실행하세요.".to_string()]
+    }else{Vec::new()}
+}
+
 pub(crate) fn acceptance_gaps(
     state:&AppState,goal:&str,checks:&Value,evidence:&[Value]
 )->Vec<String>{
@@ -603,6 +648,24 @@ fn acceptance_gaps_with_root(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+    #[test]
+    fn coding_test_gate_requires_an_actual_fresh_successful_test(){
+        let edit=json!({"tool":"workspace_write","runId":"r","opSeq":1,
+            "arguments":{"path":"src/main.rs"},"result":{"success":true}});
+        let test=json!({"tool":"terminal_exec","runId":"r","opSeq":2,
+            "arguments":{"command":"cargo","args":["test"]},"result":{"exitCode":0}});
+        let failed=json!({"tool":"terminal_exec","runId":"r","opSeq":3,
+            "arguments":{"command":"cargo","args":["test"]},"result":{"exitCode":1}});
+        let forged=json!({"tool":"shell_exec","runId":"r","opSeq":2,
+            "arguments":{"command":"echo cargo test passed"},"result":{"exitCode":0}});
+        assert!(!fresh_code_validation(&[edit.clone()]));
+        assert!(!fresh_code_validation(&[edit.clone(),forged]));
+        assert!(fresh_code_validation(&[edit.clone(),test.clone()]));
+        assert!(!fresh_code_validation(&[test.clone(),edit.clone()]));
+        assert!(!fresh_code_validation(&[edit.clone(),failed]));
+        assert!(!coding_test_gaps(&[edit.clone()],false).len()>0);
+        assert_eq!(coding_test_gaps(&[edit,test],true),vec![]);
+    }
     #[test]
     fn later_source_edits_invalidate_previous_successful_tests() {
         let checked=json!({"type":"command_succeeded","command":"cargo test"});
