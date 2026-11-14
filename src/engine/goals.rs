@@ -295,7 +295,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // Session-scoped gateway usage now covers executor, planner, reviewer
         // and replanner (plus earlier reviewed continuations). Admission is
         // checked before each turn/call; it is not an exact provider bill cap.
-        let observed_tokens=state.store.session_usage(&session_id)["totalTokens"]
+        let observed_tokens=state.store.session_tree_usage(&session_id)?["totalTokens"]
             .as_u64().unwrap_or(0);
         if token_budget>0 && observed_tokens>=token_budget {
             gaps.push(format!("목표 토큰 예산 {token_budget}을(를) 사용해 다음 실행을 중단했습니다. 기록된 사용량: {observed_tokens}토큰."));
