@@ -1012,3 +1012,39 @@ fn schedule_automations(state: &AppState) {
 include!("../../tests/support/engine/jobs.tests.rs");
 
 
+
+#[cfg(test)]
+mod sub3_workflow_schedule_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    #[test]
+    fn same_schedule_occurrence_does_not_enqueue_twice_after_crash_replay() {
+        let dir=std::env::temp_dir().join(format!("dominion-schedule-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),workspace:dir.clone(),web_dir:dir.join("web")};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path()));
+        state.store.put("workflow",&json!({"id":"flow-1","name":"test workflow",
+            "steps":[{"id":"s1","agentId":"a","prompt":"{{input}}"}]})).unwrap();
+        let original=(chrono::Utc::now()-chrono::Duration::minutes(1)).to_rfc3339();
+        let automation=json!({"id":"automation-1","enabled":true,"kind":"workflow",
+            "nextAt":original,"intervalMinutes":60,
+            "input":{"workflowId":"flow-1","input":"예약 작업","tokenBudget":1000}});
+        state.store.put("automation",&automation).unwrap();
+        schedule_automations(&state);
+        let first=state.store.all("job").into_iter()
+            .filter(|j|j["kind"]=="workflow").collect::<Vec<_>>();
+        assert_eq!(first.len(),1);
+        assert_eq!(first[0]["input"]["tokenBudget"],1000);
+        assert_eq!(first[0]["input"]["automationId"],"automation-1");
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),1);
+        // Simulate a crash after the job insert but before the schedule cursor
+        // was advanced: replaying the SAME due slot reuses the same job id.
+        state.store.put("automation",&automation).unwrap();
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),1);
+        assert_eq!(state.store.all("job")[0]["id"],first[0]["id"]);
+        let _=std::fs::remove_dir_all(dir);
+    }
+}
