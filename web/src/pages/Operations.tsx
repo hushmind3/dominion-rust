@@ -54,4 +54,31 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
  {edit&&<DialogBackdrop onDismiss={()=>setEdit(null)}><DialogPanel size="wide"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small>{t('ui.label.scheduledJob')}</small><h2>{t('ops.automation.config')}</h2></div><Button size="icon" variant="ghost" onClick={()=>setEdit(null)}><X size={19}/></Button></div><div className="grid gap-4 p-5"><FormField label={t('ops.automation.type')}><SelectInput  value={edit.kind} onChange={e=>setEdit({...edit,kind:e.target.value})}><option value="prompt">{t('ops.agentJob')}</option><option value="meeting">{t('ops.meeting')}</option></SelectInput></FormField><FormField label={edit.kind==='meeting'?t('ops.meetingAgenda'):t('ops.taskInstruction')}><TextArea className="min-h-28" rows={4} value={edit.kind==='meeting'?(edit.input?.goal||''):(edit.input?.prompt||'')} onChange={e=>setEdit({...edit,input:{...edit.input,[edit.kind==='meeting'?'goal':'prompt']:e.target.value}})}/></FormField><div className="grid grid-cols-1 gap-4 sm:grid-cols-2"><FormField label={t('ops.interval')}><TextInput type="number" min={1}  value={edit.intervalMinutes||1440} onChange={e=>setEdit({...edit,intervalMinutes:Number(e.target.value)})}/></FormField><FormField label={t('ops.nextRun')}><TextInput type="datetime-local"  value={localDateTime(edit.nextAt)} onChange={e=>{const date=new Date(e.target.value);setEdit({...edit,nextAt:Number.isFinite(date.getTime())?date.toISOString():''})}}/></FormField></div>{edit.kind==='prompt'?<><FormField label={t('ops.agent')}><SelectInput  value={edit.input?.agentId||''} onChange={e=>setEdit({...edit,input:{...edit.input,agentId:e.target.value}})}><option value="">{t('ops.pickAgent')}</option>{agents.value.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</SelectInput></FormField><div className="grid grid-cols-1 gap-4 sm:grid-cols-2"><FormField label={t('ops.provider')}><SelectInput  value={edit.input?.providerId||''} onChange={e=>setEdit({...edit,input:{...edit.input,providerId:e.target.value}})}><option value="">{t('ops.agentSettings')}</option>{providers.value.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</SelectInput></FormField><FormField label={t('ops.modelId')}><TextInput  value={edit.input?.model||''} onChange={e=>setEdit({...edit,input:{...edit.input,model:e.target.value}})}/></FormField></div></>:<FormField label={t('ops.roomId')}><TextInput  value={edit.input?.roomId||''} onChange={e=>setEdit({...edit,input:{...edit.input,roomId:e.target.value}})} placeholder={t('ops.roomIdPlaceholder')}/></FormField>}<label className="inline-flex items-center gap-2 text-sm text-[#4A443C]"><TextInput type="checkbox" checked={edit.enabled} onChange={e=>setEdit({...edit,enabled:e.target.checked})}/> {t('ops.enabled')}</label></div><div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5"><Action variant="secondary" onClick={()=>setEdit(null)}>{t('ops.cancel')}</Action><Action onClick={saveAutomation}><Check size={16}/> {t('ops.save')}</Action></div></DialogPanel></DialogBackdrop>}
  </div>
 }
-function JobList({jobs}:{jobs:any[]}){return <div className="flex min-w-0 flex-col gap-3">{jobs.slice(0,30).map(j=><Panel className="flex min-w-0 flex-wrap items-start gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm" key={j.id}><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Workflow size={20}/></span><div><strong>{j.kind==='meeting'?t('ops.meeting'):t('ops.agentJob')}</strong><p>{j.input?.goal||j.input?.prompt||t('ops.job')}</p>{j.error&&<small className="break-words text-xs text-rose-600">{translateError(j.error)}</small>}<small>{j.createdAt?formatDateTime(j.createdAt):''}</small></div><StatusPill status={j.status} /></Panel>)}{!jobs.length&&<Panel><Empty icon={Workflow} title={t('ops.noJobs')} description={t('ops.noJobs.desc')}/></Panel>}</div>}
+function JobList({jobs}:{jobs:any[]}){
+ return <div className="flex min-w-0 flex-col gap-3">{jobs.slice(0,30).map(j=>{
+  const workflow=j.kind==='workflow'
+  const outputs=j.result?.outputs||j.workflowState?.outputs||[]
+  const count=workflow?(j.result?.artifacts?.length||
+   outputs.reduce((n:number,step:any)=>n+(step.artifacts?.length||0),0)):0
+  return <Panel className="flex min-w-0 flex-wrap items-start gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm" key={j.id}>
+   <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-[#F7E8E1] text-[#C96442]"><Workflow size={20}/></span>
+   <div className="min-w-0 flex-1">
+    <strong>{workflow?(j.input?.definition?.name||'워크플로 협업 작업'):
+     j.kind==='meeting'?t('ops.meeting'):t('ops.agentJob')}</strong>
+    <p>{workflow?(j.input?.input||'에이전트별 단계 실행'):
+     (j.input?.goal||j.input?.prompt||t('ops.job'))}</p>
+    {workflow&&<p className="mt-1 text-[11px] text-[#7C7469]">
+      실제 완료 단계 {outputs.length} / {j.input?.definition?.steps?.length||j.stepTotal||'?'} · 확인된 파일 영수증 {count}개
+      {j.result?.usage?.totalTokens!==undefined&&' · 모델 토큰 '+j.result.usage.totalTokens}
+    </p>}
+    {workflow&&<div className="mt-2 flex flex-wrap gap-3 text-[11px] font-semibold text-[#AE5536]">
+     <a href="#/workflows" className="hover:underline">단계 결과·담당 에이전트 확인</a>
+     {count>0&&<a href="#/developer" className="hover:underline">현재 파일 SHA 재검증</a>}
+    </div>}
+    {j.error&&<small className="break-words text-xs text-rose-600">{translateError(j.error)}</small>}
+    <small>{j.createdAt?formatDateTime(j.createdAt):''}</small>
+   </div>
+   <StatusPill status={j.status}/>
+  </Panel>
+ })}{!jobs.length&&<Panel><Empty icon={Workflow} title={t('ops.noJobs')} description={t('ops.noJobs.desc')}/></Panel>}</div>
+}
