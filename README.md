@@ -17,6 +17,14 @@ Codex·Claude Agent·Copilot SDK는 내부 계획·도구·복구 설계의 **�
 권한상 사용할 수 있을 때 누락시키지 않도록 동작합니다.
 분석 및 실제 수정 위치는 [2026 SDK 자체 하네스 비교](docs/research/2026-sdk-native-harness-comparison.md)에 정리했습니다.
 
+## 도미니언 자체 SDK
+
+외부 에이전트 SDK를 내부 실행기로 이식하지 않고, Rust 하네스의 기존 API를 직접 사용하는
+[TypeScript SDK](sdk/typescript/README.md)를 제공합니다.
+목표 실행·사용자 계획 변경·체크포인트 재개·세션·SSE 대화·이벤트 커서 재연결·승인·실행 기록을
+독립적인 클라이언트에서 다룰 수 있습니다. `sdk/typescript`에서 `npm test`로 빌드·
+모의 HTTP/SSE 테스트를 실행합니다. 외부에 npm 패키지로 배포한 상태는 아닙니다.
+
 ## 그룹 대화와 내 에이전트
 
 `그룹 대화 · 회의` 화면에서 주인이 대화에 직접 참여하고, 에이전트들이 같은 기록을 읽으며

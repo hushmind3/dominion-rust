@@ -1,0 +1,22 @@
+name: sub1 TypeScript SDK
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - 'sdk/typescript/**'
+      - '.github/workflows/sub1-sdk.yml'
+  workflow_dispatch:
+
+jobs:
+  sdk-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and test first-party SDK
+        run: |
+          cd sdk/typescript
+          npm install --no-audit --no-fund
+          npm test
