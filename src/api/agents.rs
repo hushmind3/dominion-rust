@@ -28,6 +28,31 @@ pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) 
     Json(saved).into_response()
 }
 
+/// An agent can launch only workflows that actually assign it a step.
+/// The workflow engine owns durable execution, tools, memory and receipts;
+/// this endpoint does not synthesize a new chat-only "success" message.
+pub async fn run_agent_workflow(
+    State(state):State<AppState>,
+    Path((agent_id,workflow_id)):Path<(String,String)>,
+    Json(body):Json<Value>,
+)->Response {
+    let Some(agent)=state.store.get("agent",&agent_id) else {
+        return error(StatusCode::NOT_FOUND,"에이전트를 찾을 수 없습니다.");
+    };
+    let Some(workflow)=state.store.get("workflow",&workflow_id) else {
+        return error(StatusCode::NOT_FOUND,"워크플로를 찾을 수 없습니다.");
+    };
+    if !workflow["steps"].as_array().is_some_and(|steps|steps.iter()
+        .any(|step|step["agentId"]==agent["id"])) {
+        return error(StatusCode::BAD_REQUEST,
+            "이 에이전트에게 실제 작업 단계가 배정된 워크플로만 실행할 수 있습니다.");
+    }
+    match crate::engine::workflows::enqueue_run(&state,&workflow_id,&body) {
+        Ok(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}
+
 pub async fn bulk_agent_model(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     if let Err(message) = crate::engine::reasoning::validate(&body) {
         return error(StatusCode::BAD_REQUEST, &message);
