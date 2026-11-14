@@ -177,12 +177,14 @@ pub async fn scene_content(
     State(state):State<AppState>,Path((id,index)):Path<(String,usize)>,
     request:Request<Body>,
 )->Response{
-    let manifest=match video::film_scenes(&state,&id){
-        Ok(value)=>value,
-        Err(e)=>return error(StatusCode::NOT_FOUND,e),
-    };
-    if index>=6||manifest["clips"][index]["isAvailable"]!=true{
-        return error(StatusCode::NOT_FOUND,"해당 장면 영상이 없습니다.");
+    // Video Range requests are frequent during seeking. Do not SHA-hash all
+    // six large clips for every byte range; the manifest endpoint owns that.
+    let valid=state.store.get("job",&id).is_some_and(|job|
+        job["kind"]=="video"&&job["input"]["engine"]=="ltx"
+        &&job["input"]["render"]["film"]["clips"].as_array()
+            .is_some_and(|clips|index<clips.len()&&clips.len()<=6));
+    if !valid {
+        return error(StatusCode::NOT_FOUND,"해당 다중 장면 영상을 찾지 못했습니다.");
     }
     let root=match video::directory(&state,&id)
         .and_then(|p|p.canonicalize().map_err(|_|"영상 디렉터리가 없습니다.".to_string())){
