@@ -28,6 +28,7 @@ test("typed goals use native Rust endpoint, owner's fields and admin header", as
   });
   const goal = await sdk.goals.create({
     goal:"Build a release",isolateWorktree:true,maxIterations:8,
+    requireTests:true,tokenBudget:150000,
     executor:{providerId:"p",model:"m"},
   });
   assert.equal(goal.id, "goal-1");
@@ -37,6 +38,8 @@ test("typed goals use native Rust endpoint, owner's fields and admin header", as
   const body = JSON.parse(requests[0].init.body);
   assert.equal(body.executor.model, "m");
   assert.equal(body.isolateWorktree, true);
+  assert.equal(body.requireTests,true);
+  assert.equal(body.tokenBudget,150000);
 });
 
 test("server errors retain status, and writes never silently retry", async () => {
