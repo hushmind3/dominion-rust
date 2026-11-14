@@ -67,6 +67,7 @@ pub mod rsi_recursive_closure;
 pub mod rsi_negative_transfer;
 #[path = "rsi/lineage/rsi_model_lineage.rs"]
 pub mod rsi_model_lineage;
+pub mod rsi_model_learning;
 pub mod rsi_evolve;
 #[path = "rsi/learning/rsi_edit_genome.rs"]
 pub mod rsi_edit_genome;
