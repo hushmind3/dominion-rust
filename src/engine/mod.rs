@@ -1,3 +1,4 @@
+pub mod goal_checks;
 pub mod goal_control;
 pub mod goal_git;
 pub mod goal_recovery;
