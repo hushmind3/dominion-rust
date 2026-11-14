@@ -252,6 +252,95 @@ function makePatch(dir,base){
   // The official grader, not our local quality heuristic, owns resolution.
   return patch;
 }
+
+/** The official Docker evaluator may run later or on another machine.
+ * Independently consume its per-instance report files. No local model
+ * completion, reference patch or self-reported test may populate this score.
+ * Validate the stored predictions against the original Git diff digests
+ * before associating any external verdict with this benchmark attempt.
+ */
+export function importOfficialVerdicts(receipts,predictions,model,logsRoot){
+  demand(Array.isArray(receipts)&&Array.isArray(predictions)
+    &&receipts.length===predictions.length,'benchmark manifest/prediction mismatch');
+  demand(typeof model==='string'&&model.startsWith('DOMINION-Rust-')
+    &&model.length<240,'untrusted evaluator model directory');
+  const byId=new Map();
+  for(const pred of predictions){
+    demand(typeof pred?.instance_id==='string'
+      &&/^[a-zA-Z0-9_.-]{1,160}$/.test(pred.instance_id),
+      'invalid prediction instance ID');
+    demand(!byId.has(pred.instance_id),'duplicate prediction instance');
+    demand(pred.model_name_or_path===model,'evaluator model name mismatch');
+    demand(typeof pred.model_patch==='string','missing generated patch text');
+    byId.set(pred.instance_id,pred);
+  }
+  for(const row of receipts){
+    const pred=byId.get(row?.instance_id);
+    demand(pred,'official grading instance not in benchmark predictions');
+    demand(Number.isSafeInteger(row.patchBytes)&&row.patchBytes>=0,
+      'benchmark patch size unknown');
+    demand(Buffer.byteLength(pred.model_patch)===row.patchBytes,
+      'generated prediction byte count changed since execution');
+    if(row.patchSha256!==null){
+      demand(SHA(pred.model_patch)===row.patchSha256,
+        'generated prediction SHA-256 changed since execution');
+    }else{
+      demand(row.patchBytes===0,'generated patch has no native SHA-256');
+    }
+    if(row.patchBytes===0){
+      row.officialSolved=false;
+      row.officialGradeSource='empty_prediction_not_evaluated';
+      continue;
+    }
+    const path=join(logsRoot,model.replaceAll('/','__'),
+      row.instance_id,'report.json');
+    if(!existsSync(path)){
+      row.officialSolved=null;
+      row.officialGradeSource='missing_official_instance_report';
+      continue;
+    }
+    try{
+      const doc=JSON.parse(readFileSync(path,'utf8'));
+      const result=doc?.[row.instance_id];
+      row.officialSolved=typeof result?.resolved==='boolean'
+        ?result.resolved:null;
+      row.officialInfraFailure=result?.infra_failure===true;
+      row.officialGradeSource=row.officialSolved===null
+        ?'invalid_official_instance_report':'official_swebench_docker_report';
+    }catch{
+      row.officialSolved=null;
+      row.officialGradeSource='unreadable_official_instance_report';
+    }
+  }
+  return receipts;
+}
+export function importOfficialRun(reportPath,logsRoot){
+  demand(isAbsolute(reportPath)&&isAbsolute(logsRoot),
+    'use absolute benchmark report and official evaluator log paths');
+  const run=JSON.parse(readFileSync(reportPath,'utf8'));
+  demand(run?.dataset==='princeton-nlp/SWE-bench_Verified'
+    &&typeof run.runId==='string'
+    &&/^dominion-swe-[0-9]+-[a-f0-9]{8}$/.test(run.runId),
+    'not a native SWE-bench Verified benchmark run');
+  demand(typeof run.model==='string'&&Array.isArray(run.receipts),
+    'native benchmark receipts missing');
+  const predictionsPath=join(dirname(reportPath),'predictions.jsonl');
+  const preds=readFileSync(predictionsPath,'utf8').split(/\r?\n/)
+    .filter(line=>line.trim()).map(line=>JSON.parse(line));
+  importOfficialVerdicts(run.receipts,preds,run.model,logsRoot);
+  run.summary=summarize(run.receipts);
+  run.officialGrading={
+    source:'external_SWE_bench_docker_per_instance_reports',
+    runId:run.runId,
+    logDirectory:resolve(logsRoot),
+    importedAt:NOW(),
+    fullyGraded:run.receipts.every(row=>typeof row.officialSolved==='boolean'),
+  };
+  persist(reportPath,run);
+  return {runId:run.runId,summary:run.summary,
+    officialGrading:run.officialGrading};
+}
+
 function safeName(id){return id.replace(/[^A-Za-z0-9_.-]/g,'_')}
 function persist(path,record){mkdirSync(dirname(path),{recursive:true});writeFileSync(path,JSON.stringify(record,null,2)+'\n');}
 function envProvider(){
@@ -455,7 +544,8 @@ async function run(){
       summary:summarize(receipts),receipts,
       evaluatorCommand:['python','-m','swebench.harness.run_evaluation',
         '--dataset_name','princeton-nlp/SWE-bench_Verified',
-        '--predictions_path',predictionFile,'--max_workers','2','--run_id',runId]});
+        '--predictions_path',predictionFile,'--max_workers','2','--run_id',runId,
+        '--instance_ids',...tasks.map(t=>t.instance_id)]});
   };
   for(let n=0;n<tasks.length;n++){
     const {result,prediction:pred}=await runOne(tasks[n],n,s,name);
@@ -467,8 +557,10 @@ async function run(){
     const completed=spawnSync('python',['-m','swebench.harness.run_evaluation',
       '--dataset_name','princeton-nlp/SWE-bench_Verified',
       '--predictions_path',predictionFile,
-      '--max_workers','2','--run_id',runId],
-      {encoding:'utf8',timeout:12*60*60*1000,maxBuffer:32*1024*1024});
+      '--max_workers','2','--run_id',runId,
+      '--instance_ids',...tasks.map(t=>t.instance_id)],
+      {cwd:s.output,encoding:'utf8',
+        timeout:12*60*60*1000,maxBuffer:32*1024*1024});
     const exit=completed.status??1;
     writeFileSync(join(s.output,'official-evaluator.log'),
       (completed.stdout||'')+'\n'+(completed.stderr||''));
@@ -477,34 +569,23 @@ async function run(){
       runId,exitStatus:exit,
       note:'Read official SWE-bench generated per-instance reports; zero process exit does not itself imply a resolved task.'
     });
-    // Parse upstream evaluator's per-task report rather than inferring
-    // solved status from a completed subprocess or DOMINION's own review.
-    // Missing reports for nonempty patches leave the score UNKNOWN.
-    const root=join(process.cwd(),'logs','evaluation',runId,
-      name.replace(/\//g,'__'));
-    for(const row of receipts){
-      if(row.patchBytes===0){
-        row.officialSolved=false;continue;
-      }
-      const reportPath=join(root,row.instance_id,'report.json');
-      if(!existsSync(reportPath)){
-        row.officialSolved=null;
-        continue;
-      }
-      try{
-        const grades=JSON.parse(readFileSync(reportPath,'utf8'));
-        row.officialSolved=typeof grades[row.instance_id]?.resolved==='boolean'
-          ?grades[row.instance_id].resolved:null;
-        row.officialInfraFailure=grades[row.instance_id]?.infra_failure===true;
-      }catch{
-        row.officialSolved=null;
-      }
-    }
+    // The evaluator writes inside this isolated run directory. A partial
+    // or infrastructure-failed run does NOT turn into a benchmark success.
+    importOfficialVerdicts(receipts,predictions,name,
+      join(s.output,'logs','evaluation',runId));
     save();
     if(exit!==0)process.exitCode=1;
   }
   process.stdout.write(JSON.stringify({report,predictionFile,summary:summarize(receipts)})+'\n');
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  run().catch(error=>{console.error(String(error.stack||error));process.exitCode=2});
+  if(process.argv[2]==='--import-grade'){
+    try{
+      demand(process.argv.length===5,
+        'usage: --import-grade /absolute/report.json /absolute/logs/evaluation/<runId>');
+      console.log(JSON.stringify(importOfficialRun(process.argv[3],process.argv[4])));
+    }catch(error){console.error(String(error.stack||error));process.exitCode=2;}
+  }else{
+    run().catch(error=>{console.error(String(error.stack||error));process.exitCode=2});
+  }
 }
