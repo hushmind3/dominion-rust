@@ -146,6 +146,33 @@ impl GoalOptions {
     }
 }
 
+/// Owner decision required to resume a paused or interrupted autonomous goal.
+/// Unknown external effects are not replayed unless the owner has inspected
+/// them and explicitly records how they were reconciled.
+#[derive(Debug, Clone, Default)]
+pub struct GoalResumeOptions {
+    pub resolution_note: Option<String>,
+    pub acknowledge_external_effects: bool,
+    pub max_iterations: Option<u64>,
+    pub max_executor_tokens: Option<u64>,
+}
+
+impl GoalResumeOptions {
+    fn into_value(self) -> Value {
+        let mut body = json!({
+            "acknowledgeExternalEffects": self.acknowledge_external_effects,
+            "resolutionNote": self.resolution_note.unwrap_or_default()
+        });
+        if let Some(value) = self.max_iterations {
+            body["maxIterations"] = json!(value);
+        }
+        if let Some(value) = self.max_executor_tokens {
+            body["maxExecutorTokens"] = json!(value);
+        }
+        body
+    }
+}
+
 /// Completed native engine turn: persisted assistant message plus witnessed
 /// tool operations, including partial operations on a provider failure.
 #[derive(Debug, Clone)]
@@ -456,6 +483,15 @@ impl DominionSdk {
     /// goals. The returned record contains the durable jobId.
     pub fn enqueue_goal(&self, options: GoalOptions) -> Result<Value, String> {
         engine::goals::enqueue_goal(&self.state, &options.into_value())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Resume a paused native autonomous goal through the same atomic
+    /// owner-reviewed state transition used by the HTTP adapter.
+    pub fn resume_goal(
+        &self, id: &str, options: GoalResumeOptions,
+    ) -> Result<Value, String> {
+        engine::goals::resume_goal(&self.state, id, &options.into_value())
             .map_err(|error| error.to_string())
     }
 
