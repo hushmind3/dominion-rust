@@ -77,6 +77,19 @@ fn observed(row:&Value)->Option<(Arm,Genome)>{
         ||c.effect_proven {return None;}
     Some((c.arm,c.genome))
 }
+/// A recorded worker job is one experiment, even if a campaign resumes and
+/// the same settled receipt appears multiple times in its reconstructed history.
+/// Counting duplicate rows as independent evidence makes exploration collapse
+/// into the arm that happened to be persisted most often.
+fn independent_trials(history:&[Value])->Vec<(&Value,Arm,Genome)>{
+    let mut seen=std::collections::BTreeSet::<String>::new();
+    history.iter().filter_map(|row|{
+        let id=row["jobId"].as_str().filter(|id|!id.trim().is_empty())?;
+        let (arm,genome)=observed(row)?;
+        seen.insert(id.to_string()).then_some((row,arm,genome))
+    }).collect()
+}
+
 fn score(row:&Value,genome:&Genome)->i64{
     let gain=row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0).min(8);
     let regression=row["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0).min(8);
@@ -90,10 +103,10 @@ fn score(row:&Value,genome:&Genome)->i64{
 /// produced a frozen paired receipt; unmeasured declarations are ignored.
 /// Recombinations are proposals, not proof of the policy's superiority.
 fn inherit(history:&[Value])->(Genome,Option<String>){
-    let verified=history.iter().filter_map(|r|observed(r).map(|(arm,genome)|{
+    let verified=independent_trials(history).into_iter().map(|(r,arm,genome)|{
         let grade=score(r,&genome);
         (r,arm,genome,grade)
-    })).collect::<Vec<_>>();
+    }).collect::<Vec<_>>();
     let Some((last,_,last_genome,_))=verified.last() else{return (Genome::default(),None)};
     let mut next=last_genome.clone();
     if last["accepted"]==true {
@@ -126,8 +139,8 @@ pub(crate) fn propose(history:&[Value],revision:&str,factorial:bool,repair:bool)
         match arm {Arm::Explore=>true,Arm::Factorial=>factorial,Arm::Repair=>repair})
         .collect::<Vec<_>>();
     let mut scored=Vec::new();
-    let real=history.iter().filter_map(|r|observed(r).map(|(arm,_)|(r,arm)))
-        .collect::<Vec<_>>();
+    let real=independent_trials(history).into_iter()
+        .map(|(row,arm,_)|(row,arm)).collect::<Vec<_>>();
     for arm in allowed {
         let rows=real.iter().filter(|(_,a)|*a==arm).map(|(r,_)|*r)
             .collect::<Vec<_>>();
@@ -135,10 +148,20 @@ pub(crate) fn propose(history:&[Value],revision:&str,factorial:bool,repair:bool)
         let rewards=rows.iter().map(|r|score(r,&genome)).sum::<i64>();
         // Integer arithmetic makes tie-breaking and source receipt hashes
         // independent of architecture-specific floating-point behavior.
-        let mean=if trials>0 {rewards*100/trials}else{0};
+        // Shrink the mean toward the no-evidence prior (two virtual trials).
+        // One lucky mutation must not permanently dominate the selection
+        // policy ahead of under-explored interventions.
+        let mean=rewards.saturating_mul(100)/(trials+2);
         let novelty=(genome.novelty_weight as i64)*500/(trials+1);
         let recovery=if arm==Arm::Repair {genome.recovery_weight as i64*100}else{0};
-        scored.push((mean+novelty+recovery,arm,trials));
+        // An actual run of consecutive unsuccessful interventions is stronger
+        // evidence than a stale high historical mean. Discourage immediate
+        // repetition while preserving a future return to that arm.
+        let stagnant=real.iter().rev()
+            .take_while(|(row,a)|*a==arm && row["accepted"]!=true)
+            .take(4).count() as i64;
+        let plateau_penalty=stagnant*genome.recovery_weight as i64*125;
+        scored.push((mean+novelty+recovery-plateau_penalty,arm,trials));
     }
     scored.sort_by(|a,b|b.0.cmp(&a.0).then_with(||a.1.name().cmp(b.1.name())));
     let selected=scored.first().map(|r|r.1).unwrap_or(Arm::Explore);

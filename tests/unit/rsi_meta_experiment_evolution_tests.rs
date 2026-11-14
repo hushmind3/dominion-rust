@@ -98,3 +98,52 @@ fn genuine_rejected_paired_experiment_changes_next_genome(){
     rejected["pairedMeasured"]=json!(false);
     assert_eq!(propose(&[rejected],&"b".repeat(40),false,false)["observedTrials"],0);
 }
+
+
+#[test]
+fn duplicate_persisted_job_receipts_never_create_extra_experimental_evidence() {
+    let initial=propose(&[],&"a".repeat(40),true,true);
+    let once=run("same-job",&initial,true,2,0);
+    let a=propose(&[once.clone()],&"b".repeat(40),true,true);
+    let b=propose(&[once.clone(),once.clone(),once.clone()],&"b".repeat(40),true,true);
+    assert_eq!(a,b,"replayed worker receipts are not independent trials");
+    assert_eq!(b["observedTrials"],1);
+    assert_eq!(b["evidenceJobIds"],json!(["same-job"]));
+}
+
+#[test]
+fn early_weak_results_do_not_lock_the_evolutionary_experiment_arm() {
+    let first=propose(&[],&"a".repeat(40),true,true);
+    assert_eq!(first["arm"],"repair");
+    // A measured but unsuccessful repair must reopen exploration/factorial
+    // rather than rewarding that arm for a single noisy run.
+    let weak=run("real-failure",&first,false,0,0);
+    let next=propose(&[weak],&"b".repeat(40),true,true);
+    assert_ne!(next["arm"],"repair");
+    assert_eq!(next["observedTrials"],1);
+    assert!(validate(&next,&"b".repeat(40)).is_ok());
+}
+
+#[test]
+fn unmeasured_or_missing_job_identity_cannot_train_rsi_strategy() {
+    let first=propose(&[],&"a".repeat(40),true,true);
+    let mut invalid=run("job-1",&first,true,4,0);
+    invalid["jobId"]=json!("");
+    let p=propose(&[invalid],&"b".repeat(40),true,true);
+    assert_eq!(p["observedTrials"],0);
+    assert!(p["parentRevision"].is_null());
+    assert_eq!(p["genome"],first["genome"]);
+}
+
+#[test]
+fn independently_measured_jobs_still_evolve_and_preserve_lineage() {
+    let first=propose(&[],&"a".repeat(40),true,true);
+    let second=propose(&[run("j-1",&first,false,0,1)],&"b".repeat(40),true,true);
+    let third=propose(&[
+        run("j-1",&first,false,0,1),
+        run("j-2",&second,true,3,0),
+    ],&"c".repeat(40),true,true);
+    assert_eq!(third["observedTrials"],2);
+    assert_eq!(third["parentRevision"],second["revision"]);
+    assert!(validate(&third,&"c".repeat(40)).is_ok());
+}

@@ -8,6 +8,18 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 RSI experiment selection: independent evidence and exploration
+
+`src/engine/rsi/meta/experiment_evolution.rs` now counts **distinct
+settled worker jobs**, not duplicated history rows, both for genotype
+inheritance and strategy selection. The decision rule uses a conservative
+two-observation prior for average payoff, a novelty bonus and a bounded
+penalty for recent measured non-improving runs. The algorithm continues to
+select only runnable Rust experiment arms; the existing independent paired
+evaluator still exclusively decides acceptance. Regression tests validate
+duplicate receipts, false/unmeasured provenance, early exploration,
+inheritance and stable policy hashes.
+
 ## 2026-11-14 Goal worker provenance in the Rust prompt compiler
 
 The original user goal and later direct corrections are owner-authored.
