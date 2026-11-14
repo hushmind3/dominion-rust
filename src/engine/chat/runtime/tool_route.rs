@@ -8,7 +8,7 @@
 //! Route only tools the caller already advertised and authorized. Feedback is
 //! limited to durable operation status/name; model-authored tool output text is
 //! never parsed into instructions or permission.
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use super::tool_catalog::tool_name;
 
