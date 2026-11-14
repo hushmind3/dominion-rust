@@ -1195,6 +1195,9 @@ pub(super) async fn run_turn_body(
                     })
                     .collect::<Vec<_>>();
                 crate::engine::procedure::sort_operations(&mut operations);
+                // Resolve before the Option-returning filter_map closure.
+                // A missing isolated worktree must fail closed.
+                let scoped_workspace=crate::engine::goal_git::workspace_for_session(state,session_id)?;
                 let violations = strategy_candidates
                     .iter()
                     .filter(|strategy| {
@@ -1209,7 +1212,7 @@ pub(super) async fn run_turn_body(
                         let result = crate::engine::procedure::evaluate(
                             strategy,
                             &operations,
-                            &crate::engine::goal_git::workspace_for_session(state,session_id)?,
+                            &scoped_workspace,
                         );
                         if result["verified"].as_bool() == Some(true)
                             && result["followed"].as_bool() == Some(false)
