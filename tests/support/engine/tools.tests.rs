@@ -543,6 +543,46 @@ mod tests {
     }
 
     #[test]
+    fn delegated_result_preserves_late_edits_after_many_reads() {
+        use crate::config::Config;
+        use crate::db::Store;
+        use crate::vault::Vault;
+        let dir=std::env::temp_dir().join(format!("dominion-delegated-proof-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let store=Store::open(&cfg.db_path()).unwrap();
+        let state=crate::state::AppState::new(cfg,store,Vault::open(&dir.join("vault.key")));
+        state.store.put("job",&json!({"id":"child-job","kind":"prompt","status":"completed",
+            "input":{"sessionId":"child","parentSessionId":"owner"},
+            "result":{"sessionId":"child"}})).unwrap();
+        for seq in 1..=35 {
+            state.store.put("execution_operation",&json!({
+                "id":format!("read-{seq:03}"),"runId":"run-1",
+                "sessionId":"child","opSeq":seq,"status":"completed",
+                "tool":"workspace_read","arguments":{"path":format!("src/module_{seq}.rs")},
+                "result":{"content":"unmodified"}
+            })).unwrap();
+        }
+        state.store.put("execution_operation",&json!({
+            "id":"edit-late","runId":"run-1","sessionId":"child",
+            "opSeq":36,"status":"completed","tool":"workspace_replace_range",
+            "arguments":{"path":"src/lib.rs"},
+            "result":{"written":true,"postSha256":"a".repeat(64)}
+        })).unwrap();
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,
+            session_id:"owner",agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        let result=task_payload(&ctx,&json!({"jobId":"child-job"}),true).unwrap();
+        assert_eq!(result["operationsTotal"],36);
+        assert!(result["operationsOmitted"].as_u64().unwrap()>0);
+        assert!(result["operations"].as_array().unwrap().len()<=24);
+        assert!(result["operations"].as_array().unwrap().iter().any(|op|
+            op["tool"]=="workspace_replace_range" && op["result"]["written"]==true));
+        assert!(crate::engine::verification::is_action_evidence(
+            &json!({"tool":"task_result","result":result})));
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn public_http_fetch_blocks_internal_and_redirect_destinations() {
         for url in ["http://127.0.0.1:4317","http://10.1.2.3","http://172.16.1.1",
             "http://192.168.1.1","http://169.254.169.254/latest/meta-data/",

@@ -111,3 +111,24 @@
 실행 중인 하위 작업이 남지 않는 두 가지 합법 상태만 인정합니다.
 부모/자식이 이미 시작한 외부 비멱등 효과는 자동으로 되돌리거나 성공으로
 재해석하지 않습니다. 검증 완료 여부는 해당 HEAD의 CI 결과와 별도로 구분합니다.
+
+## 2026-11-15 · 하위 작업의 실제 소스 기여를 부모 완수 검증에 연결
+
+이전 `tools::task_payload`는 DB에서 순서가 불명확한 `execution_operation`을
+`take(20)`으로 잘라 20회 이상 탐색 후의 마지막 파일 수정 영수증을 누락할 수 있었습니다.
+이를 `Store::session_execution_operations`의 scoped 영수증을 사용해
+실제 성공한 행동 최대 16개를 우선 확보하고, 최근 문맥을 포함해 총 24개로
+묶어 부모에 전달하도록 바꿨습니다. 부모에 전송한 출력 텍스트가 4096바이트를 넘으면
+앞 1800자와 SHA-256 및 원래 길이를 제공하며, `operationsTotal/operationsOmitted`를
+별도로 기록합니다. 전체 원본 도구 영수증은 SQLite에 남습니다.
+
+`verification::source_mutation`이 `completed` 상태의
+`delegate_task/task_result` 안에 들어있는 성공한 소스 수정 영수증을
+64개 이내의 bounded walk로 실제 확인하게 했습니다. 부모가 다른 작업을
+마쳤다는 텍스트 주장만으로는 `requires_source_change`를 통과하지 못합니다.
+`is_action_evidence` 역시 `workspace_* / file_write`에 `written=true`를
+요구하므로 무변경/실패한 쓰기로 행동 완료를 위조할 수 없습니다.
+
+회귀: `tools::tests::delegated_result_preserves_late_edits_after_many_reads`,
+`verification::inference_tests::delegated_writes_satisfy_source_mutation_but_no_op_or_read_does_not`.
+독립 SWE-bench 실모델 평가와는 별개입니다.

@@ -688,23 +688,60 @@ fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Resul
         .chars()
         .take(8000)
         .collect::<String>();
-    let operations = ctx
-        .state
-        .store
-        .all("execution_operation")
-        .into_iter()
-        .filter(|operation| {
-            operation["runId"].as_str().is_some()
-                && operation["sessionId"].as_str() == Some(session_id)
-                && operation["status"] == "completed"
-        })
-        .map(|operation| {
-            json!({"tool":operation["tool"],"arguments":operation["arguments"],"result":operation["result"]})
-        })
-        .take(20)
-        .collect::<Vec<_>>();
+    // A long-running worker can do dozens of searches before it edits a
+    // file. The old .take(20) returned the first SQLite rows (unordered by
+    // opSeq) and could hide the only successful source edit from its parent.
+    // Keep recent proven actions plus bounded context, in execution order.
+    let mut all=ctx.state.store.session_execution_operations(session_id)
+        .unwrap_or_default();
+    all.retain(|operation|operation["runId"].as_str().is_some_and(|s|!s.is_empty())
+        && operation["status"]=="completed");
+    all.sort_by(|a,b|{
+        if a["runId"]==b["runId"] {
+            a["opSeq"].as_u64().cmp(&b["opSeq"].as_u64())
+        }else{
+            let stamp=|v:&Value|v["startedAt"].as_str()
+                .or_else(||v["createdAt"].as_str()).unwrap_or("").to_string();
+            stamp(a).cmp(&stamp(b))
+                .then(a["id"].as_str().cmp(&b["id"].as_str()))
+        }
+    });
+    const MAX_OPERATIONS:usize=24;
+    const MAX_ACTIONS:usize=16;
+    let mut selected=Vec::new();
+    for (index,operation) in all.iter().enumerate().rev() {
+        if crate::engine::verification::is_action_evidence(operation) {
+            selected.push(index);
+            if selected.len()>=MAX_ACTIONS{break;}
+        }
+    }
+    for index in (0..all.len()).rev() {
+        if selected.len()>=MAX_OPERATIONS{break;}
+        if !selected.contains(&index){selected.push(index);}
+    }
+    selected.sort_unstable();
+    let operations=selected.iter().map(|index|{
+        let op=&all[*index];
+        let mut result=op["result"].clone();
+        // The child has already responded in prose. Repeating megabytes of
+        // stdout/source text in a parent tool receipt wastes model tokens.
+        // Keep audit fields such as written, exitCode, SHA and PR metadata.
+        for key in ["content","stdout","stderr","body"] {
+            let Some(value)=result[key].as_str()else{continue};
+            if value.len()>4096 {
+                let chars=value.chars().take(1800).collect::<String>();
+                let digest=format!("{:x}",Sha256::digest(value.as_bytes()));
+                result[key]=json!(format!("{chars}… [receipt text clipped; {} bytes; sha256:{digest}]",value.len()));
+            }
+        }
+        json!({"runId":op["runId"],"opSeq":op["opSeq"],
+            "status":op["status"],"tool":op["tool"],"arguments":op["arguments"],
+            "result":result,"toolReceipt":op["toolReceipt"]})
+    }).collect::<Vec<_>>();
     payload["sessionId"] = json!(session_id);
     payload["content"] = json!(answer);
+    payload["operationsTotal"] = json!(all.len());
+    payload["operationsOmitted"] = json!(all.len().saturating_sub(operations.len()));
     payload["operations"] = json!(operations);
     Ok(payload)
 }

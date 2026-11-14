@@ -365,7 +365,7 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
     }
     match tool_name(item) {
         "workspace_write" | "workspace_replace" | "workspace_replace_range"
-        | "file_write" => true,
+        | "file_write" => item["result"]["written"]==true,
         "shell_exec" | "terminal_exec" => {
             let args = item
                 .get("arguments")
@@ -491,12 +491,35 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
 /// modified state. Reusing a passing test from before the last source write is
 /// a false positive on multi-turn autonomous coding tasks.
 fn source_mutation(item: &Value) -> bool {
-    if !successful_evidence(item) || item["result"]["written"]==false
-        || item["result"]["changed"]==false {return false;}
+    if !successful_evidence(item) {return false;}
+    // Source edits by a completed delegated worker must count toward the
+    // parent's coding acceptance gate. Do not trust text-only task summaries,
+    // unfinished jobs, or unbounded/nested unverified output.
+    if matches!(tool_name(item),"delegate_task"|"task_result") {
+        if item["result"]["status"]!="completed" {return false;}
+        let mut pending=item["result"]["operations"].as_array().into_iter().flatten()
+            .collect::<Vec<_>>();
+        let mut examined=0usize;
+        while let Some(operation)=pending.pop() {
+            examined+=1;
+            if examined>64 {return false;}
+            if matches!(tool_name(operation),"delegate_task"|"task_result") {
+                if operation["result"]["status"]=="completed" {
+                    pending.extend(operation["result"]["operations"].as_array().into_iter().flatten());
+                }
+            } else if source_mutation(operation) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if item["result"]["written"]==false || item["result"]["changed"]==false {
+        return false;
+    }
     let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
     match tool_name(item) {
         "workspace_write" | "workspace_replace" | "workspace_replace_range"
-        | "workspace_replace_function" | "file_write" => true,
+        | "workspace_replace_function" | "file_write" => item["result"]["written"]==true,
         "shell_exec" | "terminal_exec" => {
             let command=string(args,"command").to_lowercase();
             let argv=args["args"].as_array().into_iter().flatten()
@@ -747,7 +770,7 @@ mod inference_tests {
 
     #[test]
     fn delegated_action_needs_completed_child_and_real_operation(){
-        let action=json!({"tool":"workspace_replace","result":{"ok":true}});
+        let action=json!({"tool":"workspace_replace","result":{"written":true}});
         assert!(is_action_evidence(&json!({"tool":"task_result",
             "result":{"status":"completed","operations":[action]}})));
         assert!(!is_action_evidence(&json!({"tool":"task_result",
@@ -763,12 +786,42 @@ mod inference_tests {
     #[test]
     fn actual_range_and_exact_replacements_are_action_evidence() {
         for tool in ["workspace_replace","workspace_replace_range","workspace_write"] {
-            assert!(is_action_evidence(&json!({"tool":tool,"result":{"ok":true}})));
+            assert!(is_action_evidence(&json!({"tool":tool,"result":{"written":true}})));
             assert!(!is_action_evidence(&json!({"tool":tool,
                 "result":{"error":"stale fingerprint"}})));
         }
         assert!(!is_action_evidence(&json!({"tool":"workspace_read",
             "result":{"content":"unchanged"}})));
+    }
+
+    #[test]
+    fn delegated_writes_satisfy_source_mutation_but_no_op_or_read_does_not() {
+        let edit=json!({"tool":"workspace_replace_range","status":"completed",
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true}});
+        let result=json!({"tool":"task_result","result":{"status":"completed",
+            "operations":[{"tool":"workspace_read","result":{"content":"source"}},edit]}});
+        assert!(source_mutation(&result));
+        assert!(is_action_evidence(&result));
+        let criteria=json!([]);
+        let gaps=acceptance_gaps_in(Path::new("."),
+            "src/lib.rs 코드를 수정해라",&criteria,&[result]);
+        assert!(!gaps.iter().any(|gap|gap.contains("소스 변경 영수증")));
+        for bad in [
+            json!({"tool":"workspace_write","result":{"written":false,"unchanged":true}}),
+            json!({"tool":"workspace_replace","result":{"unchanged":true}}),
+            json!({"tool":"workspace_write","result":{"error":"permission denied"}}),
+        ] {
+            assert!(!is_action_evidence(&bad));
+            assert!(!source_mutation(&bad));
+        }
+        assert!(!source_mutation(&json!({"tool":"task_result",
+            "result":{"status":"running","operations":[
+                {"tool":"workspace_write","result":{"written":true}}
+            ]}})));
+        assert!(!source_mutation(&json!({"tool":"task_result",
+            "result":{"status":"completed","operations":[
+                {"tool":"workspace_read","result":{"content":"unchanged"}}
+            ]}})));
     }
 
     #[test]
