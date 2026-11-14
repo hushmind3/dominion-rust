@@ -34,6 +34,7 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
  const [error,setError]=useState('')
  const [message,setMessage]=useState('')
  const [selected,setSelected]=useState('')
+ const [planDrafts,setPlanDrafts]=useState<Record<string,string>>({})
  const available=agents.value.filter(agent=>agent.providerId&&agent.model)
  const executor=available.some(agent=>agent.id===agentId)?agentId:(available[0]?.id||'')
  const hasActive=goals.value.some(goal=>running(goal.status))
@@ -66,6 +67,18 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
   setBusy(true);setError('')
   try{await post('/api/jobs/'+jobId+'/cancel',{});await Promise.all([goals.reload(),jobs.reload()])}
   catch(e){setError((e as Error).message)}
+  finally{setBusy(false)}
+ }
+ const submitPlan=async(goal:Goal)=>{
+  const next=planDrafts[goal.id]?.trim()
+  if(!next||busy)return
+  setBusy(true);setError('');setMessage('')
+  try{
+   await post('/api/goals/'+goal.id+'/plan',{plan:next})
+   setMessage('새 계획을 저장했습니다. 현재 실행 중인 도구가 끝나면 다음 실행 단계부터 적용됩니다.')
+   setPlanDrafts(previous=>({...previous,[goal.id]:''}))
+   await goals.reload()
+  }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
  }
  const ordered=[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))
@@ -131,6 +144,13 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
      </div>
      {expanded&&<div className="mt-3 grid gap-3 border-t border-[#EFE9DF] pt-3">
       {goal.plan&&<section><strong className="text-xs">현재 실행 계획</strong><pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded-lg bg-[#FAF7F1] p-3 text-[11px] leading-5">{goal.plan}</pre></section>}
+      {running(goal.status)&&<details className="rounded-lg border border-[#E7E0D5] p-3">
+       <summary className="cursor-pointer text-xs font-semibold">실행 계획 직접 수정</summary>
+       <p className="mt-2 text-[11px] text-[#7C7469]">현재 도구 실행은 중단하지 않고, 다음 안전한 실행 단계에 새 계획을 반영합니다. 목표 완료 조건과 실행 권한은 변경되지 않습니다.</p>
+       <TextArea rows={4} value={planDrafts[goal.id]??''} onChange={e=>setPlanDrafts(previous=>({...previous,[goal.id]:e.target.value}))}
+        placeholder={goal.plan||'실행할 새 계획을 구체적으로 입력하세요.'}/>
+       <div className="mt-2 flex justify-end"><Button size="sm" variant="secondary" disabled={busy||!(planDrafts[goal.id]||'').trim()} onClick={()=>void submitPlan(goal)}>다음 단계 계획으로 적용</Button></div>
+      </details>}
       {errors(goal.gaps).length>0&&<section><strong className="text-xs">미충족 검증 조건과 수정 과제</strong><ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-amber-700">{errors(goal.gaps).map((gap,i)=><li key={i}>{gap}</li>)}</ul></section>}
       {(goal.planHistory||[]).length>1&&<details><summary className="cursor-pointer text-xs font-semibold">재계획 기록 {goal.planHistory!.length}개</summary>
        {goal.planHistory!.map((step,i)=><pre key={i} className="mt-2 whitespace-pre-wrap rounded-lg bg-[#FAF7F1] p-3 text-[11px]">{step.version}차: {step.plan}</pre>)}</details>}
