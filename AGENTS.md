@@ -99,3 +99,6 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 
 `src/engine/chat/runtime/tool_selection.rs`의 영어 의도 판별은 완전 단어 기준이며, 한국어 행동 어간은 활용형을 위해 부분일치합니다. 새로운 도구를 추가할 때는 역할별 분류·이어하기 이력 규칙과 `tests/support/engine/chat_runtime.tests.rs`를 함께 갱신합니다. `turn.rs`의 `execution.toolSelection`은 후보/선택된 JSON 정의 크기 측정이며 실제 API 과금량으로 간주하지 않습니다. 일반 대화는 0개 스키마, 작업 대화는 필요한 도구 중심으로 유지합니다.
 
+
+그룹 도구 의도와 목표 테스트 완료조건의 영문 단어 경계는 이제 `src/engine/text_intent.rs`가 단일 구현입니다. `src/engine/goal_verification.rs`의 `asks_for_tests`에서도 사용하므로 단어 목록을 변경할 때 의도하지 않은 완료 게이트와 실제 테스트 요청을 함께 검증합니다.
+
