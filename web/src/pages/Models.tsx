@@ -1,6 +1,6 @@
 import {useEffect,useMemo,useRef,useState} from 'react'
 import {ArrowRight,Check,Cloud,HardDrive,KeyRound,LogIn,Plus,RefreshCw,Search,Settings2,ShieldCheck,Sparkles,UserRound,X} from 'lucide-react'
-import {Provider,del,get,post} from '../api'
+import {Agent,Provider,del,get,post} from '../api'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {FormField,Notice,refresh,useRemote} from '../components/UI'
 import {DialogBackdrop,DialogPanel} from '../components/Dialog'
@@ -67,7 +67,24 @@ const sameProvider=(p:Provider,preset:ProviderPreset)=>p.name===preset.name||p.b
 export function ModelHub(){
  useLocale()
  const providers=useRemote<Provider[]>('/api/providers',[])
+ const agents=useRemote<Agent[]>('/api/agents',[])
+ const [assignAgent,setAssignAgent]=useState(''),[assignProvider,setAssignProvider]=useState(''),[assignModel,setAssignModel]=useState('')
+ const [assignBusy,setAssignBusy]=useState(false),[assignResult,setAssignResult]=useState('')
  const cli=useRemote<CliCredential[]>('/api/providers/cli',[])
+ const assignedProvider=providers.value.find(p=>p.id===assignProvider)
+ const assignModels=useProviderModels(assignProvider)
+ const assign=async()=>{
+  if(!assignAgent||!assignProvider||!assignModel.trim()||assignBusy)return
+  setAssignBusy(true);setAssignResult('');setError('')
+  try{
+   const response=await post<{count:number}>('/api/agents/bulk-model',{
+    agentIds:[assignAgent],providerId:assignProvider,model:assignModel.trim()
+   })
+   await agents.reload()
+   setAssignResult('실제 에이전트 '+(agents.value.find(a=>a.id===assignAgent)?.name||assignAgent)+
+    '의 실행 모델을 변경했습니다. 이제 채팅과 워크플로에서 이 모델을 사용합니다. ('+response.count+'건)')
+  }catch(e){setError((e as Error).message)}finally{setAssignBusy(false)}
+ }
  const [counts,setCounts]=useState<Record<string,{list:string[];error?:string;busy?:boolean}>>({})
  const [error,setError]=useState(''),[saving,setSaving]=useState(false)
  const [savedId,setSavedId]=useState(''),[removedName,setRemovedName]=useState('')
@@ -338,6 +355,25 @@ export function ModelHub(){
     {tab==='providers'&&<div className="flex flex-wrap gap-1">{(['all','free','cloud'] as const).map(value=><button key={value} type="button" onClick={()=>setCategory(value)} className={'rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold '+(category===value?'border-[#C96442] bg-[#FBF1EC] text-[#A94E30]':'border-[#E7E0D5] bg-white text-[#7C7469]')}>{t(value==='all'?'models.filter.all':value==='free'?'models.filter.free':'models.filter.cloud')}</button>)}</div>}</>}
   </div>
 
+  <section className="mb-4 grid gap-3 rounded-xl border border-[#E7D8C8] bg-[#FFF9F1] p-4">
+   <div><strong className="text-sm">모델 연결 → 실제 에이전트 실행</strong>
+    <p className="text-[11px] text-[#7C7469]">연결한 모델을 선택한 에이전트에 바로 배정합니다. 같은 에이전트를 쓰는 채팅·협업·워크플로가 새 모델을 사용하며, 이미 등록한 워크플로 실행 작업의 모델은 바뀌지 않습니다.</p></div>
+   <div className="grid gap-2 md:grid-cols-[1fr_1fr_1.2fr_auto] md:items-center">
+    <SelectInput value={assignAgent} onChange={e=>setAssignAgent(e.target.value)}>
+     <option value="">에이전트 선택</option>{agents.value.map(agent=><option key={agent.id} value={agent.id}>{agent.name}</option>)}
+    </SelectInput>
+    <SelectInput value={assignProvider} onChange={e=>{setAssignProvider(e.target.value);setAssignModel('')}}>
+     <option value="">연결한 제공자 선택</option>{providers.value.filter(p=>p.enabled!==false).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+    </SelectInput>
+    <ModelPicker providerId={assignProvider} catalogue={assignModels} value={assignModel}
+      onChange={setAssignModel} placeholder={assignedProvider?.model||'모델 선택 또는 입력'}
+      className="w-full" ariaLabel="에이전트 실행 모델"/>
+    <Button variant="primary" disabled={assignBusy||!assignAgent||!assignProvider||!assignModel.trim()} onClick={()=>void assign()}>
+      {assignBusy?'연결 중':'에이전트에 연결'}
+    </Button>
+   </div>
+   {assignResult&&<p className="text-xs text-emerald-700">{assignResult}</p>}
+  </section>
   <section className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-[#E7E0D5] bg-[#FFFDF9] px-3 py-2 text-[11px] text-[#7C7469]" title={t('models.freeCheck.note')}>
    <strong className="text-[#3A342D]">{t('models.freeCheck.title')}</strong>
    <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-semibold text-emerald-700">{t('models.freeCheck.free',{count:freeCatalog.value.counts?.free||0})}</span>
