@@ -117,11 +117,30 @@ pub(crate) fn tool_name(definition: &Value) -> &str {
         .unwrap_or("")
 }
 
+// Korean action stems deliberately match inflections; ASCII action words must
+// match full tokens. Otherwise "latest", "profile", "thread" and "brunch"
+// accidentally turn on test, file, read and run tool schemas.
+fn intent_has_term(query: &str, term: &str) -> bool {
+    if !term.is_ascii() {
+        return query.contains(term);
+    }
+    query.match_indices(term).any(|(offset, _)| {
+        let before = query[..offset].chars().last();
+        let after = query[offset + term.len()..].chars().next();
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
+}
+
+fn intent_has_any(query: &str, terms: &[&str]) -> bool {
+    terms.iter().any(|term| intent_has_term(query, term))
+}
+
 /// Casual room turns carry zero tool schemas. Action requests select the
 /// exact native schemas the harness judges relevant; no model call is used.
 pub(crate) fn room_tool_request(input: &str) -> bool {
     let lower = input.to_lowercase();
-    [
+    let terms: &[&str] = &[
         "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
         "쓰기", "써줘", "써 줘", "저장해", "저장하", "수정해", "수정하",
         "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
@@ -131,10 +150,10 @@ pub(crate) fn room_tool_request(input: &str) -> bool {
         "결과", "가져와", "확인해", "진행해",
         "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
-        "browser", "memory", "delegate", "task",
-    ]
-    .iter()
-    .any(|term| lower.contains(term))
+        "browser", "memory", "delegate", "task", "continue", "resume",
+        "files", "tests", "searching", "running", "commit", "git",
+    ];
+    intent_has_any(&lower, terms)
 }
 
 pub(crate) fn recent_room_tools(state: &AppState, session_id: &str) -> std::collections::HashSet<String> {
@@ -185,7 +204,8 @@ pub(crate) fn select_room_tools(
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
                 "기록", "남겨", "write", "save", "edit", "delete", "create",
             ],
-            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_write", "file_write"],
+            &["workspace_read", "workspace_read_range", "workspace_replace", "workspace_replace_range",
+              "workspace_replace_function", "workspace_write", "file_write"],
         ),
         (
             &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
@@ -199,18 +219,26 @@ pub(crate) fn select_room_tools(
             &["메모리", "memory", "기억해둬", "기억해 둬", "저장해"],
             &["memory_store", "memory_search"],
         ),
+        (&["코드", "버그", "소스", "code", "debug", "refactor"],
+            &["code_search", "workspace_list", "workspace_read", "workspace_read_range"]),
         (&["스킬", "skill"], &["skill_propose"]),
         (
             &["위임", "delegate", "task", "에이전트"],
-            &["delegate_task", "task_status", "task_result"],
+            &["delegate_task", "delegate_tasks", "task_status", "task_result"],
         ),
         (
             &["브라우저", "browser", "클릭", "click"],
             &["browser_control"],
         ),
-        (&["github", "깃허브"], &["github_api"]),
+        (&["github", "깃허브", "git", "커밋", "commit"],
+            &["github_api", "shell_exec"]),
         (&["계정", "oauth", "account"], &["account_status"]),
     ];
+    // Last-used tools are relevant to explicit continuation, not every new
+    // topic in a shared room. History alone must not inflate a fresh menu.
+    let continuation = intent_has_any(&lower, &[
+        "계속", "이어", "마저", "continue", "resume", "again", "next",
+    ]);
     let mut scored: Vec<(i32, Value)> = definitions
         .iter()
         .filter_map(|definition| {
@@ -220,7 +248,7 @@ pub(crate) fn select_room_tools(
                 .unwrap_or_default()
                 .to_lowercase();
             let mut score = 0i32;
-            if lower.contains(&name_lower) {
+            if intent_has_term(&lower, &name_lower) {
                 score += 30;
             }
             for token in lower
@@ -232,13 +260,13 @@ pub(crate) fn select_room_tools(
                 }
             }
             for (terms, tools) in groups {
-                if terms.iter().any(|term| lower.contains(term))
+                if intent_has_any(&lower, terms)
                     && tools.contains(&name_lower.as_str())
                 {
                     score += 12;
                 }
             }
-            if recent.contains(&name_lower) {
+            if continuation && recent.contains(&name_lower) {
                 score += 8;
             }
             (score > 0).then(|| (score, definition.clone()))
