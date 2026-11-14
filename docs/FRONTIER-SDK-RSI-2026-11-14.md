@@ -80,3 +80,10 @@ cargo test --release
 ```
 
 The repository CI now calls these SDK and benchmark export tests; a successful **GitHub file commit** is not a passing CI or an actual SWE-bench result. A release claim requires successful Rust/TypeScript build, real model runs and the external benchmark report. The SDK packages have not been published to package registries.
+
+## 2026-11-15 measured rejected-candidate path and benchmark correction
+
+`rsi_system/replay.rs` distinguishes replayed independent measurement (`pairedReceiptReplayed`) from adopted/source-validated status (`pairedRevalidated`). `rsi/learning/failure_feedback.rs` now uses the former for failures, including rejected candidate regressions; only candidates with the latter and an eligible accepted commit contribute prior success examples.
+
+The benchmark runner now resolves output to an absolute path, handles the official report's run-ID-specific output locations, and reports tool attempts, failed/uncertain operations and observed task recovery rates. [Draft validation PR #11](https://github.com/hushmind3/dominion-rust/pull/11). Neither an unexecuted benchmark nor static tests imply a SWE-bench resolved score.
+
