@@ -92,6 +92,12 @@ export class DominionClient {
       models: (providerId, options) => this.request('GET', `/api/providers/${id(providerId)}/models`, undefined, options),
     };
     this.tools = { list: options => this.request('GET', '/api/tools', undefined, options) };
+    this.mcp = {
+      list: options => this.request('GET', '/api/mcp', undefined, options),
+      register: (config, options) => this.request('POST', '/api/mcp', config, options),
+      remove: (serverId, options) => this.request('DELETE', `/api/mcp/${id(serverId)}`, undefined, options),
+      discover: options => this.request('GET', '/api/mcp/discover', undefined, options),
+    };
     this.rooms = {
       list: options => this.request('GET', '/api/rooms', undefined, options),
       run: (roomId, input, options) => this.request('POST', `/api/rooms/${id(roomId)}/run`, input, options),
