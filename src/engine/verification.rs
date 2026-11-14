@@ -73,6 +73,10 @@ pub(crate) fn looks_actionable(goal: &str) -> bool {
         "적용",
         "반영",
         "연결",
+        "완성",
+        "개선",
+        "고도화",
+        "추가",
         "생성",
         "저장",
         "작성",
@@ -89,6 +93,8 @@ pub(crate) fn looks_actionable(goal: &str) -> bool {
         "커밋",
         "배포",
         "implement",
+        "complete",
+        "improve",
         "refactor",
         "fix",
         "patch",
@@ -546,6 +552,21 @@ pub(crate) fn fresh_command_matches(evidence: &[Value], command: &str) -> bool {
     })
 }
 
+/// A coding implementation request cannot be satisfied by a clean build
+/// of untouched source. The mutation must be observed in the execution
+/// ledger; a shell test or read-only inspection is not a code edit.
+fn requires_source_change(goal: &str) -> bool {
+    let lower=goal.to_lowercase();
+    let direct=["구현", "리팩터", "implement", "refactor"]
+        .iter().any(|verb|lower.contains(verb));
+    let project=["도미니온","dominion","소스","코드","rust","sdk","하네스",
+        "모듈","프로젝트","repository","repo","시스템","알고리즘"];
+    let contextual=["수정","고쳐","완성","개선","고도화","fix ","patch "]
+        .iter().any(|verb|lower.contains(verb))
+        && project.iter().any(|term|lower.contains(term));
+    direct||contextual
+}
+
 pub(crate) fn acceptance_gaps(
     state: &AppState,
     goal: &str,
@@ -570,6 +591,9 @@ pub(crate) fn acceptance_gaps_in(
     });
     if looks_actionable(goal) && !evidence.iter().any(is_action_evidence) && !has_explicit_tool {
         gaps.push("변경 또는 실행을 입증하는 성공한 도구 결과가 없습니다. 조회 결과만으로 행동 목표를 완료할 수 없습니다.".into());
+    }
+    if requires_source_change(goal) && !evidence.iter().any(source_mutation) {
+        gaps.push("코드 구현·수정 요청에 대한 실제 소스 변경 영수증이 없습니다. 조회나 테스트 성공만으로 코드가 수정됐다고 할 수 없습니다.".into());
     }
     for check in checks {
         let kind = check["type"].as_str().unwrap_or("");
