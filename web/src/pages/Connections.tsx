@@ -6,6 +6,8 @@ import {Activity,ArrowRight,Check,ChevronRight,Cloud,ExternalLink,Filter,Globe2,
 import {del,openOAuth,post} from '../api'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {t,useLocale,type LocaleKey} from '../i18n'
+import {ExtensionsPage} from './Extensions'
+import {CapabilitiesPage} from './Capabilities'
 
 type ChannelField={key:string;label:string;type:'secret'|'text'|'url';required?:boolean;placeholder?:string}
 type ChannelEntry={id:string;name:string;category:string;mode:string;description:string;docs:string;available:boolean;status:string;features:string[];fields:ChannelField[];instructions?:string[];requiresPublicUrl?:boolean;requiresRoom?:boolean;maxRoomParticipants?:number}
@@ -26,6 +28,7 @@ export function ConnectionsPage(){
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
  const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[view,setView]=useState<'channels'|'accounts'>('channels');
+ const [section,setSection]=useState<'channels'|'extensions'|'capabilities'>('channels');
  const [editor,setEditor]=useState<{entry:ChannelEntry;record:any}|null>(null);
  const [error,setError]=useState(''),[info,setInfo]=useState(''),[probe,setProbe]=useState<Record<string,string>>({}),[saving,setSaving]=useState(false);
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
@@ -58,7 +61,19 @@ export function ConnectionsPage(){
   setError('');
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
+ const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
+  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
+  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
+  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
+ </div>;
+ if(section!=='channels'){
+  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+   {sectionTabs}
+   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>setSection(page==='extensions'?'extensions':'channels')}/>}
+  </div>
+ }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
+  {sectionTabs}
   <Headline eyebrow={t('ui.eyebrow.connections')} title={t('conn.title')} description={t('conn.description')} actions={<Action variant="secondary" onClick={()=>{void registry.reload();void channels.reload()}}><Activity size={16}/> {t('conn.refresh')}</Action>}/>
   <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F3EEE5] text-[#7C7469]"><Globe2 size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.platforms')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{registry.value.length}</strong></div></div>
