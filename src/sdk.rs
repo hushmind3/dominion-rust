@@ -97,6 +97,55 @@ impl TurnOptions {
     }
 }
 
+/// Configuration of a durable, self-verifying multi-step goal.
+/// The goal is executed by DOMINION's native planner, tool loop, reviewer and
+/// frozen acceptance checks, never by a second SDK-side agent.
+#[derive(Debug, Clone)]
+pub struct GoalOptions {
+    pub objective: String,
+    pub success_criteria: Value,
+    pub executor: Value,
+    pub planner: Value,
+    pub reviewer: Value,
+    pub max_iterations: u64,
+    pub max_replans: u64,
+    pub replan_after: u64,
+    pub max_executor_tokens: u64,
+    pub isolate_worktree: bool,
+}
+
+impl GoalOptions {
+    pub fn new(objective: impl Into<String>) -> Self {
+        Self {
+            objective: objective.into(),
+            success_criteria: json!([]),
+            executor: json!({}),
+            planner: json!({}),
+            reviewer: json!({}),
+            max_iterations: 16,
+            max_replans: 6,
+            replan_after: 2,
+            max_executor_tokens: 80_000,
+            isolate_worktree: true,
+        }
+    }
+
+    fn into_value(self) -> Value {
+        json!({
+            "goal": self.objective,
+            "successCriteria": self.success_criteria,
+            "executor": self.executor,
+            "planner": self.planner,
+            "reviewer": self.reviewer,
+            "maxIterations": self.max_iterations,
+            "maxReplans": self.max_replans,
+            "replanAfter": self.replan_after,
+            "maxExecutorTokens": self.max_executor_tokens,
+            "isolateWorktree": self.isolate_worktree,
+        })
+    }
+}
+
 /// Completed native engine turn: persisted assistant message plus witnessed
 /// tool operations, including partial operations on a provider failure.
 #[derive(Debug, Clone)]
@@ -400,6 +449,62 @@ impl DominionSdk {
         }
         engine::jobs::enqueue(&self.state, "prompt", queued)
             .ok_or_else(|| "could not persist SDK job".into())
+    }
+
+    /// Atomically persist a complete autonomous goal and its runnable job.
+    /// Call start_job_workers() in a standalone SDK runtime to execute queued
+    /// goals. The returned record contains the durable jobId.
+    pub fn enqueue_goal(&self, options: GoalOptions) -> Result<Value, String> {
+        engine::goals::enqueue_goal(&self.state, &options.into_value())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn goal(&self, id: &str) -> Option<Value> {
+        self.state.store.get("goal", id)
+    }
+
+    /// Only the receipt of this goal's *current* job is authoritative.
+    /// Never resurrect the receipt of an earlier attempt after resume.
+    pub fn goal_receipt(&self, id: &str) -> Option<Value> {
+        let goal = self.goal(id)?;
+        let job_id = goal["jobId"].as_str()?;
+        self.state.store.get("goal_receipt", &format!("goal-receipt:{id}:{job_id}"))
+    }
+
+    /// Inspect actual source changes recorded by the native worktree engine.
+    pub async fn goal_diff(&self, id: &str) -> Result<Value, String> {
+        engine::goals::diff_for_goal(&self.state, id).await
+    }
+
+    /// Cancel a job using the same atomic transition as the HTTP endpoint.
+    /// A stale cancellation cannot stop a completed job's active session.
+    pub fn cancel_job(&self, id: &str) -> Result<Value, String> {
+        engine::jobs::cancel_job(&self.state, id).map_err(|error| error.to_string())
+    }
+
+    pub fn cancel_goal(&self, id: &str) -> Result<Value, String> {
+        let goal = self.goal(id).ok_or("goal not found")?;
+        let job_id = goal["jobId"].as_str().ok_or("goal has no job")?;
+        self.cancel_job(job_id)
+    }
+
+    /// Await persisted terminal state, not a guessed model completion.
+    /// Duration bounds waiting even when no worker has been started.
+    pub async fn wait_job(
+        &self, id: &str, max_wait: std::time::Duration,
+    ) -> Result<Value, String> {
+        if max_wait.is_zero() { return Err("wait duration must be positive".into()); }
+        let start = std::time::Instant::now();
+        loop {
+            let job = self.job(id).ok_or("job not found")?;
+            if matches!(job["status"].as_str(),
+                Some("completed" | "failed" | "needs_review" | "cancelled")) {
+                return Ok(job);
+            }
+            let left = max_wait.saturating_sub(start.elapsed());
+            if left.is_zero() { return Err(format!("job {id} wait timed out")); }
+            tokio::time::sleep(left.min(std::time::Duration::from_millis(100))).await;
+        }
     }
 
     pub fn job(&self, id: &str) -> Option<Value> {
