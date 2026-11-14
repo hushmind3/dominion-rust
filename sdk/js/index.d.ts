@@ -63,7 +63,7 @@ export class DominionClient {
     get(id: string, options?: Options): Promise<Goal>;
     wait(id: string, options?: WaitOptions): Promise<Goal>;
     run(input: GoalInput, options?: WaitOptions): Promise<Goal>;
-    resume(id: string, options?: Options): Promise<Goal>;
+    resume(id: string, options?: Options & {acknowledgeUnknownEffects?: boolean}): Promise<Goal>;
     changes(id: string, options?: Options): Promise<RecordData>;
     applyReviewed(id: string, patchSha256: string, options?: Options): Promise<RecordData>;
     rollback(id: string, options?: Options): Promise<RecordData>;
