@@ -324,6 +324,62 @@ pub fn render(template: &str, input: &str, previous: &str) -> String {
 mod tests {
     use super::render;
 
+    #[tokio::test]
+    async fn actual_multi_agent_turns_persist_a_reusable_deliverable() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        use axum::{extract::State,response::IntoResponse,routing::post,Json,Router};
+        use std::sync::{Arc,Mutex};
+        let observed=Arc::new(Mutex::new(Vec::<Value>::new()));
+        async fn respond(State(observed):State<Arc<Mutex<Vec<Value>>>>,
+            Json(body):Json<Value>)->impl IntoResponse{
+            observed.lock().unwrap().push(body);
+            let payload=format!("data: {}\n\ndata: [DONE]\n\n",
+                json!({"choices":[{"delta":{"content":"completed step output"}}]}));
+            ([("content-type","text/event-stream")],payload)
+        }
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let server=tokio::spawn(axum::serve(listener,Router::new()
+            .route("/v1/chat/completions",post(respond))
+            .with_state(observed.clone())).into_future());
+        let root=std::env::temp_dir().join(format!("workflow-delivery-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        let state=crate::state::AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        state.store.put("provider",&json!({"id":"p","name":"mock","kind":"openai",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"sample","enabled":true,"toolMode":"native"}));
+        for agent in ["writer","reviewer"]{
+            state.store.put("agent",&json!({"id":agent,"name":agent,
+                "providerId":"p","model":"sample"}));
+        }
+        let definition=json!({"id":"workflow-one","name":"Build and review",
+            "steps":[
+              {"id":"s1","name":"Draft","agentId":"writer",
+               "providerId":"p","model":"sample","prompt":"{{input}}"},
+              {"id":"s2","name":"Review","agentId":"reviewer",
+               "providerId":"p","model":"sample","prompt":"Check {{previous}}"}]});
+        state.store.put("workflow",&definition);
+        let job=state.store.put("job",&json!({"id":"job-one","kind":"workflow",
+            "status":"running","input":{"workflowId":"workflow-one",
+                "input":"Create a report","definition":definition}})).unwrap();
+        let context=crate::engine::jobs::JobContext::new(state.clone(),"job-one".into());
+        let result=super::run(&context,&job).await.unwrap();
+        assert_eq!(result["status"],"completed","{result}");
+        assert_eq!(result["outputs"].as_array().unwrap().len(),2);
+        let artifact=state.store.get("workflow_deliverable","job-one").unwrap();
+        assert_eq!(artifact["finalContent"],"completed step output");
+        assert_eq!(artifact["steps"][0]["agentId"],"writer");
+        assert_eq!(artifact["steps"][1]["agentId"],"reviewer");
+        assert_eq!(artifact["steps"][1]["providerId"],"p");
+        assert_eq!(artifact["independentlyVerified"],false);
+        assert_eq!(artifact["steps"][0]["committedToolReceiptIds"].as_array().unwrap().len(),0);
+        assert!(observed.lock().unwrap().len()>=2);
+        server.abort();
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn substitutions_do_not_interpret_placeholder_text_in_payloads() {
         assert_eq!(
