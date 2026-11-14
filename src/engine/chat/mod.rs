@@ -4,12 +4,14 @@ mod budget;
 mod codex_ws;
 mod context;
 mod history_repair;
+mod owner_inbox;
 mod continuity;
 mod room_context;
 
 pub(crate) fn estimate_text_tokens(text:&str)->u64 {room_context::estimate(text) as u64}
 mod evidence;
 pub(crate) use evidence::prepare_owner_action;
+pub(crate) use owner_inbox::{enqueue as enqueue_owner_steer, defer_unclaimed as defer_owner_steer};
 mod protocol;
 mod provider;
 mod runtime;
