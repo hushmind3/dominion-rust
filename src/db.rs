@@ -416,6 +416,26 @@ impl Store {
                 }
                 collected
             };
+            // A parent goal's job may be terminal while a delegated child
+            // is still actively executing a remote operation. Owner review
+            // cannot cancel an actively-running execution by relabelling it.
+            if rows.len()>256{
+                return Err("재개할 미확정 작업이 256건을 초과합니다. 개별 점검이 필요합니다.".into());
+            }
+            for operation in &rows {
+                let run_id=operation["runId"].as_str().ok_or(
+                    "미확정 도구 기록에 실행 ID가 없습니다.")?;
+                let run:Option<String>=tx.query_row(
+                    "SELECT data FROM records WHERE kind='execution' AND id=?1",
+                    [run_id],|r|r.get(0)
+                ).optional().map_err(|e|e.to_string())?;
+                let value:Value=serde_json::from_str(
+                    run.as_deref().ok_or("미확정 도구의 실행 기록을 찾을 수 없습니다.")?
+                ).map_err(|e|e.to_string())?;
+                if value["status"]=="running"||value["status"]=="queued"{
+                    return Err("위임 실행이 아직 활성 상태입니다. 종료 후 재개하세요.".into());
+                }
+            }
             let now=chrono::Utc::now().to_rfc3339();
             for mut operation in rows{
                 operation["ownerReconciliation"]=json!({
