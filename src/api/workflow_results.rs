@@ -5,21 +5,6 @@ use crate::state::AppState;
 use axum::{extract::{Path,State},http::StatusCode,response::{IntoResponse,Response},Json};
 use serde_json::{json,Value};
 
-/// Optional third-party agent harness availability, without leaking user
-/// tokens or treating SDK license as free inference.
-pub async fn harnesses()->Json<Value>{
-    Json(json!({
-        "native":{"compiled":true,"runtime":"DOMINION","requiresAuth":false},
-        "copilot":{
-            "compiled":crate::engine::copilot_harness::enabled(),
-            "runtime":"GitHub Copilot SDK (official Rust)",
-            "requiresAuth":true,
-            "defaultAutoApproval":false,
-            "measuredBilling":false
-        }
-    }))
-}
-
 pub async fn list(State(state):State<AppState>)->Json<Value>{
     let mut rows=state.store.all("workflow_artifact");
     rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
