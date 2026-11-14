@@ -3,6 +3,7 @@
 //! touches the source checkout or silently publishes a change.
 use crate::state::AppState;
 use serde_json::{json,Value};
+use sha2::{Digest,Sha256};
 use std::{collections::HashSet,path::{Path,PathBuf},process::Stdio,time::Duration};
 use tokio::process::Command;
 
@@ -12,10 +13,17 @@ fn goal_path(state:&AppState,id:&str)->Result<PathBuf,String>{
         || !id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'){
         return Err("유효하지 않은 목표 식별자입니다.".into());
     }
-    // Canonicalize before passing an absolute destination to git. Relative
-    // data dirs must not accidentally create a worktree under the checkout.
     let data=state.config.data_dir.canonicalize().map_err(|e|e.to_string())?;
-    Ok(data.join("goal-worktrees").join(id))
+    let source=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
+    // Default DOMINION_DATA is <repository>/runtime. A worktree placed there
+    // would be inside the original checkout and fail the source-isolation
+    // contract. Keep its deterministic owner directory beside the checkout.
+    let parent=if data.starts_with(&source){
+        let ancestor=source.parent().ok_or("Git 원본 폴더의 부모 경로가 없습니다.")?;
+        let digest=format!("{:x}",sha2::Sha256::digest(source.to_string_lossy().as_bytes()));
+        ancestor.join(format!(".dominion-goal-worktrees-{}",&digest[..16]))
+    }else{data.join("goal-worktrees")};
+    Ok(parent.join(id))
 }
 async fn git(root:&Path,args:&[&str])->Result<String,String>{
     let out=tokio::time::timeout(Duration::from_secs(30),
