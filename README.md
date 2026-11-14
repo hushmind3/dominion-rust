@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Bounded native parallel execution
+
+`src/engine/chat/runtime/program.rs` allocates a non-overlapping share of
+the remaining model-round, tool-call and tool-proposal budget to each
+parallel branch. `src/engine/chat/budget.rs::partition` owns this native
+Rust algorithm. Siblings may run concurrently without each receiving the
+entire remaining budget. The available total is unchanged, and sequential
+programs retain their existing behavior. Rust regression tests check the
+sum and exhaustion of all parallel quotas.
+
 ## 2026-11-14 Rust owner control: atomic completion barrier
 
 The native agent goal loop now seals terminal decisions using one SQLite

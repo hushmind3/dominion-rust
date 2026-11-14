@@ -427,15 +427,17 @@ fn execute_nodes<'a>(
                         }
                         continue;
                     }
-                    let base = budget.branch();
                     let mut futures = Vec::new();
-                    for child in children.clone() {
+                    // The same remaining budget must NOT be cloned into
+                    // every parallel executor. Each child gets a disjoint
+                    // quota; combined model/tool calls cannot exceed parent.
+                    for (child_index, child) in children.clone().into_iter().enumerate() {
                         futures.push(execute_nodes(
                             ctx,
                             vec![child],
                             resolved.clone(),
                             checkpoint.clone(),
-                            base.branch(),
+                            budget.partition(child_index, children.len()),
                             op_seq,
                             depth + 1,
                             false,

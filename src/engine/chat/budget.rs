@@ -69,6 +69,30 @@ impl BudgetLedger {
         }
     }
 
+    /// Deterministic parallel budget allocation. Every sibling gets only
+    /// its share of the parent's unspent rounds, tool calls and proposals.
+    /// Cloning a full remaining budget into EVERY child allows N branches
+    /// to consume N times the intended maximum.
+    pub fn partition(&self, index: usize, count: usize) -> Self {
+        let base = self.branch();
+        let count = count.max(1);
+        let share = |available: usize| -> usize {
+            let whole = available / count;
+            let remainder = available % count;
+            whole + usize::from(index < remainder && index < count)
+        };
+        Self {
+            max_rounds: share(base.max_rounds),
+            max_tools: share(base.max_tools),
+            max_proposals: share(base.max_proposals),
+            max_elapsed: base.max_elapsed,
+            rounds: 0,
+            tools: 0,
+            proposals: 0,
+            started: Instant::now(),
+        }
+    }
+
     /// Adds the usage of a completed branch back into this ledger.
     pub fn merge_usage(&mut self, branch: &Self) {
         self.rounds = self.rounds.saturating_add(branch.rounds);
@@ -114,6 +138,31 @@ mod tests {
         assert!(ledger.charge_proposal());
         assert!(ledger.charge_proposal());
         assert!(!ledger.charge_proposal());
+    }
+
+    #[test]
+    fn parallel_siblings_share_one_global_budget_not_cloned_allowances() {
+        let mut parent = BudgetLedger::new(7, 11, Duration::from_secs(60));
+        assert!(parent.charge_round());
+        assert!(parent.charge_tool());
+        assert!(parent.charge_proposal());
+        let remaining = parent.branch();
+        let shards = (0..4).map(|i| parent.partition(i, 4)).collect::<Vec<_>>();
+        let sum = |key: &str| shards.iter()
+            .map(|shard| shard.snapshot()[key].as_u64().unwrap_or(0))
+            .sum::<u64>();
+        assert_eq!(sum("maxRounds"), remaining.snapshot()["maxRounds"].as_u64().unwrap());
+        assert_eq!(sum("maxTools"), remaining.snapshot()["maxTools"].as_u64().unwrap());
+        assert_eq!(sum("maxProposals"), remaining.snapshot()["maxProposals"].as_u64().unwrap());
+        assert!(shards.iter().all(|shard| shard.snapshot()["maxTools"].as_u64().unwrap() <= 3));
+        for mut shard in shards {
+            let quota = shard.snapshot()["maxTools"].as_u64().unwrap();
+            for _ in 0..quota { assert!(shard.charge_tool()); }
+            assert!(!shard.charge_tool());
+            parent.merge_usage(&shard);
+        }
+        assert_eq!(parent.snapshot()["tools"], 11);
+        assert!(!parent.charge_tool());
     }
 
     #[test]
