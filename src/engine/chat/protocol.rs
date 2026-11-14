@@ -82,6 +82,15 @@ pub fn parse_text_tool_calls_known(
     let mut calls = Vec::new();
     let mut cleaned = content.to_string();
 
+    // Qwen-Agent's original FUNCTION/ARGS format is distinct from Hermes.
+    // Decode it in the native Rust boundary, without a Qwen-Agent runtime.
+    if let Some((legacy_calls, legacy_cleaned)) = super::qwen_compat::parse_legacy(&cleaned, known) {
+        if !legacy_calls.is_empty() {
+            return (legacy_calls, legacy_cleaned);
+        }
+        cleaned = legacy_cleaned;
+    }
+
     // Some models emit a DSML-style block instead of native function calls.
     // Parse it when possible, and always remove the block so a failed call is
     // never shown to the owner as a successful answer.
