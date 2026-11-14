@@ -71,7 +71,8 @@ pub(super) fn room_tool_request(input: &str) -> bool {
         "열어줘", "열어봐", "보여줘", "보여 줘", "실행", "명령", "터미널",
         "빌드", "테스트", "설치", "검색", "웹",
         "http", "url", "api", "코드", "버그", "도구", "계속", "이어", "마저",
-        "결과", "가져와", "확인해", "진행해",
+        "결과", "가져와", "확인해", "진행해", "구현", "개발",
+        "리팩터", "고도화", "완성", "개선",
         "스킬", "메모리", "브라우저", "깃허브", "github", "shell", "file", "read",
         "write", "run", "search", "fetch", "install", "build", "test", "tool",
         "browser", "memory", "delegate", "task",
@@ -126,12 +127,15 @@ pub(super) fn select_room_tools(
             &[
                 "쓰기", "써줘", "써 줘", "저장해", "저장하", "수정해", "수정하",
                 "삭제해", "삭제하", "만들어", "만들어줘", "작성해", "작성하",
-                "기록", "남겨", "write", "save", "edit", "delete", "create",
+                "기록", "남겨", "구현", "개발", "리팩터",
+                "고도화", "완성", "개선", "write", "save", "edit", "delete", "create",
             ],
             &["workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "file_write"],
         ),
         (
-            &["실행", "명령", "터미널", "빌드", "테스트", "설치", "shell", "run", "build", "test", "install"],
+            &["실행", "명령", "터미널", "빌드", "테스트", "설치",
+                "구현", "개발", "리팩터", "고도화", "완성", "개선",
+                "shell", "run", "build", "test", "install"],
             &["shell_exec", "terminal_exec"],
         ),
         (
@@ -202,8 +206,38 @@ pub(super) fn select_room_tools(
             })
             .collect();
     }
-    scored.truncate(8);
-    scored.into_iter().map(|(_, definition)| definition).collect()
+    let code_task = [
+        "구현", "개발", "고쳐", "수정", "리팩터", "고도화", "완성",
+        "소스", "코드", "버그", "build", "fix ", "implement", "refactor",
+    ].iter().any(|term|lower.contains(term));
+    let mut chosen = scored.into_iter().take(8)
+        .map(|(_, definition)| definition).collect::<Vec<_>>();
+    if code_task {
+        // A group agent must be able to complete a code task, not just inspect
+        // it. The 8-tool limit once starved either the editor or the verifier
+        // when irrelevant high-ranked tool schemas filled the menu.
+        const ESSENTIAL: &[&str] = &[
+            "workspace_read_range", "workspace_replace_range", "shell_exec"
+        ];
+        for required in ESSENTIAL {
+            if chosen.iter().any(|definition|tool_name(definition)==*required) {
+                continue;
+            }
+            let Some(source)=definitions.iter().find(|definition|
+                tool_name(definition)==*required) else {continue};
+            if chosen.len()>=8 {
+                let Some(remove)=chosen.iter().rposition(|definition|
+                    !ESSENTIAL.contains(&tool_name(definition))) else {continue};
+                chosen.remove(remove);
+            }
+            chosen.push(source.clone());
+        }
+    }
+    // Reconstruct in the original order to reuse provider prompt prefixes.
+    let selected = chosen.iter().map(tool_name)
+        .collect::<std::collections::HashSet<_>>();
+    definitions.into_iter().filter(|definition|
+        selected.contains(tool_name(definition))).collect()
 }
 
 pub(super) fn select_tool_definitions(
