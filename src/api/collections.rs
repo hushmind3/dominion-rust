@@ -344,3 +344,117 @@ fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
             .into_response(),
     }
 }
+
+
+#[cfg(test)]
+mod owner_memory_edit_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    fn state() -> AppState {
+        let dir=std::env::temp_dir().join(format!("dominion-sub3-memory-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),workspace:dir.clone(),web_dir:dir.join("web")};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        AppState::new(config,store,vault)
+    }
+    async fn edit(state:&AppState,id:&str,body:Value)->Response {
+        let uri=format!("/api/memories/{id}/edit").parse().unwrap();
+        action(State(state.clone()),OriginalUri(uri),Json(body)).await
+    }
+    async fn create(state:&AppState,body:Value)->Response {
+        let uri="/api/memories".parse().unwrap();
+        save(State(state.clone()),OriginalUri(uri),Json(body)).await
+    }
+
+    #[tokio::test]
+    async fn edits_only_active_owner_memory_preserving_provenance_and_auditing_once(){
+        let state=state();
+        state.store.put("memory",&json!({"id":"owner-1","text":"before",
+            "source":"user","scope":"agent","agentId":"agent-7","status":"active",
+            "verification":"source_quote","evidenceQuote":"owner testimony",
+            "sourceMessageIds":["message-1"],"importance":0.8})).unwrap();
+        let ok=edit(&state,"owner-1",json!({"expectedText":"before","text":"after"})).await;
+        assert_eq!(ok.status(),StatusCode::OK);
+        let updated=state.store.get("memory","owner-1").unwrap();
+        assert_eq!(updated["text"],"after");
+        assert_eq!(updated["scope"],"agent");
+        assert_eq!(updated["agentId"],"agent-7");
+        assert_eq!(updated["source"],"user");
+        assert_eq!(updated["verification"],"source_quote");
+        assert_eq!(updated["evidenceQuote"],"owner testimony");
+        assert_eq!(updated["sourceMessageIds"],json!(["message-1"]));
+        assert_eq!(updated["importance"],0.8);
+        assert_eq!(updated["ownerEditVersion"],1);
+        let stale=edit(&state,"owner-1",json!({"expectedText":"before","text":"lost"})).await;
+        assert_eq!(stale.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","owner-1").unwrap()["text"],"after");
+        let audit=state.store.recent_audit(10);
+        let edits:Vec<_>=audit.iter().filter(|row|row["event"]=="memory.owner_edited").collect();
+        assert_eq!(edits.len(),1);
+        assert_eq!(edits[0]["detail"]["memoryId"],"owner-1");
+        assert_eq!(edits[0]["detail"]["version"],1);
+        assert!(!edits[0].to_string().contains("owner testimony"));
+    }
+
+    #[tokio::test]
+    async fn learned_and_inactive_memory_are_never_editable(){
+        let state=state();
+        for (id,source,status) in [
+            ("learned","learn","active"),
+            ("reflected","reflect","active"),
+            ("archived","user","archived"),
+            ("draft","user","draft")
+        ]{
+            state.store.put("memory",&json!({"id":id,"text":"immutable",
+                "source":source,"status":status})).unwrap();
+            let result=edit(&state,id,json!({"text":"tamper",
+                "expectedText":"immutable"})).await;
+            assert_eq!(result.status(),StatusCode::CONFLICT,id);
+            assert_eq!(state.store.get("memory",id).unwrap()["text"],"immutable");
+        }
+        let missing=edit(&state,"missing",json!({"text":"x","expectedText":"old"})).await;
+        assert_eq!(missing.status(),StatusCode::NOT_FOUND);
+        assert!(state.store.recent_audit(10).iter().all(|row|
+            row["event"]!="memory.owner_edited"));
+    }
+
+    #[tokio::test]
+    async fn generic_upsert_cannot_bypass_provenance_or_cas(){
+        let state=state();
+        state.store.put("memory",&json!({"id":"learned","text":"evidence",
+            "source":"learn","status":"active"})).unwrap();
+        let bypass=create(&state,json!({"id":"learned","text":"hijack",
+            "source":"user","status":"active"})).await;
+        assert_eq!(bypass.status(),StatusCode::BAD_REQUEST);
+        let spoof=create(&state,json!({"text":"fabricated provenance",
+            "source":"learn"})).await;
+        assert_eq!(spoof.status(),StatusCode::BAD_REQUEST);
+        let extra=create(&state,json!({"text":"user","source":"user",
+            "evidenceQuote":"fabricated"})).await;
+        assert_eq!(extra.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(state.store.get("memory","learned").unwrap()["text"],"evidence");
+        let authorized=create(&state,json!({"text":"owner fact","scope":"shared"})).await;
+        assert_eq!(authorized.status(),StatusCode::OK);
+    }
+
+    #[test]
+    fn concurrent_edits_cannot_both_win_or_create_two_audit_rows(){
+        let state=state();
+        state.store.put("memory",&json!({"id":"race","source":"user",
+            "status":"active","text":"baseline"})).unwrap();
+        let left=state.store.clone();
+        let right=state.store.clone();
+        let a=std::thread::spawn(move||
+            left.edit_owner_memory("race","baseline","revision-a"));
+        let b=std::thread::spawn(move||
+            right.edit_owner_memory("race","baseline","revision-b"));
+        let result_a=a.join().unwrap().unwrap();
+        let result_b=b.join().unwrap().unwrap();
+        assert_eq!(u8::from(result_a.is_some())+u8::from(result_b.is_some()),1);
+        assert_eq!(state.store.get("memory","race").unwrap()["ownerEditVersion"],1);
+        assert_eq!(state.store.recent_audit(10).iter().filter(|row|
+            row["event"]=="memory.owner_edited").count(),1);
+    }
+}
