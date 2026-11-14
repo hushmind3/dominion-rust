@@ -1,0 +1,29 @@
+name: sub1 Native Rust SDK
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - 'sdk/rust/**'
+      - '.github/workflows/sub1-rust-sdk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/rust -> target
+      - name: Rust SDK formatting
+        run: cargo fmt --manifest-path sdk/rust/Cargo.toml --check
+      - name: Rust SDK compile and integration tests
+        run: cargo test --manifest-path sdk/rust/Cargo.toml --all-targets
+      - name: Rust SDK lint
+        run: cargo clippy --manifest-path sdk/rust/Cargo.toml --all-targets -- -D warnings

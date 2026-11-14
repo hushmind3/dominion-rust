@@ -19,11 +19,14 @@ Codex·Claude Agent·Copilot SDK는 내부 계획·도구·복구 설계의 **�
 
 ## 도미니언 자체 SDK
 
-외부 에이전트 SDK를 내부 실행기로 이식하지 않고, Rust 하네스의 기존 API를 직접 사용하는
-[TypeScript SDK](sdk/typescript/README.md)를 제공합니다.
-목표 실행·사용자 계획 변경·체크포인트 재개·세션·SSE 대화·이벤트 커서 재연결·승인·실행 기록을
-독립적인 클라이언트에서 다룰 수 있습니다. `sdk/typescript`에서 `npm test`로 빌드·
-모의 HTTP/SSE 테스트를 실행합니다. 외부에 npm 패키지로 배포한 상태는 아닙니다.
+**Rust가 1차 SDK 구현입니다.** 별도 컴파일 가능한 [도미니언 Rust SDK](sdk/rust/README.md)를 제공합니다.
+Rust `DominionClient`가 목표·장기 작업·계획 변경·취소·재개·승인·세션·실시간 SSE와
+커서 기반 이벤트 복구를 호출하며, 판단·도구·권한은 도미니언 고유 Rust 엔진에 남습니다.
+`cargo test --manifest-path sdk/rust/Cargo.toml --all-targets`가 실제 SDK 검증 진입점입니다.
+
+[TypeScript SDK](sdk/typescript/README.md)는 추가 언어 클라이언트로 제공됩니다.
+둘 다 외부 회사의 에이전트 SDK를 판단 엔진으로 사용하지 않습니다.
+현재 Rust SDK는 외부 서버 연결형이고 프로세스 내부 엔진 임베딩·커스텀 도구 콜백은 추가 개발 대상입니다.
 
 ## 그룹 대화와 내 에이전트
 

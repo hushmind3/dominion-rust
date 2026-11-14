@@ -1,0 +1,119 @@
+# Dominion Rust SDK
+
+**A first-party Rust crate for the native Dominion Rust autonomous-agent engine.**
+Source: `sdk/rust`. This is **not** the TypeScript SDK and does not call
+Codex/Copilot/Claude SDKs to execute work.
+
+## Build / test
+
+```bash
+cargo test --manifest-path sdk/rust/Cargo.toml --all-targets
+cargo run --manifest-path sdk/rust/Cargo.toml --example goal -- \
+  "Inspect the repository, fix a bug, and test the change"
+```
+
+The crate is a separate Cargo package, currently `publish = false`.
+Users can reference it via a local `path` or `git` dependency:
+
+```toml
+[dependencies]
+dominion-sdk = { path = "/path/to/dominion-rust/sdk/rust" }
+tokio = { version = "1", features = ["full"] }
+```
+
+It connects to the existing Dominion Rust service (default `127.0.0.1:4317`).
+The service continues to own model selection, tools, policy, persistent
+checkpoint state, execution evidence, and permissions; the SDK never replaces
+its reasoning harness.
+
+## Native Rust API
+
+```rust
+use dominion_sdk::{DominionClient, GoalCreate, ModelSelection, WaitOptions};
+
+# async fn run() -> dominion_sdk::Result<()> {
+let sdk = DominionClient::new("http://127.0.0.1:4317")?;
+let goal = sdk.start_goal(
+    GoalCreate::new("Implement a change and verify it")
+        .max_iterations(16)
+        .isolate_worktree(true)
+).await?;
+
+let final_record = goal.wait(WaitOptions::default()).await?;
+println!("status={} evidence={:?}", final_record.status, final_record.evidence);
+
+// New owner instruction can steer the next plan boundary:
+let _ = goal.steer("Read the sources and create a passing test").await;
+// A review-pending goal can resume after owner acknowledges unknown effects:
+// let _ = goal.resume(true).await?;
+# Ok(()) }
+```
+
+The SDK returns strongly typed `Goal`, `Job`, `Session`, `Message`,
+`ChatEvent`, `ServerEvent`, and `DominionError` values. Extra server fields
+are preserved by a `serde_json::Map` to remain compatible with new Rust
+engine record attributes.
+
+### Durable sessions + chat SSE
+
+```rust
+use dominion_sdk::{DominionClient, SessionCreate};
+use futures_util::StreamExt;
+
+# async fn run() -> dominion_sdk::Result<()> {
+let sdk = DominionClient::new("http://127.0.0.1:4317")?;
+let thread = sdk.start_thread(SessionCreate::default()).await?;
+let mut events = thread.run_streamed("Summarize current task progress").await?;
+while let Some(event) = events.next().await { println!("{:?}", event?); }
+let messages = thread.messages().await?;
+# Ok(()) }
+```
+
+Streaming a `POST /api/chat` has **no automatic retry**. If SSE ends without
+`done`, the stream raises `DominionError::Interrupted` rather than rerunning a
+potentially side-effecting tool. Drop the Rust stream to stop the client reader;
+cancel a durable job/goal using its explicit cancellation API.
+
+### Reconnectable server event feed
+
+```rust
+use dominion_sdk::{DominionClient, WatchOptions};
+use futures_util::StreamExt;
+
+# async fn run() -> dominion_sdk::Result<()> {
+let sdk = DominionClient::new("http://127.0.0.1:4317")?;
+let mut events = sdk.watch_events(WatchOptions {after: 12, ..Default::default()});
+while let Some(event) = events.next().await {
+    let event = event?;
+    println!("seq={} kind={}", event.seq, event.kind);
+    // Persist this cursor AFTER your side effects are committed.
+}
+# Ok(()) }
+```
+
+`GET /api/events?after=<seq>` is replayable and safe to reconnect.
+The SDK resumes with the last delivered sequence, rejects inconsistent IDs,
+and removes duplicate events on reconnection. If the client falls behind the
+server's 500-record replay window, reconcile by fetching current goal/job state.
+
+## Actual scope
+
+- Native `DominionClient` Rust type, authenticated HTTP and error classification
+- Autonomous goals: create/list/get, plan steering, explicit resume, cancel,
+  bounded polling, persisted change/evidence retrieval
+- Prompt jobs: create/get/list/wait/cancel
+- Durable session/thread create/fork/resume/stream/persisted answer
+- Read-only execution audit and operations, approval review/resolve
+- Provider/agent/tool/capability discovery
+- SSE for chat and reconnectable, cursor-based event monitoring
+
+`sdk/rust/tests/sdk.rs` runs actual local Axum HTTP/SSE mock servers
+and verifies the SDK's interaction contracts. Tests do not claim full production
+model execution or genuine provider invoices.
+
+### Still not implemented
+
+This release is a **Rust SDK client for the native runtime**, not an in-process
+embedded engine library. A separate Rust server must be running.
+Out-of-process custom tool callback registration and an ACP server transport
+are further native engine extensions, not falsely advertised as present.
