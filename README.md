@@ -822,3 +822,7 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 - LangGraph(체크포인트), OpenHands(읽기/자원 잠금), Hermes(도구 배치 효과 분류)를 실제 소스에서 조사하고, `jobs::recover`→`workflows::interrupted_step_safe_to_repeat`→`workflows::run` 실행 경로를 개선했다.
 - 단계 시작 시점`stepStartedAt`을 도구 호출 **이전**에 저장한다. 비정상 종료된 워크플로는 해당 시점 이후의 SQLite `execution_operation`을 실제로 조회한다. **workspace/file 읽기·code_search만** 실행됐다면 사용자가 매번 재개 승인할 필요 없이 같은 단계를 재시도한다. 해당 기간의 셸·파일 쓰기·MCP·원격 작업·효과 미확정 작업은 계속 `needs_review`로 정지한다. 예전 체크포인트에 시각/단계 경계가 없으면 자동 복구하지 않는다.
 - 에이전트 런타임·모델 선택·권한·감사 기록은 도미니언 자체 Rust/SQLite 코드가 소유한다. 외부 LangGraph/OpenHands/Hermes 패키지를 호출하지 않는다. 재시작 안전성 분기 회귀 테스트 추가. 실제 재부팅·장기 작업 평가와 토큰 원가 측정은 별도다.
+
+### 2026-11-14 · 20개 이상 에이전트 하네스/SDK의 실제 소스 비교
+
+- [원본 파일 근거, 설계 종합, 자체 Rust 코드 적용](docs/AGENT-SDK-2026-SOURCE-REVIEW.md) — 코딩 에이전트·범용 SDK·장기 실행 프레임워크 원본을 실제 소스 파일별로 추적. 일부 2차 비교 조사와 직접 코드 확인을 구분하며, 외부 실행기 의존 없이 구현하는 경계 명시.
