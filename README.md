@@ -4,7 +4,7 @@
 
 알고리즘·하네스·기억·학습·도구·UI를 수정하고, 독립 평가를 통과한 버전이 다음 개선을 이어가는 시스템 소스 진화 경로를 구현합니다. 특정 모델에 고정하지 않으며 등록된 API·로컬 모델을 선택할 수 있습니다. **전체 시스템의 반복적인 지능 향상이 실증된 완성품이라는 주장은 하지 않습니다.** 구현·프로토콜 테스트·실제 개선 실적을 구분해 공개합니다.
 
-[자체 에이전트 SDK (JS/TS)](sdk/js/README.md) · [SDK 구조·계약](docs/DOMINION-AGENT-SDK-2026-11-14.md) · [설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
+[자체 에이전트 SDK (JS/TS)](sdk/js/README.md) · [2026 미·중 하네스 실행 소스 비교](docs/research/FRONTIER-RUST-SDK-SOURCE-AUDIT-2026-11-15.md) · [SDK 구조·계약](docs/DOMINION-AGENT-SDK-2026-11-14.md) · [설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
 
 **Rust 백엔드 + Rust 실행 엔진**과 React 프론트엔드를 사용합니다.
 

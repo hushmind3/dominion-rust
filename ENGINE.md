@@ -202,3 +202,12 @@ DM·음성·파일 첨부·슬래시 명령·Gateway 실시간 이벤트는 이�
 - [Hermes 스킬](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
 - [Discord 메시지 API](https://docs.discord.com/developers/resources/message)
 - [Discord 요청 제한](https://docs.discord.com/developers/topics/rate-limits)
+
+## 2026-11-15 서브3: 원자적 병렬 실행과 근거 기반 RSI 신호
+
+- `tools::delegate → jobs::enqueue_delegation → Store::reserve_delegation`: 부모별 동시 실행 상한 확인 및 자식 세션/작업 저장을 단일 SQLite 트랜잭션으로 수행합니다.
+- `rsi/meta/controller_evidence::generalization_evidence`: 동일 후보와 평가 프로필에서 중복된 holdout·재개 기록을 1회 관측으로 처리하여 다음 세대 탐색 편향을 줄입니다. 평가 심판·독립 채택 조건은 수정하지 않습니다.
+- `chat/context::render_history → history_repair::replay`: 미확정 도구 호출은 성공으로 위장하지 않고 unknown 프로토콜 결과로 복구합니다.
+- `scripts/swebench-verified.mjs`: 실제 도구 실행·코드 변경·오류 재시도의 영수증을 공식 독립 채점과 구분합니다.
+
+미·중 오픈소스 코드 비교와 설계 선정 근거는 [Rust SDK 비교 검토](docs/research/FRONTIER-RUST-SDK-SOURCE-AUDIT-2026-11-15.md).
