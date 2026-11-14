@@ -12,6 +12,8 @@ use crate::state::AppState;
 use serde_json::{json, Value};
 #[path = "goals/report.rs"]
 mod report;
+#[path = "goals/git.rs"]
+mod git;
 
 /// The model proposes and reviews work; the Rust harness owns completion,
 /// checkpoints and the deterministic acceptance checks.
@@ -159,6 +161,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .as_ref()
         .and_then(crate::engine::episode::contract_revision)
         .map(str::to_string);
+    if goal["gitBaseline"].is_null() {
+        goal["gitBaseline"]=git::snapshot(&state.config.workspace);
+    }
     state
         .store
         .put("goal", &goal)
