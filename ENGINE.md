@@ -239,3 +239,14 @@ instance IDs, resource limits and provenance.
 SWE-bench trial comparisons, refusing missing grades or cherry-picked case
 sets. It reports paired wins and cost accounting and labels a controlled
 harness comparison only when the model and recorded budgets match.
+
+
+The Rust native tool execution entrypoint `tools::execute` now lives
+in `src/engine/tools/gateway.rs`, backed by independent editor,
+process and network modules. The stable `tools.rs` façade preserves
+SDK, policy, MCP and room entrypoints.
+`src/db/delegation.rs` atomically admits child sessions and queued
+jobs under concurrent SQLite writers; only committed jobs launch.
+`src/db/usage_tree.rs` provides persisted recursive model-use totals
+for root autonomous goals; `goals::run` gates continuation and
+`goals/receipts.rs` records full tree spend and audit completeness.
