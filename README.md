@@ -702,3 +702,8 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 ### Goal-wide helper token accounting (2026-11-14)
 
 `GoalControl::complete` now uses `llm::complete_for_session` for planner, reviewer and replanner. Their provider-reported usage (or an explicitly marked estimate when absent) is audited under the same goal session as executor turns. Before **each helper call**, the shared `goal.tokenBudget` is checked against `db::session_usage`; `0` remains unlimited. Final reports expose the scope and explicitly mark the limit as **not an exact billing cap** (an in-flight call may overrun, and missing usage cannot be estimated reliably). See [goal execution architecture](docs/SUB4-AUTONOMOUS-AGENT-2026-11-14.md). A mock HTTP regression is included but was not run in this connector-only edit environment.
+
+
+### Isolated goal worktree lifetime across delegated descendants (2026-11-14)
+
+`goal_git::rollback` and `goal_git::apply` now share ancestry-aware active child job detection. A still-running grandchild or cyclic/deep unresolved session ancestry blocks worktree removal/integration. See [isolated agent lifecycle](docs/SUB4-ISOLATED-AGENT-2026-11-14.md). Regression cases are committed; runtime CI remains unverified.

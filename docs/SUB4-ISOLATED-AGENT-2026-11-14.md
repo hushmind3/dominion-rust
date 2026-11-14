@@ -22,3 +22,10 @@
 `api/goals.rs` (owner intent + review API) → `engine/jobs.rs` (durable job) → `engine/goals.rs` (plan/execute/review) → `engine/goal_git.rs` (prepare/isolation/review/apply/discard) → `chat/runtime/tool_execution.rs` + `tools.rs` (isolated work) → `verification.rs` / `goals/report.rs` (proof) → `Goals.tsx` (owner review).
 
 2026년 레퍼런스: [VS Code Agents worktree/permissions](https://github.com/microsoft/vscode-docs/blob/main/docs/agents/run/agents-window.md), [2026-09 Codex worktree/agents review](https://www.harness.institute/research/codex-cli-agents-worktrees-review-load).
+
+
+## 2026-11-14 · 하위·손자 에이전트 작업트리 수명 보호
+
+`goal_git.rs::has_active_goal_descendants`는 queued/running job의 `input.sessionId`에서 `parentSessionId` 조상들을 따라 목표 `goalId`와 연결되는지를 검사한다. `rollback`과 `apply`가 동일한 확인 함수를 사용하므로 **직속 자식뿐 아니라 손자·중첩 위임 작업이 살아 있을 때** 작업트리 제거/반영을 차단한다. 순환이나 깊이 제한 초과의 불명확한 작업 계보도 차단한다. 다른 작업 목표에 속한 정상 세션은 이 목표의 활성 자손으로 계산하지 않는다.
+
+검증 코드: `goal_git.rs`의 `isolated_goal_diff_and_discard_never_change_source_checkout` 손자 작업 시나리오 및 `cyclic_active_descendant_ancestry_blocks_source_worktree_mutation`. 연결·검사 소스는 작성했으며 이 변경에서 Rust 컴파일/CI 실행은 미확인이다.

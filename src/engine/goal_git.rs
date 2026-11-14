@@ -151,6 +151,28 @@ pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
         "truncated":diff.chars().count()>=LIMIT,
         "reviewDigest":review_digest(state,id).await?}))
 }
+// Every active job whose session ancestry reaches this goal owns access to
+// the same isolated checkout. A grandchild must block discard just as a direct
+// child blocks apply. Cyclic / over-deep ancestry is ambiguous and fails
+// closed so no running worker loses its worktree.
+fn has_active_goal_descendants(state:&AppState,id:&str)->bool{
+    state.store.all("job").into_iter().any(|job|{
+        if !matches!(job["status"].as_str(),Some("queued"|"running")){return false;}
+        let Some(start)=job.pointer("/input/sessionId").and_then(Value::as_str)
+            else{return false;};
+        let mut cursor=Some(start.to_string());
+        let mut seen=std::collections::HashSet::new();
+        for _ in 0..=16 {
+            let Some(sid)=cursor.take() else{return false;};
+            if !seen.insert(sid.clone()){return true;}
+            let Some(session)=state.store.get("session",&sid) else{return false;};
+            if session["goalId"].as_str()==Some(id){return true;}
+            cursor=session["parentSessionId"].as_str().map(str::to_string);
+        }
+        cursor.is_some()
+    })
+}
+
 pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
     if goal["gitWorktree"]["applied"]==true {
@@ -159,17 +181,11 @@ pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     if matches!(goal["status"].as_str(),Some("running"|"queued")){
         return Err("진행 중인 작업을 먼저 중단하세요.".into());
     }
-    // A parent may have finished while its delegated child is still editing.
-    // Never remove a worktree underneath an active nested session.
-    let active_children=state.store.all("job").into_iter().any(|job|{
-        if !matches!(job["status"].as_str(),Some("queued"|"running")){return false;}
-        let Some(session_id)=job.pointer("/input/sessionId").and_then(Value::as_str) else{
-            return false;
-        };
-        state.store.get("session",session_id)
-            .is_some_and(|session|session["goalId"].as_str()==Some(id))
-    });
-    if active_children{return Err("하위 에이전트가 작업 중입니다. 모두 종료한 뒤 되돌리세요.".into());}
+    // A parent may finish before a grandchild. The entire delegated session
+    // lineage must be quiescent before deleting its shared worktree.
+    if has_active_goal_descendants(state,id){
+        return Err("하위 에이전트가 작업 중입니다. 모두 종료한 뒤 되돌리세요.".into());
+    }
     let work=checked_path(state,id,&goal)?;
     let root=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
     if goal["gitWorktree"]["source"].as_str()!=root.to_str(){
@@ -234,22 +250,11 @@ pub(crate) async fn apply(state:&AppState,id:&str,expected:&str)->Result<Value,S
     if goal["gitWorktree"]["applied"]==true || goal["gitWorktree"]["rolledBack"]==true{
         return Err("이미 반영하거나 폐기한 작업공간입니다.".into());
     }
-    // The same session may have spawned asynchronous children still editing.
-    let outstanding=state.store.all("job").into_iter().any(|job|{
-        if !matches!(job["status"].as_str(),Some("queued"|"running")){return false;}
-        let Some(child)=job.pointer("/input/sessionId").and_then(Value::as_str) else{return false;};
-        let mut cursor=Some(child.to_string());
-        let mut seen=std::collections::HashSet::new();
-        for _ in 0..=8 {
-            let Some(sid)=cursor.take() else{break};
-            if !seen.insert(sid.clone()){return true;}
-            let Some(session)=state.store.get("session",&sid) else{break};
-            if session["goalId"].as_str()==Some(id){return true;}
-            cursor=session["parentSessionId"].as_str().map(str::to_string);
-        }
-        false
-    });
-    if outstanding {return Err("하위 에이전트 실행이 끝나지 않아 병합할 수 없습니다.".into());}
+    // Both integration and discard must inspect the same full descendant
+    // lineage, including asynchronous grandchildren.
+    if has_active_goal_descendants(state,id){
+        return Err("하위 에이전트 실행이 끝나지 않아 병합할 수 없습니다.".into());
+    }
     let preview=changes(state,id).await?;
     if preview["truncated"]==true || preview["reviewIncomplete"]==true {
         return Err("변경 내용 중 미리보기에서 생략된 파일이 있어 자동 반영을 차단했습니다.".into());
@@ -344,6 +349,21 @@ mod tests{
      let goal=state.store.get("goal",&id).unwrap();
      state.store.patch_if("goal",&id,"status",&goal["status"],
          &json!({"status":"completed"})).unwrap();
+     // A live grandchild inherits the goal checkout indirectly. Discard must
+     // not delete that checkout while the worker is still using it.
+     state.store.put("session",&json!({"id":"child",
+         "parentSessionId":"session"})).unwrap();
+     state.store.put("session",&json!({"id":"grandchild",
+         "parentSessionId":"child"})).unwrap();
+     state.store.put("job",&json!({"id":"grandchild-job","status":"running",
+         "input":{"sessionId":"grandchild"}})).unwrap();
+     assert!(has_active_goal_descendants(&state,&id));
+     assert!(rollback(&state,&id).await.unwrap_err().contains("하위 에이전트"));
+     assert!(isolated.exists());
+     let expected=state.store.get("job","grandchild-job").unwrap()["status"].clone();
+     state.store.patch_if("job","grandchild-job","status",&expected,
+         &json!({"status":"completed"})).unwrap();
+     assert!(!has_active_goal_descendants(&state,&id));
      let result=rollback(&state,&id).await.unwrap();
      assert_eq!(result["localWorktreeRemoved"],true);
      assert!(!isolated.exists());
@@ -351,6 +371,26 @@ mod tests{
      assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
          "fn original() {}");
  }
+ #[test]
+ fn cyclic_active_descendant_ancestry_blocks_source_worktree_mutation(){
+     let root=std::env::temp_dir().join(format!("dominion-goal-lineage-{}",uuid::Uuid::new_v4()));
+     std::fs::create_dir_all(&root).unwrap();
+     let config=crate::config::Config{port:0,data_dir:root.clone(),
+         web_dir:root.join("web"),workspace:root.clone()};
+     let store=crate::db::Store::open(&config.db_path()).unwrap();
+     let vault=crate::vault::Vault::open(&config.key_path());
+     let state=AppState::new(config,store,vault);
+     state.store.put("session",&json!({"id":"a","parentSessionId":"b"})).unwrap();
+     state.store.put("session",&json!({"id":"b","parentSessionId":"a"})).unwrap();
+     state.store.put("job",&json!({"id":"live","status":"running",
+         "input":{"sessionId":"a"}})).unwrap();
+     assert!(has_active_goal_descendants(&state,"goal-unknown"));
+     state.store.patch_if("job","live","status",&json!("running"),
+         &json!({"status":"completed"})).unwrap();
+     assert!(!has_active_goal_descendants(&state,"goal-unknown"));
+     std::fs::remove_dir_all(root).unwrap();
+ }
+
  #[test]
  fn rejects_attacker_selected_ids(){
      let root=std::env::temp_dir();
