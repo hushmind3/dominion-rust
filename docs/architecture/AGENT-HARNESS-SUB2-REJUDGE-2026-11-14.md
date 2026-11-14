@@ -86,21 +86,27 @@ This is **technical stream inspection, not subjective scene quality or shot cont
 ```text
 GoalConsole → GET /api/goals/:id/diff
  → goal_workspace::changes → preview
- → bounded full Git --binary diff (max 128KiB) + SHA-256 + canApply
+ → bounded full Git --binary diff including regular UTF-8 newly authored source files (max 128KiB, 64 new files) + SHA-256 + canApply
  → show ENTIRE patch and hash to owner
 GoalConsole → POST /api/goals/:id/apply { expectedPatchSha256 }
  → api/goals::apply_workspace → goal_workspace::apply_reviewed
  → terminal goal, existing owner worktree, no concurrent writer jobs
  → source HEAD == goal baseCommit, source tracked/untracked clean
- → no untracked files in isolated worktree
+ → only vetted untracked regular UTF-8 files in isolated worktree; include their entire new-file patches via temporary Git index, never mutate checkout index
  → exact patch hash equals owner's previously reviewed SHA-256
  → git apply --check → recheck original HEAD & status → git apply
  → hash original git diff against the same frozen base
  → persist gitApply { patchSha256, baseCommit, appliedAt, verified }
 ```
 
-The patch is not clipped for review. Oversize or non-UTF8 diffs require external pull-request review rather than a potentially misleading source promotion. No git reset, cherry-pick, force, auto-commit or auto-merge occurs. A second attempt to apply the same goal is blocked by its durable `appliedAt` marker. A separate owner-confirmed discard action is still available after successful promotion.
+The patch is not clipped for review. New regular text source files are now included through an ephemeral Git index (`git read-tree` + `git add -N`); original and detached worktree indexes are not staged. Up to 64 new files pass canonical-path containment, UTF-8, file-type and per-file size checks. Oversize, binary, symlink or non-UTF8 changes require external pull-request review rather than a misleading partial promotion. No git reset, cherry-pick, force, auto-commit or auto-merge occurs. A second attempt to apply the same goal is blocked by its durable `appliedAt` marker. A separate owner-confirmed discard action is still available after successful promotion.
 
 Default `DOMINION_DATA` may be inside the source checkout. `goal_workspace::goal_path` now deterministically creates the worktree outside the checkout, using a source-path digest to avoid sharing a sibling directory between repositories.
 
-Regression specifications cover clean-source application, wrong digest refusal, untracked-file refusal, idempotent second apply, nested data location, separate owner/child workspace, dirty source and explicit discard. Live model cost and actual end-to-end agent success rates are still not measured.
+Regression specifications now cover clean-source application of both tracked edits and newly authored text files, stale digest refusal after a new file is created or changed, binary new-file refusal, idempotent second apply, nested data location, separate owner/child workspace, dirty source and explicit discard. Live model cost and actual end-to-end agent success rates are still not measured.
+
+## 2026-11-14: Owner-reviewed newly authored files
+
+Code: `goal_workspace.rs::{untracked_review_paths,patch_bytes,preview,apply_reviewed}`; owner UI: `GoalConsole.tsx`. The exact SHA-256 binds complete modifications and newly created regular text files. `git apply --check` is re-run against the clean source checkout immediately before applying; the post-apply digest includes the now-untracked new files as intended. Nothing is auto-committed, and binary/oversize/unreadable files remain manual review boundaries.
+
+**Verification:** The underlying ephemeral-index Git procedure was manually replayed in a disposable local Git checkout, verifying identical pre/post patch SHA-256 and successful `git apply --check`. This is **not** a compilation, Rust unit test run, CI result, or end-to-end agent benchmark. New Rust regression tests are authored but have not been executed here.
