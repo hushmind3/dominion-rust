@@ -72,6 +72,35 @@
             assert!(!parse_review(text).0);
         }
     }
+    #[test]
+    fn unfinished_external_effects_are_scoped_to_the_exact_executor_session(){
+        let (state,dir)=state();
+        state.store.put("execution",&json!({"id":"run-other",
+            "sessionId":"room-session","status":"completed"})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"op-other",
+            "runId":"run-other","status":"interrupted","outcomeUnknown":true})).unwrap();
+        state.store.put("execution",&json!({"id":"run-goal",
+            "sessionId":"goal-session","status":"completed"})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"op-ok",
+            "runId":"run-goal","status":"completed","outcomeUnknown":false})).unwrap();
+        assert!(!state.store.session_has_uncertain_effects("goal-session").unwrap(),
+            "other agents' remote effects must not block an independent goal");
+        assert!(state.store.session_has_uncertain_effects("room-session").unwrap());
+        // A model can return successful text while the tool's effect remains
+        // unknown. The server must detect it independently from turn_error.
+        state.store.put("execution_operation",&json!({"id":"op-unknown",
+            "runId":"run-goal","status":"completed","outcomeUnknown":true})).unwrap();
+        assert!(state.store.session_has_uncertain_effects("goal-session").unwrap());
+        state.store.patch_if("execution_operation","op-unknown","outcomeUnknown",
+            &json!(true),&json!({"outcomeUnknown":false})).unwrap();
+        assert!(!state.store.session_has_uncertain_effects("goal-session").unwrap());
+        state.store.put("execution_operation",&json!({"id":"op-running",
+            "runId":"run-goal","status":"running","outcomeUnknown":false})).unwrap();
+        assert!(state.store.session_has_uncertain_effects("goal-session").unwrap());
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn interrupted_inflight_goal_never_replays() {
         let (state, dir) = state();
