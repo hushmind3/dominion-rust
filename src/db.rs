@@ -28,6 +28,27 @@ fn upsert_tx(
     Ok(())
 }
 
+/// The atomic Stop result. Never publish a cancellation notice for a write
+/// that was not durably committed.
+pub struct CancelledSessionTree {
+    pub session_ids: Vec<String>,
+    pub jobs: Vec<Value>,
+    pub goals: Vec<Value>,
+}
+
+/// Query JSON records from one SQLite snapshot while holding its write
+/// transaction. This prevents job changes or new delegated sessions from
+/// racing with a Stop.
+fn records_in_tx(tx: &rusqlite::Transaction<'_>, kind: &str) -> Result<Vec<Value>, String> {
+    let mut stmt=tx.prepare("SELECT data FROM records WHERE kind=?1")
+        .map_err(|e|e.to_string())?;
+    let rows=stmt.query_map([kind],|row|row.get::<_,String>(0))
+        .map_err(|e|e.to_string())?;
+    let raw=rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    raw.into_iter().map(|value|serde_json::from_str::<Value>(&value)
+        .map_err(|e|e.to_string())).collect()
+}
+
 fn upsert_secret(conn: &Connection, name: &str, sealed: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "INSERT INTO secrets(name, value) VALUES(?1, ?2)
@@ -358,6 +379,17 @@ impl Store {
         }
         let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
         let tx = conn.transaction().map_err(|error| error.to_string())?;
+        // The parent cancellation epoch and the active quota are checked in
+        // the SAME transaction as the new child. A race with Stop either
+        // cancels this child or rejects it; it never leaves paid work running.
+        let parent_cancel:Option<String>=tx.query_row(
+            "SELECT data FROM records WHERE kind='session_cancel' AND id=?1",
+            [parent_session_id],|row|row.get(0),
+        ).optional().map_err(|e|e.to_string())?;
+        if parent_cancel.and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
+            .is_some_and(|value|value["cancelled"]==true) {
+            return Err("Delegation parent session has been cancelled".into());
+        }
         // JSON1 is built into the SQLite version used by rusqlite. Restrict
         // counting to job records; finished/cancelled workers free their slot.
         let active: i64 = tx.query_row(
@@ -376,6 +408,77 @@ impl Store {
         upsert_tx(&tx, "job", job)?;
         tx.commit().map_err(|error| error.to_string())?;
         Ok(true)
+    }
+
+    /// Stop a parent and its entire delegated session tree in ONE SQLite
+    /// transaction. Concurrent reserve_delegation calls cannot slip new work
+    /// between walking the tree and closing the cancellation epochs.
+    pub fn cancel_session_family(&self, root: &str) -> Result<CancelledSessionTree, String> {
+        if root.is_empty() { return Err("Empty root session ID".into()); }
+        let mut conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let tx=conn.transaction().map_err(|e|e.to_string())?;
+        let mut children=std::collections::HashMap::<String,Vec<String>>::new();
+        for session in records_in_tx(&tx,"session")? {
+            if session["delegated"] != true {continue;}
+            let (Some(parent),Some(id))=
+                (session["parentSessionId"].as_str(),session["id"].as_str())
+                else{continue};
+            children.entry(parent.to_owned()).or_default().push(id.to_owned());
+        }
+        let mut visited=std::collections::HashSet::new();
+        let mut pending=vec![root.to_owned()];
+        let mut session_ids=Vec::new();
+        while let Some(id)=pending.pop() {
+            if !visited.insert(id.clone()) {continue;}
+            if let Some(direct)=children.get(&id) {
+                pending.extend(direct.iter().cloned());
+            }
+            session_ids.push(id);
+        }
+        let stopped=chrono::Utc::now().to_rfc3339();
+        for id in &session_ids {
+            let old:Option<String>=tx.query_row(
+                "SELECT data FROM records WHERE kind='session_cancel' AND id=?1",
+                [id],|row|row.get(0),
+            ).optional().map_err(|e|e.to_string())?;
+            let old=old.and_then(|raw|serde_json::from_str::<Value>(&raw).ok())
+                .unwrap_or(Value::Null);
+            let epoch=old["generation"].as_u64().unwrap_or(0)
+                .checked_add(1).ok_or("Session cancellation epoch overflow")?;
+            upsert_tx(&tx,"session_cancel",&json!({
+                "id":id,"generation":epoch,"cancelled":true,"cancelledAt":stopped
+            }))?;
+        }
+        let scope=visited;
+        let mut jobs=Vec::new();
+        for mut job in records_in_tx(&tx,"job")? {
+            if !matches!(job["status"].as_str(),Some("queued"|"running")) {continue;}
+            let owned=[
+                "/sessionId","/input/sessionId","/input/parentSessionId",
+                "/goalState/sessionId","/roomState/sessionId",
+                "/workflowState/sessionId"
+            ].iter().any(|path|job.pointer(path).and_then(Value::as_str)
+                .is_some_and(|id|scope.contains(id)));
+            if !owned {continue;}
+            job["status"]=json!("cancelled");
+            job["cancelRequested"]=json!(true);
+            job["finishedAt"]=json!(stopped);
+            job["error"]=json!("사용자 요청으로 실행이 중단되었습니다.");
+            upsert_tx(&tx,"job",&job)?;
+            jobs.push(job);
+        }
+        let mut goals=Vec::new();
+        for mut goal in records_in_tx(&tx,"goal")? {
+            if !matches!(goal["status"].as_str(),Some("queued"|"running"))
+                || !goal["sessionId"].as_str().is_some_and(|id|scope.contains(id)) {continue;}
+            goal["status"]=json!("cancelled");
+            goal["phase"]=json!("cancelled");
+            goal["finishedAt"]=json!(stopped);
+            upsert_tx(&tx,"goal",&goal)?;
+            goals.push(goal);
+        }
+        tx.commit().map_err(|e|e.to_string())?;
+        Ok(CancelledSessionTree{session_ids,jobs,goals})
     }
 
     /// Transaction that only commits when the current record still has the

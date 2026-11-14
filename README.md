@@ -8,6 +8,8 @@
 
 **Rust 백엔드 + Rust 실행 엔진**과 React 프론트엔드를 사용합니다.
 
+**서브3 2026-11-15 중단 전파:** 부모 목표·채팅 Stop이 `src/state.rs → Store::cancel_session_family`의 단일 SQLite 트랜잭션으로 모든 위임 후손의 실행 세션·잡·목표를 중단합니다. 중단 중 새 위임의 생성도 `reserve_delegation`에서 거부합니다. 취소 및 새 위임의 경쟁 테스트와 재시작 영속성 테스트를 추가했습니다.
+
 **서브3 2026-11-15 병렬 에이전트 실행 보호:** `delegate_task` 생성 경쟁을 SQLite 원자적 자식 세션+잡 예약으로 변경했습니다. 동시 위임 6개 한도, 완료 후 슬롯 재사용, 실패 시 양쪽 롤백을 실제 저장 경로에서 강제합니다. 스레드 동시성 회귀 테스트와 기존 작업/RSI 경로는 [하네스 구조](docs/AGENT-HARNESS-2026-11-14.md)에 정리했습니다.
 
 **서브3 모듈 경계 보강:** `src/engine/rsi_system.rs`는 소스 자기모형의 공개 진입점만 유지하고, `rsi_system/{inventory,frontier,blueprint,validation}.rs`가 소스 조사·편집 가능한 구조 후보·재컴파일된 시스템 청사진·독립 소스 검증을 분담합니다. `rsi_principle_learning.rs`의 예측 오류 추정은 `rsi/learning/principle_calibration.rs`로 분리해 실제 `study()` 경로에서 사용합니다. 신규 분해 파일은 후손 자기모형에 등록되며, 메타 정책은 동결 평가를 변경하지 않습니다.

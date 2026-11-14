@@ -79,46 +79,30 @@ impl AppState {
     }
 
     pub fn cancel_session(&self, session_id: &str) {
-        self.cancelled
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string());
-        if self.store.cancel_session_epoch(session_id).is_none() {
-            self.store.audit(
-                "session.cancel_persistence_failed",
-                serde_json::json!({"sessionId":session_id}),
-            );
-        }
-        // Cancellation survives a restart and cannot be cleared for old queued
-        // work merely because the user starts a fresh foreground turn.
-        for job in self.store.all("job") {
-            let matches = [
-                "/sessionId",
-                "/input/sessionId",
-                "/goalState/sessionId",
-                "/roomState/sessionId",
-                "/workflowState/sessionId",
-            ]
-            .iter()
-            .any(|path| job.pointer(path).and_then(serde_json::Value::as_str) == Some(session_id));
-            if matches && matches!(job["status"].as_str(), Some("queued" | "running")) {
-                if let Some(id) = job["id"].as_str() {
-                    if let Some(saved) = self.store.patch_if("job",id,"status",&job["status"],&serde_json::json!({
-                        "status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339(),"error":"사용자 요청으로 실행이 중단되었습니다."
-                    })) { self.bus.record("job",&saved); }
-                }
+        // One transaction closes every descendant's durable cancellation epoch,
+        // then marks their queued/running jobs and goals cancelled. A concurrent
+        // delegation reservation sees the parent's stopped epoch under the
+        // same database lock and cannot start an orphan paid worker.
+        match self.store.cancel_session_family(session_id) {
+            Ok(stopped) => {
+                let mut local=self.cancelled.lock().unwrap();
+                local.extend(stopped.session_ids.iter().cloned());
+                drop(local);
+                for job in &stopped.jobs {self.bus.record("job",job);}
+                for goal in &stopped.goals {self.bus.record("goal",goal);}
+                self.store.audit("session.cancel_tree",serde_json::json!({
+                    "rootSessionId":session_id,
+                    "sessions":stopped.session_ids.len(),
+                    "jobs":stopped.jobs.len(),
+                    "goals":stopped.goals.len(),
+                }));
             }
-        }
-        for mut goal in self.store.all("goal") {
-            if goal["sessionId"].as_str() == Some(session_id)
-                && matches!(goal["status"].as_str(), Some("queued" | "running"))
-            {
-                goal["status"] = serde_json::json!("cancelled");
-                goal["phase"] = serde_json::json!("cancelled");
-                goal["finishedAt"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
-                if let Some(saved) = self.store.put("goal", &goal) {
-                    self.bus.record("goal", &saved);
-                }
+            Err(error) => {
+                // Stop the local turn even when disk persistence fails;
+                // report the failure rather than claiming durable cancellation.
+                self.cancelled.lock().unwrap().insert(session_id.to_string());
+                self.store.audit("session.cancel_persistence_failed",
+                    serde_json::json!({"sessionId":session_id,"error":error}));
             }
         }
     }
@@ -246,6 +230,78 @@ mod tests {
             "cancelled"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stop_propagates_to_nested_delegates_and_keeps_unrelated_sessions_running() {
+        let (state,dir)=temp_state();
+        for (id,parent,delegated) in [
+            ("root",None,false),("child",Some("root"),true),
+            ("grandchild",Some("child"),true),("sibling",None,false)
+        ] {
+            state.store.put("session",&serde_json::json!({
+                "id":id,"parentSessionId":parent,"delegated":delegated
+            })).unwrap();
+            state.store.put("job",&serde_json::json!({
+                "id":format!("job-{id}"),"kind":"prompt",
+                "status":if id=="grandchild" {"queued"} else {"running"},
+                "input":{"sessionId":id,"delegation":delegated,
+                    "parentSessionId":parent}
+            })).unwrap();
+        }
+        state.store.put("goal",&serde_json::json!({
+            "id":"child-goal","sessionId":"grandchild","status":"running"
+        })).unwrap();
+        state.cancel_session("root");
+        let restarted=AppState::new(state.config.clone(),state.store.clone(),
+            Vault::open(&state.config.key_path()));
+        for id in ["root","child","grandchild"] {
+            assert!(restarted.is_cancelled(id),"{id} must remain stopped after restart");
+            let job=restarted.store.get("job",&format!("job-{id}")).unwrap();
+            assert_eq!(job["status"],"cancelled");
+            assert_eq!(job["cancelRequested"],true);
+        }
+        assert_eq!(restarted.store.get("goal","child-goal").unwrap()["status"],"cancelled");
+        assert!(!restarted.is_cancelled("sibling"));
+        assert_eq!(restarted.store.get("job","job-sibling").unwrap()["status"],"running");
+        let session=serde_json::json!({"id":"late","delegated":true,
+            "parentSessionId":"child"});
+        let job=serde_json::json!({"id":"late-job","kind":"prompt","status":"queued",
+            "input":{"delegation":true,"parentSessionId":"child","sessionId":"late"}});
+        assert!(restarted.store.reserve_delegation("child",6,&session,&job).is_err());
+        assert!(restarted.store.get("session","late").is_none());
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn concurrent_stop_and_delegation_never_leave_an_active_orphan() {
+        let (state,dir)=temp_state();
+        state.store.put("session",&serde_json::json!({"id":"root"})).unwrap();
+        std::thread::scope(|scope| {
+            let store=state.store.clone();
+            let child=scope.spawn(move||{
+                let session=serde_json::json!({"id":"racing-child","delegated":true,
+                    "parentSessionId":"root"});
+                let job=serde_json::json!({"id":"racing-job","kind":"prompt",
+                    "status":"queued","input":{"sessionId":"racing-child",
+                        "parentSessionId":"root","delegation":true}});
+                store.reserve_delegation("root",6,&session,&job)
+            });
+            state.cancel_session("root");
+            let inserted=child.join().unwrap();
+            match inserted {
+                Ok(true)=>assert_eq!(state.store.get("job","racing-job").unwrap()["status"],
+                    "cancelled","child created first must be stopped"),
+                Err(_)=>assert!(state.store.get("job","racing-job").is_none(),
+                    "Stop first must reject new child"),
+                Ok(false)=>panic!("Fresh parent should never hit its quota"),
+            }
+        });
+        assert!(state.is_cancelled("root"));
+        assert!(!state.store.get("job","racing-job")
+            .is_some_and(|job|matches!(job["status"].as_str(),
+                Some("queued"|"running"))));
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]

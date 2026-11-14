@@ -93,3 +93,21 @@
   실모델 pass@1 검증은 별도 평가 대상입니다.
 - 실행 검증: 본 코드 변경은 소스 및 데이터 원자성 회귀 테스트를 추가합니다. CI가 실제 성공하기 전까지
   컴파일·완주를 확정된 성능 수치로 보고하지 않습니다.
+
+## 2026-11-15 · 실제 부모/하위 에이전트 Stop 연동
+
+`AppState::cancel_session` → `Store::cancel_session_family`은 **단일 SQLite 트랜잭션**으로
+`session.parentSessionId`의 전체 delegated 후손을 찾아, 부모·자식·손자의
+`session_cancel` epoch 및 관련 `queued/running` 작업·목표를 동시에 중단 처리합니다.
+상관없는 다른 세션은 그대로 둡니다. `reserve_delegation`은 같은 DB 잠금에서
+부모의 `cancelled` epoch를 조회하고 거부하므로, 경합 결과는
+**위임 선행→중단됨** 또는 **중단 선행→위임 거부**뿐입니다.
+재시작 이후에도 각 자식의 중단 epoch가 남고, 활성 Rust 모델/도구 루프는
+기존 `is_cancelled` 검사에 의해 추가 라운드를 진행하지 않습니다.
+
+`state::tests::stop_propagates_to_nested_delegates_and_keeps_unrelated_sessions_running`은
+부모/자식/손자 전파, 형제 세션 보존, 영속 epoch, 사후 위임 거부를 검사합니다.
+`state::tests::concurrent_stop_and_delegation_never_leave_an_active_orphan`은 경쟁 조건에서
+실행 중인 하위 작업이 남지 않는 두 가지 합법 상태만 인정합니다.
+부모/자식이 이미 시작한 외부 비멱등 효과는 자동으로 되돌리거나 성공으로
+재해석하지 않습니다. 검증 완료 여부는 해당 HEAD의 CI 결과와 별도로 구분합니다.

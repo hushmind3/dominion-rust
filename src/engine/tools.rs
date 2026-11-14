@@ -625,7 +625,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
     loop {
         if ctx.state.is_cancelled(ctx.session_id) {
-            return Err("실행이 중단되었습니다. 위임 작업은 백그라운드에서 계속됩니다.".into());
+            return Err("상위 실행이 중단되었습니다. 위임 작업에도 중단이 전파됩니다.".into());
         }
         let Some(current) = ctx.state.store.get("job", &job_id) else {
             return Err("위임 작업 기록이 사라졌습니다.".into());
