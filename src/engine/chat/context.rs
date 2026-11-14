@@ -601,6 +601,36 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn crashed_owner_steer_uses_persisted_frame_id_not_a_missing_public_id(){
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"steered"})).unwrap();
+        let receipt=crate::engine::steering::enqueue(&state,"steered","new owner plan")
+            .unwrap();
+        let id=receipt["id"].as_str().unwrap();
+        state.store.write_message(&json!({
+            "id":id,"session_id":"steered","role":"user",
+            "content":"new owner plan",
+            "metadata":{"authorKind":"owner","steerId":id}
+        })).unwrap();
+        // Simulated crash point: SQLite message exists but inbox status still
+        // queued. The next model sees the historical owner message exactly
+        // once, with its original, durable identity.
+        let mut wire=history(&state,"steered",None,None).unwrap();
+        assert_eq!(wire.len(),1);
+        assert_eq!(wire[0]["_dominion_frame"],id);
+        let replay=crate::engine::steering::drain_at_step_with_ids(
+            &state,"steered").unwrap();
+        for (steer_id,message) in replay{
+            if !wire.iter().any(|row|
+                row["_dominion_frame"].as_str()==Some(steer_id.as_str())){
+                wire.push(message);
+            }
+        }
+        assert_eq!(wire.len(),1,"crash recovery must not duplicate owner text");
+        assert_eq!(wire[0]["content"],"new owner plan");
+        let _=std::fs::remove_dir_all(dir);
+    }
+    #[test]
     fn room_history_preserves_stored_reasoning_for_provider_specific_replay() {
         let (state, dir) = state();
         state
