@@ -326,24 +326,5 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
 }
 
 #[cfg(test)]
-mod tests{
-    use super::*;
-    #[test]
-    fn segmentation_requires_real_multi_clip_consent_and_valid_profiles(){
-        assert_eq!(split_duration(22,10).unwrap(),vec![10,6,6]);
-        assert_eq!(split_duration(60,10).unwrap(),vec![10,10,10,10,10,10]);
-        assert_eq!(split_duration(38,20).unwrap(),vec![20,18]);
-        assert!(split_duration(62,10).is_err());
-        assert!(split_duration(8,10).is_err());
-        let cfg=json!({"videoModel":"ltx-2-5-pro","videoQuality":"1080p"});
-        let body=json!({"duration":22,"brief":"Ocean lighthouse",
-            "videoModel":"ltx-2-5-pro","videoQuality":"1080p","fps":24,
-            "aspectRatio":"16:9"});
-        assert!(spec(&body,&cfg).is_err());
-        let mut yes=body;
-        yes["confirmPaidMultiShot"]=json!(true);
-        // The caller's FFmpeg configuration is a prerequisite, so only
-        // exercise pure segmentation independent of local installations.
-        assert_eq!(max_clip("ltx-2-5-pro","1080p",24).unwrap(),10);
-    }
-}
+#[path = "film/tests.rs"]
+mod tests;
