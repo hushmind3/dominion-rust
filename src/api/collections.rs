@@ -371,4 +371,43 @@ mod manual_memory_edit_tests {
         assert_eq!(edit(&state,"missing",json!({"text":"new","expectedText":"old"})).await.status(),StatusCode::NOT_FOUND);
         let _=std::fs::remove_dir_all(root);
     }
+    #[tokio::test]
+    async fn competing_edits_have_one_winner_and_preserve_provenance() {
+        let (state,root)=state();
+        state.store.put("memory",&json!({"id":"manual","source":"user",
+            "scope":"agent","agentId":"owner","status":"active","text":"start"}));
+        let (first,second)=tokio::join!(
+            edit(&state,"manual",json!({"expectedText":"start","text":"alpha"})),
+            edit(&state,"manual",json!({"expectedText":"start","text":"beta"}))
+        );
+        let mut statuses=[first.status().as_u16(),second.status().as_u16()];
+        statuses.sort();
+        assert_eq!(statuses,[200,409]);
+        let saved=state.store.get("memory","manual").unwrap();
+        assert!(saved["text"]=="alpha"||saved["text"]=="beta");
+        assert_eq!(saved["scope"],"agent");
+        assert_eq!(saved["agentId"],"owner");
+        assert_eq!(saved["verification"],"manual_edit");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn archived_or_disabled_manual_memory_is_not_reactivated_by_edit() {
+        let (state,root)=state();
+        state.store.put("memory",&json!({"id":"archived","source":"user",
+            "status":"archived","text":"historic"}));
+        assert_eq!(edit(&state,"archived",json!({"expectedText":"historic","text":"mutated"}))
+            .await.status(),StatusCode::CONFLICT);
+        state.store.put("memory",&json!({"id":"disabled","source":"user",
+            "status":"active","enabled":false,"text":"keep"}));
+        assert_eq!(edit(&state,"disabled",json!({"expectedText":"keep","text":"mutated"}))
+            .await.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","archived").unwrap()["text"],"historic");
+        assert_eq!(state.store.get("memory","disabled").unwrap()["text"],"keep");
+        assert_eq!(edit(&state,"archived",json!({
+            "expectedText":"historic","text":"new","scope":"global"}))
+            .await.status(),StatusCode::BAD_REQUEST);
+        let _=std::fs::remove_dir_all(root);
+    }
+
 }
