@@ -132,6 +132,15 @@ pub fn definitions() -> Vec<Value> {
         }), vec!["agentId", "prompt"])),
         tool("task_status", "Check a delegated task's status", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
         tool("task_result", "Read a delegated task's result, artifacts and final answer", object(json!({"jobId": text("Job id")}), vec!["jobId"])),
+        tool("delegate_tasks", "Launch 1-4 bounded parallel READ-ONLY subagent research tasks. Each gets an isolated session; only the parent may edit or merge after inspecting actual child results.", object(json!({
+            "tasks":{"type":"array","minItems":1,"maxItems":4,
+                "items":{"type":"object","properties":{
+                    "agentId":text("Research agent id"),
+                    "prompt":text("Bounded investigation, no edits; specify file area and desired evidence")
+                },"required":["agentId","prompt"],"additionalProperties":false}},
+            "wait":{"type":"boolean","description":"Wait for all research results (default false)"},
+            "timeoutSeconds":{"type":"integer","minimum":5,"maximum":300}
+        }), vec!["tasks"])),
         tool("account_status", "List OAuth accounts connected to DOMINION", object(json!({}), vec![])),
         tool("browser_control", "Control a local Chrome/Chromium window: open pages, observe text and interactive elements, click, type, press keys and capture screenshots (approval required)", object(json!({
             "action": json!({"type": "string", "enum": ["status", "open", "observe", "click", "type", "press", "screenshot", "close"]}),
@@ -177,6 +186,10 @@ pub use dispatch::execute;
 
 #[path = "tools/gateway.rs"]
 mod gateway;
+
+#[path = "tools/batch.rs"]
+mod batch;
+pub(crate) use batch::{delegate_batch,delegation_allows};
 pub(crate) use gateway::*;
 
 #[path = "tools/workspace.rs"]
