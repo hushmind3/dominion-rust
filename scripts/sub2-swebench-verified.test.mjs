@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger,positiveBenchmarkLimit,attributedSessionIds,aggregateSessionUsage} from './sub2-swebench-verified.mjs';
+import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {createHash} from 'node:crypto';
+import {dirname,join} from 'node:path';
+import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger,positiveBenchmarkLimit,attributedSessionIds,aggregateSessionUsage,importOfficialVerdicts,importOfficialRun} from './sub2-swebench-verified.mjs';
 const issue={
  instance_id:'django__django-10000',
  repo:'django/django',
@@ -136,4 +140,55 @@ test('delegated child-agent work counts in the same real goal and unrelated sess
  assert.throws(()=>attributedSessionIds('root',sessions.slice(1)));
  assert.throws(()=>attributedSessionIds('root',[...sessions,sessions[0]]));
  assert.throws(()=>aggregateSessionUsage([{calls:0,totalTokens:12}]));
+});
+
+test('independently imported Docker verdicts require unchanged native predictions',()=>{
+ const root=mkdtempSync(join(tmpdir(),'dominion-swe-grader-'));
+ try{
+  const model='DOMINION-Rust-local-test';
+  const runId='dominion-swe-123456-abcd1234';
+  const patch='diff --git a/example.py b/example.py\n--- a/example.py\n+++ b/example.py\n@@ -1 +1 @@\n-old\n+new\n';
+  const digest=createHash('sha256').update(patch).digest('hex');
+  const rows=[
+   {instance_id:'django__django-10000',patchSha256:digest,
+     patchBytes:Buffer.byteLength(patch),goalStatus:'completed',usage:{totalTokens:100}},
+   {instance_id:'sympy__sympy-2000',patchSha256:null,patchBytes:0,
+     goalStatus:'failed',usage:{totalTokens:50}},
+  ];
+  const preds=[
+   {instance_id:rows[0].instance_id,model_patch:patch,model_name_or_path:model},
+   {instance_id:rows[1].instance_id,model_patch:'',model_name_or_path:model},
+  ];
+  const logs=join(root,'logs','evaluation',runId);
+  const evidence=join(logs,model,rows[0].instance_id,'report.json');
+  mkdirSync(dirname(evidence),{recursive:true});
+  writeFileSync(evidence,JSON.stringify({[rows[0].instance_id]:{resolved:true}}));
+  const trial=rows.map(row=>({...row}));
+  importOfficialVerdicts(trial,preds,model,logs);
+  assert.equal(trial[0].officialSolved,true);
+  assert.equal(trial[1].officialSolved,false);
+  assert.equal(summarize(trial).officialResolveRate,0.5);
+  assert.throws(()=>importOfficialVerdicts(rows,
+    [{...preds[0],model_patch:patch.replace('new','bad')},preds[1]],
+    model,logs),'same-sized tampered diffs cannot inherit earlier Docker results');
+  const reportPath=join(root,'report.json');
+  writeFileSync(reportPath,JSON.stringify({
+   runId,dataset:'princeton-nlp/SWE-bench_Verified',
+   model,receipts:rows,summary:null
+  }));
+  writeFileSync(join(root,'predictions.jsonl'),
+    preds.map(pred=>JSON.stringify(pred)).join('\n')+'\n');
+  const imported=importOfficialRun(reportPath,logs);
+  assert.equal(imported.summary.officialResolved,1);
+  assert.equal(imported.officialGrading.fullyGraded,true);
+  const saved=JSON.parse(readFileSync(reportPath,'utf8'));
+  assert.equal(saved.receipts[0].officialGradeSource,'official_swebench_docker_report');
+  assert.equal(saved.receipts[1].officialGradeSource,'empty_prediction_not_evaluated');
+  rmSync(evidence);
+  const partial=importOfficialRun(reportPath,logs);
+  assert.equal(partial.officialGrading.fullyGraded,false);
+  assert.equal(partial.summary.officialResolveRate,null,
+    'no result must never become an official unresolved task by guesswork');
+  assert.equal(partial.summary.officialResolved,null);
+ }finally{rmSync(root,{recursive:true,force:true})}
 });
