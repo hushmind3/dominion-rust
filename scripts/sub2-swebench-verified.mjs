@@ -123,6 +123,58 @@ export function toolLedger(operations){
     // Resolution after an error must be shown only by official external grader.
     recovered:false};
 }
+/** Walk only native child-agent sessions. A delegated call runs under its own
+ * sessionId and must count against the parent's attempted task. */
+export function attributedSessionIds(rootId,sessions){
+  demand(typeof rootId==='string'&&rootId.length>0,'missing root session');
+  demand(Array.isArray(sessions),'missing native session records');
+  const byId=new Map();
+  for(const session of sessions){
+    if(typeof session?.id!=='string'||!session.id)continue;
+    demand(!byId.has(session.id),'duplicate session ID in live audit');
+    byId.set(session.id,session);
+  }
+  demand(byId.has(rootId),'root goal session missing from audit');
+  const owned=new Set([rootId]);
+  for(let round=0;round<16;round++){
+    let additions=0;
+    for(const [id,session] of byId){
+      if(owned.has(id))continue;
+      if(owned.has(session.parentSessionId)){
+        demand(owned.size<1024,'goal agent descendants exceed audit bound');
+        owned.add(id);additions++;
+      }
+    }
+    if(additions===0)break;
+  }
+  for(const [id,session] of byId){
+    if(owned.has(id)||!session.parentSessionId)continue;
+    // Do not infer cross-tenant/session ownership from title or model names.
+    let parent=session.parentSessionId;
+    const visited=new Set([id]);
+    while(typeof parent==='string' && !visited.has(parent)){
+      visited.add(parent);
+      if(owned.has(parent))throw Error('delegated agent lineage exceeds 16 levels');
+      parent=byId.get(parent)?.parentSessionId;
+    }
+  }
+  return owned;
+}
+export function aggregateSessionUsage(usages){
+  demand(Array.isArray(usages)&&usages.length>0,'no session usage rows');
+  const keys=['calls','promptTokens','completionTokens','totalTokens','estimatedCalls'];
+  const totals=Object.fromEntries(keys.map(key=>[key,0]));
+  for(const usage of usages){
+    for(const key of keys){
+      const value=usage?.[key];
+      demand(Number.isSafeInteger(value)&&value>=0,'missing or invalid session usage '+key);
+      totals[key]+=value;
+      demand(Number.isSafeInteger(totals[key]),'session usage overflow '+key);
+    }
+  }
+  return totals;
+}
+
 export function executionLedger(rows){
   const all=[];
   for(const row of rows){
@@ -316,20 +368,30 @@ async function runOne(task,index,settings,model){
         resolvedChecksWindow:receipt.resolvedChecksWindow};
     }catch(error){result.receiptError=String(error.message)}
     if(snapshot.sessionId){
+      let ownedSessions=null;
+      try {
+        const sessions=await request(base,'/api/sessions');
+        ownedSessions=attributedSessionIds(snapshot.sessionId,sessions);
+        result.attributedSessionCount=ownedSessions.size;
+      }catch(error){result.sessionLineageError=String(error.message)}
       try{
-        const usage=await request(base,'/api/sessions/'+encodeURIComponent(snapshot.sessionId)+'/usage');
-        result.usage={totalTokens:usage.totalTokens??null,calls:usage.calls??null,
-          estimatedCalls:usage.estimatedCalls??null,
-          promptTokens:usage.promptTokens??null,completionTokens:usage.completionTokens??null};
+        demand(ownedSessions,'cannot attribute descendant model usage');
+        const usages=[];
+        for(const id of ownedSessions){
+          usages.push(await request(base,
+            '/api/sessions/'+encodeURIComponent(id)+'/usage'));
+        }
+        result.usage=aggregateSessionUsage(usages);
       }catch(error){result.usageError=String(error.message)}
       try{
+        demand(ownedSessions,'cannot attribute descendant tool calls');
         const all=[];
-        // Session is isolated per task, so these operation receipts cannot
-        // include an earlier benchmark problem or another owner's work.
+        // The root goal AND its delegated child agent sessions belong to
+        // this one isolated task; unrelated API sessions are excluded.
         for(let offset=0;;offset+=1000){
           const page=await request(base,'/api/executions?limit=1000&offset='+offset);
           demand(Array.isArray(page),'invalid execution list');
-          all.push(...page.filter(x=>x.sessionId===snapshot.sessionId));
+          all.push(...page.filter(x=>ownedSessions.has(x.sessionId)));
           if(page.length<1000)break;
           demand(offset<100_000,'execution list exceeded benchmark bound');
         }
