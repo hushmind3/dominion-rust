@@ -40,6 +40,9 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if let Err(message) = engine::goals::validate_criteria(&criteria) {
         return error(StatusCode::BAD_REQUEST, &message);
     }
+    if body.get("isolateWorktree").is_some_and(|value|!value.is_boolean()){
+        return error(StatusCode::BAD_REQUEST,"Git 격리 옵션은 참/거짓으로 지정해야 합니다.");
+    }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
     let max_iterations = body
         .get("maxIterations")
@@ -54,6 +57,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "taskId": uuid::Uuid::new_v4().to_string(),
             "goal": text,
             "successCriteria": criteria,
+            "isolateWorktree":body["isolateWorktree"].as_bool().unwrap_or(false),
             "executor": executor,
             "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
@@ -125,7 +129,12 @@ pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Respon
     let Some(goal)=state.store.get("goal",&id) else {
         return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
     };
-    match engine::goal_changes::preview(&state,&goal).await {
+    let result=if goal["isolateWorktree"]==true {
+        engine::goal_workspace::changes(&state,&goal).await
+    } else {
+        engine::goal_changes::preview(&state,&goal).await
+    };
+    match result {
         Ok(receipt)=>Json(receipt).into_response(),
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
@@ -139,6 +148,10 @@ pub async fn undo_change(
     let Some(goal)=state.store.get("goal",&id) else {
         return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
     };
+    if goal["isolateWorktree"]==true {
+        return error(StatusCode::CONFLICT,
+            "격리 목표는 원본 파일을 되돌리지 않습니다. 검토 후 격리 작업공간 폐기를 선택하세요.");
+    }
     let Some(path)=body["path"].as_str() else {
         return error(StatusCode::BAD_REQUEST,"되돌릴 파일 경로가 필요합니다.");
     };
@@ -173,6 +186,40 @@ pub async fn undo_change(
                                 .collect::<Vec<_>>());
                     }
                     receipt["goalStatus"]=json!("needs_review");
+                }
+            }
+            Json(receipt).into_response()
+        },
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
+
+pub async fn discard_worktree(
+    State(state):State<AppState>,Path(id):Path<String>,
+)->Response{
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if goal["isolateWorktree"]!=true {
+        return error(StatusCode::BAD_REQUEST,"이 목표는 격리 작업공간을 사용하지 않습니다.");
+    }
+    match engine::goal_workspace::discard(&state,&goal).await {
+        Ok(receipt)=>{
+            if let Some(current)=state.store.get("goal",&id) {
+                let mut metrics=current["metrics"].clone();
+                if metrics.is_object(){
+                    metrics["verifiedCompleted"]=json!(false);
+                    metrics["ownerUndoCount"]=json!(metrics["ownerUndoCount"].as_u64().unwrap_or(0)+1);
+                }
+                let gaps=vec!["사용자가 격리 작업공간을 폐기하여 결과 소스가 더 이상 존재하지 않습니다.".to_string()];
+                if let Some(saved)=state.store.patch_if("goal",&id,"status",&current["status"],
+                    &json!({"status":"needs_review","phase":"worktree_discarded",
+                        "metrics":metrics,"gaps":gaps})){
+                    state.bus.record("goal",&saved);
+                    if let Some(task_id)=saved["taskId"].as_str() {
+                        engine::episode::set_root_outcome(&state,task_id,
+                            engine::episode::goal_outcome("needs_review"),&gaps);
+                    }
                 }
             }
             Json(receipt).into_response()
