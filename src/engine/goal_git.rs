@@ -124,9 +124,31 @@ pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
     let status=git(&work,&["status","--short"]).await?;
     let diff=git(&work,&["diff","--no-ext-diff","--no-color",base]).await?;
     let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
+    let mut budget=48_000usize;
+    let mut untracked_previews=Vec::<Value>::new();
+    let mut review_incomplete=false;
+    for name in untracked.lines() {
+        let bytes=std::fs::read(work.join(name)).map_err(|e|e.to_string())?;
+        if bytes.len()>budget || bytes.len()>16_000 || untracked_previews.len()>=32 {
+            review_incomplete=true;
+            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),
+                "previewOmitted":true}));
+            continue;
+        }
+        if let Ok(text)=String::from_utf8(bytes.clone()){
+            budget-=bytes.len();
+            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),"content":text}));
+        }else{
+            review_incomplete=true;
+            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),
+                "previewOmitted":true}));
+        }
+    }
     Ok(json!({"goalId":id,"branch":goal["gitWorktree"]["branch"],
         "baseCommit":base,"status":status,"diff":diff,
-        "untracked":untracked,"truncated":diff.chars().count()>=LIMIT,
+        "untracked":untracked,"untrackedPreviews":untracked_previews,
+        "reviewIncomplete":review_incomplete,
+        "truncated":diff.chars().count()>=LIMIT,
         "reviewDigest":review_digest(state,id).await?}))
 }
 pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
@@ -228,6 +250,10 @@ pub(crate) async fn apply(state:&AppState,id:&str,expected:&str)->Result<Value,S
         false
     });
     if outstanding {return Err("하위 에이전트 실행이 끝나지 않아 병합할 수 없습니다.".into());}
+    let preview=changes(state,id).await?;
+    if preview["truncated"]==true || preview["reviewIncomplete"]==true {
+        return Err("변경 내용 중 미리보기에서 생략된 파일이 있어 자동 반영을 차단했습니다.".into());
+    }
     let current=review_digest(state,id).await?;
     if expected.len()!=64 || expected!=current{
         return Err("변경된 파일이 마지막 검토와 달라졌습니다. 새 미리보기를 열어 다시 확인하세요.".into());
