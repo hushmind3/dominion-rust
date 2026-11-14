@@ -17,12 +17,13 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
  const data=useRemote<SceneManifest>('/api/video/jobs/'+encodeURIComponent(jobId)+'/scenes',{})
  const [selected,setSelected]=useState<number|null>(null)
  const [prompt,setPrompt]=useState('')
- const [accepted,setAccepted]=useState(false)
+ const [acceptedDigest,setAcceptedDigest]=useState('')
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
  const [result,setResult]=useState('')
  const eligible=(data.value.clips||[]).filter(clip=>clip.canRetake)
  const shot=eligible.find(clip=>clip.index===selected)??eligible[0]
+ const accepted=Boolean(shot?.retakeQuote&&acceptedDigest===shot.retakeQuote.quoteDigest)
  const retake=async()=>{
   if(!shot||!accepted||busy||!shot.outputSha256||!shot.retakeQuote)return
   const message='장면 '+(shot.index+1)+'을 다시 생성합니다. 새 유료 호출 '+shot.expectedPaidCalls+
@@ -41,7 +42,7 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
    setResult('새 영상 작업을 등록했습니다. 기존 성공 장면은 재구매하지 않습니다.')
    onCreated(job)
   }catch(e){setError((e as Error).message)}
-  finally{setBusy(false);setAccepted(false)}
+  finally{setBusy(false);setAcceptedDigest('')}
  }
  return <div className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
   <div className="flex items-center justify-between gap-2">
@@ -55,7 +56,7 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
   {(data.value.clips||[]).map(clip=><label key={clip.index}
    className="mt-2 flex cursor-pointer items-center gap-2 rounded border border-[#E7E0D5] bg-white p-2 text-[11px]">
    <input type="radio" name={'shot-'+jobId} disabled={!clip.canRetake}
-    checked={shot?.index===clip.index} onChange={()=>{setSelected(clip.index);setAccepted(false)}}/>
+    checked={shot?.index===clip.index} onChange={()=>{setSelected(clip.index);setAcceptedDigest('')}}/>
    <span>장면 {clip.index+1} · {clip.duration}초
     <span className="ml-2 text-[#7C7469]">
      {clip.receiptVerified?'기존 검증 영수증':clip.isAvailable?'출력 있음·기술 검수 미완료':'아직 생성 안 됨'}
@@ -72,7 +73,7 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
     placeholder="선택: 이 장면의 새 연출 프롬프트. 비워 두면 기존 장면 프롬프트 재사용"
     maxLength={4750}/>
    <label className="flex items-start gap-2 text-[11px]">
-    <input type="checkbox" checked={accepted} disabled={!shot.retakeQuote} onChange={e=>setAccepted(e.target.checked)}/>
+    <input type="checkbox" checked={accepted} disabled={!shot.retakeQuote} onChange={e=>setAcceptedDigest(e.target.checked?(shot.retakeQuote?.quoteDigest||''):'')}/>
     <span>정상 장면은 재사용하고 나머지 {shot.expectedPaidCalls}개의 유료 호출과 위 예상 금액 상한을 승인합니다.</span>
    </label>
    <div className="flex justify-end">
