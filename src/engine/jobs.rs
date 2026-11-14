@@ -955,44 +955,106 @@ async fn run_resume(context: &JobContext, job: &Value) -> Result<Value, String> 
     Ok(result)
 }
 
+/// Bind each scheduled occurrence to a deterministic durable job ID.
+/// A crash after successful enqueue but before advancing nextAt can only
+/// recover the SAME job, never incur another remote API submission.
 fn schedule_automations(state: &AppState) {
-    let now = chrono::Utc::now();
+    let now=chrono::Utc::now();
     for automation in state.store.all("automation") {
-        if automation.get("enabled").and_then(|value| value.as_bool()) != Some(true) {
-            continue;
-        }
-        let Some(next_at) = automation.get("nextAt").and_then(|value| value.as_str()) else {
-            continue;
+        if automation["enabled"]!=true {continue}
+        let Some(id)=automation["id"].as_str() else {continue};
+        let Some(next_at)=automation["nextAt"].as_str() else {continue};
+        let Ok(next)=chrono::DateTime::parse_from_rfc3339(next_at) else {continue};
+        if next.with_timezone(&chrono::Utc)>now {continue}
+        let interval=automation["intervalMinutes"].as_i64().unwrap_or(1440).clamp(5,525_600);
+        let job_id=format!("automation-{id}-{}",next.timestamp_millis());
+        let kind=automation["kind"].as_str().unwrap_or("prompt");
+        let job_kind=if kind=="meeting"{"room"}else{kind};
+        if !matches!(job_kind,"prompt"|"workflow"|"room"){continue}
+
+        let previous=state.store.get("job",&job_id);
+        let input=if previous.is_some(){
+            // Job was already created from this exact interval. Do not resolve
+            // changed models/prompts and accidentally replay paid side effects.
+            previous.as_ref().unwrap()["input"].clone()
+        } else {
+            match schedule_input(state,&automation){
+                Ok(value)=>value,
+                Err(message)=>{
+                    // A disabled provider/invalid workflow should never keep
+                    // hitting a paid backend on every retry tick.
+                    if let Some(saved)=state.store.patch_if("automation",id,"nextAt",
+                        &json!(next_at),&json!({"enabled":false,
+                            "lastError":message,"status":"needs_review"})){
+                        state.bus.record("automation",&saved);
+                    }
+                    continue;
+                }
+            }
         };
-        let Ok(next) = chrono::DateTime::parse_from_rfc3339(next_at) else {
-            continue;
-        };
-        if next.with_timezone(&chrono::Utc) > now {
-            continue;
+        if previous.is_none(){
+            if enqueue_once(state,&job_id,job_kind,input).is_none(){continue}
         }
-        let kind = automation
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or("prompt");
-        let input = automation
-            .get("input")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let job_kind = if kind == "meeting" { "room" } else { kind };
-        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
-            continue;
+        // Update only if this exact occurrence remains scheduled. If the
+        // owner edited the rule concurrently, never overwrite their new time.
+        if let Some(saved)=state.store.patch_if("automation",id,"nextAt",
+            &json!(next_at),&json!({
+                "lastAt":now.to_rfc3339(),
+                "lastJobId":job_id,
+                "lastError":Value::Null,
+                "status":"scheduled",
+                // Deliberately skip missed periods: only one new paid run
+                // after a long offline interval, never a catch-up storm.
+                "nextAt":(now+chrono::Duration::minutes(interval)).to_rfc3339(),
+            })){
+            state.bus.record("automation",&saved);
         }
-        enqueue(state, job_kind, input);
-        let mut updated = automation.clone();
-        let interval = automation
-            .get("intervalMinutes")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(1440)
-            .max(1);
-        updated["lastAt"] = json!(now.to_rfc3339());
-        updated["nextAt"] = json!((now + chrono::Duration::minutes(interval)).to_rfc3339());
-        state.store.put("automation", &updated);
     }
+}
+fn schedule_input(state:&AppState,automation:&Value)->Result<Value,String>{
+    let original=&automation["input"];
+    let mut input=match automation["kind"].as_str().unwrap_or("prompt"){
+        "workflow"=>{
+            let id=original["workflowId"].as_str()
+                .ok_or("자동화 워크플로 ID가 없습니다.")?;
+            let workflow=state.store.get("workflow",id)
+                .ok_or("자동화 대상 워크플로가 삭제됐습니다.")?;
+            let definition=crate::api::workflows::runnable(state,&workflow)?;
+            json!({"workflowId":id,"input":original["input"],
+                "definition":definition})
+        },
+        "prompt"=>{
+            let agent_id=original["agentId"].as_str()
+                .ok_or("자동화 에이전트 ID가 없습니다.")?;
+            let agent=state.store.get("agent",agent_id)
+                .ok_or("자동화 실행 에이전트가 삭제됐습니다.")?;
+            let provider_id=original["providerId"].as_str().filter(|x|!x.is_empty())
+                .or_else(||agent["providerId"].as_str().filter(|x|!x.is_empty()))
+                .ok_or("에이전트 모델 제공자가 없습니다.")?;
+            let provider=state.store.get("provider",provider_id)
+                .filter(|p|p["enabled"]!=false)
+                .ok_or("자동화 모델 제공자가 중지 또는 삭제됐습니다.")?;
+            let model=original["model"].as_str().filter(|x|!x.is_empty())
+                .or_else(||agent["model"].as_str().filter(|x|!x.is_empty()))
+                .or_else(||provider["model"].as_str().filter(|x|!x.is_empty()))
+                .ok_or("자동화 실행 모델이 없습니다.")?;
+            json!({"prompt":original["prompt"],"agentId":agent_id,
+                "providerId":provider_id,"model":model,
+                "toolsEnabled":original["toolsEnabled"]!=false})
+        },
+        "meeting"=>{
+            let room_id=original["roomId"].as_str()
+                .ok_or("자동 회의실이 없습니다.")?;
+            if state.store.get("room",room_id).is_none(){
+                return Err("자동 회의실이 삭제됐습니다.".into())
+            }
+            json!({"roomId":room_id,"goal":original["goal"]})
+        },
+        _=>return Err("지원하지 않는 자동화 종류입니다.".into()),
+    };
+    input["automationId"]=automation["id"].clone();
+    input["scheduledAt"]=automation["nextAt"].clone();
+    Ok(input)
 }
 
 #[cfg(test)]
