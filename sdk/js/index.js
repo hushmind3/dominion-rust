@@ -71,7 +71,7 @@ export class DominionClient {
       cancel: (id, options) => this.request('POST', 'api/sessions/' + enc(id) + '/cancel', {}, options),
       // Targets the current execution. A late message is durably marked
       // deferred rather than silently carried into an unrelated run.
-      steer: (id, input, options) => {
+      steer: async (id, input, options) => {
         if (typeof input !== 'string' || !input.trim()) {
           throw new TypeError('steer requires a non-empty owner instruction');
         }
