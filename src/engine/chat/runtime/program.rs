@@ -43,6 +43,8 @@ fn settle_conditional_failure(
     nodes: &[Value], index: usize, node: &Value, result: &Value,
     checkpoint: &mut Value,
 ) -> bool {
+    // Explicit failure-handling instructions override inferred branch recovery.
+    if node.get("onFailure").is_some_and(|value| !value.is_null()) { return false; }
     let node_id = node["id"].as_str().unwrap_or("");
     let result_key = node["saveAs"].as_str().filter(|key| !key.is_empty()).unwrap_or(node_id);
     let Some(branch) = next_recovery_branch(nodes,index,result_key) else { return false; };
@@ -357,19 +359,17 @@ fn execute_nodes<'a>(
                     budget = frame.budget;
                     op_seq = frame.op_seq;
                     messages.extend(frame.messages);
-                    if frame.paused {
+                    // A failed nested call is not a successful branch/sequence.
+                    // Bubble its durable receipt to the program repair loop;
+                    // otherwise the enclosing node would mask the failure.
+                    if frame.paused || frame.failure.is_some() {
                         checkpoint["resolvedInputs"] = resolved.clone();
                         if persist {
                             save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
                         }
                         return Ok(ProgramFrame {
-                            resolved,
-                            checkpoint,
-                            budget,
-                            op_seq,
-                            messages,
-                            paused: true,
-                                failure: None,
+                            resolved, checkpoint, budget, op_seq, messages,
+                            paused: frame.paused, failure: frame.failure,
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
@@ -386,19 +386,17 @@ fn execute_nodes<'a>(
                     budget = frame.budget;
                     op_seq = frame.op_seq;
                     messages.extend(frame.messages);
-                    if frame.paused {
+                    // A failed nested call is not a successful branch/sequence.
+                    // Bubble its durable receipt to the program repair loop;
+                    // otherwise the enclosing node would mask the failure.
+                    if frame.paused || frame.failure.is_some() {
                         checkpoint["resolvedInputs"] = resolved.clone();
                         if persist {
                             save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
                         }
                         return Ok(ProgramFrame {
-                            resolved,
-                            checkpoint,
-                            budget,
-                            op_seq,
-                            messages,
-                            paused: true,
-                                failure: None,
+                            resolved, checkpoint, budget, op_seq, messages,
+                            paused: frame.paused, failure: frame.failure,
                         });
                     }
                     mark_program_completed(&mut checkpoint, node_id);
@@ -427,6 +425,7 @@ fn execute_nodes<'a>(
                     .unwrap_or_else(|| "concurrent".into());
                     if parallel_mode == "sequential" {
                         let mut paused = false;
+                        let mut child_failure = None;
                         for child in &children {
                             let frame = execute_nodes(
                                 ctx,
@@ -445,16 +444,17 @@ fn execute_nodes<'a>(
                             budget = frame.budget;
                             op_seq = frame.op_seq;
                             messages.extend(frame.messages);
-                            if frame.paused {
-                                paused = true;
+                            if frame.paused || frame.failure.is_some() {
+                                paused = frame.paused;
+                                child_failure = frame.failure;
                                 break;
                             }
                         }
                         checkpoint["pendingOperationIds"] = json!([]);
                         checkpoint["parallelMode"] = json!("sequential");
                         checkpoint["resolvedInputs"] = resolved.clone();
-                        if paused {
-                            checkpoint["status"] = json!("paused");
+                        if paused || child_failure.is_some() {
+                            if paused { checkpoint["status"] = json!("paused"); }
                             if persist {
                                 save_program_checkpoint(
                                     ctx.state, ctx.execution_id, &checkpoint,
@@ -462,7 +462,7 @@ fn execute_nodes<'a>(
                             }
                             return Ok(ProgramFrame {
                                 resolved, checkpoint, budget, op_seq, messages,
-                                paused: true, failure: None,
+                                paused, failure: child_failure,
                             });
                         }
                         mark_program_completed(&mut checkpoint, node_id);
@@ -504,6 +504,7 @@ fn execute_nodes<'a>(
                     }
                     let results = futures_util::future::join_all(futures).await;
                     let mut paused = false;
+                    let mut parallel_failure = None;
                     let mut parallel_last = serde_json::Map::new();
                     for (child, result) in children.iter().zip(results.into_iter()) {
                         let frame = result?;
@@ -529,7 +530,11 @@ fn execute_nodes<'a>(
                                 );
                             }
                         }
-                        mark_program_completed(&mut checkpoint, child_id);
+                        if frame.failure.is_none() && !frame.paused {
+                            mark_program_completed(&mut checkpoint, child_id);
+                        } else if parallel_failure.is_none() {
+                            parallel_failure = frame.failure.clone();
+                        }
                         budget.merge_usage(&frame.budget);
                         op_seq = op_seq.max(frame.op_seq);
                         messages.extend(frame.messages);
@@ -541,6 +546,14 @@ fn execute_nodes<'a>(
                     resolved["last"] = Value::Object(parallel_last);
                     checkpoint["pendingOperationIds"] = json!([]);
                     checkpoint["resolvedInputs"] = resolved.clone();
+                    if let Some(failure) = parallel_failure {
+                        // Multiple branches ran, but one failed and remains
+                        // pending for revision. Preserve every sibling receipt.
+                        checkpoint["programFailure"] = failure.clone();
+                        if persist { save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint); }
+                        return Ok(ProgramFrame { resolved, checkpoint, budget,
+                            op_seq, messages, paused: false, failure: Some(failure) });
+                    }
                     if paused {
                         checkpoint["status"] = json!("paused");
                         if persist {
@@ -713,24 +726,22 @@ fn execute_nodes<'a>(
                         budget = frame.budget;
                         op_seq = frame.op_seq;
                         messages.extend(frame.messages);
+                        if frame.paused || frame.failure.is_some() {
+                            // An incomplete loop body is not one completed
+                            // iteration. Keep its operation receipts and the
+                            // old loop cursor for repair/restart.
+                            if frame.paused { checkpoint["status"] = json!("paused"); }
+                            checkpoint["resolvedInputs"] = resolved.clone();
+                            if persist { save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint); }
+                            return Ok(ProgramFrame { resolved, checkpoint, budget,
+                                op_seq, messages, paused: frame.paused, failure: frame.failure });
+                        }
                         iterations += 1;
                         checkpoint["loopIterations"] = json!(iterations);
                         checkpoint["loopProgress"][node_id] = json!(iterations);
                         checkpoint["resolvedInputs"] = resolved.clone();
                         if persist {
                             save_program_checkpoint(ctx.state, ctx.execution_id, &checkpoint);
-                        }
-                        if frame.paused {
-                            checkpoint["status"] = json!("paused");
-                            return Ok(ProgramFrame {
-                                resolved,
-                                checkpoint,
-                                budget,
-                                op_seq,
-                                messages,
-                                paused: true,
-                                failure: None,
-                            });
                         }
                     }
                     mark_program_completed(&mut checkpoint, node_id);
@@ -1046,6 +1057,22 @@ pub(super) async fn run_program(
 #[cfg(test)]
 mod program_effect_receipt_tests {
     use super::*;
+    #[test]
+    fn explicit_repair_is_not_swallowed_by_adjacent_failure_branch() {
+        let nodes=json!([
+            {"type":"call_tool","id":"try","onFailure":"revise","tool":"shell_exec",
+                "inputs":{"command":"exit 7"}},
+            {"type":"branch","id":"recover","predicate":{
+                "type":"equals","from":"try","path":"/exitCode","value":0},
+                "then":[],"else":[]}
+        ]);
+        let arr=nodes.as_array().unwrap();
+        let mut checkpoint=crate::engine::program::new_checkpoint(&json!({
+            "revision":"explicit","nodes":arr}));
+        assert!(!settle_conditional_failure(arr,0,&arr[0],&json!({"exitCode":7}),&mut checkpoint));
+        assert!(!crate::engine::program::checkpoint_skip_completed(&checkpoint,"try"));
+    }
+
     #[test]
     fn failed_tool_can_feed_immediately_following_conditional_fallback() {
         let nodes=json!([
