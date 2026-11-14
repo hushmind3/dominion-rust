@@ -182,3 +182,7 @@ parallel tool ID ordering/malformed call handling; SWE benchmark limit and
 measured-replan aggregate fixtures. These tests provide deterministic
 conformance evidence; real provider SWE solves and provider bills require
 separate authorized benchmark runs.
+
+## In-process verified artifact promotion
+
+External Rust applications can now call `DominionSdk::apply_goal_patch(goal_id, sha256)` and `DominionSdk::discard_goal_worktree(goal_id, "DISCARD_GOAL_WORKTREE")`. The methods delegate to the exact `engine::goal_workspace::apply_reviewed` and `discard` functions used by REST. A full 64-character SHA-256 expected digest is required, and the engine additionally verifies that the exact reviewed worktree patch is unchanged and eligible for application. Disposal requires explicit confirmation and does not delete the original repository. This closes the native SDK goal lifecycle: enqueue -> model/tool execution -> review receipt/diff -> apply or discard -> optional owner-reviewed resume. The negative tests reject malformed hashes, unverified candidate patches and unconfirmed disposal.
