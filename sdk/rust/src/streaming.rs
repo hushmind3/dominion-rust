@@ -18,7 +18,8 @@ pub(crate) fn chat_stream(response: Response) -> Result<ChatStream> {
             let frame = frame.map_err(|error| DominionError::Protocol(error.to_string()))?;
             let event: ChatEvent = serde_json::from_str(&frame.data)?;
             if event.kind == "error" {
-                let message = event.field("error")
+                let message = event.field("message")
+                    .or_else(||event.field("error"))
                     .and_then(|value| value.as_str()).unwrap_or("agent turn failed");
                 Err(DominionError::Protocol(message.into()))?;
             }
