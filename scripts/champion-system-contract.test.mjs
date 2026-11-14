@@ -98,3 +98,33 @@ test('real coding evaluation uses complete Git patches and official task-level g
   'test_official_score_requires_exact_cohort',
   'test_complete_new_file_patch_is_admissible'])
 })
+
+test('real autonomous goals enforce last successful test, source SHA progress and bounded token spending',()=>{
+ check('src/api/goals.rs',['requireTests','tokenBudget','token_budget'])
+ check('src/engine/goals.rs',[
+  'goal_test_gaps','observed_artifact_changes',
+  'materially_advanced','diagnosis::classify',
+  'strict_goal_rejects_model_claims',
+  'failureDiagnosis','goal_token_budget'])
+ check('src/engine/goals/progress.rs',[
+  'observed_artifact_changes','strict_coding_progress_requires_real_artifact_change'])
+ check('src/engine/goals/diagnosis.rs',[
+  'fn classify','tool_execution','coding_test','rootCauseProven'])
+ check('src/engine/verification.rs',[
+  'fn is_code_validation_command','fn goal_test_gaps',
+  'later_failed_test_invalidates_older_success',
+  'fresh_code_validation'])
+ check('src/db.rs',['fn session_execution_operations','LIMIT 1001'])
+ check('src/engine/goal_control.rs',[
+  'fn remaining_goal_tokens','goal_token_budget_exhausted',
+  'aggregate_goal_budget_reads_real_model_usage'])
+ check('src/engine/chat/runtime/turn.rs',[
+  'goal.token_budget_exhausted','_dominion_frame'])
+ check('src/engine/chat/context.rs',[
+  'crashed_owner_steer_uses_persisted_frame_id'])
+ check('scripts/benchmark/swebench_dominion.py',[
+  'requireTests','tokenBudget','--token-budget',
+  'tokenBudgetOverrunObserved'])
+ check('sdk/typescript/src/types.ts',['requireTests'])
+ check('sdk/rust/src/types.rs',['require_tests'])
+})
