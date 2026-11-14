@@ -674,7 +674,7 @@ The goal engine is a working, owner-controlled pipeline, not a screenshot-only s
 ### 2026-11-15 추가 보완: RSI 거절 후보 학습·SWE-bench 실측 원장
 
 - `rsi_system/replay.rs`의 **실측 원본 영수증 재검증**과 **실험 채택 확정**을 구분했습니다. 채택되지 않아도 독립 검증된 회귀·정체 사례는 후손 개선 입력에 사용하고, 성공 사례 재활용은 채택 후 재검증한 커밋으로 제한했습니다.
-- SWE-bench 실행기에서 출력 경로를 절대 경로로 고정하고 공식 평가기의 실행 ID별 정식 결과 경로를 안전하게 처리합니다. 전체 도구 시도/성공/실패/불확실 상태와 실패 후 목표 완료율을 계측하며, 공식 Docker 채점 점수는 별도 보관합니다.
+- SWE-bench 실행기에서 출력 경로를 절대 경로로 고정하고 버전별 공식 SWE-bench 결과 경로(실행 ID 디렉터리 및 모델명·실행 ID 파일)를 원본 명세대로 검증를 안전하게 처리합니다. 전체 도구 시도/성공/실패/불확실 상태와 실패 후 목표 완료율을 계측하며, 공식 Docker 채점 점수는 별도 보관합니다.
 - 실증 검증용 [Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11)을 개설했습니다. 미실행 Cargo/CI/SWE-bench 점수를 성공으로 기록하지 않습니다.
 
 ### 2026-11-15: 최종 모델 경계와 유료 영상 납품 검수
