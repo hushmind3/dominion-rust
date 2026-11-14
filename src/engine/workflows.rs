@@ -333,7 +333,105 @@ pub fn render(template: &str, input: &str, previous: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::*;
+    use crate::{config::Config,db::Store,state::AppState,vault::Vault};
+    use crate::engine::jobs::JobContext;
+    use axum::{extract::State,response::{IntoResponse,Response},routing::post,Json,Router};
+    use std::sync::{atomic::{AtomicUsize,Ordering},Arc};
+
+    fn fixture()->(AppState,std::path::PathBuf){
+        let dir=std::env::temp_dir().join(format!("dominion-flow-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        state.store.put("policy",&json!({"id":"default","autoApproveAll":true})).unwrap();
+        (state,dir)
+    }
+    #[derive(Clone)]
+    struct Mock {
+        tool:&'static str,
+        calls:Arc<AtomicUsize>,
+    }
+    async fn mock_api(State(mock):State<Mock>,Json(body):Json<Value>)->Response{
+        mock.calls.fetch_add(1,Ordering::SeqCst);
+        if body["stream"]!=true{
+            return Json(json!({"choices":[{"message":{"content":"1. Execute the step."}}],
+                "usage":{"prompt_tokens":12,"completion_tokens":6,"total_tokens":18}})).into_response();
+        }
+        let has_tool_result=body["messages"].as_array().is_some_and(|messages|
+            messages.iter().any(|v|v["role"]=="tool"));
+        let delta=if has_tool_result{
+            json!({"content":"Completed with a saved artifact."})
+        }else{
+            let args=if mock.tool=="workspace_write"{
+                json!({"path":"verified.txt","content":"EXPECTED"})
+            }else{json!({"path":"existing.txt"})};
+            json!({"tool_calls":[{"index":0,"id":"flow-call",
+                "type":"function","function":{"name":mock.tool,
+                "arguments":args.to_string()}}]})
+        };
+        let stream=format!("data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":delta}]}));
+        ([("content-type","text/event-stream")],stream).into_response()
+    }
+    async fn execute_with_check(tool:&'static str)->(Value,AppState,std::path::PathBuf,usize){
+        let (state,dir)=fixture();
+        std::fs::write(dir.join("existing.txt"),"readable").unwrap();
+        let calls=Arc::new(AtomicUsize::new(0));
+        let app=Router::new().route("/v1/chat/completions",post(mock_api))
+            .with_state(Mock{tool,calls:calls.clone()});
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap()});
+        state.store.put("provider",&json!({"id":"mock","name":"mock",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"test","enabled":true,"toolMode":"native"})).unwrap();
+        state.store.put("agent",&json!({"id":"worker","name":"worker",
+            "providerId":"mock","model":"test"})).unwrap();
+        state.store.put("workflow",&json!({"id":"flow","name":"verified workflow",
+            "steps":[
+                {"id":"step-1","name":"Artifact","agentId":"worker",
+                "providerId":"mock","model":"test",
+                "prompt":"Create verified.txt with exact EXPECTED.",
+                "acceptanceChecks":[{"type":"file_equals","path":"verified.txt","content":"EXPECTED"}]},
+                {"id":"step-2","name":"Handoff","agentId":"worker",
+                "providerId":"mock","model":"test","prompt":"Report {{previous}}"}
+            ]})).unwrap();
+        let job=state.store.put("job",&json!({"id":"job","kind":"workflow",
+            "status":"running","input":{"workflowId":"flow","input":"do it"}})).unwrap();
+        let ctx=JobContext::new(state.clone(),"job".into());
+        let output=run(&ctx,&job).await.unwrap();
+        let total=calls.load(Ordering::SeqCst);
+        server.abort();
+        (output,state,dir,total)
+    }
+    #[tokio::test]
+    async fn verified_first_step_hands_durable_artifact_to_next_agent(){
+        let (result,state,dir,calls)=execute_with_check("workspace_write").await;
+        assert_eq!(result["status"],"completed","{result}");
+        assert_eq!(result["outputs"].as_array().unwrap().len(),2);
+        assert_eq!(result["outputs"][0]["verification"]["status"],"verified");
+        assert_eq!(result["outputs"][1]["verification"]["status"],"unchecked");
+        assert!(!result["outputs"][0]["verification"]["operationIds"].as_array().unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("verified.txt")).unwrap(),"EXPECTED");
+        assert!(calls>=2);
+        assert_eq!(result["verificationSummary"]["verifiedSteps"],1);
+        drop(state);std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn failed_artifact_gate_blocks_downstream_agent_and_preserves_review(){
+        let (result,state,dir,_)=execute_with_check("workspace_read").await;
+        assert_eq!(result["status"],"needs_review","{result}");
+        assert_eq!(result["failedStepIndex"],0);
+        assert_eq!(result["outputs"].as_array().unwrap().len(),0,
+            "second agent must never run on unverified first result");
+        assert!(result["verificationGaps"].as_array().is_some_and(|v|!v.is_empty()));
+        assert_eq!(state.store.get("job","job").unwrap()["workflowState"]["inFlight"],false);
+        assert!(!dir.join("verified.txt").exists());
+        drop(state);std::fs::remove_dir_all(dir).unwrap();
+    }
+
 
     #[test]
     fn substitutions_do_not_interpret_placeholder_text_in_payloads() {
