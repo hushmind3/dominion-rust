@@ -45,3 +45,5 @@
 - `engine/goal_evidence.rs::synopsis` bounds retrospective reviewer/replanner evidence tokens without discarding deterministic verifier inputs. Full original evidence is used by `verification::acceptance_gaps` and source artifacts; summaries are explicitly lossy and must not serve as validation records.
 
 - Tool `workspace_diff` is real, scoped read-only Git inspection in `agent_diff.rs`, connected through `tools::definitions`, `tools::execute` and `chat/runtime/tool_selection.rs`. The goal executor prompt requests actual diff review and commands for task-specific verification.
+
+- Parallel research: `tools::definitions("delegate_parallel")` → `tools::delegate_parallel` → `agent_parallel::validate` → each child `delegate` → separate `jobs::enqueue("prompt")` → child `chat/runtime/turn.rs` schema filter and `tools::execute` read-only runtime check → `task_payload` result aggregation → owner-facing goal executor synthesis. No shared writable worktree, no parallel source-write races by this tool.

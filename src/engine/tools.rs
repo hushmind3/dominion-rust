@@ -118,6 +118,14 @@ pub fn definitions() -> Vec<Value> {
             "domain":json!({"type":"string","enum":crate::engine::rsi_evolve::DOMAINS}),
             "verification":json!({"type":"object","description":"Existing procedure format: type=procedure, appliesTo.requestContains, nodes [{id,tool,arguments}], edges [{from,to}], after [{kind:file_equals/file_contains/file_exists/tool_called,path,text,tool}]. Arguments can bind a prior node result via $node.field. Include concrete postconditions."})
         }), vec!["name","domain","verification"])),
+        tool("delegate_parallel", "Launch 2-4 independent read-only subagent investigations concurrently, each with a separate session; optionally await and collect their results. Parent must synthesize and verify changes.", object(json!({
+            "tasks": json!({"type":"array","minItems":2,"maxItems":4,
+                "items":{"type":"object","additionalProperties":false,
+                    "properties":{"agentId":{"type":"string"},"prompt":{"type":"string"}},
+                    "required":["agentId","prompt"]}}),
+            "wait":json!({"type":"boolean","description":"Wait for all teammates (default false)"}),
+            "timeoutSeconds":json!({"type":"integer","minimum":5,"maximum":300})
+        }),vec!["tasks"])),
         tool("delegate_task", "Delegate a self-contained task to another agent and optionally wait for its result", object(json!({
             "agentId": text("Target agent id"),
             "prompt": text("Task instructions"),
@@ -159,6 +167,13 @@ pub fn requires_approval(name: &str) -> bool {
     )
 }
 
+pub fn read_only_delegation_tool(name:&str)->bool {
+    matches!(name,"workspace_list"|"workspace_read"|"workspace_read_range"|
+        "workspace_diff"|"code_search"|"file_list"|"file_read"|
+        "web_search"|"http_fetch"|"memory_search"|
+        "task_status"|"task_result"|"account_status")
+}
+
 pub fn rsi_allowed(name:&str)->bool{
     matches!(name,"code_search"|"workspace_read_range"|"workspace_replace"|"workspace_replace_range"|"workspace_write"|"web_search"|"http_fetch"|"algorithm_propose"|"unsafe_audit"|"rsi_method_propose"|"rsi_system_plan")
 }
@@ -169,8 +184,11 @@ pub async fn execute(
     args: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
-    let isolated_rsi = ctx.store.get("session",ctx.session_id)
-        .is_some_and(|s|s["rsiRun"]==true);
+    let session=ctx.store.get("session",ctx.session_id).unwrap_or(Value::Null);
+    if session["delegatedReadOnly"]==true && !read_only_delegation_tool(name){
+        return Err("Parallel investigative teammate cannot mutate workspace or external services".into());
+    }
+    let isolated_rsi = session["rsiRun"]==true;
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
     }
@@ -474,6 +492,7 @@ pub async fn execute(
             Ok(crate::engine::unsafe_audit::audit_path(&path))
         }
         "delegate_task" => delegate(ctx, args).await,
+        "delegate_parallel" => delegate_parallel(ctx,args).await,
         "task_status" => task_payload(ctx, args, false),
         "task_result" => task_payload(ctx, args, true),
         "account_status" => Ok(json!({
@@ -572,6 +591,7 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
                 "delegated": true,
+                "delegatedReadOnly":args["readOnly"]==true,
             }),
         )
         .ok_or("위임 세션을 만들 수 없습니다.")?;
@@ -622,6 +642,57 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
+}
+
+/// Spawn research workers now, then optionally gather them. Child sessions
+/// cannot write or delegate; the parent owns all source edits and verification.
+async fn delegate_parallel(ctx:&ToolContext<'_>,args:&Value)->Result<Value,String>{
+    let tasks=crate::engine::agent_parallel::validate(&args["tasks"])?;
+    for (agent,_) in &tasks{
+        let Some(info)=ctx.store.get("agent",agent) else{
+            return Err(format!("Unknown teammate agent: {agent}"));
+        };
+        if info["enabled"]==false{return Err(format!("Disabled teammate: {agent}"));}
+    }
+    let outstanding=ctx.store.all("job").into_iter().filter(|j|
+        j["input"]["parentSessionId"]==ctx.session_id &&
+        matches!(j["status"].as_str(),Some("queued"|"running"))).count();
+    if outstanding+tasks.len()>8{
+        return Err("At most 8 outstanding delegated jobs per parent session".into());
+    }
+    let mut launched=Vec::new();
+    for (agent,prompt) in tasks{
+        let row=delegate(ctx,&json!({"agentId":agent,"prompt":prompt,
+            "wait":false,"readOnly":true})).await?;
+        let id=row["jobId"].as_str().ok_or("Delegation lost jobId")?;
+        launched.push((agent,id.to_string()));
+    }
+    let await_all=args["wait"].as_bool().unwrap_or(false);
+    if await_all {
+        let seconds=args["timeoutSeconds"].as_u64().unwrap_or(120).clamp(5,300);
+        let deadline=std::time::Instant::now()+Duration::from_secs(seconds);
+        loop{
+            if ctx.state.is_cancelled(ctx.session_id){
+                return Err("Parent cancelled; outstanding research jobs remain independently checkpointed".into());
+            }
+            let finished=launched.iter().all(|(_,id)|
+                ctx.store.get("job",id).is_some_and(|j|
+                    matches!(j["status"].as_str(),
+                        Some("completed"|"failed"|"cancelled"|"needs_review"))));
+            if finished||std::time::Instant::now()>=deadline{break;}
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+    let mut jobs=Vec::new();
+    for (agent,id) in launched{
+        let result=task_payload(ctx,&json!({"jobId":id}),await_all)?;
+        jobs.push(json!({"agentId":agent,"jobId":id,"status":result["status"],
+            "sessionId":result["sessionId"],"content":result["content"],
+            "operations":result["operations"],"error":result["error"]}));
+    }
+    let complete=jobs.iter().all(|j|j["status"]=="completed");
+    Ok(json!({"jobs":jobs,"allCompleted":complete,
+        "note":"Read-only teammate findings are observations. Parent must inspect source, integrate approved edits and pass acceptance checks."}))
 }
 
 fn task_payload(ctx: &ToolContext<'_>, args: &Value, with_result: bool) -> Result<Value, String> {

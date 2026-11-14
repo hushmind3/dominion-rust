@@ -139,7 +139,7 @@ pub(super) fn select_room_tools(
         (&["스킬", "skill"], &["skill_propose"]),
         (
             &["위임", "delegate", "task", "에이전트"],
-            &["delegate_task", "task_status", "task_result"],
+            &["delegate_task", "delegate_parallel", "task_status", "task_result"],
         ),
         (
             &["브라우저", "browser", "클릭", "click"],
@@ -214,7 +214,7 @@ pub(super) fn select_tool_definitions(
     }
     let default_core = [
         "workspace_list", "workspace_read", "workspace_read_range", "workspace_diff", "workspace_replace_range", "workspace_replace", "workspace_write", "shell_exec",
-        "web_search", "memory_store", "memory_search", "delegate_task",
+        "web_search", "memory_store", "memory_search", "delegate_task", "delegate_parallel",
         "task_status", "task_result",
     ];
     let core = algorithm["parameters"]["tools"]

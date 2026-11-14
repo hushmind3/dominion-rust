@@ -555,3 +555,7 @@ Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation r
 
 ### Verified workspace diffs
 `tools::execute("workspace_diff")` → `agent_diff::inspect` performs read-only Git status, staged and unstaged diff with a bounded timeout and output budget. Goals explicitly request the diff before claiming completion; it does not auto-approve commands or accept self-reported tool success. `chat/runtime/tool_selection.rs` classifies it as read-only.
+
+### Parallel investigative agents
+- `tools::execute("delegate_parallel")` validates 2–4 independent subtasks via `agent_parallel.rs`, starts distinct durable delegated sessions/jobs using the established `delegate_task` entry point, and optionally aggregates their checkpointed status and results.
+- Read-only restriction is frozen into each child **before** `jobs::start_now`. `chat/runtime/turn.rs` strips writable/MCP schemas, and `tools::execute` enforces the same restriction at execution time. Parent retains editing/approval and independent acceptance duties; the child findings alone cannot complete a root goal. A bounded outstanding-job cap stops runaway fan-out.

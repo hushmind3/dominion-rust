@@ -241,6 +241,12 @@ pub(super) async fn run_turn_body(
     if session["rsiRun"]==true {
         tool_definitions.retain(|definition| tools::rsi_allowed(tool_name(definition)));
     }
+    // Enforce the boundary twice: models never see forbidden tool schemas,
+    // and tools::execute rejects forged calls from investigative teammates.
+    if session["delegatedReadOnly"]==true {
+        tool_definitions.retain(|definition|
+            tools::read_only_delegation_tool(tool_name(definition)));
+    }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::super::room_context::compile(
