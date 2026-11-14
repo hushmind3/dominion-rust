@@ -43,6 +43,7 @@ pub(crate) fn meta_source_changed(g:&Value)->bool{
         |"src/engine/procedure.rs"|"src/engine/learning.rs"
         |"src/engine/rsi/meta_controller/provenance.rs"
         |"src/engine/rsi/meta_controller/reciprocal.rs"
+        |"src/engine/rsi/meta_controller/trajectory.rs"
         |"src/engine/rsi/meta_controller/selection.rs"
         |"src/engine/rsi/meta_controller/transfer.rs"
         |"src/engine/rsi/meta_controller/feedback.rs"

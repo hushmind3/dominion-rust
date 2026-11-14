@@ -15,7 +15,7 @@
         ];
         let plan=synthesize(&[],&frontier,&["improver"],None);
         assert_eq!(plan["metaMechanismSource"],"src/engine/rsi/meta_controller/selection.rs");
-        assert_eq!(plan["metaMechanismModules"].as_array().unwrap().len(),5);
+        assert_eq!(plan["metaMechanismModules"].as_array().unwrap().len(),6);
         let guidance=instruction(&plan);
         assert!(guidance.contains("src/engine/rsi/meta_controller/"));
         assert!(guidance.contains("src/engine/rsi/system/"));

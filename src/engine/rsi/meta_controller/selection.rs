@@ -143,6 +143,7 @@ pub(crate) fn synthesize(
             "src/engine/rsi/meta_controller/provenance.rs",
             "src/engine/rsi/meta_controller/reciprocal.rs",
             "src/engine/rsi/meta_controller/selection.rs",
+            "src/engine/rsi/meta_controller/trajectory.rs",
             "src/engine/rsi/meta_controller/transfer.rs",
             "src/engine/rsi/meta_controller/feedback.rs"
         ],
