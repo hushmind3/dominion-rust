@@ -942,22 +942,85 @@ fn schedule_automations(state: &AppState) {
         if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
             continue;
         }
-        enqueue(state, job_kind, input);
-        let mut updated = automation.clone();
-        let interval = automation
-            .get("intervalMinutes")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(1440)
-            .max(1);
-        updated["lastAt"] = json!(now.to_rfc3339());
-        updated["nextAt"] = json!((now + chrono::Duration::minutes(interval)).to_rfc3339());
-        state.store.put("automation", &updated);
+        let Some(id)=automation["id"].as_str().filter(|v|!v.is_empty()) else{continue;};
+        // A long-running workflow is not scheduled again on its next tick.
+        if automation["lastJobId"].as_str().is_some_and(|previous|
+            state.store.get("job",previous)
+                .is_some_and(|job|matches!(job["status"].as_str(),Some("queued"|"running")))){
+            continue;
+        }
+        let Some(mut payload)=input.as_object().cloned() else {continue;};
+        payload.insert("automationId".into(),json!(id));
+        payload.insert("automationDueAt".into(),json!(next_at));
+        // The due instant is a stable idempotency key, including after
+        // process restarts and races between multiple scheduler instances.
+        let job_id=format!("automation:{id}:{next_at}");
+        let new_job=json!({
+            "id":job_id,"kind":job_kind,"status":"queued",
+            "queuedAt":now.to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+            "input":Value::Object(payload),
+            "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+        });
+        let mut updated=automation.clone();
+        let interval=automation["intervalMinutes"].as_i64().unwrap_or(1440).max(1);
+        updated["lastAt"]=json!(now.to_rfc3339());
+        updated["nextAt"]=json!((now+chrono::Duration::minutes(interval)).to_rfc3339());
+        updated["lastJobId"]=json!(job_id);
+        match state.store.transaction_if_field("automation",id,"nextAt",&json!(next_at),&[
+            ("automation".into(),updated.clone()),("job".into(),new_job.clone())
+        ]){
+            Ok(true)=>{
+                state.bus.record("automation",&updated);
+                state.bus.record("job",&new_job);
+                state.store.audit("automation.queued",json!({
+                    "automationId":id,"jobId":job_id,"kind":job_kind,"dueAt":next_at
+                }));
+            },
+            Ok(false)=>{}, // Another scheduler already advanced this interval.
+            Err(reason)=>state.store.audit("automation.enqueue_failed",json!({
+                "automationId":id,"dueAt":next_at,"error":reason
+            })),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automation_workflow_due_tick_has_one_durable_job_and_no_duplicate() {
+        let state=temp_state();
+        state.store.put("workflow",&json!({"id":"flow-1","name":"team",
+            "steps":[{"id":"a","name":"writer","agentId":"coder","prompt":"write"}]})).unwrap();
+        let past="2026-01-01T09:00:00Z";
+        state.store.put("automation",&json!({"id":"auto-flow","kind":"workflow",
+            "input":{"workflowId":"flow-1","input":"document the change"},
+            "enabled":true,"intervalMinutes":60,"nextAt":past})).unwrap();
+        schedule_automations(&state);
+        let first=state.store.all("job");
+        assert_eq!(first.len(),1);
+        assert_eq!(first[0]["kind"],"workflow");
+        assert_eq!(first[0]["input"]["workflowId"],"flow-1");
+        assert_eq!(first[0]["input"]["automationId"],"auto-flow");
+        let record=state.store.get("automation","auto-flow").unwrap();
+        assert_eq!(record["lastJobId"],first[0]["id"]);
+        assert_ne!(record["nextAt"],past);
+        schedule_automations(&state);
+        assert_eq!(state.store.all("job").len(),1);
+    }
+    #[test]
+    fn next_at_cas_failure_does_not_create_scheduled_job() {
+        let state=temp_state();
+        state.store.put("automation",&json!({"id":"cas","nextAt":"t0"})).unwrap();
+        let changed=json!({"id":"cas","nextAt":"t1"});
+        let job=json!({"id":"stale-job","kind":"workflow","status":"queued"});
+        assert!(!state.store.transaction_if_field("automation","cas","nextAt",
+            &json!("different"),&[("automation".into(),changed),
+                                  ("job".into(),job)]).unwrap());
+        assert!(state.store.get("job","stale-job").is_none());
+        assert_eq!(state.store.get("automation","cas").unwrap()["nextAt"],"t0");
+    }
+
     use crate::config::Config;
     use crate::db::Store;
     use crate::vault::Vault;

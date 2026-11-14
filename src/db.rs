@@ -327,26 +327,27 @@ impl Store {
         expected: &str,
         records: &[(String, Value)],
     ) -> Result<bool, String> {
-        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
-        let tx = conn.transaction().map_err(|error| error.to_string())?;
-        let current: Option<String> = tx
-            .query_row(
-                "SELECT data FROM records WHERE kind=?1 AND id=?2",
-                params![kind, id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        let status = current
-            .and_then(|data| serde_json::from_str::<Value>(&data).ok())
-            .and_then(|value| value["status"].as_str().map(str::to_string));
-        if status.as_deref() != Some(expected) {
-            return Ok(false);
-        }
-        for (record_kind, value) in records {
-            upsert_tx(&tx, record_kind, value)?;
-        }
-        tx.commit().map_err(|error| error.to_string())?;
+        self.transaction_if_field(kind,id,"status",&json!(expected),records)
+    }
+
+    /// Compare an arbitrary stored JSON field and atomically write a batch.
+    /// Used for scheduler due-at CAS so two processes cannot queue the same
+    /// interval or overwrite an already-running job with a second copy.
+    pub fn transaction_if_field(
+        &self,kind:&str,id:&str,field:&str,expected:&Value,
+        records:&[(String,Value)],
+    )->Result<bool,String>{
+        if field.is_empty() || field.len()>80 {return Err("invalid CAS field".into());}
+        let mut conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let tx=conn.transaction().map_err(|e|e.to_string())?;
+        let stored:Option<String>=tx.query_row(
+            "SELECT data FROM records WHERE kind=?1 AND id=?2",
+            params![kind,id],|row|row.get(0)
+        ).optional().map_err(|e|e.to_string())?;
+        let current=stored.and_then(|s|serde_json::from_str::<Value>(&s).ok());
+        if current.as_ref().and_then(|v|v.get(field))!=Some(expected){return Ok(false);}
+        for (item_kind,value) in records {upsert_tx(&tx,item_kind,value)?;}
+        tx.commit().map_err(|e|e.to_string())?;
         Ok(true)
     }
 

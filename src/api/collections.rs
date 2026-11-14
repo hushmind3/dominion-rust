@@ -136,6 +136,11 @@ pub async fn save(
                         state.store.get("room", id).is_some()
                     })
             }
+            "workflow" => {
+                input["workflowId"].as_str().is_some_and(|id|
+                    state.store.get("workflow",id).is_some())
+                    && input["input"].as_str().is_some_and(|s|s.chars().count()<=16000)
+            }
             _ => false,
         };
         let interval = body["intervalMinutes"].as_i64().unwrap_or(0);
