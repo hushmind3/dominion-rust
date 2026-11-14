@@ -30,6 +30,7 @@ pub(crate) fn final_report(state:&AppState, goal:&Value, status:&str, gaps:&[Str
             "completionTokens":usage["completionTokens"],"totalTokens":usage["totalTokens"],
             "estimatedCalls":usage["estimatedCalls"],
             "cacheReportedCalls":usage["cacheReportedCalls"],
+            "cacheMeasuredPromptTokens":usage["cacheMeasuredPromptTokens"],
             "cachedPromptTokens":usage["cachedPromptTokens"],
         })},
         "billingAmount":Value::Null,
@@ -81,9 +82,11 @@ pub(crate) fn aggregate(state:&AppState)->Value {
             *failures.entry(reason.to_string()).or_default()+=1;
         }
         if let Some(ms)=report["durationMs"].as_u64(){duration_ms.push(ms);}
-        let session=goal["sessionId"].as_str().unwrap_or("");
-        if session.is_empty(){zero_usage+=1;continue;}
-        let usage=state.store.session_usage(session);
+        // The final_report captured the audit snapshot at the terminal
+        // decision. Re-querying a session now would attribute any later
+        // unrelated model traffic to an already-completed goal.
+        let usage=&report["usage"];
+        if !receipt || !usage.is_object(){zero_usage+=1;continue;}
         let calls=usage["calls"].as_u64().unwrap_or(0);
         if calls==0 {zero_usage+=1;continue;}
         observed_calls+=calls;
@@ -148,19 +151,24 @@ mod tests {
         assert_eq!(empty["terminalGoals"],0);
         assert!(empty["verifiedSuccessRate"].is_null());
         assert!(empty["modelUsage"]["reportedTotalTokens"].is_null());
+        state.store.put("session",&json!({"id":"s1"}));
+        state.store.audit("model.usage",json!({"sessionId":"s1",
+            "promptTokens":82,"completionTokens":18,"totalTokens":100,
+            "estimated":false}));
+        let mut audit=final_report(&state,&json!({"sessionId":"s1"}),"completed",&[]);
+        audit["durationMs"]=json!(1050);
         state.store.put("goal",&json!({"id":"verified","status":"completed",
-            "sessionId":"s1","metrics":{"source":"goal_final_audit_v1",
-                "status":"completed","verifiedCompleted":true,
-                "unmetGapCount":0,"durationMs":1050}}));
+            "sessionId":"s1","metrics":audit}));
         state.store.put("goal",&json!({"id":"claim-only","status":"completed",
             "metrics":{"verifiedCompleted":true}}));
         state.store.put("goal",&json!({"id":"failed","status":"failed",
             "metrics":{"source":"goal_final_audit_v1","status":"failed",
                 "verifiedCompleted":false,"unmetGapCount":1}}));
         state.store.put("goal",&json!({"id":"queued","status":"queued"}));
-        // Persisted provider receipt, NOT a fabricated 'tokens saved' claim.
+        // A later unrelated call to the same session must NOT change the
+        // already-frozen goal usage receipt or inflate its historic cost.
         state.store.audit("model.usage",json!({"sessionId":"s1",
-            "promptTokens":82,"completionTokens":18,"totalTokens":100,
+            "promptTokens":900,"completionTokens":100,"totalTokens":1000,
             "estimated":false}));
         let report=aggregate(&state);
         assert_eq!(report["terminalGoals"],3);
