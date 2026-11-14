@@ -347,6 +347,38 @@ impl Store {
         Ok(true)
     }
 
+    /// Fail closed on unresolved tool effects in the active session and delegated sessions.
+    pub fn session_has_uncertain_effects(&self,session_id:&str)->Result<bool,String>{
+        if session_id.trim().is_empty(){
+            return Err("확인할 목표 세션 ID가 비어 있습니다.".into());
+        }
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let found:i64=conn.query_row(
+            "WITH RECURSIVE owned_sessions(id,depth) AS (
+                SELECT ?1, 0
+                UNION ALL
+                SELECT child.id, owned.depth+1
+                FROM records AS child
+                JOIN owned_sessions AS owned
+                  ON json_extract(child.data,'$.parentSessionId')=owned.id
+                WHERE child.kind='session' AND owned.depth<16
+             )
+             SELECT EXISTS (
+                SELECT 1 FROM records AS execution
+                INNER JOIN records AS operation
+                    ON operation.kind='execution_operation'
+                    AND json_extract(operation.data,'$.runId')=execution.id
+                WHERE execution.kind='execution'
+                    AND json_extract(execution.data,'$.sessionId')
+                        IN (SELECT id FROM owned_sessions)
+                    AND (json_extract(operation.data,'$.outcomeUnknown')=1
+                         OR json_extract(operation.data,'$.status') IN
+                            ('running','interrupted'))
+                LIMIT 1)",
+            [session_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        Ok(found!=0)
+    }
+
     /// Durable idempotency key. Unlike `put`, this never overwrites a record.
     pub fn put_if_absent(&self, kind: &str, value: &Value) -> Option<Value> {
         let id = value.get("id")?.as_str().filter(|id| !id.is_empty())?;
