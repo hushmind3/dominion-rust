@@ -153,6 +153,21 @@ pub async fn job(State(state): State<AppState>, Path(id): Path<String>) -> Respo
         None => error(StatusCode::NOT_FOUND, "영상 작업을 찾을 수 없습니다."),
     }
 }
+/// Read-only, output-digest-bound manifest for multi-shot film retakes.
+pub async fn film_scenes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match video::film_scenes(&state,&id){
+        Ok(value)=>Json(value).into_response(),
+        Err(error)=>self::error(StatusCode::BAD_REQUEST,error)
+    }
+}
+/// Owner-confirmed retake creates one idempotent new job; never retries an unknown paid POST.
+pub async fn retake_scene(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    match video::enqueue_retake(&state,&id,&body){
+        Ok(value)=>(StatusCode::ACCEPTED,Json(value)).into_response(),
+        Err(error)=>self::error(StatusCode::BAD_REQUEST,error)
+    }
+}
 pub async fn upload(
     State(state): State<AppState>,
     Path(id): Path<String>,
