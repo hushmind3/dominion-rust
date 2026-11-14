@@ -407,8 +407,11 @@ export class DominionGoal {
     return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/cancel', {})
   }
 
-  /** Recovery is explicit: never blindly replay a possibly executed effect. */
-  resume(options: JsonObject = {}): Promise<Goal> {
+  /** The server requires a deliberate owner acknowledgement of uncertain external effects. */
+  resume(options: {acknowledgeUnknownEffects: true}): Promise<Goal> {
+    if (options?.acknowledgeUnknownEffects !== true) {
+      throw new Error('resume requires acknowledgeUnknownEffects: true')
+    }
     return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/resume', options)
   }
 
@@ -420,8 +423,15 @@ export class DominionGoal {
     return this.sdk.get('/api/goals/' + encodeURIComponent(this.id) + '/changes')
   }
 
-  applyChanges(): Promise<JsonObject> {
-    return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/apply', {})
+  /** Apply exactly the diff the owner inspected via changes(), not an unreviewed checkout. */
+  applyChanges(reviewDigest: string): Promise<JsonObject> {
+    if (!reviewDigest || !reviewDigest.trim()) {
+      throw new Error('applyChanges requires the reviewed change digest')
+    }
+    return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/apply', {
+      reviewDigest,
+      acknowledgeReview: true,
+    })
   }
 
   discardChanges(): Promise<JsonObject> {
