@@ -10,6 +10,7 @@ use crate::{
 use serde_json::{json, Value};
 mod cinematic;
 mod omni;
+mod quality;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -118,6 +119,10 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         return Err("Gemini API 키를 영상 설정에 등록하세요.".into());
     }
     let cinematic = engine == "comfyui" && body["cinematic"] == true;
+    let bad_shot_retries=body["badShotRetries"].as_u64().unwrap_or(0);
+    if bad_shot_retries>1 || (bad_shot_retries>0 && !cinematic){
+        return Err("불량 샷 재생성은 시네마틱 모드에서 0~1회만 허용합니다.".into());
+    }
     if cinematic && ffmpeg(state).is_none() {
         return Err("시네마틱 멀티샷 제작에는 FFmpeg가 필요합니다.".into());
     }
@@ -168,7 +173,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     };
     let input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
-        "cinematic":cinematic,
+        "cinematic":cinematic,"badShotRetries":bad_shot_retries,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
@@ -532,6 +537,23 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
             if bytes < 100 {
                 return Err("생성된 영상이 비어 있습니다.".into());
             }
+            // A successful paid API call is not a proof of deliverable quality.
+            // This independent local probe makes verification a real job gate.
+            progress(ctx,"verifying",96)?;
+            let check=quality::inspect(&input["config"],&dir.join("output.mp4"),
+                input["duration"].as_u64().unwrap_or(15),
+                input["aspectRatio"].as_str().unwrap_or("9:16"),
+                quality::min_short_edge(input),input["engine"]=="omni").await;
+            let receipt=match check {
+                Ok(receipt)=>receipt,
+                Err(reason)=>{
+                    ctx.checkpoint(json!({"videoQuality":{"verified":false,
+                        "error":reason,"visualQualityAssessed":false}}))?;
+                    return Err(format!("영상 최종 기술 검수 실패: {reason}"));
+                }
+            };
+            ctx.checkpoint(json!({"videoQuality":receipt}))?;
+            value["qualityReceipt"]=receipt;
             value["bytes"] = json!(bytes);
             value["outputUrl"] = json!(format!("/api/video/jobs/{}/content", ctx.job_id));
             progress(ctx, "completed", 100)?;
