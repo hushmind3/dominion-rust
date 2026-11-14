@@ -511,7 +511,9 @@ pub(super) async fn dispatch_tool_call(
             tools_enabled: request.tools_enabled,
             tools_execution_enabled: request.tools_execution_enabled,
         };
-        let outcome = if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
+        let outcome = if !tools::delegation_allows(&state.store,session_id,&call.name){
+            Err("읽기 전용 위임 에이전트에는 해당 도구 또는 MCP 호출 권한이 없습니다.".into())
+        } else if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
             && !tools::rsi_allowed(&call.name) {
             Err("자기개선 작업의 허용 도구 범위를 벗어났습니다.".into())
         } else if call.name.starts_with("mcp__") {
