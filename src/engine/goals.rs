@@ -93,7 +93,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let mut stalled = job["goalState"]["stalled"].as_u64().unwrap_or(0) as usize;
+    // Resume jobs are fresh durable workers. Reuse only a checkpoint explicitly
+    // approved by the owner; never replay an earlier job's in-flight turn.
+    let resumed = job["input"]["resumeAfterReview"] == true;
+    let checkpoint = if resumed {
+        goal.get("resumeCheckpoint").cloned().unwrap_or_else(||json!({}))
+    } else {
+        job.get("goalState").cloned().unwrap_or_else(||json!({}))
+    };
+    let mut stalled = checkpoint["stalled"].as_u64().unwrap_or(0) as usize;
     let max_iterations = goal
         .get("maxIterations")
         .and_then(Value::as_i64)
@@ -189,10 +197,19 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .as_ref()
         .and_then(crate::engine::episode::contract_revision)
         .map(str::to_string);
-    state
-        .store
-        .put("goal", &goal)
-        .ok_or("목표 체크포인트를 저장할 수 없습니다.")?;
+    // A cancelled goal cannot be resurrected by a stale worker's broad put.
+    // The limited patch also preserves concurrent owner plan overrides.
+    let Some(saved) = state.store.patch_if("goal", goal_id, "status",
+        &json!("queued"), &json!({
+            "status":"running","phase":"plan","startedAt":goal["startedAt"],
+            "sessionId":session_id,"gitWorktree":goal["gitWorktree"],
+            "acceptanceChecks":criteria,"taskId":task_id,
+            "projectInventory":project_inventory,"gitBaseline":goal["gitBaseline"],
+            "resumeCheckpoint":Value::Null,
+        })) else {
+        return Err("목표가 중단되었거나 상태가 변경돼 실행을 시작하지 않았습니다.".into());
+    };
+    goal = saved;
     context.emit(json!({"type":"goal_started","goalId":goal_id,"sessionId":session_id}));
     if control.is_cancelled() {
         return Ok(finish(context, goal_id, "cancelled", vec![], None));
@@ -215,7 +232,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         goal_id,
         json!({"plan":plan,"planHistory":plan_history,"replans":replans,"phase":"execute"}),
     );
-    let checkpoint = job.get("goalState").cloned().unwrap_or_else(|| json!({}));
     let mut evidence = checkpoint
         .get("evidence")
         .and_then(Value::as_array)
@@ -235,10 +251,17 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     // A read-only reviewer may resume from its durable inputs. Replaying the
     // completed executor turn would duplicate tool side effects.
     let review_replay = crate::engine::goal_review::replay_iteration(job);
-    let start = review_replay.unwrap_or_else(|| checkpoint
-        .get("nextIteration")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize);
+    let start = if resumed {
+        // A prior tool turn may have written externally even if its response
+        // was lost. Resume after the last committed iteration, not at index 0.
+        checkpoint["nextIteration"].as_u64().unwrap_or(0)
+            .max(goal["iterations"].as_u64().unwrap_or(0)) as usize
+    } else {
+        review_replay.unwrap_or_else(|| checkpoint
+            .get("nextIteration")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize)
+    };
 
     for index in start..max_iterations {
         if control.is_cancelled() {
@@ -261,7 +284,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index,"inFlight":true,"evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
-            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000)),
+            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n{}다음 단계를 실제 도구로 수행하고 검증하세요. 말로만 완료했다고 하지 마세요.",gaps.join("\n"),tail(&transcript,6000),
+                    if resumed && index==start {"이전 실행이 중단된 뒤 재개됐습니다. 먼저 읽기 전용 도구로 현재 파일·원격 결과를 확인하고, 이미 수행된 외부 동작은 중복 실행하지 마세요.\n\n"} else {""}),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
