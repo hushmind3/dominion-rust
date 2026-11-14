@@ -26,13 +26,25 @@
 - `chat/evidence.rs::prepare_owner_action`은 명시적 구현·완성 명령을 실행 목표로 해석하되 `어떻게 구현할지`와 같은 설명·가정 질문은 작업 명령으로 승격하지 않는다.
 - `verification::acceptance_gaps_in`은 소스 구현·리팩터 요청에 **실제 성공한 소스 변경 영수증**을 요구한다. `cargo test` 통과나 읽기만으로 새 코드를 만들었다고 판정하지 않는다. 검증 명령이 코드 변경보다 이전이면 재실행을 요구하는 기존 영수증 계약도 유지한다.
 
-## 4. 다중 에이전트와 모델 호환성
+## 4. RSI 후손 실험의 신뢰성·재귀적 평가 (추가 구현)
+
+2026년 공개된 중국 개발자 오픈소스 [AnyRSI](https://github.com/TraceLite-AI/openrsi)의 '채점 불가능한 평가 인프라를 작업 실패로 계산하지 않음'과 [Harness²](https://github.com/google-research/harness2)의 '동일 조건 행동 대비로 개선을 검토함'을 실제 코드까지 조사했다. 미국·중국 런타임의 정책/SDK를 가져오지 않고 **도미니언 Rust**의 기존 후손 독립 평가기만 보강했다. 재학습·LoRA·가중치 수정은 하지 않는다.
+
+- `rsi/evaluation/trials.rs::measured_generation`은 64자리 평가 프로필·객관적 목표 해시, `pairedMeasured`, 독립 평가 verdict가 모두 있어야 비교 가능하다고 판정한다.
+- `matched_trial_envelope`은 같은 원본 생성기 커밋·도메인 외에도 **동일 동결 평가 프로필 및 목표**를 요구한다. 단지 같은 도메인에서 쉬운 작업을 처리한 상대방을 성공 사례로 잘못 비교하지 않는다.
+- 평가 실행 자체가 빠진 기록은 `unscorable`로 별도 감사하고, 후보의 패배나 향후 2회 독립 성공의 패배표로 합산하지 않는다. 실제 실패·회귀는 기존 `rejected`/비교 verdict로 계속 다룬다.
+- 컴파일된 후손의 계획 단계에는 아직 새 세대의 평가 영수증이 없으므로 `available_trial_baseline`으로 과거 기준판이 측정됐는지만 확인한다. 새 세대 실행 후에야 `comparable_trial_baseline`의 전체 대조 계약을 적용한다. 계획 단계에 미래의 평가 영수증을 요구하면 시험 알고리즘을 영원히 실행할 수 없게 된다.
+- `rsi/learning/generation_feedback.rs`와 `rsi/planner/descendant.rs`는 평가기 실패/측정 부족으로 남은 후보 ID를 다음 제어 실험에 계승한다. 다시 측정했다고 자동 채택하는 구조는 아니며, 실제 동결 비교가 2번 유효해야 활성화한다.
+- 리그레션: `tests/support/engine/rsi_evolve.tests.rs`에 프로필·목표 불일치/미측정 실험 거부, 미측정 사례 이후의 정상 독립 시험 2회 채택 조건을 추가했다.
+- 실모델 RSI Action 43607295439/43607411081은 `cargo build --locked`의 Cargo.lock 업데이트 요구로 **모델 실행 전에 실패**했다. `.github/workflows/sub3-live-model-cycle.yml`은 동일 일반 CI처럼 Cargo 잠금 재해석을 허용하고 해시와 변경 로그를 남기도록 수정했다. 이 변경을 모델 작성·후손 채택 성공 실적으로 세지 않는다.
+
+## 5. 다중 에이전트와 모델 호환성
 
 - `chat/runtime/tool_catalog.rs::select_room_tools`는 그룹의 코드 구현 요청에서 `workspace_read_range`, `workspace_replace_range`, `shell_exec` 대표 도구를 복원한다. 8개 스키마 예산으로 인해 편집·검증 기능이 실수로 사라지는 현상을 막는다.
 - `chat/protocol.rs`는 Qwen 계열의 `✿FUNCTION✿` / `✿ARGS✿` 레거시 텍스트 호출을 파싱한다. 광고된 도구만 실행하고, 인자는 JSON object만 허용한다. Native ToolCall·DSML·기존 호환 경로를 보존한다.
 - 영상·그룹·목표·RSI/워크플로 등의 기존 제품 경로는 제거하지 않는다. `video/quality.rs`의 FFprobe 검수는 기술적 검사이며 영상의 내용·화질·배우 동일성을 입증하지는 않는다.
 
-## 5. 실제 확인과 미확인 구분
+## 6. 실제 확인과 미확인 구분
 
 **코드로 추가한 회귀 확인**:
 - 사용자 스티어링 SQLite 원자성·타실행 ID 오용 거부·종료 후 지시 보존
@@ -44,7 +56,7 @@
 
 **심사 기준으로 남는 실증**: 실제 여러 모델의 장기 소스 패치 완수율, 독립 비밀 테스트, 비용/캐시 hit에 따른 원화 청구액, 유료 멀티샷 영상의 시각적/시간적 품질, RSI 새 세대 채택 및 후손 재실행의 검증 성공, 운영 장애 복구. 이러한 기록이 없으면 프론티어 성능이 *이미 측정됐다*고 주장하지 않는다.
 
-## 6. 2026년 공개 연구 근거 (알고리즘/평가 설계 참고)
+## 7. 2026년 공개 연구 근거 (알고리즘/평가 설계 참고)
 
 - Google Developers Blog, **The Anatomy of Harness Engineering**, 2026-09-09: 최종 점수만이 아니라 행동별 회귀 평가. https://developers.googleblog.com/en/the-anatomy-of-harness-engineering-how-to-evaluate-iterate-and-guard-ai-coding-agents/
 - **An Empirical Study of Harness Design for Coding Agents**, 2026-09-17: 계획·도구 공간·컨텍스트의 독립 실험. https://arxiv.org/abs/2609.20804
