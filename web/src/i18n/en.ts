@@ -9,6 +9,7 @@ const en: Record<LocaleKey, string> = {
   'nav.rooms': 'Group rooms',
   'nav.models': 'Models',
   'nav.agents': 'Agents',
+  'nav.goals': 'Autonomous goals',
   'nav.video': 'Video',
   'nav.connections': 'Connections',
   'nav.extensions': 'MCP · Skills',
