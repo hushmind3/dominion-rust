@@ -2,32 +2,37 @@
 //! The report is derived from the frozen acceptance contract and successful
 //! tool observations, never from the executor's prose or the reviewer's claim.
 use crate::state::AppState;
-use crate::engine::verification::{acceptance_gaps, resolve_path, successful_evidence, tool_name};
+use crate::engine::verification::{acceptance_gaps_in, resolve_path_from, successful_evidence, tool_name};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
 pub(super) fn build(state:&AppState, goal:&Value)->Value {
+    let workdir=match crate::engine::goal_git::workspace_for_goal(state,goal) {
+        Ok(path)=>path,
+        Err(reason)=>return json!({"accepted":false,"gaps":[reason],
+            "checks":[],"artifacts":[],"operations":[],"gitChanges":null}),
+    };
     let evidence=goal["evidence"].as_array().cloned().unwrap_or_default();
     let intent=goal["goal"].as_str().unwrap_or("");
     let checks=&goal["acceptanceChecks"];
-    let gaps=acceptance_gaps(state,intent,checks,&evidence);
+    let gaps=acceptance_gaps_in(&workdir,intent,checks,&evidence);
     let checks_report=checks.as_array().into_iter().flatten().map(|check|{
         // Passing the empty goal avoids counting a generic action gate once
         // per individual predicate. The complete goal gate is above.
-        let failures=acceptance_gaps(state,"",&json!([check]),&evidence);
+        let failures=acceptance_gaps_in(&workdir,"",&json!([check]),&evidence);
         json!({"type":check["type"],"path":check["path"],"command":check["command"],
             "passed":failures.is_empty(),"gaps":failures})
     }).collect::<Vec<_>>();
     let successful=evidence.iter().filter(|item|successful_evidence(item)).count();
-    let work=state.config.workspace.canonicalize().ok();
+    let work=workdir.canonicalize().ok();
     let mut unique=std::collections::BTreeSet::new();
     let artifacts=checks.as_array().into_iter().flatten()
         .filter_map(|check|check["path"].as_str())
         .filter(|path|unique.insert(path.to_string()))
         .take(20)
         .filter_map(|path|{
-            let resolved=resolve_path(state,path).ok()?;
+            let resolved=resolve_path_from(&workdir,path).ok()?;
             let canonical=resolved.canonicalize().ok()?;
             if !canonical.is_file() || !work.as_ref().is_some_and(|root|canonical.starts_with(root)){
                 return None;
@@ -54,7 +59,7 @@ pub(super) fn build(state:&AppState, goal:&Value)->Value {
         "successfulToolEvidence":successful,
         "toolEvidenceRecorded":evidence.len(),
         "operations":operations,
-        "gitChanges":super::git::report(&state.config.workspace,&goal["gitBaseline"]),
+        "gitChanges":super::git::report(&workdir,&goal["gitBaseline"]),
         "sessionUsage":goal["sessionId"].as_str().filter(|id|!id.is_empty())
             .map(|id|state.store.session_usage(id)).unwrap_or(Value::Null),
         "tokenBudget":goal["tokenBudget"],
