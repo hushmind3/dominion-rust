@@ -193,6 +193,32 @@ pub(crate) fn learn(history:&[Value])->Value{
     });
     model["sha256"]=json!(sha(&model));model
 }
+/// Production routing must re-read the original signed-off artifacts, not
+/// merely trust booleans stored on a generation JSON row. This is deliberately
+/// stricter than the pure learner's synthetic-fixture contract.
+pub(crate) fn learn_verified(state:&crate::state::AppState)->Value{
+    let vetted=state.store.all("rsi_generation").into_iter().filter(|generation|{
+        if !eligible(generation)
+            || !crate::engine::rsi::model_route_audited(state,generation) {
+            return false;
+        }
+        let Some(candidate_id)=generation["candidateId"].as_str()else{return false};
+        let Some(candidate)=state.store.get("rsi_candidate",candidate_id)
+            else{return false};
+        let Some(replay)=crate::engine::rsi::replayed_pair_metrics(state,&candidate)
+            else{return false};
+        candidate["evaluation"]["source"]=="server_invoked_local_paired_git_worktrees"
+            && candidate["evaluation"]["metrics"]==replay
+            && generation["evaluation"]["metrics"]==replay
+            && candidate["generatorModel"]==generation["generatorModel"]
+            && candidate["baseCommit"]==generation["generatorCommit"]
+    }).collect::<Vec<_>>();
+    let mut result=learn(&vetted);
+    result["trustedInputGenerations"]=json!(vetted.len());
+    result["productionEvidence"]="source_replayed_and_audited";
+    result
+}
+
 /// Only route matches with sufficient, shared independent evidence may
 /// overrule static capability heuristics. User-selected model never calls
 /// this function.
