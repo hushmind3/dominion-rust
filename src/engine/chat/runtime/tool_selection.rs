@@ -295,6 +295,17 @@ pub(crate) fn select_tool_definitions(
         "web_search", "memory_store", "memory_search", "delegate_task",
         "delegate_tasks", "task_status", "task_result",
     ];
+    // In a large repository the minimal schema set must still let the model
+    // find symbols and apply bounded edits. A cheap "core" policy previously
+    // hid code_search and both surgical editors, causing blind whole-file
+    // rewrites and failed localization on otherwise solvable coding goals.
+    let coding_request = intent_has_any(query, &[
+        "코드","소스","버그","함수","리팩터","컴파일","개발",
+        "code","source","bug","fix","patch","refactor","implement",
+        "function","rust","python","typescript","javascript",
+    ]) || [".rs",".py",".ts",".tsx",".js",".jsx",".go"].iter()
+        .any(|suffix|query.to_lowercase().contains(suffix));
+    let coding_tools=["code_search","workspace_replace_range","workspace_replace_function"];
     let core = algorithm["parameters"]["tools"]
         .as_array()
         .map(|items| {
@@ -313,7 +324,8 @@ pub(crate) fn select_tool_definitions(
     if strategy == "core" {
         return definitions
             .into_iter()
-            .filter(|definition| core.contains(tool_name(definition)))
+            .filter(|definition| core.contains(tool_name(definition))
+                || (coding_request && coding_tools.contains(&tool_name(definition))))
             .collect();
     }
     // query-relevant: always keep the core set, add the best matches.
@@ -349,6 +361,7 @@ pub(crate) fn select_tool_definitions(
         .into_iter()
         .filter(|definition| {
             core.contains(tool_name(definition))
+                || (coding_request && coding_tools.contains(&tool_name(definition)))
                 || keep_extra
                     .iter()
                     .any(|extra| tool_name(extra) == tool_name(definition))
