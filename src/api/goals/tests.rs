@@ -22,6 +22,29 @@ fn fixture(status:&str,in_flight:bool)->(AppState,PathBuf){
     (state,dir)
 }
 #[tokio::test]
+async fn goal_receipt_endpoint_never_reuses_a_previous_job_result(){
+    let (state,dir)=fixture("needs_review",false);
+    let receipt=state.store.put("goal_receipt",&json!({
+        "id":"goal-receipt:g:prior","goalId":"g","jobId":"prior",
+        "verifiedCompletion":true,"usage":{"totalTokens":120}
+    })).unwrap();
+    let visible=goal_receipt(State(state.clone()),Path("g".into())).await;
+    assert_eq!(visible.status(),StatusCode::OK);
+    assert_eq!(receipt["jobId"],"prior");
+    state.store.patch_if("goal","g","jobId",&json!("prior"),
+        &json!({"jobId":"new-job","status":"queued"})).unwrap();
+    let stale=goal_receipt(State(state.clone()),Path("g".into())).await;
+    assert_eq!(stale.status(),StatusCode::NOT_FOUND);
+    state.store.put("goal_receipt",&json!({
+        "id":"goal-receipt:g:new-job","jobId":"new-job",
+        "verifiedCompletion":false
+    })).unwrap();
+    let current=goal_receipt(State(state.clone()),Path("g".into())).await;
+    assert_eq!(current.status(),StatusCode::OK);
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn goal_creation_persists_exactly_one_runnable_job_with_its_identity(){
     let (state,dir)=fixture("needs_review",false);
     let goal_count=state.store.count("goal");
