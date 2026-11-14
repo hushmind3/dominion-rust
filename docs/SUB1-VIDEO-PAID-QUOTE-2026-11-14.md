@@ -35,3 +35,11 @@ Runway 기존 경로는 가격 계약이 별개여서 LTX 계산을 전용하지
 ## 다음 연결
 
 실제 청구 금액은 공급자 billing API 영수증 또는 사용자 업로드 원장을 통해 대조해야 한다. 외부 호출 결과가 미확정인 경우 기존 `needs_review` 차단을 유지한다. 품질 측정은 FFprobe 기술 결과 외에 영상 프레임/음성 연속성·사람 평가가 필요하다.
+
+## 실행 시점 재승인 검증과 디코딩 실측 (2026-11-14 추가)
+
+**LTX 유료 원격 호출 직전** `video::run`에서 `authorize_paid_execution`을 실행한다. 영속 `job.input.paidQuote` 및 `paidApprovalMaxUsdCents`와, 실제 실행 시점에 다시 계산한 모델·화질·샷 초수·부분 재생성 원본의 검증 상태를 비교한다. 저장 당시 승인이 있었더라도 요금 지문이 다르거나 승인 금액이 부족하면 `needs_review`로 중단하며 원격 요청을 보내지 않는다. 요금 출처는 공시 목록가 스냅샷으로서 실제 청구원장 보증은 아니다. 단위 테스트 `paid_worker_checks_quote_again_before_any_remote_submission`은 누락된 승인·변경된 길이·낮은 상한·위조 지문이 실제 워커 진입 시 거부됨을 확인한다.
+
+**완성 MP4 파일**은 기존 `quality::inspect`의 FFprobe 스트림·길이·화면비·오디오 검사 외에, `video/visual.rs::inspect`를 통과한다. 이 단계는 FFmpeg가 있을 때 320px 폭으로 최초 최대 15초를 실제 디코드하고 `blackdetect` 및 `freezedetect` 필터의 검출 구간을 `result.visualSignals`에 기록한다. `web/src/pages/Video.tsx`의 결과 화면에 검출 개수/표본 초수를 표시한다. 이는 **실제 출력 프레임의 기술 경고**이지 인물·복장·음성의 의미적 연속성이나 영상 시청 만족도를 보증하지 않는다. 검출된 어두움/정지는 의도적 연출일 수 있어 자동 유료 재생성 트리거로 사용하지 않는다. FFmpeg가 없거나 제한시간을 넘긴 경우 `not_measured`를 표시하며, 영상의 시청 품질 점수로 둔갑시키지 않는다.
+
+검증: `src/engine/video/visual.rs`의 로그 파싱/실제 FFmpeg 테스트와 `src/api/video/tests.rs::native_pipeline_produces_a_real_playable_container`의 렌더링→실제 디코딩 결과 검사. 공식 FFmpeg 필터 규격: https://ffmpeg.org/ffmpeg-filters.html.
