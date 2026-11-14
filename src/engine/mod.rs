@@ -129,6 +129,24 @@ pub struct TurnStats {
     pub evidence: Vec<Value>,
 }
 
+/// A transient streamed tool_end message is NOT a goal receipt. Only a
+/// completed, persisted execution_operation with matching session, call ID
+/// and tool identity can become acceptance evidence. Keep the original
+/// runId, opSeq and timestamps for later source-mutation freshness checks.
+fn committed_goal_evidence(state:&AppState, session:Option<&str>, events:Vec<Value>)->Vec<Value>{
+    events.into_iter().filter_map(|event|{
+        let operation_id=event["operationId"].as_str()?;
+        let saved=state.store.get("execution_operation",operation_id)?;
+        if saved["status"]!="completed" || saved["result"].is_null()
+            || saved["tool"]!=event["tool"]
+            || saved["callId"]!=event["callId"] {return None;}
+        if session.is_some_and(|expected|saved["sessionId"].as_str()!=Some(expected)){
+            return None;
+        }
+        crate::engine::verification::successful_evidence(&saved).then_some(saved)
+    }).collect()
+}
+
 /// Runs a turn and collects tool evidence for the goal harness.
 pub async fn run_quiet_outcome(
     state: &AppState,
@@ -144,12 +162,11 @@ pub async fn run_quiet_outcome(
                 .unwrap_or("");
             match event.get("type").and_then(|value| value.as_str()) {
                 Some("tool_end") if !name.is_empty() => {
-                    stats.tool_success.push(name.to_string());
+                    // Store only a pointer until the turn has returned and
+                    // the final SQLite execution operation can be verified.
                     stats.evidence.push(serde_json::json!({
-                        "tool": name,
-                        "callId": event.get("id"),
-                        "arguments": event.get("arguments"),
-                        "result": event.get("result"),
+                        "tool":name,"callId":event.get("id"),
+                        "operationId":event.get("operationId"),
                     }));
                 }
                 Some("tool_error") if !name.is_empty() => stats.tool_errors.push(name.to_string()),
@@ -160,7 +177,11 @@ pub async fn run_quiet_outcome(
     });
     let result = chat::run_turn_background(state, request, &sender).await;
     drop(sender);
-    let stats = collector.await.unwrap_or_default();
+    let mut stats = collector.await.unwrap_or_default();
+    stats.evidence=committed_goal_evidence(state,request.session_id.as_deref(),stats.evidence);
+    stats.tool_success=stats.evidence.iter()
+        .filter_map(|receipt|receipt["tool"].as_str().map(str::to_owned))
+        .collect();
     (result, stats)
 }
 
@@ -251,6 +272,38 @@ pub async fn run_room_quiet(
 mod outcome_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn only_committed_tool_receipts_can_become_goal_evidence(){
+        let root=std::env::temp_dir().join(format!("dominion-receipts-{}",uuid::Uuid::new_v4()));
+        let cfg=crate::config::Config{port:0,data_dir:root.clone(),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        let event=json!({"tool":"workspace_write","callId":"call-1","operationId":"op-1"});
+        assert!(committed_goal_evidence(&state,Some("s"),vec![event.clone()]).is_empty());
+        state.store.put("execution_operation",&json!({
+            "id":"op-1","tool":"workspace_write","sessionId":"other",
+            "callId":"call-1","status":"completed",
+            "runId":"run-1","opSeq":2,"startedAt":"2026-11-14T10:00:00Z",
+            "result":{"written":true}})).unwrap();
+        assert!(committed_goal_evidence(&state,Some("s"),vec![event.clone()]).is_empty());
+        state.store.patch_if("execution_operation","op-1","sessionId",&json!("other"),
+            &json!({"sessionId":"s"})).unwrap();
+        let evidence=committed_goal_evidence(&state,Some("s"),vec![event.clone()]);
+        assert_eq!(evidence.len(),1);
+        assert_eq!(evidence[0]["runId"],"run-1");
+        assert_eq!(evidence[0]["opSeq"],2);
+        assert_eq!(evidence[0]["result"]["written"],true);
+        assert!(committed_goal_evidence(&state,Some("s"),
+            vec![json!({"tool":"file_write","callId":"call-1",
+                "operationId":"op-1"})]).is_empty());
+        state.store.patch_if("execution_operation","op-1","status",&json!("completed"),
+            &json!({"status":"failed"})).unwrap();
+        assert!(committed_goal_evidence(&state,Some("s"),vec![event]).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
     #[tokio::test]
     async fn successful_write_evidence_survives_a_later_provider_failure() {
         use axum::{response::IntoResponse, routing::post, Json, Router};

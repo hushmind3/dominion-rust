@@ -471,6 +471,56 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     }
     actual.trim() == command.trim()
 }
+// A successful test/build validates the source *at that time*, not changes
+// made afterwards. Only concrete successful mutation receipts invalidate it.
+// Read-only operations and failed writes must never cause a false retry.
+fn source_mutation(item:&Value)->bool{
+    if !successful_evidence(item){return false;}
+    let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
+    match tool_name(item){
+        "delegate_task"|"task_result"=>delegated_successful_operations(item)
+            .iter().any(source_mutation),
+        "workspace_write"|"workspace_replace"|"workspace_replace_range"|
+        "workspace_replace_function"|"file_write"=>item["result"]["written"]==true
+            || item["toolReceipt"]["verified"]==true,
+        "shell_exec"|"terminal_exec"=>{
+            let command=string(args,"command").to_lowercase();
+            let argv=args["args"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
+            let full=if argv.is_empty(){command}else{format!("{command} {argv}")};
+            full.starts_with("git apply ") || full.starts_with("cargo fmt")
+                || full.starts_with("go fmt") || full.starts_with("gofmt -w")
+                || full.starts_with("rustfmt ") || full.starts_with("sed -i")
+                || full.starts_with("perl -pi") || full.starts_with("npm run format")
+                || full.starts_with("pnpm format") || full.starts_with("yarn format")
+                || full.starts_with("tee ") || full.contains(" > ")
+        },
+        _=>false,
+    }
+}
+fn test_stale_after_write(test:&Value,write:&Value)->bool{
+    let same_run=test["runId"].as_str().is_some_and(|run|
+        !run.is_empty()&&write["runId"].as_str()==Some(run));
+    if same_run{
+        if let (Some(check),Some(edit))=(test["opSeq"].as_u64(),write["opSeq"].as_u64()){
+            return edit>check;
+        }
+    }
+    let checked=test["startedAt"].as_str().or_else(||test["finishedAt"].as_str())
+        .and_then(|at|chrono::DateTime::parse_from_rfc3339(at).ok());
+    let edited=write["finishedAt"].as_str().or_else(||write["startedAt"].as_str())
+        .and_then(|at|chrono::DateTime::parse_from_rfc3339(at).ok());
+    match (checked,edited){
+        (Some(checked),Some(edited))=>edited>=checked,
+        // Missing trustworthy ordering fails closed, not "old test passed".
+        _=>true,
+    }
+}
+pub(crate) fn fresh_command_matches(evidence:&[Value],command:&str)->bool{
+    evidence.iter().filter(|item|command_matches(item,command)).any(|test|
+        !evidence.iter().filter(|item|source_mutation(item))
+            .any(|write|test_stale_after_write(test,write)))
+}
 pub(crate) fn acceptance_gaps(
     state: &AppState,
     goal: &str,
@@ -535,12 +585,17 @@ pub(crate) fn acceptance_gaps_in(
             "tool_succeeded" => evidence.iter().any(|item| {
                 evidence_has_tool(item,check["tool"].as_str().unwrap_or(""))
             }),
-            "command_succeeded" => evidence
-                .iter()
-                .any(|item| command_matches(item, check["command"].as_str().unwrap_or(""))),
+            "command_succeeded" => fresh_command_matches(
+                evidence,check["command"].as_str().unwrap_or("")),
             _ => false,
         };
         if !passed {
+            if kind=="command_succeeded" && evidence.iter().any(|item|
+                command_matches(item,check["command"].as_str().unwrap_or(""))){
+                gaps.push(format!("검증 명령 '{}'의 성공 이후 소스가 변경됐습니다. 최신 변경을 다시 검증하세요.",
+                    check["command"].as_str().unwrap_or("")));
+                continue;
+            }
             if kind == "file_replace_exact" {
                 gaps.push(format!("The exact replacement in {path} has not been verified. Preserve every other byte of the original file."));
                 continue;
@@ -558,6 +613,57 @@ pub(crate) fn acceptance_gaps_in(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn source_mutation_invalidates_tests_that_precede_it() {
+        use serde_json::json;
+        let command=|seq:u64|json!({"tool":"shell_exec","runId":"one","opSeq":seq,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:00:00Z","finishedAt":"2026-11-14T10:00:02Z"});
+        let changed=|seq:u64|json!({"tool":"workspace_write","runId":"one","opSeq":seq,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T10:00:00Z","finishedAt":"2026-11-14T10:00:01Z"});
+        assert!(fresh_command_matches(&[changed(1),command(2)],"cargo test"));
+        assert!(!fresh_command_matches(&[command(1),changed(2)],"cargo test"));
+        assert!(fresh_command_matches(&[command(1),changed(2),command(3)],"cargo test"));
+        let read=json!({"tool":"workspace_read","result":{"content":"x"}});
+        assert!(fresh_command_matches(&[command(1),read],"cargo test"));
+        let failed=json!({"tool":"workspace_write","result":{"written":true,"success":false}});
+        assert!(fresh_command_matches(&[command(1),failed],"cargo test"));
+    }
+    #[test]
+    fn newer_cross_run_source_mutation_requires_reverification() {
+        use serde_json::json;
+        let prior=json!({"tool":"terminal_exec","runId":"old","opSeq":3,
+            "arguments":{"command":"cargo","args":["test"]},
+            "result":{"exitCode":0},"startedAt":"2026-11-14T10:01:00Z",
+            "finishedAt":"2026-11-14T10:01:30Z"});
+        let edit=json!({"tool":"workspace_replace","runId":"new","opSeq":1,
+            "arguments":{"path":"src/lib.rs"},
+            "result":{"written":true},"startedAt":"2026-11-14T10:02:00Z",
+            "finishedAt":"2026-11-14T10:02:01Z"});
+        let command=json!([{"type":"command_succeeded","command":"cargo test"}]);
+        let workspace=std::env::temp_dir();
+        let gaps=acceptance_gaps_in(&workspace,"", &command,&[prior.clone(),edit.clone()]);
+        assert_eq!(gaps.len(),1);
+        assert!(gaps[0].contains("다시 검증"),"{gaps:?}");
+        let retested=json!({"tool":"shell_exec","runId":"after","opSeq":1,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:03:00Z","finishedAt":"2026-11-14T10:03:30Z"});
+        assert!(acceptance_gaps_in(&workspace,"",&command,&[prior,edit,retested]).is_empty());
+    }
+    #[test]
+    fn missing_chronology_fails_closed_for_source_mutations(){
+        use serde_json::json;
+        let prior=json!({"tool":"shell_exec","arguments":{"command":"npm test"},
+            "result":{"exitCode":0}});
+        let edited=json!({"tool":"workspace_write","arguments":{"path":"src/lib.rs"},
+            "result":{"written":true}});
+        assert!(!fresh_command_matches(&[prior.clone(),edited],"npm test"));
+        let failed=json!({"tool":"workspace_write",
+            "result":{"written":true,"error":"denied"}});
+        assert!(fresh_command_matches(&[prior,failed],"npm test"));
+    }
 
     #[test]
     fn reading_an_input_does_not_require_it_to_change() {
