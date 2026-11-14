@@ -670,3 +670,10 @@ The goal engine is a working, owner-controlled pipeline, not a screenshot-only s
 
 ### Provider protocol responsibility split
 `src/engine/chat/provider/protocols.rs` now owns the pure conversions between persisted chat history, Anthropic Messages, Codex Responses function calls and their terminal errors. `src/engine/chat/provider.rs` keeps HTTP/SSE/WebSocket, admission and failover decisions, reusing exactly the same conversion functions through private re-exports. Provider cache telemetry remains isolated in `provider/cache_usage.rs`; no additional provider call or model selection is introduced.
+
+### 2026-11-15 추가 보완: RSI 거절 후보 학습·SWE-bench 실측 원장
+
+- `rsi_system/replay.rs`의 **실측 원본 영수증 재검증**과 **실험 채택 확정**을 구분했습니다. 채택되지 않아도 독립 검증된 회귀·정체 사례는 후손 개선 입력에 사용하고, 성공 사례 재활용은 채택 후 재검증한 커밋으로 제한했습니다.
+- SWE-bench 실행기에서 출력 경로를 절대 경로로 고정하고 공식 평가기 보고서의 2종 경로를 안전하게 처리합니다. 전체 도구 시도/성공/실패/불확실 상태와 실패 후 목표 완료율을 계측하며, 공식 Docker 채점 점수는 별도 보관합니다.
+- 실증 검증용 [Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11)을 개설했습니다. 미실행 Cargo/CI/SWE-bench 점수를 성공으로 기록하지 않습니다.
+
