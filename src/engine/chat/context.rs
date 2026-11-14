@@ -79,6 +79,8 @@ pub(super) fn system_prompt_with_manifest_at(
         "\n당신은 Rust 엔진에서 동작하는 에이전트형 AI 작업 공간 DOMINION입니다. \
          사용자가 다른 언어로 쓰지 않는 한 한국어로 답하십시오.",
     );
+    prompt.push_str("\n\n");
+    prompt.push_str(crate::engine::owner_intent::OWNER_EXECUTION_RULE);
     if request.tools_enabled && request.tools_execution_enabled {
         prompt.push_str(" 작업에 필요하면 사용 가능한 도구를 사용하십시오. 도구 결과를 정확히 보고하십시오.");
     } else {
