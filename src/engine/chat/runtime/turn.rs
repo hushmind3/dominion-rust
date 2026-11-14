@@ -676,6 +676,17 @@ pub(super) async fn run_turn_body(
 
     for round in 0..max_rounds {
         if finished { break; }
+        // This also gates program-driven steps before their tool side effects.
+        // The goal owns the aggregate budget across planner/worker/reviewer.
+        if crate::engine::goal_control::goal_token_budget_exhausted(state,session_id){
+            state.store.audit("goal.token_budget_exhausted",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "round":round,"remainingTokens":
+                    crate::engine::goal_control::remaining_goal_tokens(state,session_id)
+            }));
+            mark_budget_exhausted(state,execution_id);
+            return Err("goal_token_budget: 다음 모델/도구 단계 전에 사용자 총 토큰 예산이 소진되었습니다.".into());
+        }
         if !budget.charge_round() {
             mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
