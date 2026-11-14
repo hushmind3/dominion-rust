@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -53,11 +54,20 @@ def api(base: str, path: str, token: str | None = None,
         raise RuntimeError(f"HTTP {exc.code} {path}: {detail}") from exc
 
 
+def instance_scratch_name(instance_id: str) -> str:
+    """Deterministic directory without trusting a dataset-supplied path."""
+    if not isinstance(instance_id, str) or not instance_id or len(instance_id) > 1024:
+        raise ValueError("Invalid benchmark instance ID")
+    return "case-" + hashlib.sha256(instance_id.encode("utf-8")).hexdigest()[:24]
+
+
 def checkout(row: dict, cache: Path, work: Path, offline: bool) -> str:
     repo = row["repo"]
     commit = row["base_commit"]
-    if not isinstance(repo, str) or len(repo.split("/")) != 2:
-        raise ValueError("Each official instance requires repo='owner/name'")
+    if (not isinstance(repo, str) or len(repo.split("/")) != 2
+            or any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", part) is None
+                   for part in repo.split("/"))):
+        raise ValueError("Each official instance requires a safe repo='owner/name'")
     if not isinstance(commit, str) or len(commit) != 40 or any(
         x not in "0123456789abcdefABCDEF" for x in commit
     ):
@@ -202,8 +212,7 @@ def validated_patch(payload: dict, expected_base: str) -> str:
 
 def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
     ident = str(row["instance_id"])
-    safe = ident.replace("/", "_")
-    scratch = root / safe
+    scratch = root / instance_scratch_name(ident)
     scratch.mkdir(parents=True, exist_ok=False)
     workspace = scratch / "repo"
     data = scratch / "state"
