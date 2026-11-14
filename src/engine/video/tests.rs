@@ -37,3 +37,33 @@ use super::*;
         assert_eq!(value["1"]["inputs"]["seconds"], 15);
         assert_eq!(value.as_object().unwrap().len(), 1);
     }
+
+    #[test]
+    fn paid_worker_checks_quote_again_before_any_remote_submission(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("paid-worker-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        let mut input=json!({"engine":"ltx","ltxFilm":false,
+            "videoModel":"ltx-2-5-fast","videoQuality":"1080p",
+            "duration":8,"fps":24,"aspectRatio":"16:9",
+            "generateAudio":true});
+        let quote=paid_quote(&state,&input).unwrap();
+        assert!(authorize_paid_execution(&state,&input).is_err());
+        input["paidQuote"]=quote.clone();
+        input["paidApprovalMaxUsdCents"]=quote["totalUsdCents"].clone();
+        assert!(authorize_paid_execution(&state,&input).is_ok());
+        let mut tampered=input.clone();
+        tampered["duration"]=json!(10);
+        assert!(authorize_paid_execution(&state,&tampered).is_err());
+        tampered=input.clone();
+        tampered["paidApprovalMaxUsdCents"]=json!(1);
+        assert!(authorize_paid_execution(&state,&tampered).is_err());
+        tampered=input.clone();
+        tampered["paidQuote"]["quoteDigest"]=json!("false-approval");
+        assert!(authorize_paid_execution(&state,&tampered).is_err());
+        assert!(authorize_paid_execution(&state,&json!({"engine":"native"})).is_ok());
+        let _=std::fs::remove_dir_all(dir);
+    }
