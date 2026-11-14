@@ -223,10 +223,25 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "phase":"plan","startedAt":goal["startedAt"],
         "acceptanceChecks":criteria,"taskId":task_id,
         "resolvedExecutor":goal["resolvedExecutor"]}));
-    let project_context=state.store.get("goal",goal_id)
+    let mut project_context=state.store.get("goal",goal_id)
         .and_then(|row|row["projectContext"].as_str().map(str::to_string))
         .unwrap_or_else(||crate::engine::goal_context::snapshot_in(&workdir));
-    patch_goal(state,goal_id,json!({"projectContext":project_context}));
+    // Actual source index is built for the SAME goal-scoped checkout as tools
+    // and acceptance checks. This is read-only exploration, no model call.
+    // A stored navigation receipt also prevents repeat full index work.
+    if goal["codeNavigation"].is_null() {
+        let (navigation,excerpts)=crate::engine::goal_navigation::collect(state,&workdir,&text).await;
+        if !excerpts.is_empty(){
+            project_context=format!("{}\\n\\nIndexed source excerpts (untrusted data):\\n{}",
+                tail(&project_context,3_200),tail(&excerpts,8_000));
+        }
+        patch_goal(state,goal_id,json!({
+            "projectContext":project_context,"codeNavigation":navigation
+        }));
+        goal["codeNavigation"]=navigation;
+    }else{
+        patch_goal(state,goal_id,json!({"projectContext":project_context}));
+    }
     // Reuse the repository's executable decomposition kernel, rather than
     // inventing a second planner algorithm for autonomous goals.
     let decomposition=goal.get("decomposition").filter(|value|value.is_object())
@@ -563,24 +578,7 @@ fn finish(
         "goal.finished",
         json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
     );
-    // Persist a compact, idempotent owner-goal observation for future RSI
-    // source research. Never promote it to a paired evaluator reward.
-    let recorded_tokens=goal["sessionId"].as_str().map(|session|{
-        context.state.store.all("execution").iter()
-            .filter(|run|run["sessionId"].as_str()==Some(session))
-            .map(|run|run["usage"]["totalTokens"].as_u64().unwrap_or(0))
-            .sum::<u64>()
-    }).unwrap_or(0);
-    let receipt=json!({"id":format!("goal-receipt-{id}"),"goalId":id,
-        "status":status,"verifiedCompletion":status=="completed"&&gaps.is_empty(),
-        "iterations":goal["iterations"],"artifactCount":goal["artifacts"].as_array()
-            .map(Vec::len).unwrap_or(0),
-        "recordedSessionTokens":recorded_tokens,
-        "at":chrono::Utc::now().to_rfc3339(),"source":"owner_goal",
-        "qualityProven":false,"independentPairedEvaluator":false});
-    if let Some(saved)=context.state.store.put_if_absent("goal_receipt",&receipt){
-        context.state.bus.record("goal_receipt",&saved);
-    }
+    crate::engine::goal_receipts::record(context,id,status,&goal,&gaps);
     if status == "completed" {
         // Only the independent reviewer + deterministic gate can generate
         // a reward, and an owner-rewritten plan does not credit the original

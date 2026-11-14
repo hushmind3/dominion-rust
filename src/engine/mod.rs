@@ -4,6 +4,8 @@ pub mod goal_changes;
 pub mod agent_diff;
 pub mod agent_parallel;
 pub mod goal_context;
+pub mod goal_navigation;
+pub mod goal_receipts;
 pub mod goal_evidence;
 pub mod goal_steering;
 pub mod goal_artifacts;
