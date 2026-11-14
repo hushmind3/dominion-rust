@@ -182,7 +182,36 @@ pub fn rsi_allowed(name:&str)->bool{
 
 #[path = "tools/dispatch.rs"]
 mod dispatch;
-pub use dispatch::execute;
+/// The session's owner-isolated checkout is authoritative even if a caller
+/// used the ordinary AppState. Never allow a worktree session to quietly edit
+/// the global checkout through an alternate execution entry point.
+pub async fn execute(
+    ctx:&ToolContext<'_>,name:&str,args:&Value,run_id:&str,
+)->Result<Value,String>{
+    let isolated=ctx.store.get("session",ctx.session_id)
+        .and_then(|session|session["goalId"].as_str().map(str::to_owned))
+        .and_then(|id|ctx.store.get("goal",&id))
+        .is_some_and(|goal|goal["isolateWorktree"]==true);
+    if !isolated{return dispatch::execute(ctx,name,args,run_id).await;}
+    let workspace=crate::engine::goal_workspace::workspace_for_session(
+        ctx.state,ctx.session_id)?;
+    // Absolute file tools would bypass workspace-relative path validation.
+    if matches!(name,"file_read"|"file_list"|"file_write"){
+        return Err("격리 코딩 목표에서는 workspace_* 도구를 사용하세요.".into());
+    }
+    if name=="shell_exec" {
+        if let Some(cwd)=args["cwd"].as_str() {
+            let checked=crate::engine::tools::resolve_workspace(&workspace,cwd)?;
+            if !checked.is_dir() {
+                return Err("셸 작업 경로가 디렉터리가 아닙니다.".into());
+            }
+        }
+    }
+    let scoped=ToolContext{workspace:&workspace,store:ctx.store,state:ctx.state,
+        session_id:ctx.session_id,agent_id:ctx.agent_id,
+        tools_enabled:ctx.tools_enabled,tools_execution_enabled:ctx.tools_execution_enabled};
+    dispatch::execute(&scoped,name,args,run_id).await
+}
 
 #[path = "tools/gateway.rs"]
 mod gateway;
