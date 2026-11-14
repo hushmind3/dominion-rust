@@ -28,8 +28,27 @@ pub(super) fn quote(render:&Value,seconds:u64,calls:u64)->Result<Value,String>{
         _=>return Err("영상 가격표에 없는 모델·화질입니다. 유료 생성 요청을 중단합니다.".into()),
     };
     let usd_cents=cents.checked_mul(seconds).ok_or("USD 가격 계산 초과")?;
-    let krw=usd_cents.checked_mul(FX_REFERENCE_KRW)
-        .and_then(|v|v.checked_add(99)).ok_or("KRW 견적 계산 초과")?/100;
+    // The runtime reserves a rounded-up KRW amount BEFORE EACH remote POST.
+    // A multi-shot quote must sum precisely those per-clip reservations;
+    // otherwise the last paid clip could exceed an owner's exact approved cap.
+    let durations=if calls>1 {
+        let clips=render["film"]["clips"].as_array()
+            .filter(|clips|clips.len()==calls as usize)
+            .ok_or("다중 장면 원화 견적에는 동결된 장면 길이가 필요합니다.")?;
+        clips.iter().map(|clip|clip["duration"].as_u64()
+            .ok_or_else(||"동결 장면 길이를 찾을 수 없습니다.".to_string()))
+            .collect::<Result<Vec<_>,_>>()?
+    }else{vec![seconds]};
+    if durations.iter().try_fold(0u64,|a,n|a.checked_add(*n))!=Some(seconds) {
+        return Err("장면 길이 합계와 영상 견적 길이가 다릅니다.".into());
+    }
+    let mut krw=0u64;
+    for duration in durations {
+        let clip_cents=cents.checked_mul(duration).ok_or("클립 가격 계산 초과")?;
+        let clip_krw=clip_cents.checked_mul(FX_REFERENCE_KRW)
+            .and_then(|v|v.checked_add(99)).ok_or("원화 클립 가격 계산 초과")?/100;
+        krw=krw.checked_add(clip_krw).ok_or("원화 총액 계산 초과")?;
+    }
     let fingerprint=format!("{:x}",Sha256::digest(format!(
         "{PRICE_REVISION}|{model}|{quality}|{seconds}|{calls}|{usd_cents}|{krw}"
     ).as_bytes()));
@@ -64,7 +83,9 @@ mod tests{
     #[test]
     fn estimates_locked_model_duration_and_approved_krw(){
         let render=json!({"model":"ltx-2-5-pro","quality":"1080p"});
-        let q=quote(&render,16,2).unwrap();
+        let film=json!({"model":"ltx-2-5-pro","quality":"1080p",
+            "film":{"clips":[{"duration":8},{"duration":8}]}});
+        let q=quote(&film,16,2).unwrap();
         assert_eq!(q["usdCents"],272);
         assert_eq!(q["referenceKrw"],3634);
         let accepted=json!({"approvedPaidQuote":true,
@@ -72,7 +93,10 @@ mod tests{
         assert_eq!(approved(&q,&accepted).unwrap(),3634);
         assert!(approved(&q,&json!({"approvedPaidQuote":true,
             "approvedQuoteFingerprint":q["fingerprint"],"maxApprovedKrw":3633})).is_err());
-        assert!(approved(&quote(&render,18,2).unwrap(),&accepted).is_err());
+        let changed=json!({"model":"ltx-2-5-pro","quality":"1080p",
+            "film":{"clips":[{"duration":10},{"duration":8}]}});
+        assert!(approved(&quote(&changed,18,2).unwrap(),&accepted).is_err());
+        assert!(quote(&render,16,2).is_err());
         assert!(quote(&json!({"model":"unknown","quality":"1080p"}),8,1).is_err());
     }
 }
