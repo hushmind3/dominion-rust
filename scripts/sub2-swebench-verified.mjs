@@ -196,6 +196,12 @@ function envProvider(){
   demand(['http:','https:'].includes(new URL(provider.baseUrl).protocol),'provider URL must be HTTP(S)');
   return provider;
 }
+export function positiveBenchmarkLimit(raw, name, min, max) {
+  const value = Number(raw);
+  demand(Number.isSafeInteger(value) && value>=min && value<=max,
+    name+' must be an integer in '+min+'..'+max);
+  return value;
+}
 function settings(){
   demand(process.env.DOMINION_SWE_ENABLE==='1','set DOMINION_SWE_ENABLE=1 to run real model tasks');
   const env=process.env;
@@ -208,13 +214,19 @@ function settings(){
   const output=resolve(env.DOMINION_SWE_OUTPUT);
   demand(!existsSync(output),'output must be a new directory: '+output);
   const provider=envProvider();
-  const maxIterations=Math.min(64,Math.max(1,Number(env.DOMINION_SWE_ITERATIONS||16)));
-  const timeoutMinutes=Math.min(90,Math.max(1,Number(env.DOMINION_SWE_TIMEOUT_MIN||20)));
-  const limit=Math.max(1,Number(env.DOMINION_SWE_LIMIT||500));
-  demand(Number.isInteger(maxIterations)&&Number.isFinite(timeoutMinutes)&&Number.isInteger(limit),'invalid benchmark limits');
+  // Do not silently clamp budget overflows: identical frontier comparisons
+  // require that the requested exact tool/model/time budgets were enforced.
+  const maxIterations=positiveBenchmarkLimit(
+    env.DOMINION_SWE_ITERATIONS??16,'DOMINION_SWE_ITERATIONS',1,64);
+  const maxExecutorTokens=positiveBenchmarkLimit(
+    env.DOMINION_SWE_MAX_TOKENS??80000,'DOMINION_SWE_MAX_TOKENS',5000,2000000);
+  const timeoutMinutes=positiveBenchmarkLimit(
+    env.DOMINION_SWE_TIMEOUT_MIN??20,'DOMINION_SWE_TIMEOUT_MIN',1,90);
+  const limit=positiveBenchmarkLimit(
+    env.DOMINION_SWE_LIMIT??500,'DOMINION_SWE_LIMIT',1,500);
   return {tasks:env.DOMINION_SWE_TASKS,mirrors:env.DOMINION_SWE_MIRRORS,
-    binary:env.DOMINION_SWE_BIN,output,provider,maxIterations,timeoutMinutes,limit,
-    grade:env.DOMINION_SWE_GRADE==='1'};
+    binary:env.DOMINION_SWE_BIN,output,provider,maxIterations,maxExecutorTokens,
+    timeoutMinutes,limit,grade:env.DOMINION_SWE_GRADE==='1'};
 }
 async function runOne(task,index,settings,model){
   const prefix=join(settings.output,'instances',String(index).padStart(3,'0')+'-'+safeName(task.instance_id));
@@ -251,7 +263,7 @@ async function runOne(task,index,settings,model){
     const objective=task.problem_statement+'\n\nImplement a minimal, correct fix in this checked-out repository. Inspect the source, edit the necessary files, run focused tests, diagnose failures, and repair them. Do not alter benchmark tests or evaluation fixtures.';
     const goal=await request(base,'/api/goals','POST',{
       goal:objective,maxIterations:settings.maxIterations,
-      maxReplans:6,replanAfter:2,maxExecutorTokens:80000,
+      maxReplans:6,replanAfter:2,maxExecutorTokens:settings.maxExecutorTokens,
       isolateWorktree:false,executor:{providerId,model:settings.provider.model},
       planner:{providerId,model:settings.provider.model},
       reviewer:{providerId,model:settings.provider.model},
@@ -342,7 +354,8 @@ async function run(){
       toolMode:s.provider.toolMode||'default',
       reasoningProtocol:s.provider.reasoningProtocol||'default',
     },
-    maxIterations:s.maxIterations,timeoutMinutes:s.timeoutMinutes,
+    maxIterations:s.maxIterations,maxExecutorTokens:s.maxExecutorTokens,
+    timeoutMinutes:s.timeoutMinutes,
     configuredGrades:s.grade,
   };
   const receipts=[],predictions=[];
