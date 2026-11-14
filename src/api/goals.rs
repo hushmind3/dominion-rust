@@ -446,6 +446,43 @@ mod sub3_goal_resume_tests {
         assert_eq!(job["goalState"]["evidence"][0]["tool"],"workspace_write");
     }
 
+    #[test]
+    fn metrics_count_actual_goals_and_recorded_model_usage_separately(){
+        let missing=measured_goal_summary(&[]);
+        assert_eq!(missing["eligibleTerminalGoals"],0);
+        assert!(missing["completionRatePercent"].is_null());
+        let record=json!({"status":"completed","resumeCount":1,
+            "receipt":{"verified":true,"remainingGaps":0,
+                "verificationOwner":"goal-parent",
+                "tokenUsage":{"calls":2,"totalTokens":1000,"estimatedCalls":0}}});
+        let without_model=json!({"status":"completed",
+            "receipt":{"verified":true,"remainingGaps":0,
+                "verificationOwner":"goal-parent",
+                "tokenUsage":{"calls":0,"totalTokens":0}}});
+        let false_receipt=json!({"status":"completed",
+            "receipt":{"verified":true,"remainingGaps":1,
+                "tokenUsage":{"calls":1,"totalTokens":100,"estimatedCalls":1}}});
+        let review=json!({"status":"needs_review",
+            "receipt":{"verified":false,"tokenUsage":{"calls":2,
+                "totalTokens":1300,"estimatedCalls":1}}});
+        let queued=json!({"status":"queued"});
+        let stats=measured_goal_summary(&[
+            record,without_model,false_receipt,review,queued
+        ]);
+        assert_eq!(stats["recordedGoals"],5);
+        assert_eq!(stats["eligibleTerminalGoals"],4);
+        assert_eq!(stats["harnessCompletedGoals"],2);
+        assert_eq!(stats["completedWithModelCalls"],1);
+        assert_eq!(stats["completedWithNonEstimatedTokenUsage"],1);
+        assert_eq!(stats["needsReviewGoals"],1);
+        assert_eq!(stats["ownerResumeAttempts"],1);
+        assert_eq!(stats["completionRatePercent"],50.0);
+        assert_eq!(stats["modelUsage"]["calls"],5);
+        assert_eq!(stats["modelUsage"]["totalTokens"],2400);
+        assert_eq!(stats["modelUsage"]["estimatedCalls"],2);
+        assert_eq!(stats["independentBenchmark"],false);
+    }
+
     #[tokio::test]
     async fn creating_goal_commits_bidirectional_job_link_in_one_transaction(){
         let state=state();
