@@ -663,7 +663,7 @@ mod inference_tests {
         assert!(fresh_code_validation(&[edit.clone(),test.clone()]));
         assert!(!fresh_code_validation(&[test.clone(),edit.clone()]));
         assert!(!fresh_code_validation(&[edit.clone(),failed]));
-        assert!(!coding_test_gaps(&[edit.clone()],false).len()>0);
+        assert!(coding_test_gaps(&[edit.clone()],false).is_empty());
         assert_eq!(coding_test_gaps(&[edit,test],true),vec![]);
     }
     #[test]
