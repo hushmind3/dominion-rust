@@ -142,3 +142,22 @@ An independent rejected regression now appears in next-generation diagnostic inp
 
 [Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11) isolates CI/review from automatic main-branch merge. No remote Docker evaluation, paid model inference or local Rust compilation was performed by this chat.
 
+## Reproducible SWE-bench evidence manifest
+
+The benchmark runner writes `run-manifest.json` with a SHA-256 of the
+exact native binary, JSONL task bytes, ordered instance IDs and run limits.
+The final summary also cites these hashes. It records *which provided rows*
+were run; it cannot authenticate that a user-supplied JSONL originated from
+the official dataset without a trusted external reference. Use the official
+SWE-bench Verified export and retain its provenance.
+
+`scripts/benchmark/test_swebench_dominion.py` includes an intentionally
+**synthetic, offline, missing-repository** end-to-end CLI check. It asserts
+that a relative output path creates correct outputs and a fingerprinted
+manifest while producing **only `setup_failed` with no resolved score**.
+This is test coverage of evidence honesty, not an AI benchmark result.
+
+The run directory distinguishes model calls, successful / failed / uncertain
+tool receipts, recovery after measured tool failure, and official Docker
+resolved IDs. Internal goal completion is not a substitute for the official
+grader. Real model results still require a configured provider and runtime.
