@@ -474,6 +474,37 @@ export class DominionGoal {
     return this.sdk.goal(this.id, signal)
   }
 
+  /**
+   * Observe one durable goal until Rust seals a terminal decision.
+   * Only GETs are replayed, never the goal creation, execution or approvals.
+   * On an event retention gap the authoritative goal record is re-fetched.
+   */
+  async waitForTerminal(options: {
+    after?: number
+    signal?: AbortSignal
+    reconnectDelayMs?: number
+    maxReconnects?: number
+  } = {}): Promise<Goal> {
+    const terminal = (goal: Goal) =>
+      ['completed', 'failed', 'cancelled', 'needs_review'].includes(goal.status)
+    const current = await this.status(options.signal)
+    if (terminal(current)) return current
+    for await (const event of this.sdk.watchEventsResilient(options)) {
+      const record = event.record
+      const isGoalUpdate = event.type === 'record'
+        && event.kind === 'goal'
+        && typeof record === 'object' && record !== null
+        && 'id' in record && record.id === this.id
+      if (event.type === 'replay_gap' || isGoalUpdate) {
+        // Events can contain old states from the retained history; always
+        // read the canonical persisted record before returning a decision.
+        const goal = await this.status(options.signal)
+        if (terminal(goal)) return goal
+      }
+    }
+    throw new DominionSDKError(0, 'DOMINION goal observation interrupted')
+  }
+
   cancel(): Promise<Goal> {
     return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/cancel', {})
   }
