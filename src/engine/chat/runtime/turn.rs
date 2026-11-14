@@ -305,12 +305,14 @@ pub(super) async fn run_turn_body(
 
     let mut provider = select_provider(state, request, &session)?;
     let allow_provider_fallback = session["rsiRun"]!=true;
-    let budget_algorithm = crate::engine::algorithms::choose_for_agent(
-        state,
-        "execution.budget",
-        request.agent_id.as_deref(),
-        Some(execution_id),
-    );
+    let budget_algorithm = state.store.get("execution",execution_id)
+        .map(|execution|execution["turnBudgetAlgorithm"].clone())
+        .filter(Value::is_object)
+        // Legacy callers which did not freeze the policy still run on the
+        // same first-party algorithm selector.
+        .or_else(||crate::engine::algorithms::choose_for_agent(
+            state,"execution.budget",request.agent_id.as_deref(),Some(execution_id)
+        ));
     let mut max_rounds = budget_algorithm
         .as_ref()
         .and_then(|algorithm| algorithm["parameters"]["maxRounds"].as_u64())
@@ -343,7 +345,9 @@ pub(super) async fn run_turn_body(
             .and_then(|job|job["input"]["limits"]["timeBudgetSeconds"].as_u64())
             .filter(|seconds|*seconds>0).map(std::time::Duration::from_secs)
             .unwrap_or(std::time::Duration::from_secs(365*24*3600))
-    }else{MAX_ELAPSED};
+    }else{super::selected_turn_limit(
+        budget_algorithm.as_ref().unwrap_or(&Value::Null)
+    )};
     let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
         tools::definitions()
     } else {
@@ -707,7 +711,7 @@ pub(super) async fn run_turn_body(
         "maxRounds": if campaign_budgeted {Value::Null}else{json!(max_rounds)},
         "maxToolCalls": if campaign_budgeted {Value::Null}else{json!(max_tools)},
         "maxTokens": if session["rsiRun"]==true && session["rsiCampaignId"].is_string() {Value::Null}else{json!(MAX_TOKENS)},
-        "maxElapsedMs": MAX_ELAPSED.as_millis() as u64,
+        "maxElapsedMs": elapsed_limit.as_millis() as u64,
     });
     record_selection_snapshot(
         state,
@@ -797,14 +801,14 @@ pub(super) async fn run_turn_body(
             return Err("모델 라운드 예산을 초과했습니다.".into());
         }
         if budget.expired() {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+            return Err(format!("실행 시간 제한({}초)을 초과했습니다.",elapsed_limit.as_secs()));
         }
         if state.is_cancelled(session_id) || state.cancellation_generation(session_id) != generation
         {
             return Err("실행이 중단되었습니다.".into());
         }
         if started_at.elapsed() > elapsed_limit {
-            return Err("실행 시간 제한(10분)을 초과했습니다.".into());
+            return Err(format!("실행 시간 제한({}초)을 초과했습니다.",elapsed_limit.as_secs()));
         }
         if metrics.lock().unwrap().tool_calls as usize >= max_tools {
             mark_budget_exhausted(state, execution_id);
