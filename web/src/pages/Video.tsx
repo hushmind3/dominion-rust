@@ -7,7 +7,11 @@ import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
-type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
+type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;
+ shotCount?:number;shotProgress?:number;
+ result?:{bytes:number;attemptedGenerations?:number;
+ technicalQuality?:{verified:boolean;width:number;height:number;durationSeconds:number};
+ shotResults?:{index:number;reused:boolean;technicalRetries:number}[]}}
 type VideoEngine='native'|'comfyui'|'ltx'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasLtxKey?:boolean;videoModel?:string;videoQuality?:string};ltx?:{available:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
@@ -27,6 +31,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-pro'),[ltxQuality,setLtxQuality]=useState('1080p'),[ltxAudio,setLtxAudio]=useState(true)
  const [cinematic,setCinematic]=useState(true),[shotNotes,setShotNotes]=useState(''),[paidMultiShot,setPaidMultiShot]=useState(false),[ltxFps,setLtxFps]=useState(24)
+ const [comfyCinematic,setComfyCinematic]=useState(false),[comfyRetryConsent,setComfyRetryConsent]=useState(false)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -45,7 +50,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const usingComfy=engine==='comfyui',usingLtx=engine==='ltx'
  const ready=usingLtx?Boolean(video.value.ltx?.available):usingComfy?Boolean(video.value.comfy.available&&workflow):Boolean(video.value.native?.available)
  const ltxClipMax=ltxModel==='ltx-2-5-pro'||ltxFps>=48||['1440p','4k'].includes(ltxQuality)?10:20
- const maxDuration=usingLtx?ltxClipMax*6:usingComfy?9:180
+ const maxDuration=usingLtx?ltxClipMax*6:usingComfy?(comfyCinematic?120:9):180
+ const comfyShots=usingComfy&&comfyCinematic?Math.min(15,Math.ceil(seconds/8)):1
  const paidCalls=usingLtx?Math.ceil(seconds/ltxClipMax):0
  const needsMultiShot=usingLtx&&paidCalls>1
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
@@ -107,7 +113,9 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   try{
    setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
-    ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
+    ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed,
+      cinematic:comfyCinematic,badShotRetries:comfyRetryConsent?1:0,
+      confirmRetryCosts:comfyRetryConsent}:{}),
      ...(usingLtx?{videoModel:ltxModel,videoQuality:ltxQuality,generateAudio:ltxAudio,fps:ltxFps,
       cinematic,shotNotes,confirmPaidMultiShot:needsMultiShot&&paidMultiShot}:{}),
    }));
@@ -189,10 +197,31 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        {needsMultiShot&&<label className="flex cursor-pointer items-start gap-2 text-[#7C4A2E]"><input type="checkbox" checked={paidMultiShot} onChange={e=>setPaidMultiShot(e.target.checked)}/><span>긴 영상은 LTX 유료 생성 <strong>{paidCalls}회</strong>를 차례로 실행하고 FFmpeg로 무손실 연결합니다. 장면별 과금에 동의합니다.</span></label>}
        <p className="text-[11px] text-[#8A8176]">Pro 최대 60초 · Fast 저해상도 24/25FPS 최대 120초 · 1440p/4K 또는 고FPS 최대 60초 · 장면마다 별도 과금</p>
       </div>}
+      {usingComfy&&<div className="space-y-2 rounded-xl border border-[#E7D8C5] bg-[#FFFCF7] p-3 text-[12px]">
+       <label className="flex cursor-pointer items-center gap-2">
+        <input type="checkbox" checked={comfyCinematic} onChange={e=>{setComfyCinematic(e.target.checked);setComfyRetryConsent(false)}}/>
+        <strong>🎞️ ComfyUI 멀티샷 · 장면별 검수와 1080p 편집</strong>
+       </label>
+       {comfyCinematic&&<>
+        <p className="text-[11px] leading-5 text-[#7C7469]">
+         목표 {seconds}초 · 최대 {comfyShots}개 장면, 장면당 최대 8초.
+         워크플로에서 {"{{prompt}}"}와 {"{{duration}}"} 변수를 사용해야 합니다.
+         통과한 장면은 보관해 다음 작업에서 재사용합니다.
+        </p>
+        <label className="flex cursor-pointer items-start gap-2">
+         <input type="checkbox" checked={comfyRetryConsent} onChange={e=>setComfyRetryConsent(e.target.checked)}/>
+         <span>기술 검수 불합격 장면마다 최대 1회 추가 생성 동의
+          <span className="block text-[11px] text-[#8A8176]">
+           외부 유료 ComfyUI라면 최대 {comfyShots}회 추가 과금 가능 · 기본 재시도 0회
+          </span>
+         </span>
+        </label>
+       </>}
+      </div>}
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={usingLtx?ltxQuality:`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:usingLtx?ltxClipMax*6:maxDuration})}><TextInput type="number" min={usingLtx?6:3} max={maxDuration} step={usingLtx?2:1} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'장편은 2~6회 유료 호출 · 프롬프트 동결 · 24/25/48/50FPS':'설정에서 LTX API 키를 등록하세요.'}</p>:usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'장편은 2~6회 유료 호출 · 프롬프트 동결 · 24/25/48/50FPS':'설정에서 LTX API 키를 등록하세요.'}</p>:usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{comfyCinematic?'장면별 기술 검수 · 성공 장면 재사용 · FFmpeg 편집':t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
@@ -205,7 +234,18 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     </Panel>}
    </div>
    {tab==='create'&&<div className="grid min-w-0 content-start gap-4">
-    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
+    <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{Boolean(videoJob.shotCount)&&<p className="text-[11px] text-[#7C7469]">
+       장면 제작 {videoJob.shotProgress||0}/{videoJob.shotCount} · 완료한 장면은 유지됩니다.
+      </p>}
+      {videoJob.result?.technicalQuality?.verified&&<p className="text-[11px] text-[#6D6257]">
+       <Check size={13} className="mr-1 inline"/> 기술 검수 통과 ·
+       {videoJob.result.technicalQuality.width}×{videoJob.result.technicalQuality.height} ·
+       {videoJob.result.technicalQuality.durationSeconds.toFixed(1)}초
+      </p>}
+      {videoJob.result?.attemptedGenerations!==undefined&&<p className="text-[11px] text-[#7C7469]">
+       영상 생성 {videoJob.result.attemptedGenerations}회 · 실제 제작비는 연결된 환경에 따라 달라집니다.
+      </p>}
+      {videoJob.outputUrl&&<div className="flex justify-center rounded-xl bg-black p-2"><video className="max-h-[520px] w-auto max-w-full rounded-lg" src={videoJob.outputUrl} controls playsInline/></div>}{videoJob.status==='completed'&&videoJob.outputUrl&&<div className="grid gap-2"><div className="flex min-w-0 items-center gap-2 rounded bg-[#FAF7F1] p-2"><span className="min-w-0 flex-1 truncate text-[11px] text-[#5C544A]" title={videoJob.title}>{videoJob.title||"output.mp4"}</span><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void reveal(videoJob.id)}>{t('vid.openFolder')}</Button></div><Action onClick={useResult} className="w-full"><Upload size={14}/> {t('vid.fillForm')}</Action></div>}{(videoJob.status==='failed'||videoJob.status==='needs_review'||videoJob.status==='interrupted')&&<Notice message={videoJob.error||t('vid.generateFailed')}/>}</div>}</Panel>
     <Panel className="min-w-0 p-5"><Subheading title={t('vid.upload')} extra={<span className="text-[11px] text-[#8A8176]">{selectedOutput?t('vid.fileReady'):t('vid.pickFile')}</span>}/><div className="grid gap-3"><FormField label={t('vid.videoFile')} hint={t('vid.generatedNote')}><div className="flex flex-col gap-2">{outputs.value.length?<SelectInput value={selectedOutput?.id||''} onChange={e=>{
  const picked=outputs.value.find(item=>item.id===e.target.value);
  if(!picked)return;
