@@ -580,7 +580,7 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 - `api/goals.rs::resume_goal/edit_plan`: 불확실한 외부 실행은 사용자 확인 뒤 새로운 작업으로 이어받고, 진행 중이 아닌 목표의 계획을 직접 고칠 수 있습니다. 중단·복구·증거 경계는 원래 실행 기록과 분리합니다.
 - `verification.rs::successful_evidence`: 위임 작업이 아직 진행 중이거나 실패했을 때 성공으로 세지 않습니다. `jobs/goal_status.rs`는 실패한 작업이 목표를 영원히 running으로 남기는 상태 불일치를 줄입니다.
 - `goals.rs`: 기계 검증 실패 시 불필요한 별도 리뷰 모델 호출을 생략하고, 실행 모델의 세션 토큰 예산을 다음 턴 진입 전에 확인합니다. 리뷰 생략 횟수는 실행 영수증에 남깁니다.
-- `rsi_system.rs`: 실행 중인 자율 목표 하네스를 `agent_harness` 개선 역할로 노출합니다. 일반 사용자 목표 영수증은 RSI 독립 평가의 성공 증명으로 사용하지 않습니다.
+- `rsi_system.rs` + `rsi_system/agent_feedback.rs`: 실행 중인 자율 목표 하네스를 `agent_harness` 개선 역할로 노출하고, 최근 실제 목표 시도의 완료·실패·토큰 사용·절약한 검토 호출 통계를 **재컴파일 후손 `architecture_frontier`의 `ownerTaskFeedback`**에 전달합니다. 후손이 우선 개선할 진짜 목표 실행 소스를 고르는 입력이며 일반 사용자 목표 영수증은 RSI 독립 평가의 성공 증명으로 사용하지 않습니다.
 
 [**자율 에이전트 전체 호출도·책임 경계·2026 근거**](docs/architecture/AGENT-HARNESS-SUB2-2026-11-14.md)
 

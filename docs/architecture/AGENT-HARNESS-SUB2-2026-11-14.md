@@ -64,6 +64,8 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 
 ### RSI coupling
 
+`rsi_system/agent_feedback.rs::observe` aggregates the most recent 64 actual `goal_receipt` attempts into counts of accepted task completions, unresolved outcomes, session token consumption, and redundant-reviewer calls avoided. `rsi_system.rs::architecture_frontier` attaches this **`ownerTaskFeedback` directly to the real `agent_harness` editable source candidates**, so the already compiled descendant planner/worker receives concrete production observations while deciding which target source/method to improve. This is **a feedback signal rather than a benchmark reward**: the payload has `qualityProven=false` and `independentPairedEvaluator=false`; no evidence is promoted into frozen paired RSI scores.
+
 `rsi_system.rs::source_role` and `architecture_role_domain` now include **agent_harness** files (`goals.rs`, `goal_control.rs`, `goals/*`, `api/goals.rs`) as executable `context`-domain improvement targets. The descendant `source_inventory → blueprint → architecture_frontier` can propose improving the actual goal loop, recovery policy and project inspection.
 
 `goal_receipt` belongs to normal user task telemetry. It is explicitly tagged `isIndependentBenchmark=false`, `canRewardFrozenRsiEvaluator=false`: no goal outcome can self-certify a frozen RSI paired evaluation, no model weights are edited, and adoption still requires original independent receipts, rebuilt child and source lineage.
@@ -80,6 +82,6 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 
 1. No Rust compilation, TypeScript build, test, CI, actual model session, benchmark, or paid video generation was run in this source-only change. Regression specifications were authored, not executed.
 2. Artifact capture is conservative: direct writes can produce hashes, but shell/Git/API mutations without a tracked path require a broader trusted before/after worktree journal. Git diff shows tracked changes, not untracked file contents or a guaranteed per-goal baseline.
-3. Normal goal executor can delegate to existing independent workers, but a dedicated planning-DAG/parallel merge conflict scheduler and explicit child-job quality integration remain deeper engineering goals.
+3. Normal goal executor can delegate to existing independent workers; pending/running/failed delegation statuses cannot satisfy independent success evidence. A dedicated planning-DAG/parallel merge conflict scheduler and explicit child-job quality integration remain deeper engineering goals.
 4. User goal receipt recording is live-source integrated; statistically significant task-completion, API spend and agent–RSI A→B→A improvement require actual independent real-run evidence.
 5. Current `goals.rs` retains a large iterative coordinator (with production tests now external) and `chat/runtime/turn.rs` still mixes substantial concerns. Further structural isolation should follow verified execution boundaries.
