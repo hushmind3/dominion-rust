@@ -68,6 +68,15 @@ pub async fn export_skill(State(state): State<AppState>, Path(id): Path<String>)
     }
 }
 
+/// Installed, enabled/disabled skills usable by agents; catalogue entries
+/// are only install candidates and must not be promised as executable skills.
+pub async fn installed_skills(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.store.all("skill").into_iter().map(|item|json!({
+        "id":item["id"],"name":item["name"],"description":item["description"],
+        "enabled":item["enabled"]!=false,"status":item["status"],
+    })).collect::<Vec<_>>()))
+}
+
 pub async fn skill_catalog(State(state): State<AppState>) -> Json<Value> {
     Json(engine::skills::catalog(&state))
 }
