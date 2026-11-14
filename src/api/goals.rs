@@ -207,3 +207,30 @@ pub async fn apply_goal(State(state):State<AppState>,Path(id):Path<String>,
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
+
+/// Shared-checkout preview is independent from isolated worktree /diff.
+/// It only enumerates files with successful goal edit receipts.
+pub async fn shared_changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"Goal not found");};
+    if goal["isolateWorktree"]==true{return error(StatusCode::CONFLICT,"Use isolated /diff instead");}
+    match engine::goal_changes::preview(&state,&goal).await{
+        Ok(v)=>Json(v).into_response(),
+        Err(e)=>error(StatusCode::CONFLICT,&e),
+    }
+}
+/// Restore one SHA-pinned, goal-edited tracked file from the frozen baseline.
+pub async fn shared_undo(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"Goal not found");};
+    if goal["isolateWorktree"]==true{return error(StatusCode::CONFLICT,"Isolated goals use rollback");}
+    if body.as_object().is_none_or(|map|map.len()!=2 ||
+        !map.contains_key("path")||!map.contains_key("expectedSha256")){
+        return error(StatusCode::BAD_REQUEST,"path and expectedSha256 are required.");
+    }
+    let Some(path)=body["path"].as_str() else{return error(StatusCode::BAD_REQUEST,"Invalid path");};
+    let Some(sha)=body["expectedSha256"].as_str() else{return error(StatusCode::BAD_REQUEST,"Invalid digest");};
+    match engine::goal_changes::undo(&state,&goal,path,sha).await{
+        Ok(v)=>Json(v).into_response(),
+        Err(e)=>error(StatusCode::CONFLICT,&e),
+    }
+}

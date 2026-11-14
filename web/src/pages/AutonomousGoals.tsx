@@ -11,11 +11,13 @@ type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
  planHistory?:{version:number;plan:string;reason:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  artifacts?:Artifact[];gaps?:string[];iterations?:number;maxIterations?:number;
- sessionId?:string;createdAt?:string;isolateWorktree?:boolean;
+ sessionId?:string;createdAt?:string;isolateWorktree?:boolean;gitBaseline?:{head:string;clean:boolean};
  gitWorktree?:{branch?:string;baseCommit?:string;path?:string;rolledBack?:boolean}}
 type GoalDiff={paths?:string[];status:string;unstaged?:string;staged?:string;diff?:string;
  branch?:string;baseCommit?:string;untracked?:string;note?:string;
  patchSha256?:string;canApply?:boolean;patchBytes?:number}
+type SharedChange={path:string;diff:string;currentSha256:string;canUndo:boolean;undoReason:string}
+type SharedChanges={goalId:string;baselineClean:boolean;sameHead:boolean;files:SharedChange[];notice:string}
 type Job={id:string;kind:string;status:string;input?:{goalId?:string};
  stepIndex?:number;stepTotal?:number}
 
@@ -27,6 +29,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
  const [isolate,setIsolate]=useState(true)
  const [drafts,setDrafts]=useState<Record<string,string>>({})
  const [diffs,setDiffs]=useState<Record<string,GoalDiff>>({})
+ const [shared,setShared]=useState<Record<string,SharedChanges>>({})
  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('')
  const reload=async()=>{await Promise.all([goals.reload(),jobs.reload()])}
  // SSE refreshes the records; polling fills in the gap after a tab reconnect.
@@ -68,6 +71,27 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    const result=await get<GoalDiff>('/api/goals/'+encodeURIComponent(goal.id)+'/diff')
    setDiffs(previous=>({...previous,[goal.id]:result}))
   }catch(e){setError((e as Error).message)}
+ }
+ const showShared=async(goal:Goal)=>{
+  if(shared[goal.id]){setShared(prev=>{const next={...prev};delete next[goal.id];return next});return}
+  setError('')
+  try{const snapshot=await get<SharedChanges>('/api/goals/'+encodeURIComponent(goal.id)+'/changes')
+    setShared(prev=>({...prev,[goal.id]:snapshot}))
+  }catch(e){setError((e as Error).message)}
+ }
+ const undoFile=async(goal:Goal,file:SharedChange)=>{
+  if(busy||active(goal.status)||!file.canUndo)return
+  if(!window.confirm('선택한 '+file.path+' 파일만 시작 당시 Git 내용으로 복원합니다. 다른 변경은 유지됩니다. 진행할까요?'))return
+  setBusy(goal.id);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/undo',{
+    path:file.path,expectedSha256:file.currentSha256
+   })
+   setShared(old=>{const next={...old};delete next[goal.id];return next})
+   setNotice('선택한 파일의 원본 내용을 복원하고 검증했습니다.')
+   await reload()
+  }catch(e){setError((e as Error).message);setShared(old=>{const next={...old};delete next[goal.id];return next})}
+  finally{setBusy('')}
  }
  const applyReviewed=async(goal:Goal)=>{
   const preview=diffs[goal.id]
@@ -185,8 +209,21 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
      {diffs[goal.id].staged&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].staged}</pre>}
      {!diffs[goal.id].note&&!diffs[goal.id].unstaged&&!diffs[goal.id].staged&&!diffs[goal.id].diff&&<p className="text-xs text-[#7C7469]">현재 작업 트리에 Git 변경이 없습니다. 이미 커밋된 변경 내용은 Git 기록에서 확인해야 합니다.</p>}
     </section>}
+    {shared[goal.id]&&<section className="mt-3 rounded-xl border border-[#EFE9DF] p-3">
+     <p className="text-xs font-semibold">공유 작업공간 변경 및 조건부 복원 · {shared[goal.id].files.length}개</p>
+     <p className="mt-1 text-xs text-[#7C7469]">시작 시 청결: {String(shared[goal.id].baselineClean)} · 기준 HEAD 유지: {String(shared[goal.id].sameHead)}</p>
+     <div className="mt-3 space-y-3">{shared[goal.id].files.map(file=><div key={file.path} className="space-y-1">
+      <p className="break-all text-xs font-semibold">{file.path}</p>
+      {file.diff&&<pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all bg-[#FAF7F1] p-2 font-mono text-[11px]">{file.diff}</pre>}
+      <Button size="sm" variant="ghost" disabled={!file.canUndo||busy!==''||active(goal.status)}
+       onClick={()=>void undoFile(goal,file)}>이 파일만 원본으로 복원</Button>
+      {!file.canUndo&&<p className="text-[11px] text-[#7C7469]">복원 불가: {file.undoReason}</p>}
+     </div>)}</div>
+    </section>}
     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
      {goal.sessionId&&<Button size="sm" variant="ghost" onClick={()=>openSession(goal.sessionId!)}><Bot size={14}/> 작업 대화 열기</Button>}
+     {!goal.isolateWorktree&&goal.gitBaseline&&<Button size="sm" variant="ghost"
+       onClick={()=>void showShared(goal)}>{shared[goal.id]?'파일 복원 닫기':'변경·파일 복원'}</Button>}
      {(goal.gitWorktree&&!goal.gitWorktree.rolledBack||goal.artifacts?.length)&&<Button size="sm" variant="ghost" onClick={()=>void showDiff(goal)}><ExternalLink size={13}/>{diffs[goal.id]?'diff 닫기':'실제 Git diff 확인'}</Button>}
      {goal.gitWorktree&&!goal.gitWorktree.rolledBack&&!active(goal.status)&&
       <Button size="sm" variant="danger" disabled={busy!==''} onClick={()=>void discard(goal)}>작업공간 폐기</Button>}

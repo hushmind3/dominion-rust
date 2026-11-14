@@ -238,6 +238,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals/:id/diff",get(goals::diff_goal))
         .route("/api/goals/:id/rollback",post(goals::rollback_goal))
         .route("/api/goals/:id/apply",post(goals::apply_goal))
+        .route("/api/goals/:id/changes",get(goals::shared_changes))
+        .route("/api/goals/:id/undo",post(goals::shared_undo))
         .route("/api/goals/:id/cancel",post(goals::cancel_goal))
         .route(
             "/api/goals/:id",
