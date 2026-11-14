@@ -163,6 +163,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
     let workdir=crate::engine::goal_git::workspace_for_goal(state,&goal)?;
+    // The legacy shared-workspace path can only offer SHA-guarded file undo
+    // if its original checkout was clean before any tool edited it.
+    if goal["isolateWorktree"]!=true && goal["gitBaseline"].is_null(){
+        let baseline=crate::engine::goal_changes::baseline(&workdir).await;
+        goal["gitBaseline"]=baseline.clone();
+        patch_goal(state,goal_id,json!({"gitBaseline":baseline}));
+    }
     let git_guidance=if goal["isolateWorktree"]==true{
         format!("\\nIsolated Git worktree: {}. Base commit: {}. The original checkout is NOT this workspace. Inspect Git changes before concluding. Never publish, merge or discard without owner action. Worktrees are not OS sandboxes.",
             workdir.display(),goal["gitWorktree"]["baseCommit"].as_str().unwrap_or(""))

@@ -805,7 +805,7 @@ pub(super) fn resolve_workspace(workspace: &Path, relative: &str) -> Result<Path
 }
 
 /// Resolve existing ancestors even when the final file has not been created.
-fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
+pub(crate) fn canonical_target(path: &Path) -> std::io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
