@@ -21,6 +21,7 @@ const model=process.env.BENCH_MODEL||"qwen3:4b-instruct";
 const providerId=process.env.BENCH_PROVIDER_ID||"sub1-local-eval";
 const reportPath=resolve(process.env.BENCH_REPORT||join(root,"live-goals.json"));
 const perTaskMs=Number(process.env.BENCH_TASK_TIMEOUT_MS||600_000);
+const backend=process.env.BENCH_EXECUTOR==='qwen_sdk'?'qwen_sdk':'dominion_goals';
 const sha=x=>createHash("sha256").update(x).digest("hex");
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const read=relative=>readFileSync(join(root,"workspace",relative),"utf8");
@@ -112,51 +113,82 @@ async function launchCase(test){
  const start=new Date();
  const inputHashes=Object.fromEntries(test.output.filter(p=>existsSync(join(root,"workspace",p)))
   .map(p=>[p,sha(read(p))]));
- let goal=null,error=null,job=null;
+ let goal=null,error=null,job=null,jobId=null;
  try{
-  const submitted=await request("/api/goals",{
-   goal:test.goal,successCriteria:test.successCriteria,
-   executor:{providerId,model},planner:{providerId,model},reviewer:{providerId,model},
-   maxIterations:6,maxReplans:1,replanAfter:2,tokenBudget:28000,
-   isolateWorktree:false
-  });
-  if(!submitted.id||!submitted.jobId)throw Error("No durable goal/job ID");
-  const deadline=Date.now()+perTaskMs;
-  while(Date.now()<deadline){
-   await wait(2500);
-   goal=await request("/api/goals/"+encodeURIComponent(submitted.id));
-   if(["completed","failed","needs_review","cancelled"].includes(goal.status))break;
+  if(backend==='qwen_sdk'){
+   // Same test case, model digest, workspace and external oracle.
+   // Change ONLY the harness, not the task and judge.
+   const response=await request('/api/jobs',{
+    kind:'sdk_local',requestId:crypto.randomUUID(),
+    input:{
+     providerId,model,prompt:test.goal,approvedLocalWrite:true,
+     maxSeconds:Math.min(420,Math.floor(perTaskMs/1000)-20),
+     maxEdits:18,successCriteria:test.successCriteria
+    }
+   });
+   if(!response.id)throw Error('SDK job was not durably registered');
+   jobId=response.id;
+   const deadline=Date.now()+perTaskMs;
+   while(Date.now()<deadline){
+    await wait(2500);
+    job=await request('/api/jobs/'+encodeURIComponent(jobId));
+    if(['completed','failed','needs_review','cancelled'].includes(job.status))break;
+   }
+   if(!job||!['completed','failed','needs_review','cancelled'].includes(job.status)){
+    error='time_budget_exhausted';
+    await request('/api/jobs/'+encodeURIComponent(jobId)+'/cancel',{}).catch(()=>{});
+    job=await request('/api/jobs/'+encodeURIComponent(jobId)).catch(()=>job);
+   }
+  }else{
+   const submitted=await request("/api/goals",{
+    goal:test.goal,successCriteria:test.successCriteria,
+    executor:{providerId,model},planner:{providerId,model},reviewer:{providerId,model},
+    maxIterations:6,maxReplans:1,replanAfter:2,tokenBudget:28000,
+    isolateWorktree:false
+   });
+   if(!submitted.id||!submitted.jobId)throw Error("No durable goal/job ID");
+   jobId=submitted.jobId;
+   const deadline=Date.now()+perTaskMs;
+   while(Date.now()<deadline){
+    await wait(2500);
+    goal=await request("/api/goals/"+encodeURIComponent(submitted.id));
+    if(["completed","failed","needs_review","cancelled"].includes(goal.status))break;
+   }
+   if(!goal||!["completed","failed","needs_review","cancelled"].includes(goal.status)){
+    error="time_budget_exhausted";
+    await request("/api/goals/"+encodeURIComponent(submitted.id)+"/cancel",{}).catch(()=>{});
+    goal=await request("/api/goals/"+encodeURIComponent(submitted.id)).catch(()=>goal);
+   }
+   job=await request("/api/jobs/"+encodeURIComponent(submitted.jobId)).catch(()=>null);
   }
-  if(!goal||!["completed","failed","needs_review","cancelled"].includes(goal.status)){
-   error="time_budget_exhausted";
-   await request("/api/goals/"+encodeURIComponent(submitted.id)+"/cancel",{}).catch(()=>{});
-   goal=await request("/api/goals/"+encodeURIComponent(submitted.id)).catch(()=>goal);
-  }
-  job=await request("/api/jobs/"+encodeURIComponent(submitted.jobId)).catch(()=>null);
  }catch(e){error=String(e)}
  let oraclePass=false,oracleError=null;
  try{oraclePass=await test.oracle()}catch(e){oracleError=String(e)}
  const outputHashes=Object.fromEntries(test.output.filter(p=>existsSync(join(root,"workspace",p)))
   .map(p=>[p,sha(read(p))]));
  return {
-  caseId:test.id,description:test.description,goalId:goal?.id??null,
-  jobId:goal?.jobId??null,status:goal?.status??"not_registered",
-  engineVerified:goal?.metrics?.verifiedCompleted===true,
+  caseId:test.id,description:test.description,backend,goalId:goal?.id??null,
+  jobId,status:backend==='qwen_sdk'?(job?.status??'not_registered'):(goal?.status??'not_registered'),
+  engineVerified:backend==='qwen_sdk'
+   ?job?.result?.status==='completed'&&job?.result?.acceptanceGaps?.length===0
+   :goal?.metrics?.verifiedCompleted===true,
   oraclePass,oracleError,
   startedAt:start.toISOString(),endedAt:new Date().toISOString(),
   elapsedMs:Date.now()-start.getTime(),
   inputHashes,outputHashes,
-  auditSource:goal?.metrics?.source??null,
-  usage:goal?.metrics?.usage??null,
-  evidenceCount:goal?.metrics?.successfulToolEvidenceCount??0,
-  unmetGaps:goal?.gaps?.length??null,
+  auditSource:backend==='qwen_sdk'?(job?.result?.verifiedBy??null):(goal?.metrics?.source??null),
+  usage:backend==='qwen_sdk'?(job?.result?.modelUsage??null):(goal?.metrics?.usage??null),
+  evidenceCount:backend==='qwen_sdk'
+   ?(job?.result?.verifiedFileWrites??0):(goal?.metrics?.successfulToolEvidenceCount??0),
+  unmetGaps:backend==='qwen_sdk'
+   ?(job?.result?.acceptanceGaps?.length??null):(goal?.gaps?.length??null),
   taskError:error,jobStatus:job?.status??null,
   // Neither model text nor source-side success flags are an oracle.
   evidenceModelClaimTrusted:false,
  };
 }
-const receipt={schemaVersion:1,kind:"sub1.real_model.goal_task_outcomes",
- source:"isolated_live_dominion_goal_jobs_with_private_host_oracle",
+const receipt={schemaVersion:1,kind:"sub1.real_model.agent_harness_comparison",backend,
+ source:"isolated_live_dominion_or_official_qwen_sdk_with_same_private_host_oracle",
  revision:process.env.GITHUB_SHA||"unversioned",model,providerId,
  startedAt:new Date().toISOString(),environment:null,
  cases:[],summary:null,actualBillingKrw:null,
@@ -222,7 +254,7 @@ try{
  persist();
  if(process.env.GITHUB_STEP_SUMMARY){
   appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-   "### Sub1 observed local-model goal outcomes\n"+
+   "### Sub1 observed local-model coding outcomes · "+backend+"\n"+
    "Real model: "+model+"; revision: "+receipt.revision+"\n\n"+
    "Private-oracle passes: **"+passed+"/"+cases.length+
    "**. Both model-goal proof and oracle pass: **"+receipt.summary.bothChecksPass+"/"+cases.length+
