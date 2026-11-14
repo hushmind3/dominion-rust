@@ -677,3 +677,10 @@ The goal engine is a working, owner-controlled pipeline, not a screenshot-only s
 - SWE-bench 실행기에서 출력 경로를 절대 경로로 고정하고 공식 평가기 보고서의 2종 경로를 안전하게 처리합니다. 전체 도구 시도/성공/실패/불확실 상태와 실패 후 목표 완료율을 계측하며, 공식 Docker 채점 점수는 별도 보관합니다.
 - 실증 검증용 [Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11)을 개설했습니다. 미실행 Cargo/CI/SWE-bench 점수를 성공으로 기록하지 않습니다.
 
+### 2026-11-15: 최종 모델 경계와 유료 영상 납품 검수
+
+- 에이전트 도구 메뉴는 일반 라운드와 RSI 단계별 재구성 **이후** 모두 모델 전송 직전에 스키마 바이트 예산을 재검증합니다. 초과 시 실제 제공 가능한 도구만 유지하고 `harness.tool_schema_final_budget` 감사 이벤트를 남깁니다.
+- SWE-bench Verified는 문제별 해시 작업공간과 Git 저장소 이름 검증, 정확한 `--instance_ids` 범위, 바이너리·입력·패치에 묶인 고유 채점 `run_id`를 적용합니다. 재현 매니페스트와 관측 호출·복구 지표를 저장합니다.
+- LTX 다중 클립 영상은 개별 유료 영수증 외에 **합성 완료 전 최종 MP4**의 재생 길이·화면비·오디오를 FFprobe로 검증합니다. 검수에 실패하면 `output.part.mp4`와 기존 유료 클립을 보존하고 자동 재과금을 하지 않습니다. 성공 결과는 `finalTechnicalQuality`와 `finalOutputSha256`를 포함합니다.
+- 실제 로컬 FFmpeg/FFprobe 합성 스모크를 실행해 3초+3초 클립의 최종 6.128초 합성과 오디오 존재를 확인했습니다. 이것은 **Rust 빌드·실모델 생성·SWE-bench 완료 증거는 아닙니다**.
+
