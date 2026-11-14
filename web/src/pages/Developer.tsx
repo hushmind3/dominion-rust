@@ -1,7 +1,7 @@
 import {t,useLocale,formatDateTime} from '../i18n'
 import {useEffect,useState} from 'react'
 import {Check,Code2,Eye,GitCommit,Hammer,Package,Play,RefreshCw,Square,Terminal,TestTube2,UploadCloud} from 'lucide-react'
-import {Button,TextInput} from '../components/Primitives'
+import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {get,post} from '../api'
 
@@ -23,10 +23,13 @@ export function DeveloperPage(){
  const loc=useLocale()
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
  const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
+ const flows=useRemote<{id:string;name:string;steps:{agentId:string}[]}[]>('/api/workflows',[])
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
  const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState('')
+ const [reviewFlow,setReviewFlow]=useState(''),[reviewBusy,setReviewBusy]=useState(false)
+ const [reviewRequestId,setReviewRequestId]=useState('')
  useEffect(()=>{setSourceDir(status.value.config.sourceDir||'');setRepoUrl(status.value.config.repoUrl||'');setBranch(status.value.config.branch||'main')},[status.value.config.sourceDir,status.value.config.repoUrl,status.value.config.branch])
  useEffect(()=>{
   if(!jobId)return
@@ -66,6 +69,23 @@ export function DeveloperPage(){
   catch(e){setError((e as Error).message)}
  }
  const openPreview=async()=>{const url=status.value.preview.url;if(!url){setError(t('dev.startPreviewFirst'));return}try{const bridge=(window as any).dominionDesktop;if(bridge?.openPreview)await bridge.openPreview(url);else window.open(url,'_blank')}catch(e){setError((e as Error).message)}}
+ const reviewDiff=async()=>{
+  if(!reviewFlow||!diff?.changes.length||reviewBusy)return
+  const requestId=reviewRequestId||crypto.randomUUID()
+  setReviewRequestId(requestId);setReviewBusy(true);setError('');setMessage('')
+  try{
+   const patch=diff.changes.map(change=>
+    'FILE '+change.path+' ['+change.status+']\n'+change.patch).join('\n\n')
+   const text=('아래는 개발자 도구에서 실제 추출한 Git 변경 내용입니다. 이 변경만을 검토하고 결함과 근거를 구분한 검토 보고서를 납품하세요. 소스 수정은 사용자가 명시적으로 요청하지 않는 한 하지 마세요.\n'+
+    '저장소: '+(status.value.config.repoUrl||'local')+'\n브랜치: '+(status.value.branch||status.value.config.branch)+'\n\n'+patch)
+    .slice(0,15500)
+   const job=await post<{id:string}>('/api/workflows/'+encodeURIComponent(reviewFlow)+'/run',
+    {input:text,requestId})
+   setReviewRequestId('')
+   setMessage('Git 실제 변경을 에이전트 검토 워크플로로 등록했습니다. Job '+job.id.slice(0,12)+'. 결과는 워크플로 메뉴에서 확인하세요.')
+  }catch(e){setError((e as Error).message+' · 동일 요청 ID로 재시도하면 중복 실행을 피합니다.')}
+  finally{setReviewBusy(false)}
+ }
  const commit=async()=>{
   const message=commitMessage.trim();
   if(!message){setError(t('dev.commitMessageRequired'));return}
@@ -109,6 +129,20 @@ export function DeveloperPage(){
     <Panel className="min-w-0 p-5">
      <Subheading title={t('dev.changes')} extra={<div className="flex items-center gap-2"><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void loadDiff()}><RefreshCw size={12}/> {t('dev.refresh')}</Button><span className="text-[11px] text-[#8A8176]">{t('dev.count',{count:diff?.count||0})}</span></div>}/>
      <div className="mb-3 flex gap-2"><TextInput value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder={t('dev.commitMessage')}/><Button variant="secondary" className="shrink-0 whitespace-nowrap" disabled={!diff?.count} onClick={()=>void commit()}><GitCommit size={14}/> {t('dev.commit')}</Button></div>
+     <div className="my-3 grid gap-2 rounded-xl border border-[#E7D8C8] bg-[#FFF9F1] p-3">
+       <strong className="text-xs">실제 Git 차이 → 에이전트 검토 워크플로</strong>
+       <p className="text-[11px] text-[#7C7469]">현재 Git diff를 선택한 워크플로의 실제 입력으로 전달하고, 단계별 도구 영수증과 최종 검토 보고서를 저장합니다. 실행은 선택·버튼 확인 후에만 시작합니다.</p>
+       <SelectInput value={reviewFlow} onChange={e=>{setReviewFlow(e.target.value);setReviewRequestId('')}}>
+        <option value="">검토할 워크플로 선택</option>
+        {flows.value.map(flow=><option key={flow.id} value={flow.id}>{flow.name} · {flow.steps.length}단계</option>)}
+       </SelectInput>
+       <div className="flex flex-wrap items-center gap-2">
+        <Button variant="secondary" disabled={!s.git||!diff?.count||!reviewFlow||reviewBusy} onClick={()=>void reviewDiff()}>
+         <Code2 size={14}/> {reviewBusy?'검토 작업 등록 중':'실제 변경 검토 실행'}
+        </Button>
+        <a href="#/workflows" className="text-xs text-[#A94E30] underline">워크플로·완성 산출물 열기</a>
+       </div>
+     </div>
      {diff?.changes.length?<div className="grid max-h-[420px] gap-2 overflow-auto">{diff.changes.map(change=><details key={change.path} className="rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-2"><summary className="cursor-pointer text-[11px] font-semibold text-[#5C544A]">{change.status} · {change.path}</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-4 text-[#3A342D]">{change.patch}</pre></details>)}</div>:<p className="text-[11px] text-[#8A8176]">{t('dev.noChanges')}</p>}
     </Panel>
    </div>
