@@ -766,7 +766,8 @@ pub(super) async fn run_turn_body(
         } else {
             tool_definitions.clone()
         };
-        if !round_tools.is_empty() {
+        if !force_final && (!round_tools.is_empty()
+            || (dynamic_tool_discovery && !discovery_catalog.is_empty())) {
             let budget = provider
                 .context_tokens
                 .map(|tokens| {
