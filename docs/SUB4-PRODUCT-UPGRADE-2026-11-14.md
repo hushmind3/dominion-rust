@@ -124,3 +124,13 @@ SQLite: jobs, sessions, messages, audit, secrets / vault
 ### 자율 목표 실행 토큰 예산 및 소스 계약 (2026-11-14)
 
 `api/goals.rs`는 자율 작업별 `tokenBudget`(0=무제한, 기본 150,000, 최대 2,000,000)을 저장한다. `goals.rs::run`은 다음 executor 턴 시작 직전에 `db::session_usage`의 실제 누적 토큰을 조회하며, 초과 시 `needs_review`로 마무리한다. `goals/report.rs`의 `finalReport.sessionUsage`와 `Goals.tsx`에 관측된 입력/출력/캐시 토큰과 호출 횟수를 표시한다. Planner·Reviewer의 별도 추론·제공자 청구는 이 예산에 자동 포함되지 않아 청구 총액 상한으로 선전하지 않는다. `tests/unit/goals_api_lifecycle_tests.rs`에서 목표-작업 연결, 대기중 계획 수정, 취소 및 명시 확인 후 재개를 검사하도록 작성했다(미실행).
+
+## 10. 유료 클립 검수와 비디오 과금 차단 게이트 (2026-11-14)
+
+`video/quality.rs::{executable,inspect,evaluate}`는 실행 전 ffprobe 존재를 확인하고 결제된 각 MP4 클립을 FFprobe JSON의 길이·화면비·해상도·오디오 정보로 검증한다. `video/runway.rs::run`은 한 클립에서 검수에 실패하면 뒤 클립을 제출하지 않고 `needs_review`를 반환한다. `videoState.qualityReports`와 `finalQuality`로 영속 체크포인트를 남기고, 병합된 MP4도 재검수한다. `web/src/pages/Video.tsx`에서 옵션과 결과를 표시한다. 검사 자체는 내용의 인물 일관성, 움직임 미학, 대사 진실성의 자동 품질 점수는 아니다. 기본 자동 검수는 FFmpeg 옆 ffprobe를 필요로 하며, 이를 사전 검출하여 첫 결제 전 중단한다. `tests/unit/video_quality_gate_tests.rs`에 기술 품질 검증 테스트를 추가했다.
+
+2026-10-23 Runway Dev Kling 4.0 공개 사양: https://docs.dev.runwayml.com/api-details/api_changelog/ . 전자화폐/달러 환산 고정 단가를 엔진에 하드코딩하지 않아 변동 요금을 잘못 약속하지 않는다.
+
+## 11. 에이전트 Git 작업 결과와 중단 전파 (2026-11-14)
+
+`goals/git.rs::snapshot`은 첫 실행 전 저장소 HEAD·변경 상태를 보존하고 `report`는 결과 시점에 diff 통계·작업트리 변화·수정 파일을 기록한다. `goals/report.rs`가 `finalReport.gitChanges`로 전달하고 `Goals.tsx`가 표시한다. 이 자료는 Git repository 관측 결과이며 자동 수정 attribution은 실제 도구 영수증으로만 판정한다. `state.rs`의 `cancel_delegated_descendants`는 부모 세션 취소가 별도 prompt job으로 분리된 모든 하위 위임 세션까지 전파되도록 한다. 회귀 테스트는 `tests/unit/{goal_git_report_tests,state_delegation_cancel_tests}.rs`에 작성했다.
