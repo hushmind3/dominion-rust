@@ -28,6 +28,7 @@ jobs:
       - run: npm ci --prefix web
       - run: node --check scripts/sub1-measured-goal-eval.mjs
       - run: node --test scripts/tests/sub1-sandboxed-eval.test.mjs
+      - run: python3 -m unittest discover -s scripts/agent_sdk -p 'test_*.py' -v
       - run: node scripts/verify-frontend-navigation.mjs
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
