@@ -1,4 +1,4 @@
-import {openImprovementIssue} from "../components/ImprovementNotice"
+import {openImprovementIssue} from "../components/ImprovementIssue"
 import {TokenUsage} from '../components/TokenUsage'
 import {OwnerAvatar,useOwnerProfile} from '../components/OwnerProfile'
 import {createPortal} from 'react-dom'
