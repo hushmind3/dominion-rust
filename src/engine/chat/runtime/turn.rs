@@ -1765,7 +1765,7 @@ pub(super) async fn run_turn_body(
                     state,
                     execution_id,
                     "tool.combination",
-                    results.iter().all(|result| {
+                    valid_calls.len() == read_calls.len() && results.iter().all(|result| {
                         result.as_ref().is_ok_and(|(_, ok, _)| *ok)
                     }),
                 );
