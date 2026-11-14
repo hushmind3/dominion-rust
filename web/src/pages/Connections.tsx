@@ -61,10 +61,10 @@ export function ConnectionsPage(){
   setError('');
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
- const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
-  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
-  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
-  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
+ const sectionTabs=<div role="tablist" aria-label="연결 관리" className="mb-4 flex flex-wrap items-center gap-2">
+  <Button role="tab" aria-selected={section==='channels'} variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
+  <Button role="tab" aria-selected={section==='extensions'} variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
+  <Button role="tab" aria-selected={section==='capabilities'} variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
  </div>;
  if(section!=='channels'){
   return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
