@@ -360,8 +360,38 @@ pub(super) fn budgeted_tool_definitions(
         b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
     let mut used=0usize;
     let mut chosen=std::collections::HashSet::new();
+    // Coding requires an executable tool *chain*, not merely the highest
+    // independently-scored schemas. A cheap read/edit/test/diff bundle is
+    // reserved first when all four operations fit the provider allowance.
+    // Select the smallest usable schema within each role, without inventing
+    // tools absent from the permission-filtered input catalog.
+    if coding {
+        let roles: &[&[&str]] = &[
+            &["workspace_read_range","workspace_read","file_read"],
+            &["workspace_replace_range","workspace_replace","workspace_write","file_write"],
+            &["shell_exec","terminal_exec"],
+            &["workspace_diff"],
+        ];
+        let anchors=roles.iter().map(|alternatives|{
+            definitions.iter().enumerate()
+                .filter(|(index,definition)|
+                    sizes[*index]!=usize::MAX
+                    && alternatives.contains(&tool_name(definition)))
+                .min_by_key(|(index,_)|sizes[*index])
+                .map(|(index,_)|index)
+        }).collect::<Option<Vec<_>>>();
+        if let Some(anchors)=anchors {
+            let required=anchors.iter().try_fold(0usize,|sum,index|
+                sum.checked_add(sizes[*index]));
+            if required.is_some_and(|bytes|bytes<=budget) {
+                for index in anchors {
+                    if chosen.insert(index) {used+=sizes[index];}
+                }
+            }
+        }
+    }
     for (index,_score,size) in ranked {
-        if size==usize::MAX {continue;}
+        if size==usize::MAX || chosen.contains(&index) {continue;}
         if size<=budget.saturating_sub(used) {
             used+=size;
             chosen.insert(index);
@@ -378,4 +408,59 @@ pub(super) fn budgeted_tool_definitions(
     definitions.into_iter().enumerate()
         .filter_map(|(index,definition)|chosen.contains(&index).then_some(definition))
         .collect()
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema(name:&str)->Value {
+        json!({"type":"function","function":{"name":name,"description":"execute a tool",
+            "parameters":{"type":"object","properties":{}}}})
+    }
+
+    #[test]
+    fn coding_budget_keeps_complete_read_edit_test_diff_chain() {
+        let essentials=["workspace_read_range","workspace_replace_range",
+            "shell_exec","workspace_diff"].into_iter().map(schema).collect::<Vec<_>>();
+        let allowance=essentials.iter()
+            .map(|tool|serde_json::to_string(tool).unwrap().len()).sum();
+        let mut offered=vec![schema("mcp_code_helper"),schema("mcp_code_extra")];
+        offered.extend(essentials);
+        let recent=["mcp_code_helper".to_string(),"mcp_code_extra".to_string()]
+            .into_iter().collect();
+        let selected=budgeted_tool_definitions(offered,allowance,"fix code and run tests",&recent);
+        let names=selected.iter().map(tool_name).collect::<Vec<_>>();
+        for essential in ["workspace_read_range","workspace_replace_range",
+            "shell_exec","workspace_diff"] {
+            assert!(names.contains(&essential),"{essential} missing from coding chain");
+        }
+        assert_eq!(selected.iter()
+            .map(|tool|serde_json::to_string(tool).unwrap().len()).sum::<usize>(),allowance);
+        assert_eq!(names,vec!["workspace_read_range","workspace_replace_range",
+            "shell_exec","workspace_diff"]);
+    }
+
+    #[test]
+    fn schema_budget_never_introduces_unadvertised_tools() {
+        let offered=vec![schema("workspace_read"),schema("shell_exec")];
+        let limit=serde_json::to_string(&offered[0]).unwrap().len();
+        let selected=budgeted_tool_definitions(offered.clone(),limit,
+            "refactor and test", &std::collections::HashSet::new());
+        assert!(!selected.is_empty());
+        assert!(selected.iter().all(|row|offered.contains(row)));
+        assert!(selected.iter().map(|row|serde_json::to_string(row).unwrap().len())
+            .sum::<usize>()<=limit);
+    }
+
+    #[test]
+    fn noncoding_budgets_keep_existing_relevance_ranking() {
+        let offered=vec![schema("weather_search"),schema("workspace_write")];
+        let allowance=serde_json::to_string(&offered[0]).unwrap().len();
+        let selected=budgeted_tool_definitions(offered,allowance,"weather",
+            &std::collections::HashSet::new());
+        assert_eq!(selected.len(),1);
+        assert_eq!(tool_name(&selected[0]),"weather_search");
+    }
 }
