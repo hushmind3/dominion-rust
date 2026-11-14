@@ -58,13 +58,22 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
         // compare both the index identity and the actual source bytes again.
         // This is a consistency repair, never an acceptance override.
         let refreshed=crate::engine::code_index::refresh(state,&base)?;
-        let rebuilt=refreshed["id"].as_str()==Some(index_id)
-            && crate::engine::code_index::indexed_source_hash(state,index_id,path)
-                .as_deref()==Some(sha);
+        // Re-derive the index ID from the pinned checkout itself. Requiring
+        // an inherited cache ID to equal this ID confuses stale navigation
+        // metadata with source provenance; no code is accepted on cache alone.
+        let fresh_id=refreshed["id"].as_str().ok_or("재생성된 소스 인덱스 ID 없음")?;
+        let fresh_hash=crate::engine::code_index::indexed_source_hash(state,fresh_id,path);
         let final_sha=format!("{:x}",Sha256::digest(
             fs::read(&actual).map_err(|e|e.to_string())?));
-        if !rebuilt || final_sha!=sha {
-            return Err(format!("현재 소스와 다른 탐색 근거: {path} (index mismatch after reindex)"));
+        if fresh_hash.as_deref()!=Some(sha) || final_sha!=sha {
+            return Err(format!("현재 소스와 다른 탐색 근거: {path} (fresh pinned-source index mismatch)"));
+        }
+        if fresh_id!=index_id {
+            state.store.audit("rsi.index.cache_rebound",json!({
+                "path":path,"recordedIndexId":index_id,
+                "verifiedIndexId":fresh_id,"sourceSha256":sha,
+                "actualSourceVerified":true
+            }));
         }
     }
     Ok(())
