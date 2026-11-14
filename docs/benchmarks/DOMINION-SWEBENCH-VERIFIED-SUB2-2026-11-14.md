@@ -67,3 +67,19 @@ unknown, so a partial Docker run never becomes a fabricated solve rate.
 The predictions are created from exact raw git diff bytes including final
 newlines. Source repos and the byte-exact prediction files are preserved in
 the isolated benchmark output folder for audit and independent grading.
+
+
+## Matching conditions between agents and RSI generations
+
+Every report now records the actual compiled Rust binary SHA-256, the exact
+benchmark input manifest SHA-256, sanitised provider/model settings (never
+credentials), iteration/timeout budgets and scoring mode. For causal
+comparisons, hold all of these fixed except the tested agent revision
+or the explicitly stated search-selection policy. The official resolved
+count, not model self-reports or number of nonempty patches, defines quality.
+
+Generated Git patches are preserved byte-for-byte; local whitespace style
+checks cannot silently delete an actual prediction. Known grader failures
+remain in per-instance reports. No cost in KRW is fabricated when model
+billing rates and provider invoices are unknown; the report stores measured
+total tokens including unsuccessful tasks instead.

@@ -47,5 +47,7 @@ test('success count stays null without the official Docker evaluator',()=>{
  const final=summarize(graded);
  assert.equal(final.officialResolved,1);
  assert.equal(final.officialResolveRate,1/3);
+ assert.equal(final.tokensPerOfficialResolution,1000);
+ assert.equal(final.actualBilledKRW,null);
  assert.equal(summarize([...rows,{patchBytes:0,usage:null}]).tokensPerGeneratedPatch,null);
 });

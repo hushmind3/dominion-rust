@@ -11,7 +11,7 @@
  * Each problem has a completely separate, disposable checkout AND database.
  */
 import {createHash, randomUUID} from 'node:crypto';
-import {existsSync,mkdirSync,readFileSync,writeFileSync,realpathSync} from 'node:fs';
+import {createReadStream,existsSync,mkdirSync,readFileSync,writeFileSync,realpathSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {spawn,spawnSync} from 'node:child_process';
 import {dirname,isAbsolute,join,resolve} from 'node:path';
@@ -20,6 +20,11 @@ import {fileURLToPath} from 'node:url';
 const NOW=()=>new Date().toISOString();
 const sleep=(ms)=>new Promise(done=>setTimeout(done,ms));
 const SHA=(value)=>createHash('sha256').update(value).digest('hex');
+async function fileSha(path){
+  const hash=createHash('sha256');
+  for await(const chunk of createReadStream(path)){hash.update(chunk);}
+  return hash.digest('hex');
+}
 const TERMINAL=new Set(['completed','failed','cancelled','needs_review']);
 
 function demand(ok,reason){if(!ok)throw Error(reason)}
@@ -55,6 +60,11 @@ export function summarize(rows){
       ?rows.filter(x=>x.officialSolved).length:null,
     officialResolveRate:rows.length>0 && rows.every(x=>typeof x.officialSolved==='boolean')
       ?rows.filter(x=>x.officialSolved).length/rows.length:null,
+    tokensPerOfficialResolution:counted.length===total&&total>0
+      && rows.every(x=>typeof x.officialSolved==='boolean')
+      && rows.some(x=>x.officialSolved)
+      ?tokens/rows.filter(x=>x.officialSolved).length:null,
+    actualBilledKRW:null,
     note:'Only the official SWE-bench Docker grader can populate officialResolved and officialResolveRate. Native goal completion and nonempty patches are NOT solved tests.'
   };
 }
@@ -122,8 +132,8 @@ function makePatch(dir,base){
   // Include true new source files without staging them for a real commit.
   cwdGit(dir,['add','-N','--','.']);
   const patch=command('git',['-C',dir,'diff','--binary','--no-ext-diff',base,'--','.'],{raw:true});
-  const checks=cwdGit(dir,['diff','--check',base,'--','.']);
-  demand(checks==='','generated patch failed git diff --check');
+  // Preserve the actual patch even when whitespace lint would object.
+  // The official grader, not our local quality heuristic, owns resolution.
   return patch;
 }
 function safeName(id){return id.replace(/[^A-Za-z0-9_.-]/g,'_')}
@@ -230,13 +240,28 @@ async function run(){
   mkdirSync(s.output,{recursive:true});
   const runId='dominion-swe-'+Date.now()+'-'+randomUUID().slice(0,8);
   const name='DOMINION-Rust-'+s.provider.model;
+  const reproducibility={
+    binarySha256:await fileSha(s.binary),
+    taskManifestSha256:await fileSha(s.tasks),
+    taskManifestCount:tasks.length,
+    provider:{
+      kind:s.provider.kind||'openai',
+      baseUrl:s.provider.baseUrl,
+      model:s.provider.model,
+      toolMode:s.provider.toolMode||'default',
+      reasoningProtocol:s.provider.reasoningProtocol||'default',
+    },
+    maxIterations:s.maxIterations,timeoutMinutes:s.timeoutMinutes,
+    configuredGrades:s.grade,
+  };
   const receipts=[],predictions=[];
   const predictionFile=join(s.output,'predictions.jsonl');
   const report=join(s.output,'report.json');
   const save=()=>{
     writeFileSync(predictionFile,predictions.map(x=>JSON.stringify(x)).join('\n')+(predictions.length?'\n':''));
     persist(report,{runId,createdAt:NOW(),dataset:'princeton-nlp/SWE-bench_Verified',
-      model:name,instanceIds:tasks.map(x=>x.instance_id),summary:summarize(receipts),receipts,
+      model:name,instanceIds:tasks.map(x=>x.instance_id),reproducibility,
+      summary:summarize(receipts),receipts,
       evaluatorCommand:['python','-m','swebench.harness.run_evaluation',
         '--dataset_name','princeton-nlp/SWE-bench_Verified',
         '--predictions_path',predictionFile,'--max_workers','2','--run_id',runId]});
