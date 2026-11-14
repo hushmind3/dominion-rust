@@ -44,6 +44,8 @@ import {
   useRemote,
 } from "../components/UI";
 import { t, useLocale } from "../i18n";
+type AgentOutcome={agentId:string;goalCount:number;internallyAccepted:number;deliveredOrNonIsolated:number;active:number;needsReview:number;workflowAssignedSteps:number;workflowCompletedSteps:number;recordedGoalTokens:number;recordedGoalModelCalls:number;estimatedGoalModelCalls:number;tokenTelemetryMissingGoals:number;recentGoals:{id:string;goal:string;status:string}[]}
+type AgentPortfolio={agents:AgentOutcome[];proofLevel:string;realBillingKrw:null}
 const accents = [
   "#5979e8",
   "#9067d9",
@@ -56,6 +58,14 @@ export function AgentsPage() {
   useLocale();
   const agents = useRemote<Agent[]>("/api/agents", []),
     providers = useRemote<Provider[]>("/api/providers", []);
+  const portfolio = useRemote<AgentPortfolio>("/api/agents/portfolio",{agents:[],proofLevel:"internal_runtime_observation",realBillingKrw:null},false);
+  const [runner,setRunner]=useState<string|null>(null);
+  const [goalText,setGoalText]=useState("");
+  const [goalIsolated,setGoalIsolated]=useState(false);
+  const [goalBudget,setGoalBudget]=useState(60000);
+  const [goalBusy,setGoalBusy]=useState(false);
+  const [createdGoal,setCreatedGoal]=useState<{id:string;jobId:string}|null>(null);
+  const [goalError,setGoalError]=useState("");
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
     [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
@@ -68,6 +78,17 @@ export function AgentsPage() {
     [bulkNotice, setBulkNotice] = useState("");
   const enabledProviders = providers.value.filter(p => p.enabled !== false);
   const editProvider = enabledProviders.find(p => p.id === edit?.providerId);
+  const launchAgentGoal=async()=>{
+    if(!runner||!goalText.trim()||goalBusy)return;
+    setGoalBusy(true);setGoalError("");
+    try{
+      const created=await post<{id:string;jobId:string}>('/api/agents/'+encodeURIComponent(runner)+'/goal',{
+        goal:goalText.trim(),isolateWorktree:goalIsolated,tokenBudget:goalBudget,
+        successCriteria:[]
+      });
+      setCreatedGoal(created);setGoalText("");await portfolio.reload();
+    }catch(e){setGoalError((e as Error).message)}finally{setGoalBusy(false)}
+  };
   const editModels = useProviderModels(edit?.providerId || "");
   const bulkModels = useProviderModels(bulk ? bulkProvider : "");
   const closeEditor = () => { if (!saving) { setEdit(null); setError(""); } };
@@ -321,12 +342,39 @@ export function AgentsPage() {
                   (a.providerId ? t('agents.providerMissing') : t('agents.modelInChat'))}
               </span>
               {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}
-              <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
+              {(()=>{
+                 const stats=portfolio.value.agents.find(p=>p.agentId===a.id);
+                 return stats?<div className="mt-2 border-t border-[#EEE5D9] pt-2 text-[11px] leading-5">
+                   <strong>실제 작업 원장</strong>
+                   <div>목표 {stats.goalCount}건 · 내부 검증 {stats.internallyAccepted}건 · 원본 반영·비격리 {stats.deliveredOrNonIsolated}건</div>
+                   <div>실행 중 {stats.active}건 · 검토 대기 {stats.needsReview}건 · 협업 단계 {stats.workflowCompletedSteps}/{stats.workflowAssignedSteps}</div>
+                   <div>기록 토큰 {stats.recordedGoalTokens.toLocaleString('ko-KR')} · 사용량 누락 목표 {stats.tokenTelemetryMissingGoals}건</div>
+                   <p className="text-[#9A5947]">내부 실행 기록이며 실모델 독립 성능·공급자 청구액과 구분됩니다.</p>
+                 </div>:null
+              })()}
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+               <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
+               <Button variant="secondary" onClick={()=>{setRunner(a.id);setCreatedGoal(null);setGoalError("");setGoalText("")}}><Play size={13}/> 자율 작업 실행</Button>
+              </div>
             </div>
           </Panel>
         ))}
       </div>
-      {!edit && <Notice message={error || agents.error || providers.error} />}
+      {!edit && <Notice message={error || agents.error || providers.error || portfolio.error} />}
+      {runner&&<DialogBackdrop onDismiss={()=>{if(!goalBusy)setRunner(null)}}>
+        <DialogPanel size="wide" aria-label="에이전트 자율 작업 실행">
+         <div className="space-y-4 p-5">
+          <div className="flex items-center justify-between"><h2 className="text-lg font-bold">에이전트 자율 작업 · {agents.value.find(a=>a.id===runner)?.name}</h2><Button variant="ghost" onClick={()=>setRunner(null)} disabled={goalBusy}><X size={16}/></Button></div>
+          <p className="text-xs text-[#7C7469]">현재 에이전트의 모델·지침을 이용해 실제 목표→계획→도구→검증 작업을 등록합니다. 목표·작업은 하나의 트랜잭션으로 저장되며 중단·검토·재개는 목표 화면에서 관리합니다.</p>
+          <FormField label="완수할 작업"><TextArea rows={5} value={goalText} onChange={e=>setGoalText(e.target.value)} placeholder="예: 프로젝트 로그인 오류를 분석하고 검증 가능한 수정안을 완성해 주세요."/></FormField>
+          <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={goalIsolated} onChange={e=>setGoalIsolated(e.target.checked)}/> Git 격리 작업공간에서 수정 (사용자 검토 후 원본 반영)</label>
+          <FormField label="이번 목표 토큰 예산"><TextInput type="number" min={0} max={2000000} step={10000} value={goalBudget} onChange={e=>setGoalBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
+          {goalError&&<Notice message={goalError}/>}
+          {createdGoal?<div className="rounded-xl border border-[#E7E0D5] p-3 text-xs"><p>✅ 목표와 실행 작업 등록 완료 · {createdGoal.id.slice(0,12)}</p><a className="mt-2 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline" href="#/goals">목표 화면에서 실행·검증 확인 <ArrowRight size={13}/></a></div>:null}
+          <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setRunner(null)} disabled={goalBusy}>닫기</Button><Button onClick={()=>void launchAgentGoal()} disabled={goalBusy||!goalText.trim()}><Play size={14}/>{goalBusy?'등록 중':'작업 등록'}</Button></div>
+         </div>
+        </DialogPanel>
+      </DialogBackdrop>}
       {showPersonaImport&&<PersonaImportDialog agents={agents.value} onClose={()=>setShowPersonaImport(false)} onImported={async(count)=>{await agents.reload();refresh();setBulkNotice(t('agents.personaImported', { count }))}}/>}
       {edit && (
         <DialogBackdrop onDismiss={closeEditor}>

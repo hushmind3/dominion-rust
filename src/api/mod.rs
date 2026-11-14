@@ -184,6 +184,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/providers/:id/gateway", get(gateways::inspect))
         // agents
         .route("/api/agents", get(agents::list_agents).post(agents::save_agent))
+        .route("/api/agents/portfolio",get(agents::portfolio))
+        .route("/api/agents/:id/goal",post(agents::run_agent_goal))
         .route("/api/agents/bulk-model", post(agents::bulk_agent_model))
         .route("/api/personas/import/preview", get(personas::preview))
         .route("/api/personas/import", post(personas::import))
