@@ -617,4 +617,18 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 
 심판이 지적한 기억 수정 누락도 보완했습니다. `Memory.tsx`에서 개별 기억의 내용을 직접 편집할 수 있고, `POST /api/memories/:id/edit`는 `api/collections.rs::action`에서 원본 문구 비교 후 원자적으로 반영합니다. 원래 범위·출처·근거를 보존하고 `owner_revision`으로 사용자 정정 사실을 명시합니다. 동시 수정 충돌은 HTTP 409로 반환합니다.
 
-**전체 메뉴 14개** 및 화면 → API → 엔진과 실행/검증 수준은 [서브2 전 메뉴·알림·기억 감사](docs/architecture/SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md)에 정리했습니다. 프런트 타입 검사·빌드가 통과한 커밋은 `d8aca686`; 이후 기억 API 테스트와 문서 변경의 Rust 전체 테스트/실제 브라우저 검증은 CI 실행 결과와 구분해야 합니다.
+**당시 전체 메뉴 14개** 및 화면 → API → 엔진과 실행/검증 수준은 [서브2 전 메뉴·알림·기억 감사](docs/architecture/SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md)에 정리했습니다. 프런트 타입 검사·빌드가 통과한 커밋은 `d8aca686`; 이후 기억 API 테스트와 문서 변경의 Rust 전체 테스트/실제 브라우저 검증은 CI 실행 결과와 구분해야 합니다.
+
+## 2026-11-14 · 서브2 재심사 대응: 자율 목표 15번째 메뉴 · 장편 AI 영상 · 기억 출처 보호
+
+심판 재심사에서 `dominion-sub2`는 **68/100**(영상 5/15, 자율 에이전트 19/25)이었습니다. 이는 변경 전 HEAD `7fbc8a9`의 심사 점수이며 **변경 후 점수는 심판의 독립 재평가 전까지 주장하지 않습니다.**
+
+- **독립 자율 목표:** `web/src/components/WorkspaceShell.tsx`, `web/src/pages/Goals.tsx`, `web/src/App.tsx`에서 사이드바 작업공간에 **자율 목표**를 추가하여 전체 **15개 메뉴**로 변경. 홈의 `GoalConsole`와 **동일한** 목표·실행·계획 수정·승인·중단·재개·Git SHA 검토 및 적용 경로를 사용합니다. 기존 백엔드 목표 엔진은 중복하지 않습니다.
+- **클라우드 LTX 2.5 멀티샷:** `engine/video/{film,ltx,quality}.rs` 및 `api/video.rs`를 통해 **2~6개**의 유료 장면을 작업 계획으로 동결하고, 각 장면 완료 시 SHA-256 영수증과 ffprobe 기술 검수 결과를 기록합니다. 정상 장면은 재사용하며 과금 결과가 불확실한 호출은 자동 재제출하지 않습니다. 장면별 미리보기, SHA가 고정된 선택적 재생성, 재생성 호출 수에 대한 별도 동의를 `web/src/pages/video/FilmRetake.tsx`에 구현했습니다. 결합은 FFmpeg를 사용합니다.
+- **로컬 ComfyUI 멀티샷:** `engine/video/cinematic.rs`에 장면 계획, 시각적 연속성 지시, 최대 15개 장면, FFmpeg 1080p 최종 편집, 장면 영수증과 검수·재사용을 연결했습니다. 기존 `comfy.rs`의 `/prompt`·`/history`·`/view`와 함께 동작하고 `Video.tsx`에서 선택할 수 있습니다. 업로드한 워크플로에 `{{prompt}}`와 `{{duration}}`이 필요합니다. 로컬 GPU/CPU 원가 및 실제 제작 품질은 별도 측정 대상입니다.
+- **기억 직접 수정의 출처 보호:** `POST /api/memories/:id/edit`는 `source=user`의 **활성·무인용** 기억만 허용합니다. 학습 기록·원문 인용·보관 기록은 HTTP 403으로 차단하고, `Store::patch_if_fields`로 기억 내용과 출처·상태·범위·근거를 원자적으로 비교하여 변경 충돌을 HTTP 409로 반환합니다. 편집 UI 역시 해당 기억에만 노출합니다.
+- **오류·승인·복구:** 이전에 구현한 조용한 RSI 상태 표시, 연결 채널 통합, 사용자 승인형 Git 원본 반영을 유지합니다. 비디오 오류는 원인과 저장된 유료 장면을 보존하며 실영상의 시각적 일관성·시청 만족도 성공으로 표시하지 않습니다.
+
+**실행 호출도·테스트 수준·요구 소프트웨어·API/부분 재생성 영수증·한계:** [서브2 장편 영상·자율 목표·기억 출처 보호](docs/architecture/SUB2-CINEMATIC-VIDEO-GOALS-MEMORY-2026-11-14.md). 실제 15개 메뉴의 화면·API·엔진 대응표는 [전 메뉴 감사](docs/architecture/SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md).
+
+신규 LTX 다중장면 엔진 초기 작업 커밋 `97c98959`에서 GitHub CI 전체 통과를 확인했습니다. 이후 추가한 ComfyUI 멀티샷·메뉴·기억·미리보기 구현은 [최신 서브2 CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)의 별도 검증 대상입니다. 유료 영상이나 실모델 장기 RSI 벤치마크가 실행됐다는 의미는 아닙니다.
