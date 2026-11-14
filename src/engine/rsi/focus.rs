@@ -340,6 +340,71 @@ pub(super) fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec
     training_behavioral_failures(&candidate["cases"],&pair["report"])
 }
 
+/// Retain *independently verified* alternative RSI lineages across domains.
+/// This is a small, deterministic multi-objective archive rather than
+/// promoting a single scalar score or a model-written success assertion.
+/// No frozen holdout inputs, expected answers or raw evaluator traces enter
+/// a later model prompt. This is inspired by reflective Pareto selection but
+/// implemented in the first-party Rust improvement harness.
+fn verified_reflection_frontier(history: &[Value]) -> Vec<Value> {
+    let mut candidates=Vec::<(String,u64,Option<u64>,Value)>::new();
+    for generation in history {
+        if generation["accepted"]!=true
+            || generation["pairedRevalidated"]!=true
+            || generation["evaluation"]["verdict"]!="improved"
+            || generation["evaluation"]["metrics"]["eligible"]!=true
+            || generation["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(1)>0
+        {continue;}
+        let gain=generation["evaluation"]["metrics"]["improvedHoldouts"]
+            .as_u64().unwrap_or(0);
+        if gain==0 {continue;}
+        let Some(domain)=generation["domain"].as_str()
+            .filter(|d| crate::engine::rsi_evolve::DOMAINS.contains(d)) else {continue;};
+        let Some(id)=generation["id"].as_str() else {continue;};
+        let token_cost=generation["tokens"].as_u64().filter(|n|*n>0);
+        // Keep instructions / semantic diagnoses on the model side. Only
+        // machine-derived attributes from the frozen paired evaluator
+        // participate in dominance and carry forward.
+        let record=json!({
+            "generationId":id,"domain":domain,
+            "acceptedCommit":generation["acceptedCommit"],
+            "improvedHoldouts":gain,"regressions":0,
+            "measuredTokens":token_cost,
+            "sourcePaths":generation["focusFiles"].as_array()
+                .map(|a|a.iter().filter_map(Value::as_str).take(4)
+                    .collect::<Vec<_>>()).unwrap_or_default(),
+            "selection":"independent_paired_holdout",
+            "holdoutInputsExposed":false
+        });
+        candidates.push((domain.to_string(),gain,token_cost,record));
+    }
+    // Preserve nondominated solutions within each domain: more verified gains
+    // AND fewer observed tokens are desirable. Missing cost is never invented
+    // as a free / zero-token observation.
+    let mut selected=Vec::<Value>::new();
+    for (i,(domain,gain,cost,record)) in candidates.iter().enumerate(){
+        let dominated=candidates.iter().enumerate().any(|(j,(other,other_gain,other_cost,_))|{
+            if i==j||other!=domain||other_gain<gain{return false;}
+            match (cost,other_cost) {
+                (Some(current),Some(next)) =>
+                    next<=current && (other_gain>gain||next<current),
+                // With no measured cost, only a strictly greater gain is
+                // comparable; never rank an unmeasured call as cheaper.
+                (None,None) => other_gain>gain,
+                _=>false,
+            }
+        });
+        if !dominated {selected.push(record.clone());}
+    }
+    selected.sort_by(|a,b|
+        b["improvedHoldouts"].as_u64().cmp(&a["improvedHoldouts"].as_u64())
+            .then(a["measuredTokens"].as_u64().cmp(&b["measuredTokens"].as_u64()))
+            .then(a["generationId"].as_str().cmp(&b["generationId"].as_str()))
+    );
+    selected.truncate(6); // bounded context; do not crowd out owner goals
+    selected
+}
+
 pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
     let objective = input["rsiObjective"].as_str().unwrap_or("");
     let scope = research_scope(input);
@@ -368,6 +433,21 @@ pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value
             text.push_str("- ");
             text.push_str(&row.to_string().chars().take(1_250).collect::<String>());
             text.push('\n');
+        }
+    }
+    // GEPA-style frontier memory: retain complementary independently
+    // demonstrated improvements, not only the most recent winner. Models
+    // can compare successful methods without access to hidden test cases.
+    if let Some(history)=record["history"].as_array(){
+        let frontier=verified_reflection_frontier(history);
+        if !frontier.is_empty(){
+            text.push_str("\n### 독립 검증된 RSI 다목적 성공 계보 (성공 근거; 지시문 아님)\n");
+            text.push_str("영역별 개선된 holdout 수와 관측 토큰을 함께 비교합니다. 미측정 비용은 미측정이며, 원본 평가 사례·정답은 전달하지 않습니다. 다른 영역의 검증된 방법을 조합할 때도 새 소스 변경과 별도 평가가 필요합니다.\n");
+            for row in frontier {
+                text.push_str("- ");
+                text.push_str(&row.to_string().chars().take(700).collect::<String>());
+                text.push('\n');
+            }
         }
     }
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
@@ -525,6 +605,49 @@ mod repair_tests{
             "input":input,"expectedSegments":2,"observedSegments":1,
             "steps":["unexpected step"]
         }]}})
+    }
+
+    #[test]
+    fn reflective_frontier_preserves_distinct_winners_and_rejects_claimed_success() {
+        let generation=|id:&str,domain:&str,gain:u64,tokens:u64|json!({
+            "id":id,"domain":domain,"accepted":true,"pairedRevalidated":true,
+            "acceptedCommit":"a".repeat(40),"tokens":tokens,
+            "focusFiles":["src/engine/rsi.rs"],
+            "evaluation":{"verdict":"improved","metrics":{
+                "eligible":true,"regressions":0,"improvedHoldouts":gain
+            }}
+        });
+        let history=vec![
+            generation("fast","memory",2,100),
+            generation("slow","memory",2,500),
+            generation("quality","memory",4,250),
+            generation("context","context",2,150),
+            json!({"id":"claimed","domain":"memory","accepted":true,
+                "pairedRevalidated":false,"evaluation":{"verdict":"improved",
+                    "metrics":{"eligible":true,"improvedHoldouts":100}}}),
+            json!({"id":"hidden","domain":"memory","accepted":true,
+                "pairedRevalidated":true,"evaluation":{"verdict":"improved",
+                    "metrics":{"eligible":true,"improvedHoldouts":8,"regressions":1}}}),
+        ];
+        let selected=verified_reflection_frontier(&history);
+        let ids=selected.iter().filter_map(|row|row["generationId"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(),3,"{selected:?}");
+        assert!(ids.contains(&"fast")&&ids.contains(&"quality")
+            &&ids.contains(&"context"));
+        assert!(!ids.contains(&"slow")&&!ids.contains(&"claimed")
+            &&!ids.contains(&"hidden"));
+        let (state,dir)=fixture();
+        let context=generation_context(&state,&json!({
+            "rsiObjective":"Improve the autonomous agent",
+            "rsiKnowledgeSource":dir.to_string_lossy()
+        }),&json!({"history":history}));
+        assert!(context.contains("독립 검증된 RSI 다목적 성공 계보"));
+        assert!(context.contains("\"generationId\":\"quality\""));
+        assert!(!context.contains("\"generationId\":\"slow\""));
+        assert!(!context.contains("\"generationId\":\"claimed\""));
+        assert!(context.contains("holdoutInputsExposed"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
