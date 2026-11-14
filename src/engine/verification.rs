@@ -62,53 +62,29 @@ pub fn validate_criteria(criteria: &Value) -> Result<(), String> {
     }
     Ok(())
 }
+/// Treat Korean inflected verbs as substrings but English instructions as
+/// complete words. "brunch", "preview" or "prerun" must not silently turn a
+/// read-only user request into a mandatory side-effect/tool execution.
 pub(crate) fn looks_actionable(goal: &str) -> bool {
-    [
-        "만들",
-        "생성",
-        "저장",
-        "작성",
-        "수정",
-        "편집",
-        "삭제",
-        "제거",
-        "실행",
-        "설치",
-        "복사",
-        "이동",
-        "다운로드",
-        "빌드",
-        "커밋",
-        "배포",
-        "create",
-        "write",
-        "save",
-        "edit",
-        "delete",
-        "remove",
-        "run",
-        "install",
-        "build",
-        "update",
-        "deploy",
-        "commit",
-    ]
-    .iter()
-    .any(|v| goal.to_lowercase().contains(v))
+    crate::engine::text_intent::has_any(goal, &[
+        "만들","생성","저장","작성","수정","편집","삭제","제거","실행",
+        "설치","복사","이동","다운로드","빌드","커밋","배포",
+        "create","write","save","edit","delete","remove","run",
+        "install","build","update","deploy","commit","fix","refactor",
+        "patch","implement","modify","execute","test","compile",
+    ])
 }
 pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
     if !looks_actionable(goal) {
         return vec![];
     }
     let lower = goal.to_lowercase();
-    let deletion = ["삭제", "제거", "delete", "remove"]
-        .iter()
-        .any(|v| lower.contains(v));
-    let writing = [
-        "만들", "생성", "저장", "작성", "수정", "편집", "create", "write", "save", "edit", "update",
-    ]
-    .iter()
-    .any(|v| lower.contains(v));
+    let deletion=crate::engine::text_intent::has_any(&lower,
+        &["삭제","제거","delete","remove"]);
+    let writing=crate::engine::text_intent::has_any(&lower, &[
+        "만들","생성","저장","작성","수정","편집",
+        "create","write","save","edit","update","fix","refactor","patch","implement","modify"
+    ]);
     if !deletion && !writing {
         return vec![];
     }
@@ -122,9 +98,8 @@ pub(crate) fn infer_criteria(goal: &str) -> Vec<Value> {
     // "a.txt를 읽고 b.txt에 저장해" must not require the read-only input to
     // change. With both a read and a write verb, only the last path is the
     // likely output; without a read verb every path is still inferred.
-    let reading = ["읽", "확인", "조회", "read", "check"]
-        .iter()
-        .any(|verb| lower.contains(verb));
+    let reading=crate::engine::text_intent::has_any(&lower,
+        &["읽","확인","조회","read","check"]);
     let mut paths = Vec::new();
     for raw in goal.split(|c: char| {
         c.is_whitespace() || matches!(c, '`' | '\'' | '"' | ',' | '(' | ')' | '[' | ']')
@@ -588,6 +563,23 @@ mod inference_tests {
         assert_eq!(checks[0]["type"], "file_changed");
     }
 
+
+    #[test]
+    fn incidental_substrings_do_not_turn_research_into_mutation() {
+        for phrase in [
+            "compare the latest brunch options",
+            "preview a tutorial about runner designs",
+            "summarize the prerun log",
+        ] {
+            assert!(!looks_actionable(phrase), "false action: {phrase}");
+            assert!(infer_criteria(phrase).is_empty());
+        }
+        for phrase in ["implement src/lib.rs", "fix src/lib.rs",
+            "refactor src/lib.rs", "수정해줘 src/lib.rs"] {
+            assert!(looks_actionable(phrase), "missed action: {phrase}");
+            assert!(!infer_criteria(phrase).is_empty());
+        }
+    }
 
     #[test]
     fn later_source_edits_invalidate_previous_successful_tests() {
