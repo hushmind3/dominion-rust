@@ -7,6 +7,7 @@
 use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
+use std::collections::{BTreeMap,BTreeSet};
 
 #[derive(Clone,Copy,Debug,Serialize,Deserialize,Eq,PartialEq)]
 #[serde(rename_all="snake_case")]
@@ -90,6 +91,30 @@ fn independent_trials(history:&[Value])->Vec<(&Value,Arm,Genome)>{
     }).collect()
 }
 
+/// Per-case improvements from ORIGINAL independent paired measurements.
+/// The optimizer reads these as selection *evidence*, not as adoption proof.
+/// Model-written scores, unchecked candidates and repeated job receipts do
+/// not contribute to the next generation's strategy distribution.
+fn verified_case_coverage(row:&Value)->BTreeSet<String>{
+    if row["accepted"]!=true || row["pairedRevalidated"]!=true
+        || row["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+        || row["evaluation"]["metrics"]["eligible"]!=true {
+        return BTreeSet::new();
+    }
+    row["evaluation"]["metrics"]["measurements"].as_array()
+        .into_iter().flatten()
+        .filter_map(|case|{
+            let id=case["id"].as_str().filter(|id|!id.is_empty()&&id.len()<=128)?;
+            let metrics=case["metrics"].as_array().filter(|rows|!rows.is_empty())?;
+            if metrics.iter().any(|metric|metric["regressed"]==true) {
+                return None;
+            }
+            metrics.iter().any(|metric|metric["improved"]==true)
+                .then(||id.to_string())
+        })
+        .take(64).collect()
+}
+
 fn score(row:&Value,genome:&Genome)->i64{
     let gain=row["evaluation"]["metrics"]["improvedHoldouts"].as_u64().unwrap_or(0).min(8);
     let regression=row["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0).min(8);
@@ -141,6 +166,18 @@ pub(crate) fn propose(history:&[Value],revision:&str,factorial:bool,repair:bool)
     let mut scored=Vec::new();
     let real=independent_trials(history).into_iter()
         .map(|(row,arm,_)|(row,arm)).collect::<Vec<_>>();
+    // GEPA-style per-instance coverage: keep strategies that solve distinct
+    // frozen cases, not just the single greatest aggregate reward. Only
+    // independently paired and revalidated cases enter these sets.
+    let mut covered=BTreeMap::<String,BTreeSet<String>>::new();
+    for (row,arm) in &real {
+        covered.entry(arm.name().into()).or_default()
+            .extend(verified_case_coverage(row));
+    }
+    let mut case_frequency=BTreeMap::<String,usize>::new();
+    for cases in covered.values() {
+        for case in cases { *case_frequency.entry(case.clone()).or_default()+=1; }
+    }
     for arm in allowed {
         let rows=real.iter().filter(|(_,a)|*a==arm).map(|(r,_)|*r)
             .collect::<Vec<_>>();
@@ -161,7 +198,17 @@ pub(crate) fn propose(history:&[Value],revision:&str,factorial:bool,repair:bool)
             .take_while(|(row,a)|*a==arm && row["accepted"]!=true)
             .take(4).count() as i64;
         let plateau_penalty=stagnant*genome.recovery_weight as i64*125;
-        scored.push((mean+novelty+recovery-plateau_penalty,arm,trials));
+        let cases=covered.get(arm.name());
+        // Non-dominated case coverage has more value than solving an already
+        // saturated guard. Saturation and per-arm trial priors limit one lucky
+        // evaluation; the existing frozen proof gate remains authoritative.
+        let distinctive=cases.map(|set|set.iter().filter(|id|
+            case_frequency.get(*id)==Some(&1)).count()).unwrap_or(0).min(8) as i64;
+        let shared=cases.map(|set|set.len()).unwrap_or(0)
+            .saturating_sub(distinctive as usize).min(8) as i64;
+        let case_coverage_bonus=(genome.payoff_weight as i64)
+            .saturating_mul(distinctive*180+shared*60)/(trials+2);
+        scored.push((mean+novelty+recovery-plateau_penalty+case_coverage_bonus,arm,trials));
     }
     scored.sort_by(|a,b|b.0.cmp(&a.0).then_with(||a.1.name().cmp(b.1.name())));
     let selected=scored.first().map(|r|r.1).unwrap_or(Arm::Explore);

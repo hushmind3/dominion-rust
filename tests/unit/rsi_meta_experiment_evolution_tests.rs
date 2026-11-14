@@ -147,3 +147,60 @@ fn independently_measured_jobs_still_evolve_and_preserve_lineage() {
     assert_eq!(third["parentRevision"],second["revision"]);
     assert!(validate(&third,&"c".repeat(40)).is_ok());
 }
+
+
+#[test]
+fn genuinely_paired_case_coverage_changes_compiled_descendant_arm_choice() {
+    let commit="a".repeat(40);
+    let explore=propose(&[],&commit,false,false);
+    let trial=run("explore-failed",&explore,false,0,0);
+    let factorial=propose(&[trial],&"b".repeat(40),true,false);
+    assert_eq!(factorial["arm"],"factorial");
+    let x=run("independent-explore",&explore,true,1,0);
+    let mut y=run("independent-factorial",&factorial,true,1,0);
+    let control=propose(&[x.clone(),y.clone()],&"c".repeat(40),true,false);
+    assert_eq!(control["arm"],"explore","without new case coverage rewards remain tied");
+    // These are exact paired evaluator shapes, not arbitrary model opinions.
+    y["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+    y["evaluation"]["metrics"]["eligible"]=json!(true);
+    y["evaluation"]["metrics"]["measurements"]=json!([
+        {"id":"verified-hard-case-A","metrics":[
+            {"key":"quality","improved":true,"regressed":false}]},
+        {"id":"verified-hard-case-B","metrics":[
+            {"key":"quality","improved":true,"regressed":false}]}
+    ]);
+    assert_eq!(verified_case_coverage(&y).len(),2);
+    let winner=propose(&[x,y.clone()],&"c".repeat(40),true,false);
+    assert_eq!(winner["arm"],"factorial");
+    assert_eq!(winner["observedTrials"],2);
+    assert!(validate(&winner,&"c".repeat(40)).is_ok());
+    // A forged success story with no local paired source is ignored.
+    y["evaluation"]["source"]=json!("model_generated_claim");
+    assert!(verified_case_coverage(&y).is_empty());
+    assert_eq!(propose(&[run("independent-explore",&explore,true,1,0),y],
+       &"c".repeat(40),true,false)["arm"],"explore");
+}
+
+#[test]
+fn pareto_case_coverage_censors_regressions_unverified_and_saturated_cases() {
+    let strategy=propose(&[],&"a".repeat(40),false,false);
+    let mut good=run("measured",&strategy,true,2,0);
+    good["evaluation"]["source"]=json!("server_invoked_local_paired_git_worktrees");
+    good["evaluation"]["metrics"]["eligible"]=json!(true);
+    good["evaluation"]["metrics"]["measurements"]=json!([
+        {"id":"quality-gain","metrics":[
+            {"key":"quality","improved":true,"regressed":false}]},
+        {"id":"cost-regressed","metrics":[
+            {"key":"quality","improved":true,"regressed":false},
+            {"key":"tokens","improved":false,"regressed":true}]},
+        {"id":"unchanged-guard","metrics":[
+            {"key":"quality","improved":false,"regressed":false}]}
+    ]);
+    assert_eq!(verified_case_coverage(&good),
+        ["quality-gain".to_string()].into_iter().collect());
+    good["pairedRevalidated"]=json!(false);
+    assert!(verified_case_coverage(&good).is_empty());
+    good["pairedRevalidated"]=json!(true);
+    good["evaluation"]["metrics"]["eligible"]=json!(false);
+    assert!(verified_case_coverage(&good).is_empty());
+}

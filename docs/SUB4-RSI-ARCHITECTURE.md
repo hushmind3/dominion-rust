@@ -248,3 +248,20 @@ The connected `multiagent.economy` algorithm runs through `api/rooms.rs` → `al
 ### Ordinary agent completion as evidence for future RSI improvements (2026-11-14)
 
 `engine/goals/report.rs` publishes the actual final acceptance checks, material file SHA-256 and successful tool evidence for an owner-rooted durable goal. `verification.rs` can recognize completed delegated worker receipts without counting a child answer alone. `api/goals.rs` adds a user-confirmed resumption job, preserving old observations without repeating uncertain remote effects. These agent task outcomes may inform *future* candidate prioritization, but they are **not** independent RSI acceptance receipts and cannot raise the RSI score by themselves. See [agent source map](SUB4-AUTONOMOUS-AGENT-2026-11-14.md). Source change only, no build/tests or measured Claude Code/Codex task completion.
+
+## 2026-11-15 Verified-case diversity in descendant experiment selection
+
+`src/engine/rsi/meta/experiment_evolution.rs::propose` now carries a
+GEPA-inspired, non-weight-learning **per-instance coverage component** into
+its real compiled-descendant choice of Explore/Factorial/Repair. Each arm's
+bonus derives only from accepted, revalidated local paired worktree receipts
+with eligible measured case deltas; unverified model stories, unchanged guard
+cases, and regressed cases contribute zero. Unique case wins are prioritized
+above shared wins, with bounded rewards and per-arm trial priors.
+
+This is an experiment-selector improvement, not a new assertion of SWE-bench
+success, RSI source adoption, or model weight training. Original independent
+worktree evaluation and the method A→B→A source-provenance gate are unchanged.
+The regression corpus is `tests/unit/rsi_meta_experiment_evolution_tests.rs`.
+
+Research origin: [DSPy/GEPA implementation](https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/gepa/gepa.py), [GEPA paper artifact](https://github.com/gepa-ai/optimize-anything-artifact). The code uses Dominion's native Rust structures and does not link the external optimizer.

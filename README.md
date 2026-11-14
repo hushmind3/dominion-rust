@@ -952,3 +952,18 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 ### 2026-11-14 · 20개 이상 에이전트 하네스/SDK의 실제 소스 비교
 
 - [원본 파일 근거, 설계 종합, 자체 Rust 코드 적용](docs/AGENT-SDK-2026-SOURCE-REVIEW.md) — 코딩 에이전트·범용 SDK·장기 실행 프레임워크 원본을 실제 소스 파일별로 추적. 일부 2차 비교 조사와 직접 코드 확인을 구분하며, 외부 실행기 의존 없이 구현하는 경계 명시.
+
+## 2026-11-15 Native recovery + evidence-aware RSI
+
+The typed Rust program engine in `src/engine/chat/runtime/program.rs`
+retains a failed tool/delegate receipt for a directly adjacent typed recovery
+branch; an unhandled failed tool still enters verified program repair. This
+restores true fallback behavior in the coding-agent E2E suite.
+
+The compiled successor's RSI experiment controller now derives a bounded
+case-coverage bonus from independently paired successful validation cases;
+novel solved cases prevent scalar reward alone from crowding out complementary
+experiments. See `src/engine/rsi/meta/experiment_evolution.rs` and the
+associated unit tests. This does not modify the independent verifier or model
+weights. The optional external TypeScript SDK remains supported, while the
+React application calls the native Rust server directly.
