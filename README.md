@@ -8,6 +8,17 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Preempt stale Rust goal rounds for newest owner commands
+
+`src/engine/chat/runtime/turn.rs` checks the durable owner revision
+before each new harness/model round in a goal session. A new owner
+instruction yields at that boundary. `src/engine/goals.rs` retains actual
+tool receipts, persists the yield and skips the now-useless model reviewer;
+the next goal iteration applies the newest command. No user chat/room data
+or tool output can create a goal revision. The last bounded iteration
+preserves a still-pending command for human-reviewed continuation instead
+of claiming stale completion.
+
 ## 2026-11-14 Bounded native parallel execution
 
 `src/engine/chat/runtime/program.rs` allocates a non-overlapping share of

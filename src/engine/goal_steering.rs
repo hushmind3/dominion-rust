@@ -10,6 +10,27 @@ pub enum SteeringError { Missing, Immutable, Conflict, Invalid }
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub enum SteeringKind { Plan, Instruction }
 
+/// Internal signal used when a running model/tool loop yields for an
+/// authenticated owner's newer durable command.
+pub const OWNER_REVISION_YIELD: &str = "새 사용자 지시를 적용하기 위해 현재 실행 턴을 종료합니다.";
+
+/// Return true only for a real durable goal session linked by Rust itself.
+/// An ordinary chat, room message, retrieved document or tool output cannot
+/// pose as an owner correction and preempt another user's work.
+pub fn pending_for_session(state:&AppState,session:&Value)->bool{
+    let Some(goal_id)=session["goalId"].as_str().filter(|s|!s.is_empty()) else {
+        return false;
+    };
+    let Some(goal)=state.store.get("goal",goal_id) else {
+        return false;
+    };
+    let Some(revision)=goal["ownerPlan"]["revision"].as_u64() else{
+        return false;
+    };
+    revision>goal["appliedPlanRevision"].as_u64().unwrap_or(0)
+        && goal["ownerPlan"]["plan"].as_str().is_some_and(|text|!text.trim().is_empty())
+}
+
 pub fn submit(state:&AppState,id:&str,expected:u64,plan:&str)->Result<Value,SteeringError> {
     submit_with_kind(state,id,expected,plan,SteeringKind::Plan)
 }

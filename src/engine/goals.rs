@@ -359,6 +359,25 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 "modelTurnError":turn_error.is_some()}));
             return Ok(finish(context,goal_id,"needs_review",gaps,turn_error));
         }
+        // A newer authenticated owner command arrived while the previous
+        // executor was running. Preserve completed tool receipts and yield
+        // directly to the next executor turn; reviewing the superseded plan
+        // would waste tokens and may incorrectly mark the old goal complete.
+        if crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision).is_some() {
+            evidence.extend(stats.evidence.iter().filter(|item|successful_evidence(item)).cloned());
+            if evidence.len()>120 {evidence.drain(..evidence.len()-120);}
+            patch_goal(state,goal_id,json!({"phase":"execute","iterations":index+1,
+                "evidence":evidence,"transcript":transcript,"sessionId":session_id}));
+            context.checkpoint(json!({"goalState":{"sessionId":session_id,
+                "nextIteration":index+1,"inFlight":false,"reviewPending":false,
+                "evidence":evidence,"transcript":transcript,"gaps":gaps,"stalled":0}}))?;
+            state.store.audit("goal.owner_yield",json!({"goalId":goal_id,
+                "iteration":index+1,"interruptedError":turn_error,
+                "toolErrors":stats.tool_errors}));
+            context.emit(json!({"type":"goal_owner_yielded",
+                "goalId":goal_id,"iteration":index+1}));
+            continue;
+        }
         if let Some(message) = message {
             transcript.push_str(&format!(
                 "\n[단계 {}] {}\n",

@@ -98,3 +98,24 @@ fn terminal_goal_cannot_be_reopened_by_stale_owner_revision() {
     assert_eq!(state.store.get("goal","done").unwrap()["planRevision"],0);
     drop(state);std::fs::remove_dir_all(dir).unwrap();
 }
+
+
+#[test]
+fn only_durable_goal_sessions_can_yield_for_owner_instructions() {
+    let (state,dir)=fixture();
+    state.store.put("goal",&json!({
+        "id":"goal-z","status":"running","planRevision":0,"appliedPlanRevision":0
+    })).unwrap();
+    let real_session=json!({"id":"session-z","goalId":"goal-z"});
+    let unrelated=json!({"id":"chat","roomId":"room","goalId":null});
+    assert!(!pending_for_session(&state,&real_session));
+    assert!(!pending_for_session(&state,&unrelated));
+    submit_instruction(&state,"goal-z",0,"새로운 사용자 지시").unwrap();
+    assert!(pending_for_session(&state,&real_session));
+    assert!(!pending_for_session(&state,&unrelated));
+    state.store.patch_if_fields("goal","goal-z",
+        &[("status",&json!("running")),("planRevision",&json!(1))],
+        &json!({"appliedPlanRevision":1})).unwrap();
+    assert!(!pending_for_session(&state,&real_session));
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}

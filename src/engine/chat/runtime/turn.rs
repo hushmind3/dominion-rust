@@ -676,6 +676,11 @@ pub(super) async fn run_turn_body(
     // `toolsEnabled` controls whether the model may call tools. It is not an
     // execution permission for the Rust harness; harness nodes use the same
     // approval, cancellation and budget policy as model tool calls.
+    // Owner corrections are durable commands, not a model-suggested preference.
+    // Yield before starting a new harness stage if this goal was superseded.
+    if crate::engine::goal_steering::pending_for_session(state,&session) {
+        return Err(crate::engine::goal_steering::OWNER_REVISION_YIELD.into());
+    }
     let harness_messages = if request.tools_execution_enabled {
         run_harness_nodes(
         state,
@@ -698,6 +703,11 @@ pub(super) async fn run_turn_body(
 
     for round in 0..max_rounds {
         if finished { break; }
+        // On a long autonomous turn, stop before the NEXT model request and
+        // tool round, rather than spending the remaining budget on a stale plan.
+        if crate::engine::goal_steering::pending_for_session(state,&session) {
+            return Err(crate::engine::goal_steering::OWNER_REVISION_YIELD.into());
+        }
         if !budget.charge_round() {
             mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
