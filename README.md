@@ -20,6 +20,7 @@
 
 ## 서브3 · 출시 후 전체 시스템 개선 (2026-11-14)
 
+- **저사양 컨텍스트 도구 보존·행동 증거 기반 재계획:** 도구 목록이 제공자 예산을 넘으면 앞에서부터 잘라 수정·셸·MCP 기능이 사라지던 문제를 `chat/runtime/tool_catalog.rs::trim_tool_definitions`의 능력군 우선 선택으로 수정했습니다. 선택된 JSON 스키마 바이트 수와 탈락 도구 수를 `tool.schema_budget` 감사 기록에 남깁니다. 목표 실행의 `goal_progress::advanced_with_policy`는 행동형 목표에서 신규 검색만으로 정체 카운터가 초기화되지 않도록 하고, 실제 성공한 변경 또는 닫힌 검증 조건을 요구합니다. [설계·실행 경로·회귀 테스트·검증 한계](docs/research/sub3-bounded-tool-schemas-and-goal-progress-2026-11-14.md). Rust 컴파일/전체 CI 결과는 해당 커밋의 GitHub Actions에서 별도 확인해야 합니다.
 - **CI·RSI 차단 원인 수정:** 코드 인덱서가 실제 `src/engine/chat/runtime/` 소스를 생성물용 `runtime` 폴더와 혼동하여 탐색에서 제외하던 오류를 수정했습니다. 회귀 테스트는 중첩 runtime 모듈의 탐색·영속 인덱스 기록·재사용까지 검증합니다. 실모델 캠페인의 개선 세대 채택은 별도 실증이 필요합니다.
 - **사용자 검토 Git 원본 적용:** 독립 Git 목표의 `diff → 전체 패치 SHA-256 → 사용자 확인 → POST /api/goals/:id/apply → git apply --check → 결과 SHA 확인 → 영수증`을 연결했습니다. 소스 HEAD·깨끗한 작업공간·활성 작업·미추적 파일·패치 변경 여부를 검사하며 96KiB 초과는 PR 검토로 넘깁니다.
 - **RSI 실모델 진입 실패 진단·원본 검증:** [실모델 실행 기록](https://github.com/hushmind3/dominion-rust/actions/runs/43537617763)은 workflow 성공과 달리 내부 개선 세대 0회·모델 호출 0회로 `needs_review`였습니다. `rsi_system/validation.rs`에서 계획 파일의 실제 SHA-256이 일치할 때만 코드 인덱스 누락을 재구성하는 복구 경로를 추가했습니다. 원본 소스의 실제 변경과 채택 검증은 완전히 차단합니다. [원인·코드 경로·실증 한계](docs/POST-LAUNCH-ENGINE-INTEGRATION-2026-11-14.md). 재실행의 실제 개선 성과는 별도 확인해야 합니다.
