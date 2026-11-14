@@ -418,6 +418,15 @@ export class DominionGoal {
   steer(plan: string, expectedRevision: number): Promise<Goal> {
     return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/steer', {plan, expectedRevision})
   }
+  /** Direct owner instruction, distinct from a model-generated work plan. */
+  steerInstruction(instruction: string, expectedRevision: number): Promise<Goal> {
+    if (!instruction || !instruction.trim()) {
+      throw new Error('owner instruction cannot be empty')
+    }
+    return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/steer', {
+      instruction, expectedRevision,
+    })
+  }
 
   changes(): Promise<JsonObject> {
     return this.sdk.get('/api/goals/' + encodeURIComponent(this.id) + '/changes')
