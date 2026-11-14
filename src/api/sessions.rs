@@ -114,6 +114,22 @@ pub async fn fork_session(State(state): State<AppState>, Path(id): Path<String>)
     Json(fork).into_response()
 }
 
+/// An owner instruction is committed before acknowledgement; the active
+/// native model loop claims it at its next safe model-step boundary.
+pub async fn steer_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(instruction) = body["instruction"].as_str() else {
+        return error(StatusCode::BAD_REQUEST, "instruction 문자열이 필요합니다.");
+    };
+    match engine::steering::enqueue(&state, &id, instruction) {
+        Ok(saved) => (StatusCode::ACCEPTED,Json(saved)).into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, &message),
+    }
+}
+
 // ---------------------------------------------------------------- approvals
 
 pub async fn cancel_session(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
