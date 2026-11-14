@@ -35,10 +35,17 @@ fn schema_size(definition: &Value) -> usize {
 /// Keep explicit revelations visible across model turns; remove unrelated,
 /// large schemas from the initial request, never the permission-filtered catalog.
 pub(super) fn search_tool_definitions_for_round(
-    catalog: &[Value], task: &str, budget: usize, revealed: &BTreeSet<String>, dynamic: bool,
+    catalog: &[Value], task: &str, budget: usize, initially_visible: &BTreeSet<String>,
+    revealed: &BTreeSet<String>, dynamic: bool,
 ) -> Vec<Value> {
-    if !dynamic || catalog.iter().map(schema_size).sum::<usize>() <= budget {
-        return super::tool_selection::trim_tool_definitions(catalog.to_vec(), budget, task);
+    let initial=catalog.iter().filter(|d|initially_visible.contains(tool_name(d))).cloned()
+        .collect::<Vec<_>>();
+    if !dynamic || catalog.is_empty() {
+        return super::tool_selection::trim_tool_definitions(initial, budget, task);
+    }
+    let hidden=catalog.iter().any(|d|!initially_visible.contains(tool_name(d)));
+    if !hidden && catalog.iter().map(schema_size).sum::<usize>()<=budget {
+        return catalog.to_vec();
     }
     let search=tool_search_definition();
     let search_size=schema_size(&search);
@@ -50,16 +57,18 @@ pub(super) fn search_tool_definitions_for_round(
         .filter(|(_,def)| !tool_name(def).is_empty() && tool_name(def)!=TOOL_SEARCH_NAME)
         .map(|(i,def)| (i,
             revealed.contains(tool_name(def)),
+            initially_visible.contains(tool_name(def)),
             super::tool_selection::tool_schema_relevance(def,task),
             schema_size(def)))
         .collect::<Vec<_>>();
     // A model search must actually reveal the tool on the next turn. Already
     // revealed names outrank initial task relevance; smaller schemas win ties.
     ranked.sort_by(|a,b|b.1.cmp(&a.1).then_with(||b.2.cmp(&a.2))
-        .then_with(||a.3.cmp(&b.3)).then_with(||a.0.cmp(&b.0)));
+        .then_with(||b.3.cmp(&a.3)).then_with(||a.4.cmp(&b.4))
+        .then_with(||a.0.cmp(&b.0)));
     let mut chosen=HashSet::new();
     let mut used=0usize;
-    for (idx,_,_,size) in &ranked {
+    for (idx,_,_,_,size) in &ranked {
         if *size<=available.saturating_sub(used) {
             chosen.insert(*idx);
             used+=size;
@@ -184,19 +193,39 @@ mod tests {
     fn hidden_schema_is_revealed_next_round_without_breaking_budget(){
         let defs=vec![definition("unrelated_video_renderer",2700),definition("mcp__github__create_pr",250),definition("workspace_read",100)];
         let budget=1100;
-        let first=search_tool_definitions_for_round(&defs,"read file",budget,&BTreeSet::new(),true);
+        let first=search_tool_definitions_for_round(&defs,"read file",budget,
+            &BTreeSet::from(["workspace_read".to_string()]),&BTreeSet::new(),true);
         assert!(first.iter().any(|d|tool_name(d)==TOOL_SEARCH_NAME));
         assert!(!first.iter().any(|d|tool_name(d)=="mcp__github__create_pr"));
         let revealed=BTreeSet::from(["mcp__github__create_pr".to_string()]);
-        let second=search_tool_definitions_for_round(&defs,"read file",budget,&revealed,true);
+        let second=search_tool_definitions_for_round(&defs,"read file",budget,
+            &BTreeSet::from(["workspace_read".to_string()]),&revealed,true);
         assert!(second.iter().any(|d|tool_name(d)=="mcp__github__create_pr"));
         assert!(second.iter().map(schema_size).sum::<usize>()<=budget);
     }
     #[test]
     fn small_catalog_keeps_all_tools_and_no_search(){
         let defs=vec![definition("a",20),definition("b",20)];
-        let kept=search_tool_definitions_for_round(&defs,"task",2048,&BTreeSet::new(),true);
+        let kept=search_tool_definitions_for_round(&defs,"task",2048,
+            &BTreeSet::from(["a".to_string(),"b".to_string()]),&BTreeSet::new(),true);
         assert_eq!(kept,defs);
+    }
+
+    #[test]
+    fn core_algorithm_does_not_hide_installed_mcp_forever(){
+        let defs=vec![definition("workspace_read",120),definition("mcp__github__pull_request",140)];
+        let initial=BTreeSet::from(["workspace_read".to_string()]);
+        let first=search_tool_definitions_for_round(&defs,"read file",1600,&initial,&BTreeSet::new(),true);
+        assert!(first.iter().any(|d|tool_name(d)==TOOL_SEARCH_NAME));
+        assert!(first.iter().any(|d|tool_name(d)=="workspace_read"));
+        assert!(!first.iter().any(|d|tool_name(d)=="mcp__github__pull_request"));
+        let (hits,names)=search_catalog(&defs,"github pull request",4,&BTreeSet::new());
+        assert!(!hits.is_empty());
+        assert!(names.iter().any(|n|n=="mcp__github__pull_request"));
+        let second=search_tool_definitions_for_round(
+            &defs,"read file",1600,&initial,
+            &BTreeSet::from(["mcp__github__pull_request".to_string()]),true);
+        assert!(second.iter().any(|d|tool_name(d)=="mcp__github__pull_request"));
     }
     #[test]
     fn no_keyword_no_match_does_not_invent_a_tool(){

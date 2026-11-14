@@ -209,6 +209,10 @@ pub(super) async fn run_turn_body(
     if request.tools_enabled && request.tools_execution_enabled {
         tool_definitions.extend(mcp::definitions(state).await);
     }
+    // Tool-discovery algorithms may intentionally show only core schemas.
+    // Keep the full native+MCP catalog separately so a model can discover
+    // an installed capability that its first-round heuristic did not select.
+    let installed_catalog = tool_definitions.clone();
     let is_room = session["roomId"].is_string();
     if is_room && request.tools_enabled && request.tools_execution_enabled {
         let recent = recent_room_tools(state, session_id);
@@ -234,9 +238,27 @@ pub(super) async fn run_turn_body(
             tools::rsi_allowed(tool_name(definition))
             && rsi_successor_tool_allowed(&session["rsiSuccessorStage"],tool_name(definition)));
     }
-    // Capability boundaries are applied above. The native search catalog is
-    // scoped to the same authorization and has no external execution backend.
-    let discovery_catalog = tool_definitions.clone();
+    // Room actions still require an actionable owner request. Do not expose a
+    // discovery route when the room's existing guard offered zero tools.
+    let mut discovery_catalog = if is_room && tool_definitions.is_empty() {
+        Vec::new()
+    } else {
+        installed_catalog
+    };
+    // Apply exactly the same authorization ceilings to hidden capabilities.
+    // Selection can be deferred; permission must NEVER be deferred.
+    if session["delegatedReadOnly"]==true {
+        discovery_catalog.retain(|definition|
+            tools::delegation_allows(&state.store,session_id,tool_name(definition)));
+    }
+    if session["rsiRun"]==true {
+        discovery_catalog.retain(|definition|
+            tools::rsi_allowed(tool_name(definition))
+            && rsi_successor_tool_allowed(&session["rsiSuccessorStage"],tool_name(definition)));
+    }
+    let initially_visible_tool_names = tool_definitions.iter()
+        .map(tool_name).filter(|name|!name.is_empty())
+        .map(str::to_string).collect::<std::collections::BTreeSet<_>>();
     let mut revealed_tool_names = restore_revealed(state, execution_id, &discovery_catalog);
     let mut discovery_search_calls = 0usize;
     let dynamic_tool_discovery = session["rsiRun"] != true
@@ -758,8 +780,8 @@ pub(super) async fn run_turn_body(
                 })
                 .unwrap_or(60_000);
             round_tools = search_tool_definitions_for_round(
-                &discovery_catalog, &request.input, budget, &revealed_tool_names,
-                dynamic_tool_discovery,
+                &discovery_catalog, &request.input, budget, &initially_visible_tool_names,
+                &revealed_tool_names, dynamic_tool_discovery,
             );
         }
         if session["rsiRun"]==true && !force_final {
