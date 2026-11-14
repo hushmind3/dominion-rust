@@ -32,7 +32,7 @@ impl Store {
                 "SELECT data,id,created_at,updated_at FROM records WHERE kind='job' AND id=?1",
                 [last],record_from_row
             ).optional().map_err(|e|e.to_string())?;
-            if prior.is_some_and(|j|matches!(j["status"].as_str(),Some("queued"|"running"))){
+            if prior.is_some_and(|j|matches!(j["status"].as_str(),Some("queued"|"running"|"needs_review"))){
                 return Ok(None);
             }
         }
@@ -98,7 +98,12 @@ mod tests{
         assert!(store.claim_due_automation("auto",next,now+chrono::Duration::minutes(2)).unwrap().is_none(),
             "never overlap queued work");
         store.patch_if("job",job["id"].as_str().unwrap(),"status",
-            &json!("queued"),&json!({"status":"completed"})).unwrap();
+            &json!("queued"),&json!({"status":"needs_review"})).unwrap();
+        assert!(store.claim_due_automation("auto",next,
+            now+chrono::Duration::minutes(2)).unwrap().is_none(),
+            "a job requiring owner review must never silently rerun next period");
+        store.patch_if("job",job["id"].as_str().unwrap(),"status",
+            &json!("needs_review"),&json!({"status":"completed"})).unwrap();
         assert!(store.claim_due_automation("auto",next,now+chrono::Duration::minutes(2)).unwrap().is_some());
         assert_eq!(store.count("job"),2);
         drop(store);std::fs::remove_dir_all(dir).unwrap();
