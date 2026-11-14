@@ -188,6 +188,13 @@ pub async fn execute(
     if session["delegatedReadOnly"]==true && !read_only_delegation_tool(name){
         return Err("Parallel investigative teammate cannot mutate workspace or external services".into());
     }
+    let isolated_goal=session["goalId"].as_str().and_then(|id|ctx.store.get("goal",id))
+        .is_some_and(|g|g["isolateWorktree"]==true);
+    // Absolute filesystem tools bypass workspace scoping. A goal that chose
+    // isolation must use workspace-relative tools instead.
+    if isolated_goal && matches!(name,"file_write"|"file_read"|"file_list"){
+        return Err("Isolated goal: use workspace-relative file tools, not absolute filesystem tools".into());
+    }
     let isolated_rsi = session["rsiRun"]==true;
     if isolated_rsi && !rsi_allowed(name) {
         return Err("분리 자기개선 작업에서는 작업공간 내부 도구만 허용됩니다.".into());
@@ -590,6 +597,8 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
                 "providerId": agent["providerId"],
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
+                "goalId":ctx.store.get("session",ctx.session_id)
+                    .and_then(|s|s["goalId"].as_str().map(str::to_string)),
                 "delegated": true,
                 "delegatedReadOnly":args["readOnly"]==true,
             }),

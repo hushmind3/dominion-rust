@@ -1209,7 +1209,7 @@ pub(super) async fn run_turn_body(
                         let result = crate::engine::procedure::evaluate(
                             strategy,
                             &operations,
-                            &state.config.workspace,
+                            &crate::engine::goal_git::workspace_for_session(state,session_id)?,
                         );
                         if result["verified"].as_bool() == Some(true)
                             && result["followed"].as_bool() == Some(false)

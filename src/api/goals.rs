@@ -15,12 +15,19 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
-pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
+pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if matches!(goal["status"].as_str(),Some("queued"|"running")){
+        return error(StatusCode::CONFLICT,"진행 중인 목표를 먼저 중단하세요.");
+    }
+    if goal["gitWorktree"].is_object() && goal["gitWorktree"]["rolledBack"]!=true{
+        return error(StatusCode::CONFLICT,"독립 Git 작업공간을 먼저 폐기한 후 목표를 삭제하세요.");
+    }
     state.store.remove("goal", &id);
-    state
-        .bus
-        .emit(json!({ "type": "record", "kind": "goal", "removed": id }));
-    Json(json!({ "ok": true }))
+    state.bus.emit(json!({"type":"record","kind":"goal","removed":id}));
+    Json(json!({"ok":true})).into_response()
 }
 
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
