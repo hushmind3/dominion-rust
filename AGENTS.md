@@ -156,3 +156,8 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - UI: Home guided readiness/result; Agents installed-skill selection and 2-step workflow launch; Workflows idempotent run and persisted receipt review; Developer user-selected Git diff → chosen workflow → deliverable. Model change does not rewrite already queued job snapshots.
 - Tests: `src/api/workflows.rs` frozen model, idempotency and disabled provider; `src/engine/workflows.rs` actual HTTP mock 2-agent execution and persisted deliverable; `scripts/verify-frontend-navigation.mjs` full cross-menu route contract. No green CI or mock test is a real-model success proof. Previous real Qwen3 4B goal oracle results are 0/2 timeout cancellations.
 - Detailed 15-menu audit, limits and entrypoints: `docs/SUB1-WHOLE-PRODUCT-ISSUE9-2026-11-14.md`.
+
+### Sub1 Issue #9 automation-to-activity continuation
+
+- `src/api/automations.rs`: validates recurring prompt/meeting/workflow target and 5-minute..1-year interval; `/api/automations` API restores UI functionality. Scheduler `src/engine/jobs.rs::schedule_automations` now uses deterministic per-occurrence job IDs and `enqueue_once`; CAS-advances nextAt after job persistence, avoids catch-up bursts after downtime, and disables schedules whose target model/provider was deleted or disabled. The alternate generic `/api/jobs` workflow admission uses the same `api::workflows::runnable` frozen provider validation.
+- `web/src/pages/Operations.tsx`: automation form launches the stored workflow, displays lastJobId and review error. Activity section opens actual durable workflow result and operation receipt IDs without claiming independent quality proof.
