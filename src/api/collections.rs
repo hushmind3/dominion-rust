@@ -412,7 +412,7 @@ mod owner_memory_edit_tests {
                 "source":source,"status":status})).unwrap();
             let result=edit(&state,id,json!({"text":"tamper",
                 "expectedText":"immutable"})).await;
-            assert_eq!(result.status(),StatusCode::CONFLICT,id);
+            assert_eq!(result.status(),StatusCode::CONFLICT,"memory id: {}",id);
             assert_eq!(state.store.get("memory",id).unwrap()["text"],"immutable");
         }
         let missing=edit(&state,"missing",json!({"text":"x","expectedText":"old"})).await;
