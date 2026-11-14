@@ -361,3 +361,101 @@
             std::fs::remove_dir_all(dir).unwrap();
         }
     }
+
+
+    /// Real Rust goal loop integration: a provider first asks for two
+    /// non-existent files, then the native diagnosis changes the plan, the
+    /// provider repairs the goal with workspace_write and independent Rust
+    /// acceptance checks verify the actual file. This is a fake *model*, not
+    /// a fake filesystem/tool/agent harness.
+    #[tokio::test]
+    async fn two_witnessed_tool_failures_cause_early_replan_and_real_repair() {
+        use axum::{extract::State,response::{IntoResponse,Response},routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+
+        #[derive(Clone)]
+        struct Scripted{ replans:Arc<AtomicUsize>,writes:Arc<AtomicUsize> }
+        async fn serve_model(State(s):State<Scripted>, Json(body):Json<Value>)->Response {
+            let system=body.pointer("/messages/0/content").and_then(Value::as_str).unwrap_or("");
+            if body["stream"]!=true {
+                let text=if system.contains("independent replanner") {
+                    s.replans.fetch_add(1,Ordering::SeqCst);
+                    "1. Stop reading missing paths. 2. Write repaired.txt. 3. Verify it."
+                }else if system.contains("strict reviewer") {
+                    r#"{"complete":true,"gaps":[]}"#
+                }else{
+                    "1. Inspect project. 2. Create repaired.txt. 3. Verify result."
+                };
+                return Json(json!({"choices":[{"message":{"content":text}}],
+                    "usage":{"prompt_tokens":25,"completion_tokens":9,"total_tokens":34}}))
+                    .into_response();
+            }
+            let messages=body["messages"].as_array().cloned().unwrap_or_default();
+            let last_user=messages.iter().rposition(|m|m["role"]=="user").unwrap_or(0);
+            let prompt=messages[last_user]["content"].as_str().unwrap_or("");
+            let seen_tool=messages.iter().skip(last_user+1).any(|m|m["role"]=="tool");
+            let number=if prompt.contains("실행 반복: 3"){3}else if prompt.contains("실행 반복: 2"){2}else{1};
+            let delta=if seen_tool {
+                json!({"content":if number==3 {
+                    "The file was written; the Rust verifier must check it."
+                }else{"The file read failed; inspect the actual error."}})
+            }else{
+                let (name,args)=if number==3 {
+                    s.writes.fetch_add(1,Ordering::SeqCst);
+                    ("workspace_write",json!({"path":"repaired.txt",
+                        "content":"recovered by native Rust harness"}))
+                }else{
+                    ("workspace_read",json!({"path":"missing-file.txt"}))
+                };
+                json!({"tool_calls":[{"index":0,"id":format!("call-{number}"),
+                    "type":"function","function":{"name":name,"arguments":args.to_string()}}]})
+            };
+            let chunk=json!({"choices":[{"delta":delta}]});
+            ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],
+                format!("data: {chunk}\n\ndata: [DONE]\n\n")).into_response()
+        }
+
+        let (state,dir)=state();
+        state.store.put("policy",&json!({"id":"default","autoApproveAll":true})).unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let scripted=Scripted{replans:Arc::new(AtomicUsize::new(0)),
+            writes:Arc::new(AtomicUsize::new(0))};
+        let copy=scripted.clone();
+        let server=tokio::spawn(async move {
+            axum::serve(listener,Router::new()
+                .route("/v1/chat/completions",post(serve_model))
+                .with_state(copy)).await.unwrap();
+        });
+        state.store.put("provider",&json!({"id":"mock","name":"mock",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"scripted","enabled":true,"toolMode":"native"})).unwrap();
+        state.store.put("goal",&json!({"id":"repair-goal",
+            "goal":"write repaired.txt","maxIterations":3,
+            "maxReplans":2,"replanAfter":8,
+            "executor":{"providerId":"mock","model":"scripted"},
+            "planner":{"providerId":"mock","model":"scripted"},
+            "reviewer":{"providerId":"mock","model":"scripted"}})).unwrap();
+        let job=state.store.put("job",&json!({"id":"repair-job",
+            "status":"running","kind":"goal","input":{"goalId":"repair-goal"}})).unwrap();
+        let ctx=JobContext::new(state.clone(),"repair-job".into());
+        let result=tokio::time::timeout(
+            std::time::Duration::from_secs(45),run(&ctx,&job)
+        ).await.expect("repair scenario timed out").unwrap();
+        let saved=state.store.get("goal","repair-goal").unwrap();
+        assert_eq!(result["status"],"completed",
+            "the actual file write and Rust independent verifier must close the loop");
+        assert_eq!(std::fs::read_to_string(dir.join("repaired.txt")).unwrap(),
+            "recovered by native Rust harness");
+        assert_eq!(scripted.replans.load(Ordering::SeqCst),1,
+            "two repeated real tool failures must trigger replan before threshold 8");
+        assert_eq!(scripted.writes.load(Ordering::SeqCst),1);
+        assert_eq!(saved["replans"],1);
+        assert!(saved["diagnosticHistory"].as_array().unwrap().len()>=2);
+        assert_eq!(saved["diagnosticHistory"][1]["repeatCount"],2);
+        assert!(saved["evidence"].as_array().unwrap().iter()
+            .any(|e|e["tool"]=="workspace_write"));
+        server.abort();
+        drop(ctx); drop(state);
+        let _=std::fs::remove_dir_all(dir);
+    }
