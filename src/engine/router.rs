@@ -82,7 +82,7 @@ pub fn select_provider(state: &AppState, complexity: Complexity) -> Option<Value
     // The learner requires independent matched baselines, multiple domains
     // and successor trials; no win is inferred from model-name size.
     let learned=if complexity==Complexity::Deep && candidates.len()>1 {
-        rsi_model_learning::learn(&state.store.all("rsi_generation"))
+        rsi_model_learning::learn_verified(state)
     }else{Value::Null};
     match complexity {
         Complexity::Light => {
