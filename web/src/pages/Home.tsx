@@ -15,17 +15,15 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const channels=useRemote<any[]>('/api/channels',[])
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
  const workflows=useRemote<any[]>('/api/workflows',[])
- const goalMetrics=useRemote<any|null>('/api/goals/metrics',null,false)
  const automation=useRemote<any[]>('/api/automations',[])
  const enabledProviders=providers.value.filter(p=>p.enabled)
  const authenticatedProviders=enabledProviders.filter((p:any)=>p.hasKey||p.local).length
  const recent=[...jobs.value].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))).slice(0,6)
  const busy=jobs.value.filter(j=>['queued','running','planning','reviewing','repairing'].includes(j.status)).length
- // The metrics endpoint is a bounded projection; don't download every
- // goal's evidence/transcript JSON merely to render dashboard counters.
- const pendingReview=Number(goalMetrics.value?.statusCounts?.needs_review||0)
- const activeGoals=Number(goalMetrics.value?.statusCounts?.queued||0)
-   +Number(goalMetrics.value?.statusCounts?.running||0)
+ // Job status covers *all* execution kinds. A slash command is not a
+ // first-class product category or a dashboard performance KPI.
+ const pendingReview=jobs.value.filter(j=>j.status==='needs_review'||j.result?.status==='needs_review').length
+ const activeJobs=jobs.value.filter(j=>j.status==='queued'||j.status==='running').length
  const readyProvider=authenticatedProviders>0
  const nextAction: {title:string;detail:string;page:Destination}= !readyProvider?
    {title:'모델 제공자 연결',detail:'먼저 API 키 또는 로컬 모델을 연결하세요.',page:'models'}:
@@ -60,9 +58,9 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
     <span>연결된 모델 {authenticatedProviders}/{enabledProviders.length}</span>
     <span>실행 에이전트 {agents.value.length}개</span>
     <span>워크플로 {workflows.value.length}개 · 예약 {automation.value.filter(a=>a.enabled).length}개</span>
-    <span>목표 진행 {activeGoals}개 · 검토 {pendingReview}개</span>
+    <span>전체 작업 진행 {activeJobs}개 · 검토 {pendingReview}개</span>
    </div>
-   {goalMetrics.value&&<p className="mt-2 text-[11px] text-[#7C7469]">내부 검증 통과 {goalMetrics.value.internalAcceptedGoals||0}건 · Git 원본 반영/비격리 {goalMetrics.value.deliveredToSourceGoals||0}건 · 기록 토큰 {Number(goalMetrics.value.usage?.totalTokens||0).toLocaleString('ko-KR')}. 실제 모델 독립 벤치마크나 유료 청구 총액은 아닙니다.</p>}
+   <p className="mt-2 text-[11px] text-[#7C7469]">사용량·실행 영수증·미확정 외부 작업은 활동 메뉴에서 확인합니다. 실행 결과는 공급자 청구액이나 독립 모델 성능 점수와 구분됩니다.</p>
   </section>
   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{metrics.map(m=>{const Icon=m.icon;return <Button type="button" key={m.name} onClick={()=>navigate(m.page)} className="flex min-h-24 flex-col items-start rounded-xl border border-[#E7E0D5] bg-white p-4 text-left transition-colors hover:border-[#D8CFC2]"><span className="flex w-full items-center justify-between text-[11px] text-[#7C7469]">{t(m.name as any)}<Icon size={16} className="text-[#A79C8E]"/></span><strong className="mt-4 text-[23px] font-bold leading-none tabular-nums text-[#24211D]">{m.value}</strong></Button>})}</div>
   <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(270px,.72fr)]">
