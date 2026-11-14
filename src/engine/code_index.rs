@@ -100,7 +100,10 @@ fn collect_files(source: &Path) -> Vec<PathBuf> {
             if kind.is_dir() {
                 if matches!(
                     name.as_str(),
-                    ".git" | "target" | "node_modules" | "dist" | "runtime" | "tmp"
+                    // Generated directories above are always excluded. Do NOT
+                    // filter nested "runtime" or "tmp": src/engine/chat/runtime
+                    // is a real Rust module and carries critical RSI evidence.
+                    ".git" | "target" | "node_modules" | "dist"
                 ) {
                     continue;
                 }
@@ -1050,6 +1053,37 @@ pub fn bounded_focus_context(
         result.push_str("목표와 일치하는 함수가 색인에 없습니다. 필요한 위치만 code_search로 찾고 범위를 읽으세요.\n");
     }
     Some(result)
+}
+
+#[cfg(test)]
+mod scan_runtime_regressions {
+    use super::*;
+    #[test]
+    fn nested_runtime_modules_are_indexed_and_persisted() {
+        let root=std::env::temp_dir().join(format!("code-index-runtime-{}",uuid::Uuid::new_v4()));
+        let relative="src/engine/chat/runtime/intent.rs";
+        std::fs::create_dir_all(root.join("src/engine/chat/runtime")).unwrap();
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+        std::fs::write(root.join(relative),"pub fn real_runtime() {}").unwrap();
+        std::fs::write(root.join("runtime/generated.rs"),"pub fn scratch() {}").unwrap();
+        let discovered=collect_files(&root);
+        assert!(discovered.iter().any(|p|p.ends_with(relative)),
+            "nested Rust runtime sources must never be filtered as generated runtime data");
+        assert!(!discovered.iter().any(|p|p.ends_with("runtime/generated.rs")),
+            "top-level generated runtime directory is outside the indexed roots");
+        let cfg=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        let state=AppState::new(cfg.clone(),
+            crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        let meta=refresh(&state,&root).unwrap();
+        let index_id=meta["id"].as_str().unwrap();
+        let expected=digest(&std::fs::read(root.join(relative)).unwrap());
+        assert_eq!(indexed_source_hash(&state,index_id,relative).as_deref(),Some(expected.as_str()));
+        let again=refresh(&state,&root).unwrap();
+        assert_eq!(again["reusedFiles"],meta["files"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
