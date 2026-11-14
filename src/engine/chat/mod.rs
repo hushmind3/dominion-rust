@@ -10,6 +10,7 @@ pub(crate) fn estimate_text_tokens(text:&str)->u64 {room_context::estimate(text)
 mod evidence;
 pub(crate) use evidence::prepare_owner_action;
 mod protocol;
+mod qwen_compat;
 mod provider;
 mod runtime;
 #[cfg(test)]
