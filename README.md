@@ -861,3 +861,10 @@ is restricted to attempted IDs and writes logs in the isolated output folder.
 Offline grading reconciliation:
 `node scripts/sub2-swebench-verified.mjs --import-grade /absolute/report.json /absolute/logs/evaluation/<runId>`.
 An actual provider benchmark is opt-in; no synthetic fixture is a claimed solve.
+
+
+Two independently graded SWE-bench trials can be compared with
+`node scripts/sub2-swebench-compare.mjs /absolute/trial-A/report.json /absolute/trial-B/report.json`.
+The comparison requires identical actual issues and base revisions,
+requires official evidence for every task, and flags model/budget differences
+rather than claiming a controlled harness win.
