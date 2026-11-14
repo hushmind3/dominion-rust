@@ -163,7 +163,7 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
      {diff.reviewError&&<p className="mt-1 text-[11px] text-rose-700">원본 적용 불가: {diff.reviewError}</p>}
      {diff.review?.notice&&<p className="mt-1 text-[10px] text-[#8A8176]">{diff.review.notice}</p>}
      {diff.review?.canApply&&!active(selected.status)&&<Button size="sm" variant="secondary" disabled={busy} onClick={()=>void applyPatch()}>검토한 패치 원본에 적용</Button>}
-     {selected.gitWorktree?.appliedAt&&<p className="mt-1 text-[11px]">✅ 적용 완료: {selected.gitWorktree.appliedAt}</p>
+     {selected.gitWorktree?.appliedAt&&<p className="mt-1 text-[11px]">✅ 적용 완료: {selected.gitWorktree.appliedAt}</p>}
     </details>}
     {selected.workspaceSnapshot?.stack?.length? <p className="mt-2 text-[11px] text-[#7C7469]">프로젝트: {selected.workspaceSnapshot.stack.join(', ')}</p>:null}
     <details open className="mt-3 border-t border-[#ECE4D8] pt-3">
