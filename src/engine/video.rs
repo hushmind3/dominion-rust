@@ -108,7 +108,8 @@ pub fn public_job(job: &Value) -> Value {
     json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":storyboard,"filmCompleted":job["videoState"]["filmCompleted"],
     "cinematic":job["input"]["cinematic"],"shotProgress":job["videoState"]["shotIndex"],
     "shotCount":job["videoState"]["shotCount"],"film":job["input"]["render"]["film"],
-    "retake":job["input"]["retake"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
+    "retake":job["input"]["retake"],"paidSubmissionAttempts":job["paidSubmissionAttempts"],
+    "result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
