@@ -24,15 +24,27 @@ struct Options {
     goal_timeout:Duration,
     token_budget:u64,
     max_iterations:u64,
+    input_cost_krw_million:Option<f64>,
+    output_cost_krw_million:Option<f64>,
     evaluate:bool,
 }
 fn parse_args(args:&[String])->Result<Options,String>{
     let mut values=std::collections::BTreeMap::new();
     let mut flags=std::collections::BTreeSet::new();
+    let allowed=["--tasks","--output","--engine","--provider-url",
+        "--provider-kind","--model","--provider-key-env","--limit",
+        "--timeout-seconds","--token-budget","--iterations",
+        "--input-cost-krw-million","--output-cost-krw-million"];
     let mut index=0;
     while index<args.len(){
         let key=&args[index];
         if !key.starts_with("--"){return Err(format!("unexpected argument {key}"))}
+        if key!="--evaluate" && !allowed.contains(&key.as_str()){
+            return Err(format!("unknown benchmark option {key}"));
+        }
+        if values.contains_key(key) || flags.contains(key){
+            return Err(format!("duplicate option {key}"));
+        }
         if key=="--evaluate"{flags.insert(key.clone());index+=1;continue;}
         let Some(value)=args.get(index+1) else{return Err(format!("missing {key} value"))};
         if !value.starts_with("--"){values.insert(key.clone(),value.clone());index+=2;}
@@ -41,8 +53,11 @@ fn parse_args(args:&[String])->Result<Options,String>{
     let required=|key:&str|values.get(key).cloned()
         .ok_or_else(||format!("{key} is required"));
     let positive=|key:&str,default:u64,min:u64,max:u64|->Result<u64,String>{
-        let n=values.get(key).map(String::as_str).unwrap_or("")
-            .parse::<u64>().unwrap_or(default);
+        let n=match values.get(key){
+            Some(value)=>value.parse::<u64>()
+                .map_err(|_|format!("{key} must be an integer"))?,
+            None=>default,
+        };
         if !(min..=max).contains(&n){return Err(format!("{key} must be {min}..{max}"))}
         Ok(n)
     };
@@ -53,12 +68,24 @@ fn parse_args(args:&[String])->Result<Options,String>{
     if !matches!(uri.scheme(),"http"|"https"){return Err("provider must use http(s)".into());}
     let model=required("--model")?;
     if model.trim().is_empty(){return Err("model must not be blank".into());}
-    let engine=PathBuf::from(required("--engine")?);
+    let engine=PathBuf::from(required("--engine")?).canonicalize()
+        .map_err(|e|format!("DOMINION Rust engine unavailable: {e}"))?;
     if !engine.is_file(){return Err(format!("DOMINION Rust engine not found: {}",engine.display()));}
-    let tasks=PathBuf::from(required("--tasks")?);
+    let tasks=PathBuf::from(required("--tasks")?).canonicalize()
+        .map_err(|e|format!("official task JSONL unavailable: {e}"))?;
     if !tasks.is_file(){return Err(format!("official task JSONL not found: {}",tasks.display()));}
-    let output=PathBuf::from(required("--output")?);
+    let requested_output=PathBuf::from(required("--output")?);
+    let output=if requested_output.is_absolute(){requested_output}
+        else{env::current_dir().map_err(|e|e.to_string())?.join(requested_output)};
     if output.exists(){return Err("output directory must be new; never mix evaluation receipts".into());}
+    let cost=|key:&str|->Result<Option<f64>,String>{
+        let Some(raw)=values.get(key)else{return Ok(None)};
+        let amount=raw.parse::<f64>().map_err(|_|format!("{key} must be numeric"))?;
+        if !amount.is_finite()||!(0.0..=100_000_000.0).contains(&amount){
+            return Err(format!("{key} must be a finite nonnegative KRW value"));
+        }
+        Ok(Some(amount))
+    };
     Ok(Options{
         tasks,output,engine,
         provider_url:url,
@@ -69,6 +96,8 @@ fn parse_args(args:&[String])->Result<Options,String>{
         goal_timeout:Duration::from_secs(positive("--timeout-seconds",900,60,7200)?),
         token_budget:positive("--token-budget",150_000,1000,2_000_000)?,
         max_iterations:positive("--iterations",16,1,64)?,
+        input_cost_krw_million:cost("--input-cost-krw-million")?,
+        output_cost_krw_million:cost("--output-cost-krw-million")?,
         evaluate:flags.contains("--evaluate"),
     })
 }
@@ -251,13 +280,24 @@ async fn solve(cfg:&Options,task:&Task,client:&reqwest::Client)->Result<Value,St
             tool_calls+=ops.as_array().map(Vec::len).unwrap_or(0);
         }
     }
+    let usage=if session.is_empty(){Value::Null}else{
+        json_get(client,&format!("{base}/api/sessions/{session}/usage"))
+            .await.unwrap_or(Value::Null)
+    };
+    let krw=match (cfg.input_cost_krw_million,
+        cfg.output_cost_krw_million,
+        usage["promptTokens"].as_u64(),usage["completionTokens"].as_u64()){
+        (Some(input),Some(output),Some(prompt),Some(completion))=>
+            Some(((prompt as f64)*input+(completion as f64)*output)/1_000_000.0),
+        _=>None
+    };
     Ok(json!({
         "instanceId":task.id,"repo":task.repo,"baseCommit":task.commit,
         "goalId":goal_id,"goalStatus":final_goal["status"],
         "timedOut":timed_out,"elapsedMs":started.elapsed().as_millis() as u64,
         "toolCalls":tool_calls,"executionCount":executions_seen,
         "tokenBudget":cfg.token_budget,
-        "reportedTokens":Value::Null,
+        "measuredUsage":usage,"estimatedCostKrw":krw,
         "patchSha256":format!("{:x}",Sha256::digest(patch.as_bytes())),
         "patchBytes":patch.len(),"patch":patch,
         "notOfficiallyEvaluated":true
@@ -285,7 +325,8 @@ async fn run()->Result<(),String>{
             Ok(v)=>v,
             Err(message)=>json!({"instanceId":task.id,"error":message,
                 "goalStatus":"runner_failure","patch":"","patchBytes":0,
-                "toolCalls":Value::Null,"reportedTokens":Value::Null,"notOfficiallyEvaluated":true})
+                "toolCalls":Value::Null,"measuredUsage":Value::Null,
+                "estimatedCostKrw":Value::Null,"notOfficiallyEvaluated":true})
         };
         let patch=record["patch"].as_str().unwrap_or("");
         writeln!(pred,"{}",json!({
@@ -304,6 +345,8 @@ async fn run()->Result<(),String>{
         "model":cfg.provider_model,"providerKind":cfg.provider_kind,
         "providerBase":cfg.provider_url,"tokenBudget":cfg.token_budget,
         "maxIterations":cfg.max_iterations,
+        "inputCostKrwPerMillion":cfg.input_cost_krw_million,
+        "outputCostKrwPerMillion":cfg.output_cost_krw_million,
         "goalTimeoutSecs":cfg.goal_timeout.as_secs(),
         "requestedInstances":tasks.iter().map(|task|task.id.as_str()).collect::<Vec<_>>(),
         "predictionFormat":"official_swebench_jsonl",
