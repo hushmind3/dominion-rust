@@ -1105,6 +1105,10 @@ pub(super) async fn run_turn_body(
                 );
             }
             provider = selected_provider;
+        } else if selected_provider.context_tokens != provider.context_tokens {
+            // Preserve the smaller, successfully admitted replay bound for
+            // the next tool round rather than exceeding the same window again.
+            provider.context_tokens=selected_provider.context_tokens;
         }
 
         let has_dsml_call = completion.content.contains("invoke name=\"")

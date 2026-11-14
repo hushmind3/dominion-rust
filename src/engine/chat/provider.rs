@@ -240,6 +240,17 @@ pub(super) fn apply_reasoning_options(
 /// Retry transient provider/stream failures only before any content was
 /// published to the client. Replaying a partially streamed answer could repeat
 /// visible text, reasoning, or a tool request, so that case always stops.
+/// A rejected context-window request has not executed any model tool.
+/// Only this explicit class is eligible for one smaller-context retry.
+fn context_overflow_error(error: &str) -> bool {
+    let lower=error.to_ascii_lowercase();
+    ["context_length_exceeded","context window exceeded","maximum context length",
+     "prompt is too long","input is too long","too many tokens",
+     "context size exceeded","exceeds the context window",
+     "maximum prompt length","context_length"].iter()
+        .any(|needle|lower.contains(needle))
+}
+
 fn transient_provider_error(error: &str) -> bool {
     error.contains(" 연결 실패:")
         || error.contains("스트림 오류:")

@@ -28,6 +28,9 @@ pub(crate) async fn stream_completion(
     let mut failed = Vec::new();
 
     for candidate in candidates {
+        let mut attempted=candidate.clone();
+        let mut context_retries=0u8;
+        loop {
         if state.is_cancelled(session_id) {
             return Err("실행이 중단되었습니다.".into());
         }
@@ -35,8 +38,8 @@ pub(crate) async fn stream_completion(
         let candidate_started = std::time::Instant::now();
         let (result, exposed) = {
             let attempt = stream_completion_once(
-                state, client, &candidate, messages, tools, request, session_id, &relay,
-                candidate.tool_mode == "compat" && original_mode != "compat",
+                state, client, &attempted, messages, tools, request, session_id, &relay,
+                attempted.tool_mode == "compat" && original_mode != "compat",
             );
             tokio::pin!(attempt);
             let mut exposed = false;
@@ -68,7 +71,7 @@ pub(crate) async fn stream_completion(
         let is_room = state.store.get("session", session_id)
             .is_some_and(|session| session["roomId"].is_string());
         if should_mark_slow_provider(candidate_started.elapsed(), is_room) {
-            crate::engine::gateway::mark_slow(&candidate.base_url, &candidate.model);
+            crate::engine::gateway::mark_slow(&attempted.base_url, &attempted.model);
         }
         match result {
             Ok(completion) => {
@@ -83,9 +86,29 @@ pub(crate) async fn stream_completion(
                         "model":candidate.model,
                     }));
                 }
-                return Ok((completion, candidate));
+                return Ok((completion, attempted));
             }
             Err(error) => {
+                // A context rejection happened before content or tool dispatch:
+                // reduce only the model-facing replay, keep the SQLite evidence.
+                // Retry at most once; a second rejection does not burn more
+                // tokens or silently switch providers on a permanent error.
+                if !exposed && context_retries==0
+                    && context_overflow_error(&error)
+                    && attempted.context_tokens.is_some_and(|n|n>=1024)
+                    && !state.is_cancelled(session_id) {
+                    let original=attempted.context_tokens.unwrap_or_default();
+                    attempted.context_tokens=Some((original*7/10).max(512));
+                    context_retries+=1;
+                    state.store.audit("chat.context_overflow_retry",json!({
+                        "sessionId":session_id,"providerId":attempted.id,
+                        "model":attempted.model,"originalContextTokens":original,
+                        "retryProjectionTokens":attempted.context_tokens,
+                        "attempts":context_retries,
+                        "sourceTranscriptUnchanged":true
+                    }));
+                    continue;
+                }
                 // No replay after partial visible content or a policy/cancel
                 // error. The next provider is only allowed to retry a clean
                 // transient failure with zero externally observed output.
@@ -93,7 +116,9 @@ pub(crate) async fn stream_completion(
                     return Err(error);
                 }
                 failed.push(json!({"providerId":candidate.id,"error":error}));
+                break;
             }
+        }
         }
     }
     Err(format!("사용 가능한 제공자가 모두 실패했습니다: {}", json!(failed)))

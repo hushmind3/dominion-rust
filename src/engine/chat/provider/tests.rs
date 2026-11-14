@@ -229,6 +229,20 @@
         assert_eq!(projected,original);
     }
 
+
+    #[test]
+    fn only_actual_context_rejections_enable_bounded_projection_retry() {
+        for message in ["HTTP 400: context_length_exceeded",
+            "maximum context length is 8192 tokens",
+            "prompt is too long", "input is too long"] {
+            assert!(context_overflow_error(message), "{message}");
+        }
+        for message in ["HTTP 429 rate limited","HTTP 400 invalid tool schema",
+            "permission rejected","stream partially emitted","connection refused"] {
+            assert!(!context_overflow_error(message), "{message}");
+        }
+    }
+
     #[test]
     fn each_provider_receives_its_own_tool_window_from_full_evidence() {
         let base = ProviderRef {
