@@ -490,13 +490,21 @@ fn compatibility_tools_are_available_and_round_limit_is_a_failure() {
     let session = app.post("/api/sessions", &json!({"title":"limit"}));
     let stream =
         app.chat(&json!({"sessionId":session["id"],"input":"계속 확인","autoLearning":false}));
-    // Repeating a read call carries information, so the harness lets the
-    // model continue until the round budget; it still must fail and never
-    // save a raw tool-call fragment as the final answer.
+    // Two identical observed local reads are real evidence, but a third
+    // request for the unchanged result must be refused before execution.
+    // A stubborn model is stopped by the fifth identical request rather
+    // than burning the entire round budget. No fake success is allowed.
     assert!(stream.contains("tool_start") || stream.contains("tool_error"), "{stream}");
     assert!(!stream.contains("assistant_saved"), "{stream}");
     let calls = requests.lock().unwrap();
-    assert!(calls.len() >= 8, "round budget was not reached: {} calls", calls.len());
+    assert_eq!(calls.len(),5,"the fifth identical unproductive read must end the loop");
+    // The guard returns protocol-valid errors but never invents a new tool
+    // operation after the second actual filesystem observation.
+    let execution=app.get("/api/executions")[0].clone();
+    let operations=app.get(&format!("/api/executions/{}/operations",
+        execution["id"].as_str().unwrap()));
+    assert_eq!(operations.as_array().unwrap().len(),2,
+        "only two real reads should have execution_operation receipts");
     assert!(calls[0]["messages"][0]["content"]
         .as_str()
         .unwrap()
