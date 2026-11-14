@@ -246,6 +246,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals/:id/steer",post(goals::steer_goal))
         .route("/api/goals/:id/resume",post(goals::resume_goal))
         .route("/api/goals/:id/diff",get(goals::diff_goal))
+        .route("/api/goals/:id/patch",get(goals::export_goal_patch))
         .route("/api/goals/:id/rollback",post(goals::rollback_goal))
         .route("/api/goals/:id/apply",post(goals::apply_goal))
         .route("/api/goals/:id/changes",get(goals::shared_changes))
