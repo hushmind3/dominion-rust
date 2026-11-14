@@ -436,6 +436,98 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn owner_steering_is_seen_by_the_next_real_provider_step_after_tool_execution() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use tokio::sync::Notify;
+
+        #[derive(Default)]
+        struct Fixture {
+            first_request: Notify,
+            resume: Notify,
+            saw_steer: AtomicBool,
+            model_calls: AtomicUsize,
+        }
+
+        let fixture = std::sync::Arc::new(Fixture::default());
+        let handler_fixture = fixture.clone();
+        let app = Router::new().route("/chat/completions", post(
+            move |Json(body): Json<Value>| {
+                let state = handler_fixture.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    let calls = state.model_calls.fetch_add(1, Ordering::SeqCst);
+                    let chunk = if calls == 0 {
+                        // Deliberately pause the provider so the owner can
+                        // replace direction during the first model request.
+                        state.first_request.notify_one();
+                        state.resume.notified().await;
+                        json!({"choices":[{"delta":{"tool_calls":[{
+                            "index":0,"id":"native-sdk-call-1",
+                            "function":{
+                                "name":"sdk__echo",
+                                "arguments":"{\"text\":\"first model call\"}"
+                            }
+                        }]},"finish_reason":"tool_calls"}]})
+                    } else {
+                        let seen = body["messages"].as_array().is_some_and(|messages| {
+                            messages.iter().any(|message| {
+                                message["role"] == "user"
+                                    && message["content"] == "원래 계획 대신 새 지시를 우선하세요"
+                            })
+                        });
+                        state.saw_steer.store(seen, Ordering::SeqCst);
+                        json!({"choices":[{"delta":{"content":"Completed with owner correction"},"finish_reason":"stop"}]})
+                    };
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                        format!("data: {chunk}\n\ndata: [DONE]\n\n"),
+                    ).into_response()
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener,app).await.unwrap() });
+
+        let (sdk, root) = fresh();
+        sdk.register_provider("p", &format!("http://{address}"), "fixture", None).unwrap();
+        sdk.register_tool(
+            "echo", "Echo a value",
+            json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
+            false,
+            |args| async move { Ok(json!({"echo":args["text"]})) },
+        ).unwrap();
+        let session = sdk.create_session("owner-steering").unwrap();
+        let session_id = session["id"].as_str().unwrap().to_owned();
+        let options = TurnOptions::new("Run the native echo tool")
+            .with_session(&session_id)
+            .with_provider("p");
+
+        let running_sdk = sdk.clone();
+        let turn_task = tokio::spawn(async move { running_sdk.run(options).await });
+        tokio::time::timeout(std::time::Duration::from_secs(15), fixture.first_request.notified())
+            .await.expect("first native model request should start");
+        let queued = sdk.steer(&session_id,"원래 계획 대신 새 지시를 우선하세요").unwrap();
+        assert_eq!(queued["status"],"queued");
+        fixture.resume.notify_one();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(40), turn_task)
+            .await.expect("native turn timed out").unwrap().unwrap();
+        assert!(result.message.is_some());
+        assert_eq!(fixture.model_calls.load(Ordering::SeqCst),2);
+        assert!(fixture.saw_steer.load(Ordering::SeqCst),
+            "the real model must see the owner's correction, not only the SQLite queue");
+        assert!(result.successful_tools.iter().any(|tool|tool=="sdk__echo"));
+        assert_eq!(sdk.state.store.get("chat_steer", queued["id"].as_str().unwrap()).unwrap()["status"],"delivered");
+        assert_eq!(sdk.messages(&session_id).iter()
+            .filter(|message|message["metadata"]["source"]=="sdk_chat_steer")
+            .count(), 1);
+        server.abort();
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn invalid_user_request_returns_an_error_but_is_not_rewritten() {
         let (sdk, root) = fresh();
