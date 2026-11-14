@@ -18,7 +18,7 @@ const groups=[{id:'all',name:'conn.group.all'},{id:'messaging',name:'conn.group.
 const badge=(s:string)=>{const keys:Record<string,LocaleKey>={connected:'conn.status.connected',outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',webhook_ready:'conn.status.webhook_ready',starting:'conn.status.starting',reconnecting:'conn.status.reconnecting',error:'conn.status.error',disabled:'conn.status.disabled',not_started:'conn.status.not_started',stopped:'conn.status.stopped'};return keys[s]?t(keys[s]):s};
 const active=(s:string)=>s==='connected';
 
-export function ConnectionsPage(){
+export function ConnectionsPage({initialSection='channels'}:{initialSection?:'channels'|'extensions'|'capabilities'}={}){
  useLocale()
  const registry=useRemote<ChannelEntry[]>('/api/channels/catalog',[]);
  const channels=useRemote<Channel[]>('/api/channels',[]);
@@ -28,7 +28,7 @@ export function ConnectionsPage(){
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
  const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[view,setView]=useState<'channels'|'accounts'>('channels');
- const [section,setSection]=useState<'channels'|'extensions'|'capabilities'>('channels');
+ const [section,setSection]=useState<'channels'|'extensions'|'capabilities'>(initialSection);
  const [editor,setEditor]=useState<{entry:ChannelEntry;record:any}|null>(null);
  const [error,setError]=useState(''),[info,setInfo]=useState(''),[probe,setProbe]=useState<Record<string,string>>({}),[saving,setSaving]=useState(false);
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
