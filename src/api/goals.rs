@@ -65,27 +65,30 @@ pub async fn edit_plan(
     }
 }
 
-/// Plan steering is versioned and takes effect only at the next turn
-/// boundary. The initial success contract, tool rights and reviewer remain fixed.
+/// Owner plan or direct instruction is versioned and applied at the next
+/// executor turn. The user can correct an in-flight agent without rewriting a
+/// provider transcript or issuing a forged tool/result message.
 pub async fn steer_goal(
     State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
 )->Response{
     if body.as_object().is_none_or(|fields|fields.len()!=2) {
-        return error(StatusCode::BAD_REQUEST,"plan과 expectedRevision만 제공하세요.");
+        return error(StatusCode::BAD_REQUEST,"expectedRevision과 plan 또는 instruction을 제공하세요.");
     }
     let Some(revision)=body["expectedRevision"].as_u64() else{
         return error(StatusCode::BAD_REQUEST,"현재 계획 revision이 필요합니다.");
     };
-    let Some(plan)=body["plan"].as_str() else{
-        return error(StatusCode::BAD_REQUEST,"새 계획이 필요합니다.");
+    use crate::engine::goal_steering::{submit,submit_instruction,SteeringError};
+    let result=match (body["plan"].as_str(),body["instruction"].as_str()) {
+        (Some(plan),None)=>submit(&state,&id,revision,plan),
+        (None,Some(instruction))=>submit_instruction(&state,&id,revision,instruction),
+        _=>return error(StatusCode::BAD_REQUEST,"plan 또는 instruction 중 하나만 지정하세요."),
     };
-    use crate::engine::goal_steering::{submit,SteeringError};
-    match submit(&state,&id,revision,plan){
+    match result {
         Ok(saved)=>Json(saved).into_response(),
         Err(SteeringError::Missing)=>error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다."),
-        Err(SteeringError::Immutable)=>error(StatusCode::CONFLICT,"종료된 목표는 계획을 변경할 수 없습니다."),
-        Err(SteeringError::Conflict)=>error(StatusCode::CONFLICT,"다른 계획 변경이 먼저 저장됐습니다. 최신 revision으로 다시 확인하세요."),
-        Err(SteeringError::Invalid)=>error(StatusCode::BAD_REQUEST,"계획은 1~6000자이고 NULL 문자를 포함할 수 없습니다."),
+        Err(SteeringError::Immutable)=>error(StatusCode::CONFLICT,"이미 끝난 목표는 새 목표로 시작하거나 재개하세요."),
+        Err(SteeringError::Conflict)=>error(StatusCode::CONFLICT,"다른 사용자 변경이 먼저 저장됐습니다. 최신 revision으로 다시 제출하세요."),
+        Err(SteeringError::Invalid)=>error(StatusCode::BAD_REQUEST,"지시 또는 계획은 1~6000자이고 NULL 문자를 포함할 수 없습니다."),
     }
 }
 
