@@ -10,6 +10,7 @@ import {FilmRetake} from './video/FilmRetake'
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;
  result?:{bytes:number;shots?:number;newPaidCallsThisRun?:number;technicalQuality?:{status:string;reason?:string};
+ visualSignals?:{status:string;sampledSeconds?:number;blackIntervalCount?:number;freezeIntervalCount?:number;semanticQualityVerified?:boolean};
  clipReceipts?:{index:number;quality?:{status:string}}[]};
  videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;
  technicalGate?:boolean;film?:{paidCallCount?:number;clips?:unknown[]};storyboard?:string[];
@@ -295,6 +296,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        승인된 생성 견적: <strong>{videoJob.paidQuote.referenceKrw.toLocaleString('ko-KR')}원</strong>
        {' '}· 신규 과금 기준 {videoJob.paidQuote.billableSeconds}초 · {videoJob.paidQuote.paidCalls}회.
        공개 목록가·참고 환율에 의한 견적이며 실제 결제 원장 수집 전에는 확정 지출이 아닙니다.
+      </p>}
+      {videoJob.result?.visualSignals?.status==='sampled'&&<p className="text-[11px] leading-5 text-[#7C7469]">
+       실제 MP4 프레임 디코드 진단 · 최초 {videoJob.result.visualSignals.sampledSeconds}초 표본:
+       거의 검은 구간 {videoJob.result.visualSignals.blackIntervalCount??0}개,
+       프레임 정지 의심 {videoJob.result.visualSignals.freezeIntervalCount??0}개.
+       연출상 정지 화면·어두운 장면도 감지될 수 있으며 인물·음성의 시청 품질 평가와는 별개입니다.
       </p>}
       {videoJob.result?.shots&&<p className="text-[11px] text-[#7C7469]">완성 장면 {videoJob.result.shots}개 · 이번 실행 신규 유료 요청 {videoJob.result.newPaidCallsThisRun??0}건</p>}
       {(videoJob.shotMode||videoJob.videoModel&&videoJob.videoQuality)&&<p className="text-[11px] text-[#7C7469]">제작 설정: {videoJob.videoQuality||'1080p'} · {videoJob.shotMode?(videoJob.shotMode==='custom'?'사용자 샷 구성':'자동 멀티샷'):videoJob.videoModel} · {videoJob.generateAudio===false?'무음':'AI 오디오'}</p>}{videoJob.storyboard&&videoJob.storyboard.length>0&&<details className="text-xs text-[#5C544A]"><summary className="cursor-pointer font-medium">샷 구성 확인</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{videoJob.storyboard.map((scene,i)=><li key={i}>{scene}</li>)}</ol></details>}{videoJob.film?.clips?.length&&terminal(videoJob.status)&&
