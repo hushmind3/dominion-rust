@@ -14,6 +14,16 @@ APIs remain supported. The same Rust scheduler, tools, provider and
 SQLite records execute both, without another third-party agent harness.
 SSE interruptions and remote model errors are not retried as new runs.
 
+## Verifiable code goals
+
+```rust
+let goal = GoalCreate::new("Repair the source and verify tests")
+    .isolate_worktree(true).require_tests(true)
+    .token_budget(100_000).max_iterations(16);
+```
+
+The native engine checks real tool outcome receipts including later failed tests; `token_budget` limits future model steps according to observed usage, not already billed tokens.
+
 ## Build / test
 
 ```bash
