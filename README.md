@@ -599,3 +599,9 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - Regression tests: `tests/support/engine/chat_runtime.tests.rs` covers lexical false positives, positive English actions, fresh-vs-continuation history and source editing exposure. No CI, Rust compiler, paid API or live-provider verification was run for this change.
 - Research context (2026): [OpenAI Tool Search](https://developers.openai.com/api/docs/guides/tools-tool-search), [Anthropic Manage Tool Context](https://platform.claude.com/docs/en/agents-and-tools/tool-use/manage-tool-context), [ToolBottleneckBench (Oct 2026)](https://arxiv.org/abs/2610.21098) and [Airbnb Agent Harness Optimizer](https://github.com/airbnb/agent-harness-optimizer). Dominion implements its own deterministic selection here; it does not claim native provider-side deferred search.
 
+
+### Sub1 follow-up: shared intent matcher and autonomous test gate
+
+- The action-word boundary policy now lives in `src/engine/text_intent.rs`, is registered in `src/engine/mod.rs`, and is reused by group routing and `src/engine/goal_verification.rs::asks_for_tests`. Natural-language words such as `latest`, `testament` or `protest` no longer accidentally turn on `cargo test` completion obligations. Explicit `test`, `tests`, `testing`, and Korean `테스트` retain the test gate.
+- Room code intents now cover explicit English `fix bug`/`patch`/`refactor` alongside Korean requests. Source discovery and surgical edits remain bounded by the existing execution approval and worktree policies. `goal_verification.rs` and the shared matcher both have regression tests.
+
