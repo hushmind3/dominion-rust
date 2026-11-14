@@ -697,3 +697,8 @@ ComfyUI 영상에 `cinematic:true` 옵션이 연결됐습니다. `video/cinemati
 #### 실행 중 사용자 계획 수정 (서브4)
 
 `/api/goals/:id/steer`는 예상 plan revision을 동봉한 사용자의 새 계획을 기록한다. `goal_steering::pending`이 다음 executor 턴에서만 적용하고, 기존 계획으로 완료 처리되지 않도록 `goals::run`·`finish`에서 미반영 revision을 검사한다. `Goals.tsx`는 최신/반영 계획 상태를 표시한다. 완료 판정과 권한/검증 조건은 불변이다. 세부 경로: [서브4 v3 문서](docs/SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md).
+
+
+### Goal-wide helper token accounting (2026-11-14)
+
+`GoalControl::complete` now uses `llm::complete_for_session` for planner, reviewer and replanner. Their provider-reported usage is audited under the same goal session as executor turns. Before **each helper call**, the shared `goal.tokenBudget` is checked against `db::session_usage`; `0` remains unlimited. Final reports expose the scope and explicitly mark the limit as **not an exact billing cap** (an in-flight call may overrun, and missing usage cannot be estimated reliably). See [goal execution architecture](docs/SUB4-AUTONOMOUS-AGENT-2026-11-14.md). A mock HTTP regression is included but was not run in this connector-only edit environment.

@@ -49,7 +49,27 @@ impl GoalControl {
         if self.is_cancelled() {
             return Err(cancelled());
         }
-        let completion = llm::complete(&self.context.state, provider, model, system, prompt);
+        // Planner, reviewer and replanner use the SAME durable goal-session
+        // ledger as the tool-capable executor. Previously their model calls
+        // had no session attribution and could bypass the owner's budget.
+        // This is admission based on observed usage, not a pre-billed hard cap:
+        // one in-flight call can exceed the remaining tokens, and providers
+        // that omit usage cannot be measured exactly.
+        let goal = self.context.state.store.get("goal", &self.goal_id)
+            .ok_or_else(cancelled)?;
+        let token_budget = goal["tokenBudget"].as_u64().unwrap_or(150_000);
+        if token_budget > 0 {
+            let observed = self.context.state.store.session_usage(&self.session_id)["totalTokens"]
+                .as_u64().unwrap_or(0);
+            if observed >= token_budget {
+                return Err(format!(
+                    "목표 토큰 예산({token_budget})에 도달하여 추가 계획/검토 모델 호출을 중단했습니다 (기록: {observed}토큰)."
+                ));
+            }
+        }
+        let completion = llm::complete_for_session(
+            &self.context.state, provider, model, system, prompt, &self.session_id,
+        );
         tokio::pin!(completion);
         loop {
             tokio::select! {
@@ -137,6 +157,51 @@ mod tests {
         server.abort();
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[tokio::test]
+    async fn planner_and_reviewer_share_executor_usage_budget_without_duplicate_calls() {
+        use axum::{extract::State, routing::post, Json, Router};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (state, dir) = state();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(
+                |State(calls): State<Arc<AtomicUsize>>, Json(_): Json<Value>| async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"choices":[{"message":{"content":"plan or review"}}],
+                        "usage":{"prompt_tokens":6,"completion_tokens":3,"total_tokens":9}}))
+                }
+            ))
+            .with_state(calls.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        state.store.put("provider", &json!({
+            "id":"p", "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"mock", "enabled":true
+        }));
+        state.store.patch_if("goal", "g", "id", &json!("g"),
+            &json!({"tokenBudget":8}));
+        let control = GoalControl::new(&JobContext::new(state.clone(), "j".into()), "g", "s");
+
+        assert_eq!(control.complete("p", "mock", "planner", "plan").await.unwrap(),
+            "plan or review");
+        assert_eq!(state.store.session_usage("s")["totalTokens"], 9);
+        assert_eq!(state.store.session_usage("s")["calls"], 1);
+        let blocked = control.complete("p", "mock", "reviewer", "review").await.unwrap_err();
+        assert!(blocked.contains("예산"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1,
+            "a rejected helper must not send another provider request");
+
+        // Existing zero=unlimited contract must remain intact.
+        state.store.patch_if("goal", "g", "id", &json!("g"),
+            &json!({"tokenBudget":0}));
+        assert!(control.complete("p", "mock", "reviewer", "review").await.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(state.store.session_usage("s")["totalTokens"], 18);
+        server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn cancelled_or_deleted_records_stop_work_without_requiring_session_flag() {
         let (state, dir) = state();

@@ -246,10 +246,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             context.emit(json!({"type":"goal_owner_plan_applied",
                 "goalId":goal_id,"revision":revision,"iteration":index+1}));
         }
-        // Session-scoped provider token usage is metered by the actual gateway,
-        // including usage from earlier manually reviewed continuations.
-        // The planner/reviewer may use separate model calls; this bounds the
-        // tool-capable executor iterations, not the provider's billing ledger.
+        // Session-scoped gateway usage now covers executor, planner, reviewer
+        // and replanner (plus earlier reviewed continuations). Admission is
+        // checked before each turn/call; it is not an exact provider bill cap.
         let observed_tokens=state.store.session_usage(&session_id)["totalTokens"]
             .as_u64().unwrap_or(0);
         if token_budget>0 && observed_tokens>=token_budget {

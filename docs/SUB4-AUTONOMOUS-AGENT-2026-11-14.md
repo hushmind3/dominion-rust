@@ -99,3 +99,14 @@ Engine: goals.rs::run
 `tools/batch.rs::delegate_batch`를 통해 상위 에이전트는 최대 4개의 탐색 작업을 동시에 생성하고 `task_result`에서 결과를 모은다. 자식 세션에는 `delegatedReadOnly`가 저장되며 모델 도구 스키마와 실행기, 별도 MCP 호출의 진입점에서 쓰기와 추가 위임이 차단된다. 부모는 실제 증거를 확인한 후 최종 수정과 완료를 담당한다.
 
 `goals::finish`는 상태와 도구·파일 검증 영수증을 `goal_receipt`에 멱등 기록하고, `rsi/planner/focus.rs::generation_context`에서 좁은 범위의 비신뢰 관측 데이터만 활용한다. 이는 실제 사용자 과제의 문제 지점을 다음 세대 소스 조사 후보로 제시하지만 RSI의 독립 평가·채택 및 후손 계승 실증으로 승격되지 않는다. 자세한 호출 경로는 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md](SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md).
+
+
+## 2026-11-14 · 자율 목표 단일 토큰 원장과 역할별 호출 차단
+
+`src/engine/goal_control.rs::GoalControl::complete`는 `llm::complete_for_session`을 사용해 계획·검토·재계획 모델 호출을 목표 실행 세션의 `model.usage` 감사 원장에 귀속한다. 호출 **전** `db::Store::session_usage`의 `totalTokens`를 조회해 `goal.tokenBudget` 이상이면 새 helper 호출을 거부한다. 동일 세션의 실행기 `run_quiet_outcome` 사용량도 포함하므로 계획/검토만 별도 무료 예산으로 실행되는 누락을 줄인다. `0`은 기존처럼 제한 없음.
+
+실행 진입점: `api/goals.rs` → `jobs::run` → `goals.rs::run` → `goal_control::complete` → `llm::complete_for_session` → `gateway::record_usage` → `db::session_usage` → `goals/report.rs::build(finalReport.sessionUsage)` → `Goals.tsx`.
+
+`src/engine/goal_control.rs` 회귀 테스트는 실제 로컬 모의 HTTP 응답의 `usage`를 DB에 기록해 1번째 호출 9토큰, 예산 8토큰 도달 이후 2번째 요청 무전송, 예산 `0`으로 변경한 뒤 재개를 검사한다. 소스에 테스트를 작성했으며 **CI·컴파일·실모델 사용량 시험은 아직 실행하지 않았다**.
+
+**제한:** 사용량이 응답 뒤 보고되므로 첫 호출이 남은 한도를 초과할 수 있다. 미보고 usage, 서버측 재시도와 별도 도구·영상 요금은 원화 청구액 상한으로 보장되지 않는다. 정확한 선불 예약/동시 병렬 하위 작업 공유 한도는 향후 별도 원가 원장·원자적 admission이 필요하다. 참고: Microsoft TokenOps, 2026-08-13 (https://commandline.microsoft.com/tokenops-real-time-run-scoped-cost-control-ai-agents/).

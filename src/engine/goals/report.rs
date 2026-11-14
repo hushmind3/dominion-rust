@@ -70,6 +70,8 @@ pub(super) fn build(state:&AppState, goal:&Value)->Value {
         "sessionUsage":goal["sessionId"].as_str().filter(|id|!id.is_empty())
             .map(|id|state.store.session_usage(id)).unwrap_or(Value::Null),
         "tokenBudget":goal["tokenBudget"],
+        "tokenBudgetScope":"session executor and planner/reviewer/replanner model usage",
+        "tokenBudgetIsExactBillingCap":false,
         "reportedAt":chrono::Utc::now().to_rfc3339()
     })
 }
