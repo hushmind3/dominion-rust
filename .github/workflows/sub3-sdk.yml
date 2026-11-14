@@ -1,0 +1,24 @@
+name: DOMINION SDK tests
+on:
+  push:
+    branches: [dominion-sub3]
+    paths:
+      - 'sdk/js/**'
+      - '.github/workflows/sub3-sdk.yml'
+  pull_request:
+    paths:
+      - 'sdk/js/**'
+      - '.github/workflows/sub3-sdk.yml'
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and SSE/protocol tests
+        run: |
+          cd sdk/js
+          npm run check
+          npm test
