@@ -111,4 +111,8 @@ RSI: `rsi_scan::report`의 `goal_signals::collect`가 최근 실제 목표의 �
 
 ## 2026-11-14: Judge issue #8 frontend integration
 
-`docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md` traces all 14 visible sidebar destinations and existing backend entry points. Connections is the sole sidebar entry for channel bindings, MCP/skills and capability-market discovery. Legacy tabs still load through one page. The root does not display unsolicited self-improvement prompts. Owner memory text can be edited via a provenance- and concurrency-guarded API. Static source checks were added, but browser click scenarios, real providers and full paid RSI evolutionary runs remain separate verification gates.
+`docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md` traces all 15 visible sidebar destinations and existing backend entry points. Connections is the sole sidebar entry for channel bindings, MCP/skills and capability-market discovery. Legacy tabs still load through one page. The root does not display unsolicited self-improvement prompts. Owner memory text can be edited via a provenance- and concurrency-guarded API. Static source checks were added, but browser click scenarios, real providers and full paid RSI evolutionary runs remain separate verification gates.
+
+### 2026-11-14 재심사 74점 이후의 Sub1 개선
+
+자율 목표의 독립 메뉴가 `Goals.tsx` → 공유 `GoalConsole`로 추가되어 15개 화면 진입점이 생겼습니다. `api/goals::cancel_goal/resume_goal`은 durable worker cancellation / owner-reviewed new job, `goals.rs`는 확정된 iteration 및 evidence를 계승하면서 이전 in-flight 도구를 재실행하지 않습니다. `goal_control`은 planner/reviewer 사용량을 목표 세션에 합산하고 관측된 tokenBudget 상한을 처리합니다. `Store::edit_manual_memory`는 SQLite 단일 트랜잭션 내 원문/출처/활성 상태 CAS 및 감사 기록을 결합했습니다. 이전 기본 CI의 Chrome 원격 디버깅 포트 오류는 별도 opt-in browser test로 분리했습니다. 이 변경은 심판의 다음 점수를 예고하지 않으며, 운영상 실제 모델 완수율은 추가 측정 대상입니다.
