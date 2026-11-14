@@ -54,6 +54,29 @@ impl BudgetLedger {
         true
     }
 
+    /// Atomically reserve a parallel read batch. Parallel execution is a
+    /// scheduling optimization, not a way around owner-set execution budgets.
+    /// Invalid JSON proposals still count against proposal capacity but never
+    /// claim an executed-tool slot.
+    pub fn charge_parallel(&mut self, proposals: usize, valid_tools: usize) -> bool {
+        if valid_tools > proposals {
+            return false;
+        }
+        let Some(next_proposals) = self.proposals.checked_add(proposals) else {
+            return false;
+        };
+        let Some(next_tools) = self.tools.checked_add(valid_tools) else {
+            return false;
+        };
+        if next_proposals > self.max_proposals || next_tools > self.max_tools
+            || self.expired() {
+            return false;
+        }
+        self.proposals = next_proposals;
+        self.tools = next_tools;
+        true
+    }
+
     /// A fresh ledger for one parallel branch. Counters start at zero so the
     /// parent can merge only the usage of this branch.
     pub fn branch(&self) -> Self {
@@ -116,6 +139,22 @@ mod tests {
         assert!(!ledger.charge_proposal());
     }
 
+    #[test]
+    fn parallel_reads_charge_actual_budgets_atomically() {
+        let mut ledger = BudgetLedger::new(6, 3, Duration::from_secs(60));
+        assert!(ledger.charge_tool());
+        assert!(ledger.charge_proposal());
+        assert_eq!(ledger.snapshot()["tools"],1);
+        assert!(!ledger.charge_parallel(3,3));
+        assert_eq!(ledger.snapshot()["tools"],1);
+        assert_eq!(ledger.snapshot()["proposals"],1);
+        assert!(ledger.charge_parallel(3,2));
+        assert_eq!(ledger.snapshot()["tools"],3);
+        assert_eq!(ledger.snapshot()["proposals"],4);
+        assert!(!ledger.charge_parallel(1,1));
+        assert_eq!(ledger.snapshot()["proposals"],4);
+        assert!(!ledger.charge_parallel(1,2));
+    }
     #[test]
     fn ledger_snapshot_exposes_limits() {
         let ledger = BudgetLedger::new(8, 40, Duration::from_secs(600));

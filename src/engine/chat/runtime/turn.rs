@@ -1730,6 +1730,13 @@ pub(super) async fn run_turn_body(
                 .cloned()
                 .collect::<Vec<_>>();
             if read_calls.len() >= 2 {
+                // Reads are prepared together only when the ENTIRE batch fits
+                // the remaining tool and proposal budgets. Otherwise run the
+                // original calls sequentially through normal budget checks.
+                let valid_reads = read_calls.iter().filter(|call| {
+                    serde_json::from_str::<Value>(&call.arguments).is_ok()
+                }).count();
+                if budget.charge_parallel(read_calls.len(), valid_reads) {
                 // Only this applicable run owns a combination usage record;
                 // a single read is not a combination measurement.
                 let _ = crate::engine::algorithms::choose_for_agent(
@@ -1815,6 +1822,16 @@ pub(super) async fn run_turn_body(
                     );
                 }
                 round_calls.retain(|call| !tool_is_read_only(&call.name));
+                } else {
+                    // Do not discard read requests or mis-credit combination
+                    // performance when a budget forces serial execution.
+                    state.store.audit("agent.parallel_reads_serial_fallback",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "requestedReads":read_calls.len(),
+                        "validReads":valid_reads,
+                        "budget":budget.snapshot()
+                    }));
+                }
             }
         }
         let mut ordering_used = false;
