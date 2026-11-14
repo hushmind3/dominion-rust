@@ -19,12 +19,15 @@ fn duration(value:&Value)->Option<f64>{
         .or_else(||value.as_f64()).filter(|x|x.is_finite()&&*x>0.0)
 }
 pub(super) fn evaluate(probe:&Value,expected_seconds:u64,aspect:&str,require_audio:bool)->Result<Value,String>{
+    evaluate_with_minimum(probe,expected_seconds,aspect,640,require_audio)
+}
+fn evaluate_with_minimum(probe:&Value,expected_seconds:u64,aspect:&str,min_short_edge:u64,require_audio:bool)->Result<Value,String>{
     let streams=probe["streams"].as_array().ok_or("ffprobe 영상 스트림 정보가 없습니다.")?;
     let video=streams.iter().find(|stream|stream["codec_type"]=="video")
         .ok_or("MP4에 재생 가능한 비디오 스트림이 없습니다.")?;
     let width=video["width"].as_u64().unwrap_or(0);
     let height=video["height"].as_u64().unwrap_or(0);
-    if width<640 || height<640 {
+    if width<min_short_edge || height<min_short_edge {
         return Err(format!("해상도가 너무 낮습니다: {width}x{height}"));
     }
     let actual_ratio=width as f64/height as f64;
@@ -44,10 +47,19 @@ pub(super) fn evaluate(probe:&Value,expected_seconds:u64,aspect:&str,require_aud
         return Err("오디오를 요청했지만 생성 파일에 오디오 스트림이 없습니다.".into());
     }
     Ok(json!({"verified":true,"durationSeconds":seconds,"width":width,"height":height,
-        "ratio":aspect,"audioStream":audio,"verification":"ffprobe-stream-duration-aspect-v1"}))
+        "ratio":aspect,"audioStream":audio,"visualQualityAssessed":false,
+        "requiredShortEdge":min_short_edge,"verification":"ffprobe-stream-duration-aspect-v1"}))
 }
 
+pub(super) fn min_short_edge(input:&Value)->u64{
+    input["render"]["width"].as_u64().unwrap_or(360)
+        .min(input["render"]["height"].as_u64().unwrap_or(640))
+        .saturating_mul(3)/4
+}
 pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,audio:bool)->Result<Value,String>{
+    inspect_clip(cfg,path,seconds,aspect,640,audio).await
+}
+pub(super) async fn inspect_clip(cfg:&Value,path:&Path,seconds:u64,aspect:&str,min_short_edge:u64,audio:bool)->Result<Value,String>{
     let probe=executable(cfg).ok_or("영상 검수에는 FFmpeg와 같은 폴더의 ffprobe가 필요합니다.")?;
     let mut command=tokio::process::Command::new(probe);
     command.kill_on_drop(true).args(["-v","error","-show_entries",
@@ -63,7 +75,7 @@ pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,audio:
     if output.stdout.len()>32768 {return Err("영상 검수 출력이 비정상적으로 큽니다.".into());}
     let report:Value=serde_json::from_slice(&output.stdout)
         .map_err(|e|format!("ffprobe JSON 해석 오류: {e}"))?;
-    evaluate(&report,seconds,aspect,audio)
+    evaluate_with_minimum(&report,seconds,aspect,min_short_edge,audio)
 }
 
 #[cfg(test)]
