@@ -11,6 +11,7 @@ import {statusLabel} from '../components/StatusPill'
 import {Action,Empty,FormField,Headline,Notice,Panel,StateTag,Subheading,refresh,useRemote} from '../components/UI'
 import {BackupPanel} from './operations/Backup'
 import {ExecutionReview} from '../components/ExecutionReview'
+import {GoalOwnerControls} from './operations/GoalOwnerControls'
 function localDateTime(value?: string) {
  if(!value)return '';
  const date=new Date(value);
@@ -87,7 +88,8 @@ function JobList({jobs}:{jobs:any[]}){
     </details>}
     {usage&&<p className="text-[11px] text-[#8A8176]">이 작업의 공유 세션 모델 호출 {usage.calls||0}회 · 기록 토큰 {Number(usage.totalTokens||0).toLocaleString('ko-KR')} · 실제 청구 원화 미측정</p>}
     {j.kind==='workflow'&&<a href="#/workflows" className="inline-flex items-center gap-1 text-xs font-semibold text-[#C96442] hover:underline">워크플로·다음 실행 보기 →</a>}
-    {j.kind==='goal'&&<a href="#/activity" className="inline-flex items-center gap-1 text-xs font-semibold text-[#C96442] hover:underline">검증·변경 검토·재개 보기 →</a>}
+    {j.kind==='goal'&&typeof j.input?.goalId==='string'&&<GoalOwnerControls goalId={j.input.goalId}/>}
+    {j.kind==='goal'&&!j.input?.goalId&&<small className="text-[#8A8176]">목표 ID를 찾을 수 없어 작업 기록만 표시합니다.</small>}
    </div>
    <StatusPill status={j.status}/>
   </Panel>
