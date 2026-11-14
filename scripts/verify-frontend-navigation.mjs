@@ -114,3 +114,32 @@ test('goal replans use real source-edit receipts and acceptance improvement',()=
  assert.ok(progress.includes('cleared_checks'))
  assert.ok(verify.includes('"workspace_replace_function" => true'))
 })
+
+test('issue 9: agent -> installed skill -> workflow -> persisted deliverable has live endpoints',()=>{
+ const routes=read('src/api/mod.rs')
+ const api=read('src/api/workflows.rs')
+ const engine=read('src/engine/workflows.rs')
+ const context=read('src/engine/chat/context.rs')
+ const agents=read('web/src/pages/Agents.tsx')
+ const models=read('web/src/pages/Models.tsx')
+ const workflow=read('web/src/pages/Workflows.tsx')
+ const developer=read('web/src/pages/Developer.tsx')
+ const home=read('web/src/pages/Home.tsx')
+ for(const path of ['/api/workflows','/api/workflows/:id/run',
+   '/api/workflows/deliverables/:id','/api/skills']){
+  assert.ok(routes.includes(path),path+' needs an actual API route')
+ }
+ assert.ok(api.includes('jobs::enqueue_once'))
+ assert.ok(api.includes('runnable(&state,&workflow)'))
+ assert.ok(engine.includes('run_quiet_outcome'))
+ assert.ok(engine.includes('workflow_deliverable'))
+ assert.ok(engine.includes('check_acceptance('))
+ assert.ok(context.includes('preferredSkillIds'))
+ assert.ok(agents.includes('preferredSkillIds'))
+ assert.ok(agents.includes('#/workflows?agent='))
+ assert.ok(models.includes('/api/agents/bulk-model'))
+ assert.ok(workflow.includes('DeliverableDialog'))
+ assert.ok(workflow.includes('requestId'))
+ assert.ok(developer.includes('/api/workflows/'))
+ assert.ok(home.includes('readyAgents'))
+})
