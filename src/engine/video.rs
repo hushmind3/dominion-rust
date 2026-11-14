@@ -107,6 +107,10 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if !matches!(engine, "native" | "comfyui" | "omni") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
+    // Reject an unverifiable remote render before its first billable call.
+    if !quality::available(&cfg){
+        return Err("최종 영상 검수용 FFprobe가 없습니다. FFmpeg와 FFprobe를 설치하거나 실행 파일 경로를 지정하세요.".into());
+    }
     if engine == "native" && ffmpeg(state).is_none() {
         return Err("FFmpeg가 필요합니다. 고급 설정에서 실행 파일을 지정하세요.".into());
     }
