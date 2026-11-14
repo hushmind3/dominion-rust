@@ -25,6 +25,53 @@ fn temp_state() -> AppState {
     AppState::new(config, store, vault)
 }
 
+#[tokio::test]
+async fn real_model_cannot_execute_a_tool_excluded_from_its_round_manifest(){
+    use axum::{extract::State,response::IntoResponse,routing::post,Json,Router};
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    async fn model(State(calls):State<Arc<AtomicUsize>>,Json(body):Json<Value>)
+        ->axum::response::Response{
+        calls.fetch_add(1,Ordering::SeqCst);
+        let seen_denial=body["messages"].as_array().is_some_and(|items|
+            items.iter().any(|item|item["role"]=="tool"
+                && item["content"].as_str().is_some_and(|text|
+                    text.contains("unadvertisedTool"))));
+        let delta=if seen_denial {
+            json!({"content":"허용된 도구가 없어 실제 변경은 수행하지 않았습니다."})
+        }else{
+            json!({"tool_calls":[{"index":0,"id":"unadvertised-write",
+                "type":"function","function":{"name":"workspace_write",
+                    "arguments":r#"{"path":"should-not-exist.txt","content":"ILLEGAL"}"#}}]})
+        };
+        let stream=format!("data: {}\n\ndata: [DONE]\n\n",
+            json!({"choices":[{"delta":delta,
+                "finish_reason":if seen_denial{"stop"}else{"tool_calls"}}]}));
+        ([("content-type","text/event-stream")],stream).into_response()
+    }
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr=listener.local_addr().unwrap();
+    let calls=Arc::new(AtomicUsize::new(0));
+    let app=Router::new().route("/chat/completions",post(model)).with_state(calls.clone());
+    let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+    let state=temp_state();
+    state.store.put("policy",&json!({"id":"default","autoApproveAll":true})).unwrap();
+    state.store.put("provider",&json!({"id":"p","baseUrl":format!("http://{addr}"),
+        "model":"native-harness-fixture","enabled":true,"toolMode":"native"})).unwrap();
+    state.store.put("session",&json!({"id":"s","providerId":"p"})).unwrap();
+    let request=TurnRequest::from_value(&json!({"sessionId":"s","input":"안녕",
+        "toolsEnabled":false,"toolsExecutionEnabled":true,"autoLearning":false})).unwrap();
+    let (tx,_rx)=tokio::sync::mpsc::unbounded_channel();
+    let result=tokio::time::timeout(Duration::from_secs(8),
+        run_turn(&state,&request,&tx)).await.unwrap();
+    assert!(result.is_ok(),"turn should gracefully recover from forbidden tool: {result:?}");
+    assert!(!state.config.workspace.join("should-not-exist.txt").exists());
+    assert!(state.store.all("execution_operation").iter().all(|operation|
+        operation["tool"]!="workspace_write"));
+    assert!(calls.load(Ordering::SeqCst)>=2);
+    server.abort();
+    std::fs::remove_dir_all(&state.config.data_dir).unwrap();
+}
+
 #[test]
 fn split_korean_utf8_and_crlf_events_are_lossless() {
     let bytes = "data: {\"text\":\"장기기억\"}\r\n\r\ndata: [DONE]\n\n".as_bytes();
