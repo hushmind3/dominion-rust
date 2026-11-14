@@ -168,7 +168,7 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
       </button>
       <StatusPill status={goal.status}>{goal.status}</StatusPill>
       {running(goal.status)&&<Button size="sm" variant="danger" disabled={busy} onClick={()=>void cancel(goal)}><Square size={12}/> 중단</Button>}
-      {['failed','needs_review'].includes(goal.status)&&<Button size="sm" variant="secondary" disabled={busy||((goal.resumeCount||0)>=12)} onClick={()=>void resume(goal)}><RotateCw size={12}/> 검토 후 이어가기</Button>
+      {['failed','needs_review'].includes(goal.status)&&<Button size="sm" variant="secondary" disabled={busy||((goal.resumeCount||0)>=12)} onClick={()=>void resume(goal)}><RotateCw size={12}/> 검토 후 이어가기</Button>}
       {goal.sessionId&&<Button size="sm" variant="ghost" onClick={()=>openSession(goal.sessionId!)}>대화 기록 <ArrowRight size={13}/></Button>}
      </div>
      {expanded&&<div className="mt-3 grid gap-3 border-t border-[#EFE9DF] pt-3">
