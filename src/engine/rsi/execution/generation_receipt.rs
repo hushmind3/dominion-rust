@@ -26,6 +26,7 @@ pub(super) fn assemble(
             "costOpportunities":current["input"]["rsiCostOpportunities"],
             "metaTransferTarget":current["input"]["rsiMetaTransferTarget"],
             "focusSelection":current["input"]["rsiFocusSelection"],
+            "workerFeedbackPlan":current["rsiWorkerContextPlan"],
             "targetReplan":current["rsiTargetReplan"],
             "knowledgePartition":research_scope(&current["input"]).partition_key,
             "objectiveId":crate::engine::memory::stable_id(&[
