@@ -391,6 +391,13 @@ mod goal_resume_api_tests {
             "goalState":{"nextIteration":2,"inFlight":true,
                 "transcript":"two prior completed iterations"}
         })).unwrap();
+        state.store.put("execution",&json!({
+            "id":"run-old","sessionId":"session-1"
+        })).unwrap();
+        state.store.put("execution_operation",&json!({
+            "id":"op-old","runId":"run-old","status":"interrupted",
+            "outcomeUnknown":true
+        })).unwrap();
         let accepted=resume_goal(State(state.clone()),Path("goal-1".to_string()),
             Json(json!({"acknowledgeUnknownEffects":true}))).await;
         assert_eq!(accepted.status(),StatusCode::OK);
@@ -405,6 +412,14 @@ mod goal_resume_api_tests {
         assert_eq!(new_job["input"]["resumeAfterReview"],true);
         assert_eq!(new_job["goalState"]["evidence"].as_array().unwrap().len(),1);
         assert_eq!(new_job["goalState"]["sessionId"],"session-1");
+        assert_eq!(new_job["goalState"]["reviewedUnknownOpIds"][0],"op-old");
+        let reviewed=vec!["op-old".to_string()];
+        assert!(!state.store.session_has_uncertain_effects_except("session-1",&reviewed).unwrap());
+        state.store.put("execution_operation",&json!({
+            "id":"op-new","runId":"run-old","status":"running",
+            "outcomeUnknown":true
+        })).unwrap();
+        assert!(state.store.session_has_uncertain_effects_except("session-1",&reviewed).unwrap());
         assert_eq!(state.store.get("job","job-old").unwrap()["goalState"]["inFlight"],true);
         let duplicate=resume_goal(State(state.clone()),Path("goal-1".to_string()),
             Json(json!({"acknowledgeUnknownEffects":true}))).await;
