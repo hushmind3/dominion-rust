@@ -217,3 +217,29 @@ DM·음성·파일 첨부·슬래시 명령·Gateway 실시간 이벤트는 이�
 - [Hermes 스킬](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
 - [Discord 메시지 API](https://docs.discord.com/developers/resources/message)
 - [Discord 요청 제한](https://docs.discord.com/developers/topics/rate-limits)
+
+## 2026-11-15: Rust-native subagent admission and goal-tree budgets
+
+```text
+User / Rust SDK / optional TypeScript SDK / native web UI
+   → Rust /api/goals or /api/chat
+   → goals::run → chat::runtime → tools::delegate
+       → db::Store::reserve_delegation
+          SQLite IMMEDIATE transaction:
+          verify parent not cancelled; count lifetime/active children
+          insert(session + queued job) or rollback together
+       → jobs::start_now → jobs::run_prompt → native model/tools
+          ↳ db::Store::enclosing_goal(parentSession)
+          ↳ db::Store::session_tree_usage(goalRoot)
+   → goal_control::complete (plan/review; same goal-tree usage)
+   → verification::acceptance_gaps_in
+   → goals::report::build (evidence + descendant model-cost scope)
+```
+
+The single durable source of agent authority and budget ancestry is the Rust/SQLite session graph. Neither a TypeScript caller nor an LLM-provided `goalId` can attach a child session to another goal: `enclosing_goal` verifies the stored root goal/session relation, and read-only parallel child restrictions remain independently enforced at the tool gateway. `session_tree_usage` includes nested children with cycle/recursion bounds and does not count unrelated sessions.
+
+`src/db.rs::reserve_delegation` replaces unsafe count-then-insert fan-out. It atomically reserves both worker session and prompt job, rejecting cancelled roots and excessive concurrency; only after commit does the engine publish a queued event and spawn the child. This repairs overlapping job-admission races, without claiming a distributed process-wide concurrency semaphore over *all* job kinds. Existing task cancellation, checkpoint/recovery and side-effect approval paths are preserved.
+
+**Cost invariant:** goal executor, planner/replanner, reviewer, and every delegated child's observed provider consumption count against one owner-defined goal budget. Parallel in-flight model requests may overshoot observed tokens; this is not an exact vendor prepayment cap. Provider-estimated or missing metering is surfaced in usage fields and may require additional billing controls.
+
+**RSI invariant:** detached source mutation → frozen independent paired evaluation → revalidated adoption → compiled successor → learned strategy/negative-transfer feedback. The budget/admission changes do not modify the frozen oracle or enable weight updates. Tests added for concurrent independent SQLite connections, reservation rollback, cancellation, goal-tree token attribution, cycles, and pre-provider child admission. Latest commit-specific CI, benchmark manifests and live billing observations must be used for any performance claim.
