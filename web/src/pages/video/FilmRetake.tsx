@@ -59,6 +59,7 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
   </label>)}
   {shot&&<div className="mt-3 grid gap-2">
    <span className="text-xs font-medium">선택 장면 {shot.index+1} · 예상 신규 유료 호출 {shot.expectedPaidCalls}회</span>
+   {shot.isAvailable&&<video controls playsInline preload="metadata" className="max-h-[360px] w-full rounded-lg bg-black" src={'/api/video/jobs/'+encodeURIComponent(jobId)+'/scenes/'+shot.index+'/content'}/>}
    <TextArea rows={2} value={prompt} onChange={e=>setPrompt(e.target.value)}
     placeholder="선택: 이 장면의 새 연출 프롬프트. 비워 두면 기존 장면 프롬프트 재사용"
     maxLength={4750}/>
