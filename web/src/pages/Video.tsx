@@ -113,14 +113,29 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   }
   setGenerating(true);setError('');
   try{
-   setVideoSubmission(await post<VideoJob>('/api/video/jobs',{
+   const request:Record<string,unknown>={
     engine,title,brief:prompt,aspectRatio:ratio,duration:seconds,
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed,
       cinematic:comfyCinematic,badShotRetries:comfyRetryConsent?1:0,
       confirmRetryCosts:comfyRetryConsent}:{}),
      ...(usingLtx?{videoModel:ltxModel,videoQuality:ltxQuality,generateAudio:ltxAudio,fps:ltxFps,
       cinematic,shotNotes,confirmPaidMultiShot:needsMultiShot&&paidMultiShot}:{}),
-   }));
+   };
+   if(usingLtx){
+    const quote=await post<{referenceKrw:number;fingerprint:string;
+     pricingAsOf:string;referenceFxKrwPerUsd:number;fxReferenceDate:string;
+     paidCalls:number}>('/api/video/quote',request)
+    const ok=window.confirm(
+     'LTX 유료 영상 생성 예상 견적: 약 '+quote.referenceKrw.toLocaleString('ko-KR')+
+     '원\n생성 API '+quote.paidCalls+'회 · 원화 환산 참고 견적\n'+
+     '가격 기준 '+quote.pricingAsOf+' · 환율 참고 '+quote.fxReferenceDate+
+     '\n실제 청구금액과 차이가 날 수 있습니다. 이 금액을 최대 승인 한도로 설정하고 생성할까요?')
+    if(!ok)return
+    request.approvedPaidQuote=true
+    request.approvedQuoteFingerprint=quote.fingerprint
+    request.maxApprovedKrw=quote.referenceKrw
+   }
+   setVideoSubmission(await post<VideoJob>('/api/video/jobs',request))
   }catch(e){setError((e as Error).message)}finally{setGenerating(false)}
  }
  const useResult=()=>{
