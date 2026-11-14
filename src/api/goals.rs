@@ -8,6 +8,76 @@ pub async fn list_goals(State(state): State<AppState>) -> Json<Value> {
     Json(json!(state.store.all("goal")))
 }
 
+/// Evidence accounting only. These are local owner goal records, not a
+/// benchmark score or proof that an external model solved unseen tasks.
+pub(crate) fn measured_goal_summary(records:&[Value])->Value {
+    let mut eligible=0u64;
+    let mut completed=0u64;
+    let mut reviewed=0u64;
+    let mut failed=0u64;
+    let mut cancelled=0u64;
+    let mut model_observed=0u64;
+    let mut completed_with_model_calls=0u64;
+    let mut completed_with_nonestimated_tokens=0u64;
+    let mut total_calls=0u64;
+    let mut total_tokens=0u64;
+    let mut estimated_calls=0u64;
+    let mut resume_attempts=0u64;
+    for goal in records {
+        resume_attempts=resume_attempts.saturating_add(
+            goal["resumeCount"].as_u64().unwrap_or(0));
+        let status=goal["status"].as_str().unwrap_or("");
+        match status {
+            "completed"|"failed"|"needs_review"=>eligible+=1,
+            "cancelled"=>cancelled+=1,
+            _=>continue,
+        }
+        if status=="failed"{failed+=1;}
+        if status=="needs_review"{reviewed+=1;}
+        let receipt=&goal["receipt"];
+        let usage=&receipt["tokenUsage"];
+        let calls=usage["calls"].as_u64().unwrap_or(0);
+        let tokens=usage["totalTokens"].as_u64().unwrap_or(0);
+        let estimated=usage["estimatedCalls"].as_u64().unwrap_or(0);
+        total_calls=total_calls.saturating_add(calls);
+        total_tokens=total_tokens.saturating_add(tokens);
+        estimated_calls=estimated_calls.saturating_add(estimated);
+        if calls>0 {model_observed+=1;}
+        if status=="completed" && receipt["verified"]==true
+            && receipt["remainingGaps"].as_u64()==Some(0)
+            && receipt["verificationOwner"]=="goal-parent" {
+            completed+=1;
+            if calls>0 {completed_with_model_calls+=1;}
+            if calls>0 && tokens>0 && estimated==0 {
+                completed_with_nonestimated_tokens+=1;
+            }
+        }
+    }
+    json!({
+        "recordedGoals":records.len(),
+        "eligibleTerminalGoals":eligible,
+        "harnessCompletedGoals":completed,
+        "needsReviewGoals":reviewed,
+        "failedGoals":failed,
+        "cancelledGoals":cancelled,
+        "ownerResumeAttempts":resume_attempts,
+        "goalsWithModelCalls":model_observed,
+        "completedWithModelCalls":completed_with_model_calls,
+        "completedWithNonEstimatedTokenUsage":completed_with_nonestimated_tokens,
+        "completionRatePercent":if eligible==0 {Value::Null}
+            else {json!((completed as f64*1000.0/eligible as f64).round()/10.0)},
+        "modelUsage":{"calls":total_calls,"totalTokens":total_tokens,
+            "estimatedCalls":estimated_calls},
+        "basis":"durable goal.receipt and session model.usage audit aggregates",
+        "independentBenchmark":false,
+        "videoQualityMeasured":false,
+        "actualProviderBillingMeasured":false,
+    })
+}
+pub async fn metrics(State(state):State<AppState>)->Json<Value>{
+    Json(measured_goal_summary(&state.store.all("goal")))
+}
+
 pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.store.get("goal", &id) {
         Some(goal) => Json(goal).into_response(),
