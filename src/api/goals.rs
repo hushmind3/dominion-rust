@@ -150,7 +150,13 @@ pub async fn resume_goal(
         .and_then(|job_id|state.store.get("job",job_id))
         .unwrap_or(Value::Null);
     let old_checkpoint=&old_job["goalState"];
-    let next_iteration=iterations.max(old_checkpoint["nextIteration"].as_u64().unwrap_or(0));
+    // A tool call whose result was unknown at the interruption boundary
+    // must not be repeated as if it had never run.
+    let interrupted=old_checkpoint["inFlight"]==true;
+    let unfinished=old_checkpoint["nextIteration"].as_u64().unwrap_or(iterations);
+    let next_iteration=iterations.max(if interrupted {
+        unfinished.saturating_add(1)
+    }else{unfinished});
     if next_iteration>=next_max {
         return error(StatusCode::CONFLICT,"이전 실행 단계가 반복 한도를 모두 사용했습니다.");
     }
@@ -178,8 +184,8 @@ pub async fn resume_goal(
             "finishedAt":null,"error":null,"finalReport":null})) else {
         return error(StatusCode::CONFLICT,"목표가 다른 요청에서 변경됐습니다.");
     };
-    let created=crate::engine::jobs::enqueue_once(&state,&new_job_id,"goal",
-        json!({"goalId":id,"resumeAfterReview":true}));
+    let created=crate::engine::jobs::enqueue_goal_resume(
+        &state,&new_job_id,&id,checkpoint,next_iteration,next_max);
     if created.is_none() {
         let restored=state.store.patch_if("goal",&id,"jobId",&json!(new_job_id),
             &json!({"status":"needs_review","phase":"resume_enqueue_failed",
@@ -187,8 +193,6 @@ pub async fn resume_goal(
         if let Some(restored)=restored {state.bus.record("goal",&restored);}
         return error(StatusCode::INTERNAL_SERVER_ERROR,"이어가기 작업을 등록하지 못했습니다.");
     }
-    let _=state.store.patch_if("job",&new_job_id,"status",&json!("queued"),
-        &json!({"goalState":checkpoint,"stepIndex":next_iteration,"stepTotal":next_max}));
     if let Some(session)=saved["sessionId"].as_str(){state.clear_cancel(session);}
     state.bus.record("goal",&saved);
     state.store.audit("goal.owner_reviewed_resume",json!({
