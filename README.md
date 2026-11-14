@@ -559,3 +559,10 @@ The editable experiment allocator now credits a prior source-policy revision onl
 **이번 변경에 없는 것:** 일반 Goal의 DAG 병렬 위임/합성, Git diff 승인·되돌리기 전 구간 UX, 독립 RSI 동결 평가에 의한 일반 Goal 후손 승률 증명. 이번 변경은 테스트/컴파일/CI/벤치마크/실모델 작업을 실행하지 않은 소스 단계입니다.
 
 - **목표 작업의 프로젝트 이해·계측·수정**: `goal_intake.rs`가 저장소의 manifest/최상위 구조를 한정적으로 조사한 뒤 계획자·실행자에게 전달합니다. `POST /api/goals/:id/plan` → `goal_plan.rs`은 실행 중 사용자 수정 계획을 다음 안전한 단계에 반영합니다. `goal_metrics.rs`는 완료 증빙, 모델 토큰, 소요시간, 재계획 횟수를 Goal/Job에 기록합니다. 실제 청구액이나 작업 완수율은 지어내지 않습니다.
+
+
+### 자율 에이전트의 실제 병렬 조사·Git 변경 확인·복원 (2026-11-14)
+
+- **`delegate_tasks`**: 1~4개 조사 에이전트가 각각 저장된 세션과 작업으로 병렬 실행됩니다. `tools/batch.rs`에서 읽기 전용 도구만 허용하고 `chat/runtime/turn.rs`, `chat/runtime/tool_dispatch.rs`, `tools/dispatch.rs`에서 API/MCP/결정적 실행까지 동일한 제한을 적용합니다. 부모가 개별 `task_result`를 취합해 실제 코드를 수정합니다.
+- **변경 내역·되돌리기 UX**: `GoalConsole` → `GoalChanges` → `/api/goals/:id/changes`/`undo` → `goal_changes.rs`. 시작 Git HEAD와 clean 상태를 도구 실행 전에 저장하고, 성공한 쓰기 도구의 파일만 HEAD 기준 diff와 SHA로 대조합니다. 엄격한 조건을 모두 만족한 경우 사용자가 파일 1개의 복원을 직접 승인할 수 있습니다. 동시 외부 편집·처음부터 변경된 저장소·상용 환경 전체 자동 롤백은 지원 범위가 아닙니다.
+- CI: 일반 `.github/workflows/ci.yml`의 push 검사로 React 타입 검사·빌드와 Rust 릴리스 테스트를 확인합니다. 정확한 실행 로그는 GitHub Actions를 기준으로 합니다. [자율 에이전트 전체 구조](docs/AUTONOMOUS-AGENT-2026-11-14.md).
