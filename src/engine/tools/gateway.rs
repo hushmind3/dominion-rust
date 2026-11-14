@@ -68,6 +68,7 @@ pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
         ));
     }
     let prompt = required_arg(args, "prompt")?;
+    let read_only = args["readOnly"].as_bool().unwrap_or(false);
     let agent = ctx
         .state
         .store
@@ -91,6 +92,7 @@ pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
                 "model": agent["model"],
                 "parentSessionId": ctx.session_id,
                 "delegated": true,
+                "delegatedReadOnly": read_only,
             }),
         )
         .ok_or("위임 세션을 만들 수 없습니다.")?;
@@ -109,6 +111,7 @@ pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
             "parentSessionId": ctx.session_id,
             "parentAgentId": ctx.agent_id,
             "delegation": true,
+            "delegatedReadOnly": read_only,
         }),
     )
     .ok_or("위임 작업을 만들 수 없습니다.")?;
