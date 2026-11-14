@@ -3,11 +3,12 @@
 use github_copilot_sdk::{Client,ClientOptions,MessageOptions,MessageSource,SessionConfig};
 use github_copilot_sdk::types::{ProviderConfig,SessionEvent};
 use serde_json::{json,Value};
-use std::{io::{Read,Write},sync::Arc,time::Duration};
+use std::{io::{Read,Write},time::Duration};
 
 #[derive(Default)]
 struct Meters{
     saw_usage:bool,
+    lost_events:bool,
     prompt_tokens:u64,
     completion_tokens:u64,
     cache_read_tokens:u64,
@@ -43,17 +44,19 @@ impl Meters{
     }
     fn into_json(self)->Value{
         // Input tokens already INCLUDE cached input. Do not double count.
+        let complete=self.saw_usage&&!self.lost_events;
         json!({
             "source":"github-copilot-sdk:assistant.usage",
-            "measured":self.saw_usage,
-            "calls":if self.saw_usage{json!(self.model_calls)}else{Value::Null},
-            "promptTokens":if self.saw_usage{json!(self.prompt_tokens)}else{Value::Null},
-            "completionTokens":if self.saw_usage{json!(self.completion_tokens)}else{Value::Null},
-            "totalTokens":if self.saw_usage {
+            "measured":complete,
+            "eventLossDetected":self.lost_events,
+            "calls":if complete{json!(self.model_calls)}else{Value::Null},
+            "promptTokens":if complete{json!(self.prompt_tokens)}else{Value::Null},
+            "completionTokens":if complete{json!(self.completion_tokens)}else{Value::Null},
+            "totalTokens":if complete {
                 json!(self.prompt_tokens.saturating_add(self.completion_tokens))
             }else{Value::Null},
-            "cacheReadTokens":if self.saw_usage{json!(self.cache_read_tokens)}else{Value::Null},
-            "cacheWriteTokens":if self.saw_usage{json!(self.cache_write_tokens)}else{Value::Null},
+            "cacheReadTokens":if complete{json!(self.cache_read_tokens)}else{Value::Null},
+            "cacheWriteTokens":if complete{json!(self.cache_write_tokens)}else{Value::Null},
             "toolStarts":self.tool_starts,
             "toolSuccessEvents":self.tool_success,
             "toolErrorEvents":self.tool_errors,
@@ -118,7 +121,13 @@ async fn execute(request:Value)->Result<Value,String>{
         loop{
             match tokio::time::timeout(Duration::from_secs(2),events.recv()).await{
                 Ok(Ok(event))=>meters.observe(&event),
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))=>continue,
+                Ok(Err(error))=>{
+                    if matches!(error.kind(),github_copilot_sdk::subscription::RecvErrorKind::Lagged(_)){
+                        meters.lost_events=true;
+                        continue;
+                    }
+                    break;
+                },
                 _=>break
             }
         }
