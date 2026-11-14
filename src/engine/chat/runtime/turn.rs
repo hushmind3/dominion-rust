@@ -10,6 +10,22 @@ fn parallel_read_prefix_len<T>(
     calls.iter().position(|call| !is_read(call)).unwrap_or(calls.len())
 }
 
+/// Form one tool response per model tool-call ID in **model order**, even if
+/// some arguments are invalid or individual parallel tasks return earlier.
+fn parallel_tool_messages<T>(
+    calls: &[T],
+    responses: Vec<Option<String>>,
+    call_id: impl Fn(&T) -> &str,
+) -> Vec<Value> {
+    calls.iter().enumerate().map(|(index, call)| json!({
+        "role":"tool",
+        "tool_call_id":call_id(call),
+        "content":responses.get(index).and_then(Option::as_deref).unwrap_or(
+            "{\\"error\\":\\"missing parallel tool result\\"}"
+        )
+    })).collect()
+}
+
 #[cfg(test)]
 mod parallel_read_order_tests {
     use super::parallel_read_prefix_len;
@@ -20,6 +36,27 @@ mod parallel_read_order_tests {
         assert_eq!(parallel_read_prefix_len(&calls, |call| *call == "read"), 2);
         assert_eq!(parallel_read_prefix_len(&calls[2..], |call| *call == "read"), 0);
         assert_eq!(parallel_read_prefix_len(&calls[3..], |call| *call == "read"), 2);
+    }
+
+    #[test]
+    fn malformed_and_successful_parallel_results_preserve_model_call_id_order() {
+        let calls = ["a", "b", "c"];
+        let messages = super::parallel_tool_messages(&calls,
+            vec![Some("result-a".into()), None, Some("result-c".into())],
+            |call| *call);
+        assert_eq!(messages.len(),3);
+        assert_eq!(messages[0]["tool_call_id"],"a");
+        assert_eq!(messages[1]["tool_call_id"],"b");
+        assert_eq!(messages[2]["tool_call_id"],"c");
+        assert_eq!(messages[0]["content"],"result-a");
+        assert!(messages[1]["content"].as_str().unwrap().contains("missing parallel tool result"));
+        assert_eq!(messages[2]["content"],"result-c");
+        let mixed = super::parallel_tool_messages(&calls,
+            vec![Some("{\\"error\\":\\"bad arguments\\"}".into()),
+                 Some("success".into()),Some("later".into())],|call|*call);
+        assert_eq!(mixed[0]["tool_call_id"],"a");
+        assert_eq!(mixed[1]["tool_call_id"],"b");
+        assert_eq!(mixed[0]["content"],"{\\"error\\":\\"bad arguments\\"}");
     }
 
     #[test]
@@ -1669,6 +1706,10 @@ pub(super) async fn run_turn_body(
                 op_seq += read_calls.len() as u64;
                 let mut futures = Vec::new();
                 let mut valid_calls = Vec::new();
+                // Tool response slots correspond to model call indices,
+                // including invalid JSON. Completion order and early errors
+                // must not reorder the transcript sent to the next model.
+                let mut responses = vec![None::<String>; read_calls.len()];
                 for (offset, call) in read_calls.iter().enumerate() {
                     match serde_json::from_str::<Value>(&call.arguments) {
                         Ok(arguments) => {
@@ -1697,13 +1738,9 @@ pub(super) async fn run_turn_body(
                             // Every tool_call needs a matching tool message.
                             // Dropping a malformed read would leave the next
                             // provider round with an unanswered call id.
-                            messages.push(json!({
-                                "role":"tool",
-                                "tool_call_id":call.id,
-                                "content":json!({
-                                    "error":format!("invalid tool arguments: {error}")
-                                }).to_string(),
-                            }));
+                            responses[offset] = Some(json!({
+                                "error":format!("invalid tool arguments: {error}")
+                            }).to_string());
                             crate::engine::algorithms::mark_signal(
                                 state, execution_id, "tool.selection", false,
                             );
@@ -1730,14 +1767,12 @@ pub(super) async fn run_turn_body(
                         result.as_ref().is_ok_and(|(_, ok, _)| *ok)
                     }),
                 );
-                for ((call, _offset), result) in valid_calls.iter().zip(results.into_iter()) {
+                for ((_call, offset), result) in valid_calls.iter().zip(results.into_iter()) {
                     let (content, ok) = match result {
                         Ok((_value, ok, content)) => (content, ok),
                         Err(error) => (json!({"error":error}).to_string(), false),
                     };
-                    messages.push(json!({
-                        "role":"tool","tool_call_id":call.id,"content":content,
-                    }));
+                    responses[*offset] = Some(content);
                     crate::engine::algorithms::mark_signal(
                         state, execution_id, "tool.selection", ok,
                     );
@@ -1745,6 +1780,7 @@ pub(super) async fn run_turn_body(
                         state, execution_id, "recovery.strategy", ok,
                     );
                 }
+                messages.extend(parallel_tool_messages(&read_calls, responses, |call| &call.id));
                 // Drain only executed prefix. Later reads remain behind the
                 // intervening write/control call, preserving model order.
                 round_calls.drain(..read_count);
