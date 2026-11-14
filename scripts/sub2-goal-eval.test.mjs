@@ -29,13 +29,17 @@ test("independent file verifier grades real bytes, not a model claim",()=>{
 test("a stale, forged or no-action receipt cannot be a verified win",()=>{
   const good={jobId:"job-new",verifiedCompletion:true,actionEvidenceCount:2};
   const local={passed:true};
-  assert.equal(verifiedGoal("completed",good,"job-new",local),true);
-  assert.equal(verifiedGoal("needs_review",good,"job-new",local),false);
-  assert.equal(verifiedGoal("completed",good,"job-old",local),false);
-  assert.equal(verifiedGoal("completed",{...good,verifiedCompletion:false},"job-new",local),false);
-  assert.equal(verifiedGoal("completed",{...good,actionEvidenceCount:0},"job-new",local),false);
-  assert.equal(verifiedGoal("completed",good,"job-new",{passed:false}),false);
-  assert.equal(verifiedGoal("completed",null,"job-new",local),false);
+  const usage={calls:3,totalTokens:450};
+  assert.equal(verifiedGoal("completed",good,"job-new",local,usage),true);
+  assert.equal(verifiedGoal("needs_review",good,"job-new",local,usage),false);
+  assert.equal(verifiedGoal("completed",good,"job-old",local,usage),false);
+  assert.equal(verifiedGoal("completed",{...good,verifiedCompletion:false},"job-new",local,usage),false);
+  assert.equal(verifiedGoal("completed",{...good,actionEvidenceCount:0},"job-new",local,usage),false);
+  assert.equal(verifiedGoal("completed",good,"job-new",{passed:false},usage),false);
+  assert.equal(verifiedGoal("completed",null,"job-new",local,usage),false);
+  assert.equal(verifiedGoal("completed",good,"job-new",local,null),false,
+    "a completed file task is not proof that any real model was invoked");
+  assert.equal(verifiedGoal("completed",good,"job-new",local,{calls:0}),false);
 });
 
 test("measured cost per verified result includes failed runs but refuses incomplete usage",()=>{
