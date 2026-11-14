@@ -145,10 +145,12 @@ test('approval and durable goal APIs use native server contracts', async () => {
   const goal = await sdk.startGoal({goal:'task',isolateWorktree:true})
   assert.equal(goal.id, 'g1')
   await goal.steer('execute updated plan', 3)
+  await goal.steerInstruction('최신 지시에 따라 테스트를 먼저 수행', 4)
   await goal.resume({acknowledgeUnknownEffects:true})
   assert.equal((await goal.status()).status, 'running')
   assert.deepEqual(seen[0][2], {id:'approval-1',allow:true})
   assert.deepEqual(seen[2][2], {plan:'execute updated plan',expectedRevision:3})
+  assert.deepEqual(seen[3][2], {instruction:'최신 지시에 따라 테스트를 먼저 수행',expectedRevision:4})
 })
 
 test('MCP configuration flows into the native engine rather than a third-party SDK', async () => {
@@ -204,4 +206,9 @@ test('goal lifecycle SDK uses the exact Rust resume and reviewed-diff contracts'
   assert.deepEqual(calls[2], {url:'/api/goals/g1/resume',body:{
     acknowledgeUnknownEffects:true,
   }})
+})
+
+test('owner steering rejects empty corrections before network dispatch', () => {
+  const goal = new DominionSDK({fetch: async () => {throw Error('must not dispatch')}}).resumeGoal('test')
+  assert.throws(() => goal.steerInstruction(' ', 1), /owner instruction cannot be empty/)
 })
