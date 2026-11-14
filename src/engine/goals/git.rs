@@ -40,10 +40,11 @@ pub(super) fn report(root:&Path,baseline:&Value)->Value{
         .collect::<Vec<_>>();
     // A dirty baseline or another active worker makes attribution ambiguous.
     // Keep this separate from the tool receipts used for acceptance.
+    let truncated=patch.is_none() && base.is_some();
     json!({"baselineHead":baseline["head"],"currentHead":head,
         "initialStatus":baseline["initialStatus"],"currentStatus":status,
         "changedFiles":files,"diffStat":stat,"diffPreview":patch,
-        "diffPreviewTruncated":patch.is_none() && base.is_some(),
+        "diffPreviewTruncated":truncated,
         "attribution":"repository-observation-not-agent-proof"})
 }
 
