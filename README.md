@@ -739,3 +739,34 @@ async fn main() -> Result<(), String> {
 ```
 
 `DominionSdk::stream` provides raw native model/tool events, `enqueue_prompt` persists jobs, and `start_job_workers` runs the existing Rust job queue in a standalone Tokio app. The SDK must own its data directory; do not concurrently open the desktop server's active SQLite store. `sdk/` remains an optional JavaScript client adapter for the React/web ecosystem, **not** the Rust agent engine. See `docs/architecture/DOMINION-NATIVE-RUST-SDK-SUB2-2026-11-14.md` for the shared execution path and validation.
+
+
+### Native Rust SDK custom tools: no external agent engine
+
+The Rust `DominionSdk::register_tool` method now installs an async Rust
+callback into the same state as native chat. The model sees a namespaced
+`sdk__...` JSON-schema tool, and calls run through the **existing** Rust
+tool-dispatch, owner approval, operation receipts and tool-error feedback. The
+registry lives only in the embedded process (not serialized as executable
+objects). MCP continues to handle out-of-process tools.
+
+```rust
+use dominion_rust::sdk::{DominionSdk, EngineConfig, TurnOptions};
+use serde_json::json;
+
+# async fn example() -> Result<(), String> {
+let sdk = DominionSdk::open(EngineConfig::new("./workspace","./agent-data"))?;
+sdk.register_tool(
+    "fetch_invoice",
+    "Look up an invoice by number",
+    json!({"type":"object","properties":{"number":{"type":"string"}},
+           "required":["number"],"additionalProperties":false}),
+    false, // true for tools requiring owner approval
+    |args| async move { Ok(json!({"invoice":args["number"],"status":"found"})) }
+)?;
+# Ok(()) }
+```
+
+The SDK does not insert a third-party refusal policy, redirect the owner's
+instruction, or treat model text as a completed tool operation. User prompt
+content (including whitespace) is preserved in the native `TurnRequest`.

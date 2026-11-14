@@ -15,6 +15,8 @@ pub struct AppState {
     pub store: Store,
     pub bus: Bus,
     pub vault: Arc<Vault>,
+    /// Owner-registered native Rust SDK tools, isolated per engine instance.
+    pub custom_tools: crate::engine::custom_tools::Registry,
     /// Pending tool approvals: approval id -> waiter.
     pub approvals: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
     /// Sessions the user asked to stop. The engine checks between rounds/tools.
@@ -44,6 +46,7 @@ impl AppState {
             store,
             bus,
             vault: Arc::new(vault),
+            custom_tools: crate::engine::custom_tools::Registry::default(),
             approvals: Arc::new(Mutex::new(HashMap::new())),
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             active: Arc::new(Mutex::new(HashSet::new())),

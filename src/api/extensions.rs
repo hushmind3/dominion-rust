@@ -22,6 +22,17 @@ pub async fn list_tools(State(state): State<AppState>) -> Json<Value> {
         })
         .collect::<Vec<_>>();
 
+    for definition in state.custom_tools.definitions() {
+        let function = &definition["function"];
+        items.push(json!({
+            "name": function["name"],
+            "description": function["description"],
+            "parameters": function["parameters"],
+            "approval": state.custom_tools.requires_approval(function["name"].as_str().unwrap_or("")),
+            "source": "native_sdk",
+        }));
+    }
+
     for tool in engine::mcp::tools(&state).await {
         let qualified = tool.qualified();
         items.push(json!({

@@ -96,6 +96,9 @@ pub fn resource_key(tool: &str, arguments: &Value) -> Option<String> {
 /// world. A read can still have side effects (locks, billing reservations), so
 /// callers must not treat this classification as a safety proof.
 pub fn is_effectful(tool: &str, arguments: &Value) -> bool {
+    // A user-owned SDK callback may modify the external world. Do not infer
+    // read-only behavior from a friendly name and lose its effect provenance.
+    if tool.starts_with("sdk__") { return true; }
     if matches!(tool, "shell_exec" | "terminal_exec") {
         return true;
     }
@@ -152,6 +155,7 @@ fn gated(tool: &str, arguments: &Value) -> bool {
     is_effectful(tool, arguments)
         && (tool == "github_api"
             || tool.starts_with("mcp__")
+            || tool.starts_with("sdk__")
             || tool.contains("http_request"))
 }
 

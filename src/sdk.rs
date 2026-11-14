@@ -181,6 +181,40 @@ impl DominionSdk {
         Ok(saved)
     }
 
+    /// Register a first-party, in-process asynchronous Rust function tool.
+    ///
+    /// The native engine advertises `sdk__{name}` to the model and dispatches
+    /// it through the same approval, operation evidence and audit path as
+    /// built-in tools. The callback is allowed to perform I/O; choose
+    /// `needs_approval = true` when it can mutate files/external services.
+    /// No external agent SDK or content-filtering policy is involved.
+    pub fn register_tool<F, Fut>(
+        &self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        needs_approval: bool,
+        handler: F,
+    ) -> Result<String, String>
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        let callback: crate::engine::custom_tools::Callback =
+            std::sync::Arc::new(move |args| Box::pin(handler(args)));
+        self.state.custom_tools.register(
+            name, description, input_schema, needs_approval, callback,
+        )
+    }
+
+    pub fn unregister_tool(&self, qualified_name: &str) -> bool {
+        self.state.custom_tools.remove(qualified_name)
+    }
+
+    pub fn registered_tools(&self) -> Vec<Value> {
+        self.state.custom_tools.definitions()
+    }
+
     pub fn session(&self, id: &str) -> Option<Value> {
         self.state.store.get("session", id)
     }
@@ -364,6 +398,33 @@ mod tests {
         stream.finish().await.unwrap();
         assert!(events.iter().any(|event| event["type"] == "error"));
         assert!(events.iter().any(|event| event["type"] == "done"));
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn native_sdk_registers_tool_and_executes_callback_without_node() {
+        let (sdk, root) = fresh();
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = called.clone();
+        let qualified = sdk.register_tool("hello", "Respond to user text",
+            json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}),
+            false,
+            move |args| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+                    Ok(json!({"echo":args["text"]}))
+                }
+            }
+        ).unwrap();
+        assert_eq!(qualified, "sdk__hello");
+        assert_eq!(sdk.registered_tools()[0]["function"]["name"], "sdk__hello");
+        let reply = sdk.state.custom_tools.execute(&qualified,
+            &json!({"text":"시킨 그대로"})).await.unwrap();
+        assert_eq!(reply["echo"], "시킨 그대로");
+        assert_eq!(called.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(sdk.unregister_tool(&qualified));
         drop(sdk);
         let _ = std::fs::remove_dir_all(root);
     }

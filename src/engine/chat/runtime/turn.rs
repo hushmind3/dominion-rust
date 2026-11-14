@@ -197,7 +197,9 @@ pub(super) async fn run_turn_body(
         .unwrap_or(MAX_TOOL_CALLS as u64)
         .clamp(4, 120) as usize;
     let mut tool_definitions = if request.tools_enabled && request.tools_execution_enabled {
-        tools::definitions()
+        let mut native = state.custom_tools.definitions();
+        native.extend(tools::definitions());
+        native
     } else {
         Vec::new()
     };

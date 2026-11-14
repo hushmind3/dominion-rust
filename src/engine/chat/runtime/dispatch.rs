@@ -419,7 +419,9 @@ pub(super) async fn dispatch_tool_call(
     let _ = tx.send(json!({ "type": "tool_start", "name": call.name, "id": call.id }));
 
     let denied_read_only=!tools::delegation_allows(&state.store,session_id,&call.name);
-    let needs_approval = if call.name.starts_with("mcp__") {
+    let needs_approval = if call.name.starts_with("sdk__") {
+        state.custom_tools.requires_approval(&call.name)
+    } else if call.name.starts_with("mcp__") {
         mcp::requires_approval(state, &call.name)
     } else {
         tools::requires_approval(&call.name)
@@ -519,6 +521,8 @@ pub(super) async fn dispatch_tool_call(
         } else if state.store.get("session",session_id).is_some_and(|s|s["rsiRun"]==true)
             && !tools::rsi_allowed(&call.name) {
             Err("자기개선 작업의 허용 도구 범위를 벗어났습니다.".into())
+        } else if call.name.starts_with("sdk__") {
+            state.custom_tools.execute(&call.name, &arguments).await
         } else if call.name.starts_with("mcp__") {
             mcp::call(state, &call.name, &arguments).await
         } else {

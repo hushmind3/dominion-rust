@@ -107,10 +107,9 @@ impl TurnRequest {
             .get("input")
             .and_then(|item| item.as_str())
             .unwrap_or("")
-            .trim()
             .to_string();
         let attachment_ids = crate::engine::attachments::ids(&value["attachmentIds"])?;
-        if text.is_empty() && attachment_ids.is_empty() {
+        if text.trim().is_empty() && attachment_ids.is_empty() {
             return Err("메시지가 비어 있습니다.".into());
         }
         let string = |key: &str| {
