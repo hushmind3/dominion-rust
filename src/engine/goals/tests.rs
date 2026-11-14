@@ -254,6 +254,15 @@
             "verified content"
         );
         assert_eq!(result["evidence"][0]["arguments"]["path"], "report.txt");
+        // Only the durable DB operation, never a pre-commit tool_end event,
+        // may cross the goal's acceptance and review boundary.
+        let proof=&result["evidence"][0];
+        let operation_id=proof["id"].as_str().expect("persisted operation id");
+        let saved=state.store.get("execution_operation",operation_id).unwrap();
+        assert_eq!(saved["runId"],proof["runId"]);
+        assert_eq!(saved["opSeq"],proof["opSeq"]);
+        assert_eq!(saved["finishedAt"],proof["finishedAt"]);
+        assert_eq!(proof["status"],"completed");
         assert_eq!(
             state.store.get("job", "j").unwrap()["goalState"]["inFlight"],
             false

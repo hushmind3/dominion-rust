@@ -118,6 +118,7 @@ pub async fn run_quiet_outcome(
                     stats.evidence.push(serde_json::json!({
                         "tool": name,
                         "callId": event.get("id"),
+                        "operationId": event.get("operationId"),
                         "arguments": event.get("arguments"),
                         "result": event.get("result"),
                     }));
@@ -130,7 +131,29 @@ pub async fn run_quiet_outcome(
     });
     let result = chat::run_turn_background(state, request, &sender).await;
     drop(sender);
-    let stats = collector.await.unwrap_or_default();
+    let mut stats = collector.await.unwrap_or_default();
+    // The UI's tool_end event is emitted BEFORE the effect receipt is
+    // durably committed. Never count it as objective proof by itself.
+    // Hydrate the exact persisted operation ID, not a reused callId or a
+    // model-supplied tool result. Preserve runId, opSeq and timestamps for
+    // source-version-aware acceptance checks across iterations.
+    let mut seen=std::collections::HashSet::new();
+    stats.evidence=stats.evidence.into_iter().filter_map(|event|{
+        let id=event["operationId"].as_str()?;
+        if !seen.insert(id.to_string()){return None;}
+        let receipt=state.store.get("execution_operation",id)?;
+        if receipt["status"]!="completed"
+            || receipt["callId"]!=event["callId"]
+            || receipt["tool"]!=event["tool"]
+            || !crate::engine::verification::successful_evidence(&receipt)
+        {return None;}
+        if request.session_id.as_deref().is_some_and(|session|
+            receipt["sessionId"].as_str()!=Some(session)){return None;}
+        Some(receipt)
+    }).collect();
+    stats.tool_success=stats.evidence.iter()
+        .filter_map(|e|e["tool"].as_str().map(str::to_string))
+        .collect();
     (result, stats)
 }
 

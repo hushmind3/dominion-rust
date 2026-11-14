@@ -459,6 +459,76 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     }
     actual.trim() == command.trim()
 }
+/// A passing test proves only the code state that existed when it ran.
+/// A newer successful write invalidates it. The tool event itself is NOT
+/// sufficient proof: the caller must hydrate a persisted execution_operation
+/// with stable runId, opSeq and timestamps.
+fn source_mutation(item:&Value)->bool{
+    if !successful_evidence(item){return false;}
+    let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
+    match tool_name(item){
+        "workspace_write"|"workspace_replace"|"workspace_replace_range"
+        |"workspace_replace_function"|"file_write"=>{
+            item["result"]["written"]!=false
+                && item["result"]["changed"]!=false
+                && item["result"]["noChange"]!=true
+        },
+        "shell_exec"|"terminal_exec"=>{
+            let exe=string(args,"command");
+            let argv=args["args"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).collect::<Vec<_>>().join(" ");
+            let full=if argv.is_empty(){exe.to_lowercase()}
+                else{format!("{exe} {argv}").to_lowercase()};
+            let command=full.trim();
+            // Read-only checks are not edits, even if the executable is a
+            // formatter or Git. Avoid confusing cargo fmt --check with a write.
+            (command.starts_with("cargo fmt")&&!command.contains("--check"))
+                || (command.starts_with("go fmt")&&!command.contains("-d"))
+                || (command.starts_with("gofmt -w"))
+                || (command.starts_with("rustfmt ")&&!command.contains("--check"))
+                || (command.starts_with("git apply ")&&!command.contains("--check"))
+                || command.starts_with("sed -i")
+                || command.starts_with("perl -pi")
+                || command.starts_with("npm run format")
+                || command.starts_with("pnpm format")
+                || command.starts_with("yarn format")
+                || command.starts_with("tee ")
+                || command.contains(" > ")
+        },
+        _=>false
+    }
+}
+
+/// Same-execution operation sequence is authoritative for the serial tool
+/// dispatcher. Across runs, require the source write to have FINISHED before
+/// the verification STARTED. Concurrent writes and unsequenced receipts fail
+/// closed rather than laundering an outdated test as current proof.
+fn test_stale_after_write(test:&Value,write:&Value)->bool{
+    let same_run=test["runId"].as_str().is_some_and(|id|
+        !id.is_empty()&&write["runId"].as_str()==Some(id));
+    if same_run {
+        if let (Some(test_seq),Some(edit_seq))=
+            (test["opSeq"].as_u64(),write["opSeq"].as_u64()){
+            return edit_seq>=test_seq;
+        }
+    }
+    let tested=test["startedAt"].as_str()
+        .and_then(|t|chrono::DateTime::parse_from_rfc3339(t).ok());
+    let edited=write["finishedAt"].as_str()
+        .and_then(|t|chrono::DateTime::parse_from_rfc3339(t).ok());
+    match (tested,edited){
+        (Some(test_start),Some(write_finish))=>write_finish>=test_start,
+        _=>true,
+    }
+}
+
+pub(crate) fn fresh_command_matches(evidence:&[Value],command:&str)->bool{
+    evidence.iter().filter(|item|command_matches(item,command)).any(|test|
+        !evidence.iter().filter(|item|source_mutation(item))
+            .any(|write|test_stale_after_write(test,write))
+    )
+}
+
 pub(crate) fn acceptance_gaps(
     state:&AppState,goal:&str,checks:&Value,evidence:&[Value],
 )->Vec<String>{
@@ -517,12 +587,21 @@ pub(crate) fn acceptance_gaps_for_workspace(
             "tool_succeeded" => evidence.iter().any(|item| {
                 successful_evidence(item) && tool_name(item) == check["tool"].as_str().unwrap_or("")
             }),
-            "command_succeeded" => evidence
-                .iter()
-                .any(|item| command_matches(item, check["command"].as_str().unwrap_or(""))),
+            "command_succeeded" => fresh_command_matches(
+                evidence,check["command"].as_str().unwrap_or("")),
             _ => false,
         };
         if !passed {
+            if kind == "command_succeeded"
+                && evidence.iter().any(|item|command_matches(item,
+                    check["command"].as_str().unwrap_or("")))
+            {
+                gaps.push(format!(
+                    "검증 명령 '{}'의 이전 성공 뒤 소스·파일이 수정됐습니다. 변경된 코드에서 다시 검증하세요.",
+                    check["command"].as_str().unwrap_or("")
+                ));
+                continue;
+            }
             if kind == "file_replace_exact" {
                 gaps.push(format!("The exact replacement in {path} has not been verified. Preserve every other byte of the original file."));
                 continue;
@@ -560,6 +639,61 @@ mod inference_tests {
             "result":{"jobId":"j","status":"completed"}});
         assert!(successful_evidence(&completed));
     }
+    #[test]
+    fn stale_test_receipt_is_invalidated_by_later_real_source_edit(){
+        let test=json!({"tool":"terminal_exec","runId":"run-1","opSeq":1,
+            "arguments":{"command":"cargo","args":["test"]},
+            "result":{"exitCode":0},"status":"completed",
+            "startedAt":"2026-11-14T08:00:00Z",
+            "finishedAt":"2026-11-14T08:00:15Z"});
+        let edit=json!({"tool":"workspace_write","runId":"run-1","opSeq":2,
+            "arguments":{"path":"src/lib.rs"},
+            "result":{"written":true},"status":"completed",
+            "startedAt":"2026-11-14T08:00:16Z",
+            "finishedAt":"2026-11-14T08:00:16Z"});
+        let again=json!({"tool":"shell_exec","runId":"run-2","opSeq":1,
+            "arguments":{"command":"cargo test"},
+            "result":{"exitCode":0},"status":"completed",
+            "startedAt":"2026-11-14T08:01:00Z",
+            "finishedAt":"2026-11-14T08:01:20Z"});
+        assert!(fresh_command_matches(&[edit.clone(),again.clone()],"cargo test"));
+        assert!(!fresh_command_matches(&[test.clone(),edit.clone()],"cargo test"));
+        assert!(fresh_command_matches(&[test.clone(),edit.clone(),again],"cargo test"));
+        let failed=json!({"tool":"workspace_write","runId":"run-1","opSeq":2,
+            "result":{"success":false,"error":"permission denied"}});
+        assert!(fresh_command_matches(&[test.clone(),failed],"cargo test"));
+        let unchanged=json!({"tool":"workspace_write","runId":"run-1","opSeq":2,
+            "result":{"written":false,"noChange":true}});
+        assert!(fresh_command_matches(&[test,unchanged],"cargo test"));
+    }
+
+    #[test]
+    fn test_and_write_chronology_is_conservative_across_runs(){
+        let test=json!({"tool":"shell_exec","runId":"a",
+            "arguments":{"command":"npm test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T08:02:00Z"});
+        let before=json!({"tool":"workspace_replace","runId":"b",
+            "result":{"written":true},
+            "finishedAt":"2026-11-14T08:01:59Z"});
+        let concurrent=json!({"tool":"workspace_replace","runId":"c",
+            "result":{"written":true},
+            "finishedAt":"2026-11-14T08:02:01Z"});
+        assert!(fresh_command_matches(&[before,test.clone()],"npm test"));
+        assert!(!fresh_command_matches(&[test.clone(),concurrent],"npm test"));
+        assert!(!fresh_command_matches(&[test,json!({"tool":"workspace_write",
+            "result":{"written":true}})],"npm test"));
+    }
+
+    #[test]
+    fn read_only_fmt_check_does_not_invalidate_prior_test(){
+        let test=json!({"tool":"shell_exec","runId":"r","opSeq":1,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0}});
+        let check=json!({"tool":"terminal_exec","runId":"r","opSeq":2,
+            "arguments":{"command":"cargo","args":["fmt","--check"]},
+            "result":{"exitCode":0}});
+        assert!(fresh_command_matches(&[test,check],"cargo test"));
+    }
+
     #[test]
     fn multiple_outputs_are_still_inferred_without_a_read_verb() {
         let checks = infer_criteria("a.txt와 b.txt를 만들어줘");
