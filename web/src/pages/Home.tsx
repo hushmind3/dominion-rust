@@ -1,12 +1,11 @@
 import {Activity,ArrowRight,Bot,BrainCircuit,CheckCircle2,Cpu,FolderOpen,MessageSquare,Play,RadioTower,Workflow} from 'lucide-react'
 import {Button,PageContainer} from '../components/Primitives'
 import {ExecutionMonitor} from '../components/ExecutionMonitor'
-import {GoalConsole} from '../components/GoalConsole'
 import {useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 import {t,useLocale,formatDateTime,jobKindLabel} from '../i18n'
 import type {Agent,ChatSession,Provider} from '../api'
-type Destination='goals'|'chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'automations'|'memory'|'activity'|'rsi'
+type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'automations'|'memory'|'activity'|'rsi'
 export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  useLocale()
  const sessions=useRemote<ChatSession[]>('/api/sessions',[])
@@ -48,7 +47,6 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
   {title:'dashboard.shortcut.models',desc:'dashboard.shortcut.models.desc',icon:Cpu,page:'models' as const},
   {title:'dashboard.shortcut.workflows',desc:'dashboard.shortcut.workflows.desc',icon:Play,page:'workflows' as const},
   {title:'dashboard.shortcut.agents',desc:'dashboard.shortcut.agents.desc',icon:Bot,page:'agents' as const},
-  {title:'nav.goals',desc:'dashboard.shortcut.goals.desc',icon:Workflow,page:'goals' as const},
   {title:'nav.rsi',desc:'dashboard.shortcut.rsi.desc',icon:BrainCircuit,page:'rsi' as const}
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">
@@ -79,7 +77,6 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
    <div className="flex items-center justify-between border-b border-[#F0EAE1] px-4 py-3"><h2 className="text-[13px] font-bold">{t('dashboard.recent')}</h2><Button type="button" onClick={()=>navigate('activity')} className="flex items-center gap-1 text-[11px] font-medium text-[#C96442]">{t('dashboard.recent.all')} <ArrowRight size={13}/></Button></div>
    {recent.length?<div className="divide-y divide-[#F0EAE1]">{recent.map(job=><div key={job.id} className="flex items-center gap-3 px-4 py-3"><Workflow size={15} className="text-[#A79C8E]"/><div className="min-w-0 flex-1"><div className="truncate text-[12px] font-semibold">{job.input?.goal||job.input?.prompt||job.kind||t('dashboard.jobFallback')}</div><div className="mt-1 text-[10px] text-[#9C9388]">{jobKindLabel(job.kind)} · {job.createdAt?formatDateTime(job.createdAt):''}</div>{job.kind==='workflow'&&job.result?.verificationSummary&&<small className="text-[10px] text-[#876E52]">산출물 검증 {job.result.verificationSummary.verifiedSteps}단계 · 기록 토큰 {job.result.verificationSummary.totalTokensRecorded||0}</small>}</div><StatusPill status={job.status} /></div>)}</div>:<div className="flex h-32 items-center justify-center text-[12px] text-[#9C9388]">{t('dashboard.recent.empty')}</div>}
   </section>
-  <div className="mt-4"><GoalConsole/></div>
   <div className="mt-4"><ExecutionMonitor/></div>
  </PageContainer>
 }
