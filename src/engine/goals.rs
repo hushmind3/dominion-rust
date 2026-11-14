@@ -319,6 +319,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .get("nextIteration")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let reviewed_unknown_ops=job["goalState"]["reviewedUnknownOpIds"]
+        .as_array().map(|v|v.iter().filter_map(Value::as_str)
+            .map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
     let resumed_after_review = job["input"]["resumeAfterReview"]==true;
     let resume_guidance=if resumed_after_review {
         "\n\n[검토 후 재개] 이전 도구 호출의 외부 결과가 불확실할 수 있습니다. 이전 명령/파일 쓰기를 반복하지 마세요. 먼저 읽기 전용 도구로 현재 Git 변경, 파일 상태와 외부 실행 기록을 재확인한 뒤 남은 작업만 수행하세요."
@@ -397,7 +400,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         // A tool call may have completed its side effect even if the model
         // returned success, errored or was cancelled. Never enter the next
         // executor turn while any external effect is unresolved.
-        match state.store.session_has_uncertain_effects(&session_id){
+        // Persist successful effects before a later model error, cancellation
+        // or unresolved remote operation can stop the goal.
+        patch_goal(state,goal_id,json!({"evidence":evidence,"iterations":index+1}));
+        match state.store.session_has_uncertain_effects_except(&session_id,&reviewed_unknown_ops){
             Ok(true)=>return Ok(finish(context,goal_id,"needs_review",vec![
                 "실행 도구의 외부 부작용이 확정되지 않았습니다. 상태를 검토한 뒤 재개하세요.".into()
             ],turn_error)),
