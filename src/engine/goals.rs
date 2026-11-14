@@ -18,6 +18,9 @@ mod project;
 #[path = "goals/enqueue.rs"]
 mod enqueue;
 pub use enqueue::{enqueue_goal, GoalEnqueueError};
+#[path = "goals/resume.rs"]
+mod resume;
+pub use resume::{resume_goal, GoalResumeError};
 #[path = "goals/artifacts.rs"]
 mod artifacts;
 #[path = "goals/diff.rs"]
