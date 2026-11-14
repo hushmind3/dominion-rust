@@ -38,6 +38,7 @@ console.log(await goal.status())
 - `run()` collects events, stops on engine errors and reads the persisted final assistant message by `messageId`.
 - `startGoal()` → `/api/goals` creates a **durable native Rust job**; `resumeGoal()` reconnects to an existing goal. Retrying an interrupted write is **not automatic**.
 - `sdk.tools()` lists installed native/MCP tools. `sdk.approvals()` and `sdk.resolveApproval()` use the existing user approval endpoints, with no new SDK refusal layer.
+- `sdk.watchEvents({after: lastSeq})` reconnects to durable job/approval/event updates through `/api/events?after=...` and retains source `seq` values. It does not auto-retry a potentially side-effecting turn.
 - `sdk.setToken()` uses the existing `X-Dominion-Token` header. Never embed production tokens into distributed browser code.
 - `DominionThread.cancel()`, `fork()`, and `DominionGoal.status()/resume()/cancel()/changes()/applyChanges()/discardChanges()` map to real existing Rust API routes.
 - The SDK does not execute tools, alter model system instructions or replace DOMINION's independent validation/recovery engine.
