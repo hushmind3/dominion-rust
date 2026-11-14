@@ -7,6 +7,8 @@
 //! not proposals and do not modify anything; they are the raw material for
 //! the persistent improvement basket.
 use crate::{engine::memory, state::AppState};
+#[path = "rsi_scan/goal_signals.rs"]
+mod goal_signals;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -305,6 +307,10 @@ pub fn report(state: &AppState) -> Value {
         ));
     }
 
+    // User-goal failures are operational hypotheses only: they can steer
+    // source research but never replace frozen paired RSI adoption evidence.
+    let (goal_feedback,goal_observations)=goal_signals::collect(state);
+    signals.extend(goal_feedback);
     signals.truncate(12);
     let checks = vec![
         json!({"id":"rsi_campaigns","title":"RSI 캠페인 기록","inspected":campaigns.len()}),
@@ -312,9 +318,12 @@ pub fn report(state: &AppState) -> Value {
         json!({"id":"executions","title":"최근 실행 결과","inspected":executions.len()}),
         json!({"id":"jobs","title":"작업 큐 상태","inspected":jobs.len()}),
         json!({"id":"candidates","title":"검증된 개선 후보","inspected":candidates}),
+        json!({"id":"owner_goals","title":"실제 목표 미완료 피드백",
+            "inspected":goal_observations["inspected"]}),
     ];
     json!({
         "signals": signals,
+        "goalObservations":goal_observations,
         "checks": checks,
         "checked": checks.len(),
         "generatedAt": chrono::Utc::now().to_rfc3339(),
