@@ -25,7 +25,7 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
  const jobs=useRemote<any[]>(section==='activity'||section==='automations'?'/api/jobs':null,[]),automations=useRemote<any[]>(section==='automations'?'/api/automations':null,[]),audit=useRemote<any[]>(section==='activity'?'/api/audit':null,[]);
  const executions=useRemote<any[]>(section==='activity'?'/api/executions?limit=100':null,[])
  const browserStatus=useRemote<any>(section==='activity'?'/api/browser/status':null,{status:{available:false,running:false},screenshot:null})
- const workflowResults=useRemote<{id:string;workflowId:string;jobId:string;sha256:string;content:string;usage?:{totalTokens?:number}}[]>(section==='activity'?'/api/workflow-artifacts':null,[]);
+ const workflowResults=useRemote<{id:string;workflowId:string;jobId:string;sha256:string;preview:string;usage?:{totalTokens?:number}}[]>(section==='activity'?'/api/workflow-artifacts':null,[]);
  const [shotTick,setShotTick]=useState(0)
  const [selectedExecution,setSelectedExecution]=useState(''),[operations,setOperations]=useState<any[]>([])
  useEffect(()=>{if(!selectedExecution){setOperations([]);return}let live=true;get<any[]>('/api/executions/'+selectedExecution+'/operations').then(rows=>{if(live)setOperations(rows)}).catch(()=>{if(live)setOperations([])});return()=>{live=false}},[selectedExecution])
@@ -49,7 +49,7 @@ export function OperationsPage({section}:{section:'automations'|'activity'|'sett
   <p className="mt-1 text-xs text-[#7C7469]">실제 실행 작업·검토 세션·SHA-256 원본·토큰 사용 기록에 연결된 최종 결과물입니다.</p>
   <div className="mt-2 grid gap-2">{workflowResults.value.slice(0,6).map(a=>
    <div key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-3 text-xs">
-    <div className="min-w-0 flex-1"><strong className="block truncate">{a.content.slice(0,100)}</strong>
+    <div className="min-w-0 flex-1"><strong className="block truncate">{a.preview.slice(0,100)}</strong>
       <small className="mt-1 block text-[#7C7469]">작업 {a.jobId} · {a.usage?.totalTokens??0}토큰 · SHA {a.sha256.slice(0,12)}</small>
     </div>
     <a href="#/workflows" className="font-semibold text-[#A64E32] hover:underline">결과 열기</a>
