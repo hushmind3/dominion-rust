@@ -97,6 +97,85 @@ async fn resumed_goal_skips_uncertain_iteration_and_preserves_evidence(){
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[tokio::test]
+async fn resume_job_insert_failure_rolls_back_status_and_checkpoint(){
+    let (state,dir)=fixture("needs_review",false);
+    let before=state.store.get("goal","g").unwrap();
+    let db=rusqlite::Connection::open(state.config.db_path()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_resume_job
+      BEFORE INSERT ON records WHEN NEW.kind='job'
+      BEGIN SELECT RAISE(ABORT,'injected resume enqueue failure'); END;").unwrap();
+    let response=resume_goal(State(state.clone()),Path("g".into()),Json(json!({
+        "resolutionNote":"복구 전 원본 상태를 확인했습니다."
+    }))).await;
+    assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+    let after=state.store.get("goal","g").unwrap();
+    assert_eq!(after["status"],before["status"]);
+    assert_eq!(after["jobId"],before["jobId"]);
+    assert_eq!(after["resumeState"],before["resumeState"]);
+    assert_eq!(state.store.count("job"),1);
+    db.execute_batch("DROP TRIGGER fail_resume_job;").unwrap();
+    drop(db);drop(state);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn owner_review_reconciles_delegated_effects_without_fabricating_success(){
+    let (state,dir)=fixture("needs_review",false);
+    state.store.put("session",&json!({"id":"child",
+        "parentSessionId":"goal-session","delegated":true})).unwrap();
+    state.store.put("execution",&json!({"id":"child-run","sessionId":"child"})).unwrap();
+    state.store.put("execution_operation",&json!({"id":"unknown-effect",
+        "runId":"child-run","status":"interrupted","outcomeUnknown":true,
+        "effectState":"effect_unknown","toolReceipt":{"verified":false}})).unwrap();
+    assert!(state.store.session_has_uncertain_effects("goal-session").unwrap());
+    let blocked=resume_goal(State(state.clone()),Path("g".into()),Json(json!({
+        "resolutionNote":"이전 작업을 확인했습니다."
+    }))).await;
+    assert_eq!(blocked.status(),StatusCode::BAD_REQUEST);
+    assert_eq!(state.store.count("job"),1);
+    let approved=resume_goal(State(state.clone()),Path("g".into()),Json(json!({
+        "acknowledgeExternalEffects":true,
+        "resolutionNote":"자식 작업의 외부 상태와 생성 파일을 직접 점검했습니다."
+    }))).await;
+    assert_eq!(approved.status(),StatusCode::ACCEPTED);
+    let op=state.store.get("execution_operation","unknown-effect").unwrap();
+    assert_eq!(op["status"],"reviewed");
+    assert_eq!(op["effectState"],"inspected");
+    assert_eq!(op["toolReceipt"]["verified"],false);
+    assert_eq!(op["ownerReconciliation"]["originalStatus"],"interrupted");
+    assert_eq!(op["ownerReconciliation"]["originalOutcomeUnknown"],true);
+    assert_eq!(op["ownerReconciliation"]["newResultVerified"],false);
+    assert!(!state.store.session_has_uncertain_effects("goal-session").unwrap());
+    assert_eq!(state.store.count("job"),2);
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn owner_review_and_resume_rollback_together_when_queue_write_fails(){
+    let (state,dir)=fixture("needs_review",false);
+    state.store.put("execution",&json!({"id":"r","sessionId":"goal-session"})).unwrap();
+    state.store.put("execution_operation",&json!({"id":"ambiguous","runId":"r",
+        "status":"interrupted","outcomeUnknown":true,
+        "effectState":"effect_unknown"})).unwrap();
+    let db=rusqlite::Connection::open(state.config.db_path()).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_review_enqueue
+        BEFORE INSERT ON records WHEN NEW.kind='job'
+        BEGIN SELECT RAISE(ABORT,'injected queue write failure'); END;").unwrap();
+    let response=resume_goal(State(state.clone()),Path("g".into()),Json(json!({
+        "acknowledgeExternalEffects":true,
+        "resolutionNote":"외부 작업 기록과 현지 작업 상태를 확인했습니다."
+    }))).await;
+    assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.store.get("goal","g").unwrap()["status"],"needs_review");
+    let original=state.store.get("execution_operation","ambiguous").unwrap();
+    assert_eq!(original["status"],"interrupted");
+    assert_eq!(original["outcomeUnknown"],true);
+    assert_eq!(state.store.count("job"),1);
+    db.execute_batch("DROP TRIGGER fail_review_enqueue;").unwrap();
+    drop(db);drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn owner_plan_edits_are_durable_but_cannot_change_a_running_goal(){
     let (state,dir)=fixture("needs_review",false);
     let response=edit_plan(State(state.clone()),Path("g".into()),Json(json!({
