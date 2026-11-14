@@ -281,7 +281,13 @@ pub async fn action(
             let patch=json!({"text":new_text,"verification":"owner_revision",
                 "ownerEditedAt":now,
                 "revision":format!("owner-edit-{}",uuid::Uuid::new_v4())});
-            match state.store.patch_if("memory",&id,"text",&json!(expected),&patch) {
+            let expected_fields=json!({"text":expected,"source":old["source"],
+                "status":old["status"],"scope":old["scope"],
+                "agentId":old["agentId"],"partitionKey":old["partitionKey"],
+                "verification":old["verification"],
+                "evidenceQuote":old["evidenceQuote"],
+                "sourceMessageIds":old["sourceMessageIds"]});
+            match state.store.patch_if_fields("memory",&id,&expected_fields,&patch) {
                 Some(record)=>{
                     state.bus.record("memory",&record);
                     state.store.audit("memory.owner_edited",json!({"memoryId":id,
