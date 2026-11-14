@@ -27,6 +27,10 @@
 
 **RSI 비교 계약 추가:** 후손 생성기의 알고리즘 시험은 실제 평가 프로필·개선 목표·독립 쌍 측정이 같은 경우에만 채점하며, 미측정/채점 불가 시도는 나중의 진짜 2회 성공 채택을 영구 차단하지 않습니다. 새로운 실험 기회는 후손의 판단 단계와 영속 trial ledger를 거쳐 재개되며 자동 승격되지 않습니다. 중단됐던 실모델 워크플로의 `--locked` 선행 빌드 문제도 수정해 빌드 해결 과정과 Cargo.lock SHA를 기록하도록 했습니다.
 
+**2026-11-15 프런티어 코딩·RSI 실동작 보강:** 실모델 RSI 실행 [#43609071999](https://github.com/hushmind3/dominion-rust/actions/runs/43609071999)은 Rust 빌드 및 실제 모델 요청까지 성공했지만 파일 편집 도구 호출 0회·개선 채택 0회였습니다. 이 원인을 대상으로 `chat/runtime/turn.rs`에서 **모델이 도구 호출 없이 중단하면 Rust가 이미 선정된 실제 파일을 `workspace_read_range`로 읽고 SHA-256 영수증을 기록하는 복구 경로**를 연결했습니다. 대상 외 파일을 임의로 편집하거나 모델의 제안을 실제 코드 변경으로 가장하지 않습니다. `rsi/evaluation/trials.rs`의 동결 실험 비교는 생산 `memory::stable_id()`의 실제 **32자리 목표 ID**를 허용하도록 고쳤습니다. `chat/runtime/tool_route.rs`의 라우팅 성공 신호도 **실제 검증된 소스 변경**만 인정하도록 강화했습니다.
+
+**실제 코딩 과제 평가:** [SWE-bench Verified 실행 가이드](docs/SWEBENCH-VERIFIED-RUNNER-SUB3-2026-11-14.md)와 `scripts/swebench-verified.mjs`가 공식 과제 입력 → 독립 체크아웃/SQLite Rust 서버 → 실제 `/api/goals` 모델·도구 수행 → 원본 커밋 대비 Git 패치 → 독립 Docker 채점으로 연결됩니다. `/api/executions/:id/operations`의 실제 영수증으로 실패·복구를 집계하고, 단가를 사용자 지정한 경우에만 **원화 토큰 원가 추정**을 계산합니다. 채점용 테스트/정답 패치를 모델에게 전달하지 않습니다. Node 5건 회귀 테스트 통과와 **실모델 SWE-bench 공식 pass@1 실측**은 구분합니다.
+
 [서브3 프론티어 통합 — Rust/API/UI/SDK 실제 진입점, 검증 및 남은 범위](docs/FRONTIER-INTEGRATION-SUB3-2026-11-14.md). **소스 경로·단위 검증과 실모델 프론티어 수행 성과를 동일시하지 않습니다.** 현재 소스의 CI 및 완수율은 커밋별로 확인해야 합니다.
 
 ## 도미니언 자체 에이전트 SDK (2026-11-14)
