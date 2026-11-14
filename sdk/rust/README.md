@@ -1,5 +1,33 @@
 # Dominion Rust SDK
 
+## Native Rust RSI campaign API
+
+The SDK calls Dominion's existing compiled-descendant controller, not an
+external agent runtime. Starting evolution may spend configured model tokens.
+The server preserves its own detached worktree, evaluator, approvals and
+source adoption policy. Explicit start and separate explicit install only.
+
+```rust
+use dominion_sdk::{DominionClient, RsiEvolutionRequest, RsiSelectionPolicy, WaitOptions};
+async fn run() -> dominion_sdk::Result<()> {
+    let sdk=DominionClient::new("http://127.0.0.1:4317")?;
+    let job=sdk.start_rsi_evolution(
+        RsiEvolutionRequest::new("configured-provider","configured-model","Improve recovery")
+            .selection_policy(RsiSelectionPolicy::Manual)
+            .max_attempts(2).token_budget(10_000)
+    ).await?;
+    let result=sdk.wait_rsi_campaign(&job.id,WaitOptions::default()).await?;
+    println!("{}: {}",result.id,result.status);
+    Ok(())
+}
+```
+
+The selected version is never auto-installed: use apply_rsi_campaign only
+after operator review of the exact verified 40-hex campaign head commit.
+Campaign status reads are side-effect-free GET requests. The campaign limits
+maxAttempts, tokenBudget and timeBudgetSeconds are top-level API fields.
+
+
 **A first-party Rust crate for the native Dominion Rust autonomous-agent engine.**
 Source: `sdk/rust`. This is **not** the TypeScript SDK and does not call
 Codex/Copilot/Claude SDKs to execute work.

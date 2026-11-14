@@ -1,5 +1,30 @@
 # DOMINION 자체 Rust 엔진
 
+## 2026-11-15 네이티브 RSI: 후손 자기개선 경험과 공개 SDK
+
+실제 실행 경로: rsi_meta_controller::synthesize →
+rsi/meta_controller/trajectory.rs::source_matched_alternatives →
+rsi/meta_controller/selection.rs → rsi/meta_controller/feedback.rs::instruction →
+후손 Rust 워커/도구 실행 → 분리 worktree → 동결 paired 평가 →
+승인된 후손 커밋 → 재컴파일.
+
+동일한 원본 Git 커밋에서 동일한 모델 작성 역할과 경로를 바꾼
+후속 변경만 경험 대안으로 선택하며, acceptedSourceHashes와
+pairedRevalidated, eligible 평가 결과를 요구합니다.
+후손에게 최대 3개의 검증된 대안을 전달하고,
+독립적인 인과효과 증명과 원래 동결 평가 기준은 변경하지 않습니다.
+새 모듈은 자기개선 가능한 실제 소스 대상으로 인벤토리에 연결됩니다.
+모델 가중치 학습/LoRA는 이 경로에 없습니다.
+
+Rust SDK와 TypeScript SDK는 모두 네이티브
+POST /api/rsi/start (mode continuous, confirmation START_RSI_EVOLUTION)
+→ GET /api/rsi/campaigns/:id → 명시적
+POST /api/rsi/campaigns/:id/apply 계약을 제공합니다.
+예산 제한은 요청 최상위 maxAttempts, tokenBudget,
+timeBudgetSeconds이고 src/engine/rsi_evolve.rs::limits에서 검증합니다.
+읽기 전용 모니터링은 기존 실행을 재시작하지 않습니다.
+
+
 실행 경로는 `src/engine`의 Rust 모듈입니다. OpenClaw/Hermes 런타임, 봇 프레임워크,
 외부 메모리 서비스, 해당 프로젝트의 소스 코드를 포함하거나 실행하지 않습니다.
 모델은 OpenAI 호환 HTTP API로 호출하고, Discord는 공식 REST v10으로 연결합니다.

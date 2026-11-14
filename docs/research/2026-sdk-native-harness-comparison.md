@@ -49,3 +49,54 @@ The work here does **not** add a prompt filter, refusal classifier, or remote SD
 - Microsoft Agent Framework: https://github.com/microsoft/agent-framework
 - Rig/Rust: https://github.com/0xPlaygrounds/rig
 - OpenCode SDK changelog: https://opencode.ai/changelog?area=sdk
+
+
+## 2026-11-15 source-level update — US/China SDKs and recursive experience
+
+| Code/research (2026 checked) | Source algorithm | Adaptation in Dominion |
+| --- | --- | --- |
+| OpenAI Codex (US), codex-rs/core/src/session/turn.rs and state/turn.rs | Rust turn state, tool router and asynchronous tool loop; compaction, interrupt and multi-agent delivery | Native Rust ownership stays independent; no Codex runtime dependency |
+| Qwen-Agent (China), qwen_agent/agent.py | Extensible Agent._run + independently configured tool registry and MCP | Dominion keeps provider-neutral Rust chat/tool selection and existing MCP dispatch |
+| AgentScope (China), ReAct SDK and toolkit | Interrupt/resume, batched tools, context compaction, permissions and events | Keep durable Rust receipts with a separate model-facing schema window and tool authorization |
+| SelfSearch (2026), arxiv 2609.37968 | Prior self-modification episodes guide successor redesign while fixed model weights remain unchanged | Implemented source-matched failed/accepted historical episodes in compiled meta-controller |
+| GEPA-Curator (2026), arxiv 2610.37651 | Filters unreliable failure trajectories; retrieves relevant successes | Current learner requires original commit, role, accepted SHA receipts and frozen paired verification; other noise filters remain a research hypothesis |
+
+### Actual integrated call chain
+
+src/engine/rsi_meta_controller.rs → meta_controller/trajectory.rs::source_matched_alternatives →
+meta_controller/selection.rs::synthesize → meta_controller/feedback.rs::instruction →
+existing descendant worktree tool worker → original frozen paired evaluator →
+adoption and compiled successor. The model observes up to 3 source-matched
+verified alternatives. These are NOT evidence of causal improvement by themselves.
+The model-controlled source change is distinct from the frozen independent reviewer.
+
+src/engine/rsi/system/inventory.rs now recognizes trajectory.rs as an editable
+improvement method; meta_controller/provenance.rs recognizes verified future
+changes to it as meta-source improvement; metaMechanismModules includes it.
+
+sdk/rust and sdk/typescript now wrap existing /api/rsi/start, /api/rsi/campaigns,
+and /api/rsi/campaigns/:id/apply endpoints with exactly the actual Rust limits
+maxAttempts, tokenBudget, timeBudgetSeconds. SDKs never delegate decisions to
+an external agent. A server-side change and accepted commit must still pass
+the existing frozen evaluator; no benchmark success is inferred from a
+network test.
+
+### Verification boundaries
+
+New unit/integration tests are in the Rust trajectory module,
+sdk/rust/tests/sdk.rs, and sdk/typescript/tests/sdk.test.mjs.
+They verify source-matched evidence and HTTP contracts. A source commit
+is not a completed local cargo build, paid model trial, or SWE-bench score.
+Full benchmark evaluation follows the existing scripts/swebench-dominion.mjs
+runner and requires a configured model and an execution environment.
+
+Sources consulted 2026-11-15:
+
+- https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs
+- https://github.com/openai/codex/blob/main/codex-rs/core/src/state/turn.rs
+- https://github.com/openai/codex/blob/main/codex-rs/tools/README.md
+- https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/agent.py
+- https://github.com/agentscope-ai/agentscope
+- https://arxiv.org/abs/2609.37968
+- https://arxiv.org/abs/2610.37651
+- https://arxiv.org/abs/2610.08902

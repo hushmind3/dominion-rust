@@ -1,5 +1,31 @@
 # dominion-rust
 
+## 2026-11-15 — Native RSI trajectory reuse + public SDK lifecycle
+
+The Rust engine remains the only owner of agent decision-making, tool execution,
+sandbox approval, worktree evaluation and source-level RSI. Both public SDKs
+expose its existing durable campaign lifecycle rather than wrapping another
+agent runtime. No model-weight training is used in RSI.
+
+- Rust: DominionClient::start_rsi_evolution, rsi_campaign, wait_rsi_campaign,
+  apply_rsi_campaign.
+- TypeScript: sdk.rsi.start, sdk.rsi.get, sdk.rsi.wait, sdk.rsi.apply.
+- Model budgets are top-level maxAttempts (1..100), tokenBudget and
+  timeBudgetSeconds, validated by the native engine.
+- The compiled meta-controller's new trajectory learner retrieves only
+  source-matched failed experiments with later independently paired-adopted
+  alternatives: same original commit, role, changed paths and accepted source
+  SHA-256. These episodes feed the next descendant's actual design instruction.
+- The new learning module is included in the meta-rewrite classification,
+  source inventory and compiled descendant module map.
+
+Tests: cargo test --manifest-path sdk/rust/Cargo.toml --all-targets ;
+npm --prefix sdk/typescript test ; cargo test source_matched_alternatives.
+These source additions do not establish full SWE-bench or paid-model gains.
+
+See docs/research/2026-sdk-native-harness-comparison.md and ENGINE.md.
+
+
 DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저장소입니다.
 
 - 프론트엔드: 기존 React UI 그대로 (`web/`)

@@ -1,5 +1,30 @@
 # Dominion Agent SDK (TypeScript)
 
+## Native Rust self-improvement campaign
+
+The TypeScript SDK is an external program's integration client, not
+another vendor's agent execution engine. Creation is a single explicit POST;
+monitoring is read-only GET polling; commit adoption requires a separate
+explicit call to apply and remains verified by the Rust server.
+
+```ts
+import {DominionClient} from "@hushmind3/dominion-sdk";
+const sdk = new DominionClient({baseUrl:"http://127.0.0.1:4317"});
+const job = await sdk.rsi.start({
+  request:"Improve tool recovery using verified failures",
+  providerId:"configured-provider",model:"configured-model",
+  selectionPolicy:"manual",maxAttempts:2,tokenBudget:10_000,
+});
+const campaign = await sdk.rsi.wait(job.id);
+console.log(campaign.status, campaign.recursiveProof);
+// Optional after explicit operator confirmation:
+// await sdk.rsi.apply(job.id, campaign.headCommit);
+```
+
+Use top-level maxAttempts, tokenBudget and timeBudgetSeconds. A configured
+provider/model and a budget appropriate to the allowed spend are required.
+
+
 **Own SDK. Own Rust engine.** No vendor agent subprocess, policy, or SDK dependency.
 The package is a typed client for Dominion's native Axum API, not a copy of
 Codex/Copilot/Claude and not an HTTP proxy for their runtimes.
