@@ -3,6 +3,17 @@
 use crate::{engine::goals,state::AppState};
 use serde_json::Value;
 
+/// An imperative implementation request means real tool work is expected,
+/// even when the owner did not spell out a filename. Descriptive and
+/// hypothetical requests are not automatically treated as commands.
+fn explicit_implementation_request(text: &str) -> bool {
+    [
+        "구현해", "구현하", "개발해", "개발하", "고쳐", "고치", "수정해",
+        "적용해", "적용하", "반영해", "반영하", "추가해", "연결해",
+        "implement ", "fix ", "patch ", "refactor ",
+    ].iter().any(|verb| text.contains(verb))
+}
+
 pub(crate) fn prepare_owner_action(state:&AppState,input:&str)->Option<(String,Value)>{
     let mut fenced=false;let mut lines=Vec::new();
     for line in input.lines(){let trimmed=line.trim();if trimmed.starts_with("```"){fenced=!fenced;continue;}if fenced||trimmed.starts_with('>'){continue;}
@@ -18,9 +29,30 @@ pub(crate) fn prepare_owner_action(state:&AppState,input:&str)->Option<(String,V
     let file_target=[".txt",".md",".rs",".json",".py",".js",".ts",".csv",".toml",".html",".yml",".yaml","파일","폴더","저장소","project","repository","directory","folder"," file"].iter().any(|term|lower.contains(term));
     let command_action=["run ","install ","build ","deploy ","commit ","download ","copy ","move "].iter().any(|prefix|english.starts_with(prefix))
         ||["실행해","테스트해","빌드해","설치해","배포해","커밋해","복사해","이동해","다운로드해"].iter().any(|term|lower.contains(term));
-    if !(file_action&&file_target||command_action){return None;}
+    // Implementation commands do not require an explicit filename. The
+    // existing verifier still demands observed changes; mere prose does not
+    // constitute successful work.
+    if !(file_action&&file_target||command_action||explicit_implementation_request(&lower)){return None;}
     let checks=goals::prepare_acceptance_checks(state,&request);Some((request,checks))
 }
+#[cfg(test)]
+mod owner_action_tests {
+    use super::explicit_implementation_request;
+
+    #[test]
+    fn korean_implementation_imperatives_require_real_action() {
+        for text in ["내말잘듣는새끼로구현해라", "이 기능을 고쳐라", "Rust에 적용해라", "커넥터를 반영해라"] {
+            assert!(explicit_implementation_request(text), "{text}");
+        }
+    }
+    #[test]
+    fn discussing_a_design_does_not_force_a_source_mutation() {
+        for text in ["어떻게 구현할지 판단하라고", "구현 방법을 알려줘", "이 설계의 문제는 뭐지"] {
+            assert!(!explicit_implementation_request(text), "{text}");
+        }
+    }
+}
+
 pub(super) fn evidence_for_source(state:&AppState,session:&str,source:&str,execution:&str)->Vec<Value>{
     let mut runs=std::collections::HashSet::new();runs.insert(execution.to_string());
     // Earlier native room speakers may already have performed this exact
