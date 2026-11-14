@@ -63,7 +63,7 @@ pub fn validate_criteria(criteria: &Value) -> Result<(), String> {
     }
     Ok(())
 }
-pub(crate) fn looks_actionable(goal: &str) -> bool {
+pub(crate) pub(crate) fn looks_actionable(goal: &str) -> bool {
     [
         "만들",
         "생성",
