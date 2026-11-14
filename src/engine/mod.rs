@@ -21,6 +21,7 @@ pub mod bridge;
 pub mod chat;
 pub mod owner_intent;
 pub mod agent_sdk;
+pub mod steering;
 pub mod browser;
 pub mod compact;
 pub mod channel_adapter;
