@@ -56,3 +56,51 @@ use super::*;
         );
         std::fs::remove_dir_all(s.config.data_dir.clone()).unwrap();
     }
+
+    #[test]
+    fn paid_ltx_enqueue_fails_closed_until_server_quote_is_approved() {
+        let s=state();
+        s.save_secret("video:ltx:api","fixture-only-do-not-call");
+        let body=json!({"engine":"ltx","brief":"A continuous coastal film",
+            "videoModel":"ltx-2-5-fast","videoQuality":"1080p",
+            "duration":8,"aspectRatio":"16:9","generateAudio":true,"fps":24});
+        let quote=video::paid_quote(&s,&body).unwrap();
+        assert_eq!(quote["paidCalls"],1);
+        assert_eq!(quote["totalUsdCents"],104);
+        assert_eq!(quote["referenceKrw"],1390);
+        assert_eq!(s.store.count("job"),0);
+        assert!(video::enqueue(&s,&body).is_err());
+        let mut approved=body.clone();
+        approved["approvedPaidQuote"]=json!(true);
+        approved["maxUsdCents"]=json!(103);
+        approved["quoteDigest"]=quote["quoteDigest"].clone();
+        assert!(video::enqueue(&s,&approved).is_err());
+        approved["maxUsdCents"]=quote["totalUsdCents"].clone();
+        approved["quoteDigest"]=json!("different-settings-or-price");
+        assert!(video::enqueue(&s,&approved).is_err());
+        approved["quoteDigest"]=quote["quoteDigest"].clone();
+        let queued=video::enqueue(&s,&approved).unwrap();
+        let job=s.store.get("job",queued["id"].as_str().unwrap()).unwrap();
+        assert_eq!(job["input"]["paidQuote"]["totalUsdCents"],104);
+        assert_eq!(job["input"]["paidApprovalMaxUsdCents"],104);
+        assert_eq!(job["status"],"queued");
+        let _=std::fs::remove_dir_all(s.config.data_dir.clone());
+    }
+
+    #[test]
+    fn ltx_quote_is_bound_to_model_audio_resolution_and_duration() {
+        let s=state();
+        let body=json!({"engine":"ltx","videoModel":"ltx-2-5-pro",
+            "videoQuality":"720p","duration":10,"fps":24,
+            "aspectRatio":"9:16","generateAudio":true});
+        let original=video::paid_quote(&s,&body).unwrap();
+        assert_eq!(original["totalUsdCents"],120);
+        for (key,value) in [("videoModel",json!("ltx-2-5-fast")),
+            ("videoQuality",json!("1080p")),
+            ("generateAudio",json!(false)),("duration",json!(8))] {
+            let mut changed=body.clone();changed[key]=value;
+            let new_quote=video::paid_quote(&s,&changed).unwrap();
+            assert_ne!(original["quoteDigest"],new_quote["quoteDigest"],"changed {key}");
+        }
+        let _=std::fs::remove_dir_all(s.config.data_dir.clone());
+    }
