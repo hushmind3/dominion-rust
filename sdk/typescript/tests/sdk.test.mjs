@@ -239,6 +239,6 @@ test("RSI SDK launches native Rust campaign once and read-only polls proof", asy
   assert.equal(finished.status,"needs_review");
   assert.equal(finished.recursiveProof.closedLoopObserved,false);
   assert.deepEqual(calls.map(c=>c.method),["POST","GET","GET"]);
-  await assert.rejects(()=>sdk.rsi.apply("rsi-1","not-a-commit"),TypeError);
+  assert.throws(()=>sdk.rsi.apply("rsi-1","not-a-commit"),TypeError);
   assert.equal(calls.length,3);
 });
