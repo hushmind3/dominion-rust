@@ -76,10 +76,18 @@ pub async fn resume_goal(
         return error(StatusCode::CONFLICT,
             "격리 작업공간이 제거되거나 적용됐습니다. 새 목표를 생성하세요.");
     }
-    let iterations=goal["iterations"].as_u64().unwrap_or(0);
+    // The previous durable checkpoint, not the new job ID, determines the
+    // next safe turn. If a tool turn was interrupted, skip that exact turn:
+    // the owner has inspected unknown effects, but Rust must not replay them.
+    let previous_job=goal["jobId"].as_str()
+        .and_then(|job_id|state.store.get("job",job_id));
+    let (resume_state,start_index,unknown_turn)=
+        resume_checkpoint(&goal,previous_job.as_ref());
     let old_max=goal["maxIterations"].as_u64().unwrap_or(16);
-    let next_max=if old_max<=iterations {old_max.saturating_add(8).min(64)}else{old_max};
-    if next_max<=iterations {
+    let next_max=if old_max<=start_index {
+        start_index.saturating_add(8).min(64)
+    } else {old_max};
+    if next_max<=start_index {
         return error(StatusCode::CONFLICT,"최대 반복 횟수(64회)에 도달했습니다.");
     }
     let next=goal["resumeCount"].as_u64().unwrap_or(0).saturating_add(1);
@@ -87,7 +95,8 @@ pub async fn resume_goal(
     let job_id=format!("goal-job-{id}-resume-{next}");
     let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
     history.push(json!({"jobId":job_id,"previousJobId":goal["jobId"],
-        "previousStatus":goal["status"],"startIteration":iterations,
+        "previousStatus":goal["status"],"startIteration":start_index,
+        "skippedUnknownTurn":unknown_turn,
         "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
     let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
         &json!({"status":"queued","phase":"resume","jobId":job_id,
@@ -95,19 +104,58 @@ pub async fn resume_goal(
             "finishedAt":null,"finalReport":null})) else {
         return error(StatusCode::CONFLICT,"목표 상태가 변경됐습니다.");
     };
-    if crate::engine::jobs::enqueue_once(&state,&job_id,"goal",
-        json!({"goalId":id,"resumeAfterReview":true})).is_none() {
+    // Put the job and the checkpoint into SQLite in the *same insert*.
+    // Patching goalState after enqueue exposes a replay race to job workers.
+    if crate::engine::jobs::enqueue_once_with_checkpoint(&state,&job_id,"goal",
+        json!({"goalId":id,"resumeAfterReview":true}),Some(resume_state)).is_none() {
         let _=state.store.patch_if("goal",&id,"jobId",&json!(job_id),
-            &json!({"status":"needs_review","phase":"needs_review"}));
+            &json!({"status":goal["status"],"phase":"needs_review"}));
         return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
     }
     if let Some(session)=saved["sessionId"].as_str() {state.clear_cancel(session);}
     state.bus.record("goal",&saved);
     state.store.audit("goal.owner_reviewed_resume",json!({
         "goalId":id,"jobId":job_id,"previousJobId":goal["jobId"],
-        "startIteration":iterations,
+        "startIteration":start_index,"skippedUnknownTurn":unknown_turn,
     }));
     Json(saved).into_response()
+}
+
+/// Preserve completed evidence and the exact cursor on every owner-approved
+/// continuation. Only a fully persisted review checkpoint is eligible for
+/// read-only review replay; tool turns with uncertain external effects are
+/// skipped instead of repeated.
+fn resume_checkpoint(goal:&Value, previous_job:Option<&Value>)->(Value,u64,bool) {
+    let old_state=previous_job.map(|job|&job["goalState"]).unwrap_or(&Value::Null);
+    let completed=goal["iterations"].as_u64().unwrap_or(0);
+    let prior_cursor=old_state["nextIteration"].as_u64().unwrap_or(0);
+    let session=goal["sessionId"].as_str().unwrap_or("");
+    let safe_review=previous_job.is_some_and(
+        crate::engine::goal_recovery::safe_review_checkpoint);
+    if safe_review && old_state["sessionId"].as_str()==Some(session) {
+        return (old_state.clone(),prior_cursor.saturating_sub(1),false);
+    }
+    let unknown=old_state["inFlight"]==true
+        || old_state["reviewPending"]==true;
+    let start=completed.max(prior_cursor.saturating_add(u64::from(unknown)));
+    let evidence=goal["evidence"].as_array().cloned()
+        .or_else(||old_state["evidence"].as_array().cloned())
+        .unwrap_or_default();
+    let gaps=goal["gaps"].as_array().cloned()
+        .or_else(||old_state["gaps"].as_array().cloned())
+        .unwrap_or_default();
+    let transcript=old_state["transcript"].as_str().unwrap_or("");
+    let transcript_tail=transcript.chars().rev().take(12_000)
+        .collect::<String>().chars().rev().collect::<String>();
+    let state=json!({
+        "sessionId":session,"nextIteration":start,
+        "inFlight":false,"reviewPending":false,
+        "evidence":evidence,"gaps":gaps,"transcript":transcript_tail,
+        "stalled":old_state["stalled"].as_u64().unwrap_or(0),
+        "replans":goal["replans"],"plan":goal["plan"],
+        "skippedUnknownTurn":unknown
+    });
+    (state,start,unknown)
 }
 
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
