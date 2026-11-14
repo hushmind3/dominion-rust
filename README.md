@@ -608,3 +608,13 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 격리 목표의 `GET /api/goals/:id/diff`는 **수정된 추적 파일과 새로 생성된 일반 텍스트 소스 파일을 함께 포함**한 전체 패치(최대 128KiB)의 `patchSha256`·`canApply`를 반환합니다. `goal_workspace.rs::patch_bytes`는 원본·격리 체크아웃의 실제 Git 인덱스에 `add`하지 않고 임시 인덱스를 만들며, 신규 소스는 `git add -N`(intent-to-add)로 그 인덱스에서만 검토 패치에 넣습니다. 경로는 64개·32KiB 목록·파일당 128KiB로 제한하고, 격리 경로 밖 파일·심볼릭 링크·바이너리·비 UTF-8 파일은 별도 Git/PR 검토 대상으로 거부합니다. 사용자는 홈에서 **새 파일의 전체 추가 내용까지** 확인하고, `POST /api/goals/:id/apply`에 검토한 SHA-256을 제출합니다. 적용 직전 Rust는 원본 HEAD 일치·원본 변경 없음·다른 실행 작업 없음·현재 패치 해시 일치·`git apply --check`를 재확인하며, 적용 후 신규 파일을 포함한 패치를 다시 구성해 SHA-256을 대조하고 `gitApply` 영수증을 남깁니다. 사용자 승인 없이 원본에 쓰지 않으며 자동 커밋·병합은 없습니다.
 
 기본 `DOMINION_DATA=runtime`가 소스 체크아웃 내부인 경우에도 격리된 Git worktree는 소스 밖 형제 디렉터리로 배치됩니다. Git worktree는 OS 샌드박스를 제공하지 않습니다. [구현 호출도](docs/architecture/AGENT-HARNESS-SUB2-REJUDGE-2026-11-14.md)에서 확인할 수 있습니다.
+
+## 2026-11-14 · 서브2: 연결 채널 통합 · 조용한 자기개선 · 기억 직접 수정
+
+메인의 연결 채널 UX를 `dominion-sub2`에 계승했습니다. **사이드바에는 연결 채널 1개만 표시**하고, 화면 내부에 **채널 연결 / MCP·스킬 / 역량 마켓** 3개 탭을 제공합니다. 원래 채널 설정·OAuth, MCP 설치·실행, 스킬 가져오기·설치 및 역량 마켓 API는 유지합니다. 이전 `#/extensions`, `#/capabilities` 주소는 해당 연결 탭으로 열리고, 탭 선택이 `#/connections?section=...` 주소에 반영됩니다. 구현 경로: `web/src/{App.tsx,components/WorkspaceShell.tsx,pages/Connections.tsx}`, 내부 패널 `pages/{Extensions,Capabilities}.tsx`.
+
+자기개선 화면은 자동 캠페인 조회 실패나 이전 작업 오류를 반복적인 상단 알림으로 노출하지 않고, **사용자 조작 실패만 즉시 표시**합니다. 실제 RSI 캠페인·설치·공급자 오류는 자기개선 화면의 접힌 기록에서 확인하며, 실행·승인·감사·복구 경로는 그대로입니다. `web/src/pages/SelfImprovement.tsx`의 백그라운드 조회 간격을 1.5초에서 4초로 조정했습니다. 실제 OS/브라우저 푸시 알림 코드는 검사한 프론트 진입점에서 발견되지 않았으며, 브라우저 상호작용 검증은 별도입니다.
+
+심판이 지적한 기억 수정 누락도 보완했습니다. `Memory.tsx`에서 개별 기억의 내용을 직접 편집할 수 있고, `POST /api/memories/:id/edit`는 `api/collections.rs::action`에서 원본 문구 비교 후 원자적으로 반영합니다. 원래 범위·출처·근거를 보존하고 `owner_revision`으로 사용자 정정 사실을 명시합니다. 동시 수정 충돌은 HTTP 409로 반환합니다.
+
+**전체 메뉴 14개** 및 화면 → API → 엔진과 실행/검증 수준은 [서브2 전 메뉴·알림·기억 감사](docs/architecture/SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md)에 정리했습니다. 프런트 타입 검사·빌드가 통과한 커밋은 `d8aca686`; 이후 기억 API 테스트와 문서 변경의 Rust 전체 테스트/실제 브라우저 검증은 CI 실행 결과와 구분해야 합니다.
