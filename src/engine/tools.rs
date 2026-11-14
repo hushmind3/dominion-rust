@@ -199,12 +199,14 @@ pub async fn execute(
     if matches!(name,"file_read"|"file_list"|"file_write"){
         return Err("격리 코딩 목표에서는 workspace_* 도구를 사용하세요.".into());
     }
+    let mut local_args=args.clone();
     if name=="shell_exec" {
         if let Some(cwd)=args["cwd"].as_str() {
             let checked=crate::engine::tools::resolve_workspace(&workspace,cwd)?;
             if !checked.is_dir() {
                 return Err("셸 작업 경로가 디렉터리가 아닙니다.".into());
             }
+            local_args["cwd"]=json!(checked.to_string_lossy());
         }
     }
     let scoped=ToolContext{workspace:&workspace,store:ctx.store,state:ctx.state,
