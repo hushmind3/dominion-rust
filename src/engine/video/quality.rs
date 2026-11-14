@@ -70,7 +70,14 @@ pub(super) async fn inspect_min(cfg:&Value,path:&Path,seconds:u64,aspect:&str,
     if output.stdout.len()>32768 {return Err("영상 검수 출력이 비정상적으로 큽니다.".into());}
     let report:Value=serde_json::from_slice(&output.stdout)
         .map_err(|e|format!("ffprobe JSON 해석 오류: {e}"))?;
-    evaluate_min(&report,seconds,aspect,min_short,audio)
+    let mut technical=evaluate_min(&report,seconds,aspect,min_short,audio)?;
+    if cfg["videoDiagnostics"]!=false {
+        technical["visualDiagnostics"]=
+            super::diagnostics::inspect(cfg,path,seconds).await;
+    }else{
+        technical["visualDiagnostics"]=json!({"status":"disabled"});
+    }
+    Ok(technical)
 }
 
 #[cfg(test)]
