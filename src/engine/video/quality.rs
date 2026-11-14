@@ -15,6 +15,7 @@ fn ffprobe(cfg:&Value)->Option<PathBuf>{
     std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|entry|entry.join(name)).find(|path|path.is_file())
 }
+pub(super) fn available(cfg:&Value)->bool{ffprobe(cfg).is_some()}
 fn duration(value:&Value)->Option<f64>{
     value.as_f64().or_else(||value.as_str().and_then(|s|s.parse().ok()))
         .filter(|v:f64|v.is_finite()&&*v>0.0)
