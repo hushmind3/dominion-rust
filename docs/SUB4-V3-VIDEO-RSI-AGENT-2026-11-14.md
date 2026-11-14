@@ -32,3 +32,10 @@
 - 영상의 원격 요청 불명확 상태에서는 추가 결제를 막고 사용자 검토로 전환한다. 기술 검증에 통과한 기존 샷만 재사용한다.
 - 정적 연결과 테스트 결과는 구분한다. 이 변경 자체로 영화 시청 품질이나 모델 주도 RSI A→B→A 성공을 입증하지 않는다.
 - 큰 `video.rs`에서 ComfyUI 전송을 별도 140줄 모듈로 분리했고, 읽기 전용 위임도 `tools/batch.rs`로 분리했다. 다음 후보는 도구의 네트워크/파일/프로세스 계층과 `rsi_system.rs`의 설계 인터페이스이다.
+
+### 4. 실행 중 목표 계획 개정 (owner steering)
+
+- `POST /api/goals/:id/steer`는 `plan`과 `expectedRevision` 2개 키만 허용한다. `src/engine/goal_steering.rs::submit`는 낙관적 CAS로 revision을 증가시키고 신규 `ownerPlan`을 저장한다. 완료 검증 조건·권한·원본 목표는 수정할 수 없다.
+- `src/engine/goals.rs::run`은 executor 턴 시작 경계에서만 `pending` revision을 로컬 계획에 반영하고 `appliedPlanRevision`과 `planHistory`를 저장한다. 진행 중 도구 실행과 검토 단계의 stale-plan 완료는 추가 검증 대상이며, `finish`도 미반영 revision을 감지하면 `needs_review`로 막는다.
+- `web/src/pages/Goals.tsx`에서 실행 중 계획 변경과 최신/반영 revision 차이를 확인한다. `tests/unit/goal_steering_tests.rs`는 stale CAS·종료된 목표 변경·기존 실행 계획 보호를 점검한다.
+- 새 계획 제출과 완료 기록 사이의 완전한 다중 필드 원자적 트랜잭션은 아직 제공하지 않는다. 해당 경쟁 상태를 운영적으로 완전히 제거하려면 목표 상태/plan revision을 함께 비교하는 DB 트랜잭션이 필요하다.
