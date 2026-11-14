@@ -3,6 +3,7 @@
 mod runway;
 mod ltx;
 mod film;
+mod pricing;
 mod quality;
 use crate::{
     engine::{
@@ -97,8 +98,39 @@ pub fn public_job(job: &Value) -> Value {
     let ready = job["kind"] == "video" && job["status"] == "completed";
     json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"].as_array().map(|_|job["videoState"]["scenes"].clone()).unwrap_or_else(||job["input"]["scenes"].clone()),"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoQuality":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["videoQuality"].clone()} else {Value::Null},"videoModel":job["input"]["videoModel"],"shotMode":if job["input"]["engine"]=="runway" {job["input"]["shotMode"].clone()} else {Value::Null},"generateAudio":if job["input"]["engine"]=="runway"||job["input"]["engine"]=="ltx" {job["input"]["generateAudio"].clone()} else {Value::Null},
         "technicalGate":job["input"]["technicalGate"],"film":job["input"]["render"]["film"],
-        "technicalQuality":job["result"]["technicalQuality"],"estimatedPaidCalls":job["input"]["render"]["film"]["paidCallCount"]})
+        "technicalQuality":job["result"]["technicalQuality"],"estimatedPaidCalls":job["input"]["render"]["film"]["paidCallCount"],
+        "paidQuote":job["input"]["paidQuote"],"paidApprovalMaxUsdCents":job["input"]["paidApprovalMaxUsdCents"]})
 }
+/// Read-only server-calculated paid LTX quote. Does not require an API key,
+/// create a job, or authorize generation. Uses the same price rules as enqueue.
+pub fn paid_quote(state:&AppState,body:&Value)->Result<Value,String>{
+    if body["engine"]!="ltx" {
+        return Err("현재 고정 원화 견적은 LTX-2.5 텍스트 영상에만 제공됩니다.".into())
+    }
+    let cfg=config(state);
+    let model=body["videoModel"].as_str().or(cfg["videoModel"].as_str())
+        .unwrap_or("ltx-2-5-pro");
+    let quality=body["videoQuality"].as_str().or(cfg["videoQuality"].as_str())
+        .unwrap_or("1080p");
+    let seconds=body["duration"].as_u64().ok_or("영상 길이는 초 단위 정수여야 합니다.")?;
+    let film_mode=body["ltxFilm"]==true;
+    let fps=body["fps"].as_u64().unwrap_or(24);
+    let aspect=body["aspectRatio"].as_str().unwrap_or("9:16");
+    let audio=body["generateAudio"].as_bool().unwrap_or(true);
+    let durations=if film_mode {
+        film::split_duration(seconds,film::max_clip(model,quality,fps)?)?
+    }else{vec![seconds]};
+    for duration in &durations {
+        let candidate=json!({
+            "videoModel":model,"videoQuality":quality,"duration":duration,
+            "fps":fps,"aspectRatio":aspect,"generateAudio":audio,
+            "brief":"Preview validation only"
+        });
+        ltx::spec(&candidate,&cfg)?;
+    }
+    pricing::quote(model,quality,&durations,audio)
+}
+
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
     let brief = body["brief"].as_str().unwrap_or("").trim();
@@ -198,6 +230,13 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if engine == "ltx" {
         input["render"] = if ltx_film {film::spec(&input,&cfg)?}
             else {ltx::spec(&input, &cfg)?};
+        // An owner must explicitly approve the exact server-computed billable
+        // duration and model/resolution. Never treat clip-count consent as a
+        // monetary ceiling.
+        let quote=paid_quote(state,&input)?;
+        pricing::approved(body,&quote)?;
+        input["paidQuote"]=quote;
+        input["paidApprovalMaxUsdCents"]=body["maxUsdCents"].clone();
     }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
