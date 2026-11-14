@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 챔피온 2026-11-14: 연결 메뉴 통합 · RSI 알림 제거 · 기억 직접 수정
+
+- 왼쪽 **확장·연결 → 연결 채널** 메뉴 하나에 **채널 연결 / MCP·스킬 / 역량 마켓** 탭을 합쳤습니다. 이미 구현된 `web/src/pages/Extensions.tsx`(MCP·플러그인·스킬 마켓/설치) 및 `Capabilities.tsx`(역량 카탈로그) API를 제거하지 않고 `Connections.tsx`에서 그대로 호출합니다. 사이드바/명령 팔레트의 중복 항목만 정리했습니다.
+- **불필요한 자기개선 자동 제안**은 표시하지 않습니다. `components/ImprovementNotice.tsx`는 글로벌 polling·팝업 없는 호환 모듈이며, 사용자에게 실제로 필요한 오류·승인·실행 상태는 해당 페이지와 활동 기록에 남깁니다.
+- 독립적인 **기억** 화면에서 사용자가 직접 등록한 기억을 수정할 수 있습니다. 기존 ID, scope와 근거를 보존하며 학습 기록은 직접 편집 대상에서 제외합니다.
+- **챔피온 고유의 자율 목표** 메뉴/엔진과 기존 자기개선·영상·그룹대화 기능은 그대로 유지합니다.
+- 회귀 테스트 `node --test scripts/champion-ui-menu.test.mjs`를 CI에 추가했습니다. 이번 변경의 브라우저 실사용·외부 연동 및 전체 CI는 별도 검증 대상입니다.
+
+실제 15개 메뉴·API·엔진 경로와 검증 범위는 [챔피온 전체 메뉴 점검표](docs/CHAMPION-UI-MENU-2026-11-14.md)를 참고하세요.
+
 ## 챔피온 2026-11-14: 턴키 고품질 영상·비용 가드
 
 - `web/src/pages/Video.tsx` → `src/api/video.rs::create` → `src/engine/video.rs::enqueue`: LTX 2.5 Pro/Fast 시네마틱 연출·장면별 지시·긴 영상의 유료 호출 횟수 확인을 하나의 생성 폼으로 제공합니다.
