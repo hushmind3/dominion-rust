@@ -1491,8 +1491,39 @@ pub(super) async fn run_turn_body(
                 let mut futures = Vec::new();
                 let mut valid_calls = Vec::new();
                 for (offset, call) in read_calls.iter().enumerate() {
+                    if !budget.charge_proposal(){
+                        return Err("병렬 읽기 도구 제안 예산을 초과했습니다.".into());
+                    }
+                    if !tool_advertised(&call.name,&round_tools){
+                        let error=format!(
+                            "이번 실행 단계에 '{}' 도구가 제공되지 않았습니다. 현재 허용된 도구를 사용하세요.",
+                            call.name
+                        );
+                        record_soft_tool_error(
+                            state,tx,session_id,request,execution_id,
+                            &call.name,&call.id,&error,metrics
+                        );
+                        messages.push(json!({
+                            "role":"tool","tool_call_id":call.id,
+                            "content":json!({"error":error,"unadvertisedTool":true}).to_string()
+                        }));
+                        continue;
+                    }
                     match serde_json::from_str::<Value>(&call.arguments) {
                         Ok(arguments) => {
+                            if !arguments.is_object(){
+                                let error="도구 인수가 JSON 객체가 아닙니다.";
+                                record_soft_tool_error(state,tx,session_id,request,
+                                    execution_id,&call.name,&call.id,error,metrics);
+                                messages.push(json!({
+                                    "role":"tool","tool_call_id":call.id,
+                                    "content":json!({"error":error}).to_string()
+                                }));
+                                continue;
+                            }
+                            if !budget.charge_tool(){
+                                return Err("병렬 읽기 도구 실행 예산을 초과했습니다.".into());
+                            }
                             valid_calls.push((call.clone(), offset));
                             futures.push(dispatch_tool_call(
                                 state,
@@ -1582,9 +1613,9 @@ pub(super) async fn run_turn_body(
             {
                 return Err("실행이 중단되었습니다.".into());
             }
-            if session["rsiRun"] == true && !rsi_tool_advertised(&call.name, &round_tools) {
+            if !tool_advertised(&call.name,&round_tools) {
                 let error = format!(
-                    "이번 RSI 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 편집 도구 중 하나를 사용하세요.",
+                    "이번 실행 단계에서 '{}' 도구는 제공되지 않았습니다. 현재 허용된 도구 중 하나를 사용하세요.",
                     call.name
                 );
                 record_soft_tool_error(
@@ -1593,7 +1624,7 @@ pub(super) async fn run_turn_body(
                 );
                 messages.push(json!({
                     "role":"tool","tool_call_id":call.id,
-                    "content":json!({"error":error,"unadvertisedRsiTool":true}).to_string()
+                    "content":json!({"error":error,"unadvertisedTool":true}).to_string()
                 }));
                 continue;
             }
