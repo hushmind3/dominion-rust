@@ -127,6 +127,33 @@ mod tests {
         let report=summarize("[blackdetect] black_start:0 black_end:1.5 black_duration:1.5\n[freezedetect] lavfi.freezedetect.freeze_start: 2\n[freezedetect] lavfi.freezedetect.freeze_end: 6 freeze_duration: 4",8.0);
         assert_eq!(report["passed"],true);
     }
+    #[tokio::test]
+    async fn actual_ffmpeg_frames_reject_black_but_accept_moving_scene() {
+        let Some(ffmpeg) = ffmpeg_from_config(&json!({})) else { return };
+        let directory = std::env::temp_dir().join(format!(
+            "dominion-video-scan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let cfg=json!({"ffmpegPath":ffmpeg.to_string_lossy().to_string()});
+        for (kind,source) in [
+            ("black","color=c=black:s=320x240:r=12:d=6"),
+            ("moving","testsrc2=s=320x240:r=12:d=6"),
+        ] {
+            let file=directory.join(format!("{kind}.mp4"));
+            let generated=tokio::process::Command::new(&ffmpeg)
+                .args(["-hide_banner","-loglevel","error","-nostdin","-f","lavfi",
+                    "-i",source,"-c:v","mpeg4","-q:v","4","-y"])
+                .arg(&file).output().await.unwrap();
+            assert!(generated.status.success(), "{}",String::from_utf8_lossy(&generated.stderr));
+            let scanned=inspect(&cfg,&file,6.0).await;
+            if kind=="black" {
+                assert!(scanned.is_err(), "black video passed: {scanned:?}");
+            } else {
+                assert!(scanned.is_ok(), "moving video rejected: {scanned:?}");
+                assert_eq!(scanned.unwrap()["passed"],true);
+            }
+        }
+        let _=std::fs::remove_dir_all(directory);
+    }
     #[test]
     fn duplicate_reports_do_not_add_lengths() {
         let report=summarize("black_duration:2\nblack_duration:2\nblack_duration:2",8.0);
