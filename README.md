@@ -557,3 +557,5 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - **등록·취소 정합성:** `api/goals.rs`가 `jobId`를 영속화하며 작업 등록 실패를 성공으로 포장하지 않습니다. `api/jobs.rs::cancel`은 실행 전 대기 중인 Goal까지 종료 상태로 전환합니다.
 
 **이번 변경에 없는 것:** 일반 Goal의 DAG 병렬 위임/합성, Git diff 승인·되돌리기 전 구간 UX, 독립 RSI 동결 평가에 의한 일반 Goal 후손 승률 증명. 이번 변경은 테스트/컴파일/CI/벤치마크/실모델 작업을 실행하지 않은 소스 단계입니다.
+
+- **목표 작업의 프로젝트 이해·계측·수정**: `goal_intake.rs`가 저장소의 manifest/최상위 구조를 한정적으로 조사한 뒤 계획자·실행자에게 전달합니다. `POST /api/goals/:id/plan` → `goal_plan.rs`은 실행 중 사용자 수정 계획을 다음 안전한 단계에 반영합니다. `goal_metrics.rs`는 완료 증빙, 모델 토큰, 소요시간, 재계획 횟수를 Goal/Job에 기록합니다. 실제 청구액이나 작업 완수율은 지어내지 않습니다.
