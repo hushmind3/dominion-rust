@@ -237,7 +237,6 @@ pub fn router(state: AppState) -> Router {
             get(executions::execution_operations),
         )
         .route("/api/skills/:id/export", get(extensions::export_skill))
-        .route("/api/agent-harnesses",get(workflow_results::harnesses))
         .route("/api/workflow-artifacts",get(workflow_results::list))
         .route("/api/workflow-artifacts/:id",get(workflow_results::one))
         .route("/api/goals", get(goals::list_goals).post(goals::create_goal))
