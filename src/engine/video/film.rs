@@ -122,6 +122,131 @@ fn persist_receipt(dir:&Path,receipt:&Value)->Result<(),String>{
     drop(file);
     std::fs::rename(tmp,dir.join("receipt.json")).map_err(|e|e.to_string())
 }
+/// Owner-visible clip receipts; no raw video bytes or credential-bearing
+/// cloud links. The SHA is an optimistic concurrency token for exact retakes.
+pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,String>{
+    if job["kind"]!="video"||job["input"]["engine"]!="ltx"
+        || job["input"]["ltxFilm"]!=true {
+        return Err("LTX 멀티샷 영상 작업이 아닙니다.".into());
+    }
+    let id=job["id"].as_str().ok_or("영상 작업 ID 오류")?;
+    let root=super::directory(state,id)?;
+    let planned=job["input"]["render"]["film"]["clips"].as_array()
+        .ok_or("영상 장면 계획이 없습니다.")?;
+    let mut clips=Vec::new();
+    let mut unknown=false;
+    let mut missing=0u64;
+    for (index,item) in planned.iter().enumerate(){
+        let clip_dir=root.join(format!("clip-{index:02}"));
+        let file=clip_dir.join("output.mp4");
+        let exists=std::fs::symlink_metadata(&file)
+            .is_ok_and(|meta|meta.is_file()&&meta.len()>=1024
+                && meta.len()<=256*1024*1024);
+        let sha=if exists {file_sha(&file).ok()} else {None};
+        let receipt=if exists {saved_receipt(&clip_dir).ok().flatten()} else {None};
+        let valid=receipt.is_some();
+        if !valid {
+            if exists||clip_dir.join("receipt.json").exists(){unknown=true;}
+            else{missing+=1;}
+        }
+        clips.push(json!({"index":index,"duration":item["duration"],
+            "outputSha256":sha,"isAvailable":exists,
+            "receiptVerified":valid,"qualityStatus":receipt.as_ref().map(|r|
+                r["quality"]["status"].clone()).unwrap_or(Value::Null)}));
+    }
+    let terminal=matches!(job["status"].as_str(),
+        Some("completed"|"needs_review"|"failed"|"cancelled"));
+    for item in &mut clips {
+        let target_exists=item["isAvailable"]==true;
+        let others_unknown=clips.iter().enumerate().any(|(other,clip)|
+            other!=item["index"].as_u64().unwrap_or(u64::MAX) as usize
+            && clip["isAvailable"]==true&&clip["receiptVerified"]!=true);
+        item["canRetake"]=json!(terminal&&target_exists&&!others_unknown);
+        item["expectedPaidCalls"]=json!(1+missing);
+    }
+    Ok(json!({"jobId":id,"status":job["status"],"film":true,
+        "unknownEffect":unknown,"clips":clips,
+        "recordedPaidCalls":planned.len(),"terminal":terminal}))
+}
+
+/// Require the owner to pin a visible source clip AND the exact number of
+/// new billable calls (target + still-uncreated tail shots). Every other
+/// completed clip remains reused by SHA, never submitted again.
+pub(super) fn retake_input(state:&crate::state::AppState,job:&Value,
+    index:usize,expected:&str,new_prompt:Option<&str>,confirmed_calls:u64)
+    ->Result<Value,String>{
+    let manifest=scenes(state,job)?;
+    let list=manifest["clips"].as_array().ok_or("장면 목록 오류")?;
+    let target=list.get(index).ok_or("장면 번호가 잘못됐습니다.")?;
+    if target["canRetake"]!=true{
+        return Err("격리된 유료 결과가 불확실하거나 작업이 진행 중이어서 장면 재생성을 시작할 수 없습니다.".into());
+    }
+    if expected.len()!=64||!expected.bytes().all(|v|v.is_ascii_hexdigit())
+        ||target["outputSha256"].as_str()!=Some(expected){
+        return Err("장면이 변경됐습니다. 영상을 다시 확인한 뒤 재생성하세요.".into());
+    }
+    let needed=target["expectedPaidCalls"].as_u64().unwrap_or(u64::MAX);
+    if confirmed_calls!=needed{
+        return Err(format!("새로 결제될 장면 {needed}개에 동의해야 합니다."));
+    }
+    let mut input=job["input"].clone();
+    if let Some(prompt)=new_prompt{
+        let prompt=prompt.trim();
+        if prompt.is_empty()||prompt.chars().count()>4750{
+            return Err("새 장면 프롬프트는 1~4750자입니다.".into());
+        }
+        input["render"]["film"]["clips"][index]["render"]["prompt"]=json!(prompt);
+    }
+    let source=job["id"].as_str().ok_or("기존 영상 ID가 없습니다.")?;
+    let fingerprint=format!("{:x}",Sha256::digest(
+        format!("{source}|{index}|{expected}|{}",
+            input["render"]["film"]["clips"][index]["render"]["prompt"]).as_bytes()));
+    input["retake"]=json!({"sourceJobId":source,"index":index,
+        "expectedSourceSha256":expected,"newPaidCalls":needed,
+        "fingerprint":fingerprint,"confirmed":true});
+    Ok(input)
+}
+fn reuse_other_shots(ctx:&JobContext,input:&Value,dir:&Path)->Result<(),String>{
+    if !input["retake"].is_object(){return Ok(());}
+    let source_id=input["retake"]["sourceJobId"].as_str()
+        .ok_or("이전 영상 ID가 없습니다.")?;
+    let source=ctx.state.store.get("job",source_id)
+        .filter(|row|row["kind"]=="video"&&row["input"]["ltxFilm"]==true)
+        .ok_or("원본 유료 영상이 없습니다.")?;
+    if !matches!(source["status"].as_str(),
+        Some("completed"|"failed"|"needs_review"|"cancelled")){
+        return Err("원본 영상 작업이 아직 진행 중입니다.".into());
+    }
+    let index=input["retake"]["index"].as_u64().ok_or("재생성 장면 번호 오류")? as usize;
+    let expected=input["retake"]["expectedSourceSha256"].as_str()
+        .ok_or("장면 버전 해시가 없습니다.")?;
+    let source_dir=super::directory(&ctx.state,source_id)?;
+    let original=source_dir.join(format!("clip-{index:02}/output.mp4"));
+    if file_sha(&original)?!=expected {
+        return Err("needs_review: 원본 유료 장면 파일이 요청 뒤 변경됐습니다. 다시 결제하지 않습니다.".into());
+    }
+    let frozen=input["render"]["film"]["clips"].as_array()
+        .ok_or("동결 장면 구성을 찾지 못했습니다.")?;
+    for other in 0..frozen.len(){
+        if other==index{continue;}
+        let from=source_dir.join(format!("clip-{other:02}"));
+        match saved_receipt(&from)?{
+            Some(receipt)=>{
+                let target=dir.join(format!("clip-{other:02}"));
+                std::fs::create_dir_all(&target).map_err(|e|e.to_string())?;
+                std::fs::copy(from.join("output.mp4"),target.join("output.mp4"))
+                    .map_err(|e|e.to_string())?;
+                let mut copied=receipt;
+                copied["reused"]=json!(true);
+                copied["reusedFromJobId"]=json!(source_id);
+                persist_receipt(&target,&copied)?;
+            }
+            None=>{}, // no prior output: requires an explicitly consented new call
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,String>{
     let clips=input["render"]["film"]["clips"].as_array()
         .ok_or("동결된 멀티샷 계획이 없습니다.")?;
@@ -135,6 +260,7 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
     if strict&&!quality::available(cfg){
         return Err("ffprobe 검수를 선택했지만 실행 파일이 없어 유료 호출을 시작하지 않습니다.".into());
     }
+    reuse_other_shots(ctx,input,dir)?;
     let mut receipts=Vec::new();
     let mut charged=0u64;
     for (index,clip) in clips.iter().enumerate(){
