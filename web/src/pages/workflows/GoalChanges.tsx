@@ -1,5 +1,5 @@
 import {useState} from 'react'
-import {FileDiff,RefreshCw,RotateCcw,Trash2} from 'lucide-react'
+import {FileDiff,RefreshCw,RotateCcw,Trash2,GitMerge} from 'lucide-react'
 import {post} from '../../api'
 import {Button} from '../../components/Primitives'
 import {Notice,useRemote} from '../../components/UI'
@@ -7,7 +7,8 @@ import {Notice,useRemote} from '../../components/UI'
 type Change={path:string;diff:string;currentSha256:string;canUndo:boolean;undoReason?:string}
 type Preview={files?:Change[];sameHead?:boolean;baselineClean?:boolean;notice?:string;
  isolated?:boolean;status?:string;diff?:string;stagedDiff?:string;
- untracked?:string;branch?:string;baseCommit?:string;truncated?:boolean}
+ untracked?:string;branch?:string;baseCommit?:string;truncated?:boolean;
+ patchSha256?:string;canPromote?:boolean;promoted?:boolean}
 
 /** Only verified tool-owned paths are displayed, never a blind git reset. */
 export function GoalChanges({goalId,finished,isolated=false,discarded=false}:{
@@ -16,6 +17,22 @@ export function GoalChanges({goalId,finished,isolated=false,discarded=false}:{
  const preview=useRemote<Preview>('/api/goals/'+encodeURIComponent(goalId)+'/changes',{})
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[info,setInfo]=useState('')
  const [justDiscarded,setJustDiscarded]=useState(false)
+ const [justPromoted,setJustPromoted]=useState(false)
+ const promote=async()=>{
+  const digest=preview.value.patchSha256
+  if(!finished||busy||justPromoted||!preview.value.canPromote||!digest)return
+  if(!window.confirm('검증된 격리 작업의 추적 파일 변경을 원본 저장소에 적용하시겠습니까?\n\n원본 HEAD와 깨끗한 상태, 변경 SHA-256을 서버에서 재검사합니다. 현재 Git 커밋은 생성하지 않습니다.'))return
+  setBusy(true);setError('');setInfo('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goalId)+'/worktree/promote',{
+    expectedPatchSha256:digest,
+   })
+   setJustPromoted(true)
+   setInfo('검증된 추적 파일 패치를 원본 저장소에 적용했습니다. Git diff를 확인해 커밋하세요.')
+   await preview.reload()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy(false)}
+ }
  const discard=async()=>{
   if(!finished||busy||discarded||justDiscarded)return
   if(!window.confirm('이 목표의 격리 작업공간을 폐기하시겠습니까?\n\n격리 공간의 미반영 코드와 추적되지 않은 파일이 삭제됩니다. 원본 체크아웃에는 적용하지 않습니다.'))return
@@ -59,9 +76,18 @@ export function GoalChanges({goalId,finished,isolated=false,discarded=false}:{
     </details>}
     {preview.value.untracked&&<p className="mt-2 whitespace-pre-wrap break-all text-[11px]">새 파일(내용 미노출): {preview.value.untracked}</p>}
     {preview.value.truncated&&<p className="mt-2 text-xs text-amber-700">변경 내용이 길어 일부만 표시됩니다. 원본 파일을 열어 검토하세요.</p>}
-    <div className="mt-3 flex justify-end"><Button size="sm" variant="danger"
+    {preview.value.promoted||justPromoted?
+     <p className="mt-2 text-xs text-emerald-700">원본 저장소로 적용한 기록이 있습니다. 격리 공간은 별도로 폐기할 수 있습니다.</p>:
+     preview.value.untracked?
+     <p className="mt-2 text-[11px] text-amber-700">추적되지 않은 새 파일이 있습니다. 해당 파일을 Git에 추가한 뒤 다시 비교해야 원본 적용을 할 수 있습니다.</p>:null}
+    <div className="mt-3 flex flex-wrap justify-end gap-2">
+     <Button size="sm" variant="secondary"
+      disabled={busy||!finished||!preview.value.canPromote||justPromoted}
+      onClick={()=>void promote()}><GitMerge size={13}/> 검증된 변경 원본에 적용</Button>
+     <Button size="sm" variant="danger"
      disabled={busy||!finished||!preview.value.branch}
-     onClick={()=>void discard()}><Trash2 size={13}/> 격리 작업공간 폐기</Button></div>
+     onClick={()=>void discard()}><Trash2 size={13}/> 격리 작업공간 폐기</Button>
+    </div>
    </>}
   </>}
   {!isolated&&<>
