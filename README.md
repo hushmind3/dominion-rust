@@ -967,3 +967,13 @@ experiments. See `src/engine/rsi/meta/experiment_evolution.rs` and the
 associated unit tests. This does not modify the independent verifier or model
 weights. The optional external TypeScript SDK remains supported, while the
 React application calls the native Rust server directly.
+
+### 2026-11-15 · Atomic subagent execution and owner-goal-wide token accounting (Sub4)
+
+Dominion's **native Rust** `tools::delegate` now creates its delegated `session` + `job` together using `Store::reserve_delegation` (`src/db.rs`). A SQLite **IMMEDIATE** write transaction checks parent cancellation, the lifetime fan-out ceiling (24), and concurrent active worker ceiling (4) before inserting both records. Concurrent callers cannot pass a stale count and create orphan/billable workers. A failed admission launches nothing. Parallel research delegation still attenuates the child to read-only tools through `src/engine/tools/batch.rs`.
+
+`src/db/usage_tree.rs` supplies two durable primitives: `enclosing_goal` resolves a child session to its actual persisted root-goal ownership, and `session_tree_usage` accounts for model-usage audit receipts from the root, planner/reviewer and all descendant sessions with one recursive SQLite query. Goal execution admission (`goals.rs`), planner/reviewer admission (`goal_control.rs`), child prompt admission (`jobs.rs`), delegation admission (`tools.rs`), and the final evidence report (`goals/report.rs`) all use this common budget scope. Cycle protection, count/cached-token fields, and unrelated-session exclusion are covered by local unit-test source. This remains a measured/admission budget, **not** an exact pre-billed hard limit for simultaneous in-flight provider requests or providers that omit usage.
+
+Tests added under `src/db.rs::delegated_admission_tests`, `src/db/usage_tree.rs::tests` and `src/engine/jobs.rs::delegated_goal_budget_tests`. Run `cargo test --release` plus the existing Rust/TS CI and actual model task cases before claiming a measured success rate. The first-party `sdk/rust` and optional `sdk/typescript` remain external clients to the same Rust runtime, not competing execution policies.
+
+The existing non-weight RSI in `src/engine/rsi/` retains detached candidate worktrees, frozen independently replayed A/B checks, adoption/recompilation, case-diverse experiment strategy inheritance, and guarded negative-transfer feedback. The above subagent/budget changes are normal source changes subject to the **same** independent RSI acceptance criteria; no model weights or third-party harness are imported.
