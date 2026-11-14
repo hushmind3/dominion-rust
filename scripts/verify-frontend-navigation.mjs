@@ -16,7 +16,7 @@ test('sidebar exposes 14 meaningful entries without a redundant Goal page',()=>{
  const navigation=nav.match(/export const navigation:[\s\S]*?\n\]/)?.[0]||''
  const ids=[...navigation.matchAll(/\{id:'([^']+)',label:'nav\.[^']+',icon:/g)].map(match=>match[1])
  assert.equal(ids.length,14)
- assert.equal(new Set(ids).size,15)
+ assert.equal(new Set(ids).size,14)
  assert.equal(ids.filter(id=>id==='connections').length,1)
  assert.ok(!ids.includes('goals'),'Goal is a chat command, not another sidebar product menu')
  for(const hidden of ['extensions','capabilities'])assert.equal(ids.includes(hidden),false)
