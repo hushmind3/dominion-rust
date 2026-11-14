@@ -985,6 +985,14 @@ pub(super) async fn run_turn_body(
                 }));
             }
         }
+        // An owner correction is a new, durable user instruction, not an
+        // assistant/system rewrite. Never interrupt an in-flight tool body.
+        // Apply it at the next model-step boundary before the request is built.
+        if !is_room {
+            for steering_message in crate::engine::steering::drain_at_step(state,session_id)? {
+                messages.push(steering_message);
+            }
+        }
         let wire_messages = messages.clone();
         // Campaigns enforce the owner's cumulative budget below. The generic
         // standalone turn ceiling must not terminate a budgeted research run.
