@@ -69,6 +69,7 @@ export class DominionClient {
       receipt: (goalId, options) => this.request('GET', `/api/goals/${id(goalId)}/receipt`, undefined, options),
       resume: (goalId, body = {}, options) => this.request('POST', `/api/goals/${id(goalId)}/resume`, body, options),
       steer: (goalId, body, options) => this.request('POST', `/api/goals/${id(goalId)}/steer`, body, options),
+      redirect: (goalId, body, options) => this.request('POST', `/api/goals/${id(goalId)}/objective`, body, options),
       editPlan: (goalId, body, options) => this.request('POST', `/api/goals/${id(goalId)}/plan`, body, options),
       diff: (goalId, options) => this.request('GET', `/api/goals/${id(goalId)}/diff`, undefined, options),
       apply: (goalId, digest, options) => this.request('POST', `/api/goals/${id(goalId)}/apply`, { expectedPatchSha256: digest }, options),

@@ -85,3 +85,17 @@ test('owner steering sends literal correction to the native Rust inbox', async (
   assert.deepEqual(JSON.parse(request.body), { instruction: exact });
   assert.equal(result.status, 'queued');
 });
+
+test('owner objective revision transports exact text and revision to Rust', async () => {
+  let captured;
+  const sdk=client(async (url, options) => {
+    captured={url,...options};
+    return response({revision:2,status:'pending_turn_boundary'});
+  });
+  const exact='  변경된 목표.\n기존 목표보다 우선합니다. ';
+  const result=await sdk.goals.redirect('goal-1',{expectedRevision:1,goal:exact});
+  assert.equal(captured.url,'http://localhost:4317/api/goals/goal-1/objective');
+  assert.equal(captured.method,'POST');
+  assert.deepEqual(JSON.parse(captured.body),{expectedRevision:1,goal:exact});
+  assert.equal(result.revision,2);
+});

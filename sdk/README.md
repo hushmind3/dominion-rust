@@ -144,3 +144,7 @@ Run `node --test sdk/index.test.mjs sdk/mcp-server.test.mjs`.
 ### Live owner steering
 
 `await sdk.session(sessionId).steer('새 방향: ...')` submits the exact owner instruction to the native Rust durable step inbox. This does not spawn a competing chat run or import a third-party policy. If the current model turn has finished, the instruction remains queued for the next native turn.
+
+### Correct the objective of a running autonomous goal
+
+Use `sdk.goals.redirect(goalId, {expectedRevision, goal, successCriteria: []})` to redirect a goal through the native Rust job engine. A changed objective receives new acceptance checks and a new task root. Previous operation records remain available but cannot prove the revised task complete.

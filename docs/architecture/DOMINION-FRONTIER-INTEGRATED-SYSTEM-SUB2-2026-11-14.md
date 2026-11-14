@@ -172,3 +172,7 @@ does not claim a paid-model autonomous coding benchmark was completed.
 ### Native tool verification closure
 
 `DominionSdk::register_verified_tool(handler, verifier)` is a first-party Rust two-stage contract. A callback may change host state; the independently registered verifier re-reads actual state, and only the registry can attach `_dominion_sdk_receipt`. The effect ledger seals this as `native_sdk_postcondition`; `verification::is_action_evidence` requires both the stored receipt and verified flag. A plain or forged callback result cannot satisfy an action task. The mock-provider end-to-end test writes a real file and verifies the bytes before completing an owner-redirected task.
+
+## Owner objective replacement across the product
+
+`web/src/components/GoalDirector.tsx` → `POST /api/goals/:id/objective` → native `owner_objective::submit` CAS → durable queue → `goals.rs` turn boundary → `owner_objective::adopt` CAS with newly frozen acceptance baseline and archived old evidence → fresh `episode::start_root` contract + replan → Rust model/tools → verifier/receipt. A pending owner correction blocks old-objective completion. Plan-only steering remains separate and cannot overwrite the newly adopted objective.

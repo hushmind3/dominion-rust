@@ -56,6 +56,7 @@ export class DominionClient {
     receipt(id: string, options?: RequestOptions): Promise<JsonObject>;
     resume(id: string, config?: JsonObject, options?: RequestOptions): Promise<JsonObject>;
     steer(id: string, config: { expectedRevision: number; plan: string }, options?: RequestOptions): Promise<JsonObject>;
+    redirect(id: string, config: { expectedRevision: number; goal: string; successCriteria?: JsonObject[] }, options?: RequestOptions): Promise<JsonObject>;
     editPlan(id: string, config: { plan: string }, options?: RequestOptions): Promise<JsonObject>;
     diff(id: string, options?: RequestOptions): Promise<JsonObject>;
     apply(id: string, sha256: string, options?: RequestOptions): Promise<JsonObject>;

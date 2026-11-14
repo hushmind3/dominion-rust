@@ -800,3 +800,7 @@ During an active chat turn the send control becomes **실행 중 사용자 지�
 #### Independently verified native Rust tools
 
 `DominionSdk::register_verified_tool` binds a native Rust action handler and a **separate asynchronous host-state verifier**. Ordinary SDK tool results cannot self-certify completion. The registry rejects forged reserved receipt fields; the verifier's success is sealed by `src/engine/effect.rs`, and the goal verifier recognizes only the sealed receipt in `src/engine/verification.rs`. This closes the native callback -> real effect -> persisted evidence -> goal acceptance loop, with no Node.js execution engine or external SDK policy.
+
+### Autonomous goal redirection (full owner control)
+
+`POST /api/goals/:id/objective` accepts `{expectedRevision, goal, successCriteria?}`. Native Rust `owner_objective` stages/adopts the latest owner objective, re-baselines checks against current workspace, archives old evidence and creates a fresh task contract. `goals.rs` replans before the next executor turn. Completion against the stale objective is blocked. Home dashboard `GoalDirector` and optional `goals.redirect` SDK expose control. If iteration budget ends, status becomes needs_review instead of falsely claiming completion.
