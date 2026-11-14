@@ -2399,6 +2399,40 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_rsi_verifier_does_not_poison_later_paired_improvements() {
+        let (state,root)=state();
+        let active=crate::engine::algorithms::active(&state,"selfimprove.search").unwrap();
+        let candidate=crate::engine::algorithms::register(&state,&json!({
+            "kind":"selfimprove.search","name":"valid-after-unscorable",
+            "implementation":"expression","parameters":{"expression":"novelty"},
+            "source":"rsi-generated"
+        })).unwrap();
+        let id=candidate["id"].as_str().unwrap();
+        queue_search_trial(&state,&candidate,&active,&[],"context","campaign",1);
+        let first=trial_generation("unscorable",1,"context",false,
+            "head-test",100,50,id);
+        let outcome=record_trial_outcome(&state,id,&first,&[]);
+        assert_eq!(outcome["status"],"inconclusive");
+        assert_eq!(state.store.get("algorithm",id).unwrap()
+            ["rsiTrial"]["trials"][0]["verdict"],"unscorable");
+
+        for attempt in 0..2 {
+            let baseline=active_generation(&format!("control-{attempt}"),
+                2+attempt*2,"context",false,"head-test",1200,100);
+            let trial=trial_generation(&format!("trial-{attempt}"),
+                3+attempt*2,"context",true,"head-test",900,80,id);
+            let result=record_trial_outcome(&state,id,&trial,&[baseline]);
+            assert_eq!(result["status"],if attempt==0{
+                "pending_second_trial"
+            }else{"adopted"});
+            assert_eq!(result["supportedTrials"],attempt+1);
+        }
+        assert_eq!(crate::engine::algorithms::active(&state,"selfimprove.search")
+            .unwrap()["id"],id);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn trial_verdict_requires_success_before_supporting_cost_savings() {
         let mut baseline = active_generation("base", 1, "context", false, "commit-1", 10_000, 1_000);
         let mut trial = trial_generation("trial", 2, "context", false, "commit-1", 5_000, 500, "candidate");
