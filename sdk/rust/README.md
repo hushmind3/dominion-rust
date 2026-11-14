@@ -162,3 +162,18 @@ model execution or genuine provider invoices.
 This release is a **Rust SDK client for the native runtime**, not an in-process
 embedded engine library. A separate Rust server must be running.
 Native Rust callbacks are available via MCP stdio. In-process engine embedding\nand ACP transport are still separate enhancements.
+
+## SDK server capability discovery
+
+```rust,no_run
+# async fn example() -> dominion_sdk::Result<()> {
+let sdk = dominion_sdk::DominionClient::new("http://127.0.0.1:4317")?;
+let info = sdk.sdk_info().await?;
+assert_eq!(info["apiVersion"], 1);
+assert_eq!(info["semantics"]["runPostIdempotent"], false);
+# Ok(()) }
+```
+
+This read-only endpoint reports supported native Rust harness interfaces.
+A disconnected run POST is never automatically replayed.
+
