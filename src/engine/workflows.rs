@@ -133,7 +133,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }))?;
         let request = TurnRequest {
             session_id: Some(session_id.clone()),
-            input: prompt,
+            input: prompt.clone(),
             agent_id: optional(step, "agentId"),
             provider_id: optional(step, "providerId"),
             model: optional(step, "model"),
