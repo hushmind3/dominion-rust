@@ -2,6 +2,7 @@
 
 Start with **the actual source** and these focused entry points. Historical status/handoff snapshots were removed from the current tree; their contents remain available through Git history.
 
+- [2026-11-14 Frontier SDK and evidence-gated RSI: US/China source study, Rust/TypeScript SDK, official SWE-bench runner](FRONTIER-SDK-RSI-2026-11-14.md)
 - [2026-11-14 Champion whole-engine integration: owner steering, empirically audited model selection, KRW costs, video diagnostics](CHAMPION-FRONTIER-SYSTEM-2026-11-14.md)
 - [Current Champion RSI source map](CHAMPION-RSI-CODE-MAP.md)
 - [Operator runbook](RSI-MANUAL-RUNBOOK-2026-11-09.md)
