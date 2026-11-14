@@ -139,3 +139,11 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - `src/engine/goals/progress.rs::measure` compares new successful tool action signatures and cleared Rust acceptance gaps across a goal iteration. The model's progress claims are never a stall-reset signal.
 - `engine/goals.rs::run` uses the measured `TurnProgress` to reset `stalled` only on verified advancement and checkpoint progress counters. Replans are triggered by consecutive unproductive turns, preserving progress through normal multi-file work.
 - `verification::is_action_evidence` includes surgical `workspace_replace(_range|_function)` edits and no longer treats them as read-only operations.
+
+### Sub1 2026-11-14: observable completion and execution-time paid approvals
+
+- Initial `POST /api/goals` now atomically commits goal and job with reciprocal frozen UUIDs via `Store::transaction`; neither is bus-visible before COMMIT. Reviewed-resume transactions remain intact.
+- `GET /api/goals/metrics` sums real persisted goal outcomes. The denominator includes failed/cancelled/needs_review; only matching server final-audit receipts count as verified success. Missing usage, cache receipts and provider billing remain null/missing rather than made-up savings.
+- Opt-in real-model suite `scripts/sub1-measured-goal-eval.mjs`, `.github/workflows/sub1-measured-goal-eval.yml` uses a disposable identity-checked engine, Ollama Qwen3 Instruct, private host-side JS/JSON oracles and immutable evidence artifact. It is two small multi-file tasks, not large-repository SWE-bench, and workflow success never means the oracle passed.
+- `video::run` calls `authorize_paid_execution` before paid LTX provider submission. The job-bound quote/digest/billable length and authorization ceiling are revalidated, including the retake source's current verified clip state. API list price is not an invoice or guaranteed provider bill ceiling.
+- Scope and methods: `docs/SUB1-MEASURED-GOAL-2026-11-14.md`.
