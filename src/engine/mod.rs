@@ -121,6 +121,11 @@ pub async fn run_quiet_outcome(
                     stats.evidence.push(serde_json::json!({
                         "tool": name,
                         "callId": event.get("id"),
+                        // A tool_end event is not a durable receipt yet: the
+                        // dispatch path emits it before committing the
+                        // execution_operation row. Carry its exact record ID
+                        // and hydrate only after the turn has completed.
+                        "operationId": event.get("operationId"),
                         "arguments": event.get("arguments"),
                         "result": event.get("result"),
                     }));
@@ -133,7 +138,26 @@ pub async fn run_quiet_outcome(
     });
     let result = chat::run_turn_background(state, request, &sender).await;
     drop(sender);
-    let stats = collector.await.unwrap_or_default();
+    let mut stats = collector.await.unwrap_or_default();
+    // The persisted operation is authoritative. Without the exact committed
+    // receipt a model/tool event cannot satisfy a goal completion check.
+    // Preserve runId/opSeq/timestamps across separate goal iterations so a
+    // passing test becomes stale after a later source modification.
+    stats.evidence = stats.evidence.into_iter().filter_map(|event| {
+        let id=event["operationId"].as_str()?;
+        let saved=state.store.get("execution_operation",id)?;
+        if saved["status"]!="completed" {
+            return None;
+        }
+        if request.session_id.as_deref().is_some_and(|session|
+            saved["sessionId"].as_str()!=Some(session)) {
+            return None;
+        }
+        Some(saved)
+    }).collect();
+    stats.tool_success = stats.evidence.iter()
+        .filter_map(|receipt|receipt["tool"].as_str().map(str::to_string))
+        .collect();
     (result, stats)
 }
 
