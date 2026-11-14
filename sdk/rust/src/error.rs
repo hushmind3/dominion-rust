@@ -5,6 +5,10 @@ use thiserror::Error;
 /// invalid wire data, and interrupted streams. It never silently replays writes.
 #[derive(Debug, Error)]
 pub enum DominionError {
+    #[error("native Dominion runtime error: {0}")]
+    Runtime(String),
+    #[error("Dominion I/O: {0}")]
+    Io(#[from] std::io::Error),
     #[error("invalid Dominion SDK configuration: {0}")]
     Configuration(String),
     #[error("Dominion HTTP transport failed: {0}")]

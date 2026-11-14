@@ -21,7 +21,33 @@ dominion-sdk = { path = "/path/to/dominion-rust/sdk/rust" }
 tokio = { version = "1", features = ["full"] }
 ```
 
-It connects to the existing Dominion Rust service (default `127.0.0.1:4317`).
+The SDK can connect to a remote/local Dominion Rust service **or start
+and own the native runtime** as a child process. This is not an alternative
+agent engine. See `DominionRuntime::spawn` below.
+
+### Start the native Rust engine from your application
+
+```rust
+use dominion_sdk::{DominionRuntime,RuntimeConfig,GoalCreate};
+# async fn run()->dominion_sdk::Result<()> {
+let runtime=DominionRuntime::spawn(RuntimeConfig::new(
+    "./target/release/dominion-rust","./my-workspace","./my-app-state"
+)).await?;
+let sdk=runtime.client();
+let goal=sdk.create_goal(GoalCreate::new("Implement and verify the change")).await?;
+println!("Goal ID: {}",goal.id);
+runtime.shutdown().await?;
+# Ok(()) }
+```
+
+The child owns its **real Rust harness**, plugin registry, SQLite checkpoints,
+models and tools. A random admin token is scoped to the child, and startup
+checks its runtime instance id, OS PID, data directory and workspace before
+exposing a client. On shutdown the SDK first closes the parent pipe and lets
+the native server exit; remaining workers are terminated after a timeout.
+Owner data remains in the chosen data directory. Dropping the handle also
+kills the owned process. Port collision never adopts another server.
+
 The service continues to own model selection, tools, policy, persistent
 checkpoint state, execution evidence, and permissions; the SDK never replaces
 its reasoning harness.
@@ -139,6 +165,7 @@ model execution or genuine provider invoices.
 
 ### Still not implemented
 
-This release is a **Rust SDK client for the native runtime**, not an in-process
-embedded engine library. A separate Rust server must be running.
-Native Rust callbacks are available via MCP stdio. In-process engine embedding\nand ACP transport are still separate enhancements.
+This release is a **Rust SDK client and native process host**, not an in-process
+embedded engine library. `DominionRuntime::spawn` owns the Rust binary and
+`DominionClient` can connect to an already-running service.
+Native Rust callbacks are available via MCP stdio. In-process engine embedding and ACP transport are separate enhancements.
