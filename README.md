@@ -825,3 +825,10 @@ Rust goal execution now records actual failing tool exit codes, bounded stderr, 
 LTX film owner-authored scenes and paid retakes now keep recurring visual context where the prompt budget permits without truncating the user's scene. Prior paid clip SHA-256 receipts are reused; semantic coherence is not falsely declared verified.
 
 See [Native autonomous repair and cross-product execution](docs/architecture/DOMINION-AUTONOMOUS-REPAIR-SUB2-2026-11-15.md).
+
+
+### Rust native autonomous goals (2026-11-15, sub2)
+
+The **in-process** `dominion_rust::sdk::DominionSdk` exposes `GoalOptions`, `enqueue_goal`, `goal`, `goal_diff`, `goal_receipt`, `cancel_goal`, `cancel_job` and bounded `wait_job`. Use `start_job_workers()` inside a Tokio runtime for standalone asynchronous execution. REST goals and the native SDK share `engine::goals::enqueue_goal`, a transactional goal+job write. REST and SDK cancellation share `engine::jobs::cancel_job` with a storage compare-and-swap. The execution loop, worktree, verifier, owner steering and RSI remain in Rust; the TypeScript SDK is a network client, not a second planning engine.
+
+See [native SDK + research and RSI audit](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md). New Rust tests exercise invalid admission, durable linkage, current-attempt receipt semantics, cancellation and bounded waiting. Live model benchmark results and billing costs are separate from these tests.
