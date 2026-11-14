@@ -573,6 +573,20 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     if ctx.state.is_cancelled(ctx.session_id) {
         return Err("상위 세션이 중단되어 새 위임을 생성할 수 없습니다.".into());
     }
+    // Do not reserve another child after the whole goal's observed model
+    // usage (including prior children) has exhausted its owner-set budget.
+    if let Some((root, goal)) = ctx.store.enclosing_goal(ctx.session_id) {
+        let limit = goal["tokenBudget"].as_u64().unwrap_or(150_000);
+        if limit > 0 {
+            let spent = ctx.store.session_tree_usage(&root)?["totalTokens"]
+                .as_u64().unwrap_or(0);
+            if spent >= limit {
+                return Err(format!(
+                    "상위 목표 토큰 예산({limit})에 도달했습니다. 기록된 사용량: {spent}토큰."
+                ));
+            }
+        }
+    }
     let wait = args["wait"].as_bool().unwrap_or(true);
     let timeout = args["timeoutSeconds"]
         .as_u64()
