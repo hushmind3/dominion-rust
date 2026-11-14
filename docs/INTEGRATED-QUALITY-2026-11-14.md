@@ -103,3 +103,8 @@ RSI: `rsi_scan::report`의 `goal_signals::collect`가 최근 실제 목표의 �
 - **새 관측**: `execution.toolSelection`의 `catalogCount`, `selectedCount`, `catalogSchemaBytes`, `selectedSchemaBytes`는 순수 JSON 스키마 바이트 비교다. provider 토큰 청구·캐시 적중·최종 전송 스키마·과금원가가 아니라는 경계를 명시한다.
 - **회귀 근거**: `tests/support/engine/chat_runtime.tests.rs`에 일상 영어 false-positive 방지, 명시적 영어 작업, 신주제/이어하기, 코드 편집 도구 선택 테스트를 추가했다. 연결의 정적 검토이며 CI·실모델 수행/원가 절감 입증은 아직 수행하지 않았다.
 
+
+### 자율 목표 완료 조건의 언어 경계
+
+`src/engine/text_intent.rs::{has_term,has_any}`를 그룹 도구 선택과 `goal_verification::asks_for_tests`의 공통 규칙으로 사용한다. 영어 `test`를 `latest`·`testament`·`protest`의 부분문자열로 오인하여 `cargo test`를 완료 조건에 추가하지 않으며, 명시적 `tests`·`testing`·`테스트` 요청은 유지한다. `goal_verification.rs` 회귀 테스트는 코드에 추가했으며 이 커밋의 컴파일·CI 수행 결과는 없다.
+
