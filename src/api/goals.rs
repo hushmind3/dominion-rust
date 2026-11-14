@@ -33,10 +33,28 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if text.is_empty() {
         return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
     }
-    let criteria = body
+    let mut criteria = body
         .get("successCriteria")
         .cloned()
         .unwrap_or_else(|| json!([]));
+    let isolate=body["isolateWorktree"].as_bool().unwrap_or(false);
+    let publish=body["publishPr"].as_bool().unwrap_or(false);
+    if publish && !isolate {return error(StatusCode::BAD_REQUEST,
+        "GitHub PR을 자동으로 만들려면 독립 Git 작업공간을 선택해야 합니다.");}
+    let commands=body["verifyCommands"].as_array().cloned().unwrap_or_default();
+    if commands.len()>4 || commands.iter().any(|v|v.as_str().is_none_or(|cmd|{
+        cmd.trim().is_empty() || cmd.len()>180 || cmd.chars().any(char::is_control)
+            || cmd.contains([';','|','&','>','<','\u{60}'])
+    })) {
+        return error(StatusCode::BAD_REQUEST,"검증 명령은 최대 4개, 개당 180자 이하여야 합니다.");
+    }
+    let Some(items)=criteria.as_array_mut() else {
+        return error(StatusCode::BAD_REQUEST,"검증 조건은 배열이어야 합니다.");
+    };
+    for command in &commands{
+        items.push(json!({"type":"command_succeeded","command":command}));
+    }
+    if publish {items.push(json!({"type":"github_pr_created"}));}
     if let Err(message) = engine::goals::validate_criteria(&criteria) {
         return error(StatusCode::BAD_REQUEST, &message);
     }
@@ -57,6 +75,8 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "taskId": uuid::Uuid::new_v4().to_string(),
             "goal": text,
             "successCriteria": criteria,
+            "isolateWorktree":isolate,"publishPr":publish,
+            "verifyCommands":commands,
             "executor": executor,
             "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
