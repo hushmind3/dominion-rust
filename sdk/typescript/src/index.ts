@@ -347,8 +347,8 @@ export class DominionGoal {
     return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/resume', options)
   }
 
-  steer(instruction: string): Promise<Goal> {
-    return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/steer', {instruction})
+  steer(plan: string, expectedRevision: number): Promise<Goal> {
+    return this.sdk.post('/api/goals/' + encodeURIComponent(this.id) + '/steer', {plan, expectedRevision})
   }
 
   changes(): Promise<JsonObject> {
