@@ -237,6 +237,30 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
     return prediction, receipt
 
 
+def official_score(report: dict, expected_instances: set[str]) -> dict:
+    """Only score the exact submitted instance IDs from the official judge."""
+    if not isinstance(report, dict) or report.get("schema_version") != 2:
+        raise ValueError("Unsupported official judge report schema")
+    resolved = report.get("resolved_ids")
+    submitted = report.get("submitted_ids")
+    if not isinstance(resolved, list) or not isinstance(submitted, list):
+        raise ValueError("Official judge did not supply per-instance result evidence")
+    if len(set(submitted)) != len(submitted) or set(submitted) != expected_instances:
+        raise ValueError("Official judge evaluated a different instance cohort")
+    if len(set(resolved)) != len(resolved) or not set(resolved).issubset(expected_instances):
+        raise ValueError("Official judge resolved IDs differ from submitted tasks")
+    if report.get("resolved_instances") != len(resolved):
+        raise ValueError("Official report count disagrees with resolved evidence")
+    return {
+        "officialResolved": len(resolved),
+        "officialDenominator": len(expected_instances),
+        "officialResolvedRate": round(len(resolved)/len(expected_instances), 6)
+            if expected_instances else None,
+        "officialResolvedIds": sorted(resolved),
+        "officialReportSchema": 2,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks-jsonl", type=Path, required=True,
@@ -316,8 +340,14 @@ def main() -> int:
         summary["officialExitCode"] = done.returncode
         report = args.output/"logs"/"evaluation"/run_id/"results.json"
         if done.returncode == 0 and report.is_file():
-            summary["officialEvaluated"] = True
-            summary["officialReport"] = json.loads(report.read_text())
+            try:
+                official = json.loads(report.read_text())
+                score = official_score(official, {p["instance_id"] for p in preds})
+                summary.update(score)
+                summary["officialEvaluated"] = True
+                summary["officialReport"] = official
+            except (ValueError, KeyError, json.JSONDecodeError) as exc:
+                summary["officialError"] = ("Official grader result did not validate: " + str(exc))
         else:
             summary["officialError"] = "Docker-based evaluator failed; no resolved score claimed"
     (args.output/"summary.json").write_text(
