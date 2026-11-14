@@ -304,6 +304,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/video/models", get(video::models))
         .route("/api/video/catalog", get(video::catalog))
         .route("/api/video/files", get(video::files))
+        .route("/api/video/quote", post(video::quote_job))
         .route("/api/video/jobs/:id", get(video::job))
         .route("/api/video/jobs/:id/scenes", get(video::scene_diagnostics))
         .route("/api/video/jobs/:id/retake", post(video::retake_scene))
