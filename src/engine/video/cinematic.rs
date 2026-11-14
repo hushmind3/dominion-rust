@@ -123,17 +123,18 @@ pub(super) async fn render(
         let clip = subdir.join("output.mp4");
         // An already verified clip is reusable after an interrupted edit.
         // This is critical: retries must not re-bill earlier successful shots.
-        let reused = clip.is_file()
-            && quality::inspect_clip(cfg,&clip,shot.seconds,
+        let validated_existing=if clip.is_file() {
+            quality::inspect_shot(cfg,&clip,shot.seconds,
                 input["aspectRatio"].as_str().unwrap_or("9:16"),
-                quality::min_short_edge(&request),false).await.is_ok();
+                quality::min_short_edge(&request),
+                input["visualQualityGate"]==true).await.ok()
+        }else{None};
+        let reused=validated_existing.is_some();
         let mut retry_count=0;
         let max_retries=input["badShotRetries"].as_u64().unwrap_or(0).min(1);
         let mut response=Value::Null;
-        let technical=if reused {
-            quality::inspect_clip(cfg,&clip,shot.seconds,
-                input["aspectRatio"].as_str().unwrap_or("9:16"),
-                quality::min_short_edge(&request),false).await?
+        let technical=if let Some(receipt)=validated_existing {
+            receipt
         } else {
             // A file left by a half-finished remote submission is not safe
             // to retry blindly, even if it looks like an invalid MP4.
@@ -143,9 +144,10 @@ pub(super) async fn render(
             }
             loop {
                 response=comfy::render(ctx,&request,&subdir).await?;
-                match quality::inspect_clip(cfg,&clip,shot.seconds,
+                match quality::inspect_shot(cfg,&clip,shot.seconds,
                     input["aspectRatio"].as_str().unwrap_or("9:16"),
-                    quality::min_short_edge(&request),false).await{
+                    quality::min_short_edge(&request),
+                    input["visualQualityGate"]==true).await{
                     Ok(receipt)=>break receipt,
                     Err(reason)=>{
                         if retry_count>=max_retries{
@@ -164,7 +166,8 @@ pub(super) async fn render(
         results.push(json!({"index":shot.index + 1,"duration":shot.seconds,
             "promptId":response["promptId"],"bytes":std::fs::metadata(&clip)
                 .map_err(|e|e.to_string())?.len(),"reused":reused,
-            "qualityReceipt":technical,"technicalRetries":retry_count}));
+            "qualityReceipt":technical,"technicalRetries":retry_count,
+            "visualQualityGate":input["visualQualityGate"]}));
     }
     progress(ctx, "editing", 88)?;
     std::fs::write(dir.join("shots.ffconcat"), manifest).map_err(|e|e.to_string())?;
