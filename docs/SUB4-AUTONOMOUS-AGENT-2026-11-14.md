@@ -87,3 +87,9 @@ Engine: goals.rs::run
 ## 7. CI 결과 해석
 
 `.github/workflows/ci.yml`와 `.github/workflows/sub4-proof-audit.yml`는 서브4 HEAD push에서 자동 실행된다. 타입검사, Vite 빌드, Rust release 모든 타깃 테스트, 계보·구조 감사를 수행하며, 중간 커밋의 중복 실행은 concurrency 설정에 따라 취소된다. `sub4-native-reproduction.yml`와 `sub4-system-live-rsi.yml`는 별도 고비용 실모델 증명 캠페인이므로 CI 성공과 동일시하지 않는다. 실모델·유료 영상 API 실행 결과는 별도 영수증으로 검증한다.
+
+## 8. 격리 worktree와 원본 반영의 실제 연결
+
+`goal_git::prepare`는 격리 요구 목표의 원본 Git 루트·clean HEAD를 검증해 새 checkout을 마련하며 실패 시 원본에 쓰지 않는다. `chat/runtime/tool_execution.rs`의 실제 모델 도구 실행·효과 영수증과 `goals::run`의 기준 검사, `goals/report.rs`의 최종 증거가 같은 격리 경로를 사용한다. `goal_git::workspace_for_session`은 위임된 자식 세션의 부모 연결을 따라간다. 소유자가 `GET /api/goals/:id/changes`에서 파일·새 파일 미리보기·`reviewDigest`를 본 다음 `POST /apply`를 명시적으로 승인할 때만 격리 브랜치 커밋과 원본 fast-forward가 일어난다. 원본 HEAD·dirty tree 변경을 강제 덮어쓰지 않는다. 불필요한 변경은 `POST /discard`로 미반영 worktree만 폐기한다.
+
+전체 경로, 테스트 범위, 알려진 파일 격리와 OS 샌드박스의 차이는 [SUB4-ISOLATED-AGENT-2026-11-14.md](SUB4-ISOLATED-AGENT-2026-11-14.md)에서 구분한다.
