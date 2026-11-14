@@ -28,6 +28,8 @@ pub struct GoalCreate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolate_worktree: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_tests: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token_budget: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_iterations: Option<u64>,
@@ -42,7 +44,7 @@ impl GoalCreate {
         Self {
             goal: goal.into(),
             success_criteria: None, executor: None, reviewer: None, planner: None,
-            isolate_worktree: None, token_budget: None, max_iterations: None,
+            isolate_worktree: None, require_tests: None, token_budget: None, max_iterations: None,
             max_replans: None, replan_after: None,
         }
     }
@@ -54,6 +56,7 @@ impl GoalCreate {
         self.isolate_worktree = Some(isolate);
         self
     }
+    pub fn require_tests(mut self, enable:bool)->Self{self.require_tests=Some(enable);self}
     pub fn executor(mut self, selection: ModelSelection) -> Self {
         self.executor = Some(selection);
         self
