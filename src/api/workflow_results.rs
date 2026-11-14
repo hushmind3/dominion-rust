@@ -9,6 +9,18 @@ pub async fn list(State(state):State<AppState>)->Json<Value>{
     let mut rows=state.store.all("workflow_artifact");
     rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     rows.truncate(100);
+    // A listing must stay small even when 100 deliverables each carry 256KiB.
+    // The full, SHA-bound body is fetched only for preview or download.
+    for record in &mut rows {
+        let content=record["content"].as_str().unwrap_or("");
+        let preview=content.chars().take(180).collect::<String>();
+        let bytes=content.len();
+        if let Some(fields)=record.as_object_mut() {
+            fields.remove("content");
+            fields.insert("preview".into(),json!(preview));
+            fields.insert("bytes".into(),json!(bytes));
+        }
+    }
     Json(json!(rows))
 }
 
