@@ -168,3 +168,7 @@ does not claim a paid-model autonomous coding benchmark was completed.
 ### Owner control is product-visible, not only backend code
 
 `web/src/pages/Chat.tsx` now allows the submit button to send a literal correction while the current session is streaming. While idle it sends a normal chat input; while busy it calls `/api/sessions/:id/steer` and awaits the queued receipt. The next Rust model step emits `owner_steer` so the UI can display that the correction was actually incorporated. The JS transport offers `sessions.steer` for other products while the real engine remains Rust. No second chat stream is started when a correction is submitted.
+
+### Native tool verification closure
+
+`DominionSdk::register_verified_tool(handler, verifier)` is a first-party Rust two-stage contract. A callback may change host state; the independently registered verifier re-reads actual state, and only the registry can attach `_dominion_sdk_receipt`. The effect ledger seals this as `native_sdk_postcondition`; `verification::is_action_evidence` requires both the stored receipt and verified flag. A plain or forged callback result cannot satisfy an action task. The mock-provider end-to-end test writes a real file and verifies the bytes before completing an owner-redirected task.

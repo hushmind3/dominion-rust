@@ -207,6 +207,38 @@ impl DominionSdk {
         )
     }
 
+    /// Register an effectful Rust callback with an *independent* asynchronous
+    /// postcondition. The verifier receives the original arguments and tool
+    /// output, re-checks actual host state (e.g. file readback), and returns
+    /// true only when the requested effect was observed. Merely returning
+    /// {"success":true} from a tool is never enough to mark an action verified.
+    ///
+    /// Verified callbacks participate in ordinary goals, tool evidence,
+    /// checkpoint recovery and the frozen acceptance verifier.
+    pub fn register_verified_tool<F, Fut, V, VFut>(
+        &self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        needs_approval: bool,
+        handler: F,
+        verifier: V,
+    ) -> Result<String, String>
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
+        V: Fn(Value, Value) -> VFut + Send + Sync + 'static,
+        VFut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
+    {
+        let callback: crate::engine::custom_tools::Callback =
+            std::sync::Arc::new(move |args| Box::pin(handler(args)));
+        let verification: crate::engine::custom_tools::Verifier =
+            std::sync::Arc::new(move |args, result| Box::pin(verifier(args, result)));
+        self.state.custom_tools.register_verified(
+            name, description, input_schema, needs_approval, callback, verification,
+        )
+    }
+
     pub fn unregister_tool(&self, qualified_name: &str) -> bool {
         self.state.custom_tools.remove(qualified_name)
     }
@@ -436,6 +468,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    fn stateful_sdk_proof(sdk: &DominionSdk, session_id: &str) -> bool {
+        sdk.state.store.all("execution_operation").into_iter().any(|operation| {
+            operation["sessionId"].as_str()==Some(session_id)
+                && operation["tool"]=="sdk__echo"
+                && operation["toolReceipt"]["verified"]==true
+                && operation["toolReceipt"]["verifier"]["kind"]=="native_sdk_postcondition"
+        })
+    }
+
     #[tokio::test]
     async fn owner_steering_is_seen_by_the_next_real_provider_step_after_tool_execution() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -492,15 +533,32 @@ mod tests {
 
         let (sdk, root) = fresh();
         sdk.register_provider("p", &format!("http://{address}"), "fixture", None).unwrap();
-        sdk.register_tool(
-            "echo", "Echo a value",
+        let written = root.join("sdk-native-proof.txt");
+        let write_path = written.clone();
+        let verify_path = written.clone();
+        sdk.register_verified_tool(
+            "echo", "Write exact input with an independent file readback",
             json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
             false,
-            |args| async move { Ok(json!({"echo":args["text"]})) },
+            move |args| {
+                let path = write_path.clone();
+                async move {
+                    let text = args["text"].as_str().ok_or("text required")?;
+                    tokio::fs::write(path, text).await.map_err(|e|e.to_string())?;
+                    Ok(json!({"written":true}))
+                }
+            },
+            move |args, output| {
+                let path = verify_path.clone();
+                async move {
+                    let text=tokio::fs::read_to_string(path).await.map_err(|e|e.to_string())?;
+                    Ok(output["written"]==true && args["text"]==text)
+                }
+            },
         ).unwrap();
         let session = sdk.create_session("owner-steering").unwrap();
         let session_id = session["id"].as_str().unwrap().to_owned();
-        let options = TurnOptions::new("What exact value does the native echo tool return?")
+        let options = TurnOptions::new("Run the native echo tool to write and verify its result")
             .with_session(&session_id)
             .with_provider("p");
 
@@ -519,6 +577,8 @@ mod tests {
         assert!(fixture.saw_steer.load(Ordering::SeqCst),
             "the real model must see the owner's correction, not only the SQLite queue");
         assert!(result.successful_tools.iter().any(|tool|tool=="sdk__echo"));
+        let verified=stateful_sdk_proof(&sdk,&session_id);
+        assert!(verified, "native SDK action must produce a verified operation receipt");
         assert_eq!(sdk.state.store.get("chat_steer", queued["id"].as_str().unwrap()).unwrap()["status"],"delivered");
         assert_eq!(sdk.messages(&session_id).iter()
             .filter(|message|message["metadata"]["source"]=="sdk_chat_steer")

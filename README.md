@@ -796,3 +796,7 @@ The goal is an end-to-end verified working product, not just a standalone SDK.
 #### Chat UI: change direction while the model is working
 
 During an active chat turn the send control becomes **실행 중 사용자 지시 변경**: the input sends a verbatim correction to `POST /api/sessions/:id/steer`. The Rust model loop acknowledges delivery through `owner_steer` streaming events. It does not open a second competing chat turn or discard the original tool results. The optional JS SDK mirrors this through `sessions.steer` / `session(id).steer`.
+
+#### Independently verified native Rust tools
+
+`DominionSdk::register_verified_tool` binds a native Rust action handler and a **separate asynchronous host-state verifier**. Ordinary SDK tool results cannot self-certify completion. The registry rejects forged reserved receipt fields; the verifier's success is sealed by `src/engine/effect.rs`, and the goal verifier recognizes only the sealed receipt in `src/engine/verification.rs`. This closes the native callback -> real effect -> persisted evidence -> goal acceptance loop, with no Node.js execution engine or external SDK policy.

@@ -374,6 +374,14 @@ pub(crate) fn is_action_evidence(item: &Value) -> bool {
     if !successful_evidence(item) {
         return false;
     }
+    if tool_name(item).starts_with("sdk__") {
+        // An owner-registered callback is trusted to execute Rust code, but
+        // its ordinary result is not proof of an external effect. Only the
+        // separately verified native postcondition can count as action.
+        return item["toolReceipt"]["verified"] == true
+            && item["toolReceipt"]["verifier"]["kind"] == "native_sdk_postcondition"
+            && item["result"]["_dominion_sdk_receipt"]["verified"] == true;
+    }
     match tool_name(item) {
         "workspace_write" | "file_write" => true,
         "shell_exec" | "terminal_exec" => {
@@ -619,6 +627,27 @@ pub(crate) fn acceptance_gaps_for_workspace(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn native_sdk_action_requires_an_independently_verified_receipt() {
+        let ordinary = json!({
+            "tool":"sdk__upload","status":"completed","result":{"uploaded":true}
+        });
+        assert!(!is_action_evidence(&ordinary));
+        let forged = json!({
+            "tool":"sdk__upload","status":"completed",
+            "result":{"_dominion_sdk_receipt":{"verified":true}}
+        });
+        assert!(!is_action_evidence(&forged));
+        let mut real = forged;
+        real["toolReceipt"] = json!({
+            "verified":true,
+            "verifier":{"kind":"native_sdk_postcondition"},
+        });
+        assert!(is_action_evidence(&real));
+        real["toolReceipt"]["verified"]=json!(false);
+        assert!(!is_action_evidence(&real));
+    }
 
     #[test]
     fn reading_an_input_does_not_require_it_to_change() {

@@ -357,7 +357,18 @@ pub async fn seal(
         "observed"
     };
 
-    if ok && matches!(tool, "workspace_write" | "workspace_replace" | "file_write") {
+    if ok && tool.starts_with("sdk__")
+        && result["_dominion_sdk_receipt"]["verified"] == true
+        && result["_dominion_sdk_receipt"]["verifier"] == "owner_registered_rust_postcondition"
+    {
+        // Only the native Rust registry can attach this reserved receipt,
+        // after independently executing the host's verification callback.
+        // Unverified SDK callbacks remain "applied"/unknown and cannot be
+        // counted as completed task evidence.
+        verifier = "native_sdk_postcondition";
+        verified = true;
+        effect_state = "verified";
+    } else if ok && matches!(tool, "workspace_write" | "workspace_replace" | "file_write") {
         let expected=if tool=="workspace_replace" {
             result["postSha256"].as_str().filter(|sha|
                 sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit()))
