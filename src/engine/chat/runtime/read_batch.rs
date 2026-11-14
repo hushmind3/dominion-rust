@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 
 /// Number of leading tool calls eligible to overlap before the first
 /// exclusive/unknown side-effect barrier. Preserves the model's ordering.
-fn parallel_read_prefix_len<T>(
+pub(super) fn parallel_read_prefix_len<T>(
     calls: &[T], is_read: impl Fn(&T) -> bool,
 ) -> usize {
     calls.iter().position(|call| !is_read(call)).unwrap_or(calls.len())
