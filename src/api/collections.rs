@@ -236,6 +236,43 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
+        ("memory", "edit") => {
+            // Manual memories may be edited without overwriting their scope,
+            // origin, retrieval evidence, timestamp or other server fields.
+            // The exact previous text is an optimistic concurrency check.
+            let Some(current) = state.store.get("memory", &id) else {
+                return (StatusCode::NOT_FOUND,
+                    Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response();
+            };
+            if current["source"] != "user" || current["status"].as_str()
+                .is_some_and(|status| status!="active") {
+                return (StatusCode::CONFLICT,
+                    Json(json!({"error":"직접 등록한 활성 기억만 수정할 수 있습니다. 학습 출처 기록은 보존됩니다."}))).into_response();
+            }
+            let Some(previous) = body["expectedText"].as_str() else {
+                return (StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"수정 전 기억 내용을 함께 보내야 합니다."}))).into_response();
+            };
+            let Some(new_text) = body["text"].as_str().map(str::trim)
+                .filter(|value| !value.is_empty() && value.chars().count()<=4096) else {
+                return (StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"기억 내용은 1~4096자여야 합니다."}))).into_response();
+            };
+            if previous==new_text {
+                return Json(current).into_response();
+            }
+            match state.store.patch_if("memory", &id, "text", &json!(previous),
+                &json!({"text":new_text,"updatedAt":chrono::Utc::now().to_rfc3339()})) {
+                Some(updated) => {
+                    state.store.audit("memory.owner_edited",
+                        json!({"id":id,"scope":updated["scope"],"source":"user"}));
+                    state.bus.record("memory",&updated);
+                    Json(updated).into_response()
+                }
+                None => (StatusCode::CONFLICT,
+                    Json(json!({"error":"다른 작업에서 기억이 변경되었습니다. 새로고침 후 다시 수정하세요."}))).into_response(),
+            }
+        },
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
@@ -276,5 +313,46 @@ fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
             Json(json!({ "error": "작업을 만들 수 없습니다." })),
         )
             .into_response(),
+    }
+}
+
+
+#[cfg(test)]
+mod memory_edit_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+    fn state() -> AppState {
+        let dir=std::env::temp_dir().join(format!("dominion-memory-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),workspace:dir.clone(),web_dir:dir.join("web")};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        AppState::new(config,store,vault)
+    }
+    async fn edit(state:&AppState,id:&str,body:Value)->Response{
+        let uri=format!("/api/memories/{id}/edit").parse().unwrap();
+        action(State(state.clone()),OriginalUri(uri),Json(body)).await
+    }
+    #[tokio::test]
+    async fn manual_edit_preserves_scope_and_rejects_stale_or_learned_provenance(){
+        let state=state();
+        state.store.put("memory",&json!({"id":"manual","text":"before",
+            "scope":"agent","agentId":"agent-7","source":"user",
+            "status":"active","verification":"owner"})).unwrap();
+        let changed=edit(&state,"manual",json!({"text":"after","expectedText":"before"})).await;
+        assert_eq!(changed.status(),StatusCode::OK);
+        let stored=state.store.get("memory","manual").unwrap();
+        assert_eq!(stored["text"],"after");
+        assert_eq!(stored["agentId"],"agent-7");
+        assert_eq!(stored["verification"],"owner");
+        assert!(stored["updatedAt"].as_str().is_some());
+        let stale=edit(&state,"manual",json!({"text":"overwritten","expectedText":"before"})).await;
+        assert_eq!(stale.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","manual").unwrap()["text"],"after");
+        state.store.put("memory",&json!({"id":"learned","text":"evidence",
+            "source":"learn","status":"active"})).unwrap();
+        let forbidden=edit(&state,"learned",json!({"text":"bad","expectedText":"evidence"})).await;
+        assert_eq!(forbidden.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","learned").unwrap()["text"],"evidence");
     }
 }
