@@ -146,6 +146,11 @@ impl Store {
                  detail TEXT NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
+             CREATE INDEX IF NOT EXISTS idx_delegated_session_parent
+                 ON records(kind,json_extract(data,'$.parentSessionId'))
+                 WHERE kind='session';
+             CREATE INDEX IF NOT EXISTS idx_audit_usage_session
+                 ON audit(event,json_extract(detail,'$.sessionId'));
              CREATE TABLE IF NOT EXISTS secrets(
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL,
@@ -1056,6 +1061,63 @@ impl Store {
 
     /// Token totals for one session, including calls made before usage was
     /// attached to messages. Audit is the durable source of truth.
+    /// Shared budget and telemetry for the complete delegated session DAG.
+    /// UNION deduplicates cycles and multiple paths. An SQL snapshot counts
+    /// root + delegated descendants only, never unrelated owner sessions.
+    /// Callers enforcing a budget must fail closed on any query error.
+    pub fn session_tree_usage(&self, session_id: &str) -> Result<Value, String> {
+        if session_id.trim().is_empty() {return Err("Empty usage root".into());}
+        let conn=self.conn.lock().map_err(|error|error.to_string())?;
+        let data=conn.query_row(
+            "WITH RECURSIVE family(id) AS (
+                SELECT ?1
+                UNION
+                SELECT r.id FROM records r JOIN family f
+                  ON r.kind='session'
+                 AND json_extract(r.data,'$.delegated')=1
+                 AND json_extract(r.data,'$.parentSessionId')=f.id
+            ),
+            usage AS (
+                SELECT COUNT(*) AS calls,
+                  COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0) AS prompt,
+                  COALESCE(SUM(CAST(json_extract(detail,'$.completionTokens') AS INTEGER)),0) AS completion,
+                  COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0) AS total,
+                  COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0) AS estimated
+                FROM audit WHERE event='model.usage'
+                  AND json_extract(detail,'$.sessionId') IN (SELECT id FROM family)
+            ),
+            cache AS (
+                SELECT COUNT(*) AS reported,
+                  COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0) AS measured,
+                  COALESCE(SUM(CAST(json_extract(detail,'$.cachedPromptTokens') AS INTEGER)),0) AS cached
+                FROM audit WHERE event='model.cache_usage'
+                  AND json_extract(detail,'$.sessionId') IN (SELECT id FROM family)
+            )
+            SELECT calls,prompt,completion,total,estimated,reported,measured,cached
+            FROM usage CROSS JOIN cache",
+            [session_id],
+            |row|Ok((
+                row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,
+                row.get::<_,i64>(2)?,row.get::<_,i64>(3)?,
+                row.get::<_,i64>(4)?,row.get::<_,i64>(5)?,
+                row.get::<_,i64>(6)?,row.get::<_,i64>(7)?,
+            )),
+        ).map_err(|error|error.to_string())?;
+        let (calls,prompt,completion,total,estimated,reported,measured,cached)=data;
+        let measured=measured.max(0);
+        let cached=cached.max(0).min(measured);
+        Ok(json!({
+            "calls":calls.max(0),"promptTokens":prompt.max(0),
+            "completionTokens":completion.max(0),"totalTokens":total.max(0),
+            "estimatedCalls":estimated.max(0),
+            "cacheReportedCalls":reported.max(0),
+            "cacheMeasuredPromptTokens":measured,"cachedPromptTokens":cached,
+            "cacheHitRate":if measured>0 {json!(cached as f64/measured as f64)}
+                else{Value::Null},
+            "includesDelegatedSessions":true
+        }))
+    }
+
     pub fn session_usage(&self, session_id: &str) -> Value {
         let conn = self.conn.lock().unwrap();
         let summary = conn.query_row(

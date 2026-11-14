@@ -3,6 +3,27 @@
 use super::{adaptation::*,program::*};
 use super::*;
 
+/// A parent's goal token cap applies to every delegated child and every
+/// model/harness turn. Query errors are admission errors, not zero usage.
+fn goal_token_budget_error(state:&AppState,session:&Value)->Option<String>{
+    let goal_id=session["goalId"].as_str()?;
+    let Some(goal)=state.store.get("goal",goal_id) else {
+        return Some("위임 작업의 상위 목표가 없어 모델 실행을 중단합니다.".into());
+    };
+    let cap=goal["tokenBudget"].as_u64().filter(|cap|*cap>0)?;
+    let Some(root)=goal["sessionId"].as_str().filter(|id|!id.is_empty()) else {
+        return Some("상위 목표의 사용량 집계 세션을 찾지 못했습니다.".into());
+    };
+    match state.store.session_tree_usage(root){
+        Ok(usage)=>if usage["totalTokens"].as_u64().is_some_and(|used|used<cap){
+            None
+        }else{
+            Some(format!("상위 목표의 전체 위임 작업 토큰 한도({cap})에 도달했습니다."))
+        },
+        Err(error)=>Some(format!("상위 목표의 토큰 사용량을 집계하지 못했습니다: {error}"))
+    }
+}
+
 pub(super) async fn run_turn_body(
     state: &AppState,
     request: &TurnRequest,
@@ -696,6 +717,10 @@ pub(super) async fn run_turn_body(
     // `toolsEnabled` controls whether the model may call tools. It is not an
     // execution permission for the Rust harness; harness nodes use the same
     // approval, cancellation and budget policy as model tool calls.
+    if let Some(error)=goal_token_budget_error(state,&session){
+        mark_budget_exhausted(state,execution_id);
+        return Err(error);
+    }
     let harness_messages = if request.tools_execution_enabled {
         run_harness_nodes(
         state,
@@ -718,6 +743,10 @@ pub(super) async fn run_turn_body(
 
     for round in 0..max_rounds {
         if finished { break; }
+        if let Some(error)=goal_token_budget_error(state,&session){
+            mark_budget_exhausted(state,execution_id);
+            return Err(error);
+        }
         if !budget.charge_round() {
             mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
@@ -2357,3 +2386,7 @@ pub(super) async fn run_turn_body(
     }
     Ok(Some(saved))
 }
+
+#[cfg(test)]
+#[path = "goal_budget_tests.rs"]
+mod goal_budget_tests;

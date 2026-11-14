@@ -6,7 +6,9 @@ use serde_json::{json,Value};
 
 pub(crate) fn final_report(state:&AppState, goal:&Value, status:&str, gaps:&[String]) -> Value {
     let session = goal["sessionId"].as_str().unwrap_or("");
-    let usage = if session.is_empty() { Value::Null } else {state.store.session_usage(session)};
+    let usage = if session.is_empty() {Value::Null} else {
+        state.store.session_tree_usage(session).unwrap_or(Value::Null)
+    };
     let now = chrono::Utc::now();
     let duration_ms = goal["startedAt"].as_str()
         .and_then(|date|chrono::DateTime::parse_from_rfc3339(date).ok())

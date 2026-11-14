@@ -1,5 +1,19 @@
 # DOMINION 자체 Rust 엔진
 
+## 2026-11-15 공동 목표 원가 상한
+
+`tools/gateway.rs::delegate`가 부여한 `parentSessionId`·`delegated`
+관계를 `Store::session_tree_usage`의 재귀 SQLite CTE로 읽습니다.
+`goal_control.rs::GoalControl::complete`는 계획·검토·재계획에,
+`chat/runtime/turn.rs::goal_token_budget_error`는 모든 부모/위임
+모델 라운드와 하네스 시작 전 공통 상한을 적용합니다. 검사 실패 시
+추가 호출을 막고, 미리 시작된 병렬 요청의 발생 비용은 소급 취소할
+수 없습니다. `goal_metrics.rs::final_report`는 전체 위임 토큰과
+실제 보고된 캐시 토큰을 사용하며 사용자 청구 금액은 추정하지 않습니다.
+별도 SQLite fixture에서 부모·자식·손자·독립 세션, 캐시, 실패 및
+상한 0(무제한)을 확인합니다.
+
+
 ## 2026-11-15 RSI 예측의 관측 분리
 
 `rsi/meta_controller/provenance.rs::paired_outcome_observed`는 실제

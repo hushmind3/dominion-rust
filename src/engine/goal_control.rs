@@ -56,8 +56,9 @@ impl GoalControl {
             .ok_or_else(cancelled)?;
         let budget = goal["tokenBudget"].as_u64().unwrap_or(150_000);
         if budget > 0 {
-            let observed = self.context.state.store.session_usage(&self.session_id)["totalTokens"]
-                .as_u64().unwrap_or(0);
+            let observed=self.context.state.store.session_tree_usage(&self.session_id)
+                .map_err(|error|format!("위임된 작업 비용 집계 실패: {error}"))?
+                ["totalTokens"].as_u64().ok_or("토큰 사용량 영수증 누락")?;
             if observed >= budget {
                 return Err(format!(
                     "목표 토큰 예산({budget})에 도달했습니다 (기록 {observed}토큰). 계획·검토 호출을 중단합니다."
