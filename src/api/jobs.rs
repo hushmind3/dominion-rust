@@ -16,6 +16,21 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
             if let Some(id)=value["agentId"].as_str(){if state.store.get("agent",id).is_none(){return error(StatusCode::BAD_REQUEST,"실행 에이전트를 찾을 수 없습니다.");}}
             value
         },
+        "sdk_local"=>{
+            let spec=match crate::engine::sdk_local::authorize(&state,input){
+                Ok(spec)=>spec,
+                Err(message)=>return error(StatusCode::BAD_REQUEST,&message),
+            };
+            let criteria=input.get("successCriteria").cloned().unwrap_or_else(||json!([]));
+            if let Err(message)=crate::engine::verification::validate_criteria(&criteria){
+                return error(StatusCode::BAD_REQUEST,&message);
+            }
+            // A client may not spoof a verified result, execution status or
+            // remote model URL. The worker resolves the provider again.
+            let mut clean=spec;
+            clean["successCriteria"]=criteria;
+            clean
+        },
         "workflow"=>{
             let Some(id)=input["workflowId"].as_str() else {
                 return error(StatusCode::BAD_REQUEST,"워크플로 ID가 필요합니다.")
@@ -38,6 +53,15 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
         },
         _=>return error(StatusCode::BAD_REQUEST,"해당 작업은 대화·회의·영상의 실행 API에서 시작하세요."),
     };
+    if kind=="sdk_local" {
+        let request=body["requestId"].as_str()
+            .filter(|v|uuid::Uuid::parse_str(v).is_ok())
+            .map(str::to_string).unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+        return match engine::jobs::enqueue_once(&state,&request,kind,clean){
+            Some(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),
+            None=>error(StatusCode::CONFLICT,"같은 요청 ID로 다른 SDK 작업이 이미 등록됐습니다."),
+        }
+    }
     match engine::jobs::enqueue(&state,kind,clean){Some(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),None=>error(StatusCode::INTERNAL_SERVER_ERROR,"작업을 대기열에 저장할 수 없습니다.")}
 }
 pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Response{
