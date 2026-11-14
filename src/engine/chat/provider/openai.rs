@@ -142,7 +142,25 @@ pub(super) async fn stream_completion_once(
 ) -> Result<Completion, String> {
     // Every provider uses the same participant state and route binding.
     // Adapters only translate the optional cache hint into their wire schema.
-    let instructions=messages.iter().filter(|row|row["role"]=="system")
+    // All transports (OpenAI, Anthropic, Codex, local CLI) must see the same
+    // provider-bounded view. Raw evidence remains in SQLite and in the caller.
+    let mut bounded_messages=messages.to_vec();
+    let schema_tokens=if provider.tool_mode=="compat" {
+        let manual=super::super::protocol::tool_manual(tools,&request.input).await;
+        super::super::room_context::estimate(&manual)
+    } else { 0 };
+    let fit=fit_provider_context(provider,&mut bounded_messages,tools,schema_tokens);
+    if fit.omitted_frames>0 || fit.clipped_tools>0 || fit.over_budget {
+        state.store.audit("chat.context_projection",json!({
+            "sessionId":session_id,"providerId":provider.id,"model":provider.model,
+            "omittedMessages":fit.omitted_frames,"clippedToolOutputs":fit.clipped_tools,
+            "estimatedTokensBefore":fit.estimated_before,
+            "estimatedTokensAfter":fit.estimated_after,
+            "stillOverBudget":fit.over_budget,
+            "persistedTranscriptUnchanged":true
+        }));
+    }
+    let instructions=bounded_messages.iter().filter(|row|row["role"]=="system")
         .map(|row|anthropic_message_text(&row["content"]))
         .collect::<Vec<_>>().join("\n\n");
     // Tool order is part of the execution contract: compatibility menus may
@@ -151,7 +169,7 @@ pub(super) async fn stream_completion_once(
     let settings=json!({"thinking":request.thinking,"effort":request.reasoning_effort,
         "tools":ordered_tools,"toolMode":provider.tool_mode});
     let mut continuity=super::super::continuity::prepare(state,provider,request,session_id,&instructions,&settings)?;
-    let (projected, projection)=super::super::continuity::project(state,provider,messages,&ordered_tools,session_id,&mut continuity);
+    let (projected, projection)=super::super::continuity::project(state,provider,&bounded_messages,&ordered_tools,session_id,&mut continuity);
     let mut completion=stream_completion_once_body(state,client,provider,&projected,&ordered_tools,
         request,session_id,tx,convert_native_history,&mut continuity).await?;
     completion.projection=projection;
@@ -213,7 +231,8 @@ pub(super) async fn stream_completion_once_body(
         tools.iter().map(|tool| tool.to_string().chars().count()).sum::<usize>()
     };
     let mut provider_messages = messages.to_vec();
-    fit_tool_context(provider, &mut provider_messages, schema_chars);
+    // Provider-neutral projection has already fitted the cached transcript.
+    let _ = schema_chars;
     if convert_native_history {
         provider_messages = compat_messages(&provider_messages);
     }

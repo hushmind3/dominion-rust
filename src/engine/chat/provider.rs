@@ -427,6 +427,116 @@ fn fit_tool_context(provider: &ProviderRef, messages: &mut [Value], schema_chars
     }
 }
 
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct ProviderContextFit {
+    omitted_frames: usize,
+    clipped_tools: usize,
+    estimated_before: usize,
+    estimated_after: usize,
+    over_budget: bool,
+}
+
+/// Provider-neutral, cost-free input projection. The *stored* transcript and
+/// execution-operation evidence stay unmodified. We preserve the current
+/// request, owner/system instructions, and the last two tool exchanges.
+/// Older protocol pairs are omitted atomically, never leaving an orphan tool
+/// result to break OpenAI, Anthropic, Codex or compatibility transports.
+fn fit_provider_context(
+    provider: &ProviderRef, messages: &mut Vec<Value>, tools: &[Value],
+    reserved_schema_tokens: usize,
+) -> ProviderContextFit {
+    let Some(capacity) = provider.context_tokens else { return ProviderContextFit::default() };
+    let reserve = provider.max_output_tokens.unwrap_or(capacity / 8)
+        .min(capacity / 4).max(128).min(capacity) as usize;
+    let budget = (capacity as usize).saturating_sub(reserve)
+        .saturating_sub(reserved_schema_tokens)
+        .saturating_sub(128);
+    let estimated = |rows: &[Value]| super::room_context::input_estimate(rows, tools);
+    let before = estimated(messages);
+    // Existing newest-first clipping remains the first, least lossy step.
+    let originals = messages.iter().filter(|row|row["role"]=="tool")
+        .map(|row|row["content"].as_str().unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    fit_tool_context(provider, messages, reserved_schema_tokens.saturating_mul(4));
+    let clipped_tools = messages.iter().filter(|row|row["role"]=="tool")
+        .map(|row|row["content"].as_str().unwrap_or(""))
+        .zip(originals.iter()).filter(|(now, old)|*now!=old.as_str()).count();
+
+    if estimated(messages) <= budget {
+        return ProviderContextFit {omitted_frames:0,clipped_tools,
+            estimated_before:before,estimated_after:estimated(messages),over_budget:false};
+    }
+
+    // Each assistant tool batch is one atomic protocol frame. Never trim an
+    // individual tool result out of a batch, never discard a system instruction.
+    let mut frames = Vec::<(usize, usize, bool)>::new();
+    let mut index = 1usize; // first system always remains
+    while index < messages.len() {
+        let row = &messages[index];
+        if row["role"]=="system" || row["role"]=="tool" {
+            index+=1;
+            continue;
+        }
+        if row["role"]=="assistant" {
+            if let Some(calls)=row["tool_calls"].as_array().filter(|c|!c.is_empty()) {
+                let end=index.saturating_add(1).saturating_add(calls.len());
+                if end<=messages.len()
+                    && calls.iter().enumerate().all(|(n,call)|
+                        messages[index+1+n]["role"]=="tool"
+                        && call["id"].as_str().is_some()
+                        && messages[index+1+n]["tool_call_id"]==call["id"])
+                {
+                    frames.push((index,end,true));
+                    index=end;
+                    continue;
+                }
+                // The runtime may still be assembling a tool batch. Incomplete
+                // chains must not be rewritten by a context optimization.
+                index+=1;
+                continue;
+            }
+        }
+        if row["role"]=="user" || row["role"]=="assistant" {
+            frames.push((index,index+1,false));
+        }
+        index+=1;
+    }
+
+    let recent_users = frames.iter().filter(|(start,_,_)|
+        messages[*start]["role"]=="user").rev().take(2)
+        .map(|(start,_,_)|*start).collect::<std::collections::HashSet<_>>();
+    let recent_tool_batches = frames.iter().filter(|(_,_,batch)|*batch)
+        .rev().take(2).map(|(start,_,_)|*start)
+        .collect::<std::collections::HashSet<_>>();
+    let recent_frames = frames.iter().rev().take(2)
+        .map(|(start,_,_)|*start).collect::<std::collections::HashSet<_>>();
+    let mut removed=vec![false;messages.len()];
+    let mut omitted=0usize;
+    for &(start,end,_) in &frames {
+        if estimated(messages) <= budget { break; }
+        if recent_users.contains(&start) || recent_tool_batches.contains(&start)
+            || recent_frames.contains(&start) { continue; }
+        for slot in removed.iter_mut().take(end).skip(start) { *slot=true; }
+        // Recompute against the visible context, not the original full list.
+        let retained = messages.iter().enumerate().filter(|(i,_)|!removed[*i])
+            .map(|(_,row)|row.clone()).collect::<Vec<_>>();
+        if retained.len()<messages.len() {
+            omitted+=end-start;
+        }
+        if estimated(&retained)<=budget { break; }
+    }
+    if omitted>0 {
+        *messages=messages.iter().enumerate().filter(|(i,_)|!removed[*i])
+            .map(|(_,row)|row.clone()).collect();
+    }
+    let after = estimated(messages);
+    ProviderContextFit {
+        omitted_frames:omitted,clipped_tools,
+        estimated_before:before,estimated_after:after,over_budget:after>budget
+    }
+}
+
 fn room_route_keys(state: &AppState, session_id: &str) -> Option<std::collections::HashSet<String>> {
     let session = state.store.get("session", session_id)?;
     let room = state.store.get("room", session["roomId"].as_str()?)?;

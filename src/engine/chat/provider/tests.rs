@@ -173,6 +173,62 @@
         assert_eq!(api["reasoning_effort"], "high", "{api}");
     }
 
+
+    #[test]
+    fn native_provider_projection_preserves_current_request_and_recent_tool_batches() {
+        let provider = ProviderRef {
+            id:"local".into(),name:"local".into(),base_url:String::new(),
+            api_key:String::new(),model:"small".into(),tool_mode:"native".into(),
+            reasoning_protocol:String::new(),local:true,
+            context_tokens:Some(3000),max_output_tokens:Some(256),
+            requests_per_minute:None,kind:"openai".into(),account_id:None,
+        };
+        let a=|| json!({"role":"assistant","content":"",
+            "tool_calls":[{"id":"c-old","type":"function","function":{"name":"file_read","arguments":"{}"}}]});
+        let mut original=vec![
+            json!({"role":"system","content":"Never leak secrets. IMPORTANT OWNER CONSTRAINT."}),
+            json!({"role":"user","content":"previous large request".repeat(700)}),
+            json!({"role":"assistant","content":"older description".repeat(1500)}),
+            a(),
+            json!({"role":"tool","tool_call_id":"c-old","content":"old evidence".repeat(2000)}),
+            json!({"role":"user","content":"current owner instruction"}),
+            json!({"role":"assistant","content":"",
+                "tool_calls":[{"id":"c-new","type":"function","function":{"name":"file_read","arguments":"{}"}}]}),
+            json!({"role":"tool","tool_call_id":"c-new","content":"new evidence".repeat(1000)}),
+        ];
+        let expected=original.clone();
+        let fit=fit_provider_context(&provider,&mut original,&[],0);
+        assert!(fit.omitted_frames>0 || fit.clipped_tools>0, "{fit:?}");
+        assert_eq!(expected[0],original[0]);
+        assert!(original.iter().any(|row|row["content"]=="current owner instruction"));
+        assert!(original.iter().any(|row|row["tool_call_id"]=="c-new"));
+        for (i,row) in original.iter().enumerate() {
+            if let Some(calls)=row["tool_calls"].as_array().filter(|calls|!calls.is_empty()) {
+                for (n,call) in calls.iter().enumerate() {
+                    assert_eq!(original[i+1+n]["tool_call_id"],call["id"],
+                        "provider compaction must never create an orphan call");
+                }
+            }
+        }
+        assert_eq!(expected[4]["content"].as_str().unwrap().len(), "old evidence".repeat(2000).len(),
+            "stored source evidence never mutated");
+    }
+
+    #[test]
+    fn unrestricted_provider_never_rewrites_any_history() {
+        let provider=ProviderRef{id:"big".into(),name:"big".into(),
+            base_url:String::new(),api_key:String::new(),model:"big".into(),
+            tool_mode:"native".into(),reasoning_protocol:String::new(),local:false,
+            context_tokens:None,max_output_tokens:None,requests_per_minute:None,
+            kind:"openai".into(),account_id:None};
+        let original=vec![json!({"role":"system","content":"s"}),
+            json!({"role":"assistant","content":"a".repeat(40000)}),
+            json!({"role":"user","content":"current"})];
+        let mut projected=original.clone();
+        assert_eq!(fit_provider_context(&provider,&mut projected,&[],0),ProviderContextFit::default());
+        assert_eq!(projected,original);
+    }
+
     #[test]
     fn each_provider_receives_its_own_tool_window_from_full_evidence() {
         let base = ProviderRef {
