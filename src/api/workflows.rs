@@ -66,7 +66,7 @@ fn normalize(state:&AppState,body:&Value)->Result<Value,String>{
 /// Freeze the agent identity/model at admission time, not mid-execution.
 /// This also fails BEFORE any billed provider call if credentials/models are
 /// absent or disabled; it does not blindly claim API credentials work.
-fn runnable(state:&AppState,definition:&Value)->Result<Value,String>{
+pub(crate) fn runnable(state:&AppState,definition:&Value)->Result<Value,String>{
     let mut result=definition.clone();
     let steps=result["steps"].as_array_mut().ok_or("워크플로 단계가 없습니다.")?;
     for step in steps {
