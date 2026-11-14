@@ -116,6 +116,28 @@ OpenEvolve·EvoAgentX MAP-Elites의 탐색 다양성을 Rust 자체 엔진에 �
 교훈 개수와 출처 세대 ID를 기록하고 `rsi_generation.repairLessonReceipt`로 계승한다.
 예산 때문에 경험이 제외되었다면 전달된 것처럼 기록하지 않는다.
 
+## 비가중치 RSI 검증 계보의 파레토 학습 (2026)
+
+`src/engine/rsi/focus.rs::verified_reflection_frontier`는 기존 RSI의 검증된
+세대 결과를 성공 주장과 분리한다. 독립 쌍대 평가 `eligible=true`,
+`verdict=improved`, `pairedRevalidated=true`, `accepted=true`,
+회귀 0건, 실제 개선된 홀드아웃 1건 이상인 세대만 사용한다.
+
+영역마다 **홀드아웃 개선 수 최대화 × 관측 토큰 비용 최소화**의
+비지배 계보를 유지하고, 최대 6개를 다음 후손 모델의
+`generation_context`로 전달한다. 비용이 없는 관측은 0원/0토큰으로
+취급하지 않으며, 동결 홀드아웃 사례·정답·실행 흔적은 전달하지 않는다.
+따라서 하나의 최신 성공 계보만 답습하지 않고 검증된 다른 장점을
+실제 소스 변경 가설에 활용할 수 있다. 이는 결과 기억/조건부 제안이며
+새 세대의 채택·성공은 독립 평가를 다시 통과해야만 인정한다.
+
+참조한 실제 구현: `gepa-ai/gepa/src/gepa/strategies/candidate_selector.py`
+(파레토 후보 선택), `gepa-ai/gepa/src/gepa/proposer/reflective_mutation/reflection_lm.py`
+(평가 피드백으로 후보 갱신), `facebookresearch/HyperAgents/generate_loop.py`
+(후손 평가·계보 개선). 2026년 Meta-Harness의 과거 후보 실행 흔적 보존,
+RSIAgent의 광범위 탐색→심층 검증도 추가 개발 방향이다. 이번 변경이
+이들 프로젝트의 전체 알고리즘을 복제했다는 뜻은 아니다.
+
 ## 목표 하네스
 
 모델은 계획과 검토를 제안하고, Rust가 완료 상태를 결정합니다.
