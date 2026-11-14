@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {validateInstance,goalPayload,loadInstances,summarize} from './swebench-dominion.mjs'
+import {validateInstance,goalPayload,loadInstances,summarize,analyzeOperations} from './swebench-dominion.mjs'
 
 const base='a'.repeat(40)
 const row={instance_id:'django__django-1001',repo:'django/django',
@@ -42,7 +42,30 @@ test('a terminal internal goal and a valid Git patch are never official pass cla
         {goalStatus:'failed',patchBytes:0,usage:{totalTokens:90},toolCalls:5}]
     assert.deepEqual(summarize(results),{
         attempted:3,goalCompleted:1,predictionPatches:2,
-        estimatedOrReportedTokens:290,toolCalls:8,officialResolved:null,
+        estimatedOrReportedTokens:null,tokenMeasurementCoverage:2/3,
+        measuredTokenSubtotal:290,
+        toolCalls:null,toolMeasurementCoverage:0,
+        observedToolFailures:null,observedToolRecoveryRate:null,
+        actualBilledKrw:null,officialResolved:null,
         note:'Internal completion and patch existence are NOT SWE-bench correctness. Use the official Docker evaluator.'
     })
+})
+
+test('durable operation recovery requires later same-run success; unknown side effects stay distinct',()=>{
+    const operations=[
+        {id:'f',runId:'run1',opSeq:1,tool:'workspace_replace',status:'failed',
+            resourceKey:'workspace:src/lib.rs'},
+        {id:'unrelated',runId:'run1',opSeq:2,tool:'file_write',status:'completed',
+            resourceKey:'file:other.txt'},
+        {id:'repair',runId:'run1',opSeq:3,tool:'workspace_replace',status:'completed',
+            resourceKey:'workspace:src/lib.rs',toolReceipt:{verified:true}},
+        {id:'unknown',runId:'run2',opSeq:1,tool:'github_api',status:'interrupted',
+            resourceKey:'github:issue',effectState:'effect_unknown'}
+    ]
+    const m=analyzeOperations(operations)
+    assert.deepEqual(m,{total:4,failed:1,successful:2,unknownEffects:1,
+        verifiedEffects:1,recoveredFailures:1,recoveryRate:1})
+    assert.equal(analyzeOperations(operations.slice(0,2)).recoveryRate,0)
+    assert.equal(analyzeOperations([]).recoveryRate,null)
+    assert.throws(()=>analyzeOperations([operations[0],operations[0]]),/duplicate/)
 })

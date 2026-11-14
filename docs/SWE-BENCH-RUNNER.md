@@ -77,3 +77,12 @@ Korean-won totals remain unmeasured unless separately reconciled.
 \`node --test scripts/swebench-dominion.tests.mjs\` verifies public-only
 prompt construction, task-path handling, exact goal fields and reporting
 semantics. This test suite does not claim paid-model runs or official passes.
+
+## Evidence-led recovery and missing usage
+
+The runner reads the server's persisted `execution_operation` records to
+count failed calls, unknown side effects, verified effects and recovery. A
+recovery counts only when a later successful call in the same execution
+addresses the same resource. Missing token or tool telemetry is `null`,
+**never** zero. Internal goal completion is not used as external resolution.
+Korean-won billing is likewise `null` until independently reconciled.

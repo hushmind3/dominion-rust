@@ -23,8 +23,10 @@ const inside=(parent,target)=>{
     return diff!==''&&!diff.startsWith('..')&&!isAbsolute(diff)
 }
 export function validateInstance(row){
-    if(!row||!clean(row.instance_id)||!repoId(row.repo)||!gitSha(row.base_commit)
-       ||typeof row.problem_statement!=='string'||!row.problem_statement.trim()){
+    if(!row||!clean(row.instance_id)||row.instance_id.length>180
+       ||!repoId(row.repo)||!gitSha(row.base_commit)
+       ||typeof row.problem_statement!=='string'||!row.problem_statement.trim()
+       ||row.problem_statement.length>250_000){
         throw Error('invalid SWE-bench public instance fields')
     }
     // Construct an entirely new object: no gold patch, test patch, fail-to-pass
@@ -42,13 +44,59 @@ export function goalPayload(instance,providerId,model,limits){
         tokenBudget:limits.tokens,maxIterations:limits.iterations,
         maxReplans:limits.replans,replanAfter:2}
 }
+/** Recovery is proven only by a later successful call in the SAME run
+ * to the same resource. It is a tool-level metric, not an official solution. */
+export function analyzeOperations(operations){
+    if(!Array.isArray(operations))throw Error('operation ledger is missing')
+    const seen=new Set()
+    const rows=operations.map(op=>{
+        if(!op||typeof op.id!=='string'||seen.has(op.id)
+           ||!Number.isSafeInteger(op.opSeq))throw Error('invalid or duplicate tool receipt')
+        seen.add(op.id)
+        return op
+    }).sort((a,b)=>String(a.runId).localeCompare(String(b.runId))
+        ||a.opSeq-b.opSeq)
+    const unknown=op=>op.outcomeUnknown===true||op.effectState==='effect_unknown'
+       ||op.result?.outcomeUnknown===true
+    const failed=op=>['failed','denied','error','needs_review'].includes(op.status)
+       ||Boolean(op.result?.error)
+    const succeeded=op=>op.status==='completed'&&!failed(op)&&!unknown(op)
+    const failures=rows.filter(failed)
+    const recovered=failures.filter(error=>rows.some(next=>
+        next.runId===error.runId&&next.opSeq>error.opSeq
+        &&succeeded(next)
+        &&(error.resourceKey&&next.resourceKey===error.resourceKey
+            ||!error.resourceKey&&next.tool===error.tool
+                &&JSON.stringify(next.arguments?.path||next.arguments?.cwd||null)
+                    ===JSON.stringify(error.arguments?.path||error.arguments?.cwd||null))
+    )).length
+    return {total:rows.length,failed:failures.length,
+        successful:rows.filter(succeeded).length,
+        unknownEffects:rows.filter(unknown).length,
+        verifiedEffects:rows.filter(op=>op.toolReceipt?.verified===true).length,
+        recoveredFailures:recovered,
+        recoveryRate:failures.length?recovered/failures.length:null}
+}
 export function summarize(records){
     const completed=records.filter(x=>x.goalStatus==='completed').length
-    const totalTokens=records.reduce((sum,x)=>sum+(x.usage?.totalTokens||0),0)
-    const totalTools=records.reduce((sum,x)=>sum+(x.toolCalls||0),0)
+    const usage=records.filter(x=>Number.isSafeInteger(x.usage?.totalTokens)
+        &&x.usage.totalTokens>=0)
+    const reported=usage.reduce((sum,x)=>sum+x.usage.totalTokens,0)
+    const tools=records.filter(x=>Number.isSafeInteger(x.toolLedger?.total))
+    const totalTools=tools.reduce((sum,x)=>sum+x.toolLedger.total,0)
+    const failures=tools.reduce((sum,x)=>sum+x.toolLedger.failed,0)
+    const recovered=tools.reduce((sum,x)=>sum+x.toolLedger.recoveredFailures,0)
     return {attempted:records.length,goalCompleted:completed,
         predictionPatches:records.filter(x=>x.patchBytes>0).length,
-        estimatedOrReportedTokens:totalTokens,toolCalls:totalTools,
+        estimatedOrReportedTokens:usage.length===records.length?reported:null,
+        tokenMeasurementCoverage:records.length?usage.length/records.length:null,
+        measuredTokenSubtotal:usage.length?reported:null,
+        toolCalls:tools.length===records.length?totalTools:null,
+        toolMeasurementCoverage:records.length?tools.length/records.length:null,
+        observedToolFailures:tools.length===records.length?failures:null,
+        observedToolRecoveryRate:tools.length===records.length&&failures>0
+            ?recovered/failures:null,
+        actualBilledKrw:null,
         officialResolved:null,
         note:'Internal completion and patch existence are NOT SWE-bench correctness. Use the official Docker evaluator.'}
 }
@@ -177,12 +225,13 @@ async function toolsUsed(base,session){
     try{
         const runs=await request(base,'/api/executions')
         if(!Array.isArray(runs))return null
-        let count=0
+        const operations=[]
         for(const run of runs.filter(r=>r.sessionId===session)){
             const ops=await request(base,'/api/executions/'+encodeURIComponent(run.id)+'/operations')
-            if(Array.isArray(ops))count+=ops.length
+            if(!Array.isArray(ops))return null
+            operations.push(...ops)
         }
-        return count
+        return analyzeOperations(operations)
     }catch{return null}
 }
 export async function runCase(instance,options){
@@ -250,7 +299,8 @@ export async function runCase(instance,options){
     const record={instance_id:instance.id,repo:instance.repo,baseCommit:instance.base,
         goalId:goal?.id||null,goalStatus:goal?.status||'infrastructure_error',
         internalVerified:goal?.metrics?.verifiedCompleted===true,
-        usage:goal?.metrics?.usage||null,toolCalls:tools,
+        usage:goal?.metrics?.usage||null,toolLedger:tools,
+        toolCalls:tools?.total??null,
         elapsedMs:Date.now()-begin,patchBytes:Buffer.byteLength(patch),
         patchSha256:sha(patch),gitStatus:patchStatus.slice(0,4000),
         runtimeCommit:identity?.commit||null,
@@ -268,6 +318,9 @@ async function run(options){
         boundedInt(options['max-instances'],'max-instances',1,10000,10000))
     const keyName=options['api-key-env']
     if(keyName&&!(keyName in process.env))throw Error('API key environment variable is not set')
+    const url=new URL(options['provider-url'])
+    if(!['https:','http:'].includes(url.protocol)||url.username||url.password)
+        throw Error('provider URL must be http(s) and contain no embedded credentials')
     const opts={reposRoot:root,binary,output,providerUrl:options['provider-url'],
         providerKind:options['provider-kind']||'openai',model:options.model,
         apiKey:keyName?process.env[keyName]:null,
