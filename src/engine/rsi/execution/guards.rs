@@ -118,6 +118,22 @@ pub(super) fn fit_worker_prompt(
             prompt.push_str(&json!(selected).to_string());
             prompt.push_str("\n동결된 평가 코드를 고치거나 사례를 하드코딩하지 말고 변경한 Rust 구현을 다시 독립 평가하세요.");
         }
+        let successful=gradient["priorSuccesses"].as_array()
+            .map(Vec::as_slice).unwrap_or(&[]);
+        let recalled=match mode {
+            "full"=>successful.iter().take(2).cloned().collect::<Vec<_>>(),
+            "compact"=>successful.iter().take(1).map(|row|json!({
+                "caseId":row["caseId"],"metric":row["metric"],
+                "baseline":row["baseline"],"candidate":row["candidate"],
+                "acceptedCommit":row["acceptedCommit"],"transferVerified":false
+            })).collect::<Vec<_>>(),
+            _=>Vec::new()
+        };
+        if !recalled.is_empty() {
+            prompt.push_str("\n독립 재검증으로 채택된 과거 수정의 실측 성공 사례(새 목표의 성능 보장은 아님): ");
+            prompt.push_str(&json!(recalled).to_string());
+            prompt.push_str("\n현재 파일과 목표가 일치하는지 먼저 확인하고, 검증 근거 없이 이전 패치를 복사하지 마세요.");
+        }
         let estimate = crate::engine::chat::estimate_text_tokens(&prompt);
         if remaining_tokens.is_none_or(|limit|estimate.saturating_add(256)<=limit) {
             return Ok((prompt,json!({
@@ -126,6 +142,8 @@ pub(super) fn fit_worker_prompt(
                 "ownerObjectivePreserved":true,
                 "measuredCounterexamplesDelivered":selected.len(),
                 "measuredCounterexamplesAvailable":evidence.len(),
+                "adoptedSuccessExamplesDelivered":recalled.len(),
+                "adoptedSuccessExamplesAvailable":successful.len(),
                 "feedbackSource":gradient["source"]
             })));
         }
