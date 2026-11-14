@@ -198,6 +198,8 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
                    "requireTests": True,
                    "maxIterations": args.max_iterations, "maxReplans": args.max_replans,
                    "executor": {"providerId": args.provider_id, "model": args.model}}
+        if args.token_budget is not None:
+            request["tokenBudget"] = args.token_budget
         goal = api(base, "/api/goals", token, request)
         goal_id = goal["id"]
         deadline = time.monotonic() + args.timeout
@@ -229,6 +231,10 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
         stop(proc, handle)
     prediction = {"instance_id": ident, "model_name_or_path": args.model_name,
                   "model_patch": patch}
+    metrics["configuredGoalTokenBudget"] = args.token_budget
+    if isinstance(metrics.get("tokens"),(int,float)) and args.token_budget:
+        metrics["tokenBudgetOverrunObserved"] = max(
+            0,metrics["tokens"]-args.token_budget)
     receipt = {"instanceId": ident, "baseCommit": original, "status": status,
                "goalId": goal.get("id"), "elapsedSeconds": round(time.monotonic() - started, 2),
                "patchBytes": len(patch.encode("utf-8")), "patchSha256":
@@ -277,6 +283,8 @@ def main() -> int:
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--max-instances", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--token-budget", type=int, default=100000,
+                        help="Per-instance aggregate token ceiling in the native Rust goal")
     parser.add_argument("--max-iterations", type=int, default=16)
     parser.add_argument("--max-replans", type=int, default=6)
     parser.add_argument("--poll-interval", type=float, default=1.0)
@@ -290,6 +298,8 @@ def main() -> int:
     args.cache = args.cache.resolve()
     if not args.binary.is_file() or not args.state_template.is_dir():
         parser.error("A built Dominion executable and a configured state template are required")
+    if args.token_budget is not None and not 1000 <= args.token_budget <= 2_000_000:
+        parser.error("token-budget must be between 1000 and 2000000")
     if args.timeout < 1 or args.max_iterations not in range(1, 65):
         parser.error("timeout and max-iterations are out of range")
     args.output.mkdir(parents=True, exist_ok=True)
