@@ -346,10 +346,10 @@ async function run(options){
         approvals:approvalPolicy(options['approve-tools'])}
     if(!['openai','anthropic','ollama'].includes(opts.providerKind))throw Error('invalid provider kind')
     await mkdir(output,{recursive:true})
-    const dataset=await readFile(resolve(options.instances))
+    const datasetBytes=await readFile(resolve(options.instances))
     const dataset=options.dataset==='verified'?'SWE-bench/SWE-bench_Verified':options.dataset||'unspecified'
     const runManifest={suite:'SWE-bench',dataset,sourceFile:resolve(options.instances),
-        sourceSha256:sha(dataset),selectedInstances:cases.map(c=>c.id),
+        sourceSha256:sha(datasetBytes),selectedInstances:cases.map(c=>c.id),
         model:opts.model,providerKind:opts.providerKind,
         providerUrl:opts.providerUrl,apiKeyEnvironment:keyName||null,
         timeoutSeconds:opts.timeoutSeconds,limits:opts.limits,
