@@ -50,3 +50,7 @@
 - **정적 계약 검사**: `node scripts/verify-frontend-navigation.mjs` (14개 메뉴/3탭, API 경로, 구주소, 전역 RSI 알림 미탑재, 메모리 API 수정 경로). CI의 `npm run typecheck --prefix web`, `npm run build --prefix web`, `cargo test --release`와 함께 실행됩니다.
 - **실제 브라우저 미완료 항목**: 3탭 실제 클릭, 기존 URL 직접 접근, MCP 설치/삭제/실행, OAuth 리다이렉트, 기억 수정-새로고침, 15초 이상 대기 시 RSI 추천 팝업 미발생. 이 문서와 소스 검사는 브라우저 실험 결과가 아닙니다.
 - **실제 과금/RSI 메타 계승**은 별도 운영 측정이 필요합니다. 자기개선 성공 알림·품질 상승을 임의로 생성하지 않습니다.
+
+### 실브라우저 UI 계약 시나리오 (수동 실행)
+
+`web/tests/connections.browser.mjs`에서 Chromium으로 실제 클릭·탭 selected 상태/URL/옛 북마크/수동 기억 수정 성공을 테스트하고, 채팅 화면을 이전 제안 폴링 주기인 15초보다 오래 열어 자기개선 자동 팝업과 네이티브 alert 미발생을 감시합니다. 서버/API는 deterministic stub이라 MCP 프로세스 연결이나 실제 과금/RSI 채택의 증거는 아닙니다. `.github/workflows/sub1-ui-browser-smoke.yml`은 수동 실행 전용이며 GitHub Actions의 일반 push CI에 브라우저 설치 부하를 추가하지 않습니다.
