@@ -14,6 +14,7 @@ type Goal={
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
  resumeHistory?:{at:string;resolutionNote:string}[];
+ stalled?:number;lastProgress?:{iteration:number;freshActionReceipts:number;clearedAcceptanceGaps:number;toolErrors:number;advanced:boolean};
 }
 type GoalApproval={id:string;tool:string;args?:unknown;status:string;sessionId?:string}
 type Subtask={id:string;status:string;agentId?:string;hasResult?:boolean;error?:string}
@@ -181,6 +182,11 @@ export function GoalConsole(){
      {chosen.isolateWorktree&&chosen.gitWorktree&&!chosen.gitWorktree.discarded&&!running(chosen.status)&&
       <Button size="sm" variant="danger" onClick={()=>void discardWorktree()} disabled={busy}><Trash2 size={13}/> 격리 폴더 폐기</Button>}
     </div>
+     {chosen.lastProgress&&<div role="status" aria-live="polite" className="rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[11px] leading-5 text-[#61574A]">
+      <strong>실제 검증 진전 · {chosen.lastProgress.iteration}번째 실행</strong>
+      <p>새 성공 도구 작업 {chosen.lastProgress.freshActionReceipts}건 · 충족된 검증 조건 {chosen.lastProgress.clearedAcceptanceGaps}건 · 도구 오류 {chosen.lastProgress.toolErrors}건</p>
+      <p>{chosen.lastProgress.advanced?'검증 가능한 진전이 기록됐습니다.':'새 진전이 없어 연속 정체를 추적합니다.'}{(chosen.stalled||0)>0?` · 연속 정체 ${chosen.stalled}턴`:''}</p>
+     </div>}
      {subtasks.value.length>0&&<details open className="rounded-xl border border-[#E7E0D5] p-3">
       <summary className="cursor-pointer text-xs font-semibold">서브에이전트 실행 {subtasks.value.length}건</summary>
       <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">{subtasks.value.map(task=><div key={task.id} className="flex items-center gap-2 rounded-lg bg-[#FAF7F1] p-2 text-xs">
