@@ -286,9 +286,15 @@ async fn run_locked(
         })
         .clamp(1, max_turns_ceiling());
     let token_budget = room["tokenBudget"].as_u64().unwrap_or(0);
-    let usage_baseline = state.store.session_usage(session_id)["totalTokens"]
-        .as_u64()
-        .unwrap_or(0);
+    let observed_usage = state.store.session_usage(session_id)["totalTokens"]
+        .as_u64().unwrap_or(0);
+    // The baseline is part of the immutable job input after first admission.
+    // Re-queued room jobs must not reset the same exchange's cost ceiling.
+    let usage_baseline = economy::metering_baseline(input,observed_usage);
+    if bound_input["usageBaselineTokens"].as_u64()!=Some(usage_baseline) {
+        bound_input["usageBaselineTokens"] = json!(usage_baseline);
+        context.checkpoint(json!({"input":bound_input}))?;
+    }
     let conflict_strategy =
         crate::engine::algorithms::variant_for_agent(state, "multiagent.conflict", None);
     let mut conflict_resolution = existing
@@ -325,6 +331,16 @@ async fn run_locked(
     )?;
 
     while outputs.len() < budget {
+        // This check precedes every potentially expensive model speaker,
+        // including the first turn after a safe resumed room job.
+        // The previous check was only after a model finished and could
+        // allow another call after resume or after exhausted siblings.
+        if economy::budget_spent(token_budget,usage_baseline,
+            state.store.session_usage(session_id)["totalTokens"].as_u64().unwrap_or(0)) {
+            return Ok(finish(
+                context,room_id,session_id,"completed",&outputs,"token_budget",None,
+            ));
+        }
         if mode == "discussion" && (cohort.is_empty() || round_slots >= roster.len()) {
             round_slots = 0;
             // Mentions since the owner's message define who may speak this
@@ -557,11 +573,9 @@ async fn run_locked(
             },
         );
         if token_budget > 0 {
-            let used = state.store.session_usage(session_id)["totalTokens"]
-                .as_u64()
-                .unwrap_or(0)
-                .saturating_sub(usage_baseline);
-            if used >= token_budget {
+            let observed = state.store.session_usage(session_id)["totalTokens"]
+                .as_u64().unwrap_or(0);
+            if economy::budget_spent(token_budget,usage_baseline,observed) {
                 checkpoint(
                     context, session_id, generation, source_id, &mode, &roster, &initial,
                     &pending, &outputs, budget, false, None,
