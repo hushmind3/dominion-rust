@@ -630,3 +630,7 @@ The editable experiment allocator now credits a prior source-policy revision onl
 ### 2026-11-14: LTX-2.5 영상 유료 견적·승인 제어
 
 LTX-2.5 신규 영상 및 일부 장면 재생성은 `POST /api/video/quote` 또는 `/api/video/jobs/:id/scenes`의 **서버 계산 견적**을 프론트에 원화 참고액으로 표시한 뒤, `approvedPaidQuote`·`maxUsdCents`·`quoteDigest`의 승인을 받아야 영상 작업이 영속 큐에 등록됩니다. 가격은 공식 LTX 2.5 Fast/Pro 720p~4K 초당 목록가의 2026-11-14 스냅샷이며 원화는 2026-11-13 참조 환율을 사용합니다. 정확한 실제 청구액이나 영상 시청 품질을 보증하지 않으며, 기존 LTX 장면별 SHA 재사용·FFprobe 검수·미확정 결제 중지 구조를 유지합니다. [실제 과금 경로·테스트](docs/SUB1-VIDEO-PAID-QUOTE-2026-11-14.md).
+
+### 2026-11-14: 자율 목표의 실측 진전 기반 재계획
+
+`engine/goals.rs`는 새 `engine/goals/progress.rs`를 통해 실제 영속 도구 영수증의 새로운 변경·검증 조건 해소를 측정합니다. 유효한 작업이 진행되는 동안에는 정체 카운터가 증가하지 않으며, 실패/반복 호출과 추가적인 수정을 구분합니다. `workspace_replace[_range|_function]` 국소 편집도 수정 증거로 계산합니다. [실행 검증 경로](docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md).
