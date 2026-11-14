@@ -19,6 +19,10 @@ Codex·Claude Agent·Copilot SDK는 내부 계획·도구·복구 설계의 **�
 
 ## 사용자 지휘권 (Owner Authority)
 
+- **실행 중 추가 지시:** `POST /api/goals/:id/steer`, 본문 `{"text":"추가 지시","mode":"append","requestId":"owner-123"}`.
+  `mode:"replace"`는 실행 접근법 교체. 지시 이력은 `GET /api/goals/:id`의 `ownerDirectiveJournal`에서 조회할 수 있다.
+
+
 DOMINION의 우선 원칙은 **사용자가 실행 목표와 방법을 지휘한다**는 것이다.
 자동 도구 선택·최적화·모델 계획은 사용자가 명시한 실행 도구를 누락할 수 없고,
 장기 실행의 계획 수정은 다음 도구 경계에서 적용한다. 사용자 지시와 모델·도구

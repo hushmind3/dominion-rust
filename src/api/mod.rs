@@ -239,6 +239,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/skills/:id/export", get(extensions::export_skill))
         .route("/api/goals", get(goals::list_goals).post(goals::create_goal))
+        .route("/api/goals/:id/steer",post(goals::steer_goal))
         .route("/api/goals/metrics", get(goals::metrics))
         .route(
             "/api/goals/:id",

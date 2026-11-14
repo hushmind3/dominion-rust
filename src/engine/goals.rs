@@ -266,7 +266,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             .unwrap_or(0) as usize)
     };
 
-    for index in start..max_iterations {
+    // Steering is not a failed execution attempt. Keep the owner's original
+    // execution budget while bounding repeated in-flight corrections.
+    let mut index=start;
+    let mut owner_steer_count=0usize;
+    while index<max_iterations {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
@@ -361,14 +365,38 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if turn_error.as_deref().is_some_and(|error|
             error.starts_with("owner_steer_pending:")
         ) {
+            owner_steer_count=owner_steer_count.saturating_add(1);
             patch_goal(state,goal_id,json!({
                 "phase":"owner_steering","gaps":gaps,
-                "evidence":evidence,"iterations":index+1
+                "evidence":evidence,"iterations":index
             }));
+            // Never replay a running tool after a process crash: the turn has
+            // returned and its already-committed operations remain durable.
+            context.checkpoint(json!({"goalState":{
+                "sessionId":session_id,"nextIteration":index,"inFlight":false,
+                "reviewPending":false,"evidence":evidence,"transcript":transcript,
+                "gaps":gaps,"stalled":stalled
+            }}))?;
             context.emit(json!({
                 "type":"goal_owner_steer_next_iteration","goalId":goal_id,
-                "iteration":index+1,"evidenceCount":evidence.len()
+                "iteration":index+1,"evidenceCount":evidence.len(),
+                "steerCount":owner_steer_count
             }));
+            if owner_steer_count>64 {
+                return Ok(finish(context,goal_id,"needs_review",
+                    vec!["사용자 지시가 64번 연속 변경돼 새 도구 작업을 시작하지 않았습니다.".into()],None));
+            }
+            continue; // same execution iteration, revised plan on next entry
+        }
+        // The owner may steer while a reviewer is thinking. Obsolete model
+        // judgments never finalize a goal ahead of that owner message.
+        if crate::engine::goal_plan::pending_owner_steer(
+            state,&session_id,Some(&task_id)).is_some() {
+            context.checkpoint(json!({"goalState":{
+                "sessionId":session_id,"nextIteration":index,"inFlight":false,
+                "reviewPending":false,"evidence":evidence,"transcript":transcript,
+                "gaps":gaps,"stalled":stalled
+            }}))?;
             continue;
         }
         let gate_gaps = acceptance_gaps(&scoped_state, &text, &criteria, &evidence);
@@ -431,7 +459,18 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
         if complete {
-            return Ok(finish(context, goal_id, "completed", vec![], None));
+            if crate::engine::goal_plan::pending_owner_steer(
+                state,&session_id,Some(&task_id)).is_none() {
+                return Ok(finish(context, goal_id, "completed", vec![], None));
+            }
+            // A new instruction arrived during review. Keep evidence, but do
+            // not claim the old plan's completion or consume a retry slot.
+            context.checkpoint(json!({"goalState":{
+                "sessionId":session_id,"nextIteration":index,"inFlight":false,
+                "reviewPending":false,"evidence":evidence,"transcript":transcript,
+                "gaps":gaps,"stalled":stalled
+            }}))?;
+            continue;
         }
         if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
@@ -460,6 +499,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }
         }
         context.checkpoint(json!({"goalState":{"sessionId":session_id,"nextIteration":index+1,"inFlight":false,"reviewPending":false,"evidence":evidence,"transcript":transcript,"gaps":gaps,"stalled":stalled,"replans":replans,"plan":plan}}))?;
+        index+=1;
     }
     Ok(finish(context, goal_id, "needs_review", gaps, None))
 }

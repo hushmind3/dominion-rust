@@ -245,30 +245,45 @@ pub async fn resume_goal(
     Json(saved).into_response()
 }
 
+/// Legacy plan updates and new directives share the exact same durable owner
+/// journal so an older plan response cannot erase the latest owner correction.
 pub async fn update_plan(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<Value>,
+    State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>,
 ) -> Response {
-    let Some(plan)=body["plan"].as_str().map(str::trim)
-        .filter(|p|p.len()>=5&&p.len()<=6000) else {
-        return error(StatusCode::BAD_REQUEST,"수정 계획은 5~6000바이트로 입력하세요.");
+    enqueue_owner_text(state,id,body,"replace","plan").await
+}
+
+/// POST {text, mode:"append"|"replace", requestId?:string}
+/// Next-step steering interrupts stale model proposals before a new tool runs.
+pub async fn steer_goal(
+    State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>,
+) -> Response {
+    let mode=body["mode"].as_str().unwrap_or("append");
+    enqueue_owner_text(state,id,body,mode,"text").await
+}
+
+async fn enqueue_owner_text(
+    state:AppState,id:String,body:Value,mode:&str,key:&str,
+) -> Response {
+    let Some(text)=body[key].as_str() else {
+        return error(StatusCode::BAD_REQUEST,"사용자 지시 내용이 필요합니다.");
     };
-    let Some(goal)=state.store.get("goal",&id) else {
-        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
-    };
-    if !matches!(goal["status"].as_str(),Some("queued"|"running")) {
-        return error(StatusCode::CONFLICT,"진행 중인 목표의 계획만 수정할 수 있습니다.");
+    if body.get("requestId").is_some_and(|v|!v.is_string()) {
+        return error(StatusCode::BAD_REQUEST,"requestId는 문자열이어야 합니다.");
     }
-    // The owner may change the method, never the acceptance checks, route
-    // permissions or the authority of an already running tool invocation.
-    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
-        &json!({"planOverride":plan,"planOverrideRequestedAt":chrono::Utc::now().to_rfc3339()})) else {
-        return error(StatusCode::CONFLICT,"작업 상태가 변경됐습니다. 새로고침 후 다시 입력하세요.");
-    };
-    state.bus.record("goal",&saved);
-    state.store.audit("goal.plan_override_requested",json!({"goalId":id}));
-    Json(saved).into_response()
+    match engine::goal_plan::enqueue_directive(
+        &state,&id,text,mode,body["requestId"].as_str(),
+    ) {
+        Ok(goal)=>Json(goal).into_response(),
+        Err(message)=>{
+            let status=if message.contains("찾을 수 없습니다") {StatusCode::NOT_FOUND}
+                else if message.contains("진행 중인")||message.contains("동시에")
+                    ||message.contains("기록이 128개")||message.contains("같은 requestId") {
+                    StatusCode::CONFLICT
+                } else {StatusCode::BAD_REQUEST};
+            error(status,&message)
+        }
+    }
 }
 
 pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
