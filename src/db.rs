@@ -446,7 +446,7 @@ impl Store {
     /// Owner-only memory edits compare the old text and trusted record metadata
     /// under the same SQLite connection lock. No client-controlled fields or
     /// inferred source provenance can overwrite an existing memory.
-    pub fn edit_manual_memory(&self, id: &str, expected: &str, new_text: &str) -> Option<Value> {
+    pub fn edit_manual_memory(&self, id: &str, expected: &str, expected_revision: u64, new_text: &str) -> Option<Value> {
         let conn = self.conn.lock().ok()?;
         let mut record = conn.query_row(
             "SELECT data,id,created_at,updated_at FROM records WHERE kind='memory' AND id=?1",
@@ -456,6 +456,7 @@ impl Store {
         if record["source"] != "user"
             || record["status"].as_str().is_some_and(|status| status != "active")
             || record["text"].as_str() != Some(expected)
+            || record["revision"].as_u64().unwrap_or(0) != expected_revision
             || !crate::engine::memory::retrieval_eligible(&record)
         {
             return None;
