@@ -55,3 +55,15 @@ use a new run_id because the official harness caches results by run_id/ID.
   it must not feed per-case hidden test outcomes into subsequent mutation
   prompts or parent-selection scoring.
 - No production workspaces and no third-party agent harness are used.
+
+
+## Official result collection
+
+When grading is explicitly enabled, the runner reads
+logs/evaluation/<unique-run-id>/<model>/<instance>/report.json from the
+official SWE-bench grader and extracts the per-instance resolved boolean.
+Empty patches are unresolved; missing reports for nonempty patches remain
+unknown, so a partial Docker run never becomes a fabricated solve rate.
+The predictions are created from exact raw git diff bytes including final
+newlines. Source repos and the byte-exact prediction files are preserved in
+the isolated benchmark output folder for audit and independent grading.

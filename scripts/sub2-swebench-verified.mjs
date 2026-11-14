@@ -21,14 +21,13 @@ const NOW=()=>new Date().toISOString();
 const sleep=(ms)=>new Promise(done=>setTimeout(done,ms));
 const SHA=(value)=>createHash('sha256').update(value).digest('hex');
 const TERMINAL=new Set(['completed','failed','cancelled','needs_review']);
-const DISALLOWED=new Set(['test_patch','patch','FAIL_TO_PASS','PASS_TO_PASS','environment_setup_commit','hints_text']);
 
 function demand(ok,reason){if(!ok)throw Error(reason)}
 export function taskPublicView(task){
   demand(task && typeof task==='object','task must be object');
   const {instance_id,repo,base_commit,problem_statement}=task;
   demand(typeof instance_id==='string'&&/^[a-zA-Z0-9_.-]{1,160}$/.test(instance_id),'invalid SWE-bench instance id');
-  demand(typeof repo==='string'&&/^[\w.-]+\/[\w.-]+$/.test(repo),'invalid repo');
+  demand(typeof repo==='string'&&/^[A-Za-z0-9][\w.-]*\/[A-Za-z0-9][\w.-]*$/.test(repo),'invalid repo');
   demand(typeof base_commit==='string'&&/^[a-f0-9]{40}$/.test(base_commit),'base commit must be pinned');
   demand(typeof problem_statement==='string'&&problem_statement.trim().length>0,'missing issue text');
   // The agent must never be given official test patches, reference solution
@@ -52,8 +51,10 @@ export function summarize(rows){
     totalRecordedTokens:counted.length===total?tokens:null,
     usageCoverage:total?counted.length/total:null,
     tokensPerGeneratedPatch:counted.length===total&&withPatches?tokens/withPatches:null,
-    officialResolved:null,
-    officialResolveRate:null,
+    officialResolved:rows.length>0 && rows.every(x=>typeof x.officialSolved==='boolean')
+      ?rows.filter(x=>x.officialSolved).length:null,
+    officialResolveRate:rows.length>0 && rows.every(x=>typeof x.officialSolved==='boolean')
+      ?rows.filter(x=>x.officialSolved).length/rows.length:null,
     note:'Only the official SWE-bench Docker grader can populate officialResolved and officialResolveRate. Native goal completion and nonempty patches are NOT solved tests.'
   };
 }
@@ -61,7 +62,7 @@ function command(bin,args,options={}){
   const run=spawnSync(bin,args,{encoding:'utf8',timeout:options.timeout||60000,
     maxBuffer:32*1024*1024,env:options.env||process.env,cwd:options.cwd});
   if(run.error||run.status!==0)throw Error((run.stderr||run.error?.message||'command failed').slice(-1800));
-  return run.stdout.trimEnd();
+  return options.raw?run.stdout:run.stdout.trimEnd();
 }
 function cwdGit(dir,args){return command('git',['-C',dir,...args]);}
 async function vacantPort(){
@@ -120,7 +121,7 @@ function makePatch(dir,base){
   demand(cwdGit(dir,['rev-parse','HEAD'])===base,'base commit changed by the agent');
   // Include true new source files without staging them for a real commit.
   cwdGit(dir,['add','-N','--','.']);
-  const patch=cwdGit(dir,['diff','--binary','--no-ext-diff',base,'--','.']);
+  const patch=command('git',['-C',dir,'diff','--binary','--no-ext-diff',base,'--','.'],{raw:true});
   const checks=cwdGit(dir,['diff','--check',base,'--','.']);
   demand(checks==='','generated patch failed git diff --check');
   return patch;
@@ -260,6 +261,30 @@ async function run(){
       runId,exitStatus:exit,
       note:'Read official SWE-bench generated per-instance reports; zero process exit does not itself imply a resolved task.'
     });
+    // Parse upstream evaluator's per-task report rather than inferring
+    // solved status from a completed subprocess or DOMINION's own review.
+    // Missing reports for nonempty patches leave the score UNKNOWN.
+    const root=join(process.cwd(),'logs','evaluation',runId,
+      name.replace(/\//g,'__'));
+    for(const row of receipts){
+      if(row.patchBytes===0){
+        row.officialSolved=false;continue;
+      }
+      const reportPath=join(root,row.instance_id,'report.json');
+      if(!existsSync(reportPath)){
+        row.officialSolved=null;
+        continue;
+      }
+      try{
+        const grades=JSON.parse(readFileSync(reportPath,'utf8'));
+        row.officialSolved=typeof grades[row.instance_id]?.resolved==='boolean'
+          ?grades[row.instance_id].resolved:null;
+        row.officialInfraFailure=grades[row.instance_id]?.infra_failure===true;
+      }catch{
+        row.officialSolved=null;
+      }
+    }
+    save();
     if(exit!==0)process.exitCode=1;
   }
   process.stdout.write(JSON.stringify({report,predictionFile,summary:summarize(receipts)})+'\n');

@@ -24,7 +24,7 @@ test('prediction uses the actual generated Git diff, never self-reported success
  assert.equal(pred.instance_id,issue.instance_id);
  assert.equal(pred.model_name_or_path,'DOMINION-rust');
 });
-test('no task, duplicate instances and invalid checkout commits are accepted',()=>{
+test('task ids, duplicate instances, checkout revisions and path escapes are rejected',()=>{
  assert.throws(()=>taskPublicView({...issue,base_commit:'HEAD'}));
  assert.throws(()=>taskPublicView({...issue,repo:'../outside'}));
  assert.throws(()=>verifyManifest([issue,issue]));
@@ -43,5 +43,9 @@ test('success count stays null without the official Docker evaluator',()=>{
  assert.equal(result.tokensPerGeneratedPatch,500);
  assert.equal(result.officialResolved,null);
  assert.equal(result.officialResolveRate,null);
+ const graded=rows.map((row,index)=>({...row,officialSolved:index===0}));
+ const final=summarize(graded);
+ assert.equal(final.officialResolved,1);
+ assert.equal(final.officialResolveRate,1/3);
  assert.equal(summarize([...rows,{patchBytes:0,usage:null}]).tokensPerGeneratedPatch,null);
 });
