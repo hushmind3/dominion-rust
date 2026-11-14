@@ -81,3 +81,9 @@
 `delegate_tasks` → `tools/batch.rs` → `gateway::delegate` → `jobs::start_now`와 `task_result`를 연결했습니다. 독립 조사에는 읽기 전용 세션 권한을 부여하고 `chat/runtime`의 Tool Schema·네이티브/MCP/결정적 실행을 동시에 제약합니다. 복수 소스 편집 작업을 같은 Workspace에서 병렬 실행하지 않습니다.
 
 `goals::run` 도구 실행 전에 `goal_changes::baseline`을 기록하고 `GoalConsole`의 `GoalChanges`에서 `/api/goals/:id/changes`로 실제 diff를 보며, 사용자가 명시적으로 선택한 파일에 한해 `undo`의 Git HEAD·clean baseline·성공 영수증·SHA·동시 작업 검사 후 복원합니다. [상세 엔진 설명](AUTONOMOUS-AGENT-2026-11-14.md).
+
+
+
+### Git worktree 실격리 및 승격(2026-11-14)
+
+`goal_workspace.rs`에서 opt-in 목표별 소스 격리·리뷰·원본 승인 반영·폐기 경로를 구현했습니다. 이 목표와 관련한 계획·파일 baseline·도구·검증, 자식 에이전트의 `jobs::run_prompt`까지 격리 경로를 사용합니다. `goals::run`과 `tools::execute`가 양쪽에서 경로를 검사하며 유실된 격리 공간은 원본으로 전환하지 않습니다. 원본 반영은 완료 검증·HEAD/clean·미추적 파일 없음·정확한 패치 SHA·사용자 확인이 있어야 하고, 기존 파일 단위 undo와 공존합니다. [완전 실행 지도](AUTONOMOUS-AGENT-2026-11-14.md#8-goal별-git-격리와-검토-후-승인-반영-추가-개발).
