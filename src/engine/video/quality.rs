@@ -78,6 +78,20 @@ pub(super) async fn inspect_clip(cfg:&Value,path:&Path,seconds:u64,aspect:&str,m
     evaluate_with_minimum(&report,seconds,aspect,min_short_edge,audio)
 }
 
+/// First validate the recorded container metadata, then optionally decode every
+/// shot frame for conservative black/frozen-screen detection. The result is
+/// saved with the same shot receipt and reused on resume.
+pub(super) async fn inspect_shot(
+    cfg:&Value,path:&Path,seconds:u64,aspect:&str,min_short_edge:u64,visual_gate:bool,
+)->Result<Value,String>{
+    let mut receipt=inspect_clip(cfg,path,seconds,aspect,min_short_edge,false).await?;
+    receipt["contentDefectScan"]=if visual_gate {
+        super::visual_scan::inspect(cfg,path,
+            receipt["durationSeconds"].as_f64().unwrap_or(seconds as f64)).await?
+    } else {json!({"checked":false})};
+    Ok(receipt)
+}
+
 #[cfg(test)]
 #[path = "../../../tests/unit/video_quality_gate_tests.rs"]
 mod tests;
