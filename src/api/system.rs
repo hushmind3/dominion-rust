@@ -95,13 +95,24 @@ pub async fn events(
         })
         .unwrap_or(0);
     let bus = state.bus.clone();
-    let backlog = bus.replay(after, 500);
+    // Subscribe FIRST: events committed while the SQL backlog is loading
+    // remain present in the live receiver and are deduplicated by seq.
     let mut receiver = bus.subscribe();
+    let backlog = bus.replay_available(after);
     let stream = async_stream::stream! {
         let mut last = after;
+        if let Some(first) = backlog.first().and_then(|value|value["seq"].as_u64()) {
+            if first > last.saturating_add(1) {
+                yield Ok(Event::default().event("replay_gap").data(json!({
+                    "type":"replay_gap","after":last,"firstAvailableSeq":first,
+                    "requiresStateRefresh":true
+                }).to_string()));
+            }
+        }
         for value in backlog {
             let seq = value["seq"].as_u64().unwrap_or(0);
-            last = last.max(seq);
+            if seq <= last { continue; }
+            last = seq;
             yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
         }
         loop {
@@ -111,19 +122,54 @@ pub async fn events(
                     if seq <= last {
                         continue;
                     }
-                    last = seq;
-                    yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    // The live buffer is bounded. Replay the gap from the
-                    // durable log instead of silently dropping writes.
-                    for value in bus.replay(last, 500) {
-                        let seq = value["seq"].as_u64().unwrap_or(0);
-                        if seq <= last {
-                            continue;
+                    if seq > last.saturating_add(1) {
+                        // Recover writes missed by the in-process channel.
+                        // A very old cursor may already have been pruned; in
+                        // that case clients must refresh durable records.
+                        let missed = bus.replay_available(last);
+                        if let Some(first) = missed.first().and_then(|v|v["seq"].as_u64()) {
+                            if first > last.saturating_add(1) {
+                                yield Ok(Event::default().event("replay_gap").data(json!({
+                                    "type":"replay_gap","after":last,"firstAvailableSeq":first,
+                                    "requiresStateRefresh":true
+                                }).to_string()));
+                            }
+                        }
+                        for recovered in missed {
+                            let recovered_seq = recovered["seq"].as_u64().unwrap_or(0);
+                            if recovered_seq <= last { continue; }
+                            last = recovered_seq;
+                            yield Ok(Event::default().id(recovered_seq.to_string())
+                                .data(recovered.to_string()));
+                        }
+                    }
+                    if seq > last {
+                        if seq > last.saturating_add(1) {
+                            yield Ok(Event::default().event("replay_gap").data(json!({
+                                "type":"replay_gap","after":last,"firstAvailableSeq":seq,
+                                "requiresStateRefresh":true
+                            }).to_string()));
                         }
                         last = seq;
                         yield Ok(Event::default().id(seq.to_string()).data(value.to_string()));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // Recover the entire retained range, not just 500 records.
+                    let missed = bus.replay_available(last);
+                    if let Some(first) = missed.first().and_then(|v|v["seq"].as_u64()) {
+                        if first > last.saturating_add(1) {
+                            yield Ok(Event::default().event("replay_gap").data(json!({
+                                "type":"replay_gap","after":last,"firstAvailableSeq":first,
+                                "requiresStateRefresh":true
+                            }).to_string()));
+                        }
+                    }
+                    for recovered in missed {
+                        let seq = recovered["seq"].as_u64().unwrap_or(0);
+                        if seq <= last { continue; }
+                        last = seq;
+                        yield Ok(Event::default().id(seq.to_string()).data(recovered.to_string()));
                     }
                 }
                 Err(_) => break,
