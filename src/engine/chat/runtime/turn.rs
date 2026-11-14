@@ -107,22 +107,22 @@ fn absorb_owner_steering(
     }
     *owner_min_op_seq=op_seq;
     *acceptance=prepare_owner_action(state,owner_input);
-    metadata["replyToMessageId"]=json!(owner_source);
+    metadata["replyToMessageId"]=json!(owner_source.as_deref());
     if let Some(mut execution)=state.store.get("execution",execution_id) {
         execution["ownerSteered"]=json!(true);
-        execution["activeOwnerMessageId"]=json!(owner_source);
+        execution["activeOwnerMessageId"]=json!(owner_source.as_deref());
         execution["ownerSteeredAtOpSeq"]=json!(op_seq);
         execution["planSuperseded"]=json!(true);
         execution["acceptanceText"]=acceptance.as_ref().map(|(text,_)|json!(text))
             .unwrap_or(Value::Null);
         execution["acceptanceChecks"]=acceptance.as_ref().map(|(_,checks)|checks.clone())
             .unwrap_or(Value::Null);
-        execution["acceptanceSourceMessageId"]=json!(owner_source);
+        execution["acceptanceSourceMessageId"]=json!(owner_source.as_deref());
         state.store.put("execution",&execution);
     }
     state.store.audit("owner.steer.activated",json!({
         "sessionId":session_id,"executionId":execution_id,
-        "ownerMessageId":owner_source,"afterOpSeq":op_seq,
+        "ownerMessageId":owner_source.as_deref(),"afterOpSeq":op_seq,
         "instructions":claimed.len(),
     }));
     true
