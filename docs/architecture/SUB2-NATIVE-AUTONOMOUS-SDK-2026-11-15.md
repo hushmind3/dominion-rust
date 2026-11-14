@@ -227,3 +227,23 @@ sessions. The result records `attributedSessionCount`. Source: upstream
 This is a fully wired execution-and-evidence path, NOT evidence of a real
 SWE-bench solve without an authorized actual model run plus upstream Docker
 grading. Synthetic graded-report unit fixtures test parser integrity only.
+
+## Paired official benchmark comparison
+
+`scripts/sub2-swebench-compare.mjs` consumes **two** independently graded
+`report.json` files and compares the identical SWE-bench Verified issue IDs
+with identical source repository/base revisions. It requires per-task official
+Docker grade provenance, refuses missing grades, verifies the full instance
+denominator, reports discordant task wins, token usage, and tool calls, and
+only labels the harness comparison `harnessComparisonControlled: true` when
+the recorded provider/model and iteration/token/time budget are identical.
+Estimated or missing usage is not presented as independently counted tokens.
+The companion fixture suite `sub2-swebench-compare.test.mjs` runs in CI.
+
+After real official grading of two benchmark outputs:
+```sh
+node scripts/sub2-swebench-compare.mjs \
+  /absolute/trial-A/report.json /absolute/trial-B/report.json
+```
+The comparison reports observed paired outcomes; it is not evidence of
+frontier performance until the owner runs the two real model trials.
