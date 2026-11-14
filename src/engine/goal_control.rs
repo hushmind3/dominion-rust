@@ -15,7 +15,7 @@ pub(crate) fn remaining_goal_tokens(
     // create a fresh allowance by walking down parentSessionId edges.
     let (root,goal)=state.store.enclosing_goal(session_id)?;
     if !matches!(goal["status"].as_str(),Some("queued"|"running")){return None;}
-    let limit=goal["tokenBudget"].as_u64()?;
+    let limit=goal["tokenBudget"].as_u64().unwrap_or(150_000);
     // Fail closed on SQLite errors rather than interpreting a broken usage
     // ledger as zero tokens spent.
     let observed=match state.store.session_tree_usage(&root){
