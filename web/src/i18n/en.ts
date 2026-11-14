@@ -563,6 +563,8 @@ const en: Record<LocaleKey, string> = {
   'chat.send': 'Send',
   'chat.steer': 'Redirect the running agent',
   'chat.steerQueued': 'New owner instruction recorded. It will take priority at the next decision boundary.',
+  'chat.steerApplied': 'Owner instruction applied · previous plan replaced',
+  'chat.steerDeferred': 'The run finished before it could apply your instruction. The message remains in history.',
   'chat.copy': 'Copy',
   'chat.noModel': 'Model server disconnected',
   'chat.manage': 'Manage connection',
