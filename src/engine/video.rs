@@ -574,10 +574,39 @@ async fn comfy(ctx: &JobContext, input: &Value, dir: &Path) -> Result<Value, Str
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
+/// Verify the frozen approval AGAIN at the actual worker boundary.
+/// Jobs can survive restarts and price/config updates. No paid HTTP request
+/// may begin if the committed quote is missing, mismatched, or exceeds the
+/// owner's immutable approval ceiling. Historical unquoted queued jobs are
+/// review-only, never silently grandfathered into billable execution.
+fn authorize_paid_execution(state:&AppState,input:&Value)->Result<(),String>{
+    if input["engine"]!="ltx" {return Ok(())}
+    let current=if let Some(retake)=input.get("retake").filter(|v|v.is_object()){
+        let source_id=retake["sourceJobId"].as_str()
+            .ok_or("needs_review: 부분 재생성 원본 정보가 없습니다.")?;
+        let source=state.store.get("job",source_id)
+            .ok_or("needs_review: 유료 원본 영상이 없어 실행을 중단합니다.")?;
+        let index=retake["index"].as_u64()
+            .ok_or("needs_review: 부분 재생성 장면 위치가 없습니다.")? as usize;
+        let manifest=film::scenes(state,&source)?;
+        film::retake_quote(&source,&manifest,index)?
+    } else {paid_quote(state,input)?};
+    if input["paidQuote"]["quoteDigest"]!=current["quoteDigest"] ||
+        input["paidQuote"]["totalUsdCents"]!=current["totalUsdCents"] ||
+        input["paidQuote"]["paidCalls"]!=current["paidCalls"] ||
+        input["paidApprovalMaxUsdCents"].as_u64()
+            .is_none_or(|ceiling|ceiling<current["totalUsdCents"].as_u64().unwrap_or(u64::MAX))
+    {
+        return Err("needs_review: 영상 가격·재생성 범위·승인 금액이 작업 등록 후 변경됐습니다. 유료 호출 전에 새 견적 승인이 필요합니다.".into())
+    }
+    Ok(())
+}
+
 pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
+    let input = &job["input"];
+    authorize_paid_execution(&ctx.state,input)?;
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let input = &job["input"];
     let result = if input["engine"] == "comfyui" {
         comfy(ctx, input, &dir).await
     } else if input["engine"] == "runway" {
