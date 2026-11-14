@@ -138,3 +138,28 @@ test('paid retake uses SHA, exact paid call count and frozen KRW ceiling',()=>{
  assert.match(retake,/confirmedPaidCallCount:shot.expectedPaidCalls/)
  assert.match(retake,/maxEstimatedKrw:shot.estimatedRetakeKrw/)
 })
+
+
+test('coding-goal verification rejects tests made stale by later source edits',()=>{
+ const verification=source('src/engine/verification.rs')
+ const goals=source('src/engine/goals.rs')
+ const checks=source('src/engine/goal_checks.rs')
+ assert.match(verification,/fn test_stale_after_write/)
+ assert.match(verification,/pub\(crate\) fn fresh_command_matches/)
+ assert.match(verification,/"command_succeeded" => fresh_command_matches/)
+ assert.match(verification,/fn source_edits_after_a_passing_test_invalidate_old_evidence/)
+ assert.match(goals,/acceptance_gaps_in\(&workdir,&text,&criteria,&evidence\)/)
+ assert.match(goals,/goal_checks::inferred_checks\(&workdir,&text\)/)
+ assert.match(checks,/packageManager/)
+ assert.match(checks,/inferred_project_commands_require_request_and_actual_manifest/)
+})
+
+test('goal continuation atomically commits goal cursor and new runnable checkpoint',()=>{
+ const api=source('src/api/goals.rs')
+ const db=source('src/db.rs')
+ assert.match(api,/state\.store\.transaction_if_status\("goal",&id,expected/)
+ assert.match(api,/"goalState":resume_state/)
+ assert.match(api,/failed_resume_job_write_rolls_back_goal_status_together/)
+ assert.match(db,/pub fn transaction_if_status/)
+ assert.match(db,/tx\.commit\(\)/)
+})
