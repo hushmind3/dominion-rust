@@ -15,7 +15,7 @@ const chat=source('web/src/pages/Chat.tsx')
 
 test('one sidebar entry owns all three connection capabilities',()=>{
  const navigation=shell.split('export const navigation:')[1]?.split('const items=')[0]||''
- assert.equal((navigation.match(/id:'[^']+'/g)||[]).length,14,'all 14 current menu entries remain')
+ assert.equal((navigation.match(/id:'[^']+'/g)||[]).length,15,'all 14 baseline entries plus autonomous goals remain')
  assert.equal((navigation.match(/id:'connections'/g)||[]).length,1)
  assert.doesNotMatch(navigation,/id:'extensions'|id:'capabilities'/)
  assert.match(navigation,/id:'memory'/)
@@ -63,4 +63,32 @@ test('memory still appears as a first-class connected product feature',()=>{
  assert.match(page,/\/api\/memories/)
  assert.match(page,/LearningRecords/)
  assert.match(page,/GrowthDashboard/)
+})
+
+test('autonomous goals are discoverable and durable resume requires owner review',()=>{
+ assert.match(shell,/id:'goals',label:'nav.goals'/)
+ assert.match(app,/page==='goals'&&<GoalsPage\/>/)
+ const goals=source('web/src/pages/Goals.tsx')
+ const workbench=source('web/src/components/GoalWorkbench.tsx')
+ const api=source('src/api/goals.rs')
+ const routes=source('src/api/mod.rs')
+ assert.match(goals,/GoalWorkbench/)
+ assert.match(workbench,/acknowledgeUnknownEffects:true/)
+ assert.match(api,/pub async fn resume_goal/)
+ assert.match(api,/goal.owner_reviewed_resume/)
+ assert.match(routes,/\/api\/goals\/:id\/resume/)
+})
+
+test('owner memory editing enforces transaction, provenance and compare-and-swap',()=>{
+ const api=source('src/api/collections.rs')
+ const db=source('src/db.rs')
+ const memory=source('web/src/pages/Memory.tsx')
+ assert.match(api,/state.store.edit_owner_memory/)
+ assert.match(api,/body.get\("id"\).is_some\(\)/)
+ assert.match(db,/pub fn edit_owner_memory/)
+ assert.match(db,/current\["source"\] != "user"/)
+ assert.match(db,/current\["status"\] != "active"/)
+ assert.match(db,/INSERT INTO audit\(id,event,detail\)/)
+ assert.match(memory,/expectedText:editing.expectedText/)
+ assert.match(memory,/m.source==='user'/)
 })
