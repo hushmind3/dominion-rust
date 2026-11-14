@@ -295,6 +295,12 @@ pub async fn execute(
         }
         "file_write" => {
             let path = PathBuf::from(required_arg(args, "path")?);
+            // Goal-owned worktrees are not an OS sandbox, but absolute-path
+            // writes must not trivially bypass the isolated source checkout.
+            if ctx.workspace!=ctx.state.config.workspace.as_path() {
+                crate::engine::verification::resolve_path_from(
+                    ctx.workspace,&path.to_string_lossy())?;
+            }
             checked_write(
                 ctx,
                 &path,
@@ -311,6 +317,13 @@ pub async fn execute(
                 Some(dir) => PathBuf::from(dir),
                 None => ctx.workspace.to_path_buf(),
             };
+            if ctx.workspace!=ctx.state.config.workspace.as_path() {
+                let root=ctx.workspace.canonicalize().map_err(|e|e.to_string())?;
+                let actual=cwd.canonicalize().map_err(|e|e.to_string())?;
+                if !actual.starts_with(&root) {
+                    return Err("격리 작업의 셸 실행 디렉터리는 해당 Git checkout 내부여야 합니다.".into());
+                }
+            }
             shell(&command, &cwd).await
         }
         "terminal_exec" => {
