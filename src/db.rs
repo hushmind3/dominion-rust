@@ -414,7 +414,7 @@ impl Store {
         self.get("execution", &execution_id)
     }
 
-    /// Compare-and-patch under the connection lock, used to claim queued work.
+    /// Compare-and-patch under the same SQLite connection lock as its read.
     pub fn patch_if(
         &self,
         kind: &str,
@@ -423,7 +423,22 @@ impl Store {
         expected: &Value,
         patch: &Value,
     ) -> Option<Value> {
-        let conn = self.conn.lock().unwrap();
+        self.patch_if_fields(kind, id, &[(field, expected)], patch)
+    }
+
+    /// Multi-field compare-and-swap. A goal may only be sealed if BOTH the
+    /// durable owner revision and the lifecycle status remain unchanged.
+    /// Testing only status lets a concurrent owner instruction be lost.
+    pub fn patch_if_fields(
+        &self,
+        kind: &str,
+        id: &str,
+        expected: &[(&str, &Value)],
+        patch: &Value,
+    ) -> Option<Value> {
+        if expected.is_empty() { return None; }
+        let patch = patch.as_object()?;
+        let conn = self.conn.lock().ok()?;
         let mut record = conn
             .query_row(
                 "SELECT data, id, created_at, updated_at FROM records WHERE kind=?1 AND id=?2",
@@ -431,10 +446,12 @@ impl Store {
                 record_from_row,
             )
             .ok()?;
-        if record.get(field).unwrap_or(&Value::Null) != expected {
+        if expected.iter().any(|(field, value)| {
+            field.is_empty() || record.get(*field).unwrap_or(&Value::Null) != *value
+        }) {
             return None;
         }
-        for (key, value) in patch.as_object()? {
+        for (key, value) in patch {
             if key != "id" {
                 record[key] = value.clone();
             }

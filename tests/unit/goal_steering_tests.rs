@@ -52,3 +52,49 @@ fn direct_instruction_has_its_own_durable_kind_and_supersedes_earlier_plan() {
         "old model plan","an in-flight model plan is never silently overwritten");
     drop(state); std::fs::remove_dir_all(dir).unwrap();
 }
+
+
+#[test]
+fn owner_revision_and_goal_terminal_status_are_one_atomic_cas() {
+    let (state,dir)=fixture();
+    let initial=state.store.put("goal",&json!({
+        "id":"sealing-goal","status":"running","planRevision":0,
+        "appliedPlanRevision":0,"plan":"old model plan"
+    })).unwrap();
+    let original_status=initial["status"].clone();
+    let original_rev=initial["planRevision"].clone();
+    let instruction=submit_instruction(&state,"sealing-goal",0,
+        "주인의 최신 지시를 우선 수행").unwrap();
+    assert_eq!(instruction["planRevision"],1);
+    // A completed report produced under revision 0 may NOT seal revision 1.
+    assert!(state.store.patch_if_fields("goal","sealing-goal",
+        &[("status",&original_status),("planRevision",&original_rev)],
+        &json!({"status":"completed","phase":"complete"})).is_none());
+    let after=state.store.get("goal","sealing-goal").unwrap();
+    assert_eq!(after["status"],"running");
+    assert_eq!(after["ownerPlan"]["plan"],"주인의 최신 지시를 우선 수행");
+    assert_eq!(after["planRevision"],1);
+    // A reviewer may close to review, but cannot claim the unexecuted
+    // direct owner correction as completed work.
+    let reviewed=state.store.patch_if_fields("goal","sealing-goal",
+        &[("status",&json!("running")),("planRevision",&json!(1))],
+        &json!({"status":"needs_review"})).unwrap();
+    assert_eq!(reviewed["status"],"needs_review");
+    assert!(matches!(submit_instruction(&state,"sealing-goal",1,"too late"),
+        Err(SteeringError::Immutable)));
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn terminal_goal_cannot_be_reopened_by_stale_owner_revision() {
+    let (state,dir)=fixture();
+    state.store.put("goal",&json!({"id":"done","status":"running",
+        "planRevision":0})).unwrap();
+    state.store.patch_if_fields("goal","done",
+        &[("status",&json!("running")),("planRevision",&json!(0))],
+        &json!({"status":"completed"})).unwrap();
+    assert!(matches!(submit_instruction(&state,"done",0,"execute again"),
+        Err(SteeringError::Immutable)));
+    assert_eq!(state.store.get("goal","done").unwrap()["planRevision"],0);
+    drop(state);std::fs::remove_dir_all(dir).unwrap();
+}

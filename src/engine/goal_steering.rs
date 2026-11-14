@@ -35,8 +35,11 @@ fn submit_with_kind(state:&AppState,id:&str,expected:u64,content:&str,kind:Steer
     if revision!=expected{return Err(SteeringError::Conflict);}
     let next=revision.checked_add(1).ok_or(SteeringError::Invalid)?;
     let kind_name=match kind {SteeringKind::Plan=>"plan",SteeringKind::Instruction=>"instruction"};
-    let saved=state.store.patch_if("goal",id,"planRevision",
-        goal.get("planRevision").unwrap_or(&Value::Null),
+    // Status and revision must be checked atomically. A late owner edit can
+    // never resurrect a goal after its terminal decision was persisted.
+    let saved=state.store.patch_if_fields("goal",id,
+        &[("status",&goal["status"]),
+          ("planRevision",goal.get("planRevision").unwrap_or(&Value::Null))],
         &json!({"planRevision":next,"ownerPlan":{"revision":next,"plan":content,
             "kind":kind_name,"submittedAt":chrono::Utc::now().to_rfc3339()}}))
         .ok_or(SteeringError::Conflict)?;

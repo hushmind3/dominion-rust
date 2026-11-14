@@ -8,6 +8,17 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Rust owner control: atomic completion barrier
+
+The native agent goal loop now seals terminal decisions using one SQLite
+compare-and-swap over **status + latest owner plan revision**. If a direct
+owner instruction arrives while a model reviewer is working, old-model
+completion is invalidated and the pending correction remains durable.
+Owner instruction submission also compares both fields atomically so no
+late request silently resurrects a completed task. Implementation:
+\`src/db.rs::patch_if_fields\`, \`src/engine/goal_steering.rs\`, and
+\`src/engine/goals.rs::finish\`. Tests: \`tests/unit/goal_steering_tests.rs\`.
+
 ## 2026-11-14 Browser transport / native Rust core
 
 The shipped React app talks to \`POST /api/chat\` through its own

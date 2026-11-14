@@ -538,46 +538,82 @@ fn patch_goal(state: &AppState, id: &str, patch: Value) {
 fn finish(
     context: &JobContext,
     id: &str,
-    status: &str,
-    gaps: Vec<String>,
+    requested_status: &str,
+    original_gaps: Vec<String>,
     error: Option<String>,
 ) -> Value {
-    let cancelled = context
-        .state
-        .store
-        .get("job", &context.job_id)
-        .is_some_and(|job| job["cancelRequested"].as_bool() == Some(true));
-    let prior=context.state.store.get("goal",id).unwrap_or(Value::Null);
-    let mut status=if cancelled||prior["status"]=="cancelled" {"cancelled"} else {status};
-    let mut gaps=gaps;
-    // The independent reviewer is advisory: the final outcome uses a fresh
-    // filesystem/tool check at the exact point the goal is sealed. A file
-    // changed by another process between review and finish cannot pass.
-    let final_report=report::build(&context.state,&prior);
-    if status=="completed" && crate::engine::goal_steering::pending(
-        &context.state,id,prior["appliedPlanRevision"].as_u64().unwrap_or(0)).is_some() {
-        status="needs_review";
-        gaps.push("완료 저장 전에 새로운 사용자 계획이 제출됐습니다. 기존 계획으로 완료 처리하지 않습니다.".into());
-    }
-    if status=="completed" && final_report["accepted"]!=true {
-        status="needs_review";
-        gaps.extend(final_report["gaps"].as_array().into_iter().flatten()
-            .filter_map(Value::as_str).map(str::to_string));
+    // A concurrent direct owner correction can arrive during verification.
+    // The terminal status must therefore commit against the exact owner
+    // revision observed by the verifier, not just the old "running" status.
+    let state = &context.state;
+    let mut latest = state.store.get("goal", id).unwrap_or(Value::Null);
+    let mut result: Option<(Value, Vec<String>, String)> = None;
+    for _ in 0..16 {
+        if !latest.is_object() {
+            break;
+        }
+        let job_cancelled = state.store.get("job", &context.job_id)
+            .is_some_and(|job| job["cancelRequested"] == true);
+        let already_cancelled = latest["status"] == "cancelled";
+        // A different worker/owner may already have sealed this goal. Never
+        // turn its terminal decision back into "running" or overwrite it.
+        if !matches!(latest["status"].as_str(), Some("queued"|"running")) {
+            let status = latest["status"].as_str().unwrap_or("needs_review").to_owned();
+            let gaps = latest["gaps"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).map(str::to_string).collect();
+            result = Some((latest.clone(), gaps, status));
+            break;
+        }
+        let mut status = if job_cancelled || already_cancelled {
+            "cancelled"
+        } else {
+            requested_status
+        };
+        let mut gaps = original_gaps.clone();
+        // Re-evaluate the filesystem evidence against the same record
+        // revision that we are about to compare-and-swap into a terminal state.
+        let final_report = report::build(state, &latest);
+        if status == "completed" && crate::engine::goal_steering::pending(
+            state, id, latest["appliedPlanRevision"].as_u64().unwrap_or(0)
+        ).is_some() {
+            status = "needs_review";
+            gaps.push("사용자의 최신 변경 지시가 아직 실행되지 않았습니다. 기존 계획으로 완료 처리하지 않습니다.".into());
+        }
+        if status == "completed" && final_report["accepted"] != true {
+            status = "needs_review";
+            gaps.extend(final_report["gaps"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).map(str::to_string));
+        }
         gaps.sort();
         gaps.dedup();
+        let patch = json!({
+            "status": status,
+            "phase": if status == "completed" {"complete"} else {status},
+            "gaps": gaps,
+            "error": error,
+            "finalReport": final_report,
+            "finishedAt": chrono::Utc::now().to_rfc3339()
+        });
+        if let Some(saved) = state.store.patch_if_fields("goal", id,
+            &[("status", &latest["status"]),
+              ("planRevision", &latest["planRevision"])],
+            &patch
+        ) {
+            state.bus.record("goal", &saved);
+            result = Some((saved, gaps, status.to_owned()));
+            break;
+        }
+        // An owner instruction or stop command raced with the verifier.
+        // Refresh and retry; never assert completion using stale evidence.
+        latest = state.store.get("goal", id).unwrap_or(Value::Null);
     }
-    patch_goal(
-        &context.state,
-        id,
-        json!({"status":status,"phase":if status=="completed" {"complete"} else {status},
-            "gaps":gaps,"error":error,"finalReport":final_report,
-            "finishedAt":chrono::Utc::now().to_rfc3339()}),
-    );
-    let goal = context
-        .state
-        .store
-        .get("goal", id)
-        .unwrap_or_else(|| json!({}));
+    let Some((goal, gaps, status)) = result else {
+        state.store.audit("goal.finish_revision_conflict", json!({
+            "goalId":id,"jobId":context.job_id
+        }));
+        return json!({"goalId":id,"status":"needs_review",
+            "error":"목표 완료 중 사용자 지시가 변경됐습니다. 최신 상태를 다시 조회하세요."});
+    };
     // Runtime task evidence contributes to the next RSI research hypothesis,
     // but is never recorded as an independently evaluated RSI improvement.
     crate::engine::goal_feedback::record(&context.state,&context.job_id,&goal);
@@ -592,7 +628,9 @@ fn finish(
     }
     context.state.store.audit(
         "goal.finished",
-        json!({"goalId":id,"status":status,"iterations":goal.get("iterations")}),
+        json!({"goalId":id,"status":status,"iterations":goal.get("iterations"),
+            "planRevision":goal["planRevision"],
+            "appliedPlanRevision":goal["appliedPlanRevision"]}),
     );
     if goal["status"] == "completed" {
         if let Some(session_id) = goal["sessionId"].as_str().filter(|id| !id.is_empty()) {
