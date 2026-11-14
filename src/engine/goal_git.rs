@@ -84,12 +84,22 @@ pub(crate) fn workspace_for_session(state:&AppState,session_id:&str)->Result<Pat
     let Some(goal)=state.store.get("goal",&id) else {
         return Err("연결된 목표가 삭제되었습니다.".into());
     };
-    if goal["gitWorktree"].is_null(){return Ok(state.config.workspace.clone());}
+    if goal["gitWorktree"].is_null(){
+        if goal["isolateWorktree"]==true {
+            return Err("격리 목표의 작업공간이 아직 준비되지 않았습니다.".into());
+        }
+        return Ok(state.config.workspace.clone());
+    }
     checked_path(state,&id,&goal)
 }
 pub(crate) fn workspace_for_goal(state:&AppState,goal:&Value)->Result<PathBuf,String>{
     let Some(id)=goal["id"].as_str() else{return Err("목표 식별자가 없습니다.".into());};
-    if goal["gitWorktree"].is_null(){return Ok(state.config.workspace.clone());}
+    if goal["gitWorktree"].is_null(){
+        if goal["isolateWorktree"]==true {
+            return Err("격리 목표의 작업공간이 아직 준비되지 않았습니다.".into());
+        }
+        return Ok(state.config.workspace.clone());
+    }
     checked_path(state,id,goal)
 }
 fn checked_path(state:&AppState,id:&str,goal:&Value)->Result<PathBuf,String>{
@@ -121,6 +131,9 @@ pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
 }
 pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
+    if goal["gitWorktree"]["applied"]==true {
+        return Err("원본에 이미 반영한 작업입니다. 작업공간 삭제가 반영 커밋을 되돌리는 것으로 오인되지 않도록 자동 폐기를 차단합니다.".into());
+    }
     if matches!(goal["status"].as_str(),Some("running"|"queued")){
         return Err("진행 중인 작업을 먼저 중단하세요.".into());
     }
