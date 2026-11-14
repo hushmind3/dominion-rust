@@ -76,7 +76,14 @@ pub(super) fn record_generation_feedback(
                 // candidate pending for the next already scheduled generation.
                 if outcome["status"] == "not_used" {
                     record["nextTrialAlgorithmId"] = json!(id);
-                } else if outcome["status"] == "pending_second_trial" {
+                } else if outcome["status"] == "pending_second_trial"
+                    || (outcome["status"] == "inconclusive"
+                        && outcome["reason"] == "comparable_baseline_missing")
+                {
+                    // Missing independent comparison is a measurement
+                    // infrastructure problem, not a failed candidate.
+                    // Retain its identity until the next eligible active
+                    // control is collected, without promoting the candidate.
                     record["nextTrialAlgorithmId"] = json!(id);
                 }
                 generation["trialOutcome"] = outcome;
