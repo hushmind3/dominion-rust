@@ -172,7 +172,7 @@ export function GoalConsole({openSession}:{openSession:(id:string)=>void}){
        <p className="mt-1 text-[10px] text-[#8A8176]">기록된 사용량 기준이며 미보고 캐시·실제 결제액은 추정하지 않습니다.</p>
       </section>}
       <GoalChanges goalId={goal.id} finished={!running(goal.status)}/>
-      {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>
+      {job&&<small className="text-[10px] text-[#8A8176]">작업 큐: {job.status} · 체크포인트 {job.stepIndex||0}/{job.stepTotal||goal.maxIterations||12}</small>}
      </div>}
     </Panel>
    })}
