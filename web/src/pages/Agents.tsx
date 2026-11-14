@@ -55,7 +55,8 @@ const accents = [
 export function AgentsPage() {
   useLocale();
   const agents = useRemote<Agent[]>("/api/agents", []),
-    providers = useRemote<Provider[]>("/api/providers", []);
+    providers = useRemote<Provider[]>("/api/providers", []),
+    skills = useRemote<{id:string;name:string;description?:string;enabled?:boolean;status?:string}[]>("/api/skills", []);
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
     [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
@@ -67,6 +68,7 @@ export function AgentsPage() {
     [bulkBusy, setBulkBusy] = useState(false),
     [bulkNotice, setBulkNotice] = useState("");
   const enabledProviders = providers.value.filter(p => p.enabled !== false);
+  const activeSkills=skills.value.filter(skill=>skill.enabled!==false&&skill.status!=="draft");
   const editProvider = enabledProviders.find(p => p.id === edit?.providerId);
   const editModels = useProviderModels(edit?.providerId || "");
   const bulkModels = useProviderModels(bulk ? bulkProvider : "");
@@ -320,7 +322,7 @@ export function AgentsPage() {
                 {providers.value.find((p) => p.id === a.providerId)?.name ||
                   (a.providerId ? t('agents.providerMissing') : t('agents.modelInChat'))}
               </span>
-              {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}
+              {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}{a.skillIds&&<span className="text-[11px]">전담 스킬 {a.skillIds.length}개 · {a.skillIds.map(id=>skills.value.find(skill=>skill.id===id)?.name||"비활성 스킬").join(", ")||"없음"}</span>}
               <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
             </div>
           </Panel>
@@ -456,6 +458,21 @@ export function AgentsPage() {
                     </Button>
                   )}
                 </div>
+              </FormField>
+              <FormField label="에이전트 전담 스킬" hint="연결에서 활성화한 스킬을 이 에이전트에 지정합니다. 선택한 스킬만 채팅·그룹대화·워크플로 문맥에 전달됩니다.">
+                <div className="max-h-40 space-y-2 overflow-auto rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+                  {activeSkills.length?activeSkills.map(skill=>{
+                    const checked=(edit.skillIds||[]).includes(skill.id);
+                    return <label key={skill.id} className="flex cursor-pointer items-start gap-2 text-[12px]">
+                      <input type="checkbox" className="mt-0.5 accent-[#C96442]"
+                        checked={checked} disabled={saving||(!checked&&(edit.skillIds||[]).length>=5)}
+                        onChange={e=>setEdit({...edit,skillIds:e.target.checked?
+                          [...(edit.skillIds||[]),skill.id]:(edit.skillIds||[]).filter(id=>id!==skill.id)})}/>
+                      <span><strong>{skill.name}</strong>{skill.description&&<small className="ml-2 text-[#998D7D]">{skill.description}</small>}</span>
+                    </label>
+                  }):<p className="text-[12px] text-[#91806D]">활성 스킬이 없습니다. 연결 → 스킬에서 설치·활성화하세요.</p>}
+                </div>
+                <p className="mt-1 text-[11px] text-[#91806D]">선택 {(edit.skillIds||[]).length}/5 · 기존 에이전트는 저장 전까지 원래 공유 스킬 동작을 유지합니다.</p>
               </FormField>
               <FormField label={t('agents.instructions')} hint={t('agents.instructions.hint')}>
                 <TextArea
