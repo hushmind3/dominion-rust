@@ -426,6 +426,70 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     }
     actual.trim() == command.trim()
 }
+/// A test command verifies the source state AT THAT POINT, not a future
+/// modified state. Reusing a passing test from before the last source write is
+/// a false positive on multi-turn autonomous coding tasks.
+fn source_mutation(item: &Value) -> bool {
+    if !successful_evidence(item) { return false; }
+    let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
+    match tool_name(item) {
+        "workspace_write" | "workspace_replace" | "workspace_replace_range"
+        | "workspace_replace_function" | "file_write" => true,
+        "shell_exec" | "terminal_exec" => {
+            let command=string(args,"command").to_lowercase();
+            let argv=args["args"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
+            let full=if argv.is_empty(){command.clone()}else{format!("{command} {argv}")};
+            // Direct source-mutation shell commands are not file_write tools.
+            // Keep this list conservative; avoid classifying test/build commands
+            // as writes merely because they execute a compiler.
+            full.starts_with("git apply ")
+                || full.starts_with("cargo fmt")
+                || full.starts_with("go fmt")
+                || full.starts_with("gofmt -w")
+                || full.starts_with("rustfmt ")
+                || full.starts_with("sed -i")
+                || full.starts_with("perl -pi")
+                || full.starts_with("npm run format")
+                || full.starts_with("pnpm format")
+                || full.starts_with("yarn format")
+                || full.starts_with("tee ")
+                || full.contains(" > ")
+        }
+        _ => false,
+    }
+}
+
+/// Determines if a successful later edit invalidates a prior test receipt.
+/// opSeq is authoritative inside one execution. RFC3339 timestamps order
+/// receipts across successive goal iterations/executions. Missing chronology
+/// fails closed: an unsequenced write cannot validate an older test.
+fn test_stale_after_write(test: &Value, write: &Value) -> bool {
+    let same_run=test["runId"].as_str().is_some_and(|id|
+        !id.is_empty() && write["runId"].as_str()==Some(id));
+    if same_run {
+        if let (Some(check),Some(edit))=(test["opSeq"].as_u64(),write["opSeq"].as_u64()){
+            return edit>check;
+        }
+    }
+    let check_time=test["startedAt"].as_str().or_else(||test["finishedAt"].as_str())
+        .and_then(|time|chrono::DateTime::parse_from_rfc3339(time).ok());
+    let write_time=write["finishedAt"].as_str().or_else(||write["startedAt"].as_str())
+        .and_then(|time|chrono::DateTime::parse_from_rfc3339(time).ok());
+    match (check_time,write_time) {
+        (Some(check),Some(edit)) => edit>=check,
+        // A later unsequenced edit cannot safely preserve the test's guarantee.
+        _ => true,
+    }
+}
+
+pub(crate) fn fresh_command_matches(evidence: &[Value], command: &str) -> bool {
+    evidence.iter().filter(|item|command_matches(item,command)).any(|test| {
+        !evidence.iter().filter(|item|source_mutation(item))
+            .any(|write| test_stale_after_write(test,write))
+    })
+}
+
 pub(crate) fn acceptance_gaps(
     state: &AppState,
     goal: &str,
@@ -482,9 +546,9 @@ pub(crate) fn acceptance_gaps(
             "tool_succeeded" => evidence.iter().any(|item| {
                 successful_evidence(item) && tool_name(item) == check["tool"].as_str().unwrap_or("")
             }),
-            "command_succeeded" => evidence
-                .iter()
-                .any(|item| command_matches(item, check["command"].as_str().unwrap_or(""))),
+            "command_succeeded" => fresh_command_matches(
+                evidence, check["command"].as_str().unwrap_or(""),
+            ),
             _ => false,
         };
         if !passed {
