@@ -301,22 +301,24 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
-        if turn_error.is_some()
-            && state.store.all("execution_operation").iter().any(|op| {
-                state
-                    .store
-                    .get("execution", op["runId"].as_str().unwrap_or(""))
-                    .is_some_and(|run| run["sessionId"] == session_id)
-                    && (op["outcomeUnknown"] == true
-                        || matches!(op["status"].as_str(), Some("running" | "interrupted")))
-            })
-        {
+        // Tool execution may have left an unknown external side effect even
+        // when the model turn itself returned Ok. Always inspect persisted
+        // operations before the next executor turn, not only on model errors.
+        // A database read failure also fails closed: never reissue a possibly
+        // paid, destructive, or otherwise irreversible tool command blindly.
+        let unresolved=match state.store.session_has_uncertain_effects(&session_id){
+            Ok(value)=>value,
+            Err(error)=>return Ok(finish(
+                context,goal_id,"needs_review",
+                vec![format!("도구 실행 기록을 확인하지 못했습니다: {error}. 확인 후 재개하세요.")],
+                turn_error
+            ))
+        };
+        if unresolved{
             return Ok(finish(
-                context,
-                goal_id,
-                "needs_review",
-                vec!["중단된 도구의 외부 결과를 확인해야 합니다. 자동 재실행하지 않습니다.".into()],
-                turn_error,
+                context,goal_id,"needs_review",
+                vec!["도구 작업의 외부 결과가 미확정입니다. 실제 상태를 확인한 뒤 재개하세요. 자동 재실행하지 않습니다.".into()],
+                turn_error
             ));
         }
         if let Some(message) = message {
