@@ -8,6 +8,7 @@ const ko = {
   'nav.rooms': '그룹 대화 · 회의',
   'nav.models': '모델 관리',
   'nav.agents': '에이전트',
+  'nav.goals': '자율 목표',
   'nav.video': '영상 제작',
   'nav.connections': '연결 · 채널',
   'nav.extensions': 'MCP · 스킬',
