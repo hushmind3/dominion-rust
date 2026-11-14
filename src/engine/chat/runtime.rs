@@ -27,6 +27,7 @@ mod intent;
 mod turn;
 mod adaptation;
 mod tool_catalog;
+mod tool_route;
 mod execution_program;
 mod dispatch;
 mod planning;
