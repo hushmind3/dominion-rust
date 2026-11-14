@@ -45,18 +45,45 @@ pub(crate) fn authorize(state:&AppState,input:&Value)->Result<Value,String>{
     }))
 }
 fn read_receipts(workspace:&Path,proofs:&Value)->Result<Vec<Value>,String>{
+    use std::collections::BTreeMap;
     let Some(records)=proofs.as_array().filter(|r|!r.is_empty()&&r.len()<=40)else{
         return Err("실제 파일 수정 증거가 없습니다.".into())
     };
-    let mut verified=Vec::new();
-    for proof in records {
+    // SDKs legitimately edit the SAME file multiple times. Every intermediate
+    // SHA is a chain claim; only the FINAL SHA is independently checkable
+    // against the live disk. Comparing each intermediate to the final bytes
+    // falsely rejected successful iterative patches.
+    let mut last_by_path=BTreeMap::<String,(usize,String)>::new();
+    let mut admitted=Vec::new();
+    for (index,proof) in records.iter().enumerate(){
         let relative=proof["path"].as_str().ok_or("수정 파일 경로가 없습니다.")?;
         let path=Path::new(relative);
-        if path.is_absolute()||relative.contains('\\')||path.components().any(|piece|
-            !matches!(piece,std::path::Component::Normal(_))){
+        if path.is_absolute()||relative.contains('\\')||relative.len()>512||
+            path.components().any(|piece|
+                !matches!(piece,std::path::Component::Normal(_))){
             return Err("파일 수정 영수증에 잘못된 경로가 있습니다.".into())
         }
-        let absolute=std::fs::canonicalize(workspace.join(path))
+        if !matches!(proof["tool"].as_str(),Some("workspace_write"|"workspace_replace"))
+            ||proof["changed"]!=true{
+            return Err("수정 도구 종류 또는 실행 여부를 증명하지 못했습니다.".into())
+        }
+        let digest=proof["afterSha256"].as_str()
+            .filter(|value|value.len()==64&&value.bytes().all(|c|c.is_ascii_hexdigit()))
+            .ok_or("SDK가 올바른 수정 해시를 남기지 않았습니다.")?;
+        if let Some((_,prior))=last_by_path.get(relative){
+            if proof["beforeSha256"].as_str()!=Some(prior.as_str()){
+                return Err("SDK 파일 수정 이력의 SHA 연결이 끊어졌습니다.".into())
+            }
+        }
+        last_by_path.insert(relative.to_string(),(index,digest.to_lowercase()));
+        admitted.push(json!({
+            "path":relative,"sha256":digest.to_lowercase(),
+            "beforeSha256":proof["beforeSha256"],"tool":proof["tool"],
+            "verification":"sdk_claim_sha256_chained",
+        }));
+    }
+    for (relative,(index,expected)) in last_by_path {
+        let absolute=std::fs::canonicalize(workspace.join(&relative))
             .map_err(|_|"SDK 기록의 수정 파일이 사라졌습니다.")?;
         if !absolute.starts_with(workspace)||!absolute.is_file(){
             return Err("수정 파일이 승인된 작업공간을 벗어났습니다.".into())
@@ -64,16 +91,13 @@ fn read_receipts(workspace:&Path,proofs:&Value)->Result<Vec<Value>,String>{
         let data=std::fs::read(&absolute).map_err(|e|e.to_string())?;
         if data.len()>100_000{return Err("SDK가 제한보다 큰 파일을 기록했습니다.".into())}
         let actual=format!("{:x}",Sha256::digest(&data));
-        if proof["afterSha256"].as_str()!=Some(actual.as_str())||proof["changed"]!=true{
-            return Err("SDK가 신고한 파일 해시와 실제 디스크가 다릅니다.".into())
+        if actual!=expected{
+            return Err("SDK의 최종 파일 SHA와 실제 디스크의 SHA가 다릅니다.".into())
         }
-        verified.push(json!({
-            "path":relative,"sha256":actual,"bytes":data.len(),
-            "beforeSha256":proof["beforeSha256"],"tool":proof["tool"],
-            "verification":"rust_disk_sha256",
-        }));
+        admitted[index]["bytes"]=json!(data.len());
+        admitted[index]["verification"]=json!("rust_final_disk_sha256");
     }
-    Ok(verified)
+    Ok(admitted)
 }
 pub async fn run(context:&JobContext,job:&Value)->Result<Value,String>{
     // Unknown external process outcome after crash: never auto-replay edits.
@@ -200,6 +224,28 @@ mod tests {
         assert!(local_server("https://api.example.com/v1").is_err());
         assert!(local_server("http://192.168.0.1:11434/v1").is_err());
         assert!(local_server("http://user:pw@127.0.0.1/v1").is_err());
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn iterative_edits_of_one_file_validate_final_sha_not_intermediate_bytes(){
+        let (_state,root)=state();
+        std::fs::write(root.join("x.txt"),"third version").unwrap();
+        let old=format!("{:x}",Sha256::digest(b"first version"));
+        let mid=format!("{:x}",Sha256::digest(b"second version"));
+        let last=format!("{:x}",Sha256::digest(b"third version"));
+        let history=json!([
+            {"tool":"workspace_write","path":"x.txt","changed":true,
+                "beforeSha256":old,"afterSha256":mid},
+            {"tool":"workspace_replace","path":"x.txt","changed":true,
+                "beforeSha256":mid,"afterSha256":last},
+        ]);
+        let output=read_receipts(&root,&history).unwrap();
+        assert_eq!(output.len(),2);
+        assert_eq!(output[0]["verification"],"sdk_claim_sha256_chained");
+        assert_eq!(output[1]["verification"],"rust_final_disk_sha256");
+        let mut tampered=history.clone();
+        tampered[1]["beforeSha256"]=json!("broken-chain");
+        assert!(read_receipts(&root,&tampered).is_err());
         let _=std::fs::remove_dir_all(root);
     }
     #[test]
