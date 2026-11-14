@@ -8,9 +8,9 @@ import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 type Agent={id:string;name:string;model?:string}
 type CheckResult={type?:string;path?:string|null;command?:string|null;passed?:boolean;gaps?:string[]}
 type Artifact={path:string;bytes:number;sha256?:string;hashOmitted?:boolean}
-type GoalReport={accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
+type GoalReport={accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;tokenBudget?:number;sessionUsage?:{calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;cachedPromptTokens?:number};operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
 type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;jobId?:string;sessionId?:string;plan?:string;
- iterations?:number;maxIterations?:number;replans?:number;planHistory?:{version:number;plan:string}[];
+ iterations?:number;maxIterations?:number;tokenBudget?:number;replans?:number;planHistory?:{version:number;plan:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  evidence?:unknown[];gaps?:string[];acceptanceChecks?:unknown[];finalReport?:GoalReport}
 type Job={id:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;result?:{status?:string;finalReport?:GoalReport}}
@@ -22,6 +22,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
  const [goalText,setGoalText]=useState('')
  const [agentId,setAgentId]=useState('')
  const [kind,setKind]=useState<VerifyKind>('auto')
+ const [tokenBudget,setTokenBudget]=useState(150000)
  const [criterion,setCriterion]=useState('')
  const [selectedId,setSelectedId]=useState('')
  const [editedPlan,setEditedPlan]=useState('')
@@ -54,7 +55,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
    if(kind!=='auto'&&!criterion.trim())throw new Error('검증 조건을 입력하세요.')
    const data=await post<Goal>('/api/goals',{goal:goalText.trim(),
     executor:agentId?{agentId}:{},successCriteria:criteria,
-    maxIterations:16,maxReplans:6,replanAfter:2})
+    maxIterations:16,maxReplans:6,replanAfter:2,tokenBudget})
    setSelectedId(data.id);setGoalText('');setCriterion('')
    await goals.reload();setNotice('목표를 등록하고 자율 실행 대기열에 넣었습니다.')
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
@@ -99,6 +100,8 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
      <FormField label="무엇을 완성할까요?"><TextArea rows={5} value={goalText} onChange={e=>setGoalText(e.target.value)} placeholder="예: 이 프로젝트의 로그인 오류를 찾아 수정하고 검증 결과를 보고해 주세요."/></FormField>
      <FormField label="실행 담당 에이전트"><SelectInput value={agentId} onChange={e=>setAgentId(e.target.value)}><option value="">기본 실행 모델 사용</option>{agents.value.map(agent=><option key={agent.id} value={agent.id}>{agent.name}{agent.model?' · '+agent.model:''}</option>)}</SelectInput></FormField>
      <FormField label="완료 검증 조건"><SelectInput value={kind} onChange={e=>setKind(e.target.value as VerifyKind)}><option value="auto">요청에서 자동 추론</option><option value="file_exists">파일 존재</option><option value="file_changed">파일 변경</option><option value="command_succeeded">명령어 성공 (실제 실행 로그)</option></SelectInput></FormField>
+     <FormField label="목표 실행 토큰 예산" hint={undefined}><TextInput type="number" min={0} max={2000000} step={10000} value={tokenBudget} onChange={e=>setTokenBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
+     <p className="text-[11px] leading-5 text-[#8A8176]">기본 15만 토큰. 0은 제한 없음. Provider가 기록한 세션 실행 사용량을 기준으로 다음 턴을 제한하며, 별도 계획·검토 호출의 전체 청구액 상한은 아닙니다.</p>
      {kind!=='auto'&&<FormField label={kind==='command_succeeded'?'검증 명령어':'워크스페이스 파일 경로'}><TextInput value={criterion} onChange={e=>setCriterion(e.target.value)} placeholder={kind==='command_succeeded'?'cargo test': 'src/main.rs'}/></FormField>}
      <Button disabled={busy||!goalText.trim()} onClick={()=>void start()}><Play size={15}/> 목표 실행</Button>
      <p className="text-[11px] leading-5 text-[#8A8176]">검증 명령어를 선택하면 실제 성공 기록이 있어야 완료됩니다. 실행 중 도구 승인 정책은 기존 엔진 설정을 따릅니다.</p>
@@ -115,7 +118,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
     {!selected?<Panel className="p-8 text-center text-sm text-[#8A8176]">목표를 만들면 계획·도구 실행·검증 결과가 이곳에 표시됩니다.</Panel>:<>
      <Panel className="space-y-4 p-5">
       <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-[11px] font-semibold text-[#8A8176]">실행 작업 · {selected.id.slice(0,10)}</p><h2 className="mt-1 text-lg font-bold">{selected.goal}</h2></div><StatusPill status={selected.status}>{selected.status}</StatusPill></div>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-[#7C7469]"><span>단계: {selected.phase||'대기'}</span><span>반복 {selected.iterations||0}/{selected.maxIterations||16}</span><span>재계획 {selected.replans||0}회</span>{job?.status&&<span>작업: {job.status} ({job.stepIndex||0}/{job.stepTotal||16})</span>}</div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[#7C7469]"><span>단계: {selected.phase||'대기'}</span><span>반복 {selected.iterations||0}/{selected.maxIterations||16}</span><span>재계획 {selected.replans||0}회</span><span>토큰 예산 {selected.tokenBudget===0?'제한 없음':(selected.tokenBudget||150000).toLocaleString()}</span>{job?.status&&<span>작업: {job.status} ({job.stepIndex||0}/{job.stepTotal||16})</span>}</div>
       <div className="flex flex-wrap gap-2">{selected.sessionId&&<Button variant="ghost" onClick={()=>openSession(selected.sessionId!)}>실제 실행 대화 보기 <ArrowRight size={14}/></Button>}{active&&<Button variant="ghost" disabled={busy} onClick={()=>void stop()}><Square size={13}/> 중단</Button>}
        {(selected.status==='needs_review'||selected.status==='failed')&&<Button variant="ghost" disabled={busy} onClick={()=>void resume()}><RotateCw size={14}/> 외부 결과 확인 후 이어가기</Button>}
        {!active&&<Button variant="ghost" disabled={busy} onClick={()=>void remove()}><Trash2 size={14}/> 기록 삭제</Button>}</div>
@@ -127,6 +130,7 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
      </Panel>
      <Panel className="space-y-3 p-5"><h3 className="flex items-center gap-2 text-sm font-bold"><ShieldCheck size={16}/> 검증·증거</h3>
       {report?<><p className={'text-xs font-bold '+(report.accepted?'text-emerald-700':'text-amber-700')}>{report.accepted?'최종 검증 조건 충족':'미충족 검증 조건 존재'} · 성공 도구 {report.successfulToolEvidence}/{report.toolEvidenceRecorded}</p>
+       {report.sessionUsage&&<p className="text-xs text-[#7C7469]">모델 실행 사용량 {Number(report.sessionUsage.totalTokens||0).toLocaleString()}토큰 · {Number(report.sessionUsage.calls||0)}회 · 캐시 적중 입력 {Number(report.sessionUsage.cachedPromptTokens||0).toLocaleString()}토큰</p>}
        {report.checks.map((check,i)=><div key={i} className="flex items-start gap-2 rounded-lg bg-[#FAF7F1] p-3 text-xs"><span>{check.passed?'✅':'⚠️'}</span><span><strong>{check.type}</strong> {check.path||check.command}{check.gaps?.map((g,j)=><small key={j} className="block text-[#9A5947]">{g}</small>)}</span></div>)}
        {!!report.artifacts.length&&<div><h4 className="mb-2 text-xs font-semibold">확인된 파일 산출물</h4>{report.artifacts.map(file=><div key={file.path} className="mb-2 rounded-lg border border-[#EEE5D9] p-3 text-xs"><FileCheck2 size={14} className="mr-2 inline"/><strong>{file.path}</strong><span className="ml-2 text-[#8A8176]">{file.bytes.toLocaleString()} bytes</span>{file.sha256&&<code className="mt-1 block break-all text-[10px] text-[#8A8176]">SHA-256 {file.sha256}</code>}</div>)}</div>}
        {!!report.operations.length&&<details className="text-xs"><summary className="cursor-pointer">성공한 실행 도구 {report.operations.length}개</summary>{report.operations.map((op,i)=><p key={i} className="mt-2 rounded-md bg-[#FAF7F1] p-2">{op.tool}{op.path?' · '+op.path:''}{op.exitCode!==undefined?' · 종료 코드 '+op.exitCode:''}</p>)}</details>}
