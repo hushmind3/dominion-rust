@@ -12,14 +12,14 @@ const memory=read('web/src/pages/Memory.tsx')
 const api=read('src/api/mod.rs')
 const collections=read('src/api/collections.rs')
 
-test('sidebar exposes 14 unique top-level items with a single connection entry',()=>{
+test('sidebar exposes 15 unique top-level items with goals and one connection entry',()=>{
  const navigation=nav.match(/export const navigation:[\s\S]*?\n\]/)?.[0]||''
  const ids=[...navigation.matchAll(/\{id:'([^']+)',label:'nav\.[^']+',icon:/g)].map(match=>match[1])
- assert.equal(ids.length,14)
- assert.equal(new Set(ids).size,14)
+ assert.equal(ids.length,15)
+ assert.equal(new Set(ids).size,15)
  assert.equal(ids.filter(id=>id==='connections').length,1)
  for(const hidden of ['extensions','capabilities'])assert.equal(ids.includes(hidden),false)
- for(const required of ['memory','rsi','video','rooms','models','agents','developer','workflows'])
+ for(const required of ['memory','rsi','video','rooms','models','agents','goals','developer','workflows'])
   assert.ok(ids.includes(required),'missing '+required)
 })
 
@@ -54,4 +54,32 @@ test('manual memory edits have a verified server path, not a decorative control'
  assert.ok(collections.includes('("memory", "edit")'))
  assert.ok(collections.includes('StatusCode::CONFLICT'))
  assert.ok(collections.includes('StatusCode::FORBIDDEN'))
+})
+
+test('standalone goals keep durable workflow console, cancellation and reviewed resume',()=>{
+ const goalPage=read('web/src/pages/Goals.tsx')
+ const goalConsole=read('web/src/pages/workflows/GoalConsole.tsx')
+ const goalsAPI=read('src/api/goals.rs')
+ const runner=read('src/engine/goals.rs')
+ assert.ok(app.includes("{page==='goals'&&<GoalsPage"))
+ assert.ok(goalPage.includes('<GoalConsole openSession={openSession}/>'))
+ assert.ok(goalConsole.includes("+'/cancel'"))
+ assert.ok(goalConsole.includes("+'/resume'"))
+ assert.ok(goalConsole.includes('acknowledgeUnknownEffects:true'))
+ assert.ok(goalConsole.includes('tokenBudget'))
+ for(const route of ['/api/goals/:id/cancel','/api/goals/:id/resume'])
+  assert.ok(api.includes(route),'missing '+route)
+ assert.ok(goalsAPI.includes('enqueue_once'))
+ assert.ok(runner.includes('resumeCheckpoint'))
+ assert.ok(runner.includes('expected_status'))
+})
+
+test('memory edits are one atomic store transaction including provenance guard',()=>{
+ const db=read('src/db.rs')
+ assert.ok(collections.includes('edit_manual_memory(&id, expected, text)'))
+ assert.ok(db.includes('pub fn edit_manual_memory'))
+ assert.ok(db.includes('conn.transaction()'))
+ assert.ok(db.includes('record["source"] != "user"'))
+ assert.ok(db.includes('record["status"]'))
+ assert.ok(db.includes('"memory.manual_edit"')||db.includes("'memory.manual_edit'"))
 })
