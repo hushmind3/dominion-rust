@@ -212,3 +212,14 @@ CAS 스케줄 판단을 그대로 적용합니다. 작업 이력 보관과 API �
 Rust 회귀는 `tool_discovery::tests` 3개로 허가 목록 격리,
 검색 후 공개 및 총 스키마 바이트 상한, 불필요한 오버헤드 부재를 확인합니다.
 2026-07-28 MCP 공식: https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/docs/2026-07-28/develop/clients/client-best-practices.mdx
+
+
+## 2026-11-15 · 코드 위치 정보 정확성 및 원가 개선
+
+실제 모델 원본 읽기 기반 코드 패치에 영향을 주는 `workspace_read_range`의
+시작 인덱스 오프바이원 오류를 수정했습니다. 잘못된 줄 번호나 범위 밖 요청은
+이전 줄을 재표시하는 대신 오류로 처리하며, 회귀 테스트에서 3행 파일의
+3행 단독 읽기·2~3행 읽기·4행/역순 범위 실패를 검증합니다.
+일반 작업·독립 RSI 모두 4곳의 전체 `execution_operation` 순회 대신
+`runId` 인덱스 조회를 적용하고 기존 `opSeq` 정렬/검증 조건을 보존했습니다.
+오류를 0건 이력으로 삼키지 않고 DB 오류를 상위 실행으로 전달합니다.

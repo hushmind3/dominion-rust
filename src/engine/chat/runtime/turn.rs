@@ -997,12 +997,10 @@ pub(super) async fn run_turn_body(
         }
         if session["rsiRun"]==true && session["rsiSystemEvolution"]!=true && !force_final {
             let tool_calls = metrics.lock().unwrap().tool_calls as u64;
-            let mut all_operations = state.store.all("execution_operation").into_iter()
-                .filter(|operation| operation["runId"].as_str() == Some(execution_id))
-                .collect::<Vec<_>>();
-            // The generic store returns most-recently-updated first. A
-            // program must consume operations in true execution order:
-            // failed edit -> fresh read means recovery, not another failure.
+            let mut all_operations = state.store.execution_operations(execution_id)?;
+            // Preserve operation chronology: failed edit -> fresh read means
+            // recovery, not another failure. The indexed query avoids scanning
+            // unrelated historical executions in each model round.
             all_operations.sort_by_key(|operation|
                 operation["opSeq"].as_u64().unwrap_or(u64::MAX));
             let completed = all_operations.iter().filter(|operation|
@@ -1403,9 +1401,8 @@ pub(super) async fn run_turn_body(
             if (session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true
                     || session["rsiFocusFiles"].as_array().is_some_and(|files|!files.is_empty()))
                 && !rsi_edit_retry && round + 1 < max_rounds {
-                let completed = state.store.all("execution_operation").into_iter()
-                    .filter(|operation| operation["runId"].as_str() == Some(execution_id)
-                        && operation["status"].as_str() == Some("completed"))
+                let completed = state.store.execution_operations(execution_id)?
+                    .into_iter().filter(|operation|operation["status"]=="completed")
                     .collect::<Vec<_>>();
                 let has_write = completed.iter().any(rsi_verified_write_operation);
                 let has_read = completed.iter().any(|operation| matches!(
@@ -1506,14 +1503,8 @@ pub(super) async fn run_turn_body(
                 }
             }
             {
-                let mut operations = state
-                    .store
-                    .all("execution_operation")
-                    .into_iter()
-                    .filter(|operation| {
-                        operation["runId"].as_str() == Some(execution_id)
-                            && operation["status"].as_str() == Some("completed")
-                    })
+                let mut operations = state.store.execution_operations(execution_id)?
+                    .into_iter().filter(|operation|operation["status"]=="completed")
                     .collect::<Vec<_>>();
                 crate::engine::procedure::sort_operations(&mut operations);
                 let violations = strategy_candidates
@@ -2054,14 +2045,8 @@ pub(super) async fn run_turn_body(
                     "matches":result["matches"],"executionId":execution_id}));
                 continue;
             }
-            let completed_operations = state
-                .store
-                .all("execution_operation")
-                .into_iter()
-                .filter(|operation| {
-                    operation["runId"].as_str() == Some(execution_id)
-                        && operation["status"].as_str() == Some("completed")
-                })
+            let completed_operations = state.store.execution_operations(execution_id)?
+                .into_iter().filter(|operation|operation["status"]=="completed")
                 .collect::<Vec<_>>();
             if session["rsiRun"] == true && call.name == "workspace_replace_range" {
                 arguments = rsi_ground_range_edit_args(arguments, &completed_operations);

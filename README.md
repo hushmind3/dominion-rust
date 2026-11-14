@@ -622,3 +622,12 @@ DOMINION은 [Apache License, Version 2.0](LICENSE)에 따라 배포됩니다. �
 통과합니다. 공개 목록/요청은 기존 `execution.revealedToolNames`와 `tool.native_discovery`
 감사 기록에 남습니다. 그룹 대화·격리 RSI·사용자가 도구를 끈 경우의 기존 정책을
 변경하지 않습니다. 실비용 절감율은 별도 동일 태스크 대조 실험 전까지 미측정입니다.
+
+
+### 2026-11-15 · 읽은 줄과 실행 영수증의 정확성
+
+`workspace_read_range`의 1-based 줄 범위를 고쳐, 2행 요청에서 1행이
+표시되거나 파일 범위를 벗어난 읽기가 마지막 행으로 바뀌는 오류를 차단했습니다.
+RSI와 일반 에이전트의 모델별 작업 영수증 조회는 기존 SQLite 실행 ID
+인덱스(`idx_operation_run`)를 사용하는 `Store::execution_operations`로
+통합해 다른 작업의 전체 기록을 매 라운드 스캔하지 않습니다.

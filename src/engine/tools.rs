@@ -248,18 +248,29 @@ pub async fn execute(
             let result = observed_read(ctx, &path, run_id).await?;
             let text = result["content"].as_str().unwrap_or_default();
             let lines = text.lines().collect::<Vec<_>>();
-            let begin = (start as usize).min(lines.len());
-            // Match the tool contract in RSI too. Silently cutting a requested
-            // 400-line read to 120 forces repeated paid prefix replays.
-            let line_cap = 399;
-            let end = (requested_end as usize).min(lines.len()).max(begin).min(begin.saturating_add(line_cap));
+            let start_index = usize::try_from(start).unwrap_or(usize::MAX);
+            if start_index>lines.len() {
+                return Err(format!(
+                    "Requested startLine {start} exceeds {} source lines. Use code_search or read an existing range.",
+                    lines.len()
+                ));
+            }
+            if requested_end<start {
+                return Err("endLine must be greater than or equal to startLine".into());
+            }
+            // startLine/endLine are 1-based inclusive. Never show the previous
+            // line on an out-of-range request: stale spans lead to bad edits.
+            let begin = start_index-1;
+            let line_cap = 400usize;
+            let end = usize::try_from(requested_end).unwrap_or(usize::MAX)
+                .min(lines.len()).min(begin.saturating_add(line_cap));
             let mut numbered = String::new();
-            for (offset, line) in lines[begin.saturating_sub(1)..end].iter().enumerate() {
-                numbered.push_str(&format!("{:>5} {}\n", begin + offset, line));
+            for (offset, line) in lines[begin..end].iter().enumerate() {
+                numbered.push_str(&format!("{:>5} {}\n", begin + offset + 1, line));
             }
             let mut output = json!({
                 "path": result["path"],
-                "startLine": begin.max(1),
+                "startLine": start,
                 "endLine": end,
                 "totalLines": lines.len(),
                 "sourceSha256":format!("{:x}",Sha256::digest(text.as_bytes())),

@@ -24,6 +24,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn range_read_is_exactly_one_based_and_never_returns_unrequested_lines() {
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("dominion-range-boundary-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("source.rs"),"first\nsecond\nthird\n").unwrap();
+        let config=Config{port:0,data_dir:dir.join("data"),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        let state=crate::state::AppState::new(config.clone(),
+            Store::open(&config.db_path()).unwrap(),Vault::open(&config.key_path()));
+        let ctx=ToolContext{workspace:&dir,store:&state.store,state:&state,session_id:"s",
+            agent_id:None,tools_enabled:true,tools_execution_enabled:true};
+        let only_last=execute(&ctx,"workspace_read_range",
+            &json!({"path":"source.rs","startLine":3,"endLine":3}),"run").await.unwrap();
+        assert_eq!(only_last["startLine"],3);
+        assert_eq!(only_last["endLine"],3);
+        assert_eq!(only_last["content"].as_str().unwrap().trim(),"3 third");
+        let middle=execute(&ctx,"workspace_read_range",
+            &json!({"path":"source.rs","startLine":2,"endLine":3}),"run").await.unwrap();
+        assert_eq!(middle["startLine"],2);
+        assert!(middle["content"].as_str().unwrap().contains("2 second"));
+        assert!(!middle["content"].as_str().unwrap().contains("1 first"));
+        let out_of_bounds=execute(&ctx,"workspace_read_range",
+            &json!({"path":"source.rs","startLine":4,"endLine":4}),"run").await.unwrap_err();
+        assert!(out_of_bounds.contains("exceeds"));
+        let reversed=execute(&ctx,"workspace_read_range",
+            &json!({"path":"source.rs","startLine":3,"endLine":2}),"run").await.unwrap_err();
+        assert!(reversed.contains("endLine"));
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn rsi_cannot_read_or_overwrite_the_coordinators_holdout_source() {
         use crate::{config::Config, db::Store, vault::Vault};
         let dir=std::env::temp_dir().join(format!("rsi-holdout-{}",uuid::Uuid::new_v4()));
