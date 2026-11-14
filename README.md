@@ -868,3 +868,18 @@ Two independently graded SWE-bench trials can be compared with
 The comparison requires identical actual issues and base revisions,
 requires official evidence for every task, and flags model/budget differences
 rather than claiming a controlled harness win.
+
+
+### Sub2 native tool gateway and delegation budgets (Nov 2026)
+
+The public Rust tools and SDK keep their established call signatures;
+native tool code now separates the authority gateway, source editing,
+subprocess lifetime, and secure HTTP operations into
+`src/engine/tools/{gateway,editor,process,network}.rs`.
+Native sub-agent creation persists a job and session in one SQLite
+transaction with 4 concurrent/24 lifetime parent-session limits.
+Root goal token caps and goal receipts include every delegated child
+and grandchild's observed model usage via `src/db/usage_tree.rs`.
+No additional model calls are allowed after the observed goal-wide
+limit is reached; an in-flight provider call may exceed the soft cap.
+Unit tests cover concurrent admission invariants and descendant usage.
