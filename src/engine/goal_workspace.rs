@@ -133,7 +133,7 @@ async fn capture_patch(state:&AppState,work:&Path,base:&str)->Result<PatchFile,S
         options.mode(0o600);
     }
     let _file=options.open(&path).map_err(|e|e.to_string())?;
-    let temporary=PatchFile{path:path.clone(),digest:String::new(),bytes:0};
+    let mut temporary=PatchFile{path:path.clone(),digest:String::new(),bytes:0};
     let arg=format!("--output={}",path.to_string_lossy());
     git(work,&["diff","--no-ext-diff","--binary",&arg,base]).await?;
     let meta=std::fs::metadata(&path).map_err(|e|e.to_string())?;
@@ -141,8 +141,9 @@ async fn capture_patch(state:&AppState,work:&Path,base:&str)->Result<PatchFile,S
         return Err("변경 패치가 512KB를 초과합니다. 변경을 분할한 뒤 적용하세요.".into());
     }
     let content=std::fs::read(&path).map_err(|e|e.to_string())?;
-    Ok(PatchFile{path:temporary.path.clone(),
-        digest:format!("{:x}",Sha256::digest(&content)),bytes:content.len()})
+    temporary.digest=format!("{:x}",Sha256::digest(&content));
+    temporary.bytes=content.len();
+    Ok(temporary)
 }
 
 pub(crate) async fn changes(state:&AppState,goal:&Value)->Result<Value,String>{
