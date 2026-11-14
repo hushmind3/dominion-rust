@@ -4,10 +4,18 @@ use super::*;
 use std::{path::{Path,PathBuf},process::Stdio};
 
 fn probe_executable(cfg:&Value)->Option<PathBuf>{
-    let ffmpeg=ffmpeg_from_config(cfg)?;
     let name=if cfg!(windows){"ffprobe.exe"}else{"ffprobe"};
-    let sibling=ffmpeg.with_file_name(name);
-    sibling.is_file().then_some(sibling)
+    let mut choices=Vec::new();
+    if let Some(ffmpeg)=ffmpeg_from_config(cfg){
+        choices.push(ffmpeg.with_file_name(name));
+    }
+    // Cloud generation does not require FFmpeg; permit an independently
+    // installed ffprobe and never classify its absence as technical success.
+    choices.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|folder|folder.join(name)));
+    choices.extend(["/opt/homebrew/bin","/usr/local/bin","/usr/bin"]
+        .into_iter().map(|folder|PathBuf::from(folder).join(name)));
+    choices.into_iter().find(|path|path.is_file())
 }
 fn duration_seconds(value:&Value)->Option<f64>{
     value.as_str().and_then(|s|s.parse::<f64>().ok())
