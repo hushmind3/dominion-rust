@@ -169,7 +169,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div className="flex items-center gap-2"><Clapperboard size={18} className="text-[#C96442]"/><strong className="text-[13px] text-[#24211D]">{t('vid.engine')}</strong></div>
     <div className="flex flex-wrap items-center gap-2">
-     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="omni">Omni Flash · 고화질 AI 영상</option></SelectInput>
+     <SelectInput aria-label={t('vid.engine')} value={engine} onChange={e=>void changeEngine(e.target.value as VideoEngine)} disabled={savingConfig} className="!w-auto !text-[12px]"><option value="native">{t('vid.engine.native')}</option><option value="comfyui">{t('vid.engine.comfy')}</option><option value="omni">Omni Flash · 고화질 AI 영상</option><option value="ltx">LTX 2.5 · 멀티샷/음성 영상</option></SelectInput>
     </div>
    </div>
   </Panel>
@@ -184,6 +184,15 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       <Button variant="secondary" disabled={savingConfig||(!omniKey.trim()&&!video.value.config.hasVideoKey)} onClick={()=>void saveOmni()}>{savingConfig?'저장 중':'영상 엔진 저장'}</Button>
      </div>
    </Panel>}
+   {engine==='ltx'&&<Panel className="p-4">
+     <div className="flex items-center justify-between gap-2"><strong className="text-[13px]">LTX 2.5 · 영상 생성 API</strong><StateTag online={Boolean(video.value.ltx?.available)}>{video.value.ltx?.available?'LTX 연결됨':'API 키 필요'}</StateTag></div>
+     <p className="mt-2 text-xs leading-5 text-[#5C544A]">별도 GPU 없이 유료 API로 음성이 포함된 장면을 제작합니다. Gemini API 키와 분리 보관합니다. 유료 호출은 생성 시 별도 동의가 필요합니다.</p>
+     <div className="mt-3 flex flex-wrap items-center gap-2">
+      <TextInput aria-label="LTX API 키" type="password" value={ltxKey}
+       onChange={e=>setLtxKey(e.target.value)} placeholder={video.value.config.hasLtxKey?'기존 키 변경':'LTX API 키'}/>
+      <Button variant="secondary" disabled={savingConfig||!ltxKey.trim()} onClick={()=>void saveLtx()}>{savingConfig?'저장 중':'LTX 키 저장'}</Button>
+     </div>
+    </Panel>}
    {engine==='comfyui'&&<Panel className={'p-4 '+(video.value.comfy.reachable?'border-emerald-200 bg-emerald-50/50':'border-amber-200 bg-amber-50/50')}>
     <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Clapperboard size={18} className={video.value.comfy.reachable?'text-emerald-700':'text-amber-700'}/><strong className="text-[13px] text-[#24211D]">{t('vid.comfyTitle')}</strong></div><StateTag online={video.value.comfy.reachable}>{video.value.comfy.reachable?t('vid.reachable'):t('vid.unreachable')}</StateTag></div>
     <p className="mt-2 text-sm text-[#5C544A]">{t('vid.comfyNote')}</p>
@@ -209,7 +218,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
-     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingOmni?'Omni Flash · 약 8초 · 사운드 포함':usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):t('vid.ffmpegCard')}</span>}/>
+     <Subheading title={t('vid.generate')} extra={<span className="text-[11px] text-[#8A8176]">{usingLtx?'LTX 2.5 · 오디오 포함 장면 제작':usingOmni?'Omni Flash · 약 8초 · 사운드 포함':usingComfy?t('vid.workflowCount',{count:video.value.workflows.length}):t('vid.ffmpegCard')}</span>}/>
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
