@@ -256,22 +256,24 @@ fn exact_replacement(bytes: Vec<u8>, old: &str, new: &str) -> Option<String> {
 }
 
 pub(crate) fn resolve_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
-    let path = Path::new(path);
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
+    resolve_path_with_root(&state.config.workspace,path,false)
+}
+/// Isolated goals are verified only inside their private worktree. Absolute
+/// paths must not silently switch verification back to the live checkout.
+pub(crate) fn resolve_path_in(root:&Path,path:&str)->Result<PathBuf,String>{
+    resolve_path_with_root(root,path,true)
+}
+fn resolve_path_with_root(root:&Path,raw:&str,strict:bool)->Result<PathBuf,String>{
+    let path=Path::new(raw);
+    if path.is_absolute() && !strict{return Ok(path.to_path_buf());}
+    if path.components().any(|part|matches!(part,Component::ParentDir)){
+        return Err("Verification paths cannot contain '..'".into());
     }
-    if path
-        .components()
-        .any(|part| matches!(part, Component::ParentDir))
-    {
-        return Err("상대 검증 경로는 워크스페이스 밖으로 나갈 수 없습니다.".into());
-    }
-    let root = state
-        .config
-        .workspace
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let resolved = root.join(path);
+    let root=root.canonicalize().map_err(|e|e.to_string())?;
+    let resolved=if path.is_absolute(){
+        if !path.starts_with(&root){return Err("Verification path escapes isolated Git worktree".into());}
+        path.to_path_buf()
+    }else{root.join(path)};
     let mut ancestor = resolved.as_path();
     while !ancestor.exists() {
         ancestor = ancestor
@@ -303,10 +305,16 @@ pub(crate) fn fingerprint(path: &Path) -> Value {
     }
     json!({"bytes":meta.len(),"modified":meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string())})
 }
-pub(crate) fn baseline_checks(state: &AppState, mut checks: Vec<Value>) -> Value {
+pub(crate) fn baseline_checks(state:&AppState, checks:Vec<Value>)->Value{
+    baseline_checks_with_root(&state.config.workspace,checks,false)
+}
+pub(crate) fn baseline_checks_in(root:&Path,checks:Vec<Value>)->Value{
+    baseline_checks_with_root(root,checks,true)
+}
+fn baseline_checks_with_root(root:&Path, mut checks:Vec<Value>,strict:bool)->Value{
     for check in &mut checks {
         if check["type"] == "file_replace_exact" {
-            let original = resolve_path(state, check["path"].as_str().unwrap_or_default())
+            let original = resolve_path_with_root(root, check["path"].as_str().unwrap_or_default(),strict)
                 .ok().and_then(|path| read_bounded_file(&path));
             check["sourceBytes"] = json!(original.as_ref().map(Vec::len));
             check["expectedSha256"] = original.and_then(|bytes| exact_replacement(
@@ -316,7 +324,7 @@ pub(crate) fn baseline_checks(state: &AppState, mut checks: Vec<Value>) -> Value
         } else if check["type"] == "file_changed"
             || (check["type"] == "file_equals" && check["inferred"] == true)
         {
-            check["baseline"] = resolve_path(state, check["path"].as_str().unwrap_or(""))
+            check["baseline"] = resolve_path_with_root(root, check["path"].as_str().unwrap_or(""),strict)
                 .map(|path| fingerprint(&path))
                 .unwrap_or(Value::Null);
         }
@@ -440,11 +448,18 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     actual.trim() == command.trim()
 }
 pub(crate) fn acceptance_gaps(
-    state: &AppState,
-    goal: &str,
-    checks: &Value,
-    evidence: &[Value],
-) -> Vec<String> {
+    state:&AppState,goal:&str,checks:&Value,evidence:&[Value]
+)->Vec<String>{
+    acceptance_gaps_with_root(&state.config.workspace,goal,checks,evidence,false)
+}
+pub(crate) fn acceptance_gaps_in(
+    root:&Path,goal:&str,checks:&Value,evidence:&[Value]
+)->Vec<String>{
+    acceptance_gaps_with_root(root,goal,checks,evidence,true)
+}
+fn acceptance_gaps_with_root(
+    root:&Path,goal:&str,checks:&Value,evidence:&[Value],strict:bool
+)->Vec<String>{
     let checks = checks.as_array().cloned().unwrap_or_default();
     let mut gaps = Vec::new();
     let has_explicit_tool = checks.iter().any(|check| {
@@ -460,7 +475,7 @@ pub(crate) fn acceptance_gaps(
         let kind = check["type"].as_str().unwrap_or("");
         let path = check["path"].as_str().unwrap_or("");
         let resolved = if kind.starts_with("file_") {
-            match resolve_path(state, path) {
+            match resolve_path_with_root(root,path,strict) {
                 Ok(path) => path,
                 Err(error) => {
                     gaps.push(error);
@@ -468,7 +483,7 @@ pub(crate) fn acceptance_gaps(
                 }
             }
         } else {
-            state.config.workspace.clone()
+            root.to_path_buf()
         };
         let passed = match kind {
             "file_exists" => resolved.is_file(),

@@ -4,8 +4,11 @@ use crate::{engine::verification,state::AppState};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::collections::BTreeMap;
-pub fn collect(state:&AppState,observations:&[Value])->Vec<Value> {
-    let Ok(root)=state.config.workspace.canonicalize() else{return Vec::new()};
+pub fn collect(state:&AppState,observations:&[Value])->Vec<Value>{
+    collect_in(&state.config.workspace,observations)
+}
+pub fn collect_in(workspace:&std::path::Path,observations:&[Value])->Vec<Value>{
+    let Ok(root)=workspace.canonicalize() else{return Vec::new()};
     let mut paths=BTreeMap::new();
     for item in observations.iter().rev() {
         if paths.len()>=32{break;}
@@ -15,7 +18,7 @@ pub fn collect(state:&AppState,observations:&[Value])->Vec<Value> {
             "workspace_replace_range"|"file_write"){continue;}
         let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
         let Some(raw)=args["path"].as_str().filter(|s|!s.is_empty()&&s.len()<=4096) else{continue};
-        let Ok(path)=verification::resolve_path(state,raw) else{continue};
+        let Ok(path)=verification::resolve_path_in(&root,raw) else{continue};
         let Ok(path)=path.canonicalize() else{continue};
         if !path.starts_with(&root){continue;}
         let Ok(rel)=path.strip_prefix(&root) else{continue};

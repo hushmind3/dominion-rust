@@ -24,7 +24,9 @@ fn scan(root:&Path,dir:&Path,depth:usize,paths:&mut Vec<String>){
     }
 }
 pub fn snapshot(state:&AppState)->String {
-    let root=&state.config.workspace;
+    snapshot_in(&state.config.workspace)
+}
+pub fn snapshot_in(root:&Path)->String {
     if !root.is_dir() || !["Cargo.toml","package.json","pyproject.toml","go.mod",
         "README.md","AGENTS.md","CLAUDE.md",".git"].iter().any(|name|root.join(name).exists()){
         return String::new();
