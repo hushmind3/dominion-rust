@@ -1411,4 +1411,6 @@ fn record_from_row(row: &Row<'_>) -> rusqlite::Result<Value> {
 #[cfg(test)]
 #[path = "db/tests.rs"]
 mod tests;
-
+#[cfg(test)]
+#[path = "db/delegated_admission_tests.rs"]
+mod delegated_admission_tests;
