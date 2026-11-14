@@ -32,7 +32,9 @@ pub(super) fn create(
         "stepReceipts":outputs.iter().map(|step|json!({
             "stepId":step["stepId"],"agentId":step["agentId"],
             "messageId":step["messageId"],"providerId":step["providerId"],
-            "model":step["model"],"toolEvidenceCount":step["toolEvidenceCount"]
+            "model":step["model"],"toolEvidenceCount":step["toolEvidenceCount"],
+            "toolOperationIds":step["toolOperationIds"],
+            "toolErrors":step["toolErrors"]
         })).collect::<Vec<_>>(),
         "usage":state.store.session_usage(session_id),
         "createdAt":chrono::Utc::now().to_rfc3339(),
