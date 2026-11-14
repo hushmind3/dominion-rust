@@ -447,6 +447,22 @@ mod sub1_goal_lifecycle_tests {
         let _=std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn goal_registration_transaction_rolls_back_parent_if_worker_upsert_fails() {
+        let (state,dir)=state();
+        let records=vec![
+            ("goal".to_string(),json!({"id":"pair-parent","status":"queued",
+                "jobId":"pair-worker"})),
+            ("job".to_string(),json!({"status":"queued",
+                "input":{"goalId":"pair-parent"}})),
+        ];
+        assert!(state.store.transaction(&records).is_err());
+        assert!(state.store.get("goal","pair-parent").is_none(),
+            "A failed worker write must not leave a queued parent behind");
+        assert!(state.store.all("job").is_empty());
+        let _=std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn reviewed_resume_is_idempotent_and_carries_only_committed_evidence() {
         let (state,dir)=state();
