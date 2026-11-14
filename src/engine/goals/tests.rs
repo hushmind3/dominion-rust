@@ -168,7 +168,8 @@
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .contains("strict reviewer");
-                return Json(json!({"choices":[{"message":{"content":if is_review {"{\"complete\":true,\"gaps\":[]}"} else {"1. Execute the requested work. 2. Verify the file."}}}]})).into_response();
+                return Json(json!({"choices":[{"message":{"content":if is_review {"{\"complete\":true,\"gaps\":[]}"} else {"1. Execute the requested work. 2. Verify the file."}}}],
+                    "usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15}})).into_response();
             }
             let has_result = body["messages"]
                 .as_array()
@@ -278,6 +279,13 @@
         let receipt=state.store.get("goal_receipt","goal-receipt:g:j").unwrap();
         assert_eq!(receipt["progressWindowTurns"],1);
         assert_eq!(receipt["productiveTurnsWindow"],1);
+        // Two non-streaming helper model requests (planner + reviewer)
+        // actually returned provider usage; the goal receipt must include
+        // both rather than counting only the executor's streaming turn.
+        assert_eq!(receipt["usageIncludesGoalHelperCalls"],true);
+        assert_eq!(receipt["providerBillingVerified"],false);
+        assert!(receipt["usage"]["calls"].as_u64().unwrap()>=2);
+        assert!(receipt["usage"]["totalTokens"].as_u64().unwrap()>=30);
         assert_eq!(receipt["unproductiveTurnsWindow"],0);
         assert!(receipt["resolvedChecksWindow"].as_u64().unwrap()>=1);
         let task_id = goal["taskId"].as_str().unwrap();
