@@ -256,3 +256,59 @@ async fn rust_url_and_credential_validation() {
     assert!(DominionClient::new("http://127.0.0.1/?token=leak").is_err());
     assert!(DominionClient::new("http://127.0.0.1:4317").is_ok());
 }
+
+#[tokio::test]
+async fn native_rust_sdk_thread_lifecycle_steers_without_replaying_a_turn() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/api/sdk/threads",post(|| async {
+            Json(json!({"id":"native-1","title":"Coding","archived":false}))
+        }))
+        .route("/api/sdk/threads/:id/steer",
+            post(|Path(id):Path<String>,Json(body):Json<Value>| async move {
+                assert_eq!(id,"native-1");
+                assert_eq!(body["instruction"],"switch to test-first");
+                Json(json!({"id":"steer-1","sessionId":id,"status":"queued"}))
+            }))
+        .route("/api/sdk/threads/:id/run",
+            post(|State(runs):State<Arc<AtomicUsize>>,
+                Path(id):Path<String>,Json(body):Json<Value>| async move {
+                assert_eq!(id,"native-1");
+                assert_eq!(body["input"],"fix and test");
+                runs.fetch_add(1,Ordering::SeqCst);
+                sse(vec![
+                    Event::default().data(json!({"type":"delta","content":"implemented"}).to_string()),
+                    Event::default().data(json!({"type":"done"}).to_string()),
+                ])
+            }))
+        .with_state(runs.clone());
+    let (base,handle)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let thread=sdk.create_sdk_thread(SessionCreate::default()).await.unwrap();
+    assert_eq!(thread.id,"native-1");
+    let receipt=thread.steer("switch to test-first").await.unwrap();
+    assert_eq!(receipt["status"],"queued");
+    assert_eq!(runs.load(Ordering::SeqCst),0);
+    let mut stream=thread.run_native_streamed("fix and test").await.unwrap();
+    assert_eq!(stream.next().await.unwrap().unwrap().kind,"delta");
+    assert_eq!(stream.next().await.unwrap().unwrap().kind,"done");
+    assert!(stream.next().await.is_none());
+    assert_eq!(runs.load(Ordering::SeqCst),1);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn native_rust_sdk_reports_actual_sse_error_message() {
+    let app=Router::new().route("/api/sdk/threads/:id/run",post(|| async {
+        sse(vec![Event::default().data(json!({
+            "type":"error","message":"compiler failed"}).to_string())])
+    }));
+    let (base,handle)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let mut stream=sdk.stream_sdk_thread("t",ChatRequest::new("t","compile"))
+        .await.unwrap();
+    let next=stream.next().await.unwrap();
+    assert!(matches!(next,Err(DominionError::Protocol(message))
+        if message.contains("compiler failed")));
+    handle.abort();
+}
