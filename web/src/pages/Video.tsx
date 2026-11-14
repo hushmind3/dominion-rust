@@ -11,6 +11,7 @@ type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;ltxFilm?:boolean;result?:{bytes:number;qualityReceipt?:{verified?:boolean;width?:number;height?:number;durationSeconds?:number;hasAudio?:boolean}}}
 type VideoEngine='native'|'comfyui'|'omni'|'ltx'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasVideoKey?:boolean;hasLtxKey?:boolean;omniModel?:string;omniResolution?:string};native?:{available:boolean};quality?:{available:boolean;method?:string};comfy:{reachable:boolean;available?:boolean};omni?:{available:boolean;model?:string;targetDurationSeconds?:number};ltx?:{available:boolean;audio?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type LtxQuote={estimatedKrw:number;paidCallCount:number;fxAsOf:string;fxKrwPerUsd:number;priceVersion:string;estimatedOnly:boolean}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -29,6 +30,8 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const [omniKey,setOmniKey]=useState(''),[omniModel,setOmniModel]=useState('gemini-omni-1.2-flash'),[omniResolution,setOmniResolution]=useState('1080p')
  const [ltxKey,setLtxKey]=useState(''),[ltxModel,setLtxModel]=useState('ltx-2-5-fast'),
        [ltxQuality,setLtxQuality]=useState('1080p'),[ltxStyle,setLtxStyle]=useState('cinematic')
+ const [ltxQuote,setLtxQuote]=useState<{key:string;value:LtxQuote}|null>(null)
+ const [ltxQuoteError,setLtxQuoteError]=useState('')
  const [ltxFilm,setLtxFilm]=useState(false),[ltxScenes,setLtxScenes]=useState(''),
        [ltxConsent,setLtxConsent]=useState(false),[ltxPaidConsent,setLtxPaidConsent]=useState(false)
  const [cinematic,setCinematic]=useState(true)
@@ -57,6 +60,18 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const maxDuration=usingLtx?(ltxFilm?ltxMaxClip*6:ltxMaxClip):usingOmni?8:usingComfy?(cinematic?120:9):180
  const ltxClipCount=ltxFilm?Math.ceil(seconds/ltxMaxClip):1
  const ltxPlannedScenes=ltxScenes.trim().split('\n').map(line=>line.trim()).filter(Boolean)
+ const quoteKey=[ltxModel,ltxQuality,ratio,seconds,ltxFilm].join('|')
+ const approvedQuote=ltxQuote?.key===quoteKey?ltxQuote.value:null
+ useEffect(()=>{
+  if(!usingLtx){setLtxQuote(null);setLtxQuoteError('');return}
+  let cancelled=false
+  setLtxQuote(null);setLtxQuoteError('');setLtxPaidConsent(false)
+  void post<LtxQuote>('/api/video/quote',{engine:'ltx',ltxModel,ltxQuality,
+   aspectRatio:ratio,duration:seconds,ltxFilm})
+   .then(value=>{if(!cancelled)setLtxQuote({key:quoteKey,value})})
+   .catch(reason=>{if(!cancelled)setLtxQuoteError((reason as Error).message)})
+  return()=>{cancelled=true}
+ },[usingLtx,quoteKey])
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
  useEffect(()=>{setOmniModel(video.value.config.omniModel||'gemini-omni-1.2-flash');setOmniResolution(video.value.config.omniResolution||'1080p')},[video.value.config.omniModel,video.value.config.omniResolution])
  useEffect(()=>{
@@ -121,7 +136,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   if(!ready||!prompt.trim()||generating)return;
   const requestedSeed=Number(seed);
   if(usingLtx&&(
-    !ltxPaidConsent || !Number.isInteger(seconds) || seconds>maxDuration ||
+    !ltxPaidConsent || !approvedQuote || !Number.isInteger(seconds) || seconds>maxDuration ||
     (ltxFilm?(seconds<12||seconds%2!==0||ltxClipCount<2||ltxClipCount>6||ltxClipCount*6>seconds||
        !ltxConsent||(ltxPlannedScenes.length>0&&ltxPlannedScenes.length!==ltxClipCount)):
        (seconds<6||seconds%2!==0))
@@ -140,6 +155,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
     ...(usingLtx?{ltxModel,ltxQuality,ltxStyle,confirmPaidGeneration:ltxPaidConsent,
       confirmedPaidCallCount:ltxFilm?ltxClipCount:1,
+      approvedPaidQuote:true,maxEstimatedKrw:approvedQuote?.estimatedKrw,
       ...(ltxFilm?{ltxFilm:true,confirmPaidMultiShot:ltxConsent,scenes:ltxPlannedScenes}:{}),
     }:{}),
    }));
@@ -234,7 +250,13 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
         {ltxFilm&&<><FormField label={`장면 연출 지시 · 총 ${ltxClipCount}개 (선택)`}>
           <TextArea rows={4} value={ltxScenes} onChange={e=>{setLtxScenes(e.target.value);setLtxConsent(false)}} placeholder="장면당 한 줄씩 적습니다. 비워두면 인물·배경 일관성을 유지하는 공통 프롬프트를 사용합니다."/></FormField>
          <label className="flex items-start gap-2"><input type="checkbox" checked={ltxConsent} onChange={e=>setLtxConsent(e.target.checked)}/> 장면 {ltxClipCount}개 생성에 따른 유료 호출을 확인했습니다. 검증된 장면은 재사용합니다.</label></>}
-        <label className="flex items-start gap-2"><input type="checkbox" checked={ltxPaidConsent} onChange={e=>setLtxPaidConsent(e.target.checked)}/> LTX 유료 생성 요청을 승인합니다. 실제 과금은 LTX 계정 기준입니다.</label>
+        {approvedQuote?<p className="rounded-lg bg-[#FAF7F1] p-2 font-semibold text-[#3A342D]">예상 비용 {approvedQuote.estimatedKrw.toLocaleString('ko-KR')}원 · 유료 장면 {approvedQuote.paidCallCount}개
+         <small className="mt-1 block font-normal text-[#7C7469]">참고 환율: {approvedQuote.fxAsOf} 기준 · 실제 청구액/세금/수수료 제외 · 최종 결제액 아님</small></p>:
+         <p className="text-rose-700">{ltxQuoteError||'선택한 설정으로 원화 견적 계산 중…'}</p>}
+        <label className="flex items-start gap-2"><input type="checkbox" checked={ltxPaidConsent}
+          disabled={!approvedQuote} onChange={e=>setLtxPaidConsent(e.target.checked)}/>
+          예상 비용과 유료 호출 수를 확인하고 이 견적 상한 안에서 LTX 생성을 승인합니다.
+        </label>
        </div>}
       {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
       {usingComfy&&<label className="flex items-start gap-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-[12px]"><input type="checkbox" className="mt-1" checked={cinematic} onChange={e=>{setCinematic(e.target.checked);if(!e.target.checked)setSeconds(value=>Math.min(value,9))}}/><span><strong className="block text-[#3A342D]">시네마틱 멀티샷 · 자동 편집</strong><small className="mt-1 block leading-5 text-[#7C7469]">장면별 구도·인물 연속성을 유지하도록 계획하고, 샷을 차례로 생성한 뒤 1080p 영상으로 편집합니다. ComfyUI 워크플로에 <code>{'{{prompt}}'}</code>와 <code>{'{{duration}}'}</code> 변수가 필요하며 FFmpeg를 사용합니다. 생성 크레딧은 샷마다 발생합니다.</small></span></label>}
@@ -243,7 +265,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
       {video.value.quality?.available===false&&<p className="text-[12px] text-rose-700">FFprobe가 없어 생성을 시작할 수 없습니다. FFmpeg 경로를 확인하세요.</p>}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).filter(key=>!usingOmni||key!=='1:1').map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={usingLtx?`선택 모델·화질 기준 최대 ${maxDuration}초`:usingOmni?'8초 목표 (실제 길이는 모델에 따라 변동)':t('vid.max',{count:maxDuration})}><TextInput type="number" min={usingOmni?8:usingLtx?(ltxFilm?12:6):3} step={usingLtx?2:1} max={maxDuration} value={usingOmni?8:seconds} disabled={usingOmni} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
       {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
-      <div className="flex flex-wrap items-center justify-between gap-3">{usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'LTX 유료 호출 · 기술 검수 후 MP4 저장 · 장면별 SHA 영수증':'설정에서 LTX API 키를 등록하세요.'}</p>:usingOmni?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'유료 Omni API 호출 · 생성 결과는 MP4로 보관됩니다.':'설정에서 Gemini API 키를 등록하세요.'}</p>:usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">{usingLtx?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'LTX 유료 호출 · 기술 검수 후 MP4 저장 · 장면별 SHA 영수증':'설정에서 LTX API 키를 등록하세요.'}</p>:usingOmni?<p className="text-[11px] leading-5 text-[#8A8176]">{ready?'유료 Omni API 호출 · 생성 결과는 MP4로 보관됩니다.':'설정에서 Gemini API 키를 등록하세요.'}</p>:usingComfy?<p className="text-[11px] leading-5 text-[#8A8176]">{t('vid.placeholderNote')}</p>:<p className="text-[11px] leading-5 text-[#8A8176]">{ready?t('vid.silentNote'):t('vid.ffmpegRequired')}</p>}<Action disabled={generating||Boolean(videoSubmission&&!terminal(activeVideo.value?.status))||!ready||!prompt.trim()||(usingLtx&&(!ltxPaidConsent||!approvedQuote))} onClick={()=>void generate()}>{generating?<><LoaderCircle size={15} className="animate-spin"/> {t('vid.requesting')}</>:<><Play size={15}/> {t('vid.generate')}</>}</Action></div>
      </div>
     </Panel>}
     {tab==='settings'&&<Panel className="min-w-0 p-5">
