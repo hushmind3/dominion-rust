@@ -16,7 +16,9 @@ fn path_for(state:&AppState,id:&str)->Result<PathBuf,String>{
         ||!id.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'){
         return Err("유효하지 않은 목표 ID입니다.".into());
     }
-    Ok(state.config.data_dir.join("goal-workspaces").join(id))
+    let data_root=state.config.data_dir.canonicalize()
+        .map_err(|e|format!("데이터 저장소 경로: {e}"))?;
+    Ok(data_root.join("goal-workspaces").join(id))
 }
 async fn git(root:&Path,args:&[&str])->Result<String,String>{
     let mut command=tokio::process::Command::new("git");
@@ -124,6 +126,7 @@ async fn capture_patch(state:&AppState,work:&Path,base:&str)->Result<PatchFile,S
     const MAX_PATCH:u64=512*1024;
     let folder=state.config.data_dir.join("goal-patches");
     std::fs::create_dir_all(&folder).map_err(|e|e.to_string())?;
+    let folder=folder.canonicalize().map_err(|e|e.to_string())?;
     let path=folder.join(format!("{}.patch",uuid::Uuid::new_v4()));
     let mut options=std::fs::OpenOptions::new();
     options.write(true).create_new(true);
