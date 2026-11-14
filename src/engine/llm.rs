@@ -54,27 +54,38 @@ async fn try_complete(
             return Err(format!("모델 호출 실패: HTTP {}", response.status()));
         }
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
-        gateway::record_usage(
-            state,
-            &route,
-            gateway::usage_from(&value),
-            "helper",
-            session_id,
-        );
         let choice = value
             .get("choices")
             .and_then(|choices| choices.get(0))
             .cloned()
             .unwrap_or_else(|| json!({}));
         let content = choice["message"]["content"].as_str().unwrap_or("");
-        if !content.trim().is_empty() {
-            return Ok(content.to_string());
-        }
-        let finish = choice["finish_reason"].as_str().unwrap_or("unknown");
         let reasoning = choice["message"]["reasoning_content"]
             .as_str()
             .or_else(|| choice["message"]["reasoning"].as_str())
             .unwrap_or("");
+        let usage = gateway::usage_from(&value);
+        if usage.total_tokens > 0 {
+            gateway::record_usage(state, &route, usage, "helper", session_id);
+        } else {
+            // OpenAI-compatible endpoints are not required to return usage.
+            // Preserve a conservative, explicitly estimated audit record per
+            // attempt (including a failed empty completion), rather than
+            // letting unreported helper calls bypass goal admission entirely.
+            let prompt_tokens = (system.len().saturating_add(prompt.len()))
+                .div_ceil(4).max(1) as u64;
+            let completion_tokens = (content.len().saturating_add(reasoning.len()))
+                .div_ceil(4).max(1) as u64;
+            gateway::record_usage_tokens(
+                state, &route.id, &route.model, route.local, "helper", session_id,
+                prompt_tokens, completion_tokens,
+                prompt_tokens.saturating_add(completion_tokens), true,
+            );
+        }
+        if !content.trim().is_empty() {
+            return Ok(content.to_string());
+        }
+        let finish = choice["finish_reason"].as_str().unwrap_or("unknown");
         last = format!(
             "모델이 빈 응답을 반환했습니다 (finish={finish}, reasoning={}자, attempt={})",
             reasoning.chars().count(),
@@ -233,6 +244,31 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[tokio::test]
+    async fn helper_without_provider_usage_is_not_invisible_to_session_budget() {
+        use axum::{routing::post, Json, Router};
+        let state = state();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/v1/chat/completions", post(
+            || async {
+                Json(json!({"choices":[{"message":{"content":"작업 계획 완료"}}]}))
+            }
+        ));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        state.store.put("provider", &json!({"id":"missing-usage",
+            "baseUrl":format!("http://127.0.0.1:{port}/v1"),
+            "model":"mock","enabled":true}));
+        let answer = complete_for_session(&state, "missing-usage", "mock",
+            "You are a planner.", "Plan one step.", "goal-session").await.unwrap();
+        assert_eq!(answer, "작업 계획 완료");
+        let usage = state.store.session_usage("goal-session");
+        assert_eq!(usage["calls"], 1);
+        assert_eq!(usage["estimatedCalls"], 1);
+        assert!(usage["totalTokens"].as_u64().unwrap_or(0) > 0);
+        server.abort();
     }
 
     #[test]

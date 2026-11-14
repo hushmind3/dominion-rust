@@ -110,3 +110,10 @@ Engine: goals.rs::run
 `src/engine/goal_control.rs` 회귀 테스트는 실제 로컬 모의 HTTP 응답의 `usage`를 DB에 기록해 1번째 호출 9토큰, 예산 8토큰 도달 이후 2번째 요청 무전송, 예산 `0`으로 변경한 뒤 재개를 검사한다. 소스에 테스트를 작성했으며 **CI·컴파일·실모델 사용량 시험은 아직 실행하지 않았다**.
 
 **제한:** 사용량이 응답 뒤 보고되므로 첫 호출이 남은 한도를 초과할 수 있다. 미보고 usage, 서버측 재시도와 별도 도구·영상 요금은 원화 청구액 상한으로 보장되지 않는다. 정확한 선불 예약/동시 병렬 하위 작업 공유 한도는 향후 별도 원가 원장·원자적 admission이 필요하다. 참고: Microsoft TokenOps, 2026-08-13 (https://commandline.microsoft.com/tokenops-real-time-run-scoped-cost-control-ai-agents/).
+
+
+### 누락된 제공자 usage에 대한 보조 계측
+
+`gateway::usage_from`은 프롬프트·완료 토큰을 제공자가 보고했으나 합계가 빠지거나 0이면 두 값을 합산한다(원본 보고값). `llm::try_complete`에서 사용량이 전혀 보고되지 않으면 요청/응답의 UTF-8 바이트를 4로 나눈 값으로 **estimated=true** 감사를 남긴다. 빈 응답으로 재시도한 유료 호출도 각각 기록된다. `db::session_usage.estimatedCalls`에 포함되지만 이는 청구 토큰 실측치가 아니며 정확한 과금 상한으로 사용해서는 안 된다. 누락값과 0원·0토큰 확정은 별개의 상태다.
+
+검사 소스: `gateway.rs::tests::missing_or_zero_provider_total_uses_reported_components`, `llm.rs::tests::helper_without_provider_usage_is_not_invisible_to_session_budget` (구현만 완료, 실행 미확인).

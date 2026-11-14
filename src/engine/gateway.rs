@@ -455,19 +455,26 @@ pub async fn send(
 
 pub fn usage_from(value: &Value) -> Usage {
     let usage = &value["usage"];
+    let prompt_tokens = usage["prompt_tokens"]
+        .as_u64()
+        .or_else(|| usage["promptTokens"].as_u64())
+        .unwrap_or(0);
+    let completion_tokens = usage["completion_tokens"]
+        .as_u64()
+        .or_else(|| usage["completionTokens"].as_u64())
+        .unwrap_or(0);
+    // Some OpenAI-compatible providers report both components but omit or
+    // zero the total. The budget ledger must not silently count that call as
+    // zero. The components are provider-reported, not an estimate.
+    let total_tokens = usage["total_tokens"]
+        .as_u64()
+        .or_else(|| usage["totalTokens"].as_u64())
+        .filter(|total| *total > 0)
+        .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens));
     Usage {
-        prompt_tokens: usage["prompt_tokens"]
-            .as_u64()
-            .or_else(|| usage["promptTokens"].as_u64())
-            .unwrap_or(0),
-        completion_tokens: usage["completion_tokens"]
-            .as_u64()
-            .or_else(|| usage["completionTokens"].as_u64())
-            .unwrap_or(0),
-        total_tokens: usage["total_tokens"]
-            .as_u64()
-            .or_else(|| usage["totalTokens"].as_u64())
-            .unwrap_or(0),
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
     }
 }
 
@@ -594,6 +601,22 @@ mod tests {
         let store = Store::open(&config.db_path()).unwrap();
         let vault = Vault::open(&config.key_path());
         AppState::new(config, store, vault)
+    }
+
+    #[test]
+    fn missing_or_zero_provider_total_uses_reported_components() {
+        for usage in [
+            json!({"usage":{"prompt_tokens":8,"completion_tokens":5}}),
+            json!({"usage":{"promptTokens":8,"completionTokens":5,"totalTokens":0}}),
+        ] {
+            let parsed = usage_from(&usage);
+            assert_eq!(parsed.prompt_tokens, 8);
+            assert_eq!(parsed.completion_tokens, 5);
+            assert_eq!(parsed.total_tokens, 13);
+        }
+        assert_eq!(usage_from(&json!({"usage":{"total_tokens":16,
+            "prompt_tokens":8,"completion_tokens":5}})).total_tokens, 16);
+        assert_eq!(usage_from(&json!({})).total_tokens, 0);
     }
 
     #[test]
