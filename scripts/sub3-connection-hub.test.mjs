@@ -163,3 +163,17 @@ test('goal continuation atomically commits goal cursor and new runnable checkpoi
  assert.match(db,/pub fn transaction_if_status/)
  assert.match(db,/tx\.commit\(\)/)
 })
+
+
+test('goal success-rate view is grounded in persisted receipts not model assertions',()=>{
+ const goals=source('src/api/goals.rs')
+ const routes=source('src/api/mod.rs')
+ const page=source('web/src/pages/Goals.tsx')
+ assert.match(goals,/pub\(crate\) fn measured_goal_summary/)
+ assert.match(goals,/receipt\["verificationOwner"\]=="goal-parent"/)
+ assert.match(goals,/completedWithNonEstimatedTokenUsage/)
+ assert.match(goals,/"independentBenchmark":false/)
+ assert.match(routes,/\/api\/goals\/metrics/)
+ assert.match(page,/\/api\/goals\/metrics/)
+ assert.match(page,/metrics\.value\.completedWithModelCalls/)
+})
