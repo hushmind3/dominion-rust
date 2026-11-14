@@ -70,9 +70,10 @@ export function permissionForCase(workspace,caseDir,request){
 export function validateBenchmarkRoot(root){
   assert(root&&existsSync(root),"DOMINION_EVAL_ROOT must exist");
   const absolute=realpathSync(root);
-  assert(!absolute.includes("/dominion-rust")&&
-    readFileSync(join(absolute,".dominion-benchmark-sentinel"),"utf8")
-      .toLowerCase().includes("benchmark"),
+  const sentinel=join(absolute,".dominion-benchmark-sentinel");
+  assert(!absolute.includes("/dominion-rust")&&existsSync(sentinel)&&
+    !lstatSync(sentinel).isSymbolicLink()&&
+    readFileSync(sentinel,"utf8").toLowerCase().includes("benchmark"),
     "explicit disposable benchmark sentinel required");
   const ws=join(absolute,"workspace"),data=join(absolute,"data");
   assert(!lstatSync(ws).isSymbolicLink()&&!lstatSync(data).isSymbolicLink(),
