@@ -801,6 +801,7 @@ pub(super) async fn run_turn_body(
         } else {
             tool_definitions.clone()
         };
+        let mut routed_round = false;
         // DOMINION native routing: inspect current-turn durable tool statuses,
         // narrow only the already-authorized catalog, retain the original
         // ordering for prompt-cache reuse. Internal RSI and group-room policies
@@ -810,14 +811,28 @@ pub(super) async fn run_turn_body(
                 .into_iter()
                 .filter(|operation|operation["runId"]==execution_id)
                 .collect::<Vec<_>>();
-            if let Some(route)=super::tool_route::select(
-                &round_tools,task_input(&session,&request.input),round,&observations
+            // Route only when the request really has relevant capabilities.
+            // This avoids recording an algorithm selection for ordinary talk.
+            if let Some(baseline)=super::tool_route::select(
+                &round_tools,task_input(&session,&request.input),round,&observations,
+                "outcome-aware",
             ){
+                let kernel=crate::engine::algorithms::choose_for_agent(
+                    state,"tool.routing",request.agent_id.as_deref(),Some(execution_id)
+                ).and_then(|a|a["implementation"].as_str().map(str::to_string))
+                    .unwrap_or_else(||"outcome-aware".to_string());
+                let route=if kernel=="outcome-aware" {baseline} else {
+                    super::tool_route::select(&round_tools,
+                        task_input(&session,&request.input),round,&observations,&kernel)
+                        .unwrap_or(baseline)
+                };
+                routed_round = true;
                 let retained=route.tools.iter().map(tool_name).collect::<Vec<_>>();
                 state.store.audit("tool.native_route",json!({
                     "sessionId":session_id,"executionId":execution_id,"round":round,
                     "stage":route.stage,"candidateCount":route.candidate_count,
                     "selectedCount":retained.len(),"selectedTools":retained,
+                    "algorithmKernel":kernel,
                     "source":"dominion-native","externalHarness":false,
                 }));
                 round_tools=route.tools;
@@ -1669,6 +1684,11 @@ pub(super) async fn run_turn_body(
                     crate::engine::algorithms::mark_signal(
                         state, execution_id, "tool.selection", ok,
                     );
+                    if routed_round {
+                        crate::engine::algorithms::mark_signal(
+                            state, execution_id, "tool.routing", ok,
+                        );
+                    }
                     crate::engine::algorithms::mark_signal(
                         state, execution_id, "recovery.strategy", ok,
                     );
@@ -1995,6 +2015,11 @@ pub(super) async fn run_turn_body(
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "tool.selection", ok,
             );
+            if routed_round {
+                crate::engine::algorithms::mark_signal(
+                    state, execution_id, "tool.routing", ok,
+                );
+            }
             crate::engine::algorithms::mark_signal(
                 state, execution_id, "recovery.strategy", ok,
             );
