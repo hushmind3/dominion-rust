@@ -143,6 +143,9 @@ impl Store {
               CREATE INDEX IF NOT EXISTS idx_live_jobs_kind_status
                 ON records(kind,json_extract(data,'$.status'))
                 WHERE kind='job';
+              CREATE INDEX IF NOT EXISTS idx_delegated_session_parent
+                ON records(kind,json_extract(data,'$.parentSessionId'))
+                WHERE kind='session';
               CREATE TABLE IF NOT EXISTS messages(
                  id TEXT PRIMARY KEY,
                  session_id TEXT NOT NULL,
@@ -162,7 +165,10 @@ impl Store {
                  detail TEXT NOT NULL,
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
-             CREATE TABLE IF NOT EXISTS secrets(
+             CREATE INDEX IF NOT EXISTS idx_model_usage_session
+                ON audit(json_extract(detail,'$.sessionId'))
+                WHERE event='model.usage';
+              CREATE TABLE IF NOT EXISTS secrets(
                  name TEXT PRIMARY KEY,
                  value TEXT NOT NULL,
                  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1277,6 +1283,43 @@ impl Store {
             Err(_)=>json!({"calls":0,"totalTokens":0,"estimatedCalls":0,
                 "matchedExactProviderModelSession":false})
         }
+    }
+
+    /// Return the cost of an entire delegated goal session family. UNION
+    /// makes the recursive ancestry cycle-safe; only engine-created sessions
+    /// with delegated=true participate. One SQL snapshot includes every
+    /// completed model usage event even when a child has already finished.
+    /// A budget caller must treat query failure as exhaustion, never zero.
+    pub fn session_tree_usage(&self, session_id: &str) -> Result<Value, String> {
+        if session_id.is_empty() {return Err("Empty usage root".into());}
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let summary=conn.query_row(
+            "WITH RECURSIVE family(id) AS (
+                SELECT ?1
+                UNION
+                SELECT r.id FROM records r JOIN family f
+                  ON r.kind='session'
+                 AND json_extract(r.data,'$.delegated')=1
+                 AND json_extract(r.data,'$.parentSessionId')=f.id
+            )
+            SELECT COUNT(*),
+                COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0),
+                COALESCE(SUM(CAST(json_extract(detail,'$.completionTokens') AS INTEGER)),0),
+                COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0),
+                COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0)
+            FROM audit WHERE event='model.usage'
+              AND json_extract(detail,'$.sessionId') IN (SELECT id FROM family)",
+            [session_id],|row|Ok((
+                row.get::<_,i64>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,
+                row.get::<_,i64>(3)?,row.get::<_,i64>(4)?
+            ))
+        ).map_err(|e|e.to_string())?;
+        let (calls,prompt,completion,total,estimated)=summary;
+        Ok(json!({
+            "calls":calls.max(0),"promptTokens":prompt.max(0),
+            "completionTokens":completion.max(0),"totalTokens":total.max(0),
+            "estimatedCalls":estimated.max(0),"includesDelegatedSessions":true,
+        }))
     }
 
     pub fn session_usage(&self, session_id: &str) -> Value {

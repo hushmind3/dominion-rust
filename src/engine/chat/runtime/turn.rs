@@ -62,6 +62,28 @@ use super::{
     retitle_if_placeholder,
 };
 
+/// Return an error before another model/harness round when a durable goal's
+/// shared token cap is exhausted. This check runs in every delegated session:
+/// a child cannot bypass the owner's cost limit by owning a different session.
+fn goal_token_budget_error(state:&AppState,session:&Value)->Option<String>{
+    let goal_id=session["goalId"].as_str()?;
+    let goal=state.store.get("goal",goal_id)?;
+    let cap=goal["tokenBudget"].as_u64().filter(|n|*n>0)?;
+    let root=goal["sessionId"].as_str().filter(|s|!s.is_empty())?;
+    match state.store.session_tree_usage(root) {
+        Ok(usage)=>{
+            if usage["totalTokens"].as_u64().is_some_and(|used|used<cap) {
+                None
+            }else{
+                Some(format!("상위 목표의 전체 위임 작업 토큰 한도({cap})에 도달했습니다."))
+            }
+        }
+        Err(error)=>Some(format!(
+            "상위 목표의 위임 작업 토큰 사용량을 집계하지 못했습니다: {error}"
+        )),
+    }
+}
+
 /// The owner may redirect an active private turn without waiting for its
 /// original model/plan to finish. Claim only durable owner-authored messages
 /// targeted at this exact execution; peer/tool/model content is never promoted.
@@ -776,6 +798,10 @@ pub(super) async fn run_turn_body(
     // `toolsEnabled` controls whether the model may call tools. It is not an
     // execution permission for the Rust harness; harness nodes use the same
     // approval, cancellation and budget policy as model tool calls.
+    if let Some(error)=goal_token_budget_error(state,&session) {
+        mark_budget_exhausted(state,execution_id);
+        return Err(error);
+    }
     let harness_messages = if request.tools_execution_enabled {
         run_harness_nodes(
         state,
@@ -798,6 +824,10 @@ pub(super) async fn run_turn_body(
 
     for round in 0..max_rounds {
         if finished { break; }
+        if let Some(error)=goal_token_budget_error(state,&session) {
+            mark_budget_exhausted(state,execution_id);
+            return Err(error);
+        }
         if !budget.charge_round() {
             mark_budget_exhausted(state, execution_id);
             return Err("모델 라운드 예산을 초과했습니다.".into());
@@ -2407,6 +2437,44 @@ pub(super) async fn run_turn_body(
 mod owner_steering_turn_tests {
     use super::*;
     use crate::{config::Config, db::Store, vault::Vault};
+
+    #[test]
+    fn delegated_goal_budget_includes_all_descendant_model_usage() {
+        let dir=std::env::temp_dir().join(format!("dominion-shared-budget-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let state=AppState::new(config,Store::open(&dir.join("db.sqlite")).unwrap(),
+            Vault::open(&dir.join("key")));
+        for (id,parent) in [("root",None),("child",Some("root")),
+            ("grandchild",Some("child")),("other",None)] {
+            state.store.put("session",&json!({"id":id,"goalId":"goal-1",
+                "parentSessionId":parent,"delegated":parent.is_some()})).unwrap();
+        }
+        state.store.put("goal",&json!({"id":"goal-1","sessionId":"root",
+            "status":"running","tokenBudget":100})).unwrap();
+        for (session,tokens) in [("root",10),("child",20),
+            ("grandchild",45),("other",200)] {
+            state.store.audit("model.usage",json!({"sessionId":session,
+                "promptTokens":tokens,"completionTokens":0,"totalTokens":tokens}));
+        }
+        let root=state.store.session_tree_usage("root").unwrap();
+        assert_eq!(root["totalTokens"],75,"unrelated sessions must not count");
+        assert_eq!(root["calls"],3);
+        let child=state.store.get("session","child").unwrap();
+        assert!(goal_token_budget_error(&state,&child).is_none());
+        state.store.audit("model.usage",json!({"sessionId":"grandchild",
+            "promptTokens":30,"completionTokens":0,"totalTokens":30}));
+        assert_eq!(state.store.session_tree_usage("root").unwrap()["totalTokens"],105);
+        assert!(goal_token_budget_error(&state,&child).is_some(),
+            "the child cannot start another model round after the shared cap");
+        assert!(goal_token_budget_error(&state,
+            &state.store.get("session","root").unwrap()).is_some());
+        state.store.patch_if("goal","goal-1","id",&json!("goal-1"),
+            &json!({"tokenBudget":0})).unwrap();
+        assert!(goal_token_budget_error(&state,&child).is_none(),
+            "an explicit unlimited goal still works");
+        let _=std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn newer_owner_instruction_replaces_old_plan_and_acceptance_at_step_boundary() {

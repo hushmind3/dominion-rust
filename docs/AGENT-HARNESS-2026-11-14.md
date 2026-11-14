@@ -175,3 +175,23 @@ CAS 스케줄 판단을 그대로 적용합니다. 작업 이력 보관과 API �
 `jobs::tests::worker_scheduler_reads_only_live_jobs_not_terminal_history`에서
 256개 종료 이력과 2개 활성 작업을 같이 저장해, 실제 worker 선택과
 종료 기록 보존·직렬화가 보존되는지 검사합니다.
+
+## 2026-11-15 · 위임 작업 전체 토큰 예산 집계
+
+`Store::session_usage(root)`는 한 세션의 사용량만 집계합니다.
+목표가 `delegate_task`로 별도 `sessionId`의 후손 작업을 생성하면
+부모가 토큰 상한 이하로 보이면서 실제 호출 비용이 늘어나는 구멍이 있었습니다.
+`Store::session_tree_usage(root)`는 재귀 SQLite CTE의 `delegated=true`
+후손들을 **같은 SQL 스냅샷**으로 집계하고 전체 `model.usage` 감사 기록의
+`promptTokens/completionTokens/totalTokens`를 합산합니다.
+세션 부모·모델 사용량 조회용 SQLite 인덱스를 추가했습니다.
+
+`goals::goal_budget_exhausted`는 부모·자식·손자 합산 사용량을 검사하고,
+`chat::runtime::turn::goal_token_budget_error`는 위임 자식의 각 모델 라운드와
+하네스 노드 시작 전 같은 상위 목표 예산을 적용합니다. 집계 실패 시
+비용 제한을 우회하지 않습니다. `goals::finish` 영수증에는 후손 비용을
+포함합니다. 독립 세션은 제외하며, 한도 초과에 도달하기 전 이미 시작된
+병렬 모델 요청의 실제 청구량까지 소급 중단할 수는 없습니다.
+
+회귀: `owner_steering_turn_tests::delegated_goal_budget_includes_all_descendant_model_usage`
+(부모/자식/손자 합산, 무관 세션 제외, 상한 초과 차단, 명시적 무제한).

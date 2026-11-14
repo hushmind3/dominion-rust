@@ -432,8 +432,13 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
 }
 
 fn goal_budget_exhausted(state:&AppState, session_id:&str, budget:u64)->bool {
-    budget>0 && state.store.session_usage(session_id)["totalTokens"]
-        .as_u64().unwrap_or(0)>=budget
+    if budget==0 {return false;}
+    // Reviewer/planner usage and all descendant model calls share the owner's
+    // cap. A broken accounting query cannot silently authorize more spending.
+    state.store.session_tree_usage(session_id)
+        .map(|usage|usage["totalTokens"].as_u64()
+            .is_none_or(|total|total>=budget))
+        .unwrap_or(true)
 }
 
 fn role_model(
@@ -507,7 +512,8 @@ fn finish(
     let status = if cancelled { "cancelled" } else { status };
     let previous=context.state.store.get("goal",id).unwrap_or(Value::Null);
     let usage=previous["sessionId"].as_str()
-        .map(|session|context.state.store.session_usage(session))
+        .map(|session|context.state.store.session_tree_usage(session)
+            .unwrap_or_else(|error|json!({"error":error,"includesDelegatedSessions":true})))
         .unwrap_or(Value::Null);
     // This receipt is audit data for agent quality/RSI analysis. It never
     // self-awards task success: only the parent verification gate may do that.
