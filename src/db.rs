@@ -348,35 +348,52 @@ impl Store {
     }
 
     /// Fail closed on unresolved tool effects in the active session and delegated sessions.
-    pub fn session_has_uncertain_effects(&self,session_id:&str)->Result<bool,String>{
+    /// IDs are evidence: acknowledgement never mutates or deletes a failed/
+    /// interrupted operation. Resume can exempt *only* its reviewed IDs,
+    /// while new uncertain effects always block the next executor turn.
+    pub fn uncertain_session_operation_ids(&self,session_id:&str)->Result<Vec<String>,String>{
         if session_id.trim().is_empty(){
             return Err("확인할 목표 세션 ID가 비어 있습니다.".into());
         }
         let conn=self.conn.lock().map_err(|e|e.to_string())?;
-        let found:i64=conn.query_row(
+        let mut statement=conn.prepare(
             "WITH RECURSIVE owned_sessions(id,depth) AS (
-                SELECT ?1, 0
+                SELECT ?1,0
                 UNION ALL
-                SELECT child.id, owned.depth+1
-                FROM records AS child
+                SELECT child.id,owned.depth+1 FROM records AS child
                 JOIN owned_sessions AS owned
                   ON json_extract(child.data,'$.parentSessionId')=owned.id
                 WHERE child.kind='session' AND owned.depth<16
-             )
-             SELECT EXISTS (
-                SELECT 1 FROM records AS execution
-                INNER JOIN records AS operation
-                    ON operation.kind='execution_operation'
-                    AND json_extract(operation.data,'$.runId')=execution.id
-                WHERE execution.kind='execution'
-                    AND json_extract(execution.data,'$.sessionId')
-                        IN (SELECT id FROM owned_sessions)
-                    AND (json_extract(operation.data,'$.outcomeUnknown')=1
-                         OR json_extract(operation.data,'$.status') IN
-                            ('running','interrupted'))
-                LIMIT 1)",
-            [session_id],|row|row.get(0)).map_err(|e|e.to_string())?;
-        Ok(found!=0)
+            )
+            SELECT DISTINCT operation.id FROM records AS execution
+            INNER JOIN records AS operation
+              ON operation.kind='execution_operation'
+              AND json_extract(operation.data,'$.runId')=execution.id
+            WHERE execution.kind='execution'
+              AND json_extract(execution.data,'$.sessionId') IN
+                (SELECT id FROM owned_sessions)
+              AND (json_extract(operation.data,'$.outcomeUnknown')=1
+                OR json_extract(operation.data,'$.status') IN ('running','interrupted'))
+            LIMIT 513"
+        ).map_err(|e|e.to_string())?;
+        let values=statement.query_map([session_id],|row|row.get::<_,String>(0))
+            .map_err(|e|e.to_string())?
+            .collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        if values.len()>512 {
+            return Err("미확정 외부 작업이 512개를 초과해 자동 검토할 수 없습니다.".into());
+        }
+        Ok(values)
+    }
+
+    pub fn session_has_uncertain_effects_except(
+        &self,session_id:&str,reviewed:&[String]
+    )->Result<bool,String>{
+        let ids=self.uncertain_session_operation_ids(session_id)?;
+        Ok(ids.iter().any(|id|!reviewed.contains(id)))
+    }
+
+    pub fn session_has_uncertain_effects(&self,session_id:&str)->Result<bool,String>{
+        self.session_has_uncertain_effects_except(session_id,&[])
     }
 
     /// Durable idempotency key. Unlike `put`, this never overwrites a record.
