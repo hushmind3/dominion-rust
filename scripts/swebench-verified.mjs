@@ -135,6 +135,16 @@ async function git(cwd, ...args) {
   return stdout;
 }
 
+/** Capture actual tracked and newly created source files from a pinned clone. */
+export async function capturePatch(checkout, baseCommit) {
+  if(!SHA.test(baseCommit))throw new Error('Unpinned Git baseline');
+  // Intent-to-add makes new source files visible in the binary-safe diff.
+  await git(checkout,'add','--intent-to-add','--all');
+  const patch=await git(checkout,'diff','--binary','--no-ext-diff','--no-color',baseCommit);
+  if(Buffer.byteLength(patch)>PATCH_LIMIT)throw new RangeError('Git patch exceeded 8 MiB');
+  return patch;
+}
+
 async function readCompleted(path) {
   try{
     const rows=parseJsonl(await readFile(path,'utf8'));
@@ -201,11 +211,7 @@ async function runCase(row,cfg,provider,repoRoot) {
       try{
         // Intent-to-add includes new untracked source files in the exact diff.
         // The checkout is disposable and never touches the owner's worktree.
-        await git(checkout,'add','--intent-to-add','--all');
-        patch=await git(checkout,'diff','--binary','--no-ext-diff','--no-color',row.base_commit);
-        if(Buffer.byteLength(patch)>PATCH_LIMIT){
-          failure='Git patch exceeded 8 MiB';patch='';
-        }
+        patch=await capturePatch(checkout,row.base_commit);
       }catch(error){failure ??= 'Patch capture failed: '+String(error.message).slice(0,600);}
       await git(localRepo,'worktree','remove','--force',checkout).catch(()=>{});
     }
