@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {BookOpenText, Check, Plus, Trash2} from 'lucide-react'
+import {BookOpenText, Check, Pencil, Plus, Trash2, X} from 'lucide-react'
 import {del, post, type Agent} from '../api'
 import {Button, TextInput, TextArea, SelectInput} from '../components/Primitives'
 import {Action, FormField, Headline, Notice, Panel, Subheading, useRemote} from '../components/UI'
@@ -25,6 +25,7 @@ export function MemoryPage(){
  const [query,setQuery]=useState(''),[text,setText]=useState(''),[scope,setScope]=useState('shared')
  const [status,setStatus]=useState('active'),[owner,setOwner]=useState('all')
  const [error,setError]=useState(''),[notice,setNotice]=useState(''),[busy,setBusy]=useState(false)
+ const [editing,setEditing]=useState<{id:string;text:string}|null>(null)
  const [showRecords,setShowRecords]=useState(false)
  const [visibleLimit,setVisibleLimit]=useState(40)
  useEffect(()=>setVisibleLimit(40),[query,status,owner])
@@ -56,6 +57,19 @@ export function MemoryPage(){
    setText('');setNotice(t('memory.saved'));setStatus('active');setOwner('all');await memories.reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const saveEdit=async(memory:Memory)=>{
+  if(!editing||editing.id!==memory.id||!editing.text.trim()||busy||memory.source!=='user')return
+  setBusy(true);setError('');setNotice('')
+  try{
+   // Retrieval eligibility is derived by the Rust API, not a field to persist.
+   // Keep the same record identity, scope and provenance when editing user text.
+   const {retrievalEligible:_eligibility,...stored}=memory
+   await post('/api/memories/'+encodeURIComponent(memory.id),{
+    ...stored,text:editing.text.trim(),editedAt:new Date().toISOString()
+   })
+   setEditing(null);setNotice(t('memory.updated'));await memories.reload()
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const drop=async(id:string)=>{
   if(busy||!confirm(t('memory.delete')+'?'))return
   setBusy(true);setError('');setNotice('')
@@ -80,8 +94,17 @@ export function MemoryPage(){
      <SelectInput aria-label={t('memory.scopeAria')} value={owner} onChange={e=>setOwner(e.target.value)}><option value="all">{t('memory.owner.all')}</option><option value="shared">{t('memory.owner.shared')}</option><option value="session">{t('memory.owner.session')}</option>{owners.map(id=><option key={id} value={id}>{agentNames.get(id)??id}</option>)}</SelectInput>
     </div>
     <div className="flex flex-col gap-3">{filtered.slice(0,visibleLimit).map(m=><Panel key={m.id} className="min-w-0 p-4">
-     <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{t(statusLabels[statusOf(m)] ?? 'memory.status.excluded')}</span><Button size="icon" variant="ghost" className="ml-auto" disabled={busy} onClick={()=>void drop(m.id)} aria-label={t('memory.delete')}><Trash2 size={16}/></Button></div>
-     <p className="whitespace-pre-wrap">{m.text}</p>
+     <div className="mb-2 flex flex-wrap items-center gap-2"><BookOpenText size={18}/><strong>{ownerName(m)}</strong><span className="text-xs text-[#7C7469]">{t(statusLabels[statusOf(m)] ?? 'memory.status.excluded')}</span><div className="ml-auto flex items-center gap-1">
+      {m.source==='user'&&<Button size="icon" variant="ghost" disabled={busy} onClick={()=>{setEditing({id:m.id,text:m.text});setError('')}} aria-label={t('memory.edit')}><Pencil size={16}/></Button>}
+      <Button size="icon" variant="ghost" disabled={busy} onClick={()=>void drop(m.id)} aria-label={t('memory.delete')}><Trash2 size={16}/></Button>
+     </div></div>
+     {editing?.id===m.id?<div className="grid gap-2">
+      <TextArea rows={4} aria-label={t('memory.edit')} value={editing.text} onChange={e=>setEditing({...editing,text:e.target.value})} disabled={busy}/>
+      <div className="flex flex-wrap gap-2">
+       <Button variant="primary" disabled={busy||!editing.text.trim()||editing.text.trim()===m.text.trim()} onClick={()=>void saveEdit(m)}><Check size={15}/>{t('memory.update')}</Button>
+       <Button variant="secondary" disabled={busy} onClick={()=>setEditing(null)}><X size={15}/>{t('memory.cancel')}</Button>
+      </div>
+     </div>:<p className="whitespace-pre-wrap">{m.text}</p>}
      <div className="mt-2 flex flex-wrap gap-x-3 text-xs text-[#7C7469]"><span>{t('memory.source')} {sourceLabels[m.source??'user']?t(sourceLabels[m.source??'user'] as LocaleKey):m.source}</span><span>{t('memory.importance')} {typeof m.importance==='number'?m.importance.toFixed(2):t('memory.time.none')}</span><span>{t('memory.lastUsed')} {displayTime(m.lastUsedAt)}</span></div>
      <details className="mt-2 text-xs text-[#5C544A]"><summary className="cursor-pointer">{t('memory.evidence')}</summary><div className="mt-2 grid gap-1 break-all"><span>{t('memory.created')} {displayTime(m.createdAt)}</span><span>{t('memory.verification')} {m.verification==='source_quote'?t('memory.verification.sourceQuote'):m.verification||t('memory.time.none')}</span>{m.partitionKey&&<span>{t('memory.workspace')} {m.partitionKey}</span>}{m.sessionId&&<span>{t('memory.sessionId')} {m.sessionId}</span>}{m.sourceMessageIds?.length?<span>{t('memory.sourceMessages')} {m.sourceMessageIds.join(', ')}</span>:null}{m.evidenceQuote&&<blockquote>{m.evidenceQuote}</blockquote>}{m.archiveReason||m.forgetReason?<span>{t('memory.archiveReason')} {m.archiveReason??m.forgetReason}</span>:null}{m.expiresAt&&<span>{t('memory.expires')} {displayTime(m.expiresAt)}</span>}</div></details>
     </Panel>)}</div>
