@@ -16,6 +16,8 @@
     → SQLite 실행 원장·체크포인트 / Provider / 로컬 모델
 ```
 
+`DominionSDK.registerMcpServer`는 `POST /api/mcp`의 저장·비밀키 vault 경로로 연결됩니다. `discoverMcpTools`는 `GET /api/mcp/discover`로 실제 네이티브 MCP 검색 목록을 반환합니다. 사용자가 연결한 MCP 서버의 실행은 계속 `engine/mcp.rs`가 소유합니다.
+
 SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라이브러리**입니다. `DominionThread.runStreamed`는 현재 Rust 세션으로 직접 턴을 보내고, `run`은 완료 이벤트 이후 저장된 `messageId`의 실제 assistant 메시지를 읽습니다. `DominionGoal`은 독립적으로 살아 있는 목표 작업 ID를 재사용합니다. `watchEvents({after})`는 전역 이벤트 버스의 durable `seq`를 이어서 읽습니다. 승인과 취소는 기존 API에 도달하며 새로운 외부 SDK 정책 계층이 없습니다.
 
 사용자 최종 메시지는 검색된 기억/경험 앞에 묻히지 않습니다. 모델 입력의 근거 자료는 `context::place_retrieval_before_latest_user`에서 최신 사용자 메시지 앞에 삽입하며, 서버는 해당 자료를 사용자의 새 지시로 저장하지 않습니다. 실질적인 도구 승인·검증·실행 관리는 Rust 엔진이 유지합니다.
