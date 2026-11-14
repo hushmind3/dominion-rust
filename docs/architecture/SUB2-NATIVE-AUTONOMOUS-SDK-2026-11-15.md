@@ -150,3 +150,35 @@ Algorithmic research directions with explicit proof requirements:
   private regression tasks, frozen test environments, exact model/token/tool
   budgets, failed attempts and reproducible patch artifacts before comparing
   success rates.
+
+## Native interrupted-goal recovery and real benchmark controls (follow-up)
+
+The HTTP-only `src/api/goals/recovery.rs` recovery controller was relocated to
+`src/engine/goals/resume.rs::resume_goal` and now serves both the REST adapter
+and `DominionSdk::resume_goal(GoalResumeOptions)` in process. A recovery
+transaction allocates a new job ID, preserves prior immutable job evidence,
+reconciles unconfirmed external effects only after an owner note, and retains
+the current-attempt receipt boundary. Duplicate or simultaneous resumes are
+rejected through a guarded SQLite transaction. An unstarted cancelled goal
+may legitimately have no worktree; missing metadata for an in-flight worktree
+edit is not silently recovered.
+
+`src/engine/chat/runtime/turn.rs` now forms one tool response for **each**
+original call ID even when some read arguments fail JSON parsing. All results
+are emitted in model invocation order, not completion order. Trial success
+credit requires every proposed call to parse and execute successfully.
+
+SWE-bench `scripts/sub2-swebench-verified.mjs` now enforces an explicit,
+exact `DOMINION_SWE_MAX_TOKENS` per goal (default 80000), with validated
+integer iterations/time/instance limits rather than silent clamping. The report
+records the chosen resource limits and real native diagnostic episodes and
+replans. `officialResolvedAfterReplanRate` requires official Docker grading
+and persisted Rust replan observations; it is an observational conditional
+rate, not proof that replanning caused resolution.
+
+Tests: native SDK cancelled-unstarted resume; new immutable job lineage;
+uncertain external effects require an explicit owner note; bounded wait;
+parallel tool ID ordering/malformed call handling; SWE benchmark limit and
+measured-replan aggregate fixtures. These tests provide deterministic
+conformance evidence; real provider SWE solves and provider bills require
+separate authorized benchmark runs.
