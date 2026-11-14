@@ -53,6 +53,13 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
     }
     let indexed=crate::engine::code_index::indexed_source_hash(state,index_id,path);
     if indexed.as_deref()!=Some(sha){
+        // Keep the exact missing-index cause in the audit trail. The pinned
+        // on-disk SHA has already been verified; a cache miss is not a
+        // substitute for a source mismatch or an independent evaluation.
+        state.store.audit("rsi.index.source_rebuild",json!({
+            "path":path,"indexId":index_id,
+            "recordedHash":indexed,"verifiedDiskSha256":actual_sha
+        }));
         // A recorded index can be stale or missing after a persistent store
         // migration. Reconstruct it from the SAME pinned checkout, then
         // compare both the index identity and the actual source bytes again.
