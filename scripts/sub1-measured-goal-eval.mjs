@@ -9,7 +9,7 @@
  * Success of this PROGRAM means measurements were recorded. It does not mean
  * the agent passed the tasks. Read summary.oraclePasses / summary.totalCases.
  */
-import {createHash} from "node:crypto";
+import {createHash,randomUUID} from "node:crypto";
 import {readFileSync,writeFileSync,mkdirSync,existsSync,realpathSync} from "node:fs";
 import {dirname,join,resolve} from "node:path";
 import {appendFileSync} from "node:fs";
@@ -119,7 +119,7 @@ async function launchCase(test){
    // Same test case, model digest, workspace and external oracle.
    // Change ONLY the harness, not the task and judge.
    const response=await request('/api/jobs',{
-    kind:'sdk_local',requestId:crypto.randomUUID(),
+    kind:'sdk_local',requestId:randomUUID(),
     input:{
      providerId,model,prompt:test.goal,approvedLocalWrite:true,
      maxSeconds:Math.min(420,Math.floor(perTaskMs/1000)-20),
