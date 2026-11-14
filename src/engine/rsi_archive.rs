@@ -118,6 +118,30 @@ fn dominates(left: &BTreeMap<String, f64>, right: &BTreeMap<String, f64>) -> boo
             .any(|(key, value)| right.get(key).is_some_and(|other| value > other))
 }
 
+/// A/B-selector control is NOT part of candidate-authored source or evaluator.
+/// The operator may choose exploration strategies with the same sealed oracle.
+/// All strategies use identical *training-only* Pareto eligibility and frozen
+/// held-out promotion gates.
+fn parent_strategy() -> &'static str {
+    match std::env::var("DOMINION_RSI_PARENT_SEARCH").as_deref() {
+        Ok("parent_only_v2") => "parent_only_v2",
+        _ => "measured-niche-diversity-v1",
+    }
+}
+
+fn parent_order(
+    strategy:&str,
+    left_niche_attempts:usize, right_niche_attempts:usize,
+    left_attempts:usize, right_attempts:usize,
+    left_id:&str, right_id:&str,
+)->std::cmp::Ordering{
+    let niche_order=if strategy=="measured-niche-diversity-v1" {
+        left_niche_attempts.cmp(&right_niche_attempts)
+    }else{std::cmp::Ordering::Equal};
+    niche_order.then_with(||left_attempts.cmp(&right_attempts))
+        .then_with(||left_id.cmp(right_id))
+}
+
 fn plan_identity(base:&str, plan:&[Value], oracle:&str) -> String {
     let plan=serde_json::to_string(plan).unwrap_or_default();
     format!("{:x}", Sha256::digest(format!("{base}\n{oracle}\n{plan}").as_bytes()))
@@ -336,17 +360,21 @@ fn select_scoped(
     };
     let distinct_niches=frontier.iter().map(|entry|entry.3.as_str())
         .collect::<BTreeSet<_>>().len();
+    let search_strategy=parent_strategy();
     let selected = frontier.iter().min_by(|left,right| {
-        niche_attempts(&left.3).cmp(&niche_attempts(&right.3))
-            .then_with(||children(&left.0).cmp(&children(&right.0)))
-            .then_with(||left.0.cmp(&right.0))
+        parent_order(
+            search_strategy,
+            niche_attempts(&left.3),niche_attempts(&right.3),
+            children(&left.0),children(&right.0),
+            &left.0,&right.0,
+        )
     });
     selected
         .map(|entry| {
             json!({
                 "candidateId":entry.0,"patchSha256":entry.1,
                 "policy":"paired-pareto-stepping-stones-v2",
-                "searchStrategy":"measured-niche-diversity-v1","baseCommit":base,
+                "searchStrategy":search_strategy,"baseCommit":base,
                 "oracleSha256":oracle,"archiveSize":entries.len(),"frontierSize":frontier.len(),
                 "nicheCount":distinct_niches,"explorationNiche":entry.3,
                 "nicheDescendantAttempts":niche_attempts(&entry.3),
@@ -392,6 +420,23 @@ pub(crate) fn validate_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_configured_rsi_ablation_changes_parent_search_not_eligibility(){
+        // Parent A is less reused individually, parent B is in a less
+        // explored niche. A/B strategies must give opposite choices on the
+        // same frozen candidate set; never touch the grader or held-out suite.
+        use std::cmp::Ordering;
+        assert_eq!(parent_order(
+            "parent_only_v2",7,0,0,1,"parent-a","parent-b"),
+            Ordering::Less);
+        assert_eq!(parent_order(
+            "measured-niche-diversity-v1",7,0,0,1,"parent-a","parent-b"),
+            Ordering::Greater);
+        assert_eq!(parent_order(
+            "measured-niche-diversity-v1",2,2,0,0,"a","b"),
+            Ordering::Less);
+    }
 
     #[test]
     fn behavior_niches_are_measured_not_guessed_and_never_leak_holdout_cases(){
