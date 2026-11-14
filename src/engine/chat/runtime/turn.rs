@@ -633,6 +633,7 @@ pub(super) async fn run_turn_body(
     let mut finished = false;
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut read_loop_guard=ReadLoopGuard::default();
     let mut failed_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
     let mut environment_version = 0u64;
@@ -1425,6 +1426,7 @@ pub(super) async fn run_turn_body(
                 })
             })
             .collect::<Vec<_>>();
+        let tool_round_message_start=messages.len();
         messages.push(json!({
             "role": "assistant",
             "content": completion.content,
@@ -1967,6 +1969,41 @@ pub(super) async fn run_turn_body(
             final_content = "실제 소스 변경을 기록했습니다. 독립 빌드와 성능 비교는 실행 엔진이 수행합니다.".into();
             finished = true;
             break;
+        }
+
+        // A model's tool-call message cannot be replayed to any provider until
+        // every call has exactly one real observation. Validate after both
+        // serial dispatch and parallel-reads; keep the append-only transcript.
+        if let Err(error)=check_tool_result_pairs(
+            &completion.tool_calls,&messages[tool_round_message_start..]
+        ){
+            state.store.audit("harness.tool_batch_invalid",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "round":round,"reason":error
+            }));
+            return Err(format!("도구 실행 기록의 원자성 검사가 실패했습니다: {error}"));
+        }
+        match read_loop_guard.observe(
+            &completion.tool_calls,&messages[tool_round_message_start..]
+        ){
+            LoopDecision::Normal=>{},
+            LoopDecision::Nudge=>{
+                state.store.audit("harness.stagnant_read_loop",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"action":"nudge","kind":"identical_read_observations"
+                }));
+                messages.push(json!({
+                    "role":"system",
+                    "content":"도미니온 실행 엔진 관측: 같은 조회 도구와 인수를 반복해 결과 바이트도 변하지 않았습니다. 똑같은 조회를 반복하지 말고 다른 파일·범위를 조사하거나, 이미 충분한 근거가 있다면 다음 작업·검증 단계로 진행하세요. 변경하지 않은 것을 작업 성공이라고 주장하지 마세요."
+                }));
+            },
+            LoopDecision::Stuck=>{
+                state.store.audit("harness.stagnant_read_loop",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"action":"stop","kind":"identical_read_observations"
+                }));
+                return Err("동일한 조회·결과가 5회 반복되어 실행이 정체됐습니다. 변경·완료 증거 없이 성공으로 처리하지 않았습니다.".into());
+            },
         }
 
         // Check acceptance after the tool round, not only when the model
