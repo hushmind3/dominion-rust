@@ -1,4 +1,5 @@
 pub mod goal_control;
+pub mod goal_git;
 pub mod agent_diff;
 pub mod agent_parallel;
 pub mod goal_context;

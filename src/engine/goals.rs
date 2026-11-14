@@ -147,6 +147,26 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     };
     let control=crate::engine::goal_control::GoalControl::new(context,goal_id,&session_id);
     goal["sessionId"] = json!(session_id);
+    // Freeze a linked source checkout before any planning/tool step. Missing
+    // worktree on retry must fail closed, never write to the live checkout.
+    if goal["isolateWorktree"]==true {
+        let info=match crate::engine::goal_git::prepare(state,goal_id).await{
+            Ok(value)=>value,
+            Err(error)=>return Ok(finish(context,goal_id,"needs_review",
+                vec![format!("Isolated Git worktree unavailable: {error}")],None)),
+        };
+        goal["gitWorktree"]=info.clone();
+        if state.store.patch_if("session",&session_id,"id",&json!(session_id),
+            &json!({"goalId":goal_id,"goalWorktree":info["path"]})).is_none(){
+            return Ok(finish(context,goal_id,"needs_review",
+                vec!["Unable to persist isolated goal session".into()],None));
+        }
+    }
+    let workdir=crate::engine::goal_git::workspace_for_goal(state,&goal)?;
+    let git_guidance=if goal["isolateWorktree"]==true{
+        format!("\\nIsolated Git worktree: {}. Base commit: {}. The original checkout is NOT this workspace. Inspect Git changes before concluding. Never publish, merge or discard without owner action. Worktrees are not OS sandboxes.",
+            workdir.display(),goal["gitWorktree"]["baseCommit"].as_str().unwrap_or(""))
+    }else{String::new()};
     goal["status"] = json!("running");
     goal["phase"] = json!("plan");
     goal["startedAt"] = goal
@@ -297,7 +317,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "evidence":evidence,"transcript":transcript,"gaps":gaps}}))?;
         let request = TurnRequest {
             session_id:Some(session_id.clone()),
-            input:format!("목표: {text}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n작업 분해(원래 사용자 요청):\n{decomposition}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
+            input:format!("목표: {text}{git_guidance}\n\n계획:\n{plan}\n\n검증 조건:\n{criteria}\n\n프로젝트 구조:\n{}\n\n작업 분해(원래 사용자 요청):\n{decomposition}\n\n이전 검토의 부족한 점:\n{}\n\n진행 기록:\n{}\n\n실제 도구로 수행하고 diff 및 검증 결과를 확인하세요. 독립 하위 작업만 선택적으로 위임하고 task_result를 수집하세요.",tail(&project_context,3600),gaps.join("\n"),tail(&transcript,6000)),
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),

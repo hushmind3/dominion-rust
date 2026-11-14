@@ -40,6 +40,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if let Err(message) = engine::goals::validate_criteria(&criteria) {
         return error(StatusCode::BAD_REQUEST, &message);
     }
+    let isolate=body["isolateWorktree"].as_bool().unwrap_or(false);
+    if body.get("isolateWorktree").is_some() && !body["isolateWorktree"].is_boolean(){
+        return error(StatusCode::BAD_REQUEST,"isolateWorktree must be a boolean.");
+    }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
     let max_iterations = body
         .get("maxIterations")
@@ -54,6 +58,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "taskId": uuid::Uuid::new_v4().to_string(),
             "goal": text,
             "successCriteria": criteria,
+            "isolateWorktree":isolate,
             "executor": executor,
             "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
@@ -149,6 +154,12 @@ pub async fn diff_goal(State(state):State<AppState>,Path(id):Path<String>)->Resp
     let Some(goal)=state.store.get("goal",&id) else{
         return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
     };
+    if goal["isolateWorktree"]==true {
+        return match engine::goal_git::changes(&state,&id).await{
+            Ok(value)=>Json(value).into_response(),
+            Err(message)=>error(StatusCode::CONFLICT,&message),
+        };
+    }
     let paths=goal["artifacts"].as_array().into_iter().flatten()
         .filter_map(|row|row["path"].as_str().map(str::to_string))
         .take(20).collect::<Vec<_>>();
@@ -163,5 +174,13 @@ pub async fn diff_goal(State(state):State<AppState>,Path(id):Path<String>)->Resp
             Json(value).into_response()
         }
         Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}
+
+/// Explicit owner discard: only the goal-owned linked worktree is removed.
+pub async fn rollback_goal(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match engine::goal_git::rollback(&state,&id).await{
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
