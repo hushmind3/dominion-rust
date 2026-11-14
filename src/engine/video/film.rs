@@ -299,6 +299,86 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
 mod tests {
     use super::*;
     #[test]
+    fn receipt_requires_exact_mp4_sha_frozen_prompt_and_verified_probe() {
+        let dir=std::env::temp_dir().join(format!("dominion-film-receipt-{}",
+            uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip=json!({"duration":8,"prompt":"one continuous shot"});
+        assert!(saved_receipt(&dir,&clip,0).unwrap().is_none());
+        let file=dir.join("output.mp4");
+        std::fs::write(&file,vec![b'x';2048]).unwrap(); // synthetic bytes; NOT video quality proof
+        assert!(saved_receipt(&dir,&clip,0).is_err());
+        let receipt=json!({"version":1,"index":0,"duration":8,
+            "promptSha256":prompt_sha(&clip).unwrap(),
+            "outputSha256":file_sha(&file).unwrap(),
+            "technicalQuality":{"verified":true}});
+        persist_receipt(&dir,&receipt).unwrap();
+        assert!(saved_receipt(&dir,&clip,0).unwrap().is_some());
+        assert!(saved_receipt(&dir,&json!({"duration":8,"prompt":"changed"}),0).is_err());
+        assert!(saved_receipt(&dir,&clip,1).is_err());
+        std::fs::write(&file,vec![b'y';2048]).unwrap();
+        assert!(saved_receipt(&dir,&clip,0).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn owner_retake_changes_one_clip_and_idempotently_queues_one_paid_job() {
+        let dir=std::env::temp_dir().join(format!("dominion-film-retake-{}",
+            uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=crate::config::Config{
+            port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()
+        };
+        let store=crate::db::Store::open(&config.db_path()).unwrap();
+        let vault=crate::vault::Vault::open(&config.key_path());
+        let state=crate::state::AppState::new(config,store,vault);
+        let id=uuid::Uuid::new_v4().to_string();
+        let clips=json!([
+            {"index":0,"duration":8,"prompt":"opening scene"},
+            {"index":1,"duration":8,"prompt":"closing scene"}
+        ]);
+        let source=state.store.put("job",&json!({
+            "id":id,"kind":"video","status":"completed",
+            "input":{"engine":"ltx","brief":"demo","duration":16,
+                "technicalGate":true,"render":{"model":"ltx-2-5-pro",
+                    "generate_audio":true,
+                    "film":{"duration":16,"clips":clips}}}
+        })).unwrap();
+        let root=super::super::directory(&state,&id).unwrap();
+        for (i,clip) in clips.as_array().unwrap().iter().enumerate(){
+            let place=root.join(format!("clip-{i:02}"));
+            std::fs::create_dir_all(&place).unwrap();
+            let output=place.join("output.mp4");
+            std::fs::write(&output,vec![b'a'+i as u8;2048]).unwrap();
+            persist_receipt(&place,&json!({
+                "version":1,"index":i,"duration":8,
+                "promptSha256":prompt_sha(clip).unwrap(),
+                "outputSha256":file_sha(&output).unwrap(),
+                "technicalQuality":{"verified":true}
+            })).unwrap();
+        }
+        let manifest=scenes(&state,&source).unwrap();
+        assert_eq!(manifest["allReceiptsVerified"],true);
+        assert_eq!(manifest["clips"][1]["expectedPaidCalls"],1);
+        let expected=manifest["clips"][1]["outputSha256"].as_str().unwrap();
+        assert!(retake_input(&state,&source,1,expected,Some("revised ending"),2).is_err());
+        assert!(retake_input(&state,&source,1,&"0".repeat(64),None,1).is_err());
+        let planned=retake_input(&state,&source,1,expected,Some("revised ending"),1).unwrap();
+        assert_eq!(planned["render"]["film"]["clips"][0]["prompt"],"opening scene");
+        assert_eq!(planned["render"]["film"]["clips"][1]["prompt"],"revised ending");
+        let body=json!({"index":1,"expectedSha256":expected,
+            "confirmedPaidCallCount":1,"confirmNewPaidCalls":true,
+            "prompt":"revised ending"});
+        let first=super::super::enqueue_retake(&state,&id,&body).unwrap();
+        let second=super::super::enqueue_retake(&state,&id,&body).unwrap();
+        assert_eq!(first["id"],second["id"]);
+        assert_eq!(state.store.all("job").len(),2);
+        assert_eq!(first["retake"]["newPaidCalls"],1);
+        std::fs::write(root.join("clip-00/output.mp4"),vec![b'z';2048]).unwrap();
+        assert_eq!(scenes(&state,&source).unwrap()["allReceiptsVerified"],false);
+        assert!(super::super::enqueue_retake(&state,&id,&body).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
     fn pro_segments_are_supported_even_durations() {
         assert_eq!(split_duration(22,10).unwrap(),vec![10,6,6]);
         assert_eq!(split_duration(60,10).unwrap(),vec![10,10,10,10,10,10]);
