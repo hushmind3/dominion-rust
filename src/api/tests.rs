@@ -81,3 +81,20 @@ mod settings_tests {
         let _ = std::fs::remove_dir_all(&state.config.data_dir);
     }
 }
+
+#[test]
+fn real_router_mounts_specialized_workflows_automations_and_skills_once() {
+    let root=std::env::temp_dir().join(format!("dominion-router-{}",uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let config=crate::config::Config{
+        port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone(),
+    };
+    let state=crate::state::AppState::new(config.clone(),
+        crate::db::Store::open(&config.db_path()).unwrap(),
+        crate::vault::Vault::open(&config.key_path()));
+    // This previously panicked at Axum path_router.rs ("Overlapping
+    // method route. Handler for GET /api/skills already exists").
+    // Cargo compiling and isolated endpoint handler tests missed the outage.
+    let _actual_runtime_router=super::router(state);
+    let _=std::fs::remove_dir_all(root);
+}

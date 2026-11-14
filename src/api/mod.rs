@@ -263,7 +263,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mcp/presets", get(extensions::mcp_presets))
         .route("/api/mcp/catalog", get(extensions::mcp_catalog))
         .route("/api/mcp/discover", get(extensions::mcp_discover))
-        .route("/api/skills", get(extensions::installed_skills))
+        .route("/api/skills", get(extensions::installed_skills).post(collections::save))
         .route("/api/skill-catalog", get(extensions::skill_catalog))
         .route("/api/skill-catalog/meta", get(extensions::skill_catalog_meta))
         .route("/api/skill-catalog/import", post(extensions::import_skill))
@@ -352,11 +352,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/webhooks/:id", post(compat::webhook));
 
     for kind in collections::COLLECTIONS {
-        router = router
-            .route(
+        // Workflows and automations now have domain-owned admission,
+        // duplicate-run and verification policies. Mounting their legacy
+        // generic CRUD routes again panics Axum before the server can boot.
+        if matches!(*kind, "workflows" | "automations") {
+            continue;
+        }
+        // The installed-skill GET endpoint is specialized, while POST
+        // retains the existing writable collection contract. Do not mount
+        // a second GET /api/skills handler on the same router.
+        if *kind != "skills" {
+            router = router.route(
                 &format!("/api/{kind}"),
                 get(collections::list).post(collections::save),
-            )
+            );
+        }
+        router = router
             .route(
                 &format!("/api/{kind}/:id"),
                 get(collections::one)
