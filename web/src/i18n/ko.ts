@@ -4,6 +4,8 @@ const ko = {
   'nav.group.operations': '운영',
   'nav.group.advanced': '고급',
   'nav.home': '대시보드',
+  'nav.goals': '자율 목표',
+  'dashboard.shortcut.goals.desc': '계획·실행·검증·중단·재개·Git 반영',
   'nav.chat': '채팅',
   'nav.rooms': '그룹 대화 · 회의',
   'nav.models': '모델 관리',
