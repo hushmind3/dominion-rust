@@ -1,5 +1,29 @@
 # dominion-rust
 
+## 2026-11-15 · Sub4: real-frame video QA and durable agent event recovery
+
+A ComfyUI cinematic job now freezes `visualQualityGate` in its queued input
+(`web/src/pages/Video.tsx` → `engine/video.rs::enqueue`). After FFprobe
+metadata checks, `engine/video/visual_scan.rs` **decodes every shot with FFmpeg**
+and checks conservative mostly-black / near-total-freeze thresholds. The
+`cinematic.rs` loop reuses only shots passing the selected checks and retries
+only a failed shot, at most the owner's configured single retry. The result
+records scan ratios, CPU milliseconds, reuses and generation attempts. No
+extra video provider/model calls are made for inspection; aesthetic, identity
+and narrative consistency still require real visual review. Parser regression
+tests and an optional real FFmpeg moving/black video test are included.
+
+Durable Rust `/api/events?after=seq` now subscribes before replaying the
+SQLite history, drains more than 500 events, and publishes a `replay_gap`
+signal with `requiresStateRefresh=true` when the bounded retention window
+has already expired. Bus sequence allocation/persistence/broadcast are ordered
+under one gate across parallel agents. The optional external TypeScript SDK
+`watchEventsResilient({after,signal})` automatically reconnects the
+**read-only stream**, excludes duplicate sequence IDs, aborts cleanly and
+uses a bounded exponential delay. It **never replays a side-effecting agent
+turn or approval**. See `docs/SUB4-2026-11-15-VIDEO-EVENT-SDK-RELIABILITY.md`
+for implementation boundaries and evidence.
+
 DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저장소입니다.
 
 - 프론트엔드: 기존 React UI 그대로 (`web/`)
