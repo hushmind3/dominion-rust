@@ -8,7 +8,7 @@
  * DOMINION_EVAL_ROOT=/tmp/... DOMINION_EVAL_PROVIDER_ID=... \
  * DOMINION_EVAL_MODEL=... node scripts/sub2-goal-eval.mjs
  */
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -72,6 +72,11 @@ export function oracle(workspace,checks){
     return {type:check.type,path:check.path,passed,details};
   });
   return {passed:rows.length>0&&rows.every(x=>x.passed),checks:rows};
+}
+export function verifiedGoal(status,receipt,jobId,independentOracle){
+  return status==="completed"&&
+    receipt?.jobId===jobId&&receipt?.verifiedCompletion===true&&
+    receipt?.actionEvidenceCount>0&&independentOracle?.passed===true;
 }
 export function summarize(records){
   const attempts=records.length;
@@ -233,11 +238,7 @@ async function run(){
         try{row.usage=await request(base,`/api/sessions/${current.sessionId}/usage`)}
         catch(error){row.error=`usage: ${error.message}`;}
       }
-      row.verified=row.status==="completed"&&
-        row.receipt?.jobId===row.jobId&&
-        row.receipt?.verifiedCompletion===true&&
-        row.receipt?.actionEvidenceCount>0&&
-        row.independentOracle.passed;
+      row.verified=verifiedGoal(row.status,row.receipt,row.jobId,row.independentOracle);
     }catch(error){row.status="error";row.error=String(error.message);}
     row.durationMs=Date.now()-began;
     persist();
