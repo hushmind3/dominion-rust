@@ -194,6 +194,48 @@ pub(crate) async fn undo(state:&AppState,goal:&Value,raw:&str,expected:&str)->Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn clean_git_goal_preview_and_pinned_undo_return_exact_original_bytes(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let dir=std::env::temp_dir().join(format!("goal-diff-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let run=|args:&[&str]|{
+            let status=std::process::Command::new("git").arg("-C").arg(&dir)
+                .args(args).status().expect("git installed");
+            assert!(status.success(),"git {args:?}");
+        };
+        run(&["init","-q"]);
+        std::fs::write(dir.join("a.txt"),"before\\n").unwrap();
+        run(&["add","a.txt"]);
+        run(&["-c","user.name=Dominion Test","-c","user.email=test@example.com",
+            "commit","-qm","initial"]);
+        let cfg=Config{port:0,data_dir:dir.join("runtime"),
+            web_dir:dir.join("web"),workspace:dir.clone()};
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        // runtime/ is ignored by Git for this fixture; capture before the
+        // app creates any untracked runtime files in real production.
+        let prior=baseline(&dir).await;
+        assert!(prior["available"]==true);
+        assert!(prior["clean"]==false,"untracked database must disable undo");
+        std::fs::remove_dir_all(&cfg.data_dir).unwrap();
+        let clean=baseline(&dir).await;
+        assert_eq!(clean["clean"],true);
+        std::fs::write(dir.join("a.txt"),"after\\n").unwrap();
+        let goal=json!({"id":"g","status":"completed","gitBaseline":clean,
+            "evidence":[{"tool":"workspace_write","arguments":{"path":"a.txt"},
+                "result":{"written":true}}]});
+        let preview=preview(&state,&goal).await.unwrap();
+        assert_eq!(preview["files"][0]["canUndo"],true);
+        assert!(preview["files"][0]["diff"].as_str().unwrap().contains("before"));
+        let sha=preview["files"][0]["currentSha256"].as_str().unwrap();
+        let receipt=undo(&state,&goal,"a.txt",sha).await.unwrap();
+        assert_eq!(receipt["verified"],true);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(),"before\\n");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn path_guard_never_escapes_workspace() {
         let root=std::env::temp_dir().join(format!("goal-git-{}",uuid::Uuid::new_v4()));
