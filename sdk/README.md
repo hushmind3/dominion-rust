@@ -97,3 +97,46 @@ Tests use a mock Fetch transport for the Rust HTTP/SSE wire contract. These are 
 - [GitHub Copilot SDK architecture](https://github.com/github/copilot-sdk) — Copilot hosts its *own* agent runtime over JSON-RPC/CLI; do not embed it as DOMINION's authority.
 - [OpenAI Agents SDK run/state/stream model](https://developers.openai.com/api/docs/guides/agents/running-agents) — separate the loop from the transport, preserve continuation state and typed streaming events.
 - [MCP TypeScript SDK v2](https://github.com/modelcontextprotocol/typescript-sdk) — MCP is a tool transport, not a replacement for the product-level agent or user intent.
+
+
+## Developer-defined tools: no Copilot/Codex agent runtime
+
+The SDK includes `@dominion/agent-sdk/mcp`, a first-party local Node HTTP MCP tool server. Developers implement executable functions directly; DOMINION discovers and invokes them through its existing Rust MCP tool dispatch and approval layer.
+
+```js
+import { DominionClient } from '@dominion/agent-sdk';
+import { DominionToolServer } from '@dominion/agent-sdk/mcp';
+
+const sdk = new DominionClient({ baseUrl: 'http://127.0.0.1:4317' });
+const token = process.env.DOMINION_MCP_TOKEN ?? '';
+const tools = new DominionToolServer({ name: 'project-helpers', token });
+
+tools.tool('calculate_area', {
+  description: 'Calculate the area of a rectangle',
+  inputSchema: {
+    type: 'object',
+    properties: { width: { type: 'number' }, height: { type: 'number' } },
+    required: ['width', 'height'],
+  },
+}, ({ width, height }) => Number(width) * Number(height));
+
+const url = await tools.listen();
+await sdk.mcp.register({
+  name: 'project-helpers',
+  transport: 'http',
+  url,
+  apiKey: token, // Rust stores this in its encrypted vault, not the public record.
+  enabled: true,
+});
+console.log('DOMINION can discover:', await sdk.mcp.discover());
+// Keep this Node process alive while DOMINION uses the tools.
+// On shutdown: await tools.close().
+```
+
+MCP extension traffic uses a local loopback endpoint by default, origin rejection,
+optional bearer authentication, request-size limits and tool-result error receipts.
+The server accepts the legacy `2024-11-05` initialize exchange used by the current
+DOMINION Rust MCP client, and the stateless `2026-07-28` request metadata format.
+No external CLI or third-party agent execution policy is installed. New tools may
+take up to the Rust MCP client's 120-second discovery cache to appear.
+Run `node --test sdk/index.test.mjs sdk/mcp-server.test.mjs`.
