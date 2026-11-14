@@ -47,6 +47,11 @@ Automations > choose saved workflow + input + interval
         running/queued overlap guard + INSERT new job +
         update nextAt / lastJobId / lastAt COMMIT together
         -> no duplicate scheduled job after retries or crashes
+        -> needs_review also blocks future periods
+        -> POST /api/automations/:id/review (explicit owner note + consent)
+           db/automation_claim.rs::acknowledge_automation_review
+           atomic: preserve original failed receipt, status=cancelled,
+           record reviewed reason, schedule a future slot after interval
        |
 Home / Activity / Workflows:
     job status, latest automation run, actual per-step verification,
@@ -73,7 +78,7 @@ Home / Activity / Workflows:
 | Connections | MCP, installed skill catalog and channels | Active installed skills link directly to binding into an agent | `SkillsPanel.tsx → #/agents?skill=` | Automatic MCP authentication checks, capability health |
 | Memory | Scoped recall, active/editable entries, growth | Growth panel now attributes **actual verified workflow artifacts and usage per agent** without presenting these as self-improvement | `Growth.tsx → /api/jobs → job.result.outputs[].verification` plus `memory::visible` | Learning/retention measured across sessions |
 | Goal | Planning, verified tool receipts, recovery | Inherited, unchanged this iteration | Existing atomic admission/resume; no new menu credit | Large independently verified task pass@1 |
-| Automations | Periodic prompt/meeting tasks | **New workflow scheduling** with exactly-once due-slot admission and running overlap prevention | `Operations.tsx → collections.rs → jobs.rs → db/automation_claim.rs`; SQLite rollback tests | Notifications, retry policy/threshold/owner approval on failure |
+| Automations | Periodic prompt/meeting tasks | **New workflow scheduling** with atomic due-slot admission, running/review overlap prevention and explicitly audited owner rearming | `Operations.tsx → collections.rs → jobs.rs → db/automation_claim.rs`; SQLite rollback tests | Notifications, retry policy/threshold/owner approval on failure |
 | Activity | Jobs, operations, audit | Display scheduled workflow source and verified steps/recorded token counts | `Operations.tsx → /api/jobs` current persisted job result | Actual provider-bill attribution |
 | RSI | Isolated candidates, evaluations and descendants | Inherited; no change to frozen independent evaluator | Existing RSI remains separate from workflow success | Genuine multi-generation adopted model-led improvement |
 | Settings | Policy, provider accounts, backup | Inherited; policy still gates tool calls | Existing `policy` and backup endpoints | End-to-end restore and bounded spending |
@@ -83,7 +88,7 @@ Home / Activity / Workflows:
 ## Verification tiers; do not confuse them
 
 - **Static:** Changes are committed to the named sub2 branch, not shared by other branches unless merged. The Developer preflight compares configured folder paths on the client; backend workflow tools still follow their original approvals and workspace restrictions, so this is not an OS security sandbox.
-- **Deterministic:** Rust tests check agent-only skill context and an actual mocked-provider workflow path with file writes versus read-only/no-artifact outcomes. Scheduler tests inspect real SQLite transactions, due-slot idempotency, no overlapping jobs and injected rollback. Web typecheck/build validates views; Node independent-oracle tests are inherited.
+- **Review safety:** Pending `needs_review` workflow jobs block every later scheduled slot. The owner must inspect outside effects and use the reviewed-job action with a >=10-character note to allow another periodic run; the old job is cancelled with a preserved unverified receipt, never marked completed.\n- **Deterministic:** Rust tests check agent-only skill context and an actual mocked-provider workflow path with file writes versus read-only/no-artifact outcomes. Scheduler tests inspect real SQLite transactions, due-slot idempotency, no overlapping jobs and injected rollback. Web typecheck/build validates views; Node independent-oracle tests are inherited.
 - **Live:** **No paid API or external model was invoked by the tests above.** The mocked-provider workflow test is native HTTP→engine→tool→SQLite→artifact verification, not a new real-model reliability benchmark.
 - **Measured:** Workflow outputs retain `modelCalls`, `totalTokens`, `usageEstimated`, and source operation IDs. Recorded token use can be incomplete/estimated; **no verified KRW bill, savings percentage, or actual audiovisual quality** is attributed.
 
