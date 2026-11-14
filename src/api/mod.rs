@@ -146,6 +146,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sdk/threads/:id/history", get(sdk::history))
         .route("/api/sdk/threads/:id/run", post(sdk::stream))
         .route("/api/sdk/threads/:id/cancel", post(sdk::cancel))
+        .route("/api/sdk/threads/:id/steer", post(sdk::steer))
         .route("/api/jobs",get(jobs::list).post(jobs::create))
         .route("/api/jobs/:id",get(jobs::one))
         .route("/api/jobs/:id/cancel",post(jobs::cancel))
