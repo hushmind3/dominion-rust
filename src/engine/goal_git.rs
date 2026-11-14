@@ -113,6 +113,17 @@ pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
     if matches!(goal["status"].as_str(),Some("running"|"queued")){
         return Err("진행 중인 작업을 먼저 중단하세요.".into());
     }
+    // A parent may have finished while its delegated child is still editing.
+    // Never remove a worktree underneath an active nested session.
+    let active_children=state.store.all("job").into_iter().any(|job|{
+        if !matches!(job["status"].as_str(),Some("queued"|"running")){return false;}
+        let Some(session_id)=job.pointer("/input/sessionId").and_then(Value::as_str) else{
+            return false;
+        };
+        state.store.get("session",session_id)
+            .is_some_and(|session|session["goalId"].as_str()==Some(id))
+    });
+    if active_children{return Err("하위 에이전트가 작업 중입니다. 모두 종료한 뒤 되돌리세요.".into());}
     let work=checked_path(state,id,&goal)?;
     let root=state.config.workspace.canonicalize().map_err(|e|e.to_string())?;
     if goal["gitWorktree"]["source"].as_str()!=root.to_str(){
