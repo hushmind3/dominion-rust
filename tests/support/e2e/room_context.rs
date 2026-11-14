@@ -879,9 +879,12 @@ fn invalid_automations_and_workflows_are_rejected_before_execution() {
         400,
         "an automation without an existing agent must not be saved"
     );
+    // This fixture must satisfy the automation's required schedule contract;
+    // otherwise the positive case returns HTTP 400 before testing the agent.
+    let next_at=(chrono::Utc::now()+chrono::Duration::hours(1)).to_rfc3339();
     let automation = app.post(
         "/api/automations",
-        &json!({"kind":"prompt","input":{"prompt":"x","agentId":agent},"intervalMinutes":10,"enabled":true}),
+        &json!({"kind":"prompt","input":{"prompt":"x","agentId":agent},"intervalMinutes":10,"nextAt":next_at,"enabled":true}),
     );
     assert!(automation["id"].is_string(), "{automation}");
     assert_eq!(

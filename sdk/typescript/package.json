@@ -4,15 +4,28 @@
   "description": "First-party TypeScript client for the Dominion native Rust agent runtime",
   "type": "module",
   "license": "MIT",
-  "engines": { "node": ">=20" },
-  "files": ["dist", "README.md"],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "sideEffects": false,
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "prepack": "npm run build"
   },
-  "devDependencies": { "typescript": "^5.9.0" }
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
 }
