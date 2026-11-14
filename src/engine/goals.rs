@@ -19,6 +19,8 @@ mod artifacts;
 mod diff;
 #[path = "goals/receipts.rs"]
 mod receipts;
+#[path = "goals/code_navigation.rs"]
+mod code_navigation;
 
 pub async fn diff_for_goal(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
@@ -130,6 +132,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let control=crate::engine::goal_control::GoalControl::new(context,goal_id,&session_id);
     let workspace_view=project::inspect(state);
     let workspace_context=project::prompt(&workspace_view);
+    let (code_view,source_context)=code_navigation::collect(state,&text).await;
+    let workspace_context=format!("{workspace_context}\n\n소스 코드 네비게이션 데이터:\n{source_context}");
     goal["sessionId"] = json!(session_id);
     goal["status"] = json!("running");
     goal["phase"] = json!("plan");
@@ -148,6 +152,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     });
     goal["acceptanceChecks"] = criteria.clone();
     goal["workspaceInspection"] = workspace_view.clone();
+    goal["codeNavigation"] = code_view.clone();
     let task_id = goal["taskId"]
         .as_str()
         .filter(|id| !id.is_empty())
