@@ -572,13 +572,13 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 
 ## 2026-11-14 · 서브2: 자율 에이전트 25점 심사 대응
 
-**사용자 실제 진입점:** 홈 `web/src/components/GoalConsole.tsx` → `POST /api/goals` → `jobs.rs::enqueue("goal")` → `goals.rs::run` → 프로젝트 조사·계획·실제 도구·독립 검토·재계획·검증·산출물·종료 기록입니다. 기존 홈의 일반 `prompt` 실행과 별도이며, 기존 Provider/채팅/도구/작업 큐를 재사용합니다.
+**사용자 실제 진입점:** 홈 `web/src/components/GoalConsole.tsx` → `POST /api/goals` → `jobs.rs::enqueue("goal")` → `goals.rs::run` → 코드 인덱스 기반 프로젝트 조사·계획·실제 도구·독립 검토·재계획·검증·최종 실행 보고·산출물·종료 기록입니다. 기존 홈의 일반 `prompt` 실행과 별도이며, 기존 Provider/채팅/도구/작업 큐를 재사용합니다.
 
-- `goals/project.rs`: 로컬 매니페스트·프로젝트 규칙과 루트 파일 구성을 제한적으로 탐색하여 계획과 실행 모델에 전달합니다. 테스트 명령은 제안만 하며 탐색 단계에서는 실행하지 않습니다.
+- `goals/project.rs`와 `goals/code_navigation.rs`: 로컬 매니페스트·프로젝트 규칙을 수집하고, **기존 영속 코드 인덱스**를 활용해 현재 목표에 적합한 파일·함수와 소스 SHA로 검증한 발췌문을 계획/실행 모델에 전달합니다. 12,000자 소스 지문 상한·비동기 인덱스 갱신을 적용하고 큰 발췌문은 첫 실행 턴 및 5턴 간격에만 다시 전송합니다. 테스트 명령은 제안만 하며 탐색 단계에서는 실행하지 않습니다.
 - `goals/artifacts.rs`와 `goals/receipts.rs`: 실제 성공한 파일 도구 기록에서 파일 해시와 실행 단위 영수증을 만듭니다. 실패/중지 시에도 이미 성공한 도구 증거를 먼저 저장합니다.
 - `goals/diff.rs`: 검증된 산출물 경로로 범위를 제한한 **읽기 전용 Git diff**를 사용자에게 보여줍니다. 신규 추적 외 파일은 파일 해시로 별도 표시합니다.
-- `api/goals.rs::resume_goal/edit_plan`: 불확실한 외부 실행은 사용자 확인 뒤 새로운 작업으로 이어받고, 진행 중이 아닌 목표의 계획을 직접 고칠 수 있습니다. 중단·복구·증거 경계는 원래 실행 기록과 분리합니다.
-- `verification.rs::successful_evidence`: 위임 작업이 아직 진행 중이거나 실패했을 때 성공으로 세지 않습니다. `jobs/goal_status.rs`는 실패한 작업이 목표를 영원히 running으로 남기는 상태 불일치를 줄입니다.
+- `api/goals.rs::resume_goal/edit_plan`: 불확실한 외부 실행은 사용자 확인 뒤 새로운 작업으로 이어받고, 진행 중이 아닌 목표의 계획을 직접 고칠 수 있습니다. `api/jobs.rs::cancel`은 대기 중인 목표도 즉시 취소 상태로 전환합니다. 중단·복구·증거 경계는 원래 실행 기록과 분리합니다.
+- `verification.rs::successful_evidence`: 위임 작업이 아직 진행 중이거나 실패했을 때 성공으로 세지 않습니다. `jobs/goal_status.rs`는 실패한 작업이 목표를 영원히 running으로 남기는 상태 불일치를 줄입니다. `api/goals.rs::goal_subtasks/goal_approvals`는 자기 목표와 하위 위임 세션의 실제 작업·승인만 화면에 노출하고 `GoalConsole`에서 도구 허용·거절을 직접 처리합니다.
 - `goals.rs`: 기계 검증 실패 시 불필요한 별도 리뷰 모델 호출을 생략하고, 실행 모델의 세션 토큰 예산을 다음 턴 진입 전에 확인합니다. 리뷰 생략 횟수는 실행 영수증에 남깁니다.
 - `rsi_system.rs` + `rsi_system/agent_feedback.rs`: 실행 중인 자율 목표 하네스를 `agent_harness` 개선 역할로 노출하고, 최근 실제 목표 시도의 완료·실패·토큰 사용·절약한 검토 호출 통계를 **재컴파일 후손 `architecture_frontier`의 `ownerTaskFeedback`**에 전달합니다. 후손이 우선 개선할 진짜 목표 실행 소스를 고르는 입력이며 일반 사용자 목표 영수증은 RSI 독립 평가의 성공 증명으로 사용하지 않습니다.
 

@@ -33,7 +33,7 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 
 | Responsibility | Production source | Durable output or owner action |
 |---|---|---|
-| Project orientation | `engine/goals/project.rs::inspect` | Root inventory + bounded `AGENTS.md`, `README.md`, manifests, suggested project-specific test commands; no shell or verification executed at this phase |
+| Project orientation | `engine/goals/project.rs::inspect`, `engine/goals/code_navigation.rs::collect` | Root inventory + bounded `AGENTS.md`, `README.md`, manifests, suggested project-specific test commands; incremental source index and hash-verified ranked source spans, with no extra model call |
 | Plan & repair | `engine/goals.rs::run`, `goal_control.rs` | `planHistory`, `reviewHistory`, `planScore`, explicit acceptance checks; full execution route |
 | Code and tools | `engine/chat/runtime/turn.rs`, `engine/tools.rs` | Real tool operations; delegated workers in isolated sessions; no fabricated success from a model answer |
 | Artifact receipts | `engine/goals/artifacts.rs::collect` | Workspace-only actual files from successful write evidence, file bytes/SHA-256; does not attribute arbitrary shell edits |
@@ -42,7 +42,8 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 | Safe resume | `api/goals.rs::resume_goal` | POST `/api/goals/:id/resume` with manual acknowledgement + explanation for uncertain external effects; new job inherits checked owner snapshot |
 | Goal planning override | `api/goals.rs::edit_plan` | POST `/api/goals/:id/plan`; only queued / stopped / failed / needs_review, not a running turn |
 | Worker crash/failure | `engine/jobs/goal_status.rs::on_error`, `jobs.rs::recover` | Parent goal becomes failed/needs_review/cancelled instead of hanging in running state |
-| Live UX | `web/src/components/GoalConsole.tsx` | Goal status, progress, plan and owner edits, verification gaps, file hashes, actual Git diff, cancel/reconcile/resume |
+| Team operations | `api/goals.rs::goal_subtasks/goal_approvals`, existing `tools.rs::delegate_task` | Status of real subordinate jobs and scoped approval requests, including descendant sessions; one-time tool approve/deny in goal UI |
+| Live UX | `web/src/components/GoalConsole.tsx` | Goal status, progress, plan and owner edits, verification gaps, scoped approvals, delegated jobs, last assistant report, file hashes, actual Git diff, cancel/reconcile/resume |
 
 **Important invariant:** a received `delegate_task` reply is NOT completion of a delegated job. `verification.rs::successful_evidence` rejects `queued`, `running`, `pending`, `failed`, `cancelled`, `needs_review`, `interrupted`, and `error` result states. A successful transport can no longer satisfy `tool_succeeded` for unfinished delegated work.
 
@@ -53,13 +54,13 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 - For an in-flight uncertain turn the next attempt skips its old iteration index. It inherits prior plan, accepted tool evidence, independent-review gaps and owner's note. It checks real workspace state and acceptance conditions in its following iteration rather than repeating the uncertain tool call automatically.
 - Cancelled goals can also be resumed only by the owner action. The session cancellation flag clears **after** acknowledgement, but the old generation-bound worker remains unable to resume because it captured the earlier cancellation epoch.
 - The API can extend the executor token budget and total allowed iterations when the owner explicitly asks. Max 64 turns and 2,000,000 executor-session tokens.
-- A failed dispatcher updates the parent goal's terminal status, with an auditable `goal.worker_failed` record.
+- A failed dispatcher updates the parent goal's terminal status, with an auditable `goal.worker_failed` record. The job cancellation endpoint also synchronizes `queued` or `running` goals into `cancelled`, including cancellation prior to the first session checkpoint.
 
 ### Cost policy
 
 - Deterministically failing acceptance checks skip that turn's redundant reviewer model call. `reviewHistory[].skippedForDeterministicGap` and `goal_receipt.reviewerCallsAvoided` give concrete counts of skipped calls, not invented monetary savings.
 - `maxExecutorTokens` defaults to 80,000; it is a **soft bound checked between executor turns** using `store.session_usage`. Single-turn overruns are possible. Planner/replanner/reviewer helper calls are not included in that session-only budget, so it is **not a complete provider bill cap**.
-- `project::inspect` uses local file operations, no extra model call. The suggested `cargo test`, `npm test`, `pytest` or `go test` commands are only advice; actual test execution requires normal agent tools/approvals.
+- `project::inspect` uses local file operations, no extra model call. `code_navigation::collect` refreshes the existing source index in a blocking task, ranks goal-relevant files, and includes SHA-checked spans in a bounded first-turn/periodic context. The large source excerpt is not retransmitted on every executor turn, reducing repeated token input; real savings remain unmeasured. Suggested `cargo test`, `npm test`, `pytest` or `go test` commands are only advice; actual execution requires normal agent tools/approvals.
 - The completion receipt stores the provider's recorded session usage and independent acceptance outcome. It is NOT evidence of a reduced benchmark cost without a paired baseline.
 
 ### RSI coupling
@@ -82,6 +83,6 @@ The goal interface appears **above the ordinary one-turn ExecutionMonitor on Hom
 
 1. No Rust compilation, TypeScript build, test, CI, actual model session, benchmark, or paid video generation was run in this source-only change. Regression specifications were authored, not executed.
 2. Artifact capture is conservative: direct writes can produce hashes, but shell/Git/API mutations without a tracked path require a broader trusted before/after worktree journal. Git diff shows tracked changes, not untracked file contents or a guaranteed per-goal baseline.
-3. Normal goal executor can delegate to existing independent workers; pending/running/failed delegation statuses cannot satisfy independent success evidence. A dedicated planning-DAG/parallel merge conflict scheduler and explicit child-job quality integration remain deeper engineering goals.
+3. Normal goal executor can delegate to existing independent workers; its real child-job status and pending approvals are visible in the owner goal console. Pending/running/failed delegation statuses cannot satisfy independent success evidence. A dedicated planning-DAG/parallel merge conflict scheduler and explicit child-job quality integration remain deeper engineering goals.
 4. User goal receipt recording is live-source integrated; statistically significant task-completion, API spend and agent–RSI A→B→A improvement require actual independent real-run evidence.
 5. Current `goals.rs` retains a large iterative coordinator (with production tests now external) and `chat/runtime/turn.rs` still mixes substantial concerns. Further structural isolation should follow verified execution boundaries.

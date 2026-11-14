@@ -64,7 +64,7 @@ Branch: `dominion-sub2` · Evaluation basis: **entire engine–harness–algorit
 
 ### 2026-11-14: Autonomous agent harness integration
 
-The previous generic `prompt` job on Home now coexists with a dedicated `GoalConsole` that sends owner goals to `api/goals.rs` and its **durable `goal` job**, including project reconnaissance, grounded planning/repair, deterministic acceptance, reviewer only after deterministic checks, owner-approved recovery of uncertain side effects, tracked artifact hashes and scoped actual Git diff. The whole chain is documented in [Agent Harness Sub2](AGENT-HARNESS-SUB2-2026-11-14.md).
+The previous generic `prompt` job on Home now coexists with a dedicated `GoalConsole` that sends owner goals to `api/goals.rs` and its **durable `goal` job**, including persistent code-index reconnaissance, grounded planning/repair, deterministic acceptance, reviewer only after deterministic checks, scoped live approval requests and delegated worker statuses, owner-approved recovery of uncertain side effects, tracked artifact hashes, last assistant execution report and scoped actual Git diff. The whole chain is documented in [Agent Harness Sub2](AGENT-HARNESS-SUB2-2026-11-14.md).
 
 `rsi_system/agent_feedback.rs::observe` reads last 64 real, durable normal goal attempt receipts and injects bounded `ownerTaskFeedback` into the compiled descendant `agent_harness` source frontier. This helps select future edits based on observed user tasks without fabricating frozen paired evaluation success. No CI/compile/live model/paid video work was run.
 
