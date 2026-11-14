@@ -242,6 +242,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/goals/:id/changes",get(goals::changes))
         .route("/api/goals/:id/rollback",post(goals::rollback))
+        .route("/api/goals/:id/apply",post(goals::apply))
         // approvals
         .route(
             "/api/approvals",
