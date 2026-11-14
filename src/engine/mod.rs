@@ -100,7 +100,35 @@ use tokio::sync::mpsc;
 pub struct TurnStats {
     pub tool_success: Vec<String>,
     pub tool_errors: Vec<String>,
+    /// Bounded, observed failures for deterministic repair decisions.
+    /// These are tool-runtime events, not inferred from assistant prose.
+    pub tool_failure_details: Vec<Value>,
     pub evidence: Vec<Value>,
+}
+
+/// Preserve the actual failure cause (stderr, exit status and tool identity).
+/// Do not feed entire command logs back to the next paid model step.
+fn bounded_tool_failure(event: &Value) -> Value {
+    fn bounded(value: Option<&str>, chars: usize) -> String {
+        let s = value.unwrap_or("");
+        let mut v = s.chars().take(chars).collect::<String>();
+        if s.chars().count() > chars { v.push('…'); }
+        v
+    }
+    let result = &event["result"];
+    serde_json::json!({
+        "name": event["name"],
+        "callId": event["id"],
+        "operationId": event["operationId"],
+        "error": bounded(event["error"].as_str().or(result["error"].as_str()), 750),
+        "stderr": bounded(result["stderr"].as_str()
+            .or(result["output"]["stderr"].as_str()), 1800),
+        "exitCode": result["exitCode"].as_i64()
+            .or(result["output"]["exitCode"].as_i64()),
+        "effectUnknown": result["effectUnknown"] == true
+            || result["outcomeUnknown"] == true,
+        "stage": result["stage"],
+    })
 }
 
 /// Runs a turn and collects tool evidence for the goal harness.
@@ -127,7 +155,12 @@ pub async fn run_quiet_outcome(
                         "result": event.get("result"),
                     }));
                 }
-                Some("tool_error") if !name.is_empty() => stats.tool_errors.push(name.to_string()),
+                Some("tool_error") if !name.is_empty() => {
+                    stats.tool_errors.push(name.to_string());
+                    if stats.tool_failure_details.len() < 24 {
+                        stats.tool_failure_details.push(bounded_tool_failure(&event));
+                    }
+                },
                 _ => {}
             }
         }
@@ -142,6 +175,33 @@ pub async fn run_quiet_outcome(
         .filter_map(|e|e["tool"].as_str().map(str::to_string))
         .collect();
     (result, stats)
+}
+
+#[cfg(test)]
+mod run_outcome_failure_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failure_capture_preserves_real_exit_error_and_bounds_output() {
+        let failure=bounded_tool_failure(&json!({
+            "type":"tool_error","name":"shell_exec","id":"c1",
+            "result":{"error":"cargo test failed","exitCode":101,
+                "stderr":"x".repeat(15_000)}
+        }));
+        assert_eq!(failure["name"],"shell_exec");
+        assert_eq!(failure["callId"],"c1");
+        assert_eq!(failure["exitCode"],101);
+        assert_eq!(failure["error"],"cargo test failed");
+        assert!(failure["stderr"].as_str().unwrap().chars().count()<=1801);
+        assert!(!failure["effectUnknown"].as_bool().unwrap());
+        let unknown=bounded_tool_failure(&json!({
+            "type":"tool_error","name":"sdk__write","id":"c2",
+            "result":{"outcomeUnknown":true,"stage":"native_sdk_callback_timeout"}
+        }));
+        assert_eq!(unknown["effectUnknown"],true);
+        assert_eq!(unknown["stage"],"native_sdk_callback_timeout");
+    }
 }
 
 /// Background resume that never records a second owner message.
