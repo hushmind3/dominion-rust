@@ -9,7 +9,7 @@ import {t,useLocale} from '../i18n'
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;result?:{bytes:number}}
 type VideoEngine='native'|'comfyui'|'runway'
-type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;runwayModel?:string;runwayAudio?:boolean;runwayContinuityFrames?:boolean;hasVideoKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean;model?:string;nativeAudio?:boolean};workflows:Workflow[];jobs:VideoJob[]}
+type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;runwayModel?:string;runwayAudio?:boolean;runwayContinuityFrames?:boolean;runwayQualityGate?:boolean;hasVideoKey?:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};runway?:{available:boolean;model?:string;nativeAudio?:boolean};workflows:Workflow[];jobs:VideoJob[]}
 type UploadJob=JobState & {progress?:number;result?:{url:string}}
 type YoutubeStatus={connected:boolean;uploadAllowed:boolean;account?:{displayName:string;scopes:string}|null;uploads:UploadJob[]}
 const ratios={'9:16':{width:360,height:640,label:'vid.ratio.shorts'},'16:9':{width:640,height:360,label:'vid.ratio.landscape'},'1:1':{width:480,height:480,label:'vid.ratio.square'}} as const
@@ -25,7 +25,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
- const [runwayKey,setRunwayKey]=useState(''),[runwayModel,setRunwayModel]=useState('kling3.0_pro'),[runwayAudio,setRunwayAudio]=useState(true),[runwayFrames,setRunwayFrames]=useState(true)
+ const [runwayKey,setRunwayKey]=useState(''),[runwayModel,setRunwayModel]=useState('kling3.0_pro'),[runwayAudio,setRunwayAudio]=useState(true),[runwayFrames,setRunwayFrames]=useState(true),[runwayQuality,setRunwayQuality]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
  const [videoSubmission,setVideoSubmission]=useState<VideoJob|null>(null),[generating,setGenerating]=useState(false),[error,setError]=useState('')
  const [uploadFile,setUploadFile]=useState(''),[uploadTitle,setUploadTitle]=useState(''),[uploadDescription,setUploadDescription]=useState(''),[uploadPrivacy,setUploadPrivacy]=useState('private'),[uploadTags,setUploadTags]=useState('')
@@ -47,7 +47,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const ready=usingComfy?Boolean(video.value.comfy.available&&workflow):engine==='runway'?Boolean(video.value.runway?.available&&(seconds<=runwayClipSeconds||video.value.native?.available)):Boolean(video.value.native?.available)
  const maxDuration=usingComfy?9:180
  useEffect(()=>{setComfyUrl(video.value.config.comfyUrl)},[video.value.config.comfyUrl])
- useEffect(()=>{setRunwayModel(video.value.config.runwayModel||'kling3.0_pro');setRunwayAudio(video.value.config.runwayAudio!==false);setRunwayFrames(video.value.config.runwayContinuityFrames!==false)},[video.value.config.runwayModel,video.value.config.runwayAudio,video.value.config.runwayContinuityFrames])
+ useEffect(()=>{setRunwayModel(video.value.config.runwayModel||'kling3.0_pro');setRunwayAudio(video.value.config.runwayAudio!==false);setRunwayFrames(video.value.config.runwayContinuityFrames!==false);setRunwayQuality(video.value.config.runwayQualityGate!==false)},[video.value.config.runwayModel,video.value.config.runwayAudio,video.value.config.runwayContinuityFrames,video.value.config.runwayQualityGate])
  useEffect(()=>{
   if(!video.value.workflows.some(item=>item.id===workflow))setWorkflow(video.value.workflows[0]?.id||'')
  },[video.value.workflows,workflow])
@@ -73,7 +73,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   if(savingConfig)return;
   setSavingConfig(true);setError('');
   try{
-   await post('/api/video/config',{engine:'runway',runwayModel,runwayAudio,runwayContinuityFrames:runwayFrames,...(runwayKey.trim()?{videoApiKey:runwayKey.trim()}:{})});
+   await post('/api/video/config',{engine:'runway',runwayModel,runwayAudio,runwayContinuityFrames:runwayFrames,runwayQualityGate:runwayQuality,...(runwayKey.trim()?{videoApiKey:runwayKey.trim()}:{})});
    setRunwayKey('');await video.reload();
   }catch(e){setError((e as Error).message)}finally{setSavingConfig(false)}
  }
@@ -148,6 +148,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
      <FormField label="화질 / 모델"><SelectInput value={runwayModel} onChange={e=>setRunwayModel(e.target.value)}><option value="kling3.0_standard">Kling 3.0 Standard · 720p</option><option value="kling3.0_pro">Kling 3.0 Pro · 1080p</option><option value="kling3.0_4k">Kling 3.0 4K</option><option value="kling_4">Kling 4.0 · 1080p · 최대 30초 단일 클립</option></SelectInput></FormField>
      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayAudio} disabled={runwayModel==='kling_4'} onChange={e=>setRunwayAudio(e.target.checked)}/> 네이티브 사운드 및 대사 생성{runwayModel==='kling_4'?' (4.0은 기본 포함)':''}</label>
      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayFrames} onChange={e=>setRunwayFrames(e.target.checked)}/> 클립 사이 인물·장면 연속성 유지 (이전 마지막 프레임 활용)</label>
+     <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={runwayQuality} onChange={e=>setRunwayQuality(e.target.checked)}/> 유료 클립 자동 기술 검수 · 길이·화면비·해상도·오디오 (FFprobe 필요)</label>
      <p className="text-[11px] leading-5 text-[#8A8176]">Kling 3.0은 최대 15초 네이티브 멀티샷, Kling 4.0은 최대 30초 연속 촬영입니다. 단일 클립 길이를 넘으면 앞 클립의 실제 마지막 프레임으로 다음 클립을 시작합니다. 장면 전환이 확연히 달라야 하는 영상은 연속성 옵션을 해제하세요.</p>
      <Button variant="secondary" disabled={savingConfig} onClick={()=>void saveRunway()}>{savingConfig?'저장 중': '영상 모델 · 키 저장'}</Button>
     </div>
