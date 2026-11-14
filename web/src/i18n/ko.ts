@@ -562,6 +562,8 @@ const ko = {
   'chat.send': '보내기',
   'chat.steer': '진행 중인 에이전트에 새 지시 전달',
   'chat.steerQueued': '새 사용자 지시를 저장했습니다. 다음 판단 단계에서 이전 계획보다 먼저 적용합니다.',
+  'chat.steerApplied': '새 사용자 지시 적용 · 이전 계획 교체',
+  'chat.steerDeferred': '지시가 실행 종료 직전에 도착해 이번 실행에는 적용되지 않았습니다. 메시지 기록에 보존했습니다.',
   'chat.copy': '복사',
   'chat.noModel': '모델 서버 미연결',
   'chat.manage': '연결 관리',
