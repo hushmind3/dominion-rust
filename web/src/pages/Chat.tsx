@@ -42,6 +42,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const messages=transcript.value
  const messageUsage=useMemo(()=>messages.reduce((sum,message)=>sum+(Number(message.metadata?.usage?.totalTokens)||0),0),[messages])
  const [serverUsage,setServerUsage]=useState(0);
+ const [sessionQuote,setSessionQuote]=useState<{krw:number;calls:number}|null>(null);
  const approvals=useRemote<Approval[]>('/api/approvals',[]);
  const [input,setInput]=useState('');
  const [agentChoice,setAgentChoice]=useState<{scope?:string;id:string}>();
@@ -84,7 +85,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const slashItems=slashOpen?slashCandidates(input,agents.value,models):[];
  const transcriptRevision=JSON.stringify([messages.at(-1)?.id,messages.length,viewingTurn?live.length:0,viewingTurn?thought.length:0,viewingTurn?toolStatus:'',approval?.id]);
  const usageRevision=JSON.stringify([messages.at(-1)?.id,messages.length]);
- useEffect(()=>{if(!current){setServerUsage(0);return}let alive=true;get<{totalTokens?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive)setServerUsage(Number(usage.totalTokens)||0)}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
+ useEffect(()=>{if(!current){setServerUsage(0);setSessionQuote(null);return}let alive=true;get<{totalTokens?:number;costQuoteKrw?:number;costQuoteKnownCalls?:number}>('/api/sessions/'+encodeURIComponent(current)+'/usage').then(usage=>{if(alive){setServerUsage(Number(usage.totalTokens)||0);setSessionQuote(Number(usage.costQuoteKnownCalls)>0?{krw:Number(usage.costQuoteKrw)||0,calls:Number(usage.costQuoteKnownCalls)||0}:null)}}).catch(()=>{});return()=>{alive=false}},[current,usageRevision])
  const {scrollRef,onScroll,jumpDown}=useTranscriptScroll(current,transcriptRevision);
  const modelPanel=useAnchoredPanel(modelMenu,()=>setModelMenu(false),380);
  const permissionPanel=useAnchoredPanel(permissionOpen,()=>setPermissionOpen(false),300,'top');
@@ -411,6 +412,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     </div>
     <div className="flex shrink-0 items-center gap-1">
      {(serverUsage||messageUsage)>0&&<span className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] sm:inline-flex">{t('usage.sessionTotal',{count:(serverUsage||messageUsage).toLocaleString()})}</span>}
+     {sessionQuote&&<span className="hidden rounded-lg border border-[#E7DDCC] bg-[#F7F1E6] px-2 py-1 text-[10px] font-semibold text-[#8A775F] lg:inline-flex" title="등록된 토큰 단가 기준 참고 견적입니다. 실제 청구 금액과 캐시 할인은 별도입니다.">참고 {sessionQuote.krw.toLocaleString('ko-KR',{maximumFractionDigits:2})}원 · {sessionQuote.calls}회</span>}
      <span role="status" className={'hidden items-center gap-2 text-[11px] font-semibold sm:inline-flex '+(modelState.confirmed?'text-emerald-700':'text-[#7C7469]')}><i className={'size-1.5 rounded-full '+(modelState.confirmed?'bg-emerald-500':'bg-slate-400')}/>{modelState.label}</span>
      
      <Button size="icon" variant="ghost" title={t('chat.modelManage')} onClick={openModels}><Cpu size={18}/></Button>
