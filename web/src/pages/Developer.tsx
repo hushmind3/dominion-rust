@@ -149,6 +149,13 @@ export function DeveloperPage(){
         <FormField label="테스트·수정할 작업 지시문">
           <TextInput value={flowInput} onChange={e=>setFlowInput(e.target.value)} placeholder="변경사항 조사 → 테스트 → 산출물 검증"/>
         </FormField>
+        <Button variant="secondary" disabled={!diff?.changes.length} onClick={()=>setFlowInput(
+          '현재 작업 트리에서 변경된 파일을 실제 도구로 확인하고 검증하세요. '+ 
+          '소스 브랜치: '+(status.value.branch||'unknown')+
+          ' / 기준 커밋: '+(status.value.commit||'unknown')+
+          '\n변경 파일: '+
+          (diff?.changes||[]).slice(0,30).map(item=>item.status+' '+item.path).join('; ').slice(0,2500)
+        )}>실제 Git 변경 파일을 작업 입력으로 사용 ({diff?.changes.length||0}개)</Button>
         {s.config.sourceDir!==engine.value.workspace&&<p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-900">소스 폴더와 엔진 작업 폴더가 일치하지 않습니다. 잘못된 프로젝트에서 도구를 실행하지 않도록 보호 중입니다. 소스: {s.config.sourceDir||'미설정'} / 실행: {engine.value.workspace||'확인 불가'}</p>}
         <Button variant="primary" disabled={!s.exists||!sameWorkspace||!flowId||flowBusy} onClick={()=>void launchVerifiedFlow()}>
           <TestTube2 size={14}/>{flowBusy?'등록 중':'실제 다중 에이전트 검증 실행'}
