@@ -6,6 +6,21 @@ This describes code paths and measurable gates, **not** a new awarded score or a
 ## Product navigation
 `web/src/components/WorkspaceShell.tsx` now offers **15 sidebar entries**, including `goals` / **자율 목표**. `web/src/pages/Goals.tsx` lazily mounts the existing `GoalConsole` — no separate implementation of agent state. The same backend handles: `POST /api/goals` (goal creation), `POST /api/goals/:id/plan` (owner's plan corrections), `POST /api/jobs/:id/cancel` (stop), `POST /api/goals/:id/resume` (acknowledged recovery), `GET /api/goals/:id/diff` (SHA review), `POST /api/goals/:id/apply` (pre-checked Git patch). The homepage still shows the console, and its shortcut enters this dedicated page. See [complete menu and route mapping](SUB2-NAVIGATION-AND-NOTIFICATIONS-2026-11-14.md).
 
+## Running-goal steering: no in-flight command rewriting
+`web/src/components/GoalConsole.tsx` adds **실행 중 방향 수정** for running goals and a visible pending/applied revision state. The owner submits `POST /api/goals/:id/steer` with `expectedRevision` and a new plan (1..6,000 characters).
+```
+GoalConsole -> api/goals.rs::steer_goal -> engine/goal_steering.rs::submit
+   -> Store::patch_if_fields {status:"running",planRevision:expected}
+   -> ownerPlan {revision, plan, submittedAt}, audit request
+   ...
+engine/goals.rs::run at NEXT iteration boundary (before inFlight=true)
+   -> goal_steering::pending
+   -> Store::patch_if_fields {status,ownerPlan,appliedOwnerPlanRevision}
+   -> plan / planHistory / appliedOwnerPlanRevision, audit application
+   -> next TurnRequest receives the owner plan
+```
+The revision updates **only the plan**: acceptance criteria, root task, executor/model, tool approval policy, active tool calls and Git source baseline do not change. No changes are silently applied while a tool is in flight; old revision or terminal goal results in HTTP 409. Planned but not yet applied changes are visible in the Goals panel. The engine records `goal.owner_steering_requested` separately from `goal.owner_steering_applied`. Atomic status/revision checks prevent a racing cancellation or second update from authorizing a stale plan. Tests cover staging, expected-revision conflicts, immutable terminal goals and untouched acceptance checks.
+
 ## LTX V2: explicit and inspectable multi-shot paid work
 ```
 web/pages/Video.tsx
