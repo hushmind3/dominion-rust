@@ -263,6 +263,14 @@
             "file_changed"
         );
         let goal = state.store.get("goal", "g").unwrap();
+        assert_eq!(goal["lastProgress"]["iteration"],1);
+        assert_eq!(goal["lastProgress"]["advanced"],true);
+        assert_eq!(goal["progressHistory"].as_array().unwrap().len(),1);
+        let receipt=state.store.get("goal_receipt","goal-receipt:g:j").unwrap();
+        assert_eq!(receipt["progressWindowTurns"],1);
+        assert_eq!(receipt["productiveTurnsWindow"],1);
+        assert_eq!(receipt["unproductiveTurnsWindow"],0);
+        assert!(receipt["resolvedChecksWindow"].as_u64().unwrap()>=1);
         let task_id = goal["taskId"].as_str().unwrap();
         let episode = state.store.get("task_episode", task_id).unwrap();
         assert_eq!(episode["contract"]["family"], "goal");
