@@ -244,3 +244,7 @@ The connected `multiagent.economy` algorithm runs through `api/rooms.rs` → `al
 ### Full-product source discoverability (2026-11-14)
 
 `rsi_system.rs` now treats executable video and room economy code as explicit descendant architecture examples, not only generic unknown harness files. The paired evaluator and independent source-proof files remain unchanged and protected. Only an actual model-edited, independently measured, accepted worktree can produce a new RSI success receipt. `video/runway.rs::checkpoint_video` also compensates for shallow job-level JSON patches to retain immutable shot plans and paid remote task IDs without changing other domains' checkpoint contracts.
+
+### Ordinary agent completion as evidence for future RSI improvements (2026-11-14)
+
+`engine/goals/report.rs` publishes the actual final acceptance checks, material file SHA-256 and successful tool evidence for an owner-rooted durable goal. `verification.rs` can recognize completed delegated worker receipts without counting a child answer alone. `api/goals.rs` adds a user-confirmed resumption job, preserving old observations without repeating uncertain remote effects. These agent task outcomes may inform *future* candidate prioritization, but they are **not** independent RSI acceptance receipts and cannot raise the RSI score by themselves. See [agent source map](SUB4-AUTONOMOUS-AGENT-2026-11-14.md). Source change only, no build/tests or measured Claude Code/Codex task completion.
