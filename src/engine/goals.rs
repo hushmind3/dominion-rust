@@ -179,6 +179,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         format!("\\nIsolated Git worktree: {}. Base commit: {}. The original checkout is NOT this workspace. Inspect Git changes before concluding. Never publish, merge or discard without owner action. Worktrees are not OS sandboxes.",
             workdir.display(),goal["gitWorktree"]["baseCommit"].as_str().unwrap_or(""))
     }else{String::new()};
+    let git_guidance=if goal["requireTests"]==true{
+        format!("{git_guidance}\\nSTRICT CODING VERIFICATION: execute a real repository build or test after the last source change. Capture the successful tool exit receipt. Reviewer approval or a claimed test pass is not enough. If a test fails, inspect its output, repair source, and rerun the test.")
+    }else{git_guidance};
     goal["status"] = json!("running");
     goal["phase"] = json!("plan");
     goal["startedAt"] = goal
