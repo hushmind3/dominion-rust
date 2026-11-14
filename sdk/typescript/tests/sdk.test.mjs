@@ -292,3 +292,59 @@ test('resilient SSE limits repeated empty reconnects and stops on authentication
   assert.equal(denied,1)
 })
 
+
+test('goal waitForTerminal checks canonical status and never replays creation on stale events', async () => {
+  const calls = []
+  let reads = 0
+  const sdk = new DominionSDK({fetch: async (url,init) => {
+    calls.push([url,init.method||'GET'])
+    if (url === '/api/goals/g9') {
+      reads++
+      return asJson({id:'g9',jobId:'job9',goal:'repair',status:reads>=3?'completed':'running'})
+    }
+    if (url === '/api/events?after=0') return eventResponse([bytes(
+      'data: {"type":"record","kind":"goal","seq":1,"record":{"id":"unrelated","status":"failed"}}\n\n' +
+      'data: {"type":"record","kind":"goal","seq":2,"record":{"id":"g9","status":"completed"}}\n\n' +
+      'data: {"type":"record","kind":"goal","seq":3,"record":{"id":"g9","status":"running"}}\n\n',
+    )])
+    throw Error('unexpected call: '+url)
+  }})
+  // Two matching records (2 & 3) each cause a canonical read; the second
+  // reflects the currently sealed goal even though its SSE payload is stale.
+  const result = await sdk.resumeGoal('g9').waitForTerminal({reconnectDelayMs:0})
+  assert.equal(result.status,'completed')
+  assert.deepEqual(calls.map(call=>call[1]),['GET','GET','GET','GET'])
+  assert.equal(calls.filter(([url])=>url==='/api/events?after=0').length,1)
+})
+
+test('goal waitForTerminal returns an already sealed state without opening an SSE socket', async () => {
+  const requests = []
+  const sdk = new DominionSDK({fetch: async (url) => {
+    requests.push(url)
+    if(url==='/api/goals/g10')return asJson({
+      id:'g10',jobId:'j',goal:'task',status:'needs_review'
+    })
+    throw Error('unexpected network call')
+  }})
+  const goal=await sdk.resumeGoal('g10').waitForTerminal()
+  assert.equal(goal.status,'needs_review')
+  assert.deepEqual(requests,['/api/goals/g10'])
+})
+
+test('goal waitForTerminal refetches authoritative state on pruned event history', async () => {
+  let reads=0
+  const sdk = new DominionSDK({fetch: async (url)=>{
+    if(url==='/api/goals/g11'){
+      reads++
+      return asJson({id:'g11',jobId:'j',goal:'task',
+        status:reads>=2?'failed':'running'})
+    }
+    if(url==='/api/events?after=0')return eventResponse([bytes(
+      'event: replay_gap\n' +
+      'data: {"type":"replay_gap","after":0,"firstAvailableSeq":70,"requiresStateRefresh":true}\n\n',
+    )])
+    throw Error('unexpected call')
+  }})
+  assert.equal((await sdk.resumeGoal('g11').waitForTerminal({reconnectDelayMs:0})).status,'failed')
+  assert.equal(reads,2)
+})
