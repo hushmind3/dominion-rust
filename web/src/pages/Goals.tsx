@@ -12,7 +12,7 @@ type GitChanges={baselineHead?:string;currentHead?:string;initialStatus?:string;
 type IsolatedChanges={goalId:string;branch:string;baseCommit:string;status:string;diff:string;untracked?:string;untrackedPreviews?:{path:string;bytes:number;content?:string;previewOmitted?:boolean}[];reviewIncomplete?:boolean;truncated?:boolean;reviewDigest:string}
 type GoalReport={gitChanges?:GitChanges|null;accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;tokenBudget?:number;sessionUsage?:{calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;cachedPromptTokens?:number};operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
 type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;jobId?:string;sessionId?:string;plan?:string;isolateWorktree?:boolean;gitWorktree?:{path:string;branch:string;baseCommit:string;rolledBack?:boolean;applied?:boolean;appliedCommit?:string};
- iterations?:number;maxIterations?:number;tokenBudget?:number;replans?:number;planHistory?:{version:number;plan:string}[];
+ iterations?:number;maxIterations?:number;tokenBudget?:number;replans?:number;planRevision?:number;appliedPlanRevision?:number;ownerPlan?:{revision:number;plan:string};planHistory?:{version:number;plan:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  evidence?:unknown[];gaps?:string[];acceptanceChecks?:unknown[];finalReport?:GoalReport}
 type Job={id:string;status:string;stepIndex?:number;stepTotal?:number;error?:string;result?:{status?:string;finalReport?:GoalReport}}
@@ -67,8 +67,11 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
  const savePlan=async()=>{
   if(!selected||busy)return
   setBusy(true);setError('')
-  try{await post('/api/goals/'+encodeURIComponent(selected.id)+'/plan',{plan:editedPlan})
-   await goals.reload();setNotice('실행 전에 계획을 수정했습니다.')
+  try{
+   const live=selected.status==='running'
+   await post('/api/goals/'+encodeURIComponent(selected.id)+(live?'/steer':'/plan'),
+    live?{plan:editedPlan,expectedRevision:selected.planRevision||0}:{plan:editedPlan})
+   await goals.reload();setNotice(live?'새 계획을 접수했습니다. 다음 안전한 실행 턴에서 적용됩니다.':'실행 전에 계획을 수정했습니다.')
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  const stop=async()=>{
@@ -173,7 +176,10 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
       </div>}
      </Panel>}
      <Panel className="space-y-3 p-5"><h3 className="flex items-center gap-2 text-sm font-bold"><Wrench size={16}/> 작업 계획 · {selected.planHistory?.length||0}개 버전</h3>
-      {selected.status==='queued'?<><TextArea rows={6} value={editedPlan} onChange={e=>setEditedPlan(e.target.value)} placeholder="선택 사항: 실행 전에 계획을 직접 입력하거나 수정하세요. 비우면 계획 모델이 작성합니다."/><Button disabled={busy||!editedPlan.trim()} onClick={()=>void savePlan()}><Check size={14}/> 계획 저장</Button></>:<pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-[#FAF7F1] p-4 text-xs leading-6">{selected.plan||'계획 작성 대기 중'}</pre>}
+      {(selected.status==='queued'||selected.status==='running')?<><TextArea rows={6} value={editedPlan} onChange={e=>setEditedPlan(e.target.value)} placeholder={selected.status==='running'?'실행 중 수정할 새 계획. 다음 실행 턴에서 적용됩니다.':'선택 사항: 실행 전에 계획을 직접 입력하거나 수정하세요.'}/><Button disabled={busy||!editedPlan.trim()} onClick={()=>void savePlan()}><Check size={14}/> {selected.status==='running'?'계획 개정 요청':'계획 저장'}</Button>
+       {selected.status==='running'&&<p className="text-xs text-[#7C7469]">현재 반영 revision {selected.appliedPlanRevision||0} · 최신 제출 revision {selected.planRevision||0}. 실행 중 승인·완료 검증 조건은 바뀌지 않습니다.</p>}
+       {(selected.planRevision||0)>(selected.appliedPlanRevision||0)&&<p className="text-xs text-amber-700">📌 새 계획 적용 대기 중 · 현재 도구 작업은 종료 후 다음 턴에서 적용</p>}
+      </>:<pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-xl bg-[#FAF7F1] p-4 text-xs leading-6">{selected.plan||'계획 작성 대기 중'}</pre>}
       {!!selected.planHistory?.length&&<details className="text-xs text-[#7C7469]"><summary className="cursor-pointer">재계획 이력</summary>{selected.planHistory.map((item,i)=><div key={i} className="mt-2 border-l-2 border-[#E9D6C5] pl-3"><strong>계획 v{item.version}</strong><pre className="mt-1 whitespace-pre-wrap">{item.plan}</pre></div>)}</details>}
      </Panel>
      <Panel className="space-y-3 p-5"><h3 className="flex items-center gap-2 text-sm font-bold"><ShieldCheck size={16}/> 검증·증거</h3>
