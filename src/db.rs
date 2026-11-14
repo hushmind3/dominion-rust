@@ -139,7 +139,10 @@ impl Store {
                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                  PRIMARY KEY(kind, id)
              );
-             CREATE TABLE IF NOT EXISTS messages(
+             CREATE INDEX IF NOT EXISTS idx_live_job_status
+                ON records(json_extract(data,'$.status'))
+                WHERE kind='job';
+              CREATE TABLE IF NOT EXISTS messages(
                  id TEXT PRIMARY KEY,
                  session_id TEXT NOT NULL,
                  role TEXT NOT NULL,
@@ -229,6 +232,19 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         rows.filter_map(|row| row.ok()).collect()
+    }
+
+    /// Scheduler read path: completed historical jobs are never fetched and
+    /// deserialized every 400ms on each worker. The partial JSON expression
+    /// index covers only jobs and is updated by existing CAS state changes.
+    pub fn live_jobs(&self) -> Result<Vec<Value>, String> {
+        let conn=self.conn.lock().map_err(|e|e.to_string())?;
+        let mut statement=conn.prepare(
+            "SELECT data,id,created_at,updated_at FROM records
+             WHERE kind='job' AND json_extract(data,'$.status') IN ('queued','running')"
+        ).map_err(|e|e.to_string())?;
+        let rows=statement.query_map([],record_from_row).map_err(|e|e.to_string())?;
+        rows.collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())
     }
 
     pub fn execution_operations(&self, run_id: &str) -> Result<Vec<Value>, String> {

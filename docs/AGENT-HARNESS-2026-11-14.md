@@ -161,3 +161,17 @@
 회귀 `approval::tests::stopping_a_session_closes_live_approval_without_timeout`은
 실제 pending 기록과 live receiver를 만들고 Stop 후 500ms 이내
 승인 대기 해제·DB 취소·반복 실행 거부를 검사합니다.
+
+## 2026-11-15 · 장기 보관 이력과 활성 작업 스케줄 분리
+
+`jobs::next_queued`는 기존에 `Store::all("job")`으로 완료·실패·중단·검토
+이력까지 400ms 간격으로 역직렬화했습니다. 사용자가 다수의 장기 목표,
+자동화, RSI 세대를 돌릴수록 전체 이력에 비례해 CPU·DB 락 비용이 증가하던
+구조입니다. 이제 `Store::live_jobs()`가 `queued/running` 문서만
+SQLite 상태 인덱스에서 반환하고 기존 priority/room/학습 동시성/
+CAS 스케줄 판단을 그대로 적용합니다. 작업 이력 보관과 API 전체 목록은
+변경하지 않습니다. DB 읽기 오류는 audit에 남깁니다.
+
+`jobs::tests::worker_scheduler_reads_only_live_jobs_not_terminal_history`에서
+256개 종료 이력과 2개 활성 작업을 같이 저장해, 실제 worker 선택과
+종료 기록 보존·직렬화가 보존되는지 검사합니다.

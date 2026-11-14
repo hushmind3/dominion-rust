@@ -51,6 +51,28 @@ mod tests {
     }
 
     #[test]
+    fn worker_scheduler_reads_only_live_jobs_not_terminal_history() {
+        let state=temp_state();
+        for n in 0..256 {
+            state.store.put("job",&json!({"id":format!("old-{n}"),
+                "kind":"prompt","status":if n%2==0{"completed"}else{"failed"},
+                "input":{"prompt":"historical"}})).unwrap();
+        }
+        let running=enqueue(&state,"prompt",json!({"prompt":"already running"})).unwrap();
+        state.store.patch_if("job",running["id"].as_str().unwrap(),"status",
+            &json!("queued"),&json!({"status":"running"})).unwrap();
+        let waiting=enqueue(&state,"prompt",json!({"prompt":"new request"})).unwrap();
+        let live=state.store.live_jobs().unwrap();
+        assert_eq!(live.len(),2,"scheduler must skip all terminal history");
+        assert!(live.iter().all(|job|matches!(job["status"].as_str(),
+            Some("queued"|"running"))));
+        assert_eq!(next_queued(&state).unwrap()["id"],waiting["id"]);
+        assert!(next_queued(&state).is_none());
+        assert_eq!(state.store.count("job"),258,"historical records remain auditable");
+        let _=std::fs::remove_dir_all(&state.config.data_dir);
+    }
+
+    #[test]
     fn learning_jobs_are_priority_last_and_serialized() {
         let state = temp_state();
         let learn1 = enqueue(&state, "learn", json!({"sessionId":"s"})).unwrap();

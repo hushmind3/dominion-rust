@@ -391,7 +391,16 @@ pub fn start(state: AppState) {
 }
 
 fn next_queued(state: &AppState) -> Option<Value> {
-    let jobs = state.store.all("job");
+    // Durable terminal history remains available through the API, but must
+    // not be decoded on every worker poll. Surface a database error rather
+    // than misclassifying an inaccessible queue as drained.
+    let jobs = match state.store.live_jobs() {
+        Ok(jobs)=>jobs,
+        Err(error)=>{
+            state.store.audit("job.scheduler_query_failed",json!({"error":error}));
+            return None;
+        }
+    };
     let learning_running = jobs
         .iter()
         .any(|job| job["status"] == "running" && job["kind"] == "learn");
