@@ -262,6 +262,14 @@ pub(crate) fn resolve_path(state: &AppState, path: &str) -> Result<PathBuf, Stri
 pub(crate) fn resolve_path_from(workspace:&Path,path:&str)->Result<PathBuf,String>{
     let path = Path::new(path);
     if path.is_absolute() {
+        let root=workspace.canonicalize().map_err(|e|e.to_string())?;
+        let mut ancestor=path;
+        while !ancestor.exists() {
+            ancestor=ancestor.parent().ok_or("검증 경로의 부모가 없습니다.")?;
+        }
+        if !ancestor.canonicalize().map_err(|e|e.to_string())?.starts_with(&root){
+            return Err("절대 검증 경로는 현재 작업공간 밖을 가리킬 수 없습니다.".into());
+        }
         return Ok(path.to_path_buf());
     }
     if path
