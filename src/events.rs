@@ -2,7 +2,7 @@ use crate::db::Store;
 use serde_json::{json, Value};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use tokio::sync::broadcast;
 
@@ -14,6 +14,8 @@ pub struct Bus {
     sender: broadcast::Sender<Value>,
     store: Store,
     seq: Arc<AtomicU64>,
+    /// Serialize allocation, persistence and broadcast in one logical order.
+    dispatch: Arc<Mutex<()>>,
 }
 
 impl Bus {
@@ -24,10 +26,15 @@ impl Bus {
             sender,
             store,
             seq: Arc::new(AtomicU64::new(seq)),
+            dispatch: Arc::new(Mutex::new(())),
         }
     }
 
     pub fn emit(&self, mut value: Value) {
+        // Assigning a sequence before waiting for SQLite lets a parallel
+        // writer persist and publish seq N+1 before seq N. One gate keeps
+        // the durable log and live notification in the same order.
+        let _dispatch = self.dispatch.lock().unwrap();
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         value["seq"] = json!(seq);
         self.store.append_event(seq, &value);
@@ -107,6 +114,25 @@ mod tests {
         let restarted = Bus::new(store);
         restarted.emit(json!({"type":"fourth"}));
         assert_eq!(restarted.replay(3, 10)[0]["seq"], 4);
+    }
+
+    #[test]
+    fn parallel_emitters_publish_in_the_same_order_as_the_sqlite_ledger() {
+        let bus=Bus::new(store());
+        let mut receiver=bus.subscribe();
+        let handles=(0..8).map(|worker|{
+            let bus=bus.clone();
+            std::thread::spawn(move||{
+                for index in 0..30 {bus.emit(json!({"type":"step","worker":worker,"index":index}));}
+            })
+        }).collect::<Vec<_>>();
+        for handle in handles {handle.join().unwrap();}
+        let replay=bus.replay_available(0);
+        assert_eq!(replay.len(),240);
+        let observed=(0..240).map(|_|receiver.try_recv().unwrap()["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(observed,
+            replay.iter().map(|item|item["seq"].as_u64().unwrap()).collect::<Vec<_>>());
     }
 
     #[test]
