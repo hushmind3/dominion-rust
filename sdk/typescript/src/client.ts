@@ -5,7 +5,7 @@ import {
 import type {TransportOptions} from "./transport.js";
 import type {
   Approval, ChatEvent, ChatRequest, ChatResult, DominionRecord, EventWatchOptions,
-  Goal, GoalCreate, Job, Message, ModelSelection, RequestOptions, ServerEvent,
+  Goal, GoalCreate, Job, Message, ModelSelection, RequestOptions, SdkInfo, ServerEvent,
   Session, SessionCreate, WaitOptions,
 } from "./types.js";
 
@@ -28,6 +28,10 @@ export class DominionClient {
   constructor(options: TransportOptions = {}) {
     this.transport = new DominionTransport(options);
   }
+
+  /** Inspect the server's native capabilities before relying on optional flows. */
+  readonly sdkInfo = (options?: RequestOptions) =>
+    this.transport.json<SdkInfo>("/api/sdk/info", "GET", undefined, options);
 
   readonly goals = {
     create: (input: GoalCreate, options?: RequestOptions) =>
