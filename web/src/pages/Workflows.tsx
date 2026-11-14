@@ -8,8 +8,7 @@ import {ExecutionMonitor} from '../components/ExecutionMonitor'
 import {Action,FormField,Headline,Notice,Panel,Subheading,useRemote} from '../components/UI'
 import {t,useLocale} from '../i18n'
 import {statusLabel} from '../components/StatusPill'
-type Step={id?:string;name:string;prompt:string;agentId:string;providerId:string;model:string;skillId?:string;
- harness?:'native'|'copilot-sdk';sdkProvider?:'ollama'|'github';sdkTools?:'read_only'|'trusted_full'}
+type Step={id?:string;name:string;prompt:string;agentId:string;providerId:string;model:string;skillId?:string}
 type Flow={id?:string;name:string;description:string;steps:Step[]}
 const emptyStep=(agentId=''):Step=>({name:t('wf.newStep'),prompt:'',agentId,providerId:'',model:''});
 export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
@@ -28,15 +27,7 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
   setStarting(f.id);setError('')
   const requestId=runKeys.current[f.id]||(runKeys.current[f.id]=crypto.randomUUID())
   try{
-   const sdkSteps=f.steps.filter(step=>step.harness==='copilot-sdk')
-   const sdkCostApproved=sdkSteps.some(step=>step.sdkProvider==='github')
-   const sdkToolsApproved=sdkSteps.some(step=>step.sdkTools==='trusted_full')
-   if((sdkCostApproved||sdkToolsApproved)&&!window.confirm(
-    (sdkCostApproved?'GitHub Copilot 계정 모델 호출에 이용량·비용이 발생할 수 있습니다. ':'')+
-    (sdkToolsApproved?'외부 SDK에 셸 실행·파일 수정 권한을 부여합니다. 서버 관리자의 별도 활성화도 필요합니다. ':'')+
-    '이 워크플로의 SDK 실행을 승인하시겠습니까?'))return
-   await post('/api/workflows/'+f.id+'/run',{input:inputs[f.id]||'',requestId,
-    sdkCostApproved,sdkToolsApproved})
+   await post('/api/workflows/'+f.id+'/run',{input:inputs[f.id]||'',requestId})
    delete runKeys.current[f.id]
    setInfo(t('wf.queued',{name:f.name}))
    await jobs.reload()
@@ -54,7 +45,7 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
    <summary className="cursor-pointer font-semibold">실제 단계 결과 · {job.result.outputs.length}단계 · 파일 {job.result.artifacts?.length||0}개 · 모델 토큰 {job.result.usage?.totalTokens??'미집계'}</summary>
    <div className="mt-3 space-y-3">{job.result.outputs.map((out:any,index:number)=><div key={index} className="border-b border-[#E7DCCC] pb-2">
     <div className="font-semibold">{index+1}. {out.name} · {agents.value.find(a=>a.id===out.agentId)?.name||out.agentId||'에이전트'}</div>
-    <div className="mt-1">도구 성공 {out.toolReceipts?.length||0}건 · 오류 {out.toolErrors?.length||0}건 · 단계 토큰 {out.usage?.totalTokens??'미집계'}{out.skillRevision?' · 동결 스킬 '+String(out.skillRevision).slice(0,10):''}{out.harnessProvenance?.harness==='github-copilot-sdk'?' · GitHub Copilot SDK 실행 (외부 도구 영수증 미검증)':''}</div>
+    <div className="mt-1">도구 성공 {out.toolReceipts?.length||0}건 · 오류 {out.toolErrors?.length||0}건 · 단계 토큰 {out.usage?.totalTokens??'미집계'}{out.skillRevision?' · 동결 스킬 '+String(out.skillRevision).slice(0,10):''}</div>
     <p className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap break-words">{String(out.content||'').slice(0,1800)}</p>
     {out.artifacts?.length>0&&<ul className="mt-2 list-disc pl-4">{out.artifacts.map((artifact:any,j:number)=><li key={j}>
       <code>{artifact.path}</code> · SHA {String(artifact.sha256||'').slice(0,12)}
@@ -73,31 +64,6 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
     &&(skill.scope!=='agent'||skill.agentId===step.agentId)).map(skill=>
    <option key={skill.id} value={skill.id}>{skill.name}</option>)}
  </SelectInput></FormField>
- <FormField label="에이전트 실행 엔진">
-  <SelectInput value={step.harness||'native'} onChange={e=>setStep(i,{
-    harness:e.target.value as 'native'|'copilot-sdk',
-    sdkProvider:step.sdkProvider||'ollama',sdkTools:step.sdkTools||'read_only'
-   })}>
-   <option value="native">도미니온 기본 Rust 엔진</option>
-   <option value="copilot-sdk">GitHub Copilot SDK · 공식 Rust 하네스(선택 설치)</option>
-  </SelectInput>
- </FormField>
- {step.harness==='copilot-sdk'&&<div className="grid gap-3 rounded-lg border border-[#E7DCCF] bg-white p-3">
-  <FormField label="SDK 모델 연결 방식"><SelectInput value={step.sdkProvider||'ollama'}
-   onChange={e=>setStep(i,{sdkProvider:e.target.value as 'ollama'|'github'})}>
-   <option value="ollama">Ollama 로컬 모델 · BYOK</option>
-   <option value="github">GitHub Copilot 계정 · 사용량 과금 가능</option>
-  </SelectInput></FormField>
-  <FormField label="SDK 모델 ID"><TextInput value={step.model||''}
-   onChange={e=>setStep(i,{model:e.target.value})}
-   placeholder={step.sdkProvider==='github'?'auto':'qwen3:4b'}/></FormField>
-  <FormField label="도구 승인 정책"><SelectInput value={step.sdkTools||'read_only'}
-   onChange={e=>setStep(i,{sdkTools:e.target.value as 'read_only'|'trusted_full'})}>
-   <option value="read_only">권한 거절 기본값 · 하네스 읽기·계획 평가</option>
-   <option value="trusted_full">신뢰 작업공간에서 셸·파일 편집 허용 · 별도 승인</option>
-  </SelectInput></FormField>
-  <p className="text-[11px] text-[#897E71]">설치형 SDK 실행기가 필요합니다. 사용량은 SDK가 실제 보고한 토큰·캐시 이벤트로만 집계합니다. 신뢰 도구 모드는 운영체제 샌드박스를 제공하지 않습니다.</p>
- </div>}
  <FormField label={t('wf.instructions')}><TextArea className="min-h-28" rows={4} value={step.prompt} onChange={e=>setStep(i,{prompt:e.target.value})} placeholder={t('wf.previous')}/></FormField></div>)}<Action variant="secondary" disabled={edit.steps.length>=30} onClick={()=>setEdit({...edit,steps:[...edit.steps,emptyStep(agents.value[0]?.id||'')]})}><Plus size={16}/> {t('wf.addStep')}</Action></div>{error&&<Notice message={error}/>}<div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5"><Action variant="secondary" onClick={()=>setEdit(null)}>{t('wf.cancel')}</Action><Action onClick={save} disabled={saving||!edit.name.trim()||edit.steps.some(s=>!s.prompt.trim()||!s.agentId)}><Check size={16}/> {t('wf.save')}</Action></div></DialogPanel></DialogBackdrop>}
  </div>
 }
