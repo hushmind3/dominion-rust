@@ -156,11 +156,12 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
     }
     let terminal=matches!(job["status"].as_str(),
         Some("completed"|"needs_review"|"failed"|"cancelled"));
-    for item in &mut clips {
+    let unknown_indices=clips.iter().enumerate().filter_map(|(index,clip)|
+        (clip["isAvailable"]==true && clip["receiptVerified"]!=true)
+            .then_some(index)).collect::<Vec<_>>();
+    for (index,item) in clips.iter_mut().enumerate() {
         let target_exists=item["isAvailable"]==true;
-        let others_unknown=clips.iter().enumerate().any(|(other,clip)|
-            other!=item["index"].as_u64().unwrap_or(u64::MAX) as usize
-            && clip["isAvailable"]==true&&clip["receiptVerified"]!=true);
+        let others_unknown=unknown_indices.iter().any(|other|*other!=index);
         item["canRetake"]=json!(terminal&&target_exists&&!others_unknown);
         item["expectedPaidCalls"]=json!(1+missing);
     }
