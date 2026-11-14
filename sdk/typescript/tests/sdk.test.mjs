@@ -110,6 +110,24 @@ test('malformed SSE envelope and oversize frame are rejected', async () => {
   }, /exceeds 4 MiB/)
 })
 
+test('durable event bus receives sequence numbers and supports explicit replay cursor', async () => {
+  const seen = []
+  const sdk = new DominionSDK({fetch: async (url, init) => {
+    seen.push([url, init.method || 'GET'])
+    return eventResponse([bytes(
+      'id: 42\n' +
+      'data: {"type":"record","seq":42,"kind":"job","id":"j1"}\n\n' +
+      ': keepalive\n\n' +
+      'id: 43\n' +
+      'data: {"type":"approval","seq":43,"id":"a1"}\n\n',
+    )])
+  }})
+  const events = []
+  for await (const event of sdk.watchEvents({after:41})) events.push(event)
+  assert.deepEqual(events.map(event => event.seq), [42,43])
+  assert.deepEqual(seen, [['/api/events?after=41','GET']])
+})
+
 test('approval and durable goal APIs use native server contracts', async () => {
   const seen = []
   const sdk = new DominionSDK({fetch: async (url, init) => {
