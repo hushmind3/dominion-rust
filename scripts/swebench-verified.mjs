@@ -70,9 +70,10 @@ export function measuredRecovery(operations) {
     .filter(op=>op && typeof op==='object')
     .sort((a,b)=>String(a.runId||'').localeCompare(String(b.runId||''))
       || (Number(a.opSeq)||0)-(Number(b.opSeq)||0));
-  const successful=op=>op.status==='completed'
-    && !op.result?.error
-    && (op.toolReceipt?.verified !== false || !op.toolReceipt);
+  // A successful tool invocation is not the same as a verified external
+  // side effect. Shell/network actions can succeed without a verifiable
+  // readback; count their actual calls, but never call them "verified edits".
+  const successful=op=>op.status==='completed' && !op.result?.error;
   const failed=op=>['failed','denied','error','needs_review'].includes(op.status);
   const attempted=rows.filter(op=>successful(op)||failed(op));
   const errors=attempted.filter(failed);
@@ -93,6 +94,8 @@ export function measuredRecovery(operations) {
     successfulToolCalls:attempted.filter(successful).length,
     failedToolCalls:errors.length,
     recoveredToolFailures:recovered,
+    verifiedToolEffects:attempted.filter(op=>successful(op)
+      && op.effectState==='verified' && op.toolReceipt?.verified===true).length,
     // null is not 100% when there were no tool failures to recover.
     toolFailureRecoveryRate:errors.length===0 ? null :
       recovered/errors.length,
