@@ -561,6 +561,8 @@ const en: Record<LocaleKey, string> = {
   'chat.learnNow': 'Learn now',
   'chat.learning': 'Learning…',
   'chat.send': 'Send',
+  'chat.steer': 'Redirect the running agent',
+  'chat.steerQueued': 'New owner instruction recorded. It will take priority at the next decision boundary.',
   'chat.copy': 'Copy',
   'chat.noModel': 'Model server disconnected',
   'chat.manage': 'Manage connection',
