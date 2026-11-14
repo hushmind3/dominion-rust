@@ -622,3 +622,7 @@ The editable experiment allocator now credits a prior source-policy revision onl
 - **Cost admission**: planner/reviewer/replanner use session-attributed usage records; an observed token ceiling blocks new helper calls when already exhausted. Provider-reported token counts can lag in-flight calls; no actual KRW billing amounts are inferred.
 - **Atomic memory editing**: `Store::edit_manual_memory` uses one SQLite transaction for source=user + active/eligible + expectedText guards, update and audit. Concurrent edits cannot bypass CAS; learned and archived memories are refused. New regression tests cover concurrent writes and provenance.
 - **CI browser E2E**: Chrome DevTools smoke is now explicitly opt-in with `DOMINION_BROWSER_E2E=1`; the previous default CI failure came from GitHub runner blocking the Chrome remote-debugging port, after 826 Rust tests passed. Generic unit tests cannot demonstrate real Chrome availability. The optional Playwright smoke remains separate.
+
+### 2026-11-14: 실제 도구 영수증 및 변경 후 테스트 재검증
+
+단계가 긴 코딩 Goal은 테스트가 한번 성공했다는 이유로 이후 소스 변경까지 검증했다고 볼 수 없습니다. `engine/mod.rs::run_quiet_outcome`이 `tool_end` 이벤트와 정확한 DB `execution_operation`을 연결해 `runId/opSeq/startedAt/finishedAt`를 보존하고, `verification.rs::fresh_command_matches`가 마지막 소스 변경 뒤의 성공 검증만 인정합니다. 원본 영수증 없는 이벤트는 증거로 사용하지 않습니다. 코딩 목표의 저예산 도구 선택 정책에서도 소스 검색과 국소 수정 도구를 보존합니다. [실행 경로·검증 및 한계](docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md).
