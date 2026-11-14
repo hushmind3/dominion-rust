@@ -46,6 +46,27 @@ impl BudgetLedger {
         true
     }
 
+    /// Atomically reserve one parallel batch before starting any tool.
+    /// A rejected batch must consume zero capacity so the ordinary serial
+    /// dispatcher can still handle these calls in order.
+    pub fn reserve_batch(&mut self, proposals: usize, executions: usize) -> bool {
+        if executions > proposals || self.expired() {
+            return false;
+        }
+        let Some(next_proposals)=self.proposals.checked_add(proposals) else {
+            return false;
+        };
+        let Some(next_tools)=self.tools.checked_add(executions) else {
+            return false;
+        };
+        if next_proposals>self.max_proposals || next_tools>self.max_tools {
+            return false;
+        }
+        self.proposals=next_proposals;
+        self.tools=next_tools;
+        true
+    }
+
     pub fn charge_tool(&mut self) -> bool {
         if self.tools >= self.max_tools {
             return false;
@@ -114,6 +135,28 @@ mod tests {
         assert!(ledger.charge_proposal());
         assert!(ledger.charge_proposal());
         assert!(!ledger.charge_proposal());
+    }
+
+    #[test]
+    fn parallel_admission_is_atomic_and_cannot_overrun_limits() {
+        let mut ledger=BudgetLedger::new(3,2,Duration::from_secs(60));
+        assert!(ledger.reserve_batch(2,2));
+        assert_eq!(ledger.snapshot()["tools"],2);
+        assert_eq!(ledger.snapshot()["proposals"],2);
+        assert!(!ledger.reserve_batch(2,1));
+        assert_eq!(ledger.snapshot()["tools"],2);
+        assert_eq!(ledger.snapshot()["proposals"],2);
+    }
+
+    #[test]
+    fn invalid_parallel_tools_charge_proposals_not_execution_slots() {
+        let mut ledger=BudgetLedger::new(3,2,Duration::from_secs(60));
+        assert!(ledger.reserve_batch(2,1));
+        assert_eq!(ledger.snapshot()["tools"],1);
+        assert_eq!(ledger.snapshot()["proposals"],2);
+        assert!(ledger.charge_tool());
+        assert!(!ledger.charge_tool());
+        assert!(!ledger.reserve_batch(1,2));
     }
 
     #[test]
