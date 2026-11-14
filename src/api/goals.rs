@@ -146,7 +146,37 @@ pub async fn undo_change(
         return error(StatusCode::BAD_REQUEST,"미리보기에서 확인한 파일 SHA-256이 필요합니다.");
     };
     match engine::goal_changes::undo(&state,&goal,path,sha).await {
-        Ok(receipt)=>Json(receipt).into_response(),
+        Ok(mut receipt)=>{
+            // A previously completed goal is no longer fulfilled after
+            // its verified source edit is deliberately undone by the owner.
+            // The historical job receipt remains intact; the live goal and
+            // its root outcome must reflect the new workspace state.
+            if let Some(current)=state.store.get("goal",&id) {
+                let mut metrics=current["metrics"].clone();
+                if metrics.is_object() {
+                    metrics["verifiedCompleted"]=json!(false);
+                    metrics["ownerUndoCount"]=json!(
+                        metrics["ownerUndoCount"].as_u64().unwrap_or(0)+1
+                    );
+                }
+                let note=format!("사용자가 {} 파일을 되돌렸습니다. 완료 조건을 다시 확인하세요.",path);
+                let mut gaps=current["gaps"].as_array().cloned().unwrap_or_default();
+                gaps.push(json!(note));
+                let patch=json!({"status":"needs_review","phase":"owner_undo",
+                    "metrics":metrics,"gaps":gaps,"lastUndo":receipt});
+                if let Some(saved)=state.store.patch_if("goal",&id,"status",&current["status"],&patch) {
+                    state.bus.record("goal",&saved);
+                    if let Some(task_id)=saved["taskId"].as_str(){
+                        engine::episode::set_root_outcome(&state,task_id,
+                            engine::episode::goal_outcome("needs_review"),
+                            &gaps.iter().filter_map(Value::as_str).map(str::to_owned)
+                                .collect::<Vec<_>>());
+                    }
+                    receipt["goalStatus"]=json!("needs_review");
+                }
+            }
+            Json(receipt).into_response()
+        },
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
