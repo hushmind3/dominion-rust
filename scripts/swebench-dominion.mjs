@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // Real SWE-bench prediction producer for the native Dominion Rust engine.
-// Uses a separate Git worktree, SQLite store and server per task. Gold patch,
+// Uses an independent single-commit source repo, SQLite store and server per task. Gold patch,
 // test_patch and test outcomes are NEVER sent to the autonomous goal.
 import {createHash, randomBytes} from 'node:crypto'
 import {execFile as execFileCb, spawn} from 'node:child_process'
 import {createServer} from 'node:net'
 import {promisify} from 'node:util'
-import {readFile, writeFile, appendFile, mkdir, open, realpath} from 'node:fs/promises'
+import {readFile, writeFile, appendFile, mkdir, open, realpath, rm} from 'node:fs/promises'
 import {resolve, join, dirname, isAbsolute, relative} from 'node:path'
 import {pathToFileURL} from 'node:url'
+import {prepareSealedSource} from './lib/swebench-source.mjs'
 const execFile=promisify(execFileCb)
 const terminal=new Set(['completed','failed','cancelled','needs_review'])
 const wait=ms=>new Promise(done=>setTimeout(done,ms))
@@ -256,11 +257,12 @@ export async function runCase(instance,options){
     const token=randomBytes(32).toString('hex')
     const port=await freePort()
     const base='http://127.0.0.1:'+port
-    let server,log,worktree=false,goal=null,patch='',patchStatus=''
+    let server,log,prepared=false,sealedBase=null,goal=null,patch='',patchStatus=''
     let error=null,identity=null,tools=null
     try{
-        await command('git',['-C',mirror,'worktree','add','--detach',source,instance.base])
-        worktree=true
+        const sealed=await prepareSealedSource(mirror,instance.base,source)
+        sealedBase=sealed.sealedCommit
+        prepared=true
         log=await open(join(folder,'server.log'),'w',0o600)
         server=spawn(options.binary,[],{cwd:source,detached:process.platform!=='win32',
             env:{...process.env,DOMINION_BENCHMARK:'1',
@@ -297,17 +299,14 @@ export async function runCase(instance,options){
         if(path){
             const real=await realpath(path)
             if(!inside(data,real))throw Error('goal worktree escaped its isolated data root')
-            const result=await capturePatch(real,instance.base)
+            const result=await capturePatch(real,sealedBase)
             patch=result.patch;patchStatus=result.status
         }
     }catch(cause){error=String(cause?.message||cause).slice(0,1200)}
     finally{
         await terminate(server)
         if(log)await log.close()
-        if(worktree){
-            try{await command('git',['-C',mirror,'worktree','remove','--force',source])}
-            catch{/* keep the worktree for manual inspection if Git refuses */}
-        }
+        if(prepared)await rm(source,{recursive:true,force:true}).catch(()=>{})
     }
     if(patch.length>2_000_000){error='patch exceeds benchmark output limit';patch=''}
     const record={instance_id:instance.id,repo:instance.repo,baseCommit:instance.base,
@@ -317,6 +316,7 @@ export async function runCase(instance,options){
         toolCalls:tools?.total??null,
         elapsedMs:Date.now()-begin,patchBytes:Buffer.byteLength(patch),
         patchSha256:sha(patch),gitStatus:patchStatus.slice(0,4000),
+        sealedBaseCommit:sealedBase,sourceIsolation:prepared?'single-commit':'failed',
         runtimeCommit:identity?.commit||null,
         failure:error,officialResolved:null}
     return {prediction:{instance_id:instance.id,
@@ -353,7 +353,8 @@ async function run(options){
         providerUrl:opts.providerUrl,apiKeyEnvironment:keyName||null,
         timeoutSeconds:opts.timeoutSeconds,limits:opts.limits,
         ownerApprovedTools:opts.approvals.autoApprove,
-        worktreeIsolation:true,runtimeBinary:binary,
+        worktreeIsolation:true,sourceIsolation:'sealed-single-commit',
+        sharedGitObjects:false,runtimeBinary:binary,
         officialEvaluation:false,createdAt:new Date().toISOString()}
     await writeFile(join(output,'manifest.json'),JSON.stringify(runManifest,null,2))
     const predictions=join(output,'predictions.jsonl')
