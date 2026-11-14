@@ -159,6 +159,33 @@ mod tests {
     }
 
     #[test]
+    fn identical_text_in_two_separate_owner_commands_remains_two_commands() {
+        let (state,root)=fixture();
+        let first=enqueue(&state,"owner-session","새 지시").unwrap();
+        let second=enqueue(&state,"owner-session","새 지시").unwrap();
+        assert_ne!(first["id"],second["id"]);
+        let delivered=drain_at_step_with_ids(&state,"owner-session").unwrap();
+        assert_eq!(delivered.len(),2);
+        assert_ne!(delivered[0].0,delivered[1].0);
+        assert_eq!(delivered[0].1,delivered[1].1);
+        assert_eq!(state.store.messages("owner-session").len(),2);
+        assert!(drain_at_step_with_ids(&state,"owner-session").unwrap().is_empty());
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cannot_inject_private_chat_instruction_into_room_or_archived_session() {
+        let (state,root)=fixture();
+        state.store.put("session",&json!({"id":"room","roomId":"r"})).unwrap();
+        state.store.put("session",&json!({"id":"archived","archived":true})).unwrap();
+        assert!(enqueue(&state,"room","방의 지시 위조").is_err());
+        assert!(enqueue(&state,"archived","보관한 지시 위조").is_err());
+        assert!(drain_at_step_with_ids(&state,"room").unwrap().is_empty());
+        drop(state);
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[test]
     fn cannot_steer_unrelated_or_missing_session() {
         let (state, root) = fixture();
         assert!(enqueue(&state, "wrong-session","hello").is_err());
