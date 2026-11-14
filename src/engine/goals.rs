@@ -15,6 +15,9 @@ use serde_json::{json, Value};
 
 #[path = "goals/project.rs"]
 mod project;
+#[path = "goals/enqueue.rs"]
+mod enqueue;
+pub use enqueue::{enqueue_goal, GoalEnqueueError};
 #[path = "goals/artifacts.rs"]
 mod artifacts;
 #[path = "goals/diff.rs"]
