@@ -240,6 +240,8 @@ pub fn router(state: AppState) -> Router {
             "/api/goals/:id",
             get(goals::get_goal).delete(goals::delete_goal),
         )
+        .route("/api/goals/:id/changes",get(goals::changes))
+        .route("/api/goals/:id/rollback",post(goals::rollback))
         // approvals
         .route(
             "/api/approvals",
