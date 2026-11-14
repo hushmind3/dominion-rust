@@ -809,3 +809,8 @@ During an active chat turn the send control becomes **실행 중 사용자 지�
 ### RSI evolutionary search: source-level improvement with held-out isolation
 
 The Rust RSI archive now ranks eligible neutral worktree candidates using training-only Pareto fitness and training-only measured behavior niches. Parent exploration balances observed descendant attempts across niches, preserving already-implemented independent paired promotion, source SHA lineage and crash durable archive. Hidden oracle results remain in the independent evaluator and no longer influence next-parent ranking. Code: src/engine/rsi_archive.rs. Design and source comparison: docs/architecture/DOMINION-RSI-OPEN-EVOLVE-SEARCH-SUB2-2026-11-14.md.
+
+
+### Reproducible real-model SWE-bench Verified adapter
+
+Run the existing Rust autonomous goals engine on real SWE-bench Verified source checkouts with scripts/sub2-swebench-verified.mjs. It emits actual Git patches and usage receipts for every attempted task; optionally invokes the upstream official Docker grader. Hidden test patches are never passed to the agent. The adapter never fabricates an official solved count. See docs/benchmarks/DOMINION-SWEBENCH-VERIFIED-SUB2-2026-11-14.md.
