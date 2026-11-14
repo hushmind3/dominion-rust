@@ -2,7 +2,7 @@
 //! The accepted workflow and provider remain frozen in the durable job input.
 //! Each shot is independently submitted and downloaded; uncertain remote
 //! submissions retain the parent's needs_review semantics (never blind retry).
-use super::{comfy, ffmpeg_from_config, progress};
+use super::{comfy, ffmpeg_from_config, progress, quality};
 use crate::engine::{jobs::JobContext, tools};
 use serde_json::{json, Value};
 use std::{path::Path, time::Duration};
@@ -112,14 +112,51 @@ pub(super) async fn render(
         request["render"]["frames"] = json!(shot.seconds *
             input["render"]["fps"].as_u64().unwrap_or(16));
         request["render"]["seed"] = json!(shot.seed);
-        let response = comfy(ctx, &request, &subdir).await?;
         let clip = subdir.join("output.mp4");
-        if !clip.is_file() || std::fs::metadata(&clip).map_err(|e|e.to_string())?.len() == 0 {
-            return Err(format!("샷 {}의 출력 파일이 비어 있습니다.", shot.index + 1));
-        }
+        // An already verified clip is reusable after an interrupted edit.
+        // This is critical: retries must not re-bill earlier successful shots.
+        let reused = clip.is_file()
+            && quality::inspect(cfg,&clip,shot.seconds,
+                input["aspectRatio"].as_str().unwrap_or("9:16"),
+                quality::min_short_edge(&request),false).await.is_ok();
+        let mut retry_count=0;
+        let max_retries=input["badShotRetries"].as_u64().unwrap_or(0).min(1);
+        let mut response=Value::Null;
+        let technical=if reused {
+            quality::inspect(cfg,&clip,shot.seconds,
+                input["aspectRatio"].as_str().unwrap_or("9:16"),
+                quality::min_short_edge(&request),false).await?
+        } else {
+            // A file left by a half-finished remote submission is not safe
+            // to retry blindly, even if it looks like an invalid MP4.
+            let latest=ctx.state.store.get("job",&ctx.job_id).unwrap_or(Value::Null);
+            if latest["videoState"]["inFlight"]==true {
+                return Err("needs_review: 샷 제출 상태가 확정되지 않아 중복 생성하지 않습니다.".into());
+            }
+            loop {
+                response=comfy(ctx,&request,&subdir).await?;
+                match quality::inspect(cfg,&clip,shot.seconds,
+                    input["aspectRatio"].as_str().unwrap_or("9:16"),
+                    quality::min_short_edge(&request),false).await{
+                    Ok(receipt)=>break receipt,
+                    Err(reason)=>{
+                        if retry_count>=max_retries{
+                            return Err(format!("샷 {} 기술 검수 실패: {reason}",shot.index+1));
+                        }
+                        retry_count+=1;
+                        ctx.state.store.audit("video.shot_quality_retry",
+                            json!({"jobId":ctx.job_id,"shot":shot.index+1,
+                                "retry":retry_count,"cause":reason}));
+                        let _=std::fs::remove_file(&clip);
+                    }
+                }
+            }
+        };
         manifest.push_str(&format!("file 'shot-{:02}/output.mp4'\n",shot.index + 1));
         results.push(json!({"index":shot.index + 1,"duration":shot.seconds,
-            "promptId":response["promptId"],"bytes":response["bytes"]}));
+            "promptId":response["promptId"],"bytes":std::fs::metadata(&clip)
+                .map_err(|e|e.to_string())?.len(),"reused":reused,
+            "qualityReceipt":technical,"technicalRetries":retry_count}));
     }
     progress(ctx, "editing", 88)?;
     std::fs::write(dir.join("shots.ffconcat"), manifest).map_err(|e|e.to_string())?;
