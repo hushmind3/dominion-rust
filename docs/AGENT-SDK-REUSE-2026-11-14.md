@@ -64,3 +64,18 @@
 ## 단계 복구: 외부 하네스 동작 방식에서 독립 설계를 추출
 
 [LangGraph `_loop.py`](https://github.com/langchain-ai/langgraph/blob/main/libs/langgraph/langgraph/pregel/_loop.py)의 체크포인트 경계, [OpenHands `parallel_executor.py`](https://github.com/OpenHands/software-agent-sdk/blob/main/openhands-sdk/openhands/sdk/agent/parallel_executor.py)의 자원별 실행 충돌 판단, [Hermes `tool_dispatch_helpers.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/tool_dispatch_helpers.py)의 부작용 기반 배치 분할을 대조했다. 우리 워크플로 엔진은 중단된 작업이 실제 로컬 관찰만 수행한 경우에도 전부 사용자 검토로 보냈다. 이 구분을 `jobs::recover`와 `workflows::run` 경로에 통합했다. 스키마·상태·실행 소유권은 DOMINION 단독이며 **SDK 의존성 없음**. 이미 실행했을지 모르는 네트워크/셸/MCP/쓰기와 오래된 체크포인트는 자동 재실행하지 않는다.
+
+## 2026-11-14 SDK 원본 확인: Rust 지원과 판단권의 실제 경계
+
+- [GitHub의 2026-06-02 정식 출시 공지](https://github.blog/changelog/2026-06-02-copilot-sdk-is-now-generally-available/) 및 [Copilot SDK 저장소](https://github.com/github/copilot-sdk): **Rust 공식 패키지 `github-copilot-sdk` 제공**, 기본 `bundled-cli`로 Copilot CLI 실행기 포함. Rust SDK도 JSON-RPC로 Copilot 런타임을 제어하므로 **SDK 패키지를 설치하면 하네스 판단/계획/도구 실행이 Copilot 측으로 넘어간다**. 커스텀 prompt/hook으로 개별 권한·지시를 바꿀 수 있어도 외부 실행 엔진의 전체 동작을 도미니온 코드가 소유하는 것은 아니다.
+- [Codex SDK 공식 문서](https://github.com/openai/codex/blob/main/sdk/typescript/README.md): TypeScript SDK는 Codex CLI와 JSONL로 통신해 스레드·실행·도구 이벤트를 제공한다. Codex용 앱 서버도 고유 sandbox/approval 정책을 갖는다. 도미니온 자체 실행 루프와 동일한 뜻이 아니다.
+- [OpenAI Agents SDK](https://developers.openai.com/api/docs/guides/agents/sdk): SDK가 도구 호출 루프를 관리하되 호스트가 도구 구현·승인 결정을 소유할 수 있다. 하네스 구성 요소의 구조적 참고 자료로 활용하며 기존 Rust 엔진을 불필요하게 교체하지 않는다.
+- [Copilot SDK Hooks](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/hooks): user prompt, 전후 tool use, 권한 요청 훅을 제공한다. 훅이 존재한다는 사실만으로 외부 런타임 정책이 제거되는 것은 아니다.
+
+**제품 선택:** 도미니온은 사용자 지시·도구·모델·세션·실행 증거를 Rust에서 계속 소유한다. 외부 SDK 자체 정책이나 입력 검열/거절 규칙을 무조건 상속하지 않는다. 도구 승인·파일 범위·실행 성공 판정은 요청을 거절하기 위한 콘텐츠 필터가 아니라 실제 실행과 사용자 통제의 경계다. Provider 자체 제한까지 호스트 애플리케이션에서 제거했다고 주장하지 않는다.
+
+### 구현: 검색 자료가 사용자 요청을 덮어쓰지 않도록 실행 메시지 순서 수정
+
+`src/engine/chat/context.rs::place_retrieval_before_latest_user`는 검색된 기억/경험을 **최신 실제 사용자 메시지 앞에** 배치한다. 기존 `runtime/turn.rs`는 이를 최신 사용자 메시지 뒤에 역할 `user`로 보냈고, 모델이 메모리/검색 기록을 사용자의 새 지시로 오인할 위험이 있었다. 최신 사용자 원문을 보존하고, 검색 자료에 `_dominion_origin: retrieval-data`를 남기며, 이미 짝지어진 assistant/tool 프로토콜은 유지한다. 이 프레임은 서버가 보관한 원문 대화나 새 사용자 요청을 만들지 않는다. 외부 Copilot/Claude/Codex 실행 엔진의 정책은 일절 호출하지 않는다.
+
+동일한 `identity_prefix`가 일반 채팅과 그룹 대화에 적용돼 **사용자의 직접 요청 수행 / 검색·도구·동료 텍스트는 참고 자료**라는 원칙을 공유한다. `context.rs`에 최신 지시 우선·도구 결과 연결 무회귀·빈 검색 문맥 테스트를 추가했다. **GitHub에 소스를 반영했으며 이 변경의 cargo 컴파일·CI 및 실모델 실행은 아직 하지 않았다.**
