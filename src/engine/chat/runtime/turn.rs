@@ -1364,6 +1364,7 @@ pub(super) async fn run_turn_body(
 
         if completion.tool_calls.is_empty() && !force_final
             && request.verification_owner.as_deref()==Some("parent")
+            && autonomous_code_task(task_input(&session,&request.input))
             && session["rsiRun"]!=true && !round_tools.is_empty()
             && request.tools_enabled && request.tools_execution_enabled {
             // No successful OR attempted source action means a final prose
