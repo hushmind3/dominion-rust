@@ -7,6 +7,10 @@ import {post} from '../api'
 type RunningGoal={
  id:string;goal:string;status:string;phase?:string;iterations?:number;
  ownerObjectiveRevision?:number;appliedOwnerObjectiveRevision?:number;
+ replans?:number;distinctFailureModes?:number;
+ lastDiagnostic?:{class?:string;iteration?:number;repeatCount?:number;
+   failedToolCalls?:number;tools?:{tool?:string;exitCode?:number;error?:string}[]};
+
 }
 
 export function GoalDirector(){
@@ -51,6 +55,13 @@ export function GoalDirector(){
      {(goal.goal||goal.id).slice(0,95)} · {goal.phase||'실행'} · {goal.iterations??0}회차
     </option>)}
    </SelectInput>
+   {current?.lastDiagnostic&&<div role="status" aria-label="자율 복구 진단"
+     className="rounded-lg border border-[#E7D9B7] bg-[#FFF9EB] px-3 py-2 text-[11px] text-[#5D4A2A]">
+     <strong className="block">실제 실행 실패 진단 · {current.lastDiagnostic.class||'실패 분석 중'}</strong>
+     <span>단계 {current.lastDiagnostic.iteration??0} · 동일 오류 {current.lastDiagnostic.repeatCount??1}회 · 자동 재계획 {current.replans??0}회</span>
+     {current.lastDiagnostic.tools?.slice(0,2).map((tool,index)=><div key={index}
+       className="mt-1 truncate" title={tool.error||''}>{tool.tool||'도구'} · {tool.exitCode!=null?'종료 '+tool.exitCode+' · ':''}{tool.error||'도구 출력 확인 필요'}</div>)}
+    </div>}
    <TextArea aria-label="새 사용자 목표 원문" rows={3} value={instruction} onChange={e=>setInstruction(e.target.value)} placeholder="새로운 목표를 그대로 입력하세요. 현재 목표와 검증 기준을 새 지시로 교체합니다." className="w-full"/>
    <div className="flex flex-wrap items-center justify-between gap-2">
     <span className="text-[11px] text-[#8A8176]">{pending?'새 목표 반영 대기 중':'현재 적용된 목표 버전 '+String(current?.appliedOwnerObjectiveRevision??0)}</span>
