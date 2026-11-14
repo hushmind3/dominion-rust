@@ -317,6 +317,7 @@ pub(crate) fn architecture_frontier(
             }
         }
     }
+    let task_observation=agent_feedback::observe(state);
     let mut frontier=Vec::<Value>::new();
     // Keep the frontier open even when no component has been adopted yet.
     // The editable meta-controller decides priorities; this source scanner
@@ -383,7 +384,7 @@ pub(crate) fn architecture_frontier(
         // architectural search space without pre-authoring an optimization.
         for (path,hash,bytes) in available.into_iter().take(12) {
             let prior=source_attempts.get(path).copied().unwrap_or(0);
-            frontier.push(json!({
+            let mut candidate=json!({
                 "role":role,"domain":domain,"path":path,
                 "sourceSha256":hash,"sourceBytes":bytes,
                 "verifiedRoleImproved":touched,
@@ -391,7 +392,11 @@ pub(crate) fn architecture_frontier(
                 "reason":if touched{"extend_prior_verified_component"}
                     else {"unmodified_intelligence_component"},
                 "qualityProven":false
-            }));
+            });
+            // Real user-task outcomes reach the compiled successor's planning
+            // input, but cannot award frozen paired scores or adoption.
+            if role=="agent_harness"{candidate["ownerTaskFeedback"]=task_observation.clone();}
+            frontier.push(candidate);
             if frontier.len()>=128 {break;}
         }
     }
@@ -417,6 +422,7 @@ mod guidance;
 mod planning;
 mod proof;
 mod method_lineage;
+mod agent_feedback;
 // Revalidate the observed B outcome and propose the EXACT executable method
 // source as the next C editing target in the compiled descendant.
 mod return_feedback;
