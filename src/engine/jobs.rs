@@ -102,6 +102,39 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
     job
 }
 
+/// Create a delegated worker without a count/insert race or orphan session.
+/// This is an engine-owned reservation, not a second agent runtime.
+pub fn enqueue_delegation(
+    state: &AppState,
+    parent_session_id: &str,
+    max_active: usize,
+    session: Value,
+    input: Value,
+) -> Result<Option<Value>, String> {
+    let job = json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "kind": "prompt",
+        "status": "queued",
+        "queuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "input": input,
+        "attempts": 0,
+        "stepIndex": 0,
+        "stepTotal": 0,
+        "events": [],
+    });
+    if !state.store.reserve_delegation(
+        parent_session_id, max_active, &session, &job,
+    )? {
+        return Ok(None);
+    }
+    state.bus.record("job", &job);
+    state.store.audit("job.queued", json!({
+        "kind": "prompt", "jobId": job["id"], "parentSessionId": parent_session_id,
+        "delegation": true,
+    }));
+    Ok(Some(job))
+}
+
 /// Atomically deduplicate an immutable operation across HTTP requests and
 /// workers. The supplied ID belongs to the engine, never a client record.
 pub fn enqueue_once(state: &AppState, id: &str, kind: &str, input: Value) -> Option<Value> {

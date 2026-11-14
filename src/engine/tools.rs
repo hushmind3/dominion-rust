@@ -566,16 +566,8 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     }
     let prompt = required_arg(args, "prompt")?;
     if prompt.len()>16_000 {return Err("위임 프롬프트는 16000바이트 이하로 제한됩니다.".into());}
-    // Parallel workers are useful, unbounded fan-out is not. Count durable
-    // queued/running children in the SAME parent session before spawning.
-    let active_children=ctx.state.store.all("job").into_iter().filter(|job| {
-        job["kind"]=="prompt" && job["input"]["delegation"]==true
-            && job["input"]["parentSessionId"].as_str()==Some(ctx.session_id)
-            && matches!(job["status"].as_str(),Some("queued"|"running"))
-    }).count();
-    if active_children>=MAX_ACTIVE_DELEGATES_PER_SESSION {
-        return Err(format!("병렬 위임 한도({MAX_ACTIVE_DELEGATES_PER_SESSION})에 도달했습니다. 실행 중인 하위 작업을 수집한 후 새 작업을 시작하세요."));
-    }
+    // Reserve the concurrency slot atomically with the child session + job.
+    // Checking active jobs here and enqueuing later races across parallel turns.
     let agent = ctx
         .state
         .store
@@ -590,27 +582,23 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
     let parent=ctx.state.store.get("session",ctx.session_id).unwrap_or(Value::Null);
     // Nested workers inherit the SAME isolated source tree as their parent.
     // Otherwise a subagent could silently modify the operator's live checkout.
-    let session = ctx
-        .state
-        .store
-        .put(
-            "session",
-            &json!({
-                "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
-                "agentId": agent_id,
-                "providerId": agent["providerId"],
-                "model": agent["model"],
-                "parentSessionId": ctx.session_id,
-                "goalId":parent["goalId"],
-                "goalWorktree":parent["goalWorktree"],
-                "delegated": true,
-            }),
-        )
-        .ok_or("위임 세션을 만들 수 없습니다.")?;
-    let session_id = session["id"].as_str().unwrap_or("").to_string();
-    let job = crate::engine::jobs::enqueue(
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let session = json!({
+        "id":session_id,
+        "title": format!("Delegate · {}", prompt.chars().take(36).collect::<String>()),
+        "agentId": agent_id,
+        "providerId": agent["providerId"],
+        "model": agent["model"],
+        "parentSessionId": ctx.session_id,
+        "goalId":parent["goalId"],
+        "goalWorktree":parent["goalWorktree"],
+        "delegated": true,
+    });
+    let job = crate::engine::jobs::enqueue_delegation(
         ctx.state,
-        "prompt",
+        ctx.session_id,
+        MAX_ACTIVE_DELEGATES_PER_SESSION,
+        session,
         json!({
             "prompt": prompt,
             "agentId": agent_id,
@@ -623,8 +611,8 @@ async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Value, String> 
             "parentAgentId": ctx.agent_id,
             "delegation": true,
         }),
-    )
-    .ok_or("위임 작업을 만들 수 없습니다.")?;
+    )?
+    .ok_or_else(||format!("병렬 위임 한도({MAX_ACTIVE_DELEGATES_PER_SESSION})에 도달했습니다. 실행 중인 하위 작업을 수집한 후 새 작업을 시작하세요."))?;
     let job_id = job["id"].as_str().unwrap_or("").to_string();
     crate::engine::jobs::start_now(ctx.state.clone(), job_id.clone());
 

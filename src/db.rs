@@ -330,6 +330,54 @@ impl Store {
         Ok(saved)
     }
 
+    /// Reserve one delegated worker under the per-parent concurrency cap.
+    /// Counting active jobs and publishing BOTH records happens under a single
+    /// SQLite write transaction. Separate count/put/enqueue calls can race and
+    /// leave an untracked session or more workers than the budget permits.
+    /// A rejected reservation publishes nothing and is safe to retry.
+    pub fn reserve_delegation(
+        &self,
+        parent_session_id: &str,
+        max_active: usize,
+        session: &Value,
+        job: &Value,
+    ) -> Result<bool, String> {
+        if max_active == 0 {
+            return Ok(false);
+        }
+        if parent_session_id.is_empty()
+            || session["delegated"] != true
+            || session["parentSessionId"].as_str() != Some(parent_session_id)
+            || job["kind"] != "prompt"
+            || job["status"] != "queued"
+            || job["input"]["delegation"] != true
+            || job["input"]["parentSessionId"].as_str() != Some(parent_session_id)
+            || job["input"]["sessionId"] != session["id"]
+        {
+            return Err("Invalid delegated session/job ownership contract".into());
+        }
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction().map_err(|error| error.to_string())?;
+        // JSON1 is built into the SQLite version used by rusqlite. Restrict
+        // counting to job records; finished/cancelled workers free their slot.
+        let active: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM records WHERE kind='job'
+             AND json_extract(data,'$.kind')='prompt'
+             AND json_extract(data,'$.input.delegation')=1
+             AND json_extract(data,'$.input.parentSessionId')=?1
+             AND json_extract(data,'$.status') IN ('queued','running')",
+            [parent_session_id],
+            |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        if active >= max_active as i64 {
+            return Ok(false);
+        }
+        upsert_tx(&tx, "session", session)?;
+        upsert_tx(&tx, "job", job)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     /// Transaction that only commits when the current record still has the
     /// expected status value. Returns false on a CAS miss.
     pub fn transaction_if_status(

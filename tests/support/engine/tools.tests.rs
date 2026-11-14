@@ -435,6 +435,57 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_delegate_reservation_is_atomic_and_enforces_hard_budget() {
+        use crate::config::Config;
+        use crate::db::Store;
+        let dir = std::env::temp_dir().join(format!("dominion-delegate-quota-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = Config {port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let store = Store::open(&config.db_path()).unwrap();
+        let receipts = std::thread::scope(|scope| {
+            let mut handles=Vec::new();
+            for index in 0..32 {
+                let store=store.clone();
+                handles.push(scope.spawn(move || {
+                    let session_id=format!("child-{index}");
+                    let session=json!({"id":session_id,"parentSessionId":"owner","delegated":true});
+                    let job=json!({"id":format!("job-{index}"),"kind":"prompt","status":"queued",
+                        "input":{"delegation":true,"parentSessionId":"owner","sessionId":session_id}});
+                    store.reserve_delegation("owner",6,&session,&job).unwrap()
+                }));
+            }
+            handles.into_iter().map(|handle|handle.join().unwrap()).collect::<Vec<_>>()
+        });
+        assert_eq!(receipts.iter().filter(|admitted|**admitted).count(),6);
+        let jobs=store.all("job");
+        let sessions=store.all("session");
+        assert_eq!(jobs.len(),6,"no duplicate jobs above the cap");
+        assert_eq!(sessions.len(),6,"no orphan sessions for rejected workers");
+        for job in &jobs {
+            assert!(sessions.iter().any(|s|s["id"]==job["input"]["sessionId"]));
+        }
+        let mut finished=jobs[0].clone();
+        finished["status"]=json!("completed");
+        store.put("job",&finished).unwrap();
+        let session=json!({"id":"after-complete","parentSessionId":"owner","delegated":true});
+        let job=json!({"id":"replacement","kind":"prompt","status":"queued",
+            "input":{"delegation":true,"parentSessionId":"owner","sessionId":"after-complete"}});
+        assert!(store.reserve_delegation("owner",6,&session,&job).unwrap());
+        assert!(!store.reserve_delegation("owner",6,
+            &json!({"id":"overflow","parentSessionId":"owner","delegated":true}),
+            &json!({"id":"overflow-job","kind":"prompt","status":"queued",
+                "input":{"delegation":true,"parentSessionId":"owner","sessionId":"overflow"}})).unwrap());
+        assert!(store.get("session","overflow").is_none());
+        // Any failure on the second insert must roll back the session insert.
+        let orphan=json!({"id":"rollback-child","parentSessionId":"other","delegated":true});
+        let invalid_job=json!({"kind":"prompt","status":"queued",
+            "input":{"delegation":true,"parentSessionId":"other","sessionId":"rollback-child"}});
+        assert!(store.reserve_delegation("other",6,&orphan,&invalid_job).is_err());
+        assert!(store.get("session","rollback-child").is_none());
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn task_results_are_scoped_to_the_owning_or_parent_session() {
         use crate::config::Config;
         use crate::db::Store;

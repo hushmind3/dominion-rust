@@ -77,3 +77,19 @@
 **회귀/실측 구분**: Rust 테스트는 동일 실행 편집→시험, 시험→후속 편집, 다른 실행의 편집, 무시해야 하는 조회·실패한 수정, 동시 재개 요청에서 단일 작업 생성, SQLite 트랜잭션 내 작업 저장 실패시 전체 롤백을 검사한다. 3OS GitHub Actions 결과는 해당 HEAD와 연결해서 확인한다. 이 수정만으로 외부 유료 모델의 장기 코딩 완수율이나 RSI 실제 성능 향상 수치를 주장하지 않는다.
 
 **실사용 성과 집계 진입점:** `GET /api/goals/metrics` → `goals::measured_goal_summary`는 실행 후 저장된 `goal.receipt`와 모델 사용량 요약을 집계합니다. `GoalsPage`는 종료된 목표, 하네스 완료, 모델 호출을 동반한 완료, 추정이 아닌 토큰 계측을 동반한 완료를 각각 보여줍니다. 모의 테스트·빈 기록·에이전트 자기보고를 독립 실모델 벤치마크 점수로 환산하지 않습니다. 리포트에는 `independentBenchmark=false`를 명시합니다.
+
+## 2026-11-15 · 서브에이전트 동시성 원자적 예약
+
+`delegate_task`는 종전의 `all("job") → 개수 판단 → session.put → jobs.enqueue` 경쟁 경로를 사용하지 않습니다.
+`tools::delegate → jobs::enqueue_delegation → Store::reserve_delegation`이 SQLite 트랜잭션 안에서
+동일 부모 세션의 `queued/running` 위임 잡을 세고, 정원(현재 6) 내에서만 **자식 session + job을 함께 커밋**합니다.
+정원 초과는 어떤 레코드도 생성하지 않으며, job 삽입 오류도 session이 롤백됩니다. 종료한 위임은 다음 자리로
+재할당됩니다. 정원 내에서의 작업 시작·도구 실행·부모/자식의 Git worktree 공유는 기존 Rust 경로를 유지합니다.
+
+- 검증 소스: `tests/support/engine/tools.tests.rs::concurrent_delegate_reservation_is_atomic_and_enforces_hard_budget`
+  (32개 동시 예약에 최대 6개 채택, session/job 쌍, 완료 후 슬롯 재사용, 오류 롤백).
+- 운영 원가: 병렬 상한은 과다 지출 위험을 줄이는 경계이지 모델 사용료나 편집 충돌까지 직렬화하지 않습니다.
+  동일 worktree에서의 **충돌 없는 파일별 병렬 스케줄링**, 부모 취소의 하위 도구 중단·전파, 독립 SWE-bench
+  실모델 pass@1 검증은 별도 평가 대상입니다.
+- 실행 검증: 본 코드 변경은 소스 및 데이터 원자성 회귀 테스트를 추가합니다. CI가 실제 성공하기 전까지
+  컴파일·완주를 확정된 성능 수치로 보고하지 않습니다.
