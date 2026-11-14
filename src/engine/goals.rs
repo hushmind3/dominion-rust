@@ -219,7 +219,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "sessionId":session_id,"gitWorktree":goal["gitWorktree"],
             "acceptanceChecks":criteria,"taskId":task_id,
             "projectInventory":project_inventory,"gitBaseline":goal["gitBaseline"],
-            "sourceTargets":source_targets,
+            "sourceTargets":source_targets.clone(),
             "resumeCheckpoint":Value::Null,
         })) else {
         return Err("목표가 중단되었거나 상태가 변경돼 실행을 시작하지 않았습니다.".into());
