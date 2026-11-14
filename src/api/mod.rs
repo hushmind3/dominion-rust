@@ -287,6 +287,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/dev/connect", post(dev::connect))
         .route("/api/dev/diff", get(dev::diff))
+        .route("/api/dev/workflow-artifacts/:id",get(dev::workflow_artifacts))
         .route("/api/dev/jobs/:id", get(dev::get_job))
         .route("/api/dev/preview/:action", post(dev::preview))
         .route("/api/dev/update", get(dev::update_status).post(dev::update))
