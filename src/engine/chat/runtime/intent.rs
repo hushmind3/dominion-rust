@@ -99,6 +99,41 @@ pub(super) fn rsi_offer_grounded_edit_fallback(
     changed
 }
 
+/// First tool-free RSI response: convert "the task is too broad" prose into
+/// one bounded source observation of a file that the compiled RSI planner
+/// already selected. This only chooses a *real advertised read tool*; it never
+/// fabricates an edit, bypasses a permission or changes the frozen oracle.
+pub(super) fn rsi_no_tool_recovery_target<'a>(
+    session:&'a Value,menu:&[Value],already_attempted:bool,
+)->Option<&'a str>{
+    if session["rsiRun"]!=true || already_attempted
+        || !(session["rsiAutoFocus"]==true || session["rsiExplicitFocus"]==true)
+        || !menu.iter().any(|definition|tool_name(definition)=="workspace_read_range") {
+        return None;
+    }
+    session["rsiFocusFiles"].as_array()?.iter()
+        .filter_map(Value::as_str)
+        .find(|path|crate::engine::rsi::safe_path(path))
+}
+
+#[cfg(test)]
+mod rsi_no_tool_recovery_tests {
+    use super::*;
+    #[test]
+    fn focussed_real_rsi_worker_gets_a_specific_advertised_first_action(){
+        let session=json!({"rsiRun":true,"rsiAutoFocus":true,
+            "rsiFocusFiles":["../../outside.rs","src/engine/rsi/meta/controller_selection.rs"]});
+        let advertised=vec![json!({"function":{"name":"workspace_read_range"}})];
+        assert_eq!(rsi_no_tool_recovery_target(&session,&advertised,false),
+            Some("src/engine/rsi/meta/controller_selection.rs"));
+        assert_eq!(rsi_no_tool_recovery_target(&session,&advertised,true),None);
+        assert_eq!(rsi_no_tool_recovery_target(&session,
+            &[json!({"function":{"name":"workspace_replace_range"}})],false),None);
+        assert_eq!(rsi_no_tool_recovery_target(&json!({"rsiRun":false}),
+            &advertised,false),None);
+    }
+}
+
 /// Execute the verifier-selected compiler repair as an actual tool menu
 /// transition. Every retry re-observes the failed source in this run before
 /// an edit is offered. A failed edit invalidates that observation again.
