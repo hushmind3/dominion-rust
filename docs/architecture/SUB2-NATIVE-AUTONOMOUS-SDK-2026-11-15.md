@@ -289,3 +289,21 @@ goal ancestry, source-edit security and bounded Unix process groups.
 `kill_on_drop` guidance, and Sourcegraph CodeScaleBench March 2026
 on the value of large-codebase retrieval. No external benchmark gain
 is claimed without a matched real-model run.
+
+## Native catalogue/delegation separation and visible goal spend
+
+The stable `src/engine/tools.rs` entrypoint now only assembles
+independently maintained submodules: `catalog.rs` owns all model-facing
+tool schemas and `delegation.rs` owns bounded child-worker creation,
+session inheritance, and owner-only results. The gateway still performs
+the final permission check before invoking real tools. The original
+~113 KB all-in-one tools file is now ~8 KB, with the removed code
+retained in typed, runnable Rust modules, not stubs.
+
+The existing `GET /api/sessions/{id}/usage` returns complete native
+descendant totals when `id` belongs to a goal's verified root session;
+ordinary independent chat sessions preserve their former direct-session
+accounting. `DominionSdk::goal_usage(goal_id)` exposes the same
+whole-goal ledger directly in-process and rejects a queued goal without
+a persisted execution session. A regression test verifies root + child
+totals, exclusion of unrelated sessions, and inherited-goal ancestry.
