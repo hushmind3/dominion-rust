@@ -363,3 +363,7 @@ mod tests{
      assert!(goal_path(&state,"a/b").is_err());
  }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/goal_git_integration_tests.rs"]
+mod integration_tests;
