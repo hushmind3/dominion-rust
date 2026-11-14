@@ -1,5 +1,7 @@
 name: Sub1 measured real-model goal completion
 
+# 2026-11-15: identical-Qwen3, identical-budget evaluation of the real
+# source-coverage repair loop; capture post-run gaps and output previews.
 # Trigger once when this workflow is added; manual reruns are supported.
 # Subsequent source commits do NOT silently start long model inference.
 on:
