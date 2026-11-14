@@ -1,6 +1,27 @@
 //! tool dispatch: independent chat runtime responsibility.
 use super::*;
 
+/// The owner changed direction after this tool call was proposed but before
+/// its dispatch. Record a *synthetic skipped* result with the original call ID;
+/// it must never be mislabeled as an executed tool, nor left unpaired.
+pub(super) fn skip_for_new_owner_instruction(
+    state:&AppState,session_id:&str,call:&ToolCall,messages:&mut Vec<Value>
+)->Result<(),String>{
+    let content=json!({
+        "skipped":true,"executed":false,
+        "reason":"new_owner_instruction_pending",
+        "message":"사용자의 최신 지시가 도착해 이전 계획의 도구 실행을 건너뛰었습니다."
+    }).to_string();
+    let saved=state.store.write_message(&json!({
+        "session_id":session_id,"role":"tool",
+        "tool_call_id":call.id,"content":content,
+        "metadata":{"outcome":"skipped_owner_revision","executed":false}
+    })).ok_or("새 사용자 지시에 따른 도구 생략 기록 실패")?;
+    state.bus.message(&saved);
+    messages.push(json!({"role":"tool","tool_call_id":call.id,"content":content}));
+    Ok(())
+}
+
 /// A fully specified replacement is executable without a model only when every
 /// acceptance requirement is the same deterministic operation and its expected
 /// hash was frozen before the turn. Anything less falls back to the model.
