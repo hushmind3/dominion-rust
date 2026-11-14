@@ -8,7 +8,7 @@ import {ExecutionMonitor} from '../components/ExecutionMonitor'
 import {Action,FormField,Headline,Notice,Panel,Subheading,useRemote} from '../components/UI'
 import {t,useLocale} from '../i18n'
 import {statusLabel} from '../components/StatusPill'
-type Step={id?:string;name:string;prompt:string;agentId:string;providerId:string;model:string;executionMode?:'native'|'copilot_sdk';copilotAllowTools?:boolean;requireActionEvidence?:boolean}
+type Step={id?:string;name:string;prompt:string;agentId:string;providerId:string;model:string;requireActionEvidence?:boolean}
 type Flow={id?:string;name:string;description:string;steps:Step[]}
 type WorkflowArtifact={id:string;workflowId:string;jobId:string;sessionId:string;
  preview?:string;content?:string;sha256:string;steps:number;createdAt:string;
@@ -22,7 +22,6 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
  const agents=useRemote<any[]>('/api/agents',[]);
  const jobs=useRemote<WorkflowJob[]>('/api/jobs',[]);
  const artifacts=useRemote<WorkflowArtifact[]>('/api/workflow-artifacts',[]);
- const agentSdk=useRemote<{copilot:{compiled:boolean;runtime:string;requiresAuth:boolean}}>('/api/agent-harnesses',{copilot:{compiled:false,runtime:'GitHub Copilot SDK',requiresAuth:true}});
  const [artifactSource,setArtifactSource]=useState<Record<string,string>>({});
  const [tokenBudgets,setTokenBudgets]=useState<Record<string,string>>({});
  const [expandedArtifact,setExpandedArtifact]=useState<string>('');
@@ -111,22 +110,7 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
  {job.result?.artifactId&&<Button size="sm" variant="secondary" onClick={()=>{
     void artifacts.reload();void viewArtifact(job.result!.artifactId!);
  }}>산출물 보기</Button>}</>}</div></Panel>})}{!flows.value.length&&<Panel><div className="flex min-h-40 flex-col items-center justify-center gap-2 p-5 text-center text-[#7C7469]"><Workflow size={26}/><strong>{t('wf.empty')}</strong><p>{t('wf.emptyDesc')}</p></div></Panel>}</div>
- {edit&&<DialogBackdrop onDismiss={()=>setEdit(null)}><DialogPanel size="wide"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small>{t('ui.label.workflowBuilder')}</small><h2>{t('wf.builder')}</h2></div><Button size="icon" variant="ghost" onClick={()=>setEdit(null)}><X size={18}/></Button></div><div className="grid gap-4 p-5"><FormField label={t('wf.name')}><TextInput  value={edit.name} onChange={e=>setEdit({...edit,name:e.target.value})}/></FormField><FormField label={t('wf.desc')}><TextInput  value={edit.description} onChange={e=>setEdit({...edit,description:e.target.value})}/></FormField><Subheading title={t('wf.stepsEdit')} extra={<span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{edit.steps.length} STEPS</span>}/>{edit.steps.map((step,i)=><div key={step.id||i} className="grid min-w-0 gap-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><strong>{i+1}. {step.name}</strong><div><Button size="icon" variant="ghost" title={t('wf.up')} disabled={i===0} onClick={()=>move(i,-1)}><ChevronRight size={16} style={{transform:'rotate(-90deg)'}}/></Button><Button size="icon" variant="ghost" title={t('wf.down')} disabled={i===edit.steps.length-1} onClick={()=>move(i,1)}><ChevronRight size={16} style={{transform:'rotate(90deg)'}}/></Button><Button size="icon" variant="ghost" title={t('wf.delete')} disabled={edit.steps.length===1} onClick={()=>setEdit({...edit,steps:edit.steps.filter((_,j)=>j!==i)})}><Trash2 size={16}/></Button></div></div><FormField label={t('wf.stepName')}><TextInput  value={step.name} onChange={e=>setStep(i,{name:e.target.value})}/></FormField><FormField label="에이전트 실행 엔진">
- <SelectInput value={step.executionMode||'native'} onChange={e=>setStep(i,{executionMode:e.target.value as 'native'|'copilot_sdk',copilotAllowTools:false})}>
-  <option value="native">DOMINION · 기존 로컬/클라우드 모델</option>
-  <option value="copilot_sdk">공식 GitHub Copilot SDK · 검증된 코딩 에이전트 실행기</option>
- </SelectInput>
- </FormField>
- {step.executionMode==='copilot_sdk'&&<div className="grid gap-2 rounded-lg border border-[#E7E0D5] bg-white p-3 text-xs">
-  <p className="font-semibold">{agentSdk.value.copilot.compiled?'SDK 빌드 활성':'SDK 추가 빌드 필요'}</p>
-  <p className="text-[#7C7469]">GitHub Copilot SDK는 공개되어 있지만 모델 이용에는 별도 인증이 필요합니다. 일반 모델 실행은 영향을 받지 않습니다.</p>
-  <label className="flex items-center gap-2">
-   <input type="checkbox" checked={Boolean(step.copilotAllowTools)} onChange={e=>setStep(i,{copilotAllowTools:e.target.checked})}/>
-   도구 실행 승인 요청 (설정에서 전체 승인이 켜진 경우에만 실행)
-  </label>
-  <p className="text-[#7C7469]">Copilot 내부 작업 이벤트는 DOMINION의 로컬 도구 실행 영수증과 구분합니다.</p>
- </div>}
- <FormField label={t('wf.agent')}><SelectInput  value={step.agentId} onChange={e=>setStep(i,{agentId:e.target.value})}><option value="">{t('wf.pickAgent')}</option>{agents.value.map(a=><option value={a.id} key={a.id}>{a.name}{a.model?' · '+a.model:''}</option>)}</SelectInput></FormField><FormField label={t('wf.instructions')}><TextArea className="min-h-28" rows={4} value={step.prompt} onChange={e=>setStep(i,{prompt:e.target.value})} placeholder={t('wf.previous')}/></FormField>
+ {edit&&<DialogBackdrop onDismiss={()=>setEdit(null)}><DialogPanel size="wide"><div className="flex items-center justify-between border-b border-[#EFE9DF] p-5"><div><small>{t('ui.label.workflowBuilder')}</small><h2>{t('wf.builder')}</h2></div><Button size="icon" variant="ghost" onClick={()=>setEdit(null)}><X size={18}/></Button></div><div className="grid gap-4 p-5"><FormField label={t('wf.name')}><TextInput  value={edit.name} onChange={e=>setEdit({...edit,name:e.target.value})}/></FormField><FormField label={t('wf.desc')}><TextInput  value={edit.description} onChange={e=>setEdit({...edit,description:e.target.value})}/></FormField><Subheading title={t('wf.stepsEdit')} extra={<span className="text-[10px] font-bold uppercase tracking-widest text-[#9C9388]">{edit.steps.length} STEPS</span>}/>{edit.steps.map((step,i)=><div key={step.id||i} className="grid min-w-0 gap-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-4"><div className="flex flex-wrap items-center justify-between gap-3"><strong>{i+1}. {step.name}</strong><div><Button size="icon" variant="ghost" title={t('wf.up')} disabled={i===0} onClick={()=>move(i,-1)}><ChevronRight size={16} style={{transform:'rotate(-90deg)'}}/></Button><Button size="icon" variant="ghost" title={t('wf.down')} disabled={i===edit.steps.length-1} onClick={()=>move(i,1)}><ChevronRight size={16} style={{transform:'rotate(90deg)'}}/></Button><Button size="icon" variant="ghost" title={t('wf.delete')} disabled={edit.steps.length===1} onClick={()=>setEdit({...edit,steps:edit.steps.filter((_,j)=>j!==i)})}><Trash2 size={16}/></Button></div></div><FormField label={t('wf.stepName')}><TextInput  value={step.name} onChange={e=>setStep(i,{name:e.target.value})}/></FormField><FormField label={t('wf.agent')}><SelectInput  value={step.agentId} onChange={e=>setStep(i,{agentId:e.target.value})}><option value="">{t('wf.pickAgent')}</option>{agents.value.map(a=><option value={a.id} key={a.id}>{a.name}{a.model?' · '+a.model:''}</option>)}</SelectInput></FormField><FormField label={t('wf.instructions')}><TextArea className="min-h-28" rows={4} value={step.prompt} onChange={e=>setStep(i,{prompt:e.target.value})} placeholder={t('wf.previous')}/></FormField>
 <label className="flex items-center gap-2 text-xs text-[#5C544A]">
  <input type="checkbox" checked={Boolean(step.requireActionEvidence)} onChange={e=>setStep(i,{requireActionEvidence:e.target.checked})}/>
  이 단계는 실제 도구 실행 영수증이 있어야 완료로 인정
