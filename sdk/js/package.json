@@ -5,9 +5,23 @@
   "type": "module",
   "main": "./index.js",
   "types": "./index.d.ts",
-  "exports": {".": {"types": "./index.d.ts", "default": "./index.js"}},
-  "files": ["index.js", "index.d.ts", "README.md"],
-  "scripts": {"test": "node --test test/*.test.mjs", "check": "node --check index.js"},
-  "engines": {"node": ">=18"},
-  "license": "MIT"
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "Apache-2.0"
 }

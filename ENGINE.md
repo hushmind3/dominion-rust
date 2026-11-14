@@ -5,6 +5,10 @@
 모델은 OpenAI 호환 HTTP API로 호출하고, Discord는 공식 REST v10으로 연결합니다.
 이번 변경은 Cargo 의존성을 추가하지 않습니다. `web/`의 Node 도구는 UI 빌드에 사용합니다.
 
+## 자체 SDK 실행 경계
+
+`sdk/js`의 `DominionClient`는 `POST /api/chat` 및 `POST /api/goals`을 통해 현재 Rust 실행 엔진을 사용하고 `GET /api/events?after=seq`에서 내구성 이벤트를 받아 외부 프로그램과 연결합니다. SDK에는 새로운 에이전트 결정 알고리즘·모델 공급자 정책·입력 거절 정책을 넣지 않습니다. `src/engine/chat/runtime`의 모델/도구 실행과 `src/engine/goals.rs`의 계획·검증·재개는 그대로 작동합니다. 진행 대기 중 SDK 중단은 원격 Rust 작업 취소가 아니며 `jobs.cancel`이 별도로 명시돼 있습니다. [SDK 계약·테스트](docs/DOMINION-AGENT-SDK-2026-11-14.md).
+
 ## 기억과 학습
 
 `memory.rs`가 기억의 소유권과 검색을 결정하고, `learning.rs`가 검증된 원문을 저장합니다.

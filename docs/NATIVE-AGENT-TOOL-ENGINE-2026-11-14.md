@@ -42,3 +42,7 @@
 **측정 단위 구별:** 이 fixture는 도구 스키마의 실제 직렬화 **바이트**를 비교한다. 실모델 토큰 청구액, 실모델 완수율, 작업 품질, 외부 서비스 성공률은 측정한 적 없다. 이에 따라 특정 비율의 실사용 비용 절감이나 독립 과제 성공을 주장하지 않는다.
 
 검증: `cargo test --release`, `npm run typecheck --prefix web`, `node --test scripts/sub3-connection-hub.test.mjs`. 별도 [CI](https://github.com/hushmind3/dominion-rust/actions/workflows/ci.yml?query=branch%3Adominion-sub3).
+
+## 2026-11-14: 외부 SDK와 자체 SDK의 차이
+
+SDK는 외부 런타임을 가져오는 패키지일 수도 있고, 제품 자체 엔진을 프로그램에서 호출하는 클라이언트일 수도 있다. GitHub Copilot SDK는 기본적으로 Copilot CLI 서버와 JSON-RPC로 통신한다. DOMINION은 그 서버·정책 대신 자체 Rust 하네스를 그대로 유지하면서 첫 번째 공용 SDK `sdk/js`를 제공한다. `chat.run/stream`의 SSE, `goals.run/wait/resume`의 durable goal/job, `events.watch`의 시퀀스 재생, `approvals.resolve`의 기존 권한 소유 경계를 모듈 API로 열었다. [독립 SDK 실행 경로 및 테스트](../docs/DOMINION-AGENT-SDK-2026-11-14.md)를 참조한다. 별도 입력 거절/정책 엔진은 추가하지 않는다.

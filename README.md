@@ -4,7 +4,7 @@
 
 알고리즘·하네스·기억·학습·도구·UI를 수정하고, 독립 평가를 통과한 버전이 다음 개선을 이어가는 시스템 소스 진화 경로를 구현합니다. 특정 모델에 고정하지 않으며 등록된 API·로컬 모델을 선택할 수 있습니다. **전체 시스템의 반복적인 지능 향상이 실증된 완성품이라는 주장은 하지 않습니다.** 구현·프로토콜 테스트·실제 개선 실적을 구분해 공개합니다.
 
-[설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
+[자체 에이전트 SDK (JS/TS)](sdk/js/README.md) · [SDK 구조·계약](docs/DOMINION-AGENT-SDK-2026-11-14.md) · [설치와 첫 사용 — macOS / Windows](docs/GETTING-STARTED.md) · [자기개선 실행·검증 계약](docs/RSI-MAIN-INTEGRATION-2026-11-12.md) · [평가 확장](rsi/evaluations/README.md)
 
 **Rust 백엔드 + Rust 실행 엔진**과 React 프론트엔드를 사용합니다.
 
@@ -17,6 +17,11 @@
 - 실행 엔진: Rust (모델 스트리밍, 추론 토큰, 도구 호출 루프, 승인 게이트)
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
+
+
+## 도미니언 자체 에이전트 SDK (2026-11-14)
+
+`sdk/js`는 Rust 에이전트 하네스를 외부 프로그램에서 재사용하는 의존성 없는 JS/TS SDK입니다. `DominionClient`가 채팅 스트리밍·저장된 실제 답변·내구성 목표/작업·세션·승인·Git 패치 검토/명시적 적용·SSE 이벤트 재연결을 제공합니다. 모든 판단·도구 실행·권한·RSI·영속화는 `src/engine` Rust에 남으며 Copilot CLI/타사 하네스 또는 별도 입력 거절 정책을 넣지 않았습니다. `npm install ./sdk/js`로 설치하며 `cd sdk/js && npm test`로 무과금 프로토콜 테스트를 수행합니다. 외부 서버 실행/실모델 성공 여부는 SDK 테스트와 구분합니다. [사용 예제](sdk/js/README.md) · [SDK 전용 CI](https://github.com/hushmind3/dominion-rust/actions/workflows/sub3-sdk.yml?query=branch%3Adominion-sub3).
 
 ## 서브3 · Issue #9 전 제품 연결 고도화 (2026-11-14)
 
