@@ -105,9 +105,17 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 
 ## 2026-11-14 Sub1: front-end merger and quiet RSI contract
 
-- `web/src/components/WorkspaceShell.tsx::navigation`: 4 groups/14 visible menus; the only extensions sidebar entry aside from memory is `connections`. The former `extensions`/`capabilities` pages are rendered as tabs inside `web/src/pages/Connections.tsx`, not deleted. `web/src/App.tsx::locationState` upgrades old hash links to the selected tab.
+- `web/src/components/WorkspaceShell.tsx::navigation`: 4 groups/15 visible menus; the only extensions sidebar entry aside from memory is `connections`. The former `extensions`/`capabilities` pages are rendered as tabs inside `web/src/pages/Connections.tsx`, not deleted. `web/src/App.tsx::locationState` upgrades old hash links to the selected tab.
 - Never mount an unsolicited self-improvement recommendation from root `App.tsx`/main bootstrap; leave progress/failure/audit in RSI/Activity screens. Do not remove approvals or real failures to achieve quiet UI.
 - Direct memory editing is owner-authored only: `web/src/pages/Memory.tsx` → `POST /api/memories/:id/edit` in `src/api/collections.rs`. Compare expected source text, preserve scope, reject learned provenance edits. Tests live in `collections.rs`.
 - Full menu/API/engine paths and validation gaps: `docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md`; static CI contract: `scripts/verify-frontend-navigation.mjs`. Do not claim browser event testing from static checks.
 
 실제 브라우저 연결 채널/기억/자기개선 비방해 UI smoke는 `web/tests/connections.browser.mjs`; 필요하면 `.github/workflows/sub1-ui-browser-smoke.yml`을 workflow_dispatch로 실행합니다. 기본 push CI는 API/타입/빌드 테스트만 하며 Chromium 설치나 브라우저 통과를 가장하지 않습니다.
+
+### Sub1 2026-11-14 — autonomous-goal review and SQLite CAS
+
+- Standalone `#/goals` uses `web/src/pages/Goals.tsx` → the existing `GoalConsole`; Workflows keeps the same component. This is a 15-menu layout, no new duplicated goal engine.
+- `api/goals.rs::cancel_goal/resume_goal`: status CAS, cancellation epoch, job check and unique resume job. Requires explicit owner acknowledgment of unknown external effects. The runner in `engine/goals.rs` begins after prior committed iterations, carries saved evidence, and re-inspects the current state; never blindly replay the prior in-flight turn.
+- `goal_control.rs::complete`: planner/reviewer calls are attributed to session usage; observed budget admission is not a guaranteed pre-charge estimate.
+- `db.rs::Store::edit_manual_memory`: one locked SQLite transaction guards provenance/status/current text and records audit with update. Client does not get to mutate scope, ownership or learned evidence.
+- Real Chrome CDP Rust smoke: opt-in `DOMINION_BROWSER_E2E=1`; generic cargo test does not require a working sandbox/remote debugging port.
