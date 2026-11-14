@@ -1,5 +1,7 @@
 use crate::engine::jobs::JobContext;
-use crate::engine::{chat::TurnRequest, run_quiet};
+use crate::engine::{chat::TurnRequest, run_quiet_outcome};
+mod artifacts;
+pub(crate) use artifacts::resolve_run_input;
 use serde_json::{json, Value};
 
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
@@ -78,6 +80,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     };
 
+    let token_budget = input["tokenBudget"].as_u64().unwrap_or(0).min(2_000_000);
     let total = steps.len();
     if outputs.len() > total {
         return Err("워크플로 체크포인트 단계 수가 실행 계획과 다릅니다.".into());
@@ -92,6 +95,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "workflowState": { "sessionId": session_id, "outputs": outputs, "definition": definition, "inFlight": false },
     }))?;
     for index in outputs.len()..total {
+        if token_budget>0 && state.store.session_usage(&session_id)["totalTokens"]
+            .as_u64().unwrap_or(0)>=token_budget {
+            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                "outputs":outputs,"status":"needs_review",
+                "reason":"워크플로 토큰 상한에 도달했습니다. 추가 모델 호출은 실행하지 않습니다."}));
+        }
         if state.is_cancelled(&session_id) {
             return Ok(
                 json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
@@ -153,7 +162,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
-        let message = match run_quiet(state, &request).await {
+        let (outcome,stats) = run_quiet_outcome(state,&request).await;
+        let message = match outcome {
             Ok(Some(message)) => message,
             Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
             Err(_) if state.is_cancelled(&session_id) => {
@@ -163,8 +173,26 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }
             Err(error) => return Err(error),
         };
+        let actual_actions=stats.evidence.iter()
+            .filter(|item|crate::engine::verification::is_action_evidence(item))
+            .count();
+        if step["requireActionEvidence"]==true && actual_actions==0 {
+            context.checkpoint(json!({"stepIndex":index,"stepTotal":total,
+                "workflowState":{"sessionId":session_id,"outputs":outputs,
+                    "definition":definition,"inFlight":false,"needsReview":true,
+                    "activeStepIndex":index}}))?;
+            return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                "outputs":outputs,"status":"needs_review",
+                "reason":format!("{step_name} 단계의 실제 도구 실행 영수증이 없습니다."),
+                "failedStepIndex":index}));
+        }
         outputs.push(json!({
             "stepId": step.get("id"),
+            "agentId":step.get("agentId"),
+            "providerId":step.get("providerId"),
+            "model":step.get("model"),
+            "toolEvidenceCount":actual_actions,
+            "modelUsageSnapshot":state.store.session_usage(&session_id),
             "name": step_name,
             "content": message.get("content").cloned().unwrap_or(json!("")),
             "messageId": message.get("id"),
@@ -195,6 +223,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     } else {
         "completed"
     };
+    let artifact=if status=="completed" {
+        Some(artifacts::create(state,&context.job_id,workflow_id,&session_id,&outputs)?)
+    }else{None};
     if status == "completed" {
         let through = state
             .store
@@ -234,6 +265,10 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         "sessionId": session_id,
         "outputs": outputs,
         "status": status,
+        "artifactId":artifact.as_ref().map(|entry|&entry["id"]),
+        "artifactSha256":artifact.as_ref().map(|entry|&entry["sha256"]),
+        "usage":state.store.session_usage(&session_id),
+        "sourceArtifact":input["sourceArtifact"],
     }))
 }
 
