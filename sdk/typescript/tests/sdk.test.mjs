@@ -210,3 +210,35 @@ test("durable owner steering passes exact instruction, mode and stable requestId
    text:"inject",mode:"append",requestId:"../../invalid"
  }),TypeError);
 });
+
+
+test("RSI SDK launches native Rust campaign once and read-only polls proof", async () => {
+  const calls=[];
+  let reads=0;
+  const sdk=new DominionClient({fetch:async (url,init) => {
+    const path=new URL(url).pathname;
+    calls.push({path,method:init.method,body:init.body?JSON.parse(init.body):null});
+    if (path==="/api/rsi/start") return json({id:"rsi-1",kind:"rsi_evolve",status:"queued"});
+    if (path==="/api/rsi/campaigns/rsi-1") return json({
+      id:"rsi-1",status:++reads===1?"running":"needs_review",
+      phase:"evaluation",recursiveProof:{closedLoopObserved:false},
+      capabilityDemonstrated:false,
+    });
+    return json({error:"unexpected"},404);
+  }});
+  const started=await sdk.rsi.start({
+    request:"improve recovery",providerId:"native",model:"m",selectionPolicy:"automatic",
+    limits:{maxGenerations:2},
+  });
+  assert.equal(started.kind,"rsi_evolve");
+  assert.equal(calls[0].body.mode,"continuous");
+  assert.equal(calls[0].body.confirmation,"START_RSI_EVOLUTION");
+  assert.equal(calls[0].body.selectionPolicy,"automatic");
+  assert.equal(calls[0].body.limits.maxGenerations,2);
+  const finished=await sdk.rsi.wait(started.id,{pollIntervalMs:100,timeoutMs:5000});
+  assert.equal(finished.status,"needs_review");
+  assert.equal(finished.recursiveProof.closedLoopObserved,false);
+  assert.deepEqual(calls.map(c=>c.method),["POST","GET","GET"]);
+  await assert.rejects(()=>sdk.rsi.apply("rsi-1","not-a-commit"),TypeError);
+  assert.equal(calls.length,3);
+});

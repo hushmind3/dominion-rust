@@ -107,3 +107,25 @@ export interface ChatResult {
   message: Message | null;
   events: ChatEvent[];
 }
+
+
+/** An explicit potentially paid source evolution using Dominion's own engine. */
+export type RsiSelectionPolicy = "manual" | "automatic";
+export interface RsiEvolutionRequest {
+  request: string;
+  providerId: string;
+  model: string;
+  selectionPolicy?: RsiSelectionPolicy;
+  limits?: Record<string, unknown>;
+  focusFiles?: string[];
+  continueFrom?: string;
+  methodAblation?: boolean;
+}
+export interface RsiCampaign extends DominionRecord {
+  status: string;
+  phase?: string;
+  baseCommit?: string;
+  headCommit?: string;
+  recursiveProof?: Record<string, unknown>;
+  capabilityDemonstrated?: boolean;
+}

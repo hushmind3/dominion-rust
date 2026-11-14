@@ -6,7 +6,7 @@ import type {TransportOptions} from "./transport.js";
 import type {
   Approval, ChatEvent, ChatRequest, ChatResult, DominionRecord, EventWatchOptions,
   Goal, GoalCreate, Job, Message, ModelSelection, OwnerDirective, RequestOptions, ServerEvent,
-  Session, SessionCreate, WaitOptions,
+  RsiCampaign, RsiEvolutionRequest, Session, SessionCreate, WaitOptions,
 } from "./types.js";
 
 const idPart = (id: string) => {
@@ -76,6 +76,36 @@ export class DominionClient {
       this.transport.json<Job>(`/api/jobs/${idPart(id)}/cancel`, "POST", {}, options),
     wait: (id: string, options?: WaitOptions<Job>) =>
       this.waitFor(() => this.jobs.get(id, {signal: options?.signal}), terminalJob, options),
+  };
+
+  /** The existing native compiled-descendant RSI runner owns this lifecycle. */
+  readonly rsi = {
+    start: (input: RsiEvolutionRequest, options?: RequestOptions) => {
+      if (!input.providerId?.trim() || !input.model?.trim())
+        throw new TypeError("RSI requires an explicit provider and model");
+      if (input.selectionPolicy !== undefined &&
+          !["manual","automatic"].includes(input.selectionPolicy))
+        throw new TypeError("Invalid RSI selection policy");
+      return this.transport.json<Job>("/api/rsi/start", "POST", {
+        ...input, mode:"continuous", confirmation:"START_RSI_EVOLUTION",
+        selectionPolicy:input.selectionPolicy ?? "manual",
+      }, options);
+    },
+    list: async (options?: RequestOptions) =>
+      (await this.transport.json<{campaigns:RsiCampaign[]}>(
+        "/api/rsi/campaigns", "GET", undefined, options)).campaigns,
+    get: (id: string, options?: RequestOptions) =>
+      this.transport.json<RsiCampaign>(
+        "/api/rsi/campaigns/" + idPart(id), "GET", undefined, options),
+    wait: (id: string, options?: WaitOptions<RsiCampaign>) =>
+      this.waitFor(() => this.rsi.get(id,{signal:options?.signal}), terminalJob, options),
+    /** Independent operator-controlled installation; Rust revalidates proof. */
+    apply: (id: string, headCommit: string, options?: RequestOptions) => {
+      if (!/^[a-fA-F0-9]{40}$/.test(headCommit))
+        throw new TypeError("RSI installation requires the exact campaign head commit");
+      return this.transport.json<Job>("/api/rsi/campaigns/" + idPart(id) + "/apply",
+        "POST", {confirmation:"APPLY_VERIFIED_CAMPAIGN_TO_SUB",commit:headCommit}, options);
+    },
   };
 
   readonly sessions = {
