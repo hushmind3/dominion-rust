@@ -1,7 +1,7 @@
 use crate::error::{DominionError, Result};
 use crate::streaming::{ChatStream, EventStream};
 use crate::types::{
-    ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,
+    ChatEvent, ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,
     Session, SessionCreate, WaitOptions, WatchOptions,
 };
 use futures_util::StreamExt;
