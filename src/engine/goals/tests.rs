@@ -97,6 +97,25 @@
         state.store.put("execution_operation",&json!({"id":"op-running",
             "runId":"run-goal","status":"running","outcomeUnknown":false})).unwrap();
         assert!(state.store.session_has_uncertain_effects("goal-session").unwrap());
+        state.store.patch_if("execution_operation","op-running","status",
+            &json!("running"),&json!({"status":"completed"})).unwrap();
+        assert!(!state.store.session_has_uncertain_effects("goal-session").unwrap());
+        // Delegated children inherit the owner's recovery boundary. A parent
+        // cannot declare completion while a grandchild tool effect is unknown.
+        state.store.put("session",&json!({"id":"child-session",
+            "parentSessionId":"goal-session","delegated":true})).unwrap();
+        state.store.put("session",&json!({"id":"grandchild-session",
+            "parentSessionId":"child-session","delegated":true})).unwrap();
+        state.store.put("execution",&json!({"id":"run-grandchild",
+            "sessionId":"grandchild-session","status":"completed"})).unwrap();
+        state.store.put("execution_operation",&json!({"id":"op-grandchild",
+            "runId":"run-grandchild","status":"interrupted","outcomeUnknown":true})).unwrap();
+        assert!(state.store.session_has_uncertain_effects("goal-session").unwrap());
+        assert!(state.store.session_has_uncertain_effects("child-session").unwrap());
+        assert!(!state.store.session_has_uncertain_effects("room-session-2").unwrap());
+        state.store.patch_if("execution_operation","op-grandchild","outcomeUnknown",
+            &json!(true),&json!({"outcomeUnknown":false,"status":"completed"})).unwrap();
+        assert!(!state.store.session_has_uncertain_effects("goal-session").unwrap());
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
