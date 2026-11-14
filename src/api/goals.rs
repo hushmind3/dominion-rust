@@ -245,6 +245,26 @@ pub async fn discard_workspace(State(state):State<AppState>,Path(id):Path<String
     }
 }
 
+/// Running goal owner steering is queued until the next safe executor turn.
+/// This does not alter the frozen acceptance checks or currently running tools.
+pub async fn steer_goal(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    let Some(expected)=body["expectedRevision"].as_u64() else{
+        return error(StatusCode::BAD_REQUEST,"현재 계획 버전이 필요합니다.");
+    };
+    let Some(plan)=body["plan"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"수정 계획이 필요합니다.");
+    };
+    use crate::engine::goal_steering::SteeringError;
+    match crate::engine::goal_steering::submit(&state,&id,expected,plan){
+        Ok(value)=>(StatusCode::ACCEPTED,Json(value)).into_response(),
+        Err(SteeringError::Missing)=>error(StatusCode::NOT_FOUND,"목표가 없습니다."),
+        Err(SteeringError::Invalid)=>error(StatusCode::BAD_REQUEST,"계획은 1~6,000자여야 합니다."),
+        Err(SteeringError::Immutable)=>error(StatusCode::CONFLICT,"실행 중인 목표만 조향할 수 있습니다."),
+        Err(SteeringError::Conflict)=>error(StatusCode::CONFLICT,"목표 계획이 변경되었습니다. 새로고침한 뒤 다시 수정하세요.")
+    }
+}
+
 /// Owner edits only a paused/queued plan; a running model must never silently
 /// ignore edits made to its captured in-memory plan.
 pub async fn edit_plan(State(state):State<AppState>,Path(id):Path<String>,
