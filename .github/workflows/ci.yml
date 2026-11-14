@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
 
+# Rapid source revisions should compile only the newest branch state.
+# A completed commit remains independently auditable in Actions history.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
