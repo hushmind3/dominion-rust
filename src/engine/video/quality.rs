@@ -80,6 +80,34 @@ pub(super) async fn inspect_min(cfg:&Value,path:&Path,seconds:u64,aspect:&str,
     Ok(technical)
 }
 
+/// A successful concat command does not prove the delivered film contains
+/// all independently paid clips. Keep final delivery stricter than an
+/// individual provider clip's accepted timing tolerance.
+fn final_duration_guard(observed:f64, expected:u64)->Result<(),String>{
+    if !observed.is_finite() || observed<=0.0 || expected==0 {
+        return Err("최종 영상의 유효한 재생 길이를 확인할 수 없습니다.".into());
+    }
+    let tolerance=(expected as f64*0.05).max(1.0);
+    if (observed-expected as f64).abs()>tolerance {
+        return Err(format!(
+            "최종 합성 영상이 요청 길이와 다릅니다: {observed:.2}s / {expected}s"));
+    }
+    Ok(())
+}
+
+/// Inspect the *staged* final film before publishing it as output.mp4.
+/// Uses the same local ffprobe/diagnostic path, with no new paid model call.
+pub(super) async fn inspect_final(cfg:&Value,path:&Path,seconds:u64,
+    aspect:&str,audio:bool)->Result<Value,String>{
+    let mut technical=inspect_min(cfg,path,seconds,aspect,640,audio).await?;
+    let observed=technical["durationSeconds"].as_f64()
+        .ok_or("최종 영상 검수 영수증에 재생 길이가 없습니다.")?;
+    final_duration_guard(observed,seconds)?;
+    technical["finalAssemblyVerified"]=json!(true);
+    technical["verification"]=json!("ffprobe-final-film-duration-aspect-v2");
+    Ok(technical)
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -98,6 +126,18 @@ mod tests{
         assert!(evaluate_min(&probe,8,"9:16",270,false).is_ok());
         assert!(evaluate(&probe,8,"9:16",false).is_err());
     }
+    #[test]
+    fn final_film_must_contain_expected_duration_not_merely_nonempty_bytes(){
+        assert!(final_duration_guard(60.3,60).is_ok());
+        assert!(final_duration_guard(57.0,60).is_ok());
+        assert!(final_duration_guard(56.9,60).is_err());
+        assert!(final_duration_guard(29.0,60).is_err());
+        assert!(final_duration_guard(0.0,60).is_err());
+        assert!(final_duration_guard(f64::NAN,60).is_err());
+        assert!(final_duration_guard(16.9,16).is_ok());
+        assert!(final_duration_guard(17.1,16).is_err());
+    }
+
     #[test]
     fn rejects_missing_stream_wrong_ratio_or_duration(){
         let probe=json!({"streams":[{"codec_type":"video","width":1280,"height":720}],
