@@ -54,7 +54,11 @@ pub(super) fn search_tool_definitions_for_round(
     }
     let available=budget-search_size;
     let mut ranked=catalog.iter().enumerate()
-        .filter(|(_,def)| !tool_name(def).is_empty() && tool_name(def)!=TOOL_SEARCH_NAME)
+        .filter(|(_,def)| {
+            let name=tool_name(def);
+            !name.is_empty() && name!=TOOL_SEARCH_NAME
+                && (initially_visible.contains(name) || revealed.contains(name))
+        })
         .map(|(i,def)| (i,
             revealed.contains(tool_name(def)),
             initially_visible.contains(tool_name(def)),
@@ -218,6 +222,22 @@ mod tests {
         assert!(second.iter().any(|d|tool_name(d)=="mcp__github__create_pr"));
         assert!(second.iter().map(schema_size).sum::<usize>()<=budget);
     }
+    #[test]
+    fn a_hidden_small_tool_must_not_leak_before_search() {
+        let defs=vec![definition("workspace_read",40),definition("mcp__github__create_pr",40)];
+        let initially_visible=BTreeSet::from(["workspace_read".to_string()]);
+        let first=search_tool_definitions_for_round(
+            &defs,"read file",2_048,&initially_visible,&BTreeSet::new(),true);
+        assert!(first.iter().any(|d|tool_name(d)==TOOL_SEARCH_NAME));
+        assert!(first.iter().any(|d|tool_name(d)=="workspace_read"));
+        assert!(!first.iter().any(|d|tool_name(d)=="mcp__github__create_pr"),
+            "installed but hidden capability leaked just because it fits in context");
+        let revealed=BTreeSet::from(["mcp__github__create_pr".to_string()]);
+        let second=search_tool_definitions_for_round(
+            &defs,"read file",2_048,&initially_visible,&revealed,true);
+        assert!(second.iter().any(|d|tool_name(d)=="mcp__github__create_pr"));
+    }
+
     #[test]
     fn small_catalog_keeps_all_tools_and_no_search(){
         let defs=vec![definition("a",20),definition("b",20)];
