@@ -163,6 +163,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
+        // Anchor evidence to durable SQLite operation rows, not ephemeral
+        // model progress text. Only operations NEW to this step are credited.
+        let before_ops=state.store.session_execution_operations(&session_id)?
+            .into_iter().filter_map(|op|op["id"].as_str().map(str::to_string))
+            .collect::<std::collections::HashSet<_>>();
         let (outcome,stats) = run_quiet_outcome(state,&request).await;
         let message = match outcome {
             Ok(Some(message)) => message,
@@ -174,9 +179,18 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             }
             Err(error) => return Err(error),
         };
-        let actual_actions=stats.evidence.iter()
-            .filter(|item|crate::engine::verification::is_action_evidence(item))
-            .count();
+        let persisted=state.store.session_execution_operations(&session_id)?
+            .into_iter()
+            .filter(|operation|{
+                operation["id"].as_str().is_some_and(|id|!before_ops.contains(id))
+                    && operation["status"]=="completed"
+                    && crate::engine::verification::successful_evidence(operation)
+            }).collect::<Vec<_>>();
+        let action_ids=persisted.iter().filter(|operation|
+                crate::engine::verification::is_action_evidence(operation))
+            .filter_map(|op|op["id"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        let actual_actions=action_ids.len();
         if step["requireActionEvidence"]==true && actual_actions==0 {
             context.checkpoint(json!({"stepIndex":index,"stepTotal":total,
                 "workflowState":{"sessionId":session_id,"outputs":outputs,
@@ -193,6 +207,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "providerId":step.get("providerId"),
             "model":step.get("model"),
             "toolEvidenceCount":actual_actions,
+            "toolOperationIds":action_ids,
+            "toolErrors":stats.tool_errors,
             "modelUsageSnapshot":state.store.session_usage(&session_id),
             "name": step_name,
             "content": message.get("content").cloned().unwrap_or(json!("")),
