@@ -104,20 +104,31 @@ pub fn enqueue(state: &AppState, kind: &str, input: Value) -> Option<Value> {
 /// Atomically deduplicate an immutable operation across HTTP requests and
 /// workers. The supplied ID belongs to the engine, never a client record.
 pub fn enqueue_once(state: &AppState, id: &str, kind: &str, input: Value) -> Option<Value> {
-    let candidate = json!({"id":id,"kind":kind,"input":input,"status":"queued",
+    enqueue_once_with_checkpoint(state, id, kind, input, None)
+}
+
+/// Goal continuation must publish its checkpoint atomically with the queued
+/// job. Saving a job first and patching its cursor afterwards allows a
+/// scheduler to start it at iteration zero and repeat prior side effects.
+pub fn enqueue_once_with_checkpoint(
+    state: &AppState, id: &str, kind: &str, input: Value, goal_state: Option<Value>,
+) -> Option<Value> {
+    let mut candidate = json!({"id":id,"kind":kind,"input":input,"status":"queued",
         "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
         "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]});
+    if let Some(goal_state) = goal_state {
+        if kind != "goal" || !goal_state.is_object() { return None; }
+        candidate["goalState"] = goal_state;
+    }
     if let Some(saved) = state.store.put_if_absent("job", &candidate) {
         state.bus.record("job", &saved);
-        state
-            .store
-            .audit("job.queued", json!({"kind":kind,"jobId":id}));
+        state.store.audit("job.queued", json!({"kind":kind,"jobId":id}));
         return Some(saved);
     }
-    state
-        .store
-        .get("job", id)
-        .filter(|existing| existing["kind"] == kind && existing["input"] == candidate["input"])
+    state.store.get("job", id).filter(|existing|
+        existing["kind"] == kind
+            && existing["input"] == candidate["input"]
+            && existing.get("goalState") == candidate.get("goalState"))
 }
 
 pub fn cancel_rsi_children(state: &AppState, campaign: &str) {
