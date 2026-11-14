@@ -14,7 +14,8 @@ type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
  sessionId?:string;createdAt?:string;isolateWorktree?:boolean;
  gitWorktree?:{branch?:string;baseCommit?:string;path?:string;rolledBack?:boolean}}
 type GoalDiff={paths?:string[];status:string;unstaged?:string;staged?:string;diff?:string;
- branch?:string;baseCommit?:string;untracked?:string;note?:string}
+ branch?:string;baseCommit?:string;untracked?:string;note?:string;
+ patchSha256?:string;canApply?:boolean;patchBytes?:number}
 type Job={id:string;kind:string;status:string;input?:{goalId?:string};
  stepIndex?:number;stepTotal?:number}
 
@@ -67,6 +68,21 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    const result=await get<GoalDiff>('/api/goals/'+encodeURIComponent(goal.id)+'/diff')
    setDiffs(previous=>({...previous,[goal.id]:result}))
   }catch(e){setError((e as Error).message)}
+ }
+ const applyReviewed=async(goal:Goal)=>{
+  const preview=diffs[goal.id]
+  if(!preview?.canApply||!preview.patchSha256||busy)return
+  if(!window.confirm('검토한 SHA-256 Git 패치를 원본 프로젝트에 적용합니다. 원본 HEAD와 청결 상태를 다시 검사하고 충돌하면 중단합니다. 적용하시겠습니까?'))return
+  setBusy(goal.id);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/apply',{
+    expectedPatchSha256:preview.patchSha256
+   })
+   setDiffs(old=>{const next={...old};delete next[goal.id];return next})
+   setNotice('검토한 Git 패치를 원본 프로젝트에 적용하고 SHA-256 재검증을 마쳤습니다.')
+   await reload()
+  }catch(e){setError((e as Error).message);setDiffs(old=>{const next={...old};delete next[goal.id];return next})}
+  finally{setBusy('')}
  }
  const discard=async(goal:Goal)=>{
   if(busy||!goal.gitWorktree||goal.gitWorktree.rolledBack||active(goal.status))return
@@ -157,6 +173,11 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
     {diffs[goal.id]&&<section aria-label="검증된 파일 변경 내용" className="mt-3 space-y-2 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
      <p className="text-xs font-semibold">Git 변경 사항 · {diffs[goal.id].branch||'공유 작업공간'} · 파일 {diffs[goal.id].paths?.length||0}개</p>
      {diffs[goal.id].note&&<p className="text-xs text-[#7C7469]">{diffs[goal.id].note}</p>}
+     {diffs[goal.id].patchSha256&&<p className="break-all text-[11px] text-[#7C7469]">패치 SHA-256: {diffs[goal.id].patchSha256}</p>}
+     {diffs[goal.id].canApply&&!active(goal.status)&&
+      <Button size="sm" variant="primary" disabled={busy!==''} onClick={()=>void applyReviewed(goal)}>
+       검토된 변경 원본에 적용
+      </Button>}}
      {diffs[goal.id].status&&<pre className="overflow-auto whitespace-pre-wrap text-[11px]">{diffs[goal.id].status}</pre>}
      {diffs[goal.id].diff&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].diff}</pre>}
      {diffs[goal.id].untracked&&<p className="break-all text-[11px] text-[#7C7469]">미추적 파일: {diffs[goal.id].untracked}</p>}

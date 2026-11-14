@@ -191,3 +191,19 @@ pub async fn rollback_goal(State(state):State<AppState>,Path(id):Path<String>)->
         Err(message)=>error(StatusCode::CONFLICT,&message),
     }
 }
+
+/// Only an owner-submitted digest of the previously reviewed patch can be
+/// applied to the clean original checkout.
+pub async fn apply_goal(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    if body.as_object().is_none_or(|obj|obj.len()!=1 || !obj.contains_key("expectedPatchSha256")){
+        return error(StatusCode::BAD_REQUEST,"expectedPatchSha256 is required.");
+    }
+    let Some(digest)=body["expectedPatchSha256"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"Expected patch digest must be a string.");
+    };
+    match engine::goal_git::apply_reviewed(&state,&id,digest).await{
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
