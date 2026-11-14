@@ -209,7 +209,8 @@ mod tests {
         run(&["add","a.txt"]);
         run(&["-c","user.name=Dominion Test","-c","user.email=test@example.com",
             "commit","-qm","initial"]);
-        let cfg=Config{port:0,data_dir:dir.join("runtime"),
+        let data_dir=std::env::temp_dir().join(format!("goal-diff-data-{}",uuid::Uuid::new_v4()));
+        let cfg=Config{port:0,data_dir:data_dir.clone(),
             web_dir:dir.join("web"),workspace:dir.clone()};
         std::fs::create_dir_all(&cfg.data_dir).unwrap();
         let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
@@ -220,7 +221,6 @@ mod tests {
         let prior=baseline(&dir).await;
         assert!(prior["available"]==true);
         assert!(prior["clean"]==false,"untracked user files must disable undo");
-        std::fs::remove_dir_all(&cfg.data_dir).unwrap();
         std::fs::remove_file(dir.join("untracked-marker.txt")).unwrap();
         let clean=baseline(&dir).await;
         assert_eq!(clean["clean"],true);
@@ -235,7 +235,9 @@ mod tests {
         let receipt=undo(&state,&goal,"a.txt",sha).await.unwrap();
         assert_eq!(receipt["verified"],true);
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(),"before\\n");
+        drop(state);
         std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
