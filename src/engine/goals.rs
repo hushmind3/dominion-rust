@@ -400,8 +400,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             continue;
         }
         let gate_gaps = acceptance_gaps(&scoped_state, &text, &criteria, &evidence);
-        let turn_progress=progress::measure(
-            &before_evidence,&evidence,&before_check_gaps,&gate_gaps,tool_errors.len()
+        let turn_progress=progress::measure_objective(
+            &before_evidence,&evidence,&before_check_gaps,&gate_gaps,
+            tool_errors.len(),&criteria
         );
         let model_review_invoked=progress::reviewer_needed(&gate_gaps,turn_progress);
         if !model_review_invoked {

@@ -18,6 +18,9 @@ Codex·Claude Agent·Copilot SDK는 내부 계획·도구·복구 설계의 **�
 분석 및 실제 수정 위치는 [2026 SDK 자체 하네스 비교](docs/research/2026-sdk-native-harness-comparison.md)에 정리했습니다.
 
 ## 사용자 지휘권 (Owner Authority)
+- **목표 진행 측정:** 신규 도구 실행 중 실제 완료 조건에 연결되는 변화만
+  정체 상태를 해소하며, 관련 없는 파일 수정으로 불필요한 검토를 반복하지 않는다.
+
 
 - **실행 중 추가 지시:** `POST /api/goals/:id/steer`, 본문 `{"text":"추가 지시","mode":"append","requestId":"owner-123"}`.
   `mode:"replace"`는 실행 접근법 교체. 지시 이력은 `GET /api/goals/:id`의 `ownerDirectiveJournal`에서 조회할 수 있다.
