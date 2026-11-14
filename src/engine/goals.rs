@@ -166,12 +166,15 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .map(str::to_string)
         .unwrap_or_else(|| format!("goal-{goal_id}"));
     goal["taskId"] = json!(task_id);
-    // Scan only a bounded repository inventory; preserve it in the goal
-    // record so planner and executor share one source-grounded project map.
+    // Reuse content-hashed source navigation from the native RSI index for
+    // ordinary autonomous coding tasks too. The planner receives a small
+    // symbol map rather than paying for a blind project-discovery LLM turn.
     let project_inventory = if goal["projectInventory"].is_object() {
         goal["projectInventory"].clone()
     } else {
-        crate::engine::goal_intake::inspect(&workdir)
+        crate::engine::goal_intake::inspect_for_goal(
+            &scoped_state,&workdir,&text
+        ).await
     };
     goal["projectInventory"] = project_inventory.clone();
     // Capture the exact clean/dirty Git baseline before any executor tool.

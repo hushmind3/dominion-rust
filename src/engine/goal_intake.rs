@@ -7,6 +7,57 @@ use std::path::Path;
 const TOP_LEVEL_LIMIT: usize = 48;
 const MAX_ENTRY_CHARS: usize = 96;
 
+/// Build a compact source-grounded symbol map for real coding goals.
+/// This runs on Tokio's blocking pool, not the model stream worker. The
+/// established RSI index is content-hashed and reused: no second index format.
+pub(crate) async fn inspect_for_goal(
+    state:&crate::state::AppState,root:&Path,objective:&str,
+)->Value{
+    let mut inventory=inspect(root);
+    let lower=objective.to_lowercase();
+    let is_code=crate::engine::text_intent::has_any(&lower,&[
+        "코드","개발","버그","수정","구현","리팩터","컴파일","소스",
+        "code","implement","debug","fix","refactor","patch","test","rust",
+    ]) || [".rs",".ts",".tsx",".py",".go",".js"].iter()
+        .any(|extension|lower.contains(extension));
+    if !is_code || !root.is_dir(){return inventory;}
+    let state=state.clone();
+    let source=root.to_path_buf();
+    let query=objective.to_string();
+    let result=tokio::task::spawn_blocking(move||{
+        let meta=crate::engine::code_index::refresh(&state,&source)?;
+        let index=meta["id"].as_str().unwrap_or("").to_string();
+        let best=crate::engine::code_index::rank_focus_files(
+            &state,&index,&query,"",&std::collections::BTreeMap::new(),None,3);
+        let focus=best.iter().filter_map(|item|item["path"].as_str()
+            .map(str::to_string)).collect::<Vec<_>>();
+        let (_,navigation)=crate::engine::code_index::prompt_context(
+            &state,&source,&focus)?;
+        Ok::<_,String>((meta,focus,navigation))
+    }).await;
+    match result {
+        Ok(Ok((meta,focus,nav)))=>{
+            inventory["codeIndex"]=json!({
+                "id":meta["id"],"files":meta["files"],"symbols":meta["symbols"],
+                "fingerprint":meta["fingerprint"],
+                "focusCandidates":focus,
+                "navigation":nav.chars().take(6_000).collect::<String>(),
+                "source":"verified_content_hash_index_v1",
+            });
+        }
+        Ok(Err(error))=>{
+            // A failed index is never represented as a valid source map.
+            inventory["codeIndex"]=json!({"status":"unavailable",
+                "reason":error.chars().take(240).collect::<String>()});
+        }
+        Err(_)=>{
+            inventory["codeIndex"]=json!({"status":"unavailable",
+                "reason":"repository parser failed"});
+        }
+    }
+    inventory
+}
+
 pub(crate) fn inspect(root:&Path) -> Value {
     let mut manifests=Vec::new();
     let mut families=Vec::new();
@@ -46,6 +97,28 @@ pub(crate) fn inspect(root:&Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn coding_goal_gets_bounded_content_hashed_symbol_navigation() {
+        let root=std::env::temp_dir().join(format!("goal-symbols-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("Cargo.toml"),"[package]\nname=\"test\"\nversion=\"0.1.0\"\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"),
+            "pub fn reconcile_invoice() -> bool { true }\n").unwrap();
+        let cfg=crate::config::Config{port:0,data_dir:root.join("data"),
+            web_dir:root.join("web"),workspace:root.clone()};
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        let state=crate::state::AppState::new(cfg.clone(),
+            crate::db::Store::open(&cfg.db_path()).unwrap(),
+            crate::vault::Vault::open(&cfg.key_path()));
+        let item=inspect_for_goal(&state,&root,
+            "Fix reconcile_invoice in src/lib.rs").await;
+        assert!(item["codeIndex"]["files"].as_u64().unwrap_or(0)>0);
+        assert!(item["codeIndex"]["navigation"].as_str().unwrap_or("")
+            .contains("reconcile_invoice"));
+        let plain=inspect_for_goal(&state,&root,"How are you?").await;
+        assert!(plain["codeIndex"].is_null());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn project_survey_is_bounded_and_skips_dotfiles() {
         let root=std::env::temp_dir().join(format!("goal-intake-{}",uuid::Uuid::new_v4()));
