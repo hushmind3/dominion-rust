@@ -126,3 +126,10 @@ The typed `rsi/contracts/experiment.rs` lives under an immutable `rsi/contracts.
 - `verification::fresh_command_matches`: a successful `command_succeeded` test receipt is stale after a later source mutation, even in another goal iteration. A fresh test after that mutation may satisfy it. Missing chronology fails closed when there are successful writes.
 - Coding requests under `tool.discovery` core/query-relevant policies keep `code_search` and surgical editors. Noncoding requests retain smaller original schemas.
 - Multi-turn mock model integration actually runs workspace_write then shell_exec and exercises the real goal completion/verification path; it does not certify long-horizon real-model performance. Full explanation: `docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md`.
+
+### Sub1 2026-11-14: LTX paid quote and explicit approved spend ceiling
+
+- `/api/video/quote` → `video::paid_quote` → `video::pricing` validates LTX-2.5 model/resolution/duration/clip segmentation without any remote billable request. Unit costs are a dated official-price snapshot (USD cents), KRW conversion a reference FX, never actual billing.
+- `video::enqueue` recomputes cost and requires `approvedPaidQuote=true`, `maxUsdCents >= quote.totalUsdCents`, and `quoteDigest` matching model/quality/duration/clip lengths/audio/pricing version. No paid LTX job without owner-approved ceiling. The job preserves cost quote and cap.
+- `film::retake_quote` costs only the selected clip plus missing clips, excluding SHA-verified sibling outputs. `video::enqueue_retake` independently revalidates the monetary limit; `FilmRetake` exposes it before consent. Legacy Runway remains separately priced/unquoted: do not copy LTX pricing to Runway.
+- Reference: `docs/SUB1-VIDEO-PAID-QUOTE-2026-11-14.md`. Do not interpret paid clip count, FFprobe validation or local mock CI as charged invoice or human-rated continuity.
