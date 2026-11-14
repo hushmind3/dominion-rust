@@ -679,7 +679,11 @@ pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>
     input["maxApprovedKrw"]=json!(approved_limit);
     let fingerprint=input["retake"]["fingerprint"].as_str()
         .ok_or("재생성 고유키가 없습니다.")?;
-    let hash=Sha256::digest(fingerprint.as_bytes());
+    // An owner approval is bound to a tariff version as well as the exact
+    // shot content. A new published rate may require a new approved job.
+    let approval_identity=format!("{fingerprint}|{}",
+        input["costQuote"]["fingerprint"].as_str().unwrap_or(""));
+    let hash=Sha256::digest(approval_identity.as_bytes());
     let mut bytes=[0u8;16];
     bytes.copy_from_slice(&hash[..16]);
     bytes[6]=(bytes[6]&0x0f)|0x40;
