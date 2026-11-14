@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger} from './sub2-swebench-verified.mjs';
+import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger,positiveBenchmarkLimit} from './sub2-swebench-verified.mjs';
 const issue={
  instance_id:'django__django-10000',
  repo:'django/django',
@@ -80,4 +80,15 @@ test('only official grader can certify recovery and tool cost per solved task',(
   assert.equal(report.officialRecoveryRate,0.5);
   assert.equal(summarize(trial.map(row=>({...row,officialSolved:null}))).officialRecoveryRate,null);
   assert.equal(summarize([...trial,{usage:null,toolLedger:null}]).toolCalls,null);
+});
+
+test('real benchmark budgets are exact bounded integers, never silently clamped',()=>{
+  assert.equal(positiveBenchmarkLimit('80000','tokens',5000,2000000),80000);
+  assert.equal(positiveBenchmarkLimit('64','iterations',1,64),64);
+  for(const invalid of [0,-1,2.5,'abc',null,Infinity,Number.MAX_SAFE_INTEGER+2]){
+    assert.throws(()=>positiveBenchmarkLimit(invalid,'iterations',1,64),
+      'invalid budget '+String(invalid)+' must stop a paid comparison');
+  }
+  assert.throws(()=>positiveBenchmarkLimit('2000001','tokens',5000,2000000));
+  assert.throws(()=>positiveBenchmarkLimit('4999','tokens',5000,2000000));
 });
