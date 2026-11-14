@@ -31,6 +31,20 @@ const goal = await sdk.startGoal({goal:'Fix failing tests', isolateWorktree:true
 console.log(await goal.status())
 ```
 
+## Using the repository package
+
+This SDK is **implemented and buildable, not yet published on npm**. To consume it from another local TypeScript/Node project:
+
+```sh
+cd /path/to/dominion-rust/sdk/typescript
+npm install
+npm run build
+cd /path/to/your-app
+npm install /path/to/dominion-rust/sdk/typescript
+```
+
+Native tools are already present in the Rust engine. To add external tools, run an MCP-compatible HTTP or stdio server and register it using `sdk.registerMcpServer({name,transport:'http',url})` or `{transport:'stdio',command,args}`. DOMINION stores its configuration under `/api/mcp` and executes discovered tools itself; `sdk.discoverMcpTools()` reads actual registered tools. Secrets sent as `apiKey` use the existing Rust vault.
+
 ## Ownership and API contract
 
 - `startThread()` creates a real `/api/sessions` record; `resumeThread(id)` reconnects to that ID, not a new model conversation.
