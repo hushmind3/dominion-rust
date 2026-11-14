@@ -186,3 +186,44 @@ separate authorized benchmark runs.
 ## In-process verified artifact promotion
 
 External Rust applications can now call `DominionSdk::apply_goal_patch(goal_id, sha256)` and `DominionSdk::discard_goal_worktree(goal_id, "DISCARD_GOAL_WORKTREE")`. The methods delegate to the exact `engine::goal_workspace::apply_reviewed` and `discard` functions used by REST. A full 64-character SHA-256 expected digest is required, and the engine additionally verifies that the exact reviewed worktree patch is unchanged and eligible for application. Disposal requires explicit confirmation and does not delete the original repository. This closes the native SDK goal lifecycle: enqueue -> model/tool execution -> review receipt/diff -> apply or discard -> optional owner-reviewed resume. The negative tests reject malformed hashes, unverified candidate patches and unconfirmed disposal.
+
+## Evidence-complete 2026 SWE-bench grading
+
+2026 SWE-bench upstream writes `logs/evaluation/<runId>/<model>/<instance>/report.json`
+and the exact evaluated `patch.diff`. The native runner now invokes the
+official grader with the **exact** attempted instance IDs and runs it
+with the current working directory set to the new benchmark output folder,
+keeping the generated Docker logs out of the source checkout.
+
+Per-instance official success is accepted only after validating:
+
+- The prediction was produced from this native source checkout and its
+  `patchSha256` and byte count still equal the runner's persisted receipt
+- The official evaluator's `patch.diff` digest matches the same SHA-256
+- The report's instance key provides a real boolean `resolved`
+
+No grader report leaves `officialSolved = null` for a nonempty patch.
+An empty patch is a known non-solve and never masquerades as a pass.
+A modified/reused official patch is a hard validation error.
+
+The new offline import mode also works when a third-party machine ran the
+official Docker grader after the Dominion generation job:
+```sh
+node scripts/sub2-swebench-verified.mjs --import-grade \
+  /absolute/benchmark-output/report.json \
+  /absolute/benchmark-output/logs/evaluation/<runId>
+```
+This reads saved `predictions.jsonl`, verifies source digests, updates
+`report.json` with `officialGrading` provenance, and records partial
+grading honestly. No model/API request is made by the import command.
+
+All cost accounting now traverses the real native
+`session.parentSessionId` tree (to a bounded depth), includes helper-agent
+token usage and execution-operation receipts, and excludes unrelated
+sessions. The result records `attributedSessionCount`. Source: upstream
+`SWE-bench/SWE-bench` `swebench/harness/run_evaluation.py` and
+`www.swebench.com/SWE-bench/guides/evaluation/` (inspected Nov 2026).
+
+This is a fully wired execution-and-evidence path, NOT evidence of a real
+SWE-bench solve without an authorized actual model run plus upstream Docker
+grading. Synthetic graded-report unit fixtures test parser integrity only.
