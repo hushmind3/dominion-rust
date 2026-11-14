@@ -51,6 +51,20 @@ pub async fn stream(
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }
 
+pub async fn steer(
+    State(state):State<AppState>,
+    Path(id):Path<String>,
+    Json(body):Json<Value>
+)->Response {
+    let Some(instruction)=body["instruction"].as_str() else {
+        return bad("instruction 문자열이 필요합니다.".into());
+    };
+    match DominionSdk::new(state).steer(&id,instruction){
+        Ok(record)=>(StatusCode::ACCEPTED,Json(record)).into_response(),
+        Err(err)=>bad(err),
+    }
+}
+
 pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Response {
     match DominionSdk::new(state).cancel(&id){
         Ok(())=>Json(json!({"cancelled":true,"sessionId":id})).into_response(),
