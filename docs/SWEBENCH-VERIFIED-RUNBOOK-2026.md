@@ -79,3 +79,13 @@ target/release/dominion-swebench \
 
 이 기능은 SWE-bench Verified에 대한 정식 실행 경로를 제공합니다.
 **실제 500문제 실행·공식 평가 결과는 아직 없습니다.**
+
+### 2026-11-15 · Goal-tree telemetry and measured recovery
+
+The native SWE-bench runner (`src/bin/dominion-swebench.rs`) now enumerates the persisted session parent edges from `GET /api/sessions` to include all delegated descendant executions. It reports `toolCalls`, `executionCount` and `failedToolOperations` for the **entire goal session tree**, and labels `toolTelemetryComplete=false` (null numerical counts) if session or operation telemetry cannot be retrieved. Unknown/interrupted side effects do not count as proven failures or successful retries.
+
+Token and provider-cost inputs use `goal.finalReport.sessionUsage`, the Rust engine's recursive, audit-based root+child total, rather than the direct root session usage endpoint. A missing final report is reflected as null cost/usage rather than a fabricated zero. These totals are still observed usage and can understate providers omitting usage.
+
+After an actual official Docker evaluation, `official-evaluation-summary.json` additionally contains `tasksWithObservedFailedToolOperations`, `officiallyResolvedTasksAfterToolFailure`, and `taskRecoveryRateGivenObservedToolFailure`. That rate is **officially resolved tasks among tasks with at least one explicit failed tool receipt**; it is *not* per-command retry success. It is null when no task with a measured failure exists. A matching real-model, official oracle, task subset and fixed budget are still required to compare with competing systems.
+
+Unit tests cover unrelated-child exclusion and refusal to infer failure from text or interrupted/unknown receipts. This is instrumentation, not a new SWE-bench completion score.
