@@ -36,6 +36,18 @@ await thread.steer("Change direction: reproduce the failure first");
 
 The correction is persisted before acknowledgement. It supersedes **unstarted** tool calls from the obsolete plan; started side effects and their observed results are not erased.
 
+## Evidence-verified coding goals
+
+For coding tasks, set `isolateWorktree:true` and `requireTests:true` to prevent a model's unsupported test claim from marking the goal complete. `tokenBudget` is an aggregate **observed** ceiling across all goal model steps; a provider's ongoing output can exceed a boundary before it reports usage.
+
+```ts
+const job=await client.goals.create({
+  goal:"Fix the regression and run repository tests",
+  isolateWorktree:true,requireTests:true,tokenBudget:100000,
+  maxIterations:16,
+});
+```
+
 ## Autonomous goals
 
 ```ts
