@@ -32,6 +32,7 @@ import { Agent, Provider, Room, del, get, post } from "../api";
 import { ModelPicker } from "../components/ModelPicker";
 import { ReasoningSelect } from "../components/ReasoningSelect";
 import { useProviderModels } from "../hooks/useProviderModels";
+import {WorkflowLauncher} from './agents/WorkflowLauncher';
 import {
   Action,
   Empty,
@@ -55,7 +56,9 @@ const accents = [
 export function AgentsPage() {
   useLocale();
   const agents = useRemote<Agent[]>("/api/agents", []),
-    providers = useRemote<Provider[]>("/api/providers", []);
+    providers = useRemote<Provider[]>("/api/providers", []),
+    workflows = useRemote<any[]>("/api/workflows", []),
+    workflowJobs = useRemote<any[]>("/api/jobs", []);
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
     [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
@@ -314,6 +317,8 @@ export function AgentsPage() {
             {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
             <p className="line-clamp-2" title={a.description || ""}>{a.description || t('agents.noDescription')}</p>
             <div className="my-2 h-px bg-[#F3EEE5]" />
+            <WorkflowLauncher agentId={a.id} flows={workflows.value} jobs={workflowJobs.value}
+              reload={workflowJobs.reload}/>
             <div className="mt-auto flex flex-col gap-1 border-t border-[#EFE9DF] pt-3 text-xs text-[#7C7469]">
               <span>
                 <Sparkles size={15} />{" "}
