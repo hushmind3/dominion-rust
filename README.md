@@ -784,3 +784,11 @@ after writing a user message but before marking the queue item delivered.
 Original bytes, whitespace and the instruction's provenance are preserved.
 Implementation: `src/engine/steering.rs`; reference analysis:
 `docs/architecture/DOMINION-US-CN-SDK-HARNESS-COMPARISON-SUB2-2026-11-14.md`.
+
+
+### Integrated frontier-grade system audit (Rust + product)
+
+The code-path map, cross-domain owner/cancellation/evidence contract, component
+integration gaps, 2026 US/China source comparison and peer-branch transfer
+candidates live in [DOMINION integrated system engineering](docs/architecture/DOMINION-FRONTIER-INTEGRATED-SYSTEM-SUB2-2026-11-14.md).
+The goal is an end-to-end verified working product, not just a standalone SDK.

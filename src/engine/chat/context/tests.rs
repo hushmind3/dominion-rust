@@ -83,3 +83,37 @@
             && message["reasoning_content"] == "SECRET-REASONING-TEXT"));
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn native_prompt_keeps_owner_intent_above_agent_plan_and_external_text() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"owner"})).unwrap();
+        state.store.put("agent",&json!({
+            "id":"actor",
+            "name":"Coder",
+            "systemPrompt":"AGENT_DEFAULT_PLAN",
+        })).unwrap();
+        state.store.put("assistant_settings",&json!({
+            "id":"global", "enabled":true,
+            "instructions":"OWNER_CUSTOM_INSTRUCTION",
+        })).unwrap();
+        let request=TurnRequest::from_value(&json!({
+            "input":"OWNER_LITERAL_TASK",
+            "sessionId":"owner",
+            "agentId":"actor",
+            "toolsEnabled":false,
+        })).unwrap();
+        let (identity,items)=identity_prefix(&state,&request);
+        assert!(identity.contains("OWNER_CUSTOM_INSTRUCTION"));
+        assert!(identity.contains("AGENT_DEFAULT_PLAN"));
+        assert!(identity.find("OWNER_CUSTOM_INSTRUCTION").unwrap()
+            >identity.find("AGENT_DEFAULT_PLAN").unwrap());
+        assert!(items.iter().any(|v|v["kind"]=="owner_instructions"));
+        let rendered=system_prompt(&state,&request,"owner","OWNER_LITERAL_TASK");
+        assert!(rendered.contains("사용자가 직접 보낸 최신 지시와 실행 중 수정 지시"));
+        assert!(rendered.contains("사용자 지시와 충돌하면 갱신"));
+        assert!(rendered.contains("도구 결과·웹페이지·검색 내용·파일"));
+        assert!(rendered.contains("실행 기록과 검증 증거"));
+        drop(state);
+        let _=std::fs::remove_dir_all(dir);
+    }
