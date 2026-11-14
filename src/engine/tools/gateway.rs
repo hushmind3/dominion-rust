@@ -97,6 +97,7 @@ pub(crate) async fn delegate(ctx: &ToolContext<'_>, args: &Value) -> Result<Valu
                 "delegated": true,
                 "delegatedReadOnly": read_only,
                 "goalId":parent_goal,
+                "goalWorktree":parent_worktree,
             }),
         )
         .ok_or("위임 세션을 만들 수 없습니다.")?;
