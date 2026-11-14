@@ -1,11 +1,9 @@
-import {ImprovementNotice} from "./components/ImprovementNotice"
 import { ContextMenu } from './components/ContextMenu'
 import {OwnerProfileProvider} from './components/OwnerProfile'
 import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,type ReactNode} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
-const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
@@ -13,7 +11,6 @@ const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.V
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
 const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
 const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
-const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({default:module.ExtensionsPage})))
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
@@ -95,11 +92,18 @@ function locationState(){
  const [name,query]=raw.split('?')
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
- return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
+ // Historical bookmarks are still valid even though the two entries no
+ // longer appear in the sidebar or command palette.
+ const legacy=name==='extensions'||name==='capabilities'?name:null
+ const tab=params.get('section')
+ const connectionSection=legacy||(tab==='extensions'||tab==='capabilities'?tab:'channels')
+ return {page:(legacy?'connections':valid?name:'chat') as PageId,
+  connectionSection:connectionSection as 'channels'|'extensions'|'capabilities',
+  session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
- const [{page,session,agent,provider,model},setRoute]=useState(locationState)
+ const [{page,session,agent,provider,model,connectionSection},setRoute]=useState(locationState)
  const [chatDraft,setChatDraft]=useState(0)
  const [sidebar,setSidebar]=useState(false)
  const [collapsed,setCollapsed]=useState(()=>{try{const saved=localStorage.getItem('dominion.nav.collapsed');return saved===null?window.innerWidth<1200:saved==='1'}catch{return false}})
@@ -126,7 +130,9 @@ export default function App(){
   }catch{setSidebar(open=>!open)}
  },[collapsed])
  const navigate=useCallback((target:PageId,sessionId?:string)=>{
-  const next='#/'+target+(sessionId?'?session='+encodeURIComponent(sessionId):'')
+  const next=target==='extensions'||target==='capabilities'
+   ? '#/connections?section='+target
+   : '#/'+target+(sessionId?'?session='+encodeURIComponent(sessionId):'')
   if(window.location.hash!==next)window.history.pushState(null,'',next)
   setRoute(locationState())
   setSidebar(false)
@@ -187,7 +193,6 @@ export default function App(){
  },[])
  return <OwnerProfileProvider><div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
-   <ImprovementNotice/>
   <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
    <WorkspaceHeader page={page} online={online} collapsed={collapsed} build={engineBuild} onMenu={toggleNav} onSearch={()=>setPalette(true)}/>
@@ -195,7 +200,6 @@ export default function App(){
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='home'&&<HomePage navigate={navigate}/>}
-    {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
     {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
@@ -203,8 +207,7 @@ export default function App(){
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}
     {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='extensions'&&<ExtensionsPage/>}
-    {page==='connections'&&<ConnectionsPage/>}
+    {page==='connections'&&<ConnectionsPage initialSection={connectionSection}/>}
     {page==='developer'&&<DeveloperPage/>}
     {page==='rsi'&&<SelfImprovementPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
