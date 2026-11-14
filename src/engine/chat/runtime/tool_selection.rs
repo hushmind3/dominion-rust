@@ -117,24 +117,9 @@ pub(crate) fn tool_name(definition: &Value) -> &str {
         .unwrap_or("")
 }
 
-// Korean action stems deliberately match inflections; ASCII action words must
-// match full tokens. Otherwise "latest", "profile", "thread" and "brunch"
-// accidentally turn on test, file, read and run tool schemas.
-fn intent_has_term(query: &str, term: &str) -> bool {
-    if !term.is_ascii() {
-        return query.contains(term);
-    }
-    query.match_indices(term).any(|(offset, _)| {
-        let before = query[..offset].chars().last();
-        let after = query[offset + term.len()..].chars().next();
-        let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
-        !before.is_some_and(word) && !after.is_some_and(word)
-    })
-}
-
-fn intent_has_any(query: &str, terms: &[&str]) -> bool {
-    terms.iter().any(|term| intent_has_term(query, term))
-}
+// Shared with autonomous goal verification; a single lexical boundary policy
+// prevents incidental English substrings from changing agent execution.
+use crate::engine::text_intent::{has_any as intent_has_any, has_term as intent_has_term};
 
 /// Casual room turns carry zero tool schemas. Action requests select the
 /// exact native schemas the harness judges relevant; no model call is used.
