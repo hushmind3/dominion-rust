@@ -207,3 +207,18 @@ DM·음성·파일 첨부·슬래시 명령·Gateway 실시간 이벤트는 이�
 2026 source-level comparisons, RSI methodology and proof limitations: [Sub2 native autonomous SDK](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
 
 The native `src/engine/chat/runtime/turn.rs` parallel-read scheduler processes only leading contiguous read groups, with exclusive/write barriers, a bounded `buffered(4)` pool, model-order result commits, normal budget charges and cancellation checks. Rust tests cover ordering barriers. The full dynamic DeepSeek-style reclassification scheduler is a separate unimplemented extension.
+
+
+## Native owner-reviewed goal resume and cost-aware evaluation
+
+`src/engine/goals/resume.rs` is the single recovery decision path for
+`sdk::DominionSdk::resume_goal` and `api/goals/recovery.rs`.
+This preserves the recorded job lineage and atomic SQLite effect
+reconciliation, including worktree identity checks and owner consent.
+Parallel read-only calls retain matching original model tool-call IDs even
+when malformed arguments are returned as errors.
+
+`scripts/sub2-swebench-verified.mjs` enforces an exact recorded model-token
+cap and reports native failure/replanning evidence separately from external
+official Docker grading. No live model score or paid cost is inferred from
+mock-provider tests.
