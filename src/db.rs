@@ -304,6 +304,81 @@ impl Store {
         Some(saved)
     }
 
+    /// Admit a delegated worker and its queued job in one SQLite write
+    /// transaction. A count followed by separate put() calls can overbook the
+    /// parent under concurrent agent turns (including multiple processes).
+    ///
+    /// The session and job become visible together. Rejected reservations
+    /// leave neither an orphan session nor a billable queued worker.
+    pub fn reserve_delegation(
+        &self,
+        parent_session_id: &str,
+        session: &Value,
+        job: &Value,
+        max_total: usize,
+        max_active: usize,
+    ) -> Result<(), String> {
+        let parent = parent_session_id.trim();
+        let session_id = session["id"].as_str().filter(|id| !id.is_empty())
+            .ok_or("delegation session id missing")?;
+        let job_id = job["id"].as_str().filter(|id| !id.is_empty())
+            .ok_or("delegation job id missing")?;
+        if parent.is_empty() || max_total == 0 || max_active == 0
+            || session["delegated"] != true
+            || session["parentSessionId"].as_str() != Some(parent)
+            || job["kind"] != "prompt" || job["status"] != "queued"
+            || job["input"]["delegation"] != true
+            || job["input"]["sessionId"].as_str() != Some(session_id)
+            || job["input"]["parentSessionId"].as_str() != Some(parent)
+        {
+            return Err("invalid delegated session/job reservation".into());
+        }
+
+        // IMMEDIATE serializes the admission counts with all concurrent
+        // writers, not just with clones of this process's Mutex<Connection>.
+        let mut conn = self.conn.lock().map_err(|error| error.to_string())?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        let cancelled: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM records
+             WHERE kind='session_cancel' AND id=?1
+               AND json_extract(data,'$.cancelled')=1",
+            [parent], |row| row.get(0)
+        ).map_err(|error| error.to_string())?;
+        if cancelled != 0 {
+            return Err("상위 세션이 중단되어 새 위임을 생성할 수 없습니다.".into());
+        }
+        let (total, active): (i64, i64) = tx.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN json_extract(data,'$.status')
+                          IN ('queued','running') THEN 1 ELSE 0 END),0)
+               FROM records
+              WHERE kind='job'
+                AND json_extract(data,'$.kind')='prompt'
+                AND json_extract(data,'$.input.delegation')=1
+                AND json_extract(data,'$.input.parentSessionId')=?1",
+            [parent], |row| Ok((row.get(0)?, row.get(1)?))
+        ).map_err(|error| error.to_string())?;
+        if total >= max_total as i64 {
+            return Err("이 세션의 위임 작업 한도에 도달했습니다. 기존 결과를 통합하세요.".into());
+        }
+        if active >= max_active as i64 {
+            return Err("동시 위임 4개가 실행 중입니다. task_result로 완료를 확인한 후 위임하세요.".into());
+        }
+        // Plain INSERT intentionally rejects a UUID collision; upsert here
+        // would silently replace another session or job.
+        tx.execute(
+            "INSERT INTO records(kind,id,data) VALUES('session',?1,?2)",
+            params![session_id,session.to_string()],
+        ).map_err(|error| error.to_string())?;
+        tx.execute(
+            "INSERT INTO records(kind,id,data) VALUES('job',?1,?2)",
+            params![job_id,job.to_string()],
+        ).map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     /// Writes several records in one SQLite transaction. Any failure rolls
     /// back all of them, which is required for experiment promotion.
     pub fn transaction(&self, records: &[(String, Value)]) -> Result<Vec<Value>, String> {
