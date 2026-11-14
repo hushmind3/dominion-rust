@@ -1,0 +1,18 @@
+name: SWE-bench runner contracts
+on:
+  push:
+    branches: [dominion-sub1]
+    paths:
+      - 'scripts/swebench-dominion*.mjs'
+      - 'docs/SWE-BENCH-RUNNER.md'
+      - '.github/workflows/swebench-runner.yml'
+  workflow_dispatch:
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test scripts/swebench-dominion.tests.mjs
