@@ -634,3 +634,7 @@ LTX-2.5 신규 영상 및 일부 장면 재생성은 `POST /api/video/quote` 또
 ### 2026-11-14: 자율 목표의 실측 진전 기반 재계획
 
 `engine/goals.rs`는 새 `engine/goals/progress.rs`를 통해 실제 영속 도구 영수증의 새로운 변경·검증 조건 해소를 측정합니다. 유효한 작업이 진행되는 동안에는 정체 카운터가 증가하지 않으며, 실패/반복 호출과 추가적인 수정을 구분합니다. `workspace_replace[_range|_function]` 국소 편집도 수정 증거로 계산합니다. [실행 검증 경로](docs/SUB1-EXECUTION-RECEIPT-CONTINUITY-2026-11-14.md).
+
+### 2026-11-14: 검증된 작업 완료율과 실모델 재현 평가
+
+첫 Goal 등록도 `/api/goals` → `Store::transaction([goal,job])` 단일 SQLite 트랜잭션으로 바뀌어, 프로세스 중단 시 유실된 작업 ID가 있는 대기 목표가 생기지 않습니다. `GET /api/goals/metrics`는 실제 저장된 Goal에서 검증된 완료율/실패 및 보류 분모, 실제 모델 호출·토큰·캐시 보고량을 집계합니다. 미청구 원가는 `null`로 유지합니다. `scripts/sub1-measured-goal-eval.mjs`와 `.github/workflows/sub1-measured-goal-eval.yml`로 공개 저장소 GitHub Actions에서 **실제 Ollama Qwen3 4B**를 격리 실행해 2개의 소형 다중 파일 작업을 비공개(모델 미제공) 검사기로 채점하고 SHA·Goal/Job·토큰 영수증을 아티팩트로 남깁니다. 통과율은 실행 결과가 나왔을 때만 보고하며 대형 SW 공학 작업 성공률로 부풀리지 않습니다. LTX 유료 워커는 실행 시작 직전에 동결 승인 견적을 다시 검사합니다. [재현 평가 경로 및 범위](docs/SUB1-MEASURED-GOAL-2026-11-14.md).
