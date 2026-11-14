@@ -81,6 +81,20 @@ export class DominionClient {
       this.transport.json<unknown>(`/api/sessions/${idPart(id)}/cancel`, "POST", {}, options),
   };
 
+  /** Stable, versioned-by-path first-party SDK surface; no vendor agent engine. */
+  readonly threads = {
+    create: (input: SessionCreate = {}, options?: RequestOptions) =>
+      this.transport.json<Session>("/api/sdk/threads","POST",input,options),
+    get: (id: string, options?: RequestOptions) =>
+      this.transport.json<Session>(`/api/sdk/threads/${idPart(id)}`,"GET",undefined,options),
+    history: (id: string, options?: RequestOptions) =>
+      this.transport.json<Message[]>(`/api/sdk/threads/${idPart(id)}/history`,"GET",undefined,options),
+    steer: (id: string, instruction: string, options?: RequestOptions) =>
+      this.transport.json<DominionRecord>(`/api/sdk/threads/${idPart(id)}/steer`,"POST",{instruction},options),
+    cancel: (id: string, options?: RequestOptions) =>
+      this.transport.json<{cancelled:boolean;sessionId:string}>(`/api/sdk/threads/${idPart(id)}/cancel`,"POST",{},options),
+  };
+
   readonly executions = {
     list: (limit = 200, offset = 0, options?: RequestOptions) =>
       this.transport.json<DominionRecord[]>(`/api/executions?limit=${limit}&offset=${offset}`, "GET", undefined, options),
@@ -132,6 +146,25 @@ export class DominionClient {
     throw new DominionStreamInterrupted();
   }
 
+  /** The dedicated native Rust SDK run endpoint; no duplicate model call on disconnect. */
+  async *streamThread(id:string, input:Omit<ChatRequest,"sessionId">, options:RequestOptions={})
+    :AsyncGenerator<ChatEvent>{
+    const source=await this.transport.sse(
+      `/api/sdk/threads/${idPart(id)}/run`,"POST",
+      {agentId:input.agentId??"",...input,toolsEnabled:input.toolsEnabled??true,
+       toolsExecutionEnabled:input.toolsExecutionEnabled??true,
+       autoLearning:input.autoLearning??false},options);
+    for await(const frame of decodeSse(source)){
+      const event=parseSseJson<ChatEvent>(frame);
+      if(event.type==="error")throw new DominionProtocolError(
+        typeof event.message==="string"?event.message:
+        typeof event.error==="string"?event.error:"Native thread failed");
+      yield event;
+      if(event.type==="done")return;
+    }
+    throw new DominionStreamInterrupted();
+  }
+
   /**
    * Reads the durable server event log and reconnects with ?after=<last seq>.
    * Unlike chat, this GET may be reissued without repeating an agent action.
@@ -172,7 +205,7 @@ export class DominionClient {
   }
 
   async startThread(input: SessionCreate = {}, options?: RequestOptions): Promise<DominionThread> {
-    const session = await this.sessions.create(input, options);
+    const session = await this.threads.create(input, options);
     return new DominionThread(this, session.id, input);
   }
 
@@ -210,8 +243,12 @@ export class DominionThread {
     private readonly defaults: ModelSelection = {},
   ) { idPart(id); }
 
-  messages(options?: RequestOptions) { return this.client.sessions.messages(this.id, options); }
-  cancel(options?: RequestOptions) { return this.client.sessions.cancel(this.id, options); }
+  messages(options?: RequestOptions) { return this.client.threads.history(this.id, options); }
+  cancel(options?: RequestOptions) { return this.client.threads.cancel(this.id, options); }
+  /** Supersede unstarted steps of an active run; the instruction stays durable. */
+  steer(instruction:string, options?:RequestOptions){
+    return this.client.threads.steer(this.id,instruction,options);
+  }
 
   async fork(options?: RequestOptions): Promise<DominionThread> {
     const copied = await this.client.sessions.fork(this.id, options);
@@ -220,8 +257,8 @@ export class DominionThread {
 
   runStreamed(input: string, options: Omit<ChatRequest, "sessionId" | "input"> & RequestOptions = {}) {
     const {signal, timeoutMs, ...model} = options;
-    return this.client.streamChat({
-      sessionId: this.id, input, ...this.defaults, ...model,
+    return this.client.streamThread(this.id,{
+      input, ...this.defaults, ...model,
     }, {signal, timeoutMs});
   }
 
