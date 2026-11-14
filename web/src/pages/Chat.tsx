@@ -326,6 +326,14 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     reasoningLanguage:reasoningKo?'ko':undefined,reasoningEffort:reasoningEffort||undefined,thinking:selectedProvider?.kind==='codex'?(reasoningEffort==='none'?false:canDisableThinking?thinkingEnabled:undefined):thinkingEnabled,
    },event=>{
     if(event.type==='assistant_saved'){saved=true;setSavedMessageId(event.messageId);refresh();}
+    if(event.type==='owner_steer_applied'){
+     // Clear speculative text from the superseded model response. Only the
+     // newly steered run may contribute to the visible active answer.
+     setLive('');setThought('');setToolStatus(t('chat.steerApplied'));refresh();
+    }
+    if(event.type==='owner_steer_deferred'){
+     setCommandInfo(t('chat.steerDeferred'));refresh();
+    }
     if(event.type==='text')setLive(old=>old+event.text);
     if(event.type==='reasoning')setThought(old=>old+event.text);
     if(event.type==='approval'){setLiveApproval({id:event.id,tool:event.tool,args:event.args,sessionId:id!,status:'pending'});void approvals.reload();}
