@@ -107,7 +107,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"cinematic":job["input"]["cinematic"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -133,12 +133,34 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     {
         return Err("ComfyUI 주소와 API 형식 워크플로 JSON을 먼저 저장하세요.".into());
     }
+    let cinematic=body["cinematic"].as_bool().unwrap_or(false);
+    if body.get("cinematic").is_some_and(|value|!value.is_boolean()) {
+        return Err("멀티샷 옵션의 타입이 유효하지 않습니다.".into());
+    }
+    if cinematic && engine!="comfyui" {
+        return Err("멀티샷 생성은 ComfyUI 작업공간에서 지원합니다.".into());
+    }
+    let retries=body["badShotRetries"].as_u64().unwrap_or(0);
+    if body.get("badShotRetries").is_some_and(|value|value.as_u64().is_none())
+        || retries>1 {
+        return Err("불량 샷 재생성은 0회 또는 1회만 선택할 수 있습니다.".into());
+    }
+    if cinematic {
+        if ffmpeg_from_config(&cfg).is_none() || quality::executable(&cfg).is_none(){
+            return Err("멀티샷 생성은 FFmpeg와 같은 폴더의 ffprobe가 필요합니다.".into());
+        }
+        let template=cfg["comfyWorkflow"].to_string();
+        if !template.contains("{{prompt}}") || !template.contains("{{duration}}"){
+            return Err("멀티샷 워크플로에는 {{prompt}} 및 {{duration}} 치환 변수가 필요합니다.".into());
+        }
+    }
     let duration = body["duration"]
         .as_u64()
         .or(cfg["duration"].as_u64())
         .unwrap_or(15);
-    if !(3..=180).contains(&duration) {
-        return Err("영상 길이는 3~180초입니다.".into());
+    if !(3..=if cinematic {120}else{180}).contains(&duration) {
+        return Err(if cinematic {"멀티샷 영상 길이는 3~120초입니다."}
+            else {"영상 길이는 3~180초입니다."}.into());
     }
     let aspect = body["aspectRatio"]
         .as_str()
@@ -177,7 +199,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         return Err("장면은 최대 12개이며 각 장면은 1~1500자여야 합니다.".into());
     }
     let input = json!({
-        "brief":brief, "title":title, "engine":engine, "duration":duration, "scenes":supplied_scenes,
+        "brief":brief, "title":title, "engine":engine, "duration":duration,
+        "cinematic":cinematic, "badShotRetries":retries,"scenes":supplied_scenes,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
