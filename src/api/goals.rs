@@ -59,53 +59,46 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
 
     for key in ["executor","reviewer","planner"] { if body.get(key).is_some_and(|v|!v.is_object()){return error(StatusCode::BAD_REQUEST,"실행자·검토자·계획자는 객체로 지정하세요.");} }
     for (key,min,max) in [("maxIterations",1,64),("maxReplans",0,16),("replanAfter",1,8)] {if body.get(key).is_some_and(|v|v.as_u64().is_none_or(|n|n<min||n>max)){return error(StatusCode::BAD_REQUEST,"반복·재계획 한도가 유효하지 않습니다.");}}
-    let Some(record) = state.store.put(
-        "goal",
-        &json!({
-            "taskId": uuid::Uuid::new_v4().to_string(),
-            "goal": text,
-            "successCriteria": criteria,
-            "isolateWorktree":isolate,
-            "executor": executor,
-            "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
-            "planner":body.get("planner").cloned().unwrap_or(json!({})),
-            "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
-            "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
-            "replans":0,"planRevision":0,"appliedPlanRevision":0,"ownerPlan":null,
-            "planHistory":[],"reviewHistory":[],"artifacts":[],
-            "status": "queued",
-            "iterations": 0,
-            "maxIterations": max_iterations,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
-        }),
-    ) else {
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "목표를 저장할 수 없습니다.",
-        );
-    };
-    state.bus.record("goal", &record);
-    let goal_id = record
-        .get("id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
-    let job_id = format!("goal-job-{goal_id}");
-    let job = crate::engine::jobs::enqueue_once(&state,&job_id,"goal",json!({"goalId":goal_id}));
-    if job.is_none() {
-        if let Some(failed)=state.store.patch_if("goal",&goal_id,"status",&json!("queued"),
-            &json!({"status":"needs_review","phase":"enqueue_failed",
-                "error":"영속 실행 작업을 등록하지 못했습니다."})) {
-            state.bus.record("goal",&failed);
-        }
-        state.store.audit("goal.enqueue_failed",json!({"goalId":goal_id,"jobId":job_id}));
-        return error(StatusCode::INTERNAL_SERVER_ERROR,"목표가 보존됐지만 실행 작업 등록에 실패했습니다. 목표 목록에서 상태를 확인하세요.");
+    // A runnable goal and its job are one atomic record set. A partially
+    // successful enqueue must never leave a queued goal with no worker job.
+    let goal_id=uuid::Uuid::new_v4().to_string();
+    let job_id=format!("goal-job-{goal_id}");
+    let now=chrono::Utc::now().to_rfc3339();
+    let goal=json!({
+        "id":goal_id,"jobId":job_id,
+        "taskId":uuid::Uuid::new_v4().to_string(),
+        "goal":text,"successCriteria":criteria,"isolateWorktree":isolate,
+        "executor":executor,
+        "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
+        "planner":body.get("planner").cloned().unwrap_or(json!({})),
+        "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
+        "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
+        "replans":0,"planRevision":0,"appliedPlanRevision":0,"ownerPlan":null,
+        "planHistory":[],"reviewHistory":[],"artifacts":[],
+        "status":"queued","iterations":0,"maxIterations":max_iterations,
+        "createdAt":now
+    });
+    let job=json!({
+        "id":job_id,"kind":"goal","input":{"goalId":goal_id},
+        "status":"queued","queuedAt":chrono::Utc::now().to_rfc3339_opts(
+            chrono::SecondsFormat::Micros,true),
+        "attempts":0,"stepIndex":0,"stepTotal":0,"events":[]
+    });
+    if let Err(cause)=state.store.transaction(&[
+        ("goal".to_string(),goal.clone()),
+        ("job".to_string(),job.clone())
+    ]){
+        state.store.audit("goal.enqueue_failed",json!({
+            "goalId":goal_id,"jobId":job_id,"error":cause
+        }));
+        return error(StatusCode::INTERNAL_SERVER_ERROR,
+            "목표와 실행 작업을 동시에 저장하지 못했습니다. 실패한 실행을 만들지 않았습니다.");
     }
-    let Some(saved)=state.store.patch_if("goal",&goal_id,"id",&json!(goal_id),
-        &json!({"jobId":job_id})) else {
-        return error(StatusCode::CONFLICT,"실행 작업은 등록됐지만 목표 상태가 먼저 변경됐습니다.");
-    };
+    let saved=state.store.get("goal",&goal_id).unwrap_or(goal);
+    let queued=state.store.get("job",&job_id).unwrap_or(job);
     state.bus.record("goal",&saved);
+    state.bus.record("job",&queued);
+    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id}));
     Json(saved).into_response()
 }
 
