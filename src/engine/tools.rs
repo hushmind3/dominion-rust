@@ -212,7 +212,7 @@ pub async fn execute(
     let scoped=ToolContext{workspace:&workspace,store:ctx.store,state:ctx.state,
         session_id:ctx.session_id,agent_id:ctx.agent_id,
         tools_enabled:ctx.tools_enabled,tools_execution_enabled:ctx.tools_execution_enabled};
-    dispatch::execute(&scoped,name,args,run_id).await
+    dispatch::execute(&scoped,name,&local_args,run_id).await
 }
 
 #[path = "tools/gateway.rs"]
