@@ -4,6 +4,7 @@ on:
     branches: [dominion-sub1]
     paths:
       - 'scripts/swebench-dominion*.mjs'
+      - 'scripts/lib/swebench-source.mjs'
       - 'docs/SWE-BENCH-RUNNER.md'
       - '.github/workflows/swebench-runner.yml'
   workflow_dispatch:

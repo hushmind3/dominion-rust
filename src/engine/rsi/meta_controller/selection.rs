@@ -20,6 +20,7 @@ pub(crate) fn synthesize(
         let relevant=history.iter().filter(|g|role_touched(g,role)).collect::<Vec<_>>();
         let attempts=relevant.len();
         let adopted=relevant.iter().filter(|g|independent_adoption(g)).count();
+        let assessed=relevant.iter().filter(|g|paired_outcome_observed(g)).count();
         let regressions=relevant.iter().filter(|g|
             g["evaluation"]["metrics"]["regressions"].as_u64().unwrap_or(0)>0).count();
         let fruitless=relevant.iter().filter(|g|
@@ -31,8 +32,10 @@ pub(crate) fn synthesize(
             meta_source_changed(g) && next_generation_productivity(history,g)>0)
             .count();
         let failure_posterior=failure_distribution(&relevant);
-        let probability=(adopted as f64+1.0)/(attempts as f64+2.0);
-        let epistemic=(probability*(1.0-probability)/(attempts as f64+3.0)).sqrt();
+        // Do not learn the quality posterior from incomplete/no-candidate
+        // generations. Keep them in feasibility penalties and exploration cost.
+        let probability=(adopted as f64+1.0)/(assessed as f64+2.0);
+        let epistemic=(probability*(1.0-probability)/(assessed as f64+3.0)).sqrt();
         let coverage=if target["verifiedRedesigns"].as_u64().unwrap_or(0)>0{0.0}else{0.22};
         let inherited_bonus=if inherited_domain==target["domain"].as_str(){0.12}else{0.0};
         let size=target["sourceBytes"].as_u64().unwrap_or(0) as f64;
@@ -58,7 +61,8 @@ pub(crate) fn synthesize(
             "score":score,"predictedAdoptionProbability":probability,
             "uncertainty":epistemic*calibration,
             "failurePosterior":failure_posterior,
-            "attempts":attempts,
+            "attempts":attempts,"pairedAssessedTrials":assessed,
+            "unassessedAttempts":attempts.saturating_sub(assessed),
             "verifiedModelAdoptions":adopted,"regressions":regressions,
             "editsWithoutCandidate":fruitless,
             "productiveDescendantAdoptions":productivity,
@@ -136,6 +140,8 @@ pub(crate) fn synthesize(
         "forecast":{"acceptanceProbability":winner["predictedAdoptionProbability"],
             "uncertainty":winner["uncertainty"],
             "failurePosterior":winner["failurePosterior"],
+            "pairedAssessedTrials":winner["pairedAssessedTrials"],
+            "unassessedAttempts":winner["unassessedAttempts"],
             "calibrationFactor":calibration,
             "qualityProven":false},
         "metaMechanismSource":"src/engine/rsi/meta_controller/selection.rs",

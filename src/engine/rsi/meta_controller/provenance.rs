@@ -30,6 +30,18 @@ pub(super) fn independent_adoption(g:&Value)->bool{
                         sha.len()==64 && sha.bytes().all(|b|b.is_ascii_hexdigit())))))
 }
 
+/// Only a source-grounded, independently adjudicated candidate should enter
+/// the posterior for a subsystem's chance of successful adoption.
+/// Compilation/no-candidate incidents remain execution-feasibility failures,
+/// not paired evidence that the intelligence design has poor quality.
+pub(super) fn paired_outcome_observed(g:&Value)->bool{
+    independent_adoption(g)
+        || g["candidateId"].as_str().is_some_and(|id|!id.is_empty())
+            && !model_design_roles(g).is_empty()
+            && g["evaluation"]["verdict"].as_str().is_some_and(|s|!s.is_empty())
+            && g["evaluation"]["metrics"]["eligible"].is_boolean()
+}
+
 /// Direct evidence that the accepted child rewrote the implementation of
 /// improvement itself, not just a task module or a claimed meta design.
 pub(crate) fn meta_source_changed(g:&Value)->bool{

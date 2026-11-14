@@ -1,5 +1,17 @@
 # DOMINION 자체 Rust 엔진
 
+## 2026-11-15 RSI 예측의 관측 분리
+
+`rsi/meta_controller/provenance.rs::paired_outcome_observed`는 실제
+독립 평가 verdict·eligible receipt가 있거나 성공한 독립 채택 영수증을
+지닌 세대만 채택 확률 추정의 표본으로 인정합니다.
+`rsi/meta_controller/selection.rs::synthesize`는 확인된 paired
+표본만 Beta(1,1) 사전분포와 합산하고, 빌드 실패/소스 후보 없음처럼
+평가되지 못한 세대는 계속 실행 가능성 패널티·탐색 비용에만 반영합니다.
+`pairedAssessedTrials`, `unassessedAttempts`를 후손이 보는 예측에
+제공합니다. 동결 A/B 검증·채택 규칙은 바꾸지 않습니다.
+
+
 ## 2026-11-15 평가 데이터 경계
 
 `scripts/swebench-dominion.mjs::runCase` →

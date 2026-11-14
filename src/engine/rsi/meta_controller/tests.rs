@@ -206,3 +206,54 @@
         generation["accepted"]=json!(false);
         assert!(!meta_source_changed(&generation));
     }
+
+
+    #[test]
+    fn adoption_forecast_uses_only_measured_paired_trials_but_tracks_all_failures(){
+        let target=json!({"role":"harness","domain":"context",
+            "path":"src/engine/jobs.rs","sourceSha256":"a".repeat(64),
+            "sourceBytes":1000});
+        let base="a".repeat(40);
+        let missed=|id:&str|json!({
+            "jobId":id,"generatorCommit":base,"accepted":false,"candidateId":null,
+            "systemDesign":{
+                "source":"model_authored_system_design",
+                "generatorCommit":base,"generationJobId":id,
+                "component":"harness","targetFiles":["src/engine/jobs.rs"]
+            }
+        });
+        let history=(0..5).map(|i|missed(&format!("miss-{i}")))
+            .collect::<Vec<_>>();
+        let unassessed=synthesize(&history,&[target.clone()],&["context"],None);
+        assert_eq!(unassessed["selectionEvidence"]["attempts"],5);
+        assert_eq!(unassessed["selectionEvidence"]["pairedAssessedTrials"],0);
+        assert_eq!(unassessed["selectionEvidence"]["unassessedAttempts"],5);
+        assert_eq!(unassessed["forecast"]["acceptanceProbability"],0.5);
+        let mut tested=missed("paired");
+        tested["candidateId"]=json!("candidate");
+        tested["evaluation"]=json!({
+            "verdict":"paired_rejected","metrics":{"eligible":false}
+        });
+        assert!(paired_outcome_observed(&tested));
+        let mut next=history.clone();
+        next.push(tested);
+        let paired=synthesize(&next,&[target.clone()],&["context"],None);
+        let p=paired["forecast"]["acceptanceProbability"].as_f64().unwrap();
+        assert!((p-1.0/3.0).abs()<1e-9);
+        assert_eq!(paired["selectionEvidence"]["pairedAssessedTrials"],1);
+        let mut adopted=missed("adopted");
+        adopted["candidateOrigin"]=json!("model_driven_detached_worktree");
+        adopted["accepted"]=json!(true);
+        adopted["pairedRevalidated"]=json!(true);
+        adopted["acceptedCommit"]=json!("b".repeat(40));
+        adopted["acceptedSourceHashes"]=json!({
+            "src/engine/jobs.rs":"c".repeat(64)
+        });
+        adopted["evaluation"]=json!({"metrics":{"eligible":true}});
+        assert!(paired_outcome_observed(&adopted));
+        next.push(adopted);
+        let balanced=synthesize(&next,&[target],&["context"],None);
+        assert_eq!(balanced["selectionEvidence"]["pairedAssessedTrials"],2);
+        assert_eq!(balanced["selectionEvidence"]["verifiedModelAdoptions"],1);
+        assert_eq!(balanced["forecast"]["acceptanceProbability"],0.5);
+    }
