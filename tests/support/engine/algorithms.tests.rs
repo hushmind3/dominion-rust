@@ -20,6 +20,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_tool_recency_baseline_requires_explicit_owner_activation() {
+        let (state, dir)=state();
+        seed(&state);
+        for n in 0..10 {
+            let chosen=choose_for_agent(&state,"tool.routing",Some("agent"),
+                Some(&format!("routing-default-{n}"))).unwrap();
+            assert_eq!(chosen["implementation"],"outcome-aware",
+                "diagnostic weak baseline must not reach user tasks");
+        }
+        let baseline=state.store.all("algorithm").into_iter()
+            .find(|item|item["kind"]=="tool.routing"
+                && item["implementation"]=="recency-biased").unwrap();
+        activate(&state,baseline["id"].as_str().unwrap()).unwrap();
+        assert_eq!(choose_for_agent(&state,"tool.routing",
+            Some("fresh-agent"),None).unwrap()["implementation"],"recency-biased",
+            "explicit owner activation remains authoritative");
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn genuine_multistep_goals_use_the_improved_kernel_in_live_selection() {
         let (state,dir)=state();
         let input="설정을 읽고 결과를 저장한 다음 검증해";
