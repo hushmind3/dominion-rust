@@ -460,6 +460,29 @@ mod coverage_tests {
     }
 
     #[test]
+    fn phase_reconstructed_menu_still_respects_hard_schema_budget() {
+        let catalog=vec![
+            schema("workspace_read"),schema("workspace_replace_range"),
+            schema("shell_exec"),schema("workspace_diff"),
+            schema("mcp_enormous_unused_tools")];
+        // A staged RSI edit policy can reconstruct its menu from the entire
+        // catalog after general discovery. The final provider boundary must
+        // budget this phase-specific menu afresh, without inventing tools.
+        let phase=catalog.iter().filter(|tool|
+            matches!(tool_name(tool),"workspace_read"|
+                "workspace_replace_range"|"shell_exec")).cloned().collect::<Vec<_>>();
+        let budget=serde_json::to_string(&phase[1]).unwrap().len();
+        let emitted=budgeted_tool_definitions(
+            phase.clone(),budget,"replace the changed range",
+            &std::collections::HashSet::new());
+        assert!(!emitted.is_empty());
+        assert!(emitted.iter().all(|tool|phase.contains(tool)));
+        let encoded=emitted.iter()
+            .map(|tool|serde_json::to_string(tool).unwrap().len()).sum::<usize>();
+        assert!(encoded<=budget,"post-phase menu exceeded byte ceiling");
+    }
+
+    #[test]
     fn noncoding_budgets_keep_existing_relevance_ranking() {
         let offered=vec![schema("weather_search"),schema("workspace_write")];
         let allowance=serde_json::to_string(&offered[0]).unwrap().len();
