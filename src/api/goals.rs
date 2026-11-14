@@ -231,7 +231,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
 pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
     match crate::engine::goal_git::changes(&state,&id).await {
         Ok(result)=>Json(result).into_response(),
-        Err(reason)=>error(StatusCode::CONFLICT,reason),
+        Err(reason)=>error(StatusCode::CONFLICT,&reason),
     }
 }
 
@@ -239,7 +239,7 @@ pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Respon
 pub async fn discard_changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
     match crate::engine::goal_git::rollback(&state,&id).await{
         Ok(value)=>Json(value).into_response(),
-        Err(reason)=>error(StatusCode::CONFLICT,reason),
+        Err(reason)=>error(StatusCode::CONFLICT,&reason),
     }
 }
 
@@ -255,7 +255,7 @@ pub async fn apply_changes(
     }
     match crate::engine::goal_git::apply(&state,&id,digest).await {
         Ok(result)=>Json(result).into_response(),
-        Err(reason)=>error(StatusCode::CONFLICT,reason),
+        Err(reason)=>error(StatusCode::CONFLICT,&reason),
     }
 }
 
