@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {Bot,Check,ClipboardList,ExternalLink,LoaderCircle,PauseCircle,RefreshCw,Send,ShieldCheck} from 'lucide-react'
+import {Bot,Check,ClipboardList,ExternalLink,LoaderCircle,PauseCircle,RefreshCw,RotateCw,Send,ShieldCheck} from 'lucide-react'
 import {get,post} from '../api'
 import {Button,TextArea} from '../components/Primitives'
 import {Headline,Notice,useRemote} from '../components/UI'
@@ -11,7 +11,7 @@ type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
  planHistory?:{version:number;plan:string;reason:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  artifacts?:Artifact[];gaps?:string[];iterations?:number;maxIterations?:number;
- sessionId?:string;createdAt?:string;isolateWorktree?:boolean;gitBaseline?:{head:string;clean:boolean};
+ sessionId?:string;jobId?:string;resumeCount?:number;createdAt?:string;isolateWorktree?:boolean;gitBaseline?:{head:string;clean:boolean};
  gitWorktree?:{branch?:string;baseCommit?:string;path?:string;rolledBack?:boolean}}
 type GoalDiff={paths?:string[];status:string;unstaged?:string;staged?:string;diff?:string;
  branch?:string;baseCommit?:string;untracked?:string;note?:string;
@@ -126,6 +126,16 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    setNotice('목표 중지를 요청했습니다.');await reload()
   }catch(e){setError((e as Error).message)}finally{setBusy('')}
  }
+ const resume=async(goal:Goal)=>{
+  if(busy||!['needs_review','failed'].includes(goal.status))return
+  if(!window.confirm('이전 실행의 파일 변경·외부 작업 결과를 확인하셨습니까? 결과가 불확실한 도구 호출은 반복하지 않고 완료된 단계 이후부터 이어갑니다.'))return
+  setBusy(goal.id);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(goal.id)+'/resume',{acknowledgeUnknownEffects:true})
+   setNotice('검토한 실행 증거를 승계하여 새 작업을 등록했습니다.')
+   await reload()
+  }catch(e){setError((e as Error).message);await reload()}finally{setBusy('')}
+ }
  const ordered=[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))
  return <div className="mx-auto max-w-[1320px] space-y-5 px-5 py-5 sm:px-7 lg:px-6">
   <Headline eyebrow="AUTONOMOUS AGENT" title="🤖 자율 목표 에이전트"
@@ -152,7 +162,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    <Button variant="ghost" size="sm" onClick={()=>void reload()}><RefreshCw size={14}/> 새로고침</Button></div>
   {ordered.length===0&&<p className="rounded-2xl border border-[#E7E0D5] p-6 text-center text-sm text-[#7C7469]">등록된 자율 목표가 없습니다.</p>}
   <div className="grid gap-4">{ordered.slice(0,30).map(goal=>{
-   const job=jobs.value.find(row=>row.kind==='goal'&&row.input?.goalId===goal.id)
+   const job=jobs.value.find(row=>row.id===goal.jobId)??jobs.value.find(row=>row.kind==='goal'&&row.input?.goalId===goal.id)
    const revision=goal.planRevision||0,applied=goal.appliedPlanRevision||0
    const editor=drafts[goal.id]??goal.ownerPlan?.plan??goal.plan??''
    return <section key={goal.id} className="rounded-2xl border border-[#E7E0D5] bg-white p-5">
@@ -170,6 +180,12 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
       {goal.gitWorktree?.branch&&' · '+goal.gitWorktree.branch}
       {goal.gitWorktree?.rolledBack?' · 폐기 완료':''}
      </p>}
+    {['failed','needs_review'].includes(goal.status)&&<div className="mt-3 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3">
+     <p className="mb-2 text-xs text-[#6F675D]">이전 실행의 변경·도구 결과를 검토한 뒤 중단 지점 이후부터 이어갈 수 있습니다. 불확실한 외부 작업은 재실행하지 않습니다.</p>
+     <Button size="sm" variant="secondary" disabled={busy!==''} onClick={()=>void resume(goal)}>
+      <RotateCw size={14}/> 검토 후 이어가기 {goal.resumeCount?('· 이전 재개 '+goal.resumeCount+'회'):''}
+     </Button>
+    </div>}
     {goal.gaps&&goal.gaps.length>0&&<details className="mt-3 rounded-xl bg-[#FFF7F1] p-3 text-xs">
      <summary className="cursor-pointer font-semibold">검토·수정이 필요한 항목 ({goal.gaps.length})</summary>
      <ul className="mt-2 list-disc space-y-1 pl-5">{goal.gaps.slice(0,12).map((gap,index)=><li key={index}>{gap}</li>)}</ul>
