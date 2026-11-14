@@ -22,6 +22,56 @@ fn fixture(status:&str,in_flight:bool)->(AppState,PathBuf){
     (state,dir)
 }
 #[tokio::test]
+async fn goal_creation_persists_exactly_one_runnable_job_with_its_identity(){
+    let (state,dir)=fixture("needs_review",false);
+    let goal_count=state.store.count("goal");
+    let job_count=state.store.count("job");
+    let response=create_goal(State(state.clone()),Json(json!({
+        "goal":"Write and verify an actual artifact",
+        "executor":{"providerId":"test","model":"mock"},
+        "maxIterations":4
+    }))).await;
+    assert_eq!(response.status(),StatusCode::OK);
+    assert_eq!(state.store.count("goal"),goal_count+1);
+    assert_eq!(state.store.count("job"),job_count+1);
+    let saved=state.store.all("goal").into_iter()
+        .find(|row|row["goal"]=="Write and verify an actual artifact").unwrap();
+    let id=saved["id"].as_str().unwrap();
+    let job_id=saved["jobId"].as_str().unwrap();
+    let job=state.store.get("job",job_id).unwrap();
+    assert_eq!(job["status"],"queued");
+    assert_eq!(job["kind"],"goal");
+    assert_eq!(job["input"]["goalId"],id);
+    assert_eq!(job["attempts"],0);
+    assert!(job["queuedAt"].as_str().is_some());
+    drop(state);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn queue_write_failure_rolls_back_goal_in_same_transaction(){
+    let (state,dir)=fixture("needs_review",false);
+    let initial_goals=state.store.count("goal");
+    let initial_jobs=state.store.count("job");
+    // Deliberately fail only the job insert. Goal INSERT succeeds first, and
+    // must still be rolled back when the same transaction is aborted.
+    let db=rusqlite::Connection::open(state.config.db_path()).unwrap();
+    db.execute_batch("CREATE TRIGGER deny_goal_job_enqueue
+        BEFORE INSERT ON records
+        WHEN NEW.kind='job'
+        BEGIN SELECT RAISE(ABORT,'injected job write failure'); END;").unwrap();
+    let response=create_goal(State(state.clone()),Json(json!({
+        "goal":"This goal must never appear without its executable job"
+    }))).await;
+    assert_eq!(response.status(),StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(state.store.count("goal"),initial_goals);
+    assert_eq!(state.store.count("job"),initial_jobs);
+    db.execute_batch("DROP TRIGGER deny_goal_job_enqueue;").unwrap();
+    drop(db);drop(state);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn incomplete_side_effect_requires_owner_acknowledgement(){
     let (state,dir)=fixture("needs_review",true);
     let response=resume_goal(State(state.clone()),Path("g".into()),
