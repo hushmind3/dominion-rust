@@ -95,6 +95,12 @@ impl DominionClient {
         Ok(response.json::<T>().await?)
     }
 
+    /// Discover native harness capabilities without triggering any agent work.
+    /// Consumers may gate optional features by apiVersion and capabilities.
+    pub async fn sdk_info(&self) -> Result<Value> {
+        self.json(Method::GET, &["sdk", "info"], None).await
+    }
+
     pub(crate) async fn open_chat_stream(&self, body: ChatRequest) -> Result<Response> {
         let req = self.request(true, Method::POST, self.api_url(&["chat"])?).json(&body);
         let response = Self::checked_response(req.send().await?).await?;
