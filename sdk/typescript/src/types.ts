@@ -27,6 +27,8 @@ export interface GoalCreate {
   reviewer?: ModelSelection;
   planner?: ModelSelection;
   isolateWorktree?: boolean;
+  /** Require a real post-edit test/build receipt before marking complete. */
+  requireTests?: boolean;
   tokenBudget?: number;
   maxIterations?: number;
   maxReplans?: number;
