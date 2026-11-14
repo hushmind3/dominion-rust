@@ -313,6 +313,23 @@ def official_score(report: dict, expected_instances: set[str]) -> dict:
         raise ValueError("Official judge resolved IDs differ from submitted tasks")
     if report.get("resolved_instances") != len(resolved):
         raise ValueError("Official report count disagrees with resolved evidence")
+    expected_count = len(expected_instances)
+    if (report.get("submitted_instances") != len(submitted)
+            or report.get("total_instances") != expected_count):
+        raise ValueError("Official grader count or cohort size disagrees")
+    groups = {}
+    for name in ("completed", "unresolved", "empty_patch", "error"):
+        ids = report.get(name + "_ids")
+        count = report.get(name + "_instances")
+        if not isinstance(ids, list) or len(set(ids)) != len(ids):
+            raise ValueError(f"Official {name} evidence is absent or duplicated")
+        if count != len(ids) or not set(ids).issubset(expected_instances):
+            raise ValueError(f"Official {name} count or cohort disagrees")
+        groups[name] = set(ids)
+    if (not set(resolved).issubset(groups["completed"])
+            or set(resolved) & (groups["unresolved"] | groups["empty_patch"] | groups["error"])
+            or groups["empty_patch"] & groups["completed"]):
+        raise ValueError("Official grader evidence has contradictory outcomes")
     return {
         "officialResolved": len(resolved),
         "officialDenominator": len(expected_instances),
@@ -321,6 +338,36 @@ def official_score(report: dict, expected_instances: set[str]) -> dict:
         "officialResolvedIds": sorted(resolved),
         "officialReportSchema": 2,
     }
+
+
+def official_report_paths(output: Path, run_id: str, model_name: str) -> list[Path]:
+    """Two verified SWE-bench official layouts; never discover arbitrary JSON."""
+    return [
+        output / "logs" / "evaluation" / run_id / "results.json",
+        output / (model_name.replace("/", "__") + f".{run_id}.json"),
+    ]
+
+
+def validated_official_report(
+    output: Path, run_id: str, model_name: str, cohort: set[str]
+) -> tuple[Path, dict, dict]:
+    verified = []
+    for path in official_report_paths(output, run_id, model_name):
+        if not path.is_file():
+            continue
+        report = json.loads(path.read_text())
+        score = official_score(report, cohort)
+        verified.append((path, report, score))
+    if not verified:
+        raise ValueError("Official grader produced no recognized run-scoped report")
+    # Never choose one report silently when a partially upgraded environment
+    # contains contradictory results for the same run and submitted cohort.
+    if len(verified) > 1 and any(
+        row[2]["officialResolvedIds"] != verified[0][2]["officialResolvedIds"]
+        for row in verified[1:]
+    ):
+        raise ValueError("Conflicting official result layouts for one run ID")
+    return verified[0]
 
 
 def main() -> int:
@@ -444,20 +491,18 @@ def main() -> int:
         summary["officialRunId"] = run_id
         done = subprocess.run(command,cwd=args.output,check=False)
         summary["officialExitCode"] = done.returncode
-        # The official SWE-bench evaluator documents exactly this run-scoped
-        # summary path. Never accept a different, unverified JSON location as
-        # evidence of an independently graded result.
-        report = args.output / "logs" / "evaluation" / run_id / "results.json"
-        if done.returncode == 0 and report.is_file():
+        if done.returncode == 0:
             try:
-                official = json.loads(report.read_text())
-                score = official_score(official, {p["instance_id"] for p in preds})
+                report_path, official, score = validated_official_report(
+                    args.output, run_id, args.model_name,
+                    {p["instance_id"] for p in preds})
                 summary.update(score)
                 summary["officialEvaluated"] = True
                 summary["officialReport"] = official
-                summary["officialReportPath"] = str(report)
-            except (ValueError, KeyError, json.JSONDecodeError) as exc:
-                summary["officialError"] = ("Official grader result did not validate: " + str(exc))
+                summary["officialReportPath"] = str(report_path)
+            except (ValueError, KeyError, json.JSONDecodeError, OSError) as exc:
+                summary["officialError"] = (
+                    "Official grader result did not validate: " + str(exc))
         else:
             summary["officialError"] = "Docker-based evaluator failed; no resolved score claimed"
     (args.output/"summary.json").write_text(
