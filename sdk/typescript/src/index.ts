@@ -12,6 +12,23 @@ export type Approval = JsonObject & {id: string; tool: string; status: string; s
 export type Goal = JsonObject & {id: string; jobId: string; status: string; goal: string}
 export type Job = JsonObject & {id: string; status: string; kind: string}
 export type Tool = JsonObject & {name: string}
+export type MCPServer = JsonObject & {
+  id: string
+  name: string
+  transport: 'http' | 'stdio'
+  enabled?: boolean
+}
+export type MCPServerConfig = {
+  id?: string
+  name: string
+  transport: 'http' | 'stdio'
+  url?: string
+  command?: string
+  args?: string[]
+  enabled?: boolean
+  /** Saved by the Rust vault; never returned in MCP records. */
+  apiKey?: string
+}
 
 export type TurnInput = {
   input: string
@@ -238,6 +255,26 @@ export class DominionSDK {
 
   approvals(signal?: AbortSignal): Promise<Approval[]> {
     return this.get('/api/approvals', signal)
+  }
+
+  /** MCP tools remain executed by the native Rust engine, not this JS process. */
+  mcpServers(signal?: AbortSignal): Promise<MCPServer[]> {
+    return this.get('/api/mcp', signal)
+  }
+
+  discoverMcpTools(signal?: AbortSignal): Promise<Tool[]> {
+    return this.get('/api/mcp/discover', signal)
+  }
+
+  registerMcpServer(config: MCPServerConfig): Promise<MCPServer> {
+    if (!config.name.trim()) throw new Error('MCP server name is required')
+    if (config.transport === 'http' && !config.url) throw new Error('HTTP MCP server URL is required')
+    if (config.transport === 'stdio' && !config.command) throw new Error('Stdio MCP command is required')
+    return this.post('/api/mcp', config)
+  }
+
+  removeMcpServer(id: string): Promise<JsonObject> {
+    return this.request('/api/mcp/' + encodeURIComponent(id), {method: 'DELETE'})
   }
 
   async resolveApproval(id: string, allow: boolean): Promise<JsonObject> {
