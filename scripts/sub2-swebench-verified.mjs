@@ -82,8 +82,22 @@ export function summarize(rows){
       &&rows.some(row=>row.toolLedger.failed>0)
       ?rows.filter(row=>row.toolLedger.failed>0 && row.officialSolved).length
         /rows.filter(row=>row.toolLedger.failed>0).length:null,
+    // This is an observational, conditional success rate; a tool failure
+    // followed by a solved issue does not by itself establish causal repair.
+    officialResolvedAfterReplanRate: rows.length>0
+      && rows.every(row=>typeof row.officialSolved==='boolean')
+      && rows.every(row=>Number.isSafeInteger(row.recoveryEvidence?.replanCount))
+      && rows.every(row=>Number.isSafeInteger(row.toolLedger?.failed))
+      && rows.some(row=>row.recoveryEvidence.replanCount>0 && row.toolLedger.failed>0)
+      ? rows.filter(row=>row.recoveryEvidence.replanCount>0
+          && row.toolLedger.failed>0 && row.officialSolved).length
+        /rows.filter(row=>row.recoveryEvidence.replanCount>0
+          && row.toolLedger.failed>0).length:null,
+    observedReplans: rows.length>0
+      && rows.every(row=>Number.isSafeInteger(row.recoveryEvidence?.replanCount))
+      ? rows.reduce((sum,row)=>sum+row.recoveryEvidence.replanCount,0):null,
     actualBilledKRW:null,
-    note:'Only the official SWE-bench Docker grader can populate officialResolved and officialResolveRate. Native goal completion and nonempty patches are NOT solved tests.'
+    note:'Only the official SWE-bench Docker grader can populate officialResolved and officialResolveRate. Native goal completion and nonempty patches are NOT solved tests. Conditional resolution after failures or replanning is observational, not a causal repair benchmark.'
   };
 }
 /**
@@ -234,7 +248,7 @@ async function runOne(task,index,settings,model){
   const result={instance_id:task.instance_id,repo:task.repo,
     base_commit:task.base_commit,model,startedAt:NOW(),goalId:null,jobId:null,
     goalStatus:'not_started',patchSha256:null,patchBytes:0,usage:null,receipt:null,
-    toolLedger:null,executionCount:null,
+    toolLedger:null,executionCount:null,recoveryEvidence:null,
     error:null,elapsedMs:null,officialSolved:null};
   const began=Date.now();
   let child;
@@ -277,6 +291,17 @@ async function runOne(task,index,settings,model){
       snapshot=await request(base,'/api/goals/'+encodeURIComponent(result.goalId));
     }while(Date.now()<deadline&&!TERMINAL.has(snapshot.status));
     result.goalStatus=TERMINAL.has(snapshot.status)?snapshot.status:'timeout';
+    result.recoveryEvidence={
+      replanCount:Number.isSafeInteger(snapshot.replans)&&snapshot.replans>=0
+        ?snapshot.replans:null,
+      observedDiagnosticEpisodes:Array.isArray(snapshot.diagnosticHistory)
+        ?snapshot.diagnosticHistory.length:null,
+      distinctFailureFingerprints:Array.isArray(snapshot.diagnosticHistory)
+        ?new Set(snapshot.diagnosticHistory.map(x=>x?.fingerprint)
+          .filter(x=>typeof x==='string'&&x.length>0)).size:null,
+      // This record describes controller behavior, NOT official success.
+      source:'persisted_native_goal_diagnostics',
+    };
     if(result.goalStatus==='timeout'){
       try{await request(base,'/api/jobs/'+encodeURIComponent(result.jobId)+'/cancel','POST',{})}
       catch(error){result.error='cancel: '+error.message}
