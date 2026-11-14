@@ -3,6 +3,29 @@
 use crate::engine::{jobs::JobContext, llm};
 use std::time::Duration;
 
+/// Preflight for an owner-declared aggregate token ceiling across planner,
+/// executor and reviewer model calls. All observed provider usage associated
+/// with the goal session is counted, including estimated fallback usage.
+/// Providers can stream output before reporting usage, so this is a
+/// per-model-boundary limit; it cannot reverse already billed tokens.
+pub(crate) fn remaining_goal_tokens(
+    state:&crate::state::AppState,session_id:&str
+)->Option<u64>{
+    let session=state.store.get("session",session_id)?;
+    let goal_id=session["goalId"].as_str()?;
+    let goal=state.store.get("goal",goal_id)?;
+    if !matches!(goal["status"].as_str(),Some("queued"|"running")){return None;}
+    let limit=goal["tokenBudget"].as_u64()?;
+    let observed=state.store.session_usage(session_id)["totalTokens"].as_u64()
+        .unwrap_or(0);
+    Some(limit.saturating_sub(observed))
+}
+pub(crate) fn goal_token_budget_exhausted(
+    state:&crate::state::AppState,session_id:&str
+)->bool{
+    remaining_goal_tokens(state,session_id).is_some_and(|remaining|remaining<256)
+}
+
 #[derive(Clone)]
 pub struct GoalControl {
     context: JobContext,
@@ -48,6 +71,9 @@ impl GoalControl {
     ) -> Result<String, String> {
         if self.is_cancelled() {
             return Err(cancelled());
+        }
+        if goal_token_budget_exhausted(&self.context.state,&self.session_id){
+            return Err("goal_token_budget: 다음 모델 호출에 필요한 토큰 예산이 부족합니다.".into());
         }
         let completion = llm::complete_for_session(&self.context.state, provider, model, system, prompt, &self.session_id);
         tokio::pin!(completion);
@@ -135,6 +161,23 @@ mod tests {
             .unwrap();
         assert!(result.unwrap_err().contains("중단"));
         server.abort();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn aggregate_goal_budget_reads_real_model_usage_and_prevents_next_step(){
+        let (state,dir)=state();
+        state.store.patch_if("goal","g","id",&json!("g"),
+            &json!({"tokenBudget":1000})).unwrap();
+        assert_eq!(remaining_goal_tokens(&state,"s"),Some(1000));
+        state.store.audit("model.usage",json!({
+            "sessionId":"s","promptTokens":700,
+            "completionTokens":60,"totalTokens":760
+        }));
+        assert_eq!(remaining_goal_tokens(&state,"s"),Some(240));
+        assert!(goal_token_budget_exhausted(&state,"s"));
+        state.store.patch_if("goal","g","id",&json!("g"),
+            &json!({"tokenBudget":2000})).unwrap();
+        assert!(!goal_token_budget_exhausted(&state,"s"));
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
