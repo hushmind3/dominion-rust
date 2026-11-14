@@ -7,7 +7,7 @@ use axum::{
 };
 use dominion_sdk::{
     ChatRequest, DominionClient, DominionError, GoalCreate, ModelSelection,
-    SessionCreate, WaitOptions, WatchOptions,
+    RsiEvolutionRequest, RsiSelectionPolicy, SessionCreate, WaitOptions, WatchOptions,
 };
 use futures_util::{stream, StreamExt};
 use serde_json::{json, Value};
@@ -255,4 +255,50 @@ async fn rust_url_and_credential_validation() {
     assert!(DominionClient::new("http://username:password@127.0.0.1").is_err());
     assert!(DominionClient::new("http://127.0.0.1/?token=leak").is_err());
     assert!(DominionClient::new("http://127.0.0.1:4317").is_ok());
+}
+
+
+#[tokio::test]
+async fn rust_rsi_sdk_launches_native_campaign_once_and_watches_without_side_effects() {
+    let start_count=Arc::new(AtomicUsize::new(0));
+    let read_count=Arc::new(AtomicUsize::new(0));
+    let app=Router::new()
+        .route("/api/rsi/start", post(|State(count): State<(Arc<AtomicUsize>,Arc<AtomicUsize>)>,
+            Json(body): Json<Value>| async move {
+            count.0.fetch_add(1,Ordering::SeqCst);
+            assert_eq!(body["providerId"],"native-provider");
+            assert_eq!(body["model"],"model-x");
+            assert_eq!(body["mode"],"continuous");
+            assert_eq!(body["confirmation"],"START_RSI_EVOLUTION");
+            assert_eq!(body["selectionPolicy"],"automatic");
+            assert_eq!(body["limits"]["maxGenerations"],2);
+            Json(json!({"id":"rsi-1","kind":"rsi_evolve","status":"queued"}))
+        }))
+        .route("/api/rsi/campaigns/:id", get(|State(count): State<(Arc<AtomicUsize>,Arc<AtomicUsize>)>,
+            Path(id): Path<String>| async move {
+            assert_eq!(id,"rsi-1");
+            let reads=count.1.fetch_add(1,Ordering::SeqCst);
+            Json(json!({"id":id,"status":if reads==0{"running"}else{"needs_review"},
+                "phase":"evaluation",
+                "recursiveProof":{"closedLoopObserved":false},
+                "capabilityDemonstrated":false}))
+        }))
+        .with_state((start_count.clone(),read_count.clone()));
+    let (base,task)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let job=sdk.start_rsi_evolution(
+        RsiEvolutionRequest::new("native-provider","model-x","improve recovery")
+            .selection_policy(RsiSelectionPolicy::Automatic)
+            .limits(json!({"maxGenerations":2}))
+    ).await.unwrap();
+    assert_eq!(job.id,"rsi-1");
+    let result=sdk.wait_rsi_campaign(&job.id,WaitOptions {
+        timeout:Duration::from_secs(2),
+        poll_interval:Duration::from_millis(10),
+    }).await.unwrap();
+    assert_eq!(result.status,"needs_review");
+    assert_eq!(result.recursive_proof.as_ref().unwrap()["closedLoopObserved"],false);
+    assert_eq!(start_count.load(Ordering::SeqCst),1);
+    assert_eq!(read_count.load(Ordering::SeqCst),2);
+    task.abort();
 }

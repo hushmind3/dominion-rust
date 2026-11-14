@@ -2,7 +2,7 @@ use crate::error::{DominionError, Result};
 use crate::streaming::{ChatStream, EventStream};
 use crate::types::{
     ChatEvent, ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,
-    Session, SessionCreate, WaitOptions, WatchOptions,
+    RsiCampaign, RsiEvolutionRequest, Session, SessionCreate, WaitOptions, WatchOptions,
 };
 use futures_util::StreamExt;
 use reqwest::{header::HeaderValue, Method, Response, Url};
@@ -225,6 +225,61 @@ impl DominionClient {
             tokio::time::sleep(options.poll_interval.max(Duration::from_millis(50))
                 .min(options.timeout - elapsed)).await;
         }
+    }
+
+    /// Explicit potentially paid continuous RSI evolution. Never retry the POST:
+    /// the returned job ID is the durable campaign ID.
+    pub async fn start_rsi_evolution(&self, request: RsiEvolutionRequest) -> Result<Job> {
+        if request.provider_id.trim().is_empty() || request.model.trim().is_empty() {
+            return Err(DominionError::Configuration(
+                "RSI evolution requires an explicit provider and model".into()));
+        }
+        let mut body = serde_json::to_value(request)?;
+        body["mode"] = json!("continuous");
+        body["confirmation"] = json!("START_RSI_EVOLUTION");
+        self.json(Method::POST, &["rsi", "start"], Some(body)).await
+    }
+
+    pub async fn rsi_campaign(&self, id: &str) -> Result<RsiCampaign> {
+        self.json(Method::GET, &["rsi", "campaigns", id], None).await
+    }
+
+    pub async fn rsi_campaigns(&self) -> Result<Vec<RsiCampaign>> {
+        let response: Value = self.json(Method::GET, &["rsi", "campaigns"], None).await?;
+        Ok(serde_json::from_value(response["campaigns"].clone())?)
+    }
+
+    /// Read-only polling does not restart children, replay tool effects, or
+    /// reinterpret an unverified improvement as proven.
+    pub async fn wait_rsi_campaign(
+        &self, id: &str, options: WaitOptions,
+    ) -> Result<RsiCampaign> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let campaign = self.rsi_campaign(id).await?;
+            if campaign.is_terminal() { return Ok(campaign); }
+            let elapsed = started.elapsed();
+            if elapsed >= options.timeout {
+                return Err(DominionError::WaitTimeout {
+                    resource: format!("RSI campaign {id}"),
+                });
+            }
+            tokio::time::sleep(options.poll_interval.max(Duration::from_millis(50))
+                .min(options.timeout - elapsed)).await;
+        }
+    }
+
+    /// A separate operator action. Rust independently revalidates the exact
+    /// selected commit and frozen evaluation receipt before installation.
+    pub async fn apply_rsi_campaign(&self, id: &str, head_commit: &str) -> Result<Job> {
+        if head_commit.len() != 40 || !head_commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(DominionError::Configuration(
+                "RSI application requires the exact 40-character head commit".into()));
+        }
+        self.json(Method::POST, &["rsi", "campaigns", id, "apply"], Some(json!({
+            "confirmation":"APPLY_VERIFIED_CAMPAIGN_TO_SUB",
+            "commit":head_commit
+        }))).await
     }
 
     pub async fn create_session(&self, input: SessionCreate) -> Result<Session> {

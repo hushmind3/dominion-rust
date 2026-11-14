@@ -225,3 +225,76 @@ impl Default for WatchOptions {
         }
     }
 }
+
+
+/// Runs Dominion's own Rust worktree/compiled-descendant RSI coordinator.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RsiSelectionPolicy { Manual, Automatic }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RsiEvolutionRequest {
+    pub request: String,
+    pub provider_id: String,
+    pub model: String,
+    pub selection_policy: RsiSelectionPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_files: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continue_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method_ablation: Option<bool>,
+}
+impl RsiEvolutionRequest {
+    pub fn new(provider_id: impl Into<String>, model: impl Into<String>,
+        request: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(), model: model.into(),
+            request: request.into(), selection_policy: RsiSelectionPolicy::Manual,
+            limits: None, focus_files: None, continue_from: None, method_ablation: None,
+        }
+    }
+    pub fn selection_policy(mut self, policy: RsiSelectionPolicy) -> Self {
+        self.selection_policy = policy;
+        self
+    }
+    pub fn limits(mut self, limits: Value) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+    pub fn focus_files(mut self, paths: Vec<String>) -> Self {
+        self.focus_files = Some(paths);
+        self
+    }
+    pub fn continue_from(mut self, campaign: impl Into<String>) -> Self {
+        self.continue_from = Some(campaign.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RsiCampaign {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub base_commit: Option<String>,
+    #[serde(default)]
+    pub head_commit: Option<String>,
+    #[serde(default)]
+    pub recursive_proof: Option<Value>,
+    #[serde(default)]
+    pub capability_demonstrated: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+impl RsiCampaign {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self.status.as_str(), "completed" | "failed" | "cancelled" | "needs_review")
+    }
+}
