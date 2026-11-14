@@ -48,6 +48,10 @@ use super::*;
         let ctx = crate::engine::jobs::JobContext::new(s.clone(), id.clone());
         let result = video::run(&ctx, &job).await.unwrap();
         assert!(result["bytes"].as_u64().unwrap() > 1000);
+        // Actual FFmpeg-decoded source content, not just MP4 magic bytes.
+        assert_eq!(result["visualSignals"]["status"],"sampled",
+            "generated native movie must be decoded for technical visuals: {result}");
+        assert_eq!(result["visualSignals"]["semanticQualityVerified"],false);
         let data = std::fs::read(video::directory(&s, &id).unwrap().join("output.mp4")).unwrap();
         assert_eq!(&data[4..8], b"ftyp");
         assert!(
