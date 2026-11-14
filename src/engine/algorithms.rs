@@ -1303,7 +1303,10 @@ fn usage_rating(usage: &Value, task_outcome: &str) -> Option<(bool, &'static str
     // force `unrated` even when the surrounding task succeeded or failed.
     if usage["forceUnrated"].as_bool() == Some(true)
         || usage["kind"].as_str() == Some("memory.retrieval")
+        || (usage["kind"] == "tool.routing" && !usage["signal"].is_object())
     {
+        // Merely displaying a routed tool menu cannot earn credit from an
+        // unrelated task completion. Only actual tool results can grade routing.
         return None;
     }
     if usage["signal"].is_object() {
