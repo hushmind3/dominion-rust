@@ -250,3 +250,12 @@ jobs under concurrent SQLite writers; only committed jobs launch.
 `src/db/usage_tree.rs` provides persisted recursive model-use totals
 for root autonomous goals; `goals::run` gates continuation and
 `goals/receipts.rs` records full tree spend and audit completeness.
+
+
+Native tool definitions are implemented in `tools/catalog.rs`, and
+durable sub-agent ownership and admission in `tools/delegation.rs`.
+`tools.rs` is a stable ~8 KB façade rather than a 110+ KB monolith.
+`api/sessions.rs::session_usage` and
+`DominionSdk::goal_usage` expose observed whole-goal model cost,
+including nested agent sessions, without changing independent chat
+session accounting.
