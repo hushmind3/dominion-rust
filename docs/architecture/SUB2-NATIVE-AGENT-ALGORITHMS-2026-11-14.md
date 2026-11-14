@@ -57,3 +57,18 @@ verification::check_acceptance / existing owner review / recorded usage
 ## Next measurable acceptance
 
 Run `scripts/sub2-goal-eval.mjs` in an explicitly isolated benchmark environment with the same Qwen/provider configuration before and after these commits. Record prompt cache/usage as **reported or estimated**, verify actual file byte oracles and job receipts, and compare (a) tasks completed, (b) repeated-read invocations, (c) context errors, (d) input tokens per verified task including failures. Real inference spend must be consented to separately.
+
+## 2026-11-14 · Native-model explicit tool call recovery
+
+The source-level comparison also exposed a concrete small-model failure:
+`src/engine/chat/protocol.rs::parse_text_tool_calls_known` understands native-looking JSON, but `runtime/turn.rs` historically reached that parser only in compatibility mode or special DSML/RSI cases. An otherwise native OpenAI-compatible 4B model may emit a **standalone JSON tool call** as visible text and never write the requested artifact.
+
+Native fix (without any SDK or external inference layer):
+
+1. `runtime/tool_catalog.rs::explicit_native_tool_envelope` differentiates standalone `<tool_call>...</tool_call>`, JSON and a JSON fence from ordinary prose and examples.
+2. `turn.rs` only tries this recovery when there is an **engine acceptance contract**, tools are executable and **at least one actually advertised tool**. It invokes the pre-existing parser with a nonempty exact allowed-tool-name set. Generic chat examples are never executed.
+3. Recovered arguments go through the **same** native authorization, file checks, cancellation and `dispatch_tool_call → execution_operation` evidence path. Text cannot assert a completed task.
+4. If an explicit attempted call cannot be parsed, one bounded model correction is offered with the actual allowed names; a second invalid response fails closed, not indefinite retries.
+5. `tests/e2e.rs::native_mode_repairs_explicit_small_model_json_tool_without_sdk_or_fake_evidence` uses mock SSE model output, but verifies an **actual created file**, one persisted `workspace_write` operation and completion through the native engine. `runtime/harness_tool_selection_tests.rs` covers strict standalone vs explanatory text. It is *not* a real Qwen benchmark.
+
+The compatibility-mode E2E for a model repeatedly requesting unchanged local `workspace_list` now expects two real filesystem tool operations, followed by truthful denials and termination after the fifth redundant request. This replaces the old assertion that a broken loop must make at least eight paid model calls merely to exhaust its budget.
