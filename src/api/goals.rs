@@ -49,6 +49,67 @@ pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) 
     Json(json!({ "ok": true }))
 }
 
+/// Owner-approved restart of an interrupted goal. Never replay a pending
+/// external effect automatically; a fresh durable job starts after review.
+pub async fn resume_goal(
+    State(state):State<AppState>,Path(id):Path<String>,Json(body):Json<Value>,
+)->Response {
+    if body.as_object().is_none_or(|fields|
+            fields.len()!=1 || fields.get("acknowledgeUnknownEffects")!=Some(&json!(true))) {
+        return error(StatusCode::BAD_REQUEST,
+            "이전 실행·외부 변경을 확인한 후 acknowledgeUnknownEffects=true로 재개하세요.");
+    }
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(),Some("needs_review"|"failed")) {
+        return error(StatusCode::CONFLICT,"검토 대기 또는 실패한 목표만 재개할 수 있습니다.");
+    }
+    if state.store.all("job").iter().any(|job|job["kind"]=="goal"
+        && job["input"]["goalId"]==id
+        && matches!(job["status"].as_str(),Some("queued"|"running"))) {
+        return error(StatusCode::CONFLICT,"이전 목표 작업이 아직 실행 중입니다.");
+    }
+    if goal["isolateWorktree"]==true && goal["gitWorktree"].is_object()
+        && (goal["gitWorktree"]["rolledBack"]==true
+            || goal["gitWorktree"]["appliedAt"].is_string()) {
+        return error(StatusCode::CONFLICT,
+            "격리 작업공간이 제거되거나 적용됐습니다. 새 목표를 생성하세요.");
+    }
+    let iterations=goal["iterations"].as_u64().unwrap_or(0);
+    let old_max=goal["maxIterations"].as_u64().unwrap_or(16);
+    let next_max=if old_max<=iterations {old_max.saturating_add(8).min(64)}else{old_max};
+    if next_max<=iterations {
+        return error(StatusCode::CONFLICT,"최대 반복 횟수(64회)에 도달했습니다.");
+    }
+    let next=goal["resumeCount"].as_u64().unwrap_or(0).saturating_add(1);
+    if next>12 {return error(StatusCode::CONFLICT,"수동 재개 한도에 도달했습니다.");}
+    let job_id=format!("goal-job-{id}-resume-{next}");
+    let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
+    history.push(json!({"jobId":job_id,"previousJobId":goal["jobId"],
+        "previousStatus":goal["status"],"startIteration":iterations,
+        "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
+    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"status":"queued","phase":"resume","jobId":job_id,
+            "resumeCount":next,"maxIterations":next_max,"resumeHistory":history,
+            "finishedAt":null,"finalReport":null})) else {
+        return error(StatusCode::CONFLICT,"목표 상태가 변경됐습니다.");
+    };
+    if crate::engine::jobs::enqueue_once(&state,&job_id,"goal",
+        json!({"goalId":id,"resumeAfterReview":true})).is_none() {
+        let _=state.store.patch_if("goal",&id,"jobId",&json!(job_id),
+            &json!({"status":"needs_review","phase":"needs_review"}));
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    }
+    if let Some(session)=saved["sessionId"].as_str() {state.clear_cancel(session);}
+    state.bus.record("goal",&saved);
+    state.store.audit("goal.owner_reviewed_resume",json!({
+        "goalId":id,"jobId":job_id,"previousJobId":goal["jobId"],
+        "startIteration":iterations,
+    }));
+    Json(saved).into_response()
+}
+
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let text = body
         .get("goal")
