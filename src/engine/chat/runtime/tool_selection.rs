@@ -397,14 +397,11 @@ pub(super) fn budgeted_tool_definitions(
             chosen.insert(index);
         }
     }
-    if chosen.is_empty(){
-        // Preserve the legacy fallback for a single oversized schema, but
-        // never silently send multiple schemas beyond the provider allowance.
-        if let Some((index,_))=sizes.iter().enumerate().filter(|(_,size)|**size!=usize::MAX)
-            .min_by_key(|(_,size)|**size) {
-            chosen.insert(index);
-        }
-    }
+    // A provider limit is a real byte ceiling. When no schema can fit,
+    // advertise no tools instead of inventing capacity by sending one
+    // oversized function signature that could reject the entire model turn.
+    // The goal's normal verification gate will then prevent false completion.
+    if chosen.is_empty(){return Vec::new();}
     definitions.into_iter().enumerate()
         .filter_map(|(index,definition)|chosen.contains(&index).then_some(definition))
         .collect()
@@ -452,6 +449,14 @@ mod coverage_tests {
         assert!(selected.iter().all(|row|offered.contains(row)));
         assert!(selected.iter().map(|row|serde_json::to_string(row).unwrap().len())
             .sum::<usize>()<=limit);
+    }
+
+    #[test]
+    fn impossible_budget_never_leaks_an_oversized_schema() {
+        let catalog=vec![schema("workspace_write"),schema("shell_exec")];
+        let selected=budgeted_tool_definitions(
+            catalog,1,"fix code and run tests",&std::collections::HashSet::new());
+        assert!(selected.is_empty());
     }
 
     #[test]
