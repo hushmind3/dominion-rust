@@ -34,6 +34,8 @@ test('connections contains functional tabs, not only renamed menu links',()=>{
  assert.match(connections,/setSection\('channels'\)/)
  assert.match(connections,/setSection\('extensions'\)/)
  assert.match(connections,/setSection\('capabilities'\)/)
+ assert.match(connections,/role="tablist"/)
+ assert.equal((connections.match(/role="tab" aria-selected=/g)||[]).length,3)
  assert.match(connections,/<ExtensionsPage\/>/)
  assert.match(connections,/<CapabilitiesPage navigate=/)
 })
