@@ -112,6 +112,23 @@ mod tests{
         assert_eq!(saved["content"],"완성 보고서");
     }
     #[test]
+    fn operation_lineage_is_loaded_from_sqlite_per_real_session(){
+        let state=state();
+        state.store.put("execution_operation",&json!({
+            "id":"op-1","sessionId":"s-1","runId":"r-1",
+            "tool":"workspace_write","status":"completed","opSeq":1,
+            "result":{"written":true}})).unwrap();
+        state.store.put("execution_operation",&json!({
+            "id":"op-2","sessionId":"other","runId":"r-2",
+            "tool":"workspace_write","status":"completed","opSeq":1,
+            "result":{"written":true}})).unwrap();
+        let observed=state.store.session_execution_operations("s-1").unwrap();
+        assert_eq!(observed.len(),1);
+        assert_eq!(observed[0]["id"],"op-1");
+        assert!(crate::engine::verification::is_action_evidence(&observed[0]));
+    }
+
+    #[test]
     fn tampered_or_oversized_artifact_never_reaches_model(){
         let state=state();
         state.store.put("workflow_artifact",&json!({
