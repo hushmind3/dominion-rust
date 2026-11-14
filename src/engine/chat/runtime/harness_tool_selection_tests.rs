@@ -2,6 +2,7 @@
 use super::*;
 use super::*;
     use serde_json::json;
+    use super::tool_catalog::explicit_native_tool_envelope;
 
     #[test]
     fn native_tool_envelope_requires_explicit_standalone_action_not_prose(){
