@@ -40,6 +40,39 @@ pub(super) fn measure(
     TurnProgress{new_actions,cleared_checks,tool_errors}
 }
 
+/// Material progress is derived from the SHA of actual owner-workspace files,
+/// not from a new tool-call name, path argument or assistant assertion. Rewriting
+/// the same bytes to a different path only counts if it actually created an
+/// observed artifact there.
+pub(super) fn observed_artifact_changes(before:&[Value],after:&[Value])->usize{
+    let hashes=before.iter().filter_map(|row|{
+        let path=row["path"].as_str()?;
+        let sha=row["sha256"].as_str()?;
+        (row["grade"]=="observed_file_bytes"&&sha.len()==64)
+            .then(||(path.to_string(),sha.to_string()))
+    }).collect::<std::collections::HashMap<_,_>>();
+    after.iter().filter(|row|{
+        let Some(path)=row["path"].as_str()else{return false;};
+        let Some(sha)=row["sha256"].as_str()else{return false;};
+        row["grade"]=="observed_file_bytes"&&sha.len()==64
+            &&sha.bytes().all(|byte|byte.is_ascii_hexdigit())
+            &&hashes.get(path).is_none_or(|previous|previous!=sha)
+    }).count()
+}
+
+/// Strict coding tasks cannot reset the stall counter by issuing different
+/// calls that produce no changed file bytes and clear no acceptance checks.
+/// All other goal families retain the existing action-based progress policy.
+pub(super) fn materially_advanced(
+    turn:TurnProgress,require_tests:bool,artifact_changes:usize
+)->bool{
+    if require_tests{
+        turn.cleared_checks>0 || artifact_changes>0
+    }else{
+        turn.advanced()
+    }
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -47,6 +80,26 @@ mod tests{
     fn write(path:&str)->Value{
         json!({"tool":"workspace_write","arguments":{"path":path,"content":"payload"},
             "result":{"success":true}})
+    }
+    #[test]
+    fn strict_coding_progress_requires_real_artifact_change_or_cleared_check(){
+        let sha="a".repeat(64);
+        let row=json!({"path":"src/main.rs","sha256":sha,"grade":"observed_file_bytes"});
+        let baseline=vec![row.clone()];
+        let unchanged=vec![row];
+        assert_eq!(observed_artifact_changes(&baseline,&unchanged),0);
+        let renamed=json!({"path":"src/main.rs","sha256":"b".repeat(64),
+            "grade":"observed_file_bytes"});
+        assert_eq!(observed_artifact_changes(&baseline,&[renamed]),1);
+        let fake=json!({"path":"other.rs","sha256":"c".repeat(64),
+            "grade":"model_claim"});
+        assert_eq!(observed_artifact_changes(&baseline,&[fake]),0);
+        let apparent=TurnProgress{new_actions:3,cleared_checks:0,tool_errors:0};
+        assert!(apparent.advanced());
+        assert!(!materially_advanced(apparent,true,0));
+        assert!(materially_advanced(apparent,true,1));
+        let cleared=TurnProgress{new_actions:0,cleared_checks:1,tool_errors:1};
+        assert!(materially_advanced(cleared,true,0));
     }
     #[test]
     fn fresh_successful_write_resets_stall_but_repeat_does_not(){
