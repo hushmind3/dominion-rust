@@ -12,6 +12,7 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const providers=useRemote<Provider[]>('/api/providers',[])
  const agents=useRemote<Agent[]>('/api/agents',[])
  const jobs=useRemote<any[]>('/api/jobs',[])
+ const artifacts=useRemote<{id:string;workflowId:string;createdAt:string;content:string;usage?:{totalTokens?:number}}[]>('/api/workflow-artifacts',[])
  const channels=useRemote<any[]>('/api/channels',[])
  const runtime=useRemote<any>('/api/model-library/runtime',{status:'idle'})
  const enabledProviders=providers.value.filter(p=>p.enabled)
@@ -53,6 +54,19 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
   <section className="mt-4 rounded-xl border border-[#E7E0D5] bg-white">
    <div className="flex items-center justify-between border-b border-[#F0EAE1] px-4 py-3"><h2 className="text-[13px] font-bold">{t('dashboard.recent')}</h2><Button type="button" onClick={()=>navigate('activity')} className="flex items-center gap-1 text-[11px] font-medium text-[#C96442]">{t('dashboard.recent.all')} <ArrowRight size={13}/></Button></div>
    {recent.length?<div className="divide-y divide-[#F0EAE1]">{recent.map(job=><div key={job.id} className="flex items-center gap-3 px-4 py-3"><Workflow size={15} className="text-[#A79C8E]"/><div className="min-w-0 flex-1"><div className="truncate text-[12px] font-semibold">{job.input?.goal||job.input?.prompt||job.kind||t('dashboard.jobFallback')}</div><div className="mt-1 text-[10px] text-[#9C9388]">{jobKindLabel(job.kind)} · {job.createdAt?formatDateTime(job.createdAt):''}</div></div><StatusPill status={job.status} /></div>)}</div>:<div className="flex h-32 items-center justify-center text-[12px] text-[#9C9388]">{t('dashboard.recent.empty')}</div>}
+  </section>
+  <section className="mt-4 rounded-xl border border-[#E7E0D5] bg-white">
+   <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#F0EAE1] px-4 py-3">
+    <div><h2 className="text-[13px] font-bold">최근 완성한 작업 결과물</h2><p className="text-[11px] text-[#8A8176]">에이전트 협업→워크플로 실행→재사용 가능한 결과</p></div>
+    <Button type="button" onClick={()=>navigate('workflows')} className="text-[11px] font-semibold text-[#C96442]">결과 관리 <ArrowRight size={13}/></Button>
+   </div>
+   {artifacts.value.length?<div className="grid gap-2 p-4 sm:grid-cols-2">
+    {artifacts.value.slice(0,4).map(a=><Button type="button" key={a.id} onClick={()=>navigate('workflows')}
+     className="min-w-0 rounded-lg border border-[#EFE9DF] bg-[#FAF7F1] p-3 text-left hover:border-[#C96442]">
+      <strong className="block truncate text-xs">{a.content.slice(0,84)||'워크플로 결과'}</strong>
+      <span className="mt-1 block text-[11px] text-[#7C7469]">{a.createdAt?.slice(0,10)||''} · 사용량 {a.usage?.totalTokens??0}토큰 · 열기</span>
+     </Button>)}
+   </div>:<p className="px-4 py-4 text-xs text-[#8A8176]">아직 완료한 협업 워크플로 결과가 없습니다. 에이전트를 선택해 조사→검토 워크플로를 시작할 수 있습니다.</p>}
   </section>
   <div className="mt-4"><ExecutionMonitor/></div>
  </PageContainer>
