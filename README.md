@@ -694,3 +694,21 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 - 모의 Provider 통합 검증: 첫 턴이 `WRONG` 파일을 쓴 뒤 실제 실패 피드백을 받고 `EXPECTED`로 복구한 경우만 후속 단계가 진행되도록 회귀 테스트를 추가했습니다. 실모델/실청구액/성공률은 별도로 검증해야 합니다. 외부 SDK 의존성은 추가하지 않았습니다.
 
 [실제 호출도·테스트·참고 문헌 및 한계](docs/architecture/SUB2-ISSUE9-CROSS-MENU-2026-11-14.md) · [서브2 CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)
+
+
+## First-party DOMINION Agent SDK (Sub2 · 2026-11-14)
+
+The source-controlled `sdk/` package (`@dominion/agent-sdk`) exposes native Rust agent
+capabilities to external JavaScript/TypeScript applications without embedding Copilot,
+Codex or another vendor's agent policy. Its actual execution authority is
+`web/src/api.ts::streamChat → sdk/index.mjs::chat.stream → POST /api/chat
+→ src/api/chat.rs::chat → engine::chat::run`. Durable work uses
+`sdk.jobs → /api/jobs → engine::jobs`; autonomous goals use
+`sdk.goals → /api/goals → engine::goals` and their verifier receipts.
+SDK operations do not introduce task-content refusal rules, a second model loop or
+unverified execution claims. Existing server-side tool permissions and owner approvals apply.
+
+`sdk/index.d.mts` provides TypeScript declarations; `sdk/index.test.mjs`
+tests actual HTTP/SSE wire-format invariants with a deterministic mock transport.
+`.github/workflows/ci.yml` runs the SDK tests alongside Rust/frontend validation.
+Run locally with `node --test sdk/index.test.mjs`. See `sdk/README.md`.
