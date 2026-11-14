@@ -253,8 +253,8 @@ mod tests {
             .collect::<Vec<_>>())
     }
 
-    fn insert(state: &AppState, name: &str, scores: [f64; 2]) -> Value {
-        let patch = format!("diff --git a/src/engine/memory.rs b/src/engine/memory.rs\n--- a/src/engine/memory.rs\n+++ b/src/engine/memory.rs\n@@ -1 +1 @@\n-old\n+{name}\n");
+    fn insert_file(state: &AppState, name: &str, scores: [f64; 2], path:&str) -> Value {
+        let patch = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-old\n+{name}\n");
         let mut candidate = rsi::propose(
             state,
             &json!({"target":"algorithm",
@@ -294,28 +294,30 @@ mod tests {
             "evaluation":candidate["evaluation"]})
     }
 
+    fn insert(state:&AppState,name:&str,scores:[f64;2])->Value{
+        insert_file(state,name,scores,"src/engine/memory.rs")
+    }
+
     #[test]
     fn diversity_bins_redistribute_descendant_search_without_overriding_fitness(){
         let (state,root)=state();
-        let left=insert(&state,"redesign-memory",[0.54,0.51]);
-        let right=insert(&state,"redesign-tools",[0.51,0.54]);
-        let left_id=left["candidateId"].as_str().unwrap();
-        let right_id=right["candidateId"].as_str().unwrap();
-        let mut right_candidate=state.store.get("rsi_candidate",right_id).unwrap();
-        // Source provenance and the patch hash are bound by frozen paired
-        // receipts. The feature calculation uses actual path/patch metadata.
-        right_candidate["paths"]=json!(["src/engine/tools.rs"]);
-        assert_ne!(feature_cell(&state.store.get("rsi_candidate",left_id).unwrap()),
-            feature_cell(&right_candidate));
-        let same=feature_cell(&state.store.get("rsi_candidate",left_id).unwrap()).unwrap();
-        assert!(same.contains("memory"));
-        // An actual independent cell is exercised below using a verified
-        // ordinary candidate, not a forged modified receipt.
-        let choices=select(&state,&[left,right],&"a".repeat(40),&plan());
-        assert_eq!(choices["frontierSize"],2);
-        assert!(choices["featureCell"].is_string());
-        assert_eq!(choices["frontierCells"],1);
-        assert_eq!(choices["descendantAttempts"],0);
+        let left=insert_file(&state,"memory-path",[0.54,0.51],
+            "src/engine/memory.rs");
+        let right=insert_file(&state,"tool-path",[0.51,0.54],
+            "src/engine/tools.rs");
+        let mut history=vec![left,right];
+        let first=select(&state,&history,&"a".repeat(40),&plan());
+        assert_eq!(first["frontierSize"],2);
+        assert_eq!(first["frontierCells"],2);
+        assert!(first["featureCell"].is_string());
+        assert_eq!(first["descendantAttempts"],0);
+        assert_eq!(first["featureCellDescendantAttempts"],0);
+        history.push(json!({"jobId":"one-executed-child",
+            "inheritedCandidateId":first["candidateId"]}));
+        let second=select(&state,&history,&"a".repeat(40),&plan());
+        assert_ne!(first["featureCell"],second["featureCell"]);
+        assert_ne!(first["candidateId"],second["candidateId"]);
+        assert_eq!(second["featureCellDescendantAttempts"],0);
         let _=std::fs::remove_dir_all(root);
     }
 
