@@ -157,6 +157,24 @@ def execution_metrics(base: str, token: str | None, goal: dict) -> dict:
     return metrics
 
 
+def validated_patch(payload: dict, expected_base: str) -> str:
+    if payload.get("source") != "isolated_git_binary_diff_after_terminal_goal_v1":
+        raise ValueError("Expected exact isolated Git worktree evidence")
+    if payload.get("complete") is not True or payload.get("baseCommit") != expected_base:
+        raise ValueError("Patch origin or completeness mismatch")
+    if payload.get("untrackedFiles") != 0:
+        raise ValueError("Missing untracked files from patch")
+    patch = payload.get("modelPatch")
+    if not isinstance(patch, str):
+        raise ValueError("Exact modelPatch must be a string")
+    raw = patch.encode("utf-8")
+    if len(raw) != payload.get("bytes"):
+        raise ValueError("Patch byte count differs from original")
+    if hashlib.sha256(raw).hexdigest() != payload.get("sha256"):
+        raise ValueError("Patch SHA does not match original source")
+    return patch
+
+
 def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
     ident = str(row["instance_id"])
     safe = ident.replace("/", "_")
@@ -196,11 +214,7 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
         if status in TERMINAL:
             try:
                 result = api(base, f"/api/goals/{goal_id}/patch", token)
-                if result.get("complete") is not True or result.get("baseCommit") != original:
-                    raise RuntimeError("Patch origin or completeness mismatch")
-                patch = result["modelPatch"]
-                if hashlib.sha256(patch.encode("utf-8")).hexdigest() != result["sha256"]:
-                    raise RuntimeError("Patch SHA does not match actual exported source")
+                patch = validated_patch(result, original)
             except (RuntimeError, KeyError, ValueError) as exc:
                 error = "patch_export: " + str(exc)
         metrics = execution_metrics(base, token, goal)
