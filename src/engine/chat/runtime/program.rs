@@ -16,6 +16,44 @@ fn program_tool_settled(node:&Value,result:&Value)->bool{
     tool_succeeded(result) || node["onFailure"] == "continue"
 }
 
+/// A failed operation can deliberately feed a typed recovery branch.
+/// Only the next substantive node may handle it, and its predicate must
+/// reference the specific saved observation. Later unrelated branches never
+/// swallow failed writes, and unknown predicates still pause independently.
+fn predicate_reads_observation(predicate: &Value, observation: &str) -> bool {
+    match predicate {
+        Value::Object(fields) => fields.get("from").and_then(Value::as_str) == Some(observation)
+            || fields.values().any(|part| predicate_reads_observation(part, observation)),
+        Value::Array(items) => items.iter().any(|part| predicate_reads_observation(part, observation)),
+        _ => false,
+    }
+}
+
+fn next_recovery_branch<'a>(nodes: &'a [Value], index: usize, observation: &str) -> Option<&'a Value> {
+    nodes.get(index + 1..)?.iter().find(|node| node["type"] != "observe")
+        .filter(|node| node["type"] == "branch"
+            && node["then"].as_array().is_some()
+            && node["else"].as_array().is_some()
+            && predicate_reads_observation(&node["predicate"], observation))
+}
+
+/// Record a failed tool as handled by an upcoming conditional rather than
+/// pretending it succeeded or blindly retrying that external operation.
+fn settle_conditional_failure(
+    nodes: &[Value], index: usize, node: &Value, result: &Value,
+    checkpoint: &mut Value,
+) -> bool {
+    let node_id = node["id"].as_str().unwrap_or("");
+    let result_key = node["saveAs"].as_str().filter(|key| !key.is_empty()).unwrap_or(node_id);
+    let Some(branch) = next_recovery_branch(nodes,index,result_key) else { return false; };
+    let mut handled = checkpoint["handledToolFailures"].as_array().cloned().unwrap_or_default();
+    handled.push(json!({"nodeId":node_id,"observation":result_key,"result":result,
+        "handler":branch["id"]}));
+    checkpoint["handledToolFailures"] = json!(handled);
+    mark_program_completed(checkpoint,node_id);
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_program_tool(
     state: &AppState,
@@ -240,7 +278,9 @@ fn execute_nodes<'a>(
                     .await?;
                     let failed = !tool_succeeded(&result);
                     resolved["last"] = result.clone();
-                    if failed && node["onFailure"].as_str() != Some("continue") {
+                    let recovered_by_branch = failed && settle_conditional_failure(
+                        &nodes,index,node,&result,&mut checkpoint);
+                    if failed && !program_tool_settled(node,&result) && !recovered_by_branch {
                         let failure = json!({
                             "nodeId": node_id,
                             "tool": node["tool"],
@@ -609,7 +649,9 @@ fn execute_nodes<'a>(
                     .await?;
                     let failed = !tool_succeeded(&result);
                     resolved["last"] = result.clone();
-                    if failed && node["onFailure"].as_str() != Some("continue") {
+                    let recovered_by_branch = failed && settle_conditional_failure(
+                        &nodes,index,node,&result,&mut checkpoint);
+                    if failed && !program_tool_settled(node,&result) && !recovered_by_branch {
                         let failure = json!({
                             "nodeId": node_id,
                             "tool": "delegate_task",
@@ -1004,6 +1046,36 @@ pub(super) async fn run_program(
 #[cfg(test)]
 mod program_effect_receipt_tests {
     use super::*;
+    #[test]
+    fn failed_tool_can_feed_immediately_following_conditional_fallback() {
+        let nodes=json!([
+            {"type":"call_tool","id":"try","saveAs":"try","tool":"shell_exec",
+                "inputs":{"command":"exit 7"}},
+            {"type":"branch","id":"recover",
+                "predicate":{"type":"equals","from":"try","path":"/exitCode","value":0},
+                "then":[{"type":"observe","id":"unused"}],
+                "else":[{"type":"call_tool","id":"fallback","tool":"workspace_write",
+                    "inputs":{"path":"fallback.txt","content":"FALLBACK"}}]}
+        ]);
+        let items=nodes.as_array().unwrap();
+        assert!(next_recovery_branch(items,0,"try").is_some());
+        assert!(next_recovery_branch(items,0,"unrelated").is_none());
+        let mut checkpoint=crate::engine::program::new_checkpoint(&json!({
+            "revision":"fallback","nodes":items}));
+        let failed=json!({"exitCode":7});
+        assert!(!tool_succeeded(&failed));
+        assert!(settle_conditional_failure(items,0,&items[0],&failed,&mut checkpoint));
+        assert!(crate::engine::program::checkpoint_skip_completed(&checkpoint,"try"));
+        assert_eq!(checkpoint["handledToolFailures"][0]["handler"],"recover");
+        assert_eq!(checkpoint["handledToolFailures"][0]["result"]["exitCode"],7);
+        let intervening=json!({"id":"write","type":"call_tool"});
+        assert!(next_recovery_branch(&[items[0].clone(),intervening,items[1].clone()],0,"try").is_none());
+        assert!(predicate_reads_observation(&json!({
+            "type":"not","predicate":items[1]["predicate"]}),"try"));
+        assert!(!predicate_reads_observation(&json!({
+            "type":"equals","from":"other","value":"try"}),"try"));
+    }
+
     #[test]
     fn failed_tool_operation_remains_pending_for_repair_instead_of_being_sealed() {
         let fail=json!({"error":"tool executable missing"});
