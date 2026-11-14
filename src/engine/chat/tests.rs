@@ -63,11 +63,13 @@ async fn real_model_cannot_execute_a_tool_excluded_from_its_round_manifest(){
     let (tx,_rx)=tokio::sync::mpsc::unbounded_channel();
     let result=tokio::time::timeout(Duration::from_secs(8),
         run_turn(&state,&request,&tx)).await.unwrap();
-    assert!(result.is_ok(),"turn should gracefully recover from forbidden tool: {result:?}");
+    assert!(result.as_ref().is_err_and(|error|
+        error.contains("도구가 비활성인 대화")),"disabled tools must hard-fail before any dispatch: {result:?}");
     assert!(!state.config.workspace.join("should-not-exist.txt").exists());
     assert!(state.store.all("execution_operation").iter().all(|operation|
         operation["tool"]!="workspace_write"));
-    assert!(calls.load(Ordering::SeqCst)>=2);
+    assert_eq!(calls.load(Ordering::SeqCst),1,
+        "the harness must not retry a tool-capability violation");
     server.abort();
     std::fs::remove_dir_all(&state.config.data_dir).unwrap();
 }
