@@ -164,6 +164,66 @@ pub(crate) async fn discard(state:&AppState,goal:&Value)->Result<Value,String>{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn goal_tools_edit_only_isolated_checkout_and_discard_keeps_original(){
+        use crate::{config::Config,db::Store,vault::Vault};
+        let base=std::env::temp_dir().join(format!("goal-scope-{}",uuid::Uuid::new_v4()));
+        let source=base.join("source");
+        let data=base.join("data");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        let git_ok=|arguments:&[&str]|{
+            let out=std::process::Command::new("git").arg("-C").arg(&source)
+                .args(arguments).output().unwrap();
+            assert!(out.status.success(),"{arguments:?}: {}",
+                String::from_utf8_lossy(&out.stderr));
+        };
+        git_ok(&["init","-q"]);
+        std::fs::write(source.join("module.rs"),"fn source() {}\\n").unwrap();
+        git_ok(&["add","module.rs"]);
+        git_ok(&["-c","user.name=Goal Test","-c","user.email=goal@test.invalid",
+            "commit","-qm","initial"]);
+        let cfg=Config{port:0,data_dir:data,web_dir:base.join("web"),workspace:source.clone()};
+        let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
+            Vault::open(&cfg.key_path()));
+        let id=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":id,"status":"queued",
+            "isolateWorktree":true})).unwrap();
+        let info=prepare(&state,&id).await.unwrap();
+        let session_id="goal-session";
+        state.store.put("session",&json!({"id":session_id,"goalId":id,
+            "goalWorktree":info["path"]})).unwrap();
+        let work=workspace_for_session(&state,session_id).unwrap();
+        assert_ne!(work,source.canonicalize().unwrap());
+        let ctx=crate::engine::tools::ToolContext{
+            workspace:&state.config.workspace,store:&state.store,state:&state,
+            session_id,agent_id:None,tools_enabled:true,tools_execution_enabled:true,
+        };
+        let result=crate::engine::tools::execute(&ctx,"workspace_write",
+            &json!({"path":"module.rs","content":"fn isolated() {}\\n"}),"fixture-run").await.unwrap();
+        assert_eq!(result["written"],true);
+        assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
+            "fn source() {}\\n");
+        assert!(std::fs::read_to_string(work.join("module.rs")).unwrap()
+            .contains("isolated"));
+        assert!(crate::engine::tools::execute(&ctx,"file_write",
+            &json!({"path":source.join("module.rs").to_str().unwrap(),
+                "content":"corruption"}),"fixture-run").await.is_err());
+        let goal=state.store.get("goal",&id).unwrap();
+        assert!(changes(&state,&goal).await.unwrap()["diff"].as_str().unwrap()
+            .contains("fn isolated"));
+        state.store.patch_if("goal",&id,"status",&json!("queued"),
+            &json!({"status":"completed"})).unwrap();
+        let goal=state.store.get("goal",&id).unwrap();
+        assert_eq!(discard(&state,&goal).await.unwrap()["originalUntouched"],true);
+        assert!(!work.exists());
+        assert!(workspace_for_session(&state,session_id).is_err());
+        assert_eq!(std::fs::read_to_string(source.join("module.rs")).unwrap(),
+            "fn source() {}\\n");
+        drop(state);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn refuses_invalid_ids_without_touching_files(){
         let root=std::env::temp_dir();
