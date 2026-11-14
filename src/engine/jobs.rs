@@ -496,6 +496,7 @@ async fn run_job(state: AppState, job: Value) {
         "workflow" => workflows::run(&context, &job).await,
         "room" | "meeting" => rooms::run(&context, &job).await,
         "goal" => goals::run(&context, &job).await,
+        "sdk_local" => crate::engine::sdk_local::run(&context,&job).await,
         "prompt" => run_prompt(&context, &job).await,
         "rsi_compare" => crate::engine::rsi_worktree::compare(&context,&job).await,
         "rsi_evolve" => crate::engine::rsi_evolve::run(&context,&job).await,
