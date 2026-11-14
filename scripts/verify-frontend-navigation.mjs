@@ -78,7 +78,7 @@ test('memory edits are one atomic store transaction including provenance guard',
  const db=read('src/db.rs')
  assert.ok(collections.includes('edit_manual_memory(&id, expected, text)'))
  assert.ok(db.includes('pub fn edit_manual_memory'))
- assert.ok(db.includes('conn.transaction()'))
+ assert.ok(db.includes('TransactionBehavior::Immediate'))
  assert.ok(db.includes('record["source"] != "user"'))
  assert.ok(db.includes('record["status"]'))
  assert.ok(db.includes('"memory.manual_edit"')||db.includes("'memory.manual_edit'"))
