@@ -92,9 +92,11 @@ function locationState(){
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
  // Old extension/capability bookmarks resolve to the matching tab, never home.
- const legacy=name==='extensions'||name==='capabilities'?name:undefined
+ const legacy: 'extensions'|'capabilities'|undefined =
+  name==='extensions'?'extensions':name==='capabilities'?'capabilities':undefined
  const requested=params.get('section')
- const connectionSection=legacy||(requested==='extensions'||requested==='capabilities'?requested:'channels')
+ const connectionSection: 'channels'|'extensions'|'capabilities' =
+  legacy||(requested==='extensions'||requested==='capabilities'?requested:'channels')
  return {page:(legacy?'connections':valid?name:'chat') as PageId,connectionSection,
   session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
