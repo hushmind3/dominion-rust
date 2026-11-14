@@ -1,5 +1,15 @@
 # dominion-rust
 
+## 2026-11-15 · Sub4: typed goal completion watcher
+
+External TypeScript applications can now call
+`DominionGoal.waitForTerminal({signal,after})` to observe an existing native
+Rust goal until a persisted `completed`, `failed`, `cancelled` or
+`needs_review` state. It checks canonical `GET /api/goals/:id` before and
+after goal events, detects replay retention gaps, and never retries goal
+creation, owner commands, execution, tools or approvals. SDK tests cover
+stale event payloads, already-terminal goals and pruned event history.
+
 ## 2026-11-15 · Sub4: room token ceilings and per-exchange metering
 
 `src/engine/rooms.rs` now records one immutable `usageBaselineTokens` and
