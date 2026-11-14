@@ -62,7 +62,7 @@ export function ConnectionsPage(){
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
  const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
-  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>연결 · 채널</Button>
+  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
   <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
   <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
  </div>;
