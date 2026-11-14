@@ -35,8 +35,8 @@ pub(super) fn measure(
     let before=action_signatures(evidence_before);
     let after=action_signatures(evidence_after);
     let new_actions=after.difference(&before).count();
-    let remaining=gaps_after.iter().collect::<HashSet<_>>();
-    let cleared_checks=gaps_before.iter().filter(|gap|!remaining.contains(gap)).count();
+    let remaining=gaps_after.iter().map(String::as_str).collect::<HashSet<_>>();
+    let cleared_checks=gaps_before.iter().filter(|gap|!remaining.contains(gap.as_str())).count();
     TurnProgress{new_actions,cleared_checks,tool_errors}
 }
 
