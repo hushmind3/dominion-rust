@@ -232,3 +232,36 @@ pub async fn edit_plan(State(state):State<AppState>,Path(id):Path<String>,
 #[cfg(test)]
 #[path = "goals/tests.rs"]
 mod tests;
+
+/// Pending approval items for the owner goal and its bounded descendant
+/// sessions. Never reveal other chat/room sessions through the goal view.
+fn belongs_to_goal(state:&AppState,child:&str,root:&str)->bool{
+    let mut current=child.to_string();
+    let mut visited=std::collections::HashSet::new();
+    for _ in 0..6{
+        if current==root{return true;}
+        if !visited.insert(current.clone()){return false;}
+        let Some(session)=state.store.get("session",&current)else{return false;};
+        let Some(parent)=session["parentSessionId"].as_str() else{return false;};
+        current=parent.to_string();
+    }
+    false
+}
+pub async fn goal_approvals(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    let Some(root)=goal["sessionId"].as_str().filter(|s|!s.is_empty())else{
+        return Json(json!([])).into_response();
+    };
+    let pending=state.store.all("approval").into_iter()
+        .filter(|record|matches!(record["status"].as_str(),Some("pending"|"interrupted")))
+        .filter(|record|record["sessionId"].as_str().is_some_and(|id|
+            belongs_to_goal(&state,id,root)))
+        .map(|approval|json!({
+            "id":approval["id"],"tool":approval["tool"],"args":approval["args"],
+            "status":approval["status"],"sessionId":approval["sessionId"]
+        }))
+        .take(32).collect::<Vec<_>>();
+    Json(json!(pending)).into_response()
+}

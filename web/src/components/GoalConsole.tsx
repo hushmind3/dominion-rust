@@ -1,6 +1,6 @@
 import {useState} from 'react'
-import {Play,RefreshCw,Square,RotateCcw,FileCode2,FolderTree,CheckCircle2,AlertTriangle} from 'lucide-react'
-import {get,post} from '../api'
+import {Play,RefreshCw,Square,RotateCcw,FileCode2,FolderTree,CheckCircle2,AlertTriangle,ShieldCheck} from 'lucide-react'
+import {get,post,resolveApproval} from '../api'
 import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {Panel,useRemote} from './UI'
 
@@ -8,11 +8,12 @@ type Agent={id:string;name:string;providerId?:string;model?:string}
 type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
  id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;finalSummary?:string;
- jobId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
+ jobId?:string;sessionId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
  resumeHistory?:{at:string;resolutionNote:string}[];
 }
+type GoalApproval={id:string;tool:string;args?:unknown;status:string;sessionId?:string}
 const running=(status:string)=>['queued','running'].includes(status)
 
 export function GoalConsole(){
@@ -28,9 +29,12 @@ export function GoalConsole(){
  const [reviewNote,setReviewNote]=useState('')
  const [resumeTokens,setResumeTokens]=useState(80000)
  const [editingPlan,setEditingPlan]=useState(false),[planDraft,setPlanDraft]=useState('')
+ const [approvalBusy,setApprovalBusy]=useState('')
  const [acknowledged,setAcknowledged]=useState(false)
  const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
  const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
+ const approvals=useRemote<GoalApproval[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/approvals':null,[])
+ const pendingApprovals=approvals.value.filter(item=>item.status==='pending')
  const available=agents.value.filter(a=>a.providerId&&a.model)
  const executor=available.find(a=>a.id===agentId)?.id||available[0]?.id||''
  const reload=async()=>{await goals.reload()}
@@ -63,6 +67,11 @@ export function GoalConsole(){
    setNotice('외부 작업 확인 기록을 보존하고 새 복구 작업을 등록했습니다. 작업 ID: '+response.jobId)
    setAcknowledged(false);setReviewNote('');setDiff(null);await reload()
   }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
+ const approve=async(id:string,allow:boolean)=>{
+  if(approvalBusy)return;setApprovalBusy(id);setError('')
+  try{await resolveApproval(id,allow);await approvals.reload();await reload()}
+  catch(e){setError((e as Error).message)}finally{setApprovalBusy('')}
  }
  const savePlan=async()=>{
   if(!chosen||busy||!planDraft.trim())return
@@ -121,6 +130,14 @@ export function GoalConsole(){
      {running(chosen.status)&&<Button variant="danger" size="sm" onClick={()=>void stop()} disabled={busy}><Square size={13}/> 중단</Button>}
      <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy}><FileCode2 size={13}/> Diff 확인</Button>
     </div>
+     {pendingApprovals.length>0&&<div className="space-y-2 rounded-xl border border-[#EED9CC] bg-[#FFF9F5] p-3">
+      <strong className="flex items-center gap-2 text-xs text-[#3A342D]"><ShieldCheck size={15}/> 실행 승인 대기 {pendingApprovals.length}건</strong>
+      {pendingApprovals.map(item=><div key={item.id} className="rounded-lg border border-[#E7E0D5] bg-white p-3 text-xs">
+       <strong>{item.tool}</strong><details className="mt-2"><summary className="cursor-pointer">실제 도구 인자 확인</summary>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(item.args,null,2)}</pre>
+       </details><div className="mt-2 flex gap-2"><Button size="sm" variant="ghost" disabled={Boolean(approvalBusy)} onClick={()=>void approve(item.id,false)}>거절</Button>
+        <Button size="sm" variant="primary" disabled={Boolean(approvalBusy)} onClick={()=>void approve(item.id,true)}>이번 실행 허용</Button></div>
+      </div>)}</div>}
      {chosen.plan&&<details open><summary className="cursor-pointer text-xs font-semibold">실행 계획</summary>
        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-[#FAF7F1] p-3 text-xs">{chosen.plan}</pre>
        {['queued','failed','needs_review','cancelled'].includes(chosen.status)&&<div className="mt-2 space-y-2">
