@@ -254,6 +254,23 @@ pub(super) async fn run_turn_body(
                 |"workspace_write"|"rsi_system_plan"|"rsi_method_propose"));
         }
     }
+    // Goal/worker source edits need a short, reliable tool protocol on
+    // smaller local models. Curate from the ALREADY-AUTHORIZED definitions,
+    // never replace the engine or grant additional tools/approvals.
+    if request.verification_owner.as_deref()==Some("parent")
+        && session["rsiRun"]!=true && !is_room
+        && request.tools_enabled && request.tools_execution_enabled {
+        let before=tool_definitions.len();
+        tool_definitions=autonomous_code_tool_window(
+            tool_definitions,task_input(&session,&request.input));
+        if tool_definitions.len()!=before {
+            state.store.audit("agent.tool_window",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "catalogCount":before,"selectedCount":tool_definitions.len(),
+                "source":"native_task_aware_coding_protocol"
+            }));
+        }
+    }
     let compiled = if is_room {
         let source = source_message_id.or(reply_to.as_deref()).ok_or("응답할 원문이 없습니다.")?;
         let compiled = super::super::room_context::compile(
@@ -612,7 +629,14 @@ pub(super) async fn run_turn_body(
 
     // Room turns are short conversational beats. A hung free model must not
     // stall the whole room for five minutes; fail over within a minute.
-    let request_timeout = if session["roomId"].is_string() {
+    let request_timeout = if request.verification_owner.as_deref()==Some("parent")
+        && provider.local {
+        // Keep a stalled small local model from consuming an entire 8-minute
+        // coding benchmark in one generation. Normal chat is unchanged.
+        std::env::var("DOMINION_AUTONOMOUS_LOCAL_TIMEOUT_SECS")
+            .ok().and_then(|s|s.parse::<u64>().ok())
+            .unwrap_or(180).clamp(30,300)
+    } else if session["roomId"].is_string() {
         std::env::var("DOMINION_ROOM_TIMEOUT_SECS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -652,6 +676,7 @@ pub(super) async fn run_turn_body(
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced=false;
     let mut rsi_edit_retry=false;
+    let mut autonomous_first_action_retry=false;
     // Keep the generation alive to repair a model-generated Rust syntax error.
     let mut rsi_syntax_repair_pending=false;
 
@@ -1268,6 +1293,7 @@ pub(super) async fn run_turn_body(
         // permission: only names in this round's selected tool contract are
         // passed to the existing Rust policy, approval and audit gateway.
         let explicit_text_call=completion.content.contains("<tool_call>")
+            || completion.content.contains("✿FUNCTION✿:")
             || (completion.content.contains("invoke name=\\\"")
                 && completion.content.contains("parameter name=\\\""))
             || super::super::protocol::single_json_tool_envelope(&completion.content);
@@ -1333,6 +1359,39 @@ pub(super) async fn run_turn_body(
                     id:uuid::Uuid::new_v4().to_string(),name,arguments
                 });
                 completion.content.clear();
+            }
+        }
+
+        if completion.tool_calls.is_empty() && !force_final
+            && request.verification_owner.as_deref()==Some("parent")
+            && session["rsiRun"]!=true && !round_tools.is_empty()
+            && request.tools_enabled && request.tools_execution_enabled {
+            // No successful OR attempted source action means a final prose
+            // answer cannot advance the owner-authored coding contract.
+            // Modern SDK run loops treat a model's no-action termination as
+            // a state transition, not a fabricated successful artifact.
+            // We implement that transition ourselves, without another SDK.
+            let attempted=state.store.all("execution_operation").into_iter().any(|op|
+                op["runId"].as_str()==Some(execution_id));
+            let coding_window=round_tools.iter().any(|definition|
+                tool_name(definition)=="workspace_write");
+            if coding_window && !attempted {
+                if !autonomous_first_action_retry && round+1<max_rounds {
+                    autonomous_first_action_retry=true;
+                    let available=round_tools.iter().map(tool_name)
+                        .filter(|name|!name.is_empty())
+                        .take(8).collect::<Vec<_>>().join(", ");
+                    state.store.audit("agent.no_action_recovery",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"reason":"model_returned_no_executable_action",
+                        "availableTools":available,
+                    }));
+                    messages.push(json!({"role":"user","content":format!(
+                        "Your previous reply made NO real tool call. The task has not started.                          Do not provide a plan or completion claim. In your next reply call                          exactly one available tool to observe a target file, normally                          workspace_read or workspace_list, using a real relative path.                          Available: {available}. If the server emits text instead of native                          calls, output an exact <tool_call>{{\\\"name\\\":\\\"workspace_read\\\",\\\"arguments\\\":{{\\\"path\\\":\\\"relative/path\\\"}}}}</tool_call>                          with the actual target, NOT a placeholder. All execution and                          approvals are controlled by DOMINION."
+                    )}));
+                    continue;
+                }
+                return Err("needs_review: 모델이 2차례 연속 실제 도구 호출 없이 작업 완료를 주장했습니다. 소스 파일은 수정되지 않았습니다.".into());
             }
         }
 
