@@ -12,6 +12,59 @@ const API: &str = "https://api.dev.runwayml.com/v1";
 const API_VERSION: &str = "2024-11-06";
 const MAX_VIDEO_BYTES: usize = 256 * 1024 * 1024;
 
+/// Snapshot of Runway Dev pricing checked on 2026-11-14:
+/// https://dev.runwayml.com/learn/kling-3-0-api
+/// https://dev.runwayml.com/learn/kling-4-0-api
+/// A microcredit is one-millionth of a Runway Dev credit. One credit costs
+/// USD 0.01 before tax. This is a *quote*, not a billing receipt.
+/// 1336 KRW/USD is an explicit 2026-11-13 reference conversion, not live FX.
+const FX_REFERENCE_KRW: u64 = 1336;
+const PRICE_SNAPSHOT_DATE: &str = "2026-11-13";
+
+fn credits_per_second_micro(cfg: &Value, date: chrono::NaiveDate) -> u64 {
+    match model(cfg) {
+        "kling3.0_standard" => if cfg["runwayAudio"] == false { 9_000_000 } else { 13_000_000 },
+        "kling3.0_4k" => 43_000_000,
+        "kling_4" => {
+            // This engine requests 1080p for both text and prior-frame
+            // image-to-video. The promotional 720p rate is NOT applicable.
+            if date <= chrono::NaiveDate::from_ymd_opt(2026,11,30).unwrap() {
+                18_800_000
+            } else {
+                23_500_000
+            }
+        },
+        _ => if cfg["runwayAudio"] == false { 12_000_000 } else { 17_000_000 },
+    }
+}
+
+fn quote_on_date(cfg: &Value, seconds: u64, date: chrono::NaiveDate) -> Result<Value,String> {
+    let m = model(cfg);
+    let clips=if m=="kling_4" {super::kling4::clip_durations(seconds)?} else {clip_durations(seconds)?};
+    let unit=credits_per_second_micro(cfg,date);
+    let total=unit.checked_mul(seconds).ok_or("영상 요금 계산 범위 초과")?;
+    // Ceiling in KRW so the UI never rounds a nonzero quote down to zero.
+    let krw = total.checked_mul(FX_REFERENCE_KRW)
+        .and_then(|amount|amount.checked_add(100_000_000-1))
+        .ok_or("영상 원화 견적 범위 초과")? / 100_000_000;
+    Ok(json!({
+        "provider":"Runway Dev","model":m,
+        "seconds":seconds,"clips":clips.len(),
+        "creditsMicro":total,"creditsPerSecondMicro":unit,
+        "referenceKrw":krw,"referenceFxKrwPerUsd":FX_REFERENCE_KRW,
+        "fxAsOf":"2026-11-13","pricingAsOf":PRICE_SNAPSHOT_DATE,
+        "pricingUrl":"https://dev.runwayml.com/learn/kling-4-0-api",
+        "promotional":m=="kling_4"&&date <= chrono::NaiveDate::from_ymd_opt(2026,11,30).unwrap(),
+        "creditUsdHundredths":1,
+        "type":"estimated-list-price","actualBilledCredits":null,
+        "includesTaxes":false,"includesModelPlanningCalls":false
+    }))
+}
+
+pub(super) fn quote(cfg:&Value, seconds:u64) -> Result<Value,String>{
+    quote_on_date(cfg,seconds,chrono::Utc::now().date_naive())
+}
+
 fn model(cfg: &Value) -> &'static str {
     match cfg["runwayModel"].as_str() {
         Some("kling3.0_standard") => "kling3.0_standard",
@@ -233,6 +286,17 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .ok_or("Runway Dev API 키를 영상 설정에 저장하세요.")?;
     let cfg = &input["config"];
     let chosen_model = model(cfg);
+    // Re-quote immediately before any remote request: a queued job may have
+    // crossed a promotional price boundary since its original acceptance.
+    let paid_quote=quote(cfg,input["duration"].as_u64().unwrap_or(15))?;
+    let accepted_limit=input["maxCreditsMicro"].as_u64()
+        .ok_or("needs_review: 승인된 유료 영상 견적 한도가 누락됐습니다.")?;
+    if paid_quote["creditsMicro"].as_u64().unwrap_or(u64::MAX)>accepted_limit {
+        return Err("needs_review: 영상 요금이 승인한 견적보다 높아졌습니다. 새 견적을 확인해야 합니다.".into());
+    }
+    let cost_per_second=paid_quote["creditsPerSecondMicro"].as_u64()
+        .ok_or("요금 산정에 실패했습니다.")?;
+    let mut attempted_exposure=0_u64;
     let quality_enabled=cfg["runwayQualityGate"].as_bool().unwrap_or(true);
     // Verify ffprobe availability BEFORE any paid remote submission.
     if quality_enabled && super::quality::executable(cfg).is_none() {
@@ -266,7 +330,10 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     // Freeze the complete creative plan before a remote credit is spent.
     // Its exact scene and camera decisions survive a needs_review restart.
     checkpoint_video(ctx,json!({"videoState":{"scenes":scenes,"shotPlans":shot_plans,
-        "inFlight":false,"completedClips":0},
+        "inFlight":false,"completedClips":0,
+        "costQuote":paid_quote,
+        "attemptedExposureCreditsMicro":0,
+        "attemptedSubmissions":0},
         "phase":"storyboard","progress":5}))?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -296,8 +363,20 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
             "image_to_video"
         } else { "text_to_video" };
         let percent = 5 + 75 * index as u64 / clips.len() as u64;
+        // Persist potential charge exposure BEFORE submitting the request.
+        // A timeout may be billed, rejected, or refunded. We must not label
+        // attempted exposure as actual spend, or resubmit blindly.
+        attempted_exposure=attempted_exposure
+            .checked_add(cost_per_second.checked_mul(*seconds)
+                .ok_or("영상 견적 누적 범위 초과")?)
+            .ok_or("영상 견적 누적 범위 초과")?;
+        if attempted_exposure>accepted_limit {
+            return Err("needs_review: 유료 영상 승인 한도를 초과할 수 있어 제출을 막았습니다.".into());
+        }
         checkpoint_video(ctx,json!({"phase":"submitting","progress":percent,
-            "videoState":{"inFlight":true,"clipIndex":index}}))?;
+            "videoState":{"inFlight":true,"clipIndex":index,
+                "attemptedExposureCreditsMicro":attempted_exposure,
+                "attemptedSubmissions":index+1}}))?;
         let response = client.post(format!("{API}/{endpoint}"))
             .bearer_auth(&token).header("X-Runway-Version", API_VERSION)
             .json(&payload).timeout(Duration::from_secs(35)).send().await
@@ -349,6 +428,9 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         "shotMode":if chosen_model=="kling_4"{"kling4_native_continuous"}else{"kling3_native_multishot"},
         "frameAnchoredClips":if use_frames{clips.len()-1}else{0},
         "taskIds":task_ids,
+        "costQuote":paid_quote,
+        "attemptedExposureCreditsMicro":attempted_exposure,
+        "actualBilledCredits":null,
         "clipQuality":quality_reports,
         "finalQuality":final_quality,
         "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
@@ -362,3 +444,43 @@ mod paid_resubmission_tests;
 #[cfg(test)]
 #[path = "../../../tests/unit/video_checkpoint_merge_tests.rs"]
 mod checkpoint_tests;
+
+// Contract checks are unit-only; no paid API requests are made in these tests.
+#[cfg(test)]
+mod pricing_quote_tests {
+    use super::*;
+    fn day(y:i32,m:u32,d:u32)->chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y,m,d).unwrap()
+    }
+    #[test]
+    fn paid_quote_depends_on_model_audio_and_actual_requested_resolution() {
+        let standard=json!({"runwayModel":"kling3.0_standard","runwayAudio":false});
+        let silent=quote_on_date(&standard,30,day(2026,11,14)).unwrap();
+        assert_eq!(silent["creditsMicro"],270_000_000);
+        assert_eq!(silent["clips"],2);
+        let with_audio=quote_on_date(&json!({"runwayModel":"kling3.0_standard","runwayAudio":true}),
+            30,day(2026,11,14)).unwrap();
+        assert_eq!(with_audio["creditsMicro"],390_000_000);
+        let pro=quote_on_date(&json!({"runwayModel":"kling3.0_pro","runwayAudio":true}),
+            30,day(2026,11,14)).unwrap();
+        assert_eq!(pro["creditsMicro"],510_000_000);
+        let four_k=quote_on_date(&json!({"runwayModel":"kling3.0_4k","runwayAudio":false}),
+            5,day(2026,11,14)).unwrap();
+        assert_eq!(four_k["creditsMicro"],215_000_000);
+        // 1080p, not the much cheaper 720p model price.
+        let k4=quote_on_date(&json!({"runwayModel":"kling_4"}),30,day(2026,11,14)).unwrap();
+        assert_eq!(k4["creditsMicro"],564_000_000);
+        assert_eq!(k4["referenceKrw"],7536);
+        assert_eq!(k4["promotional"],true);
+        let after=quote_on_date(&json!({"runwayModel":"kling_4"}),30,day(2026,12,1)).unwrap();
+        assert_eq!(after["creditsMicro"],705_000_000);
+        assert_eq!(after["promotional"],false);
+    }
+    #[test]
+    fn invalid_video_seconds_cannot_receive_paid_quote() {
+        for duration in [0,1,2,181,u64::MAX] {
+            assert!(quote_on_date(&json!({"runwayModel":"kling3.0_pro"}),
+                duration,day(2026,11,14)).is_err());
+        }
+    }
+}

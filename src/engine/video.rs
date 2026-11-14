@@ -107,8 +107,16 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"cinematic":job["input"]["cinematic"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"costQuote":job["input"]["costQuote"],
+        "attemptedExposureCreditsMicro":job["videoState"]["attemptedExposureCreditsMicro"],
+        "attemptedSubmissions":job["videoState"]["attemptedSubmissions"],
+        "id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"cinematic":job["input"]["cinematic"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
 }
+pub fn paid_quote(state:&AppState, body:&Value)->Result<Value,String>{
+    let seconds=body["duration"].as_u64().ok_or("영상 길이는 정수 초여야 합니다.")?;
+    runway::quote(&config(state),seconds)
+}
+
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
     let brief = body["brief"].as_str().unwrap_or("").trim();
@@ -194,6 +202,18 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
+    // A paid job is not queued unless the owner has explicitly acknowledged
+    // the server-calculated quote for these exact settings and duration.
+    let cost_quote=if engine=="runway" {
+        let quote=runway::quote(&cfg,duration)?;
+        let approved=body["approvedPaidQuote"]==true;
+        let approved_limit=body["maxCreditsMicro"].as_u64();
+        if !approved || approved_limit.is_none()
+            || approved_limit.unwrap_or(0)<quote["creditsMicro"].as_u64().unwrap_or(u64::MAX) {
+            return Err("Runway 유료 생성 전 견적을 확인하고 승인해야 합니다. 금액이 변경되면 다시 확인하세요.".into());
+        }
+        quote
+    }else{Value::Null};
     let supplied_scenes = body["scenes"].as_array().cloned().unwrap_or_default();
     if !supplied_scenes.is_empty() && (supplied_scenes.len() > 12
         || supplied_scenes.iter().any(|scene| scene.as_str().is_none_or(|s| s.trim().is_empty() || s.chars().count() > 1500))) {
@@ -203,6 +223,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "cinematic":cinematic, "badShotRetries":retries,"scenes":supplied_scenes,
         "aspectRatio":aspect, "config":cfg, "publish":false,
+        "costQuote":cost_quote,
+        "maxCreditsMicro":if engine=="runway" {body["maxCreditsMicro"].clone()} else {Value::Null},
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
