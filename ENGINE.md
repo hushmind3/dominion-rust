@@ -5,6 +5,19 @@
 모델은 OpenAI 호환 HTTP API로 호출하고, Discord는 공식 REST v10으로 연결합니다.
 이번 변경은 Cargo 의존성을 추가하지 않습니다. `web/`의 Node 도구는 UI 빌드에 사용합니다.
 
+## 그룹대화 재개 비용 제어 및 관측 (2026-11-15)
+
+`api/rooms.rs::submit` → `jobs.rs::run` → `rooms.rs::run_locked`는 룸별
+실제 발언을 한 작업으로 고정한다. 최초 시작 때 `roomState` 외에
+`job.input.usageBaselineTokens`와 `job.input.usageBaseline`을 영속화한다.
+안전하게 중단 후 재개해도 동일한 기준점으로 `room.tokenBudget`을 검사하며,
+매 새 참가자 모델 호출 전 현재 `model.usage` 토큰 합계를 재검사한다.
+`rooms/economy.rs::observed_delta`의 결과는 종료 `roomUsage` 영수증으로
+사용되어 입력·출력·캐시 보고 범위를 확인할 수 있다. `Rooms.tsx`에선
+이번 대화 측정치와 공급자 캐시 미보고를 구분하여 표시한다.
+실행 중 단일 모델 호출의 미래 토큰 사용량은 정확히 선차감할 수 없어
+전역 동시 모델 예산을 강제하는 금액 청구 보증과 혼동하지 않는다.
+
 ## 영상·장기 작업 이벤트 검증 경로 (2026-11-15)
 
 - 영상: `web/src/pages/Video.tsx` → `api/video.rs::create_job` →
