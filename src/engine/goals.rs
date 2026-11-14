@@ -4,7 +4,7 @@ pub use crate::engine::verification::{
     check_acceptance, prepare_acceptance_checks, validate_criteria,
 };
 use crate::engine::verification::{
-    acceptance_gaps, baseline_checks, infer_criteria, string, successful_evidence,
+    baseline_checks, infer_criteria, string, successful_evidence,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -259,7 +259,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Ok(finish(context,goal_id,"needs_review",gaps,None));
         }
         let before_evidence=evidence.clone();
-        let before_checks=acceptance_gaps(state,&text,&criteria,&evidence);
+        let before_checks=crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence);
         let mut step_progress=if resume_review && index==start {
             checkpoint["stepMadeProgress"]==true
         } else {false};
@@ -317,7 +317,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if evidence.len() > 120 {
             evidence.drain(..evidence.len() - 120);
         }
-        let after_checks=acceptance_gaps(state,&text,&criteria,&evidence);
+        let after_checks=crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence);
         step_progress=crate::engine::goal_progress::advanced_with_policy(
             &before_evidence,&evidence,&before_checks,&after_checks,
             crate::engine::verification::looks_actionable(&text));
