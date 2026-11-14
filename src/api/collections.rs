@@ -160,6 +160,10 @@ pub async fn save(
                     && step["agentId"].as_str().is_some_and(|id| {
                         state.store.get("agent", id).is_some()
                     })
+                    && step.get("acceptanceChecks").is_none_or(|checks|
+                        crate::engine::verification::validate_criteria(checks).is_ok()
+                        && checks.as_array().is_some_and(|rows|rows.len()<=8)
+                    )
             });
         if !valid {
             return (
