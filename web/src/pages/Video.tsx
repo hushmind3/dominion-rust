@@ -122,7 +122,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   const requestedSeed=Number(seed);
   if(usingLtx&&(
     !ltxPaidConsent || !Number.isInteger(seconds) || seconds>maxDuration ||
-    (ltxFilm?(seconds<12||seconds%2!==0||ltxClipCount>6||ltxClipCount*6>seconds||
+    (ltxFilm?(seconds<12||seconds%2!==0||ltxClipCount<2||ltxClipCount>6||ltxClipCount*6>seconds||
        !ltxConsent||(ltxPlannedScenes.length>0&&ltxPlannedScenes.length!==ltxClipCount)):
        (seconds<6||seconds%2!==0))
    )){
@@ -139,6 +139,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     cinematic:usingComfy&&cinematic,badShotRetries:usingComfy&&cinematic&&retryBadShot?1:0,
     ...(usingComfy?{negativePrompt:negative,fps,seed:requestedSeed}:{}),
     ...(usingLtx?{ltxModel,ltxQuality,ltxStyle,confirmPaidGeneration:ltxPaidConsent,
+      confirmedPaidCallCount:ltxFilm?ltxClipCount:1,
       ...(ltxFilm?{ltxFilm:true,confirmPaidMultiShot:ltxConsent,scenes:ltxPlannedScenes}:{}),
     }:{}),
    }));
@@ -229,7 +230,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
         </div>
         <FormField label="연출"><SelectInput value={ltxStyle} onChange={e=>setLtxStyle(e.target.value)}><option value="cinematic">시네마틱</option><option value="social">숏폼</option><option value="product">제품 광고</option><option value="original">원문 유지</option></SelectInput></FormField>
         <label className="flex items-center gap-2"><input type="checkbox" checked={ltxFilm}
-         onChange={e=>{setLtxFilm(e.target.checked);setSeconds(e.target.checked?20:8);setLtxConsent(false);setLtxPaidConsent(false)}}/> 2~6개 장면 이어 완성 영상 제작</label>
+         onChange={e=>{setLtxFilm(e.target.checked);setSeconds(e.target.checked?ltxMaxClip+6:8);setLtxConsent(false);setLtxPaidConsent(false)}}/> 2~6개 장면 이어 완성 영상 제작</label>
         {ltxFilm&&<><FormField label={`장면 연출 지시 · 총 ${ltxClipCount}개 (선택)`}>
           <TextArea rows={4} value={ltxScenes} onChange={e=>{setLtxScenes(e.target.value);setLtxConsent(false)}} placeholder="장면당 한 줄씩 적습니다. 비워두면 인물·배경 일관성을 유지하는 공통 프롬프트를 사용합니다."/></FormField>
          <label className="flex items-start gap-2"><input type="checkbox" checked={ltxConsent} onChange={e=>setLtxConsent(e.target.checked)}/> 장면 {ltxClipCount}개 생성에 따른 유료 호출을 확인했습니다. 검증된 장면은 재사용합니다.</label></>}
