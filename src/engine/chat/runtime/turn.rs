@@ -634,6 +634,7 @@ pub(super) async fn run_turn_body(
     let mut force_final = false;
     let mut call_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut read_loop_guard=ReadLoopGuard::default();
+    let mut error_loop_guard=ErrorLoopGuard::default();
     let mut recent_tool_names=recent_room_tools(state,session_id);
     let mut failed_calls: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
@@ -2022,6 +2023,29 @@ pub(super) async fn run_turn_body(
                     "round":round,"action":"stop","kind":"identical_read_observations"
                 }));
                 return Err("동일한 조회·결과가 5회 반복되어 실행이 정체됐습니다. 변경·완료 증거 없이 성공으로 처리하지 않았습니다.".into());
+            },
+        }
+
+        match error_loop_guard.observe(
+            &completion.tool_calls,&messages[tool_round_message_start..]
+        ){
+            LoopDecision::Normal=>{},
+            LoopDecision::Nudge=>{
+                state.store.audit("harness.repeated_tool_error",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"action":"nudge"
+                }));
+                messages.push(json!({
+                    "role":"system",
+                    "content":"도구 실행이 동일한 인수와 오류를 반복했습니다. 같은 호출을 다시 보내지 말고 오류를 조사해 다른 인수·접근 또는 안전한 복구 절차를 선택하세요. 실제 작업 결과가 없는 상태를 성공으로 보고하지 마세요."
+                }));
+            },
+            LoopDecision::Stuck=>{
+                state.store.audit("harness.repeated_tool_error",json!({
+                    "sessionId":session_id,"executionId":execution_id,
+                    "round":round,"action":"stop"
+                }));
+                return Err("같은 도구와 동일한 실패 결과가 5회 반복되어 실행을 중단했습니다. 외부 부작용은 재실행하지 않고 상태 확인이 필요합니다.".into());
             },
         }
 
