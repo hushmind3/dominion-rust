@@ -166,12 +166,43 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let (turn,stats)=run_quiet_outcome(state, &request).await;
         let message = match turn {
             Ok(Some(message)) => message,
-            Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
             Err(_) if state.is_cancelled(&session_id) => {
                 return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
                     "outputs":outputs,"status":"cancelled"}))
             }
-            Err(error) => return Err(error),
+            other => {
+                let reason=match other{
+                    Ok(None)=>format!("{step_name} 단계가 빈 응답을 반환했습니다."),
+                    Err(error)=>error,
+                    Ok(Some(_))=>unreachable!(),
+                };
+                let unknown=state.store.session_has_uncertain_effects(&session_id)
+                    .unwrap_or(true);
+                // Chat's own deterministic acceptance can fail *before*
+                // workflow-level verification is reached. That must preserve
+                // an inspectable needs_review job and stop the next agent,
+                // rather than throwing a generic failed job with no gap.
+                if checks.as_array().is_some_and(|rows|!rows.is_empty()) || unknown{
+                    let mut failures=vec![reason.chars().take(600).collect::<String>()];
+                    if unknown{
+                        failures.push("외부 도구 효과가 확정되지 않아 재실행하지 않습니다.".into());
+                    }
+                    context.checkpoint(json!({
+                        "workflowState":{"sessionId":session_id,"outputs":outputs,
+                            "definition":definition,"inFlight":false,
+                            "failedStepIndex":index,"verificationGaps":failures},
+                        "stepIndex":index,"stepTotal":total,
+                    }))?;
+                    state.store.audit("workflow.step_needs_review",json!({
+                        "workflowId":workflow_id,"jobId":context.job_id,
+                        "stepIndex":index,"gaps":failures,"unknownEffects":unknown,
+                    }));
+                    return Ok(json!({"workflowId":workflow_id,"sessionId":session_id,
+                        "outputs":outputs,"status":"needs_review",
+                        "failedStepIndex":index,"verificationGaps":failures}));
+                }
+                return Err(reason);
+            }
         };
         // Side effects are an execution truth, not a model claim. Never hand
         // uncertain external work to the next agent as a finished result.
