@@ -356,6 +356,27 @@ mod sub3_goal_resume_tests {
     }
 
     #[tokio::test]
+    async fn creating_goal_commits_bidirectional_job_link_in_one_transaction(){
+        let state=state();
+        let response=create_goal(State(state.clone()),Json(json!({
+            "goal":"Inspect two files and fix the failing Rust module",
+            "isolateWorktree":true,"publishPr":false,
+            "tokenBudget":55000,"verifyCommands":["cargo test"]
+        }))).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        let goals=state.store.all("goal");
+        let jobs=state.store.all("job").into_iter()
+            .filter(|job|job["kind"]=="goal").collect::<Vec<_>>();
+        assert_eq!(goals.len(),1);
+        assert_eq!(jobs.len(),1);
+        assert_eq!(jobs[0]["input"]["goalId"],goals[0]["id"]);
+        assert_eq!(goals[0]["jobId"],jobs[0]["id"]);
+        assert_eq!(goals[0]["tokenBudget"],55_000);
+        assert_eq!(goals[0]["isolateWorktree"],true);
+        assert_eq!(goals[0]["successCriteria"][0]["type"],"command_succeeded");
+    }
+
+    #[tokio::test]
     async fn live_job_and_final_result_cannot_be_restarted(){
         let state=state();
         state.store.put("goal",&json!({"id":"done","status":"completed"})).unwrap();
