@@ -188,7 +188,11 @@ try{
   method:"POST",headers:{"content-type":"application/json"},
   body:JSON.stringify({model}),signal:AbortSignal.timeout(15000)
  }).then(r=>r.ok?r.json():null).catch(()=>null);
- receipt.environment.modelDigest=modelInfo?.details?.quantization_level||null;
+ const tags=await fetch("http://127.0.0.1:11434/api/tags",{
+  signal:AbortSignal.timeout(15000)
+ }).then(r=>r.ok?r.json():null).catch(()=>null);
+ receipt.environment.modelDigest=tags?.models?.find(m=>m.name===model||m.model===model)?.digest||null;
+ receipt.environment.quantization=modelInfo?.details?.quantization_level||null;
  await request("/api/providers",{
   id:providerId,name:"Sub1 isolated live goal benchmark",
   kind:"openai",enabled:true,toolMode:"native",
