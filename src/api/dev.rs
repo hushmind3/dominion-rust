@@ -34,6 +34,30 @@ pub async fn diff(State(state): State<AppState>) -> Response {
     }
 }
 
+/// Verify only server-recorded workflow deliverables against live workspace
+/// bytes. A submitted job ID cannot be used to inspect arbitrary paths.
+pub async fn workflow_artifacts(
+    State(state):State<AppState>,Path(id):Path<String>,
+)->Response{
+    let Some(job)=state.store.get("job",&id).filter(|job|job["kind"]=="workflow") else{
+        return (StatusCode::NOT_FOUND,Json(json!({"error":"워크플로 실행 기록이 없습니다."}))).into_response();
+    };
+    let receipts=job["result"]["artifacts"].as_array().cloned().unwrap_or_else(||{
+        job["workflowState"]["outputs"].as_array().map(|outputs|
+            outputs.iter().flat_map(|step|
+                step["artifacts"].as_array().cloned().unwrap_or_default())
+                .take(96).collect()).unwrap_or_default()
+    });
+    let checked=receipts.iter().take(96)
+        .map(|receipt|crate::engine::goal_artifacts::verify_current(
+            &state.config.workspace,receipt)).collect::<Vec<_>>();
+    let intact=checked.iter().filter(|row|row["status"]=="intact").count();
+    Json(json!({"jobId":id,"workflowId":job["input"]["workflowId"],
+        "status":job["status"],"sessionId":job["result"]["sessionId"],
+        "count":checked.len(),"intact":intact,
+        "files":checked,"qualityVerified":false})).into_response()
+}
+
 pub async fn get_job(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.store.get("dev_job", &id) {
         Some(job) => Json(job).into_response(),
