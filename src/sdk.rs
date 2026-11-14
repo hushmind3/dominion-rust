@@ -507,6 +507,17 @@ impl DominionSdk {
         self.state.store.get("goal_receipt", &format!("goal-receipt:{id}:{job_id}"))
     }
 
+    /// Observed model spend of this goal and all delegated descendants.
+    /// This is native SQLite-audited usage, never a model's own cost claim.
+    /// The ceiling is checked between calls; provider billing may differ.
+    pub fn goal_usage(&self, id: &str) -> Result<Value, String> {
+        let goal = self.goal(id).ok_or("목표를 찾을 수 없습니다.")?;
+        let session_id = goal["sessionId"].as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("목표 실행 세션이 아직 생성되지 않았습니다.")?;
+        self.state.store.session_tree_usage(session_id)
+    }
+
     /// Inspect actual source changes recorded by the native worktree engine.
     pub async fn goal_diff(&self, id: &str) -> Result<Value, String> {
         engine::goals::diff_for_goal(&self.state, id).await
@@ -970,5 +981,34 @@ mod tests {
         assert_eq!(queued["input"]["prompt"], instruction);
         drop(sdk);
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn native_sdk_goal_usage_counts_descendant_tokens_without_other_sessions() {
+        let (sdk, root) = fresh();
+        let goal = sdk.enqueue_goal(GoalOptions::new("Show native goal usage")).unwrap();
+        let id=goal["id"].as_str().unwrap();
+        assert!(sdk.goal_usage(id).is_err(),
+            "queued goal without an execution session must not claim zero usage");
+        let mut saved=goal.clone();
+        saved["sessionId"]=json!("goal-root");
+        sdk.state.store.put("goal",&saved).unwrap();
+        sdk.state.store.put("session",&json!({"id":"goal-root","goalId":id})).unwrap();
+        sdk.state.store.put("session",&json!({"id":"agent-child",
+            "parentSessionId":"goal-root","goalId":id,"delegated":true})).unwrap();
+        sdk.state.store.put("session",&json!({"id":"not-ours"})).unwrap();
+        sdk.state.store.audit("model.usage",json!({"sessionId":"goal-root",
+            "promptTokens":14,"completionTokens":6,"totalTokens":20}));
+        sdk.state.store.audit("model.usage",json!({"sessionId":"agent-child",
+            "promptTokens":29,"completionTokens":11,"totalTokens":40}));
+        sdk.state.store.audit("model.usage",json!({"sessionId":"not-ours",
+            "promptTokens":100,"completionTokens":100,"totalTokens":200}));
+        let usage=sdk.goal_usage(id).unwrap();
+        assert_eq!(usage["totalTokens"],60);
+        assert_eq!(usage["sessions"],2);
+        assert_eq!(usage["calls"],2);
+        assert_eq!(sdk.state.store.enclosing_goal("agent-child").unwrap().0,
+            "goal-root");
+        drop(sdk);
+        let _=std::fs::remove_dir_all(root);
     }
 }
