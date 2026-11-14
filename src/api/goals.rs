@@ -141,3 +141,27 @@ pub async fn cancel_goal(State(state):State<AppState>,Path(id):Path<String>)->Re
     }
     Json(json!({"id":id,"status":"cancelled"})).into_response()
 }
+
+
+/// Read-only diff for files attributed to this goal by observed tool receipts.
+/// Returns no unrelated workspace changes when the goal has no file outputs.
+pub async fn diff_goal(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    let paths=goal["artifacts"].as_array().into_iter().flatten()
+        .filter_map(|row|row["path"].as_str().map(str::to_string))
+        .take(20).collect::<Vec<_>>();
+    if paths.is_empty(){
+        return Json(json!({"goalId":id,"paths":[],"status":"",
+            "unstaged":"","staged":"","observed":false,
+            "note":"관측된 파일 수정 산출물이 없어 이 목표의 diff를 구분할 수 없습니다."})).into_response();
+    }
+    match crate::engine::agent_diff::inspect(&state.config.workspace,&paths).await{
+        Ok(mut value)=>{
+            value["goalId"]=json!(id);
+            Json(value).into_response()
+        }
+        Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}

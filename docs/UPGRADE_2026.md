@@ -47,3 +47,5 @@
 - Tool `workspace_diff` is real, scoped read-only Git inspection in `agent_diff.rs`, connected through `tools::definitions`, `tools::execute` and `chat/runtime/tool_selection.rs`. The goal executor prompt requests actual diff review and commands for task-specific verification.
 
 - Parallel research: `tools::definitions("delegate_parallel")` → `tools::delegate_parallel` → `agent_parallel::validate` → each child `delegate` → separate `jobs::enqueue("prompt")` → child `chat/runtime/turn.rs` schema filter and `tools::execute` read-only runtime check → `task_payload` result aggregation → owner-facing goal executor synthesis. No shared writable worktree, no parallel source-write races by this tool.
+
+- A bounded goal diff UI is wired: `AutonomousGoalsPage::showDiff` → `GET /api/goals/:id/diff` → `api/goals.rs::diff_goal` → `agent_diff::inspect` restricted to goal artifact paths. The endpoint never writes and declines to show unrelated files when no goal artifact exists.

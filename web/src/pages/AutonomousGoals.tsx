@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {Bot,Check,ClipboardList,ExternalLink,LoaderCircle,PauseCircle,RefreshCw,Send,ShieldCheck} from 'lucide-react'
-import {post} from '../api'
+import {get,post} from '../api'
 import {Button,TextArea} from '../components/Primitives'
 import {Headline,Notice,useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
@@ -12,6 +12,7 @@ type Goal={id:string;goal:string;status:string;phase?:string;plan?:string;
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
  artifacts?:Artifact[];gaps?:string[];iterations?:number;maxIterations?:number;
  sessionId?:string;createdAt?:string}
+type GoalDiff={paths:string[];status:string;unstaged:string;staged:string;note?:string}
 type Job={id:string;kind:string;status:string;input?:{goalId?:string};
  stepIndex?:number;stepTotal?:number}
 
@@ -21,6 +22,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
  const jobs=useRemote<Job[]>('/api/jobs',[])
  const [objective,setObjective]=useState('')
  const [drafts,setDrafts]=useState<Record<string,string>>({})
+ const [diffs,setDiffs]=useState<Record<string,GoalDiff>>({})
  const [busy,setBusy]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('')
  const reload=async()=>{await Promise.all([goals.reload(),jobs.reload()])}
  // SSE refreshes the records; polling fills in the gap after a tab reconnect.
@@ -54,6 +56,14 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
    setDrafts(prev=>{const next={...prev};delete next[goal.id];return next})
    await reload()
   }catch(e){setError((e as Error).message);await reload()}finally{setBusy('')}
+ }
+ const showDiff=async(goal:Goal)=>{
+  if(diffs[goal.id]){setDiffs(previous=>{const next={...previous};delete next[goal.id];return next});return}
+  setError('')
+  try{
+   const result=await get<GoalDiff>('/api/goals/'+encodeURIComponent(goal.id)+'/diff')
+   setDiffs(previous=>({...previous,[goal.id]:result}))
+  }catch(e){setError((e as Error).message)}
  }
  const cancel=async(goal:Goal)=>{
   if(busy)return
@@ -121,9 +131,18 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
       <strong className="break-all">{file.path}</strong><p className="break-all font-mono text-[10px] text-[#7C7469]" title={file.sha256}>SHA-256 {file.sha256.slice(0,20)}… · {file.bytes.toLocaleString()} bytes</p>
      </div>)}</div><p className="mt-2 text-[11px] text-[#7C7469]">파일 해시는 무결성 기록입니다. 테스트 통과를 의미하지 않습니다.</p>
     </details>}
+    {diffs[goal.id]&&<section aria-label="검증된 파일 변경 내용" className="mt-3 space-y-2 rounded-xl border border-[#EFE9DF] bg-[#FAF7F1] p-3">
+     <p className="text-xs font-semibold">Git 변경 사항 · 파일 {diffs[goal.id].paths.length}개</p>
+     {diffs[goal.id].note&&<p className="text-xs text-[#7C7469]">{diffs[goal.id].note}</p>}
+     {diffs[goal.id].status&&<pre className="overflow-auto whitespace-pre-wrap text-[11px]">{diffs[goal.id].status}</pre>}
+     {diffs[goal.id].unstaged&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].unstaged}</pre>}
+     {diffs[goal.id].staged&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].staged}</pre>}
+     {!diffs[goal.id].note&&!diffs[goal.id].unstaged&&!diffs[goal.id].staged&&<p className="text-xs text-[#7C7469]">현재 작업 트리에 Git 변경이 없습니다. 이미 커밋된 변경 내용은 Git 기록에서 확인해야 합니다.</p>}
+    </section>}
     <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
      {goal.sessionId&&<Button size="sm" variant="ghost" onClick={()=>openSession(goal.sessionId!)}><Bot size={14}/> 작업 대화 열기</Button>}
-     <a href="#/developer" className="inline-flex items-center gap-1 text-[#A94E30] hover:underline"><ExternalLink size={13}/> 개발자 diff 확인</a>
+     <Button size="sm" variant="ghost" onClick={()=>void showDiff(goal)}><ExternalLink size={13}/>{diffs[goal.id]?'diff 닫기':'실제 Git diff 확인'}</Button>
+     <a href="#/developer" className="inline-flex items-center gap-1 text-[#A94E30] hover:underline">개발자 도구</a>
      <span className="ml-auto text-[#7C7469]">재계획·검증 기록 {goal.reviewHistory?.length||0}회</span>
     </div>
    </section>
