@@ -645,3 +645,16 @@ RSI는 미리 정한 A→B→A′→B′ 순서의 재현이 아니라 **다음 
 - **중복 문맥·토큰 낭비 억제:** `engine/goals/turn_input.rs`는 이전 모든 실행 보고를 매 턴 6,000자씩 재삽입하지 않고, 이미 보존된 동일 세션의 도구 이력을 활용하며 검증 조건·계획·현재 오류 정보를 짧게 전달합니다. 검증 근거와 원본 이력은 유지하고 실모델 완수율·청구 토큰을 측정하기 전까지 절감률은 주장하지 않습니다.
 
 [**실제 API → DB → 작업 큐 → 도구 실행 → 증거 비교 → 복구 호출도, 테스트 및 한계**](docs/architecture/SUB2-GOAL-RELIABILITY-2026-11-14.md). 기존 LTX/ComfyUI 장면 제작, 그룹 사용량 원장, 기억 출처 보호, RSI 분리 검증과 Git 작업폴더 소스 반영 경로는 유지했습니다. [서브2 GitHub Actions](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2)에서 각 HEAD의 `npm` 검사와 Rust 전체 테스트 결과를 확인할 수 있습니다.
+
+## 2026-11-14 · 서브2: 재심사 57점 이후 복구 원자성·실모델 성과 계측 경로
+
+이번 재심사 서브2 점수는 **57/100**이며 당시 구현·테스트와 미측정 실제 성과를 엄격하게 분리했습니다. 다음은 재심사 **이후** GitHub 소스에 직접 반영한 경로입니다. 새 점수·실모델 성공률·원화 절감률을 주장하지 않습니다.
+
+- **중단 후 재개도 원자적:** `POST /api/goals/:id/resume → Store::resume_goal_atomic`에서 목표 상태·새 작업 큐·소유자가 직접 확인한 미확정 도구 기록을 단일 SQLite 트랜잭션으로 반영합니다. 저장 실패 시 모두 롤백해 실행 불가능한 `queued` 목표를 없앴습니다. 기존 실행·하위 세션의 불확실한 효과를 임의로 성공 판정하지 않으며, 실제 진행 중인 하위 에이전트 작업을 관리자 확인만으로 완료 처리하지 않습니다.
+- **계획·검토·재계획까지 토큰 귀속:** `GoalControl::complete → llm::complete_for_session → gateway::record_usage → Store::session_usage → goals/receipts.rs` 경로로 실행자 외 모델 호출도 목표 세션 영수증에 포함합니다. 기존 `maxExecutorTokens` 필드가 총 목표 세션의 기록 가능한 호출량에 적용되므로 내부 명칭과 달리 사실상 소프트 목표 예산입니다. 실제 청구액·GPU 비용은 아직 미측정이며 영수증에서 이를 명시합니다.
+- **현재 실행의 영수증만 노출:** `GET /api/goals/:id/receipt`는 현재 `goal.jobId`에 해당하는 **불변 영수증**만 반환합니다. 재개 전 작업의 이전 성공 기록으로 새로운 작업이 성공한 것처럼 측정되지 않습니다.
+- **선택적 실모델 평가기:** `scripts/sub2-goal-eval.mjs`는 별도 격리 서버·실제 Provider로 3가지 파일 작업을 실행한 뒤, 서버 완료 판정뿐 아니라 **독립 파일 바이트 검증·현재 작업 영수증·사용량**까지 확인하여 1회 성공률과 성공 건당 실제 기록된 전체 토큰 수를 JSON으로 남깁니다. 실제 유료 Provider는 별도 승인 변수가 필수이며, 비용 정보 누락 시 원화 청구액이나 절감률을 만들어내지 않습니다.
+- **자동 회귀 검사:** `scripts/sub2-goal-eval.test.mjs`의 비용/검증 오염 방지 테스트를 `.github/workflows/ci.yml`에 연결했고, Rust API의 복구 트랜잭션 강제 실패·하위 작업 원본 기록 보존 테스트를 추가했습니다.
+
+[복구·영수증·실모델 평가 실행 명령·점수 해석 한계](docs/architecture/SUB2-RESUME-AND-REAL-MODEL-EVAL-2026-11-14.md) · [최신 GitHub CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2).
+
