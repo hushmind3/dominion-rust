@@ -404,6 +404,44 @@ mod sub1_goal_lifecycle_tests {
         (state,dir)
     }
     #[tokio::test]
+    async fn initial_goal_and_worker_are_atomically_registered_with_bidirectional_ids() {
+        let (state,dir)=state();
+        let response=create_goal(State(state.clone()),Json(json!({
+            "goal":"Create and verify a source artifact",
+            "executor":{"providerId":"fixture","model":"fixture"},
+            "successCriteria":[{"type":"file_exists","path":"proof.txt"}],
+            "maxIterations":3,
+        }))).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        let goals=state.store.all("goal");
+        let jobs=state.store.all("job");
+        assert_eq!(goals.len(),1);
+        assert_eq!(jobs.len(),1);
+        let goal=&goals[0];
+        let worker=&jobs[0];
+        assert_eq!(goal["jobId"],worker["id"]);
+        assert_eq!(worker["input"]["goalId"],goal["id"]);
+        assert_eq!(worker["status"],"queued");
+        assert_eq!(goal["status"],"queued");
+        assert_eq!(goal["executor"]["model"],"fixture");
+        // Calling the API twice creates two internally consistent pairs,
+        // never overwrites an existing queued record or shares a job.
+        let second=create_goal(State(state.clone()),Json(json!({
+            "goal":"Create a second file",
+            "successCriteria":[{"type":"file_exists","path":"other.txt"}]
+        }))).await;
+        assert_eq!(second.status(),StatusCode::OK);
+        let all=state.store.all("goal");
+        assert_eq!(all.len(),2);
+        for record in all {
+            let id=record["jobId"].as_str().unwrap();
+            let job=state.store.get("job",id).unwrap();
+            assert_eq!(job["input"]["goalId"],record["id"]);
+        }
+        let _=std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn reviewed_resume_is_idempotent_and_carries_only_committed_evidence() {
         let (state,dir)=state();
         state.store.put("session",&json!({"id":"s"}));
