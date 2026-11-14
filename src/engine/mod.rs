@@ -1,4 +1,5 @@
 pub mod goal_control;
+pub mod goal_git;
 pub mod goal_recovery;
 pub mod goal_progress;
 pub mod goal_workspace;
