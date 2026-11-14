@@ -39,7 +39,7 @@ mod program_execution;
 use program_execution::{scope_program_node_ids, execute_nodes, save_revised_program, propose_program_revision, run_program};
 #[path = "runtime/tool_dispatch.rs"]
 mod tool_dispatch;
-use tool_dispatch::{frozen_replacements, replacement_content, deterministic_tool, record_partial_shortcut, run_frozen_replacements, dispatch_tool_call, record_soft_tool_error};
+use tool_dispatch::{frozen_replacements, replacement_content, deterministic_tool, record_partial_shortcut, run_frozen_replacements, dispatch_tool_call, record_soft_tool_error, skip_for_new_owner_instruction};
 #[path = "runtime/finalization.rs"]
 mod finalization;
 use finalization::{finalization_semantic_payload, finalization_payload_hash, compliance_summary, compliance_detail, standing_violation, determine_task_outcome, record_success_experience, record_selection_snapshot, finish_attempt};
