@@ -37,6 +37,7 @@ pub fn validate_criteria(criteria: &Value) -> Result<(), String> {
             "file_equals" => &["path", "content"],
             "tool_succeeded" => &["tool"],
             "command_succeeded" => &["command"],
+            "github_pr_created" => &[],
             _ => return Err(format!("지원하지 않는 검증 조건: {kind}")),
         };
         if let Some(path) = item.get("path").and_then(Value::as_str) {
@@ -435,6 +436,20 @@ fn delegated_action_evidence(result:&Value)->bool {
     false
 }
 
+pub(crate) fn github_pr_created(item:&Value)->bool{
+    if !successful_evidence(item) || tool_name(item)!="github_api" {return false;}
+    let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
+    args["method"].as_str().is_some_and(|m|m.eq_ignore_ascii_case("POST"))
+        && args["path"].as_str().is_some_and(|path|{
+            path.starts_with("/repos/") && path.ends_with("/pulls")
+                && !path.contains("..")
+        })
+        && item["result"]["status"].as_u64()==Some(201)
+        && item["result"]["prNumber"].as_u64().is_some_and(|n|n>0)
+        && item["result"]["prUrl"].as_str().is_some_and(|url|{
+            url.starts_with("https://github.com/") && url.contains("/pull/")
+        })
+}
 pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     if !matches!(tool_name(item), "shell_exec" | "terminal_exec") || !successful_evidence(item) {
         return false;
@@ -522,6 +537,7 @@ pub(crate) fn acceptance_gaps_in(
             "command_succeeded" => evidence
                 .iter()
                 .any(|item| command_matches(item, check["command"].as_str().unwrap_or(""))),
+            "github_pr_created" => evidence.iter().any(github_pr_created),
             _ => false,
         };
         if !passed {
@@ -542,6 +558,20 @@ pub(crate) fn acceptance_gaps_in(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn pr_completion_needs_real_successful_github_receipt(){
+        let created=json!({"tool":"github_api",
+            "arguments":{"method":"POST","path":"/repos/owner/repo/pulls"},
+            "result":{"status":201,"prNumber":17,
+                "prUrl":"https://github.com/owner/repo/pull/17"}});
+        assert!(github_pr_created(&created));
+        let mut failure=created.clone();
+        failure["result"]["status"]=json!(403);
+        assert!(!github_pr_created(&failure));
+        failure=created.clone(); failure["result"]["prNumber"]=Value::Null;
+        assert!(!github_pr_created(&failure));
+    }
 
     #[test]
     fn delegated_action_needs_completed_child_and_real_operation(){
