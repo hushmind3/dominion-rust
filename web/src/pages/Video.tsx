@@ -12,7 +12,8 @@ type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:stri
  result?:{bytes:number;shots?:number;newPaidCallsThisRun?:number;technicalQuality?:{status:string;reason?:string};
  clipReceipts?:{index:number;quality?:{status:string}}[]};
  videoQuality?:string;videoModel?:string;shotMode?:string;generateAudio?:boolean;
- technicalGate?:boolean;film?:{paidCallCount?:number;clips?:unknown[]};storyboard?:string[]}
+ technicalGate?:boolean;film?:{paidCallCount?:number;clips?:unknown[]};storyboard?:string[];
+ paidQuote?:PaidQuote;paidApprovalMaxUsdCents?:number}
 type VideoEngine='native'|'comfyui'|'runway'|'ltx'
 type PaidQuote={quoteDigest:string;totalUsdCents:number;referenceKrw:number;
  billableSeconds:number;paidCalls:number;model:string;quality:string;
@@ -289,6 +290,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
     <Panel className="min-w-0 p-5"><Subheading title={t('vid.results')} extra={videoJob?<StateTag online={videoJob.status==='completed'}>{statusLabel(videoJob.status)}</StateTag>:<span className="text-[11px] text-[#8A8176]">{t('vid.waiting')}</span>}/>{!videoJob?<div className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[#D8CFC2] bg-[#FAF7F1] text-[12px] text-[#8A8176]" style={{aspectRatio:ratios[ratio].width+" / "+ratios[ratio].height,maxHeight:420}}><Clapperboard size={24}/>{t('vid.resultsEmpty')} <small className="text-[10px]">{t(ratios[ratio].label)} · {ratios[ratio].width}×{ratios[ratio].height}</small></div>:<div className="grid gap-3">{!terminal(videoJob.status)&&<><div className="flex justify-between text-[11px] text-[#7C7469]"><span>{videoJob.status==='queued'?t('vid.waitingJob'):videoJob.status==='downloading'?t('vid.savingResult'):t('vid.generating')}</span><span>{(videoJob.progress??0)}%</span></div><div className="h-2 overflow-hidden rounded-full bg-[#F3EEE5]"><div className="h-full bg-[#C96442]" style={{width:Math.max(4,(videoJob.progress??0))+'%'}}/></div></>}{videoJob.result?.technicalQuality&&<p className="text-[11px] text-[#7C7469]">
        실제 영상 기술 검수: <strong>{videoJob.result.technicalQuality.status==='technical_pass'?'FFprobe 통과':
        '검수되지 않음'}</strong> · 기술적 재생 검증과 영상 시청 품질은 별개입니다.
+      </p>}
+      {videoJob.paidQuote&&<p className="text-[11px] text-[#7C7469]">
+       승인된 생성 견적: <strong>{videoJob.paidQuote.referenceKrw.toLocaleString('ko-KR')}원</strong>
+       {' '}· 신규 과금 기준 {videoJob.paidQuote.billableSeconds}초 · {videoJob.paidQuote.paidCalls}회.
+       공개 목록가·참고 환율에 의한 견적이며 실제 결제 원장 수집 전에는 확정 지출이 아닙니다.
       </p>}
       {videoJob.result?.shots&&<p className="text-[11px] text-[#7C7469]">완성 장면 {videoJob.result.shots}개 · 이번 실행 신규 유료 요청 {videoJob.result.newPaidCallsThisRun??0}건</p>}
       {(videoJob.shotMode||videoJob.videoModel&&videoJob.videoQuality)&&<p className="text-[11px] text-[#7C7469]">제작 설정: {videoJob.videoQuality||'1080p'} · {videoJob.shotMode?(videoJob.shotMode==='custom'?'사용자 샷 구성':'자동 멀티샷'):videoJob.videoModel} · {videoJob.generateAudio===false?'무음':'AI 오디오'}</p>}{videoJob.storyboard&&videoJob.storyboard.length>0&&<details className="text-xs text-[#5C544A]"><summary className="cursor-pointer font-medium">샷 구성 확인</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{videoJob.storyboard.map((scene,i)=><li key={i}>{scene}</li>)}</ol></details>}{videoJob.film?.clips?.length&&terminal(videoJob.status)&&
