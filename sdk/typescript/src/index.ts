@@ -65,12 +65,11 @@ export type SDKOptions = {
 }
 
 export class DominionSDKError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-  ) {
+  readonly status: number
+  constructor(status: number, message: string) {
     super(message)
     this.name = 'DominionSDKError'
+    this.status = status
   }
 }
 
@@ -302,10 +301,12 @@ export class DominionSDK {
 }
 
 export class DominionThread {
-  constructor(
-    public readonly sdk: DominionSDK,
-    public readonly id: string,
-  ) {}
+  readonly sdk: DominionSDK
+  readonly id: string
+  constructor(sdk: DominionSDK, id: string) {
+    this.sdk = sdk
+    this.id = id
+  }
 
   runStreamed(input: string | TurnInput, options: RunOptions = {}): AsyncGenerator<AgentEvent> {
     const turn = typeof input === 'string' ? {input} : input
@@ -354,10 +355,12 @@ export class DominionThread {
 }
 
 export class DominionGoal {
-  constructor(
-    public readonly sdk: DominionSDK,
-    public readonly id: string,
-  ) {}
+  readonly sdk: DominionSDK
+  readonly id: string
+  constructor(sdk: DominionSDK, id: string) {
+    this.sdk = sdk
+    this.id = id
+  }
 
   status(signal?: AbortSignal): Promise<Goal> {
     return this.sdk.goal(this.id, signal)
