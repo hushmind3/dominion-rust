@@ -94,3 +94,29 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     payload["jobId"] = job_id;
     Json(payload).into_response()
 }
+
+pub async fn update_plan(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let Some(plan)=body["plan"].as_str().map(str::trim)
+        .filter(|p|p.len()>=5&&p.len()<=6000) else {
+        return error(StatusCode::BAD_REQUEST,"수정 계획은 5~6000바이트로 입력하세요.");
+    };
+    let Some(goal)=state.store.get("goal",&id) else {
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(),Some("queued"|"running")) {
+        return error(StatusCode::CONFLICT,"진행 중인 목표의 계획만 수정할 수 있습니다.");
+    }
+    // The owner may change the method, never the acceptance checks, route
+    // permissions or the authority of an already running tool invocation.
+    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],
+        &json!({"planOverride":plan,"planOverrideRequestedAt":chrono::Utc::now().to_rfc3339()})) else {
+        return error(StatusCode::CONFLICT,"작업 상태가 변경됐습니다. 새로고침 후 다시 입력하세요.");
+    };
+    state.bus.record("goal",&saved);
+    state.store.audit("goal.plan_override_requested",json!({"goalId":id}));
+    Json(saved).into_response()
+}
