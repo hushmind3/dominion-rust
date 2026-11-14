@@ -369,6 +369,50 @@ pub(crate) fn select_tool_definitions(
         .collect()
 }
 
+/// Owner-specified autonomous source edits are not generic browsing.
+/// Constrain only the MODEL'S tool menu to a few executable workspace actions.
+/// The tool executor still checks the same owner policy, file scope, approval
+/// and exact SHA. This is a native Rust counterpart to progressive tool
+/// selection in modern agent frameworks, not a foreign SDK runner.
+pub(crate) fn autonomous_code_tool_window(definitions:Vec<Value>,input:&str)->Vec<Value>{
+    let lower=input.to_lowercase();
+    let coding= intent_has_any(&lower,&[
+        "코드","소스","파일","수정","개발","구현","편집","검증",
+        "code","source","file","fix","edit","modify","patch","implement",
+        "module","function","translation","locale","config","script",
+    ]) || [".rs",".py",".js",".mjs",".ts",".tsx",".json",".md"].iter()
+        .any(|extension|lower.contains(extension));
+    if !coding {return definitions}
+    let preferred=[
+        "workspace_list","workspace_read","workspace_read_range",
+        "code_search","workspace_replace","workspace_write",
+        "workspace_replace_range",
+    ];
+    let mut selected=Vec::new();
+    for name in preferred {
+        if let Some(tool)=definitions.iter().find(|definition|tool_name(definition)==name){
+            selected.push(tool.clone());
+        }
+    }
+    // Rust source tasks can additionally replace one existing function while
+    // keeping unrelated functions unchanged. Other tasks should not pay for
+    // its large function-specific schema on every model round.
+    if lower.contains(".rs") || intent_has_any(&lower,&["rust","러스트"]) {
+        if let Some(tool)=definitions.iter().find(|definition|
+            tool_name(definition)=="workspace_replace_function"){
+            selected.push(tool.clone());
+        }
+    }
+    // When a bounded source workflow explicitly asks to execute tests, keep
+    // shell_exec ONLY if already advertised by the owner's tool policy.
+    if intent_has_any(&lower,&["테스트","빌드","컴파일","test","build","cargo","npm"]) {
+        if let Some(tool)=definitions.iter().find(|definition|tool_name(definition)=="shell_exec"){
+            selected.push(tool.clone());
+        }
+    }
+    if selected.is_empty(){definitions}else{selected}
+}
+
 pub(crate) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> Vec<Value> {
     let mut kept = Vec::new();
     let mut used = 0usize;
@@ -385,3 +429,30 @@ pub(crate) fn trim_tool_definitions(definitions: Vec<Value>, budget: usize) -> V
     kept
 }
 
+
+#[cfg(test)]
+mod sub1_native_autonomous_tool_tests {
+    use super::*;
+    #[test]
+    fn short_local_code_menu_preserves_read_write_and_approved_shell_only(){
+        let def=|name:&str|json!({"type":"function","function":{"name":name}});
+        let tools=vec!["account_status","workspace_list","workspace_read",
+            "workspace_read_range","code_search","workspace_replace",
+            "workspace_write","workspace_replace_range","workspace_replace_function",
+            "shell_exec","browser_control","file_write","mcp__danger"]
+            .iter().map(|name|def(name)).collect::<Vec<_>>();
+        let selected=autonomous_code_tool_window(tools.clone(),
+            "Fix trial/code/lib/price.mjs and create FIXED.txt");
+        let names=selected.iter().map(tool_name).collect::<Vec<_>>();
+        assert_eq!(names,vec!["workspace_list","workspace_read","workspace_read_range",
+            "code_search","workspace_replace","workspace_write","workspace_replace_range"]);
+        assert_eq!(autonomous_code_tool_window(tools.clone(),"How are you?").len(),tools.len());
+        let rust=autonomous_code_tool_window(tools.clone(),"Update src/lib.rs then cargo test");
+        assert!(rust.iter().any(|v|tool_name(v)=="workspace_replace_function"));
+        assert!(rust.iter().any(|v|tool_name(v)=="shell_exec"));
+        let no_shell=autonomous_code_tool_window(tools.into_iter()
+            .filter(|v|tool_name(v)!="shell_exec").collect(),"fix x.rs and test");
+        assert!(!no_shell.iter().any(|v|tool_name(v)=="shell_exec"),
+            "The window cannot invent a capability denied by upstream policy");
+    }
+}
