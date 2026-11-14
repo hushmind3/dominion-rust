@@ -255,7 +255,8 @@ pub(super) async fn run_frozen_replacements(
     let mut paths = Vec::new();
     for check in &checks {
         let raw = check["path"].as_str().ok_or("경로가 없습니다.")?;
-        let path = crate::engine::verification::resolve_path(state, raw)?;
+        let workspace=crate::engine::goal_git::workspace_for_session(state,session_id)?;
+        let path = crate::engine::verification::resolve_path_from(&workspace, raw)?;
         if paths.iter().any(|existing| existing == &path) {
             // Two independently frozen hashes on one file cannot both be
             // validated after the first change. Let the model handle it.
