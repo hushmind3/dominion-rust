@@ -72,6 +72,7 @@ export class DominionClient {
   agents: { list(options?: RequestOptions): Promise<JsonObject[]> };
   providers: { list(options?: RequestOptions): Promise<JsonObject[]>; models(id: string, options?: RequestOptions): Promise<JsonObject> };
   tools: { list(options?: RequestOptions): Promise<JsonObject[]> };
+  mcp: { list(options?: RequestOptions): Promise<JsonObject[]>; register(config: JsonObject & { name: string; transport: 'http' | 'stdio' }, options?: RequestOptions): Promise<JsonObject>; remove(id: string, options?: RequestOptions): Promise<JsonObject>; discover(options?: RequestOptions): Promise<JsonObject[]> };
   rooms: { list(options?: RequestOptions): Promise<JsonObject[]>; run(id: string, input: JsonObject, options?: RequestOptions): Promise<JsonObject>; stop(id: string, options?: RequestOptions): Promise<JsonObject>; messages(id: string, options?: RequestOptions): Promise<JsonObject[]> };
   rsi: { list(options?: RequestOptions): Promise<JsonObject>; start(input: JsonObject, options?: RequestOptions): Promise<JsonObject>; campaigns(options?: RequestOptions): Promise<JsonObject>; campaign(id: string, options?: RequestOptions): Promise<JsonObject> };
 }
