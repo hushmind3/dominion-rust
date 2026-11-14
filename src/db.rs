@@ -4,6 +4,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManualMemoryEditError {
+    NotFound,
+    NotManual,
+    NotActive,
+    Conflict,
+    Database,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FinalizeOutcome {
     Applied,
     AlreadyApplied,
@@ -281,6 +290,55 @@ impl Store {
             .ok()?;
         }
         self.get(kind, &id)
+    }
+
+    /// Atomic manual-memory editing. Check provenance, lifecycle and expected
+    /// text under the SAME SQLite transaction that writes and audits the result.
+    /// A concurrent writer cannot change ownership/scope between the guard
+    /// and the update. Learned or expired memories remain immutable here.
+    pub fn edit_manual_memory(
+        &self,
+        id: &str,
+        expected_text: &str,
+        new_text: &str,
+    ) -> Result<Value, ManualMemoryEditError> {
+        use ManualMemoryEditError as E;
+        let mut conn = self.conn.lock().map_err(|_| E::Database)?;
+        let tx = conn.transaction().map_err(|_| E::Database)?;
+        let mut record: Value = tx.query_row(
+            "SELECT data, id, created_at, updated_at FROM records WHERE kind='memory' AND id=?1",
+            [id],
+            record_from_row,
+        ).optional().map_err(|_| E::Database)?.ok_or(E::NotFound)?;
+        if record["source"] != "user" {
+            return Err(E::NotManual);
+        }
+        if !crate::engine::memory::retrieval_eligible(&record)
+            || !matches!(record["status"].as_str(), None | Some("active"))
+        {
+            return Err(E::NotActive);
+        }
+        if record["text"].as_str() != Some(expected_text) {
+            return Err(E::Conflict);
+        }
+        record["text"] = json!(new_text);
+        record["updatedAt"] = json!(chrono::Utc::now().to_rfc3339());
+        record["verification"] = json!("manual_edit");
+        record["sourceMessageIds"] = json!([]);
+        record["evidenceQuote"] = Value::Null;
+        tx.execute(
+            "UPDATE records SET data=?2, updated_at=datetime('now') WHERE kind='memory' AND id=?1",
+            params![id,record.to_string()],
+        ).map_err(|_| E::Database)?;
+        tx.execute(
+            "INSERT INTO audit(id,event,detail) VALUES(?1,'memory.manual_edit',?2)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                json!({"id":id,"source":"user","scope":record["scope"]}).to_string(),
+            ],
+        ).map_err(|_| E::Database)?;
+        tx.commit().map_err(|_| E::Database)?;
+        Ok(record)
     }
 
     pub fn save_channel(&self, value: &Value, secret: Option<(&str, &str)>) -> Option<Value> {
