@@ -227,6 +227,36 @@ impl DominionClient {
         }
     }
 
+    /// Dedicated native SDK endpoints. These are compatible with the generic
+    /// session API, but run through DominionSdk::run_streamed on the server.
+    pub async fn create_sdk_thread(&self, input:SessionCreate)->Result<DominionThread>{
+        let selection=input.selection.clone();
+        let session:Session=self.json(Method::POST,&["sdk","threads"],
+            Some(serde_json::to_value(input)?)).await?;
+        Ok(DominionThread{client:self.clone(),id:session.id,selection})
+    }
+    pub async fn sdk_thread(&self,id:&str)->Result<Session>{
+        self.json(Method::GET,&["sdk","threads",id],None).await
+    }
+    pub async fn sdk_thread_history(&self,id:&str)->Result<Vec<Message>>{
+        self.json(Method::GET,&["sdk","threads",id,"history"],None).await
+    }
+    pub async fn steer_sdk_thread(&self,id:&str,instruction:&str)->Result<Value>{
+        self.json(Method::POST,&["sdk","threads",id,"steer"],
+            Some(json!({"instruction":instruction}))).await
+    }
+    pub async fn cancel_sdk_thread(&self,id:&str)->Result<Value>{
+        self.json(Method::POST,&["sdk","threads",id,"cancel"],Some(json!({}))).await
+    }
+    pub async fn stream_sdk_thread(&self,id:&str,body:ChatRequest)->Result<ChatStream>{
+        let response=Self::checked_response(
+            self.request(true,Method::POST,self.api_url(&["sdk","threads",id,"run"])?)
+                .json(&body).send().await?
+        ).await?;
+        Self::require_sse(&response)?;
+        crate::streaming::chat_stream(response)
+    }
+
     pub async fn create_session(&self, input: SessionCreate) -> Result<Session> {
         self.json(Method::POST, &["sessions"], Some(serde_json::to_value(input)?)).await
     }
@@ -325,6 +355,26 @@ pub struct ThreadResult {
 impl DominionThread {
     pub async fn messages(&self) -> Result<Vec<Message>> {
         self.client.messages(&self.id).await
+    }
+    /// Durable live owner correction; no new model run is started here.
+    pub async fn steer(&self,instruction:&str)->Result<Value>{
+        self.client.steer_sdk_thread(&self.id,instruction).await
+    }
+    /// Run via native DominionSdk rather than the generic /api/chat surface.
+    pub async fn run_native_streamed(&self,input:impl Into<String>)->Result<ChatStream>{
+        self.client.stream_sdk_thread(&self.id,
+            ChatRequest::new(self.id.clone(),input).selection(self.selection.clone())).await
+    }
+    pub async fn run_native(&self,input:impl Into<String>)->Result<ThreadResult>{
+        let seen:HashSet<String>=self.client.sdk_thread_history(&self.id).await?
+            .into_iter().map(|message|message.id).collect();
+        let mut stream=self.run_native_streamed(input).await?;
+        let mut events=Vec::new();
+        while let Some(event)=stream.next().await{events.push(event?);}
+        let message=self.client.sdk_thread_history(&self.id).await?.into_iter()
+            .rfind(|message|message.role=="assistant"&&!seen.contains(&message.id));
+        let final_response=message.as_ref().map_or_else(String::new,|m|m.content.clone());
+        Ok(ThreadResult{final_response,message,events})
     }
     pub async fn cancel(&self) -> Result<Value> {
         self.client.cancel_session(&self.id).await
