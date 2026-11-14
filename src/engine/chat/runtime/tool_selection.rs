@@ -413,6 +413,31 @@ pub(crate) fn autonomous_code_tool_window(definitions:Vec<Value>,input:&str)->Ve
             selected.push(tool.clone());
         }
     }
+    // A compact code menu must never silently remove a capability that the
+    // owner explicitly requested. This is selection, not an authorization
+    // layer: preserve only definitions already admitted by the upstream gate.
+    // In particular, mixed coding + research/browser/shell goals must be able
+    // to execute every part of the owner's request.
+    let web_requested=intent_has_any(&lower,&[
+        "웹 검색","검색해","인터넷","온라인","브라우저","웹사이트",
+        "web search","browse","browser","online","http://","https://",
+    ]);
+    let shell_requested=intent_has_any(&lower,&[
+        "명령 실행","명령어","터미널","셸","실행해","실행하",
+        "run ","execute ","terminal","shell","bash",
+    ]);
+    for definition in &definitions {
+        let name=tool_name(definition);
+        if name.is_empty() {continue;}
+        let exact=lower.contains(&name.to_lowercase());
+        let web=web_requested && matches!(name,
+            "web_search"|"http_fetch"|"browser_control"|"browser_open");
+        let shell=shell_requested && matches!(name,"shell_exec"|"terminal_exec");
+        if (exact||web||shell)
+            && !selected.iter().any(|item|tool_name(item)==name) {
+            selected.push(definition.clone());
+        }
+    }
     if selected.is_empty(){definitions}else{selected}
 }
 
@@ -456,8 +481,20 @@ mod sub1_native_autonomous_tool_tests {
         let rust=autonomous_code_tool_window(tools.clone(),"Update src/lib.rs then cargo test");
         assert!(rust.iter().any(|v|tool_name(v)=="workspace_replace_function"));
         assert!(rust.iter().any(|v|tool_name(v)=="shell_exec"));
+        // The optimization cannot override explicit owner instructions for
+        // web research, browser verification, shell execution or a named MCP.
+        let mixed=autonomous_code_tool_window(
+            [tools.clone(),vec![def("web_search"),def("http_fetch")]].concat(),
+            "Fix src/main.rs, 웹 검색해 확인하고 browser_control, shell_exec, mcp__danger 도구도 사용하세요"
+        );
+        let names=mixed.iter().map(tool_name).collect::<Vec<_>>();
+        for requested in ["web_search","http_fetch","browser_control","shell_exec","mcp__danger"] {
+            assert!(names.contains(&requested),"owner-requested tool missing: {requested}");
+        }
+        // Unrelated capabilities remain omitted from compact single-purpose
+        // tasks, and a named tool cannot be manufactured if not authorized.
         let no_shell=autonomous_code_tool_window(tools.into_iter()
-            .filter(|v|tool_name(v)!="shell_exec").collect(),"fix x.rs and test");
+            .filter(|v|tool_name(v)!="shell_exec").collect(),"fix x.rs and test; use shell_exec");
         assert!(!no_shell.iter().any(|v|tool_name(v)=="shell_exec"),
             "The window cannot invent a capability denied by upstream policy");
     }
