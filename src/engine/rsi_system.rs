@@ -108,12 +108,18 @@ pub(crate) use handoff::handoff_evidence;
 /// original execution rather than repeatedly collecting the same failure.
 pub(crate) fn usage_evidence(state:&crate::state::AppState)->Value {
     let report=crate::engine::rsi_scan::report(state);
-    let signals=report["signals"].as_array().into_iter().flatten()
+    let feedback=agent_feedback::observe(state);
+    let mut signals=report["signals"].as_array().into_iter().flatten()
         .filter(|signal|matches!(signal["kind"].as_str(),Some("execution_failures"|"failed_jobs")))
         .take(6).cloned().collect::<Vec<_>>();
-    json!({"source":"recorded_agent_work","signals":signals,"checks":report["checks"],"qualityProven":false})
+    signals.extend(feedback["signals"].as_array().into_iter().flatten()
+        .take(6).cloned());
+    json!({"source":"recorded_agent_work","signals":signals,"checks":report["checks"],
+        "goalFeedback":feedback,"qualityProven":false,
+        "independentEvaluation":false})
 }
 
+mod agent_feedback;
 mod frontier;
 pub(crate) use frontier::architecture_frontier;
 
