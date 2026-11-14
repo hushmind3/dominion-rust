@@ -225,6 +225,12 @@ pub(super) async fn run_turn_body(
     if tool_discovery_applies(is_room, session["rsiRun"] == true) {
         tool_definitions = select_tool_definitions(tool_definitions, &request.input, &discovery);
     }
+    if session["goalWorktree"].is_string() {
+        // Workspace-relative source tools are mandatory under goal isolation.
+        // Absolute file tools would bypass the source worktree boundary.
+        tool_definitions.retain(|definition|
+            !matches!(tool_name(definition),"file_read"|"file_list"|"file_write"));
+    }
     if session["delegatedReadOnly"]==true {
         // Do not advertise capabilities that cannot execute. The model sees
         // only bounded reading and status tools, not MCP or mutation tools.
