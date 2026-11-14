@@ -991,42 +991,25 @@ async fn run_resume(context: &JobContext, job: &Value) -> Result<Value, String> 
 }
 
 fn schedule_automations(state: &AppState) {
-    let now = chrono::Utc::now();
+    let now=chrono::Utc::now();
     for automation in state.store.all("automation") {
-        if automation.get("enabled").and_then(|value| value.as_bool()) != Some(true) {
-            continue;
+        let Some(id)=automation["id"].as_str() else{continue};
+        let Some(due)=automation["nextAt"].as_str() else{continue};
+        if automation["enabled"]!=true {continue;}
+        match state.store.claim_due_automation(id,due,now){
+            Ok(Some((updated,job)))=>{
+                state.bus.record("automation",&updated);
+                state.bus.record("job",&job);
+                state.store.audit("automation.queued",json!({
+                    "automationId":id,"jobId":job["id"],
+                    "kind":job["kind"],"scheduledAt":due
+                }));
+            }
+            Ok(None)=>{},
+            Err(error)=>state.store.audit("automation.schedule_failed",json!({
+                "automationId":id,"reason":error
+            })),
         }
-        let Some(next_at) = automation.get("nextAt").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let Ok(next) = chrono::DateTime::parse_from_rfc3339(next_at) else {
-            continue;
-        };
-        if next.with_timezone(&chrono::Utc) > now {
-            continue;
-        }
-        let kind = automation
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or("prompt");
-        let input = automation
-            .get("input")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        let job_kind = if kind == "meeting" { "room" } else { kind };
-        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
-            continue;
-        }
-        enqueue(state, job_kind, input);
-        let mut updated = automation.clone();
-        let interval = automation
-            .get("intervalMinutes")
-            .and_then(|value| value.as_i64())
-            .unwrap_or(1440)
-            .max(1);
-        updated["lastAt"] = json!(now.to_rfc3339());
-        updated["nextAt"] = json!((now + chrono::Duration::minutes(interval)).to_rfc3339());
-        state.store.put("automation", &updated);
     }
 }
 
