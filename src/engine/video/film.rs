@@ -215,38 +215,50 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     }
     let ffmpeg = ffmpeg_from_config(&input["config"])
         .ok_or("장편 영상 합성에 FFmpeg가 필요합니다.")?;
-    let mut receipts = Vec::new();
-    let mut clip_quality = Vec::new();
-    let gate=input["technicalGate"]==true;
+    if input["technicalGate"]!=true||quality::executable(&input["config"]).is_none(){
+        return Err("유료 다중 영상은 FFprobe 기술 검증이 필요합니다.".into());
+    }
+    // Verify all existing outputs before the first new paid submission.
+    reuse_other_shots(ctx,input,dir)?;
+    let mut receipts=Vec::new();
+    let mut charged=0u64;
     let aspect=input["aspectRatio"].as_str().unwrap_or("9:16");
     let audio=input["render"]["generate_audio"]==true;
-    for (index, clip) in clips.iter().enumerate() {
+    for (index,clip) in clips.iter().enumerate(){
         ctx.checkpoint(json!({}))?;
-        let duration = clip["duration"].as_u64().ok_or("장면 길이가 없습니다.")?;
-        let prompt = clip["prompt"].as_str().ok_or("장면 프롬프트가 없습니다.")?;
-        let clip_dir = dir.join(format!("clip-{index:02}"));
+        let duration=clip["duration"].as_u64().ok_or("장면 길이 누락")?;
+        let prompt=clip["prompt"].as_str().ok_or("장면 프롬프트 누락")?;
+        let clip_dir=dir.join(format!("clip-{index:02}"));
         std::fs::create_dir_all(&clip_dir).map_err(|e|e.to_string())?;
-        // LTX's downloader verifies MP4 before atomic output.mp4 rename.
-        let completed = std::fs::metadata(clip_dir.join("output.mp4"))
-            .is_ok_and(|metadata| metadata.len() > 1024);
-        if !completed {
-            let mut frozen = input.clone();
-            frozen["render"]["film"] = Value::Null;
-            frozen["render"]["duration"] = json!(duration);
-            frozen["render"]["prompt"] = json!(prompt);
+        if let Some(previous)=saved_receipt(&clip_dir,clip,index)?{
+            receipts.push(previous);
+        }else{
+            // An interrupted remote POST may have succeeded while this
+            // process lost its receipt. Never charge a second time.
+            if ctx.state.store.get("job",&ctx.job_id)
+                .is_some_and(|job|job["videoState"]["inFlight"]==true){
+                return Err("needs_review: 불확실한 LTX 과금 요청을 자동 재제출하지 않습니다.".into());
+            }
+            let mut frozen=input.clone();
+            frozen["render"]["film"]=Value::Null;
+            frozen["render"]["duration"]=json!(duration);
+            frozen["render"]["prompt"]=json!(prompt);
             ctx.checkpoint(json!({"phase":"rendering",
                 "progress":5+80*index/clips.len(),
                 "videoState":{"filmClip":index+1,"filmTotal":clips.len(),"inFlight":false}}))?;
-            receipts.push(ltx::run(ctx,&frozen,&clip_dir).await?);
-        }
-        // Check every charged scene BEFORE stitching or touching the next
-        // paid request. An invalid scene remains on disk for review, so
-        // restarted work cannot silently buy it a second time.
-        if gate {
-            let report=quality::inspect(&input["config"],&clip_dir.join("output.mp4"),
-                duration,aspect,audio).await
-                .map_err(|e|format!("needs_review: Scene {} paid output is preserved, but ffprobe verification failed: {e}. Do not resubmit without owner action.",index+1))?;
-            clip_quality.push(report);
+            let provider=ltx::run(ctx,&frozen,&clip_dir).await?;
+            // The paid output exists at this point. On probe or receipt
+            // failure keep it, fail closed and require human review.
+            let technical=quality::inspect(&input["config"],&clip_dir.join("output.mp4"),
+                duration,aspect,audio).await.map_err(|e|format!(
+                "needs_review: 유료 장면 {} 검수 실패: {e}. 파일을 보존하고 재과금하지 않습니다.",index+1))?;
+            let receipt=json!({"version":1,"index":index,"duration":duration,
+                "promptSha256":prompt_sha(clip)?,
+                "outputSha256":file_sha(&clip_dir.join("output.mp4"))?,
+                "technicalQuality":technical,"provider":provider,"reused":false});
+            persist_receipt(&clip_dir,&receipt)?;
+            receipts.push(receipt);
+            charged+=1;
         }
         ctx.checkpoint(json!({"phase":"rendering",
             "progress":5+80*(index+1)/clips.len(),
@@ -278,8 +290,9 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
     std::fs::rename(staged,dir.join("output.mp4")).map_err(|e|e.to_string())?;
     Ok(json!({"engine":"ltx","mode":"film","model":input["render"]["model"],
         "duration":input["render"]["film"]["duration"],"shots":clips.len(),
-        "providerReceipts":receipts,"audio":input["render"]["generate_audio"],
-        "quality":input["render"]["quality"],"clipTechnicalQuality":clip_quality}))
+        "clipReceipts":receipts,"newPaidCallsThisRun":charged,
+        "audio":input["render"]["generate_audio"],
+        "quality":input["render"]["quality"],"semanticQualityVerified":false}))
 }
 
 #[cfg(test)]
