@@ -712,3 +712,30 @@ unverified execution claims. Existing server-side tool permissions and owner app
 tests actual HTTP/SSE wire-format invariants with a deterministic mock transport.
 `.github/workflows/ci.yml` runs the SDK tests alongside Rust/frontend validation.
 Run locally with `node --test sdk/index.test.mjs`. See `sdk/README.md`.
+
+
+### Native Rust agent SDK (first-party)
+
+The canonical DOMINION SDK lives in **`src/sdk.rs`** and is exported as `dominion_rust::sdk` by `src/lib.rs`. It executes the existing Rust model + tool + verification harness directly in-process; no JavaScript, Node.js, Copilot SDK or HTTP request to DOMINION is involved. The desktop binary and SDK now share the same library modules; `POST /api/chat` delegates to `DominionSdk::run_transport`.
+
+Rust usage (from an external Rust crate depending on this repository):
+
+```rust
+use dominion_rust::sdk::{DominionSdk, EngineConfig, TurnOptions};
+
+#[tokio::main]
+async fn main() -> Result<(), String> {
+    let sdk = DominionSdk::open(EngineConfig::new("./workspace", "./agent-data"))?;
+    sdk.register_provider("local", "http://127.0.0.1:11434/v1", "qwen3", None)?;
+    let session = sdk.create_session("Coding agent")?;
+    let result = sdk.run(
+        TurnOptions::new("Inspect the Rust code and implement the requested change")
+            .with_session(session["id"].as_str().unwrap())
+            .with_provider("local"),
+    ).await?;
+    println!("{:?}", result.message);
+    Ok(())
+}
+```
+
+`DominionSdk::stream` provides raw native model/tool events, `enqueue_prompt` persists jobs, and `start_job_workers` runs the existing Rust job queue in a standalone Tokio app. The SDK must own its data directory; do not concurrently open the desktop server's active SQLite store. `sdk/` remains an optional JavaScript client adapter for the React/web ecosystem, **not** the Rust agent engine. See `docs/architecture/DOMINION-NATIVE-RUST-SDK-SUB2-2026-11-14.md` for the shared execution path and validation.
