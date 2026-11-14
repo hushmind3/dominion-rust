@@ -288,6 +288,15 @@ pub async fn diff_goal(State(state):State<AppState>,Path(id):Path<String>)->Resp
     }
 }
 
+/// Exact, bounded patch for reproducible external evaluation. Never export
+/// clipped UI diffs, pending writes, or silently omitted untracked files.
+pub async fn export_goal_patch(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match crate::engine::goal_git::export_patch(&state,&id).await{
+        Ok(patch)=>Json(patch).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
+
 /// Explicit owner discard: only the goal-owned linked worktree is removed.
 pub async fn rollback_goal(State(state):State<AppState>,Path(id):Path<String>)->Response{
     match engine::goal_git::rollback(&state,&id).await{
