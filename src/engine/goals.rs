@@ -46,7 +46,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .store
         .get("goal", goal_id)
         .ok_or("목표를 찾을 수 없습니다.")?;
-    let text = goal
+    let mut text = goal
         .get("goal")
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -156,7 +156,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         .unwrap_or_else(|| json!(chrono::Utc::now().to_rfc3339()));
     // Baselines are stored before the first tool, so an existing untouched file
     // cannot satisfy an inferred create/edit acceptance check.
-    let criteria = goal.get("acceptanceChecks").cloned().unwrap_or_else(|| {
+    let mut criteria = goal.get("acceptanceChecks").cloned().unwrap_or_else(|| {
         let mut checks = configured.as_array().cloned().unwrap_or_default();
         if checks.is_empty() {
             checks = infer_criteria(&text);
@@ -166,7 +166,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     goal["acceptanceChecks"] = criteria.clone();
     goal["workspaceInspection"] = workspace_view.clone();
     goal["codeNavigation"] = code_view.clone();
-    let task_id = goal["taskId"]
+    let mut task_id = goal["taskId"]
         .as_str()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
@@ -187,7 +187,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
                 .unwrap_or_default(),
         },
     );
-    let task_revision = root
+    let mut task_revision = root
         .as_ref()
         .and_then(crate::engine::episode::contract_revision)
         .map(str::to_string);
@@ -240,12 +240,90 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         })
         .unwrap_or_default();
     let mut applied_owner_revision=goal["appliedOwnerPlanRevision"].as_u64().unwrap_or(0);
+    let mut applied_objective_revision=goal["appliedOwnerObjectiveRevision"].as_u64().unwrap_or(0);
     let start = checkpoint
         .get("nextIteration")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
 
     for index in start..max_iterations {
+        if control.is_cancelled(){
+            return Ok(finish(context,goal_id,"cancelled",gaps,None));
+        }
+
+        // Users control the *actual objective*, not just the generated plan.
+        // Adopt each new user revision only between real executor turns, with
+        // a fresh deterministic acceptance baseline and a new task contract.
+        // Old evidence stays archived by the revision module but can never
+        // satisfy a different goal's completion criteria.
+        if let Some(adopted)=crate::engine::owner_objective::adopt(
+            state,goal_id,applied_objective_revision,&workspace,index+1,
+        )? {
+            applied_objective_revision=adopted.revision;
+            text=adopted.objective;
+            criteria=adopted.acceptance;
+            evidence.clear();
+            gaps.clear();
+            stalled=0;
+            transcript.clear();
+            // The original root and its frozen predicates are immutable.
+            // A changed owner objective creates a new executable child root
+            // rather than silently rewriting the old acceptance contract.
+            task_id=format!("goal-{goal_id}-owner-{}",adopted.revision);
+            let owner_root=crate::engine::episode::start_root(
+                state,crate::engine::episode::RootSpec{
+                    task_id:&task_id,intent:&text,family:"goal",source:"owner",
+                    source_message_id:None,
+                    scope:json!({"partition":"local","sessionId":session_id,
+                        "goalId":goal_id,"objectiveRevision":adopted.revision}),
+                    mandatory:criteria.as_array().cloned().unwrap_or_default(),
+                },
+            );
+            task_revision=owner_root.as_ref()
+                .and_then(crate::engine::episode::contract_revision)
+                .map(str::to_string);
+
+            // The old plan is NOT reused for the revised objective. Ask the
+            // existing planner for a fresh short plan; the fallback does not
+            // depend on an extra billed call if the planner is unavailable.
+            let refreshed=control.complete(
+                &plan_provider,&plan_model,
+                "You are the planner for the owner's NEWEST objective. Ignore stale plans. Build a concrete ordered implementation and verification plan, maximum 6 steps. No tools.",
+                &format!("최신 사용자 목표(그대로 유지): {text}\n새 검증 조건: {criteria}\n작업공간 조사: {workspace_context}"),
+            ).await.unwrap_or_else(|_|
+                "1. 최신 사용자 목표에 따라 현재 소스와 상태를 조사한다.\n2. 필요한 작업을 실행한다.\n3. 독립적인 검증 조건으로 결과를 확인한다.".into());
+            if control.is_cancelled(){
+                return Ok(finish(context,goal_id,"cancelled",gaps,None));
+            }
+            plan=refreshed.chars().take(6000).collect();
+            let version=plan_history.iter().filter_map(|v|v["version"].as_u64())
+                .max().unwrap_or(0).saturating_add(1);
+            plan_history.push(json!({
+                "version":version,"plan":plan,
+                "reason":"owner_objective_revision",
+                "ownerObjectiveRevision":adopted.revision,
+                "at":chrono::Utc::now().to_rfc3339(),
+            }));
+            if plan_history.len()>40{plan_history.drain(..plan_history.len()-40);}
+            applied_owner_revision=state.store.get("goal",goal_id)
+                .and_then(|g|g["appliedOwnerPlanRevision"].as_u64()).unwrap_or(applied_owner_revision);
+            patch_goal(state,goal_id,json!({
+                "plan":plan,"planHistory":plan_history,"taskId":task_id,
+                "phase":"execute","planScore":crate::engine::plan_quality::score(&plan,&text),
+            }));
+            context.checkpoint(json!({"goalState":{
+                "sessionId":session_id,"nextIteration":index,
+                "inFlight":false,"reviewPending":false,
+                "evidence":[],"transcript":"","gaps":[],
+                "stalled":0,"plan":plan,
+                "objectiveRevision":adopted.revision,
+            }}))?;
+            context.emit(json!({
+                "type":"goal_objective_adopted","goalId":goal_id,
+                "revision":adopted.revision,"iteration":index+1,
+                "acceptanceChecks":criteria.as_array().map(Vec::len).unwrap_or(0),
+            }));
+        }
         // Snapshot objective progress before the executor makes another
         // tool call. A second identical command or self-reported success is
         // NOT evidence of progress and must not suppress replanning.
@@ -384,6 +462,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         patch_goal(state, goal_id, json!({"reviewHistory":review_history}));
         gaps.sort();
         gaps.dedup();
+        // An owner update arriving during the current model/review step
+        // invalidates completion under the old objective, even when all old
+        // acceptance checks passed. Apply it at the NEXT safe turn boundary.
+        if crate::engine::owner_objective::pending(state,goal_id,applied_objective_revision){
+            gaps.push("새 사용자 목표가 도착했습니다. 이전 목표의 완료를 확정하지 않고 다음 단계에서 최신 목표를 적용합니다.".into());
+        }
         let complete = complete && gaps.is_empty();
         // Final successful and budget-exhausted turns must be counted too:
         // the completion branch exits before the next replan decision.
@@ -520,7 +604,18 @@ fn finish(
         .store
         .get("job", &context.job_id)
         .is_some_and(|job| job["cancelRequested"].as_bool() == Some(true));
-    let status = if cancelled { "cancelled" } else { status };
+    // Do not let a late model/reviewer result win over an owner revision
+    // submitted a moment before finalization. Leave a durable review state
+    // if no executor iteration remains to adopt the revised objective.
+    let mut gaps=gaps;
+    let previous=context.state.store.get("goal",id).unwrap_or(Value::Null);
+    let newest=previous["ownerObjectiveRevision"].as_u64().unwrap_or(0);
+    let applied=previous["appliedOwnerObjectiveRevision"].as_u64().unwrap_or(0);
+    let superseded=status=="completed" && newest>applied;
+    if superseded {
+        gaps.push("사용자의 새로운 목표가 대기 중입니다. 최신 목표를 반영해 재개해야 완료로 확정할 수 있습니다.".into());
+    }
+    let status = if cancelled { "cancelled" } else if superseded { "needs_review" } else { status };
     let prior=context.state.store.get("goal",id).unwrap_or(Value::Null);
     let proof=prior["evidence"].as_array().cloned().unwrap_or_default();
     let deliverables=artifacts::collect(&context.state,&prior,&proof);
