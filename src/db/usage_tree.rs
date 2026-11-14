@@ -22,7 +22,9 @@ impl Store {
                 if goal["sessionId"].as_str() == Some(cursor.as_str()) {
                     return Some((cursor, goal));
                 }
-                return None;
+                // A delegated session can carry the goalId for workspace
+                // ownership without being the root. Follow its authenticated
+                // parent edge; never use a child's claim to choose a budget.
             }
             cursor = session["parentSessionId"].as_str()?.to_owned();
         }
@@ -124,6 +126,13 @@ mod tests {
         assert_eq!(usage["cachedPromptTokens"], 12);
         assert_eq!(store.session_usage("root")["totalTokens"], 10);
         assert_eq!(store.enclosing_goal("grand").unwrap().0, "root");
+        // Child sessions created by the actual delegation gateway inherit
+        // goalId for workspace attribution; this must NOT cut off ancestry.
+        let mut child=store.get("session","child").unwrap();
+        child["goalId"]=json!("g");
+        store.put("session",&child).unwrap();
+        assert_eq!(store.enclosing_goal("grand").unwrap().0, "root");
+        assert_eq!(store.enclosing_goal("child").unwrap().0, "root");
         assert!(store.enclosing_goal("other").is_none());
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
