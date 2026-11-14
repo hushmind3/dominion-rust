@@ -12,14 +12,15 @@ const memory=read('web/src/pages/Memory.tsx')
 const api=read('src/api/mod.rs')
 const collections=read('src/api/collections.rs')
 
-test('sidebar exposes 15 unique top-level items with goals and one connection entry',()=>{
+test('sidebar exposes 14 meaningful entries without a redundant Goal page',()=>{
  const navigation=nav.match(/export const navigation:[\s\S]*?\n\]/)?.[0]||''
  const ids=[...navigation.matchAll(/\{id:'([^']+)',label:'nav\.[^']+',icon:/g)].map(match=>match[1])
- assert.equal(ids.length,15)
+ assert.equal(ids.length,14)
  assert.equal(new Set(ids).size,15)
  assert.equal(ids.filter(id=>id==='connections').length,1)
+ assert.ok(!ids.includes('goals'),'Goal is a chat command, not another sidebar product menu')
  for(const hidden of ['extensions','capabilities'])assert.equal(ids.includes(hidden),false)
- for(const required of ['memory','rsi','video','rooms','models','agents','goals','developer','workflows'])
+ for(const required of ['memory','rsi','video','rooms','models','agents','developer','workflows'])
   assert.ok(ids.includes(required),'missing '+required)
 })
 
@@ -56,13 +57,13 @@ test('manual memory edits have a verified server path, not a decorative control'
  assert.ok(collections.includes('StatusCode::FORBIDDEN'))
 })
 
-test('standalone goals keep durable workflow console, cancellation and reviewed resume',()=>{
- const goalPage=read('web/src/pages/Goals.tsx')
+test('slash-goal engine persists while workflow hosts the optional review console',()=>{
+ const workflows=read('web/src/pages/Workflows.tsx')
  const goalConsole=read('web/src/pages/workflows/GoalConsole.tsx')
  const goalsAPI=read('src/api/goals.rs')
  const runner=read('src/engine/goals.rs')
- assert.ok(app.includes("{page==='goals'&&<GoalsPage"))
- assert.ok(goalPage.includes('<GoalConsole openSession={openSession}/>'))
+ assert.ok(!app.includes("page==='goals'"))
+ assert.ok(workflows.includes('<GoalConsole openSession={openSession}/>'))
  assert.ok(goalConsole.includes("+'/cancel'"))
  assert.ok(goalConsole.includes("+'/resume'"))
  assert.ok(goalConsole.includes('acknowledgeUnknownEffects:true'))
