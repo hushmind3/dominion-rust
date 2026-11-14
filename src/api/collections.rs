@@ -209,6 +209,21 @@ pub async fn save(
             )
                 .into_response();
         }
+        // Stable, distinct step IDs bind checkpoints and artifact receipts to
+        // the same execution contract even when the user rearranges steps.
+        let mut seen=std::collections::HashSet::new();
+        if let Some(steps)=body["steps"].as_array_mut(){
+            for step in steps {
+                if step["id"].as_str().is_none_or(|id|id.trim().is_empty()){
+                    step["id"]=json!(uuid::Uuid::new_v4().to_string());
+                }
+                if !seen.insert(step["id"].as_str().unwrap_or_default().to_string()){
+                    return (StatusCode::BAD_REQUEST,Json(json!({
+                        "error":"워크플로 단계 ID가 중복되었습니다."
+                    }))).into_response();
+                }
+            }
+        }
     }
     match state.store.put(&kind, &body) {
         Some(record) => {
