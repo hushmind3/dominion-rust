@@ -447,6 +447,70 @@ pub(crate) fn command_matches(item: &Value, command: &str) -> bool {
     }
     actual.trim() == command.trim()
 }
+/// A test command verifies the source state AT THAT POINT, not a future
+/// modified state. Reusing a passing test from before the last source write is
+/// a false positive on multi-turn autonomous coding tasks.
+fn source_mutation(item: &Value) -> bool {
+    if !successful_evidence(item) { return false; }
+    let args=item.get("arguments").or_else(||item.get("args")).unwrap_or(&Value::Null);
+    match tool_name(item) {
+        "workspace_write" | "workspace_replace" | "workspace_replace_range"
+        | "workspace_replace_function" | "file_write" => true,
+        "shell_exec" | "terminal_exec" => {
+            let command=string(args,"command").to_lowercase();
+            let argv=args["args"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).collect::<Vec<_>>().join(" ").to_lowercase();
+            let full=if argv.is_empty(){command.clone()}else{format!("{command} {argv}")};
+            // Direct source-mutation shell commands are not file_write tools.
+            // Keep this list conservative; avoid classifying test/build commands
+            // as writes merely because they execute a compiler.
+            full.starts_with("git apply ")
+                || full.starts_with("cargo fmt")
+                || full.starts_with("go fmt")
+                || full.starts_with("gofmt -w")
+                || full.starts_with("rustfmt ")
+                || full.starts_with("sed -i")
+                || full.starts_with("perl -pi")
+                || full.starts_with("npm run format")
+                || full.starts_with("pnpm format")
+                || full.starts_with("yarn format")
+                || full.starts_with("tee ")
+                || full.contains(" > ")
+        }
+        _ => false,
+    }
+}
+
+/// Determines if a successful later edit invalidates a prior test receipt.
+/// opSeq is authoritative inside one execution. RFC3339 timestamps order
+/// receipts across successive goal iterations/executions. Missing chronology
+/// fails closed: an unsequenced write cannot validate an older test.
+fn test_stale_after_write(test: &Value, write: &Value) -> bool {
+    let same_run=test["runId"].as_str().is_some_and(|id|
+        !id.is_empty() && write["runId"].as_str()==Some(id));
+    if same_run {
+        if let (Some(check),Some(edit))=(test["opSeq"].as_u64(),write["opSeq"].as_u64()){
+            return edit>check;
+        }
+    }
+    let check_time=test["startedAt"].as_str().or_else(||test["finishedAt"].as_str())
+        .and_then(|time|chrono::DateTime::parse_from_rfc3339(time).ok());
+    let write_time=write["finishedAt"].as_str().or_else(||write["startedAt"].as_str())
+        .and_then(|time|chrono::DateTime::parse_from_rfc3339(time).ok());
+    match (check_time,write_time) {
+        (Some(check),Some(edit)) => edit>=check,
+        // A later unsequenced edit cannot safely preserve the test's guarantee.
+        _ => true,
+    }
+}
+
+pub(crate) fn fresh_command_matches(evidence: &[Value], command: &str) -> bool {
+    evidence.iter().filter(|item|command_matches(item,command)).any(|test| {
+        !evidence.iter().filter(|item|source_mutation(item))
+            .any(|write| test_stale_after_write(test,write))
+    })
+}
+
 pub(crate) fn acceptance_gaps(
     state:&AppState,goal:&str,checks:&Value,evidence:&[Value]
 )->Vec<String>{
@@ -510,12 +574,18 @@ fn acceptance_gaps_with_root(
             "tool_succeeded" => evidence.iter().any(|item| {
                 successful_evidence(item) && tool_name(item) == check["tool"].as_str().unwrap_or("")
             }),
-            "command_succeeded" => evidence
-                .iter()
-                .any(|item| command_matches(item, check["command"].as_str().unwrap_or(""))),
+            "command_succeeded" => fresh_command_matches(
+                evidence, check["command"].as_str().unwrap_or("")),
+
             _ => false,
         };
         if !passed {
+            if kind=="command_succeeded" &&
+                evidence.iter().any(|item|command_matches(item,check["command"].as_str().unwrap_or(""))) {
+                gaps.push(format!("검증 명령 '{}' 성공 이후 소스가 변경됐습니다. 마지막 수정 후 다시 실행하세요.",
+                    check["command"].as_str().unwrap_or("")));
+                continue;
+            }
             if kind == "file_replace_exact" {
                 gaps.push(format!("The exact replacement in {path} has not been verified. Preserve every other byte of the original file."));
                 continue;
@@ -533,6 +603,84 @@ fn acceptance_gaps_with_root(
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+    #[test]
+    fn later_source_edits_invalidate_previous_successful_tests() {
+        let checked=json!({"type":"command_succeeded","command":"cargo test"});
+        let cmd=|seq:u64|json!({
+            "tool":"shell_exec","runId":"run-1","opSeq":seq,
+            "arguments":{"command":"cargo test"},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:01:00Z",
+            "finishedAt":"2026-11-14T10:01:10Z"
+        });
+        let write=|seq:u64|json!({
+            "tool":"workspace_replace_range","runId":"run-1","opSeq":seq,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T10:01:01Z",
+            "finishedAt":"2026-11-14T10:01:02Z"
+        });
+        assert!(fresh_command_matches(&[write(1),cmd(2)],"cargo test"));
+        assert!(!fresh_command_matches(&[cmd(1),write(2)],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),write(2),cmd(3)],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),json!({
+            "tool":"workspace_read","runId":"run-1","opSeq":2,
+            "result":{"content":"read-only"}
+        })],"cargo test"));
+        assert!(fresh_command_matches(&[cmd(1),json!({
+            "tool":"workspace_write","runId":"run-1","opSeq":2,
+            "result":{"success":false}
+        })],"cargo test"));
+        assert_eq!(checked["command"],"cargo test");
+    }
+
+    #[test]
+    fn multi_iteration_tests_require_a_new_check_after_newer_source_write() {
+        let (state,root)={
+            let root=std::env::temp_dir().join(format!("goal-stale-check-{}",uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let config=crate::config::Config{
+                port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()
+            };
+            let state=crate::state::AppState::new(config.clone(),
+                crate::db::Store::open(&config.db_path()).unwrap(),
+                crate::vault::Vault::open(&config.key_path()));
+            (state,root)
+        };
+        let test=json!({
+            "tool":"shell_exec","runId":"old-run","opSeq":3,
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:00:00Z","finishedAt":"2026-11-14T10:01:00Z"
+        });
+        let later_edit=json!({
+            "tool":"workspace_write","runId":"new-run","opSeq":1,
+            "arguments":{"path":"src/lib.rs"},"result":{"written":true},
+            "startedAt":"2026-11-14T10:02:00Z","finishedAt":"2026-11-14T10:02:01Z"
+        });
+        let criteria=json!([{"type":"command_succeeded","command":"cargo test"}]);
+        let gaps=acceptance_gaps(&state,"run tests",&criteria,&[test.clone(),later_edit.clone()]);
+        assert_eq!(gaps.len(),1,"{gaps:?}");
+        assert!(gaps[0].contains("다시 실행"),"{gaps:?}");
+        let new_test=json!({
+            "tool":"terminal_exec","runId":"third-run","opSeq":1,
+            "arguments":{"command":"cargo","args":["test"]},
+            "result":{"exitCode":0},
+            "startedAt":"2026-11-14T10:03:00Z","finishedAt":"2026-11-14T10:03:20Z"
+        });
+        assert!(acceptance_gaps(&state,"run tests",&criteria,
+            &[test,later_edit,new_test]).is_empty());
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsequenced_writes_fail_closed_but_failed_writes_do_not() {
+        let ok=json!({"tool":"shell_exec","arguments":{"command":"npm test"},
+            "result":{"exitCode":0}});
+        let changed=json!({"tool":"workspace_write","result":{"written":true}});
+        assert!(!fresh_command_matches(&[ok.clone(),changed.clone()],"npm test"));
+        let failed=json!({"tool":"workspace_write","result":{"error":"permission denied"}});
+        assert!(fresh_command_matches(&[ok,failed],"npm test"));
+    }
+
 
     #[test]
     fn reading_an_input_does_not_require_it_to_change() {
