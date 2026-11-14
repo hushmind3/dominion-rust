@@ -132,11 +132,19 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     }
     let old=&previous["goalState"];
     let session=goal["sessionId"].as_str().unwrap_or("");
-    let unknown=old["inFlight"]==true || old["reviewPending"]==true
-        || (session.len()>0 && state.store.all("execution_operation").iter().any(|op|
-            op["outcomeUnknown"]==true && op["runId"].as_str()
-                .and_then(|key|state.store.get("execution",key))
-                .is_some_and(|execution|execution["sessionId"]==session)));
+    let persisted_unknown=if session.is_empty(){false}else{
+        match state.store.session_has_uncertain_effects(session){
+            Ok(value)=>value,
+            Err(cause)=>{
+                state.store.audit("goal.resume_inspection_failed",
+                    json!({"goalId":id,"reason":cause}));
+                return error(StatusCode::INTERNAL_SERVER_ERROR,
+                    "도구 실행 상태를 조회할 수 없습니다. 복구 작업을 중단했습니다.");
+            }
+        }
+    };
+    let unknown=old["inFlight"]==true||old["reviewPending"]==true
+        ||persisted_unknown;
     let note=body["resolutionNote"].as_str().unwrap_or("").trim();
     if unknown && (body["acknowledgeExternalEffects"]!=true || note.chars().count()<10){
         return error(StatusCode::BAD_REQUEST,"외부 작업 결과가 불확실합니다. 실행 기록을 직접 확인한 뒤 승인과 10자 이상의 처리 기록을 제출하세요.");
@@ -182,24 +190,40 @@ pub async fn resume_goal(State(state):State<AppState>,Path(id):Path<String>,Json
     history.push(json!({"previousJobId":previous["id"],"previousStatus":previous["status"],
         "unknownEffectsAcknowledged":unknown,"resolutionNote":note,"nextIteration":next_step,
         "at":chrono::Utc::now().to_rfc3339()}));
-    let saved=state.store.patch_if("goal",&id,"status",&goal["status"],&json!({
+    let job_id=uuid::Uuid::new_v4().to_string();
+    let job=json!({"id":job_id,"kind":"goal","status":"queued",
+        "queuedAt":chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros,true),
+        "input":{"goalId":id},"attempts":0,"stepIndex":0,
+        "stepTotal":0,"events":[]});
+    let patch=json!({
         "status":"queued","phase":"queued","resumeState":resume,"resumeHistory":history,
         "maxIterations":max,"maxExecutorTokens":new_cap,"error":Value::Null,"gaps":gaps,
         "resumedAt":chrono::Utc::now().to_rfc3339()
-    }));
-    let Some(saved)=saved else{return error(StatusCode::CONFLICT,"목표 상태가 변경되었습니다.");};
-    state.bus.record("goal",&saved);
-    if !session.is_empty(){state.clear_cancel(session);}
-    let Some(job)=crate::engine::jobs::enqueue(&state,"goal",json!({"goalId":id})) else{
-        let _=state.store.patch_if("goal",&id,"status",&json!("queued"),
-            &json!({"status":"needs_review","phase":"needs_review"}));
-        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    });
+    let reconciliation=if persisted_unknown && unknown{
+        Some((session,note))
+    }else{None};
+    let saved=match state.store.resume_goal_atomic(
+        &id,goal["status"].as_str().unwrap_or(""),
+        goal["jobId"].as_str().unwrap_or(""),&patch,&job,reconciliation
+    ){
+        Ok(Some(saved))=>saved,
+        Ok(None)=>return error(StatusCode::CONFLICT,"목표 상태 또는 작업 버전이 변경되었습니다."),
+        Err(cause)=>{
+            state.store.audit("goal.resume_transaction_failed",
+                json!({"goalId":id,"reason":cause}));
+            return error(StatusCode::INTERNAL_SERVER_ERROR,
+                "목표 재개와 작업 등록을 함께 저장하지 못했습니다. 다시 시도할 수 있습니다.");
+        }
     };
-    let _=state.store.patch_if("goal",&id,"status",&json!("queued"),
-        &json!({"jobId":job["id"]}));
-    state.store.audit("goal.resumed",json!({"goalId":id,"jobId":job["id"],
+    state.bus.record("goal",&saved);
+    let saved_job=state.store.get("job",&job_id).unwrap_or(job);
+    state.bus.record("job",&saved_job);
+    if !session.is_empty(){state.clear_cancel(session);}
+    state.store.audit("job.queued",json!({"kind":"goal","jobId":job_id}));
+    state.store.audit("goal.resumed",json!({"goalId":id,"jobId":job_id,
         "previousJobId":previous["id"],"explicitReview":unknown}));
-    (StatusCode::ACCEPTED,Json(json!({"goalId":id,"jobId":job["id"],
+    (StatusCode::ACCEPTED,Json(json!({"goalId":id,"jobId":job_id,
         "status":"queued","nextIteration":next_step,"reviewAcknowledged":unknown}))).into_response()
 }
 
