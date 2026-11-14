@@ -5,6 +5,7 @@ pub(crate) mod goal_metrics;
 pub(crate) mod goal_plan;
 pub(crate) mod goal_intake;
 pub(crate) mod goal_changes;
+pub(crate) mod goal_workspace;
 pub mod adaptation_loop;
 pub mod distill;
 pub mod effect;
