@@ -66,6 +66,28 @@ Previously, unresolved external effects were inspected **only if the model turn 
 
 The regression fixture writes actual `session`, `execution` and `execution_operation` records: another session's unknown operation cannot block the goal; a completed operation is allowed; unknown, interrupted and running operations are detected. A **grandchild** session's uncertain external effect blocks the parent until reconciled. Error-on-query uses the same fail-closed treatment.
 
+## 3.5 Persisted operation evidence and post-edit test freshness
+
+```text
+tool dispatch (runtime/dispatch.rs)
+ -> emit tool_end {operationId: stable execution_operation ID}
+ -> persist execution_operation {runId,opSeq,startedAt,finishedAt,tool,result}
+ -> engine/mod.rs::run_quiet_outcome
+ -> engine/tool_evidence.rs::hydrate
+      exact operationId + callId + tool + session match
+      status=completed, successful first-party result
+      reject absent/uncommitted/failed/forged/UI-only events
+ -> engine/goals.rs::evidence
+ -> verification.rs::fresh_command_matches
+      accept command_succeeded only if successful test postdates
+      ALL later successful source mutations
+ -> goal finish and goal_receipt
+```
+
+The timing boundary matters: a UI `tool_end` event is emitted before the database commit. Treating the event as final proof could complete a goal even if the receipt write fails. Exact operation ID hydration also defeats repeated `callId` values across provider turns. The source mutation comparator uses `opSeq` for one execution and strict RFC3339 started/finished timing across multiple executions. Missing chronology fails closed after a write; failed/no-change writes and read-only `cargo fmt --check` do not invalidate a passing test.
+
+Regression tests check actual persisted operation identity on a complete mocked-provider goal, forged/uncommitted or cross-session UI tool events, same-run ordering, cross-run chronology, successful modifications after passing tests, no-change/failed writes, and required retesting. These tests do not claim a new independent paid-provider completion.
+
 ## 4. Incremental goal context instead of repeated self-claims
 
 ```text
