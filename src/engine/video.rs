@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 mod cinematic;
 mod omni;
 mod quality;
+mod ltx;
+mod film;
+use sha2::Digest;
 use std::{
     path::{Path, PathBuf},
     time::Duration,
@@ -29,6 +32,7 @@ pub fn config(state: &AppState) -> Value {
     }
     if value["engine"]=="veo" {value["engine"]=json!("omni");}
     value["hasVideoKey"] = json!(state.store.has_secret("video:api"));
+    value["hasLtxKey"] = json!(state.store.has_secret("video:ltx-api"));
     value
 }
 pub fn quality_available(state:&AppState)->bool {
@@ -95,7 +99,7 @@ pub fn output_path(state: &AppState, id: &str) -> Result<PathBuf, String> {
 pub fn public_job(job: &Value) -> Value {
     let id = job["id"].as_str().unwrap_or("");
     let ready = job["kind"] == "video" && job["status"] == "completed";
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":job["videoState"]["scenes"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"ltxFilm":job["input"]["ltxFilm"],"film":job["input"]["render"]["film"],"qualityReceipt":job["result"]["qualityReceipt"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -107,7 +111,7 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .as_str()
         .or(cfg["engine"].as_str())
         .unwrap_or("native");
-    if !matches!(engine, "native" | "comfyui" | "omni") {
+    if !matches!(engine, "native" | "comfyui" | "omni" | "ltx") {
         return Err("지원하지 않는 영상 엔진입니다.".into());
     }
     // Reject an unverifiable remote render before its first billable call.
@@ -125,6 +129,16 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     if engine == "omni" && !cfg["hasVideoKey"].as_bool().unwrap_or(false) {
         return Err("Gemini API 키를 영상 설정에 등록하세요.".into());
     }
+    if engine=="ltx" && state.read_secret("video:ltx-api").is_none(){
+        return Err("LTX 2.5 API 키를 영상 설정에서 등록하세요.".into());
+    }
+    if engine=="ltx" && body["confirmPaidGeneration"]!=true {
+        return Err("LTX 유료 영상 생성에 명시적으로 동의해야 합니다.".into());
+    }
+    let ltx_model=body["ltxModel"].as_str().unwrap_or("ltx-2-5-fast");
+    let ltx_quality=body["ltxQuality"].as_str().unwrap_or("1080p");
+    let ltx_style=body["ltxStyle"].as_str().unwrap_or("cinematic");
+    let ltx_film=engine=="ltx" && body["ltxFilm"]==true;
     let cinematic = engine == "comfyui" && body["cinematic"] == true;
     let bad_shot_retries=body["badShotRetries"].as_u64().unwrap_or(0);
     if bad_shot_retries>1 || (bad_shot_retries>0 && !cinematic){
@@ -139,6 +153,17 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         .unwrap_or(15);
     if engine == "omni" && duration != 8 {
         return Err("Omni 영상은 현재 8초를 목표로 생성합니다.".into());
+    }
+    if engine=="ltx" {
+        if !matches!(ltx_model,"ltx-2-5-fast"|"ltx-2-5-pro"){
+            return Err("LTX 지원 모델을 확인하세요.".into());
+        }
+        let _=ltx::resolution(body["aspectRatio"].as_str()
+            .or(cfg["aspectRatio"].as_str()).unwrap_or("9:16"),ltx_quality)?;
+        ltx::cinematic_prompt(brief,ltx_style)?;
+        if !ltx_film && !ltx::valid_duration(ltx_model,ltx_quality,duration) {
+            return Err("LTX 2.5 모델·화질별 지원 길이를 확인하세요.".into());
+        }
     }
     if !(3..=if cinematic {120} else {180}).contains(&duration) {
         return Err(if cinematic {"시네마틱 영상은 3~120초를 지원합니다."}
@@ -178,13 +203,20 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     } else {
         seed
     };
-    let input = json!({
+    let mut input = json!({
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "cinematic":cinematic,"badShotRetries":bad_shot_retries,
+        "ltxFilm":ltx_film,"ltxModel":ltx_model,"ltxQuality":ltx_quality,
+        "ltxStyle":ltx_style,"confirmPaidGeneration":body["confirmPaidGeneration"]==true,
+        "confirmPaidMultiShot":body["confirmPaidMultiShot"]==true,
+        "technicalGate":true,"scenes":body.get("scenes").cloned().unwrap_or(Value::Null),
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
+    if ltx_film {
+        input["render"]=film::spec(&input,&input["config"])?;
+    }
     jobs::enqueue(state, "video", input)
         .map(|j| public_job(&j))
         .ok_or("영상 작업을 저장할 수 없습니다.".into())
@@ -525,7 +557,11 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     let dir = directory(&ctx.state, &ctx.job_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
-    let result = if input["engine"] == "omni" {
+    let result = if input["engine"]=="ltx" && input["ltxFilm"]==true {
+        film::run(ctx,input,&dir).await
+    } else if input["engine"]=="ltx" {
+        ltx::render(ctx,input,&dir).await
+    } else if input["engine"] == "omni" {
         omni::render(ctx, job, &dir).await
     } else if input["engine"] == "veo" {
         Err("Veo Preview가 종료됐습니다. 새 Omni 작업으로 생성하세요.".into())
@@ -550,7 +586,8 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
             let check=quality::inspect(&input["config"],&dir.join("output.mp4"),
                 input["duration"].as_u64().unwrap_or(15),
                 input["aspectRatio"].as_str().unwrap_or("9:16"),
-                quality::min_short_edge(input),input["engine"]=="omni").await;
+                if input["engine"]=="ltx" {700} else {quality::min_short_edge(input)},
+                input["engine"]=="omni" || input["engine"]=="ltx").await;
             let receipt=match check {
                 Ok(receipt)=>receipt,
                 Err(reason)=>{
@@ -582,6 +619,40 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 }
+/// Read-only scene diagnostics including SHA-256 for owner-pinned retakes.
+pub fn film_scenes(state:&AppState,id:&str)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 영상 작업 ID")?;
+    let job=state.store.get("job",id).ok_or("영상 작업이 없습니다.")?;
+    film::scenes(state,&job)
+}
+
+/// A retake is a NEW durable video job, never a replay of an uncertain paid
+/// submission. Deterministic job IDs make double-clicks/idempotent retries
+/// refer to the same billable work rather than creating another order.
+pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>{
+    uuid::Uuid::parse_str(id).map_err(|_|"유효하지 않은 원본 영상 ID")?;
+    let source=state.store.get("job",id).ok_or("원본 영상 작업을 찾지 못했습니다.")?;
+    if body["confirmNewPaidCalls"]!=true {
+        return Err("장면 재생성으로 발생하는 추가 유료 API 호출에 동의해야 합니다.".into());
+    }
+    let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
+    let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA-256이 없습니다.")?;
+    let count=body["confirmedPaidCallCount"].as_u64().ok_or("추가 결제 장면 수에 동의해야 합니다.")?;
+    let input=film::retake_input(state,&source,index,digest,
+        body["prompt"].as_str(),count)?;
+    let fingerprint=input["retake"]["fingerprint"].as_str().ok_or("재생성 식별자가 없습니다.")?;
+    let raw=sha2::Sha256::digest(fingerprint.as_bytes());
+    let mut bytes=[0u8;16];
+    bytes.copy_from_slice(&raw[..16]);
+    bytes[6]=(bytes[6]&0x0f)|0x40;
+    bytes[8]=(bytes[8]&0x3f)|0x80;
+    let job_id=uuid::Uuid::from_bytes(bytes).to_string();
+    let job=jobs::enqueue_once(state,&job_id,"video",input)
+        .ok_or("재생성 작업을 저장하지 못했습니다.")?;
+    Ok(public_job(&job))
+}
+
+
 pub fn enqueue_upload(state: &AppState, id: &str, body: &Value) -> Result<Value, String> {
     output_path(state, id)?;
     let video = state.store.get("job", id).ok_or("영상이 없습니다.")?;
