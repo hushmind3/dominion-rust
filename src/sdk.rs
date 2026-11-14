@@ -5,6 +5,8 @@
 //!
 //! A standalone SDK owns its data directory. Never open a second SDK process
 //! against the data directory of a running DOMINION server.
+pub use crate::engine::custom_tools::ToolLimits;
+
 use crate::{
     config::Config,
     db::Store,
@@ -200,10 +202,27 @@ impl DominionSdk {
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
     {
-        let callback: crate::engine::custom_tools::Callback =
-            std::sync::Arc::new(move |args| Box::pin(handler(args)));
-        self.state.custom_tools.register(
-            name, description, input_schema, needs_approval, callback,
+        self.register_tool_with_limits(
+            name,description,input_schema,needs_approval,ToolLimits::default(),handler,
+        )
+    }
+
+    /// Per-tool execution envelope. A callback timeout or callback-level
+    /// failure is treated as an unknown external outcome, never as safe to
+    /// retry automatically. This affects all worker types using the same
+    /// Rust tool registry, not merely SDK callers.
+    pub fn register_tool_with_limits<F,Fut>(
+        &self,name:&str,description:&str,input_schema:Value,
+        needs_approval:bool,limits:ToolLimits,handler:F,
+    )->Result<String,String>
+    where
+        F:Fn(Value)->Fut+Send+Sync+'static,
+        Fut:std::future::Future<Output=Result<Value,String>>+Send+'static,
+    {
+        let callback:crate::engine::custom_tools::Callback =
+            std::sync::Arc::new(move |args|Box::pin(handler(args)));
+        self.state.custom_tools.register_with_limits(
+            name,description,input_schema,needs_approval,callback,None,limits,
         )
     }
 
@@ -230,12 +249,30 @@ impl DominionSdk {
         V: Fn(Value, Value) -> VFut + Send + Sync + 'static,
         VFut: std::future::Future<Output = Result<bool, String>> + Send + 'static,
     {
-        let callback: crate::engine::custom_tools::Callback =
-            std::sync::Arc::new(move |args| Box::pin(handler(args)));
-        let verification: crate::engine::custom_tools::Verifier =
-            std::sync::Arc::new(move |args, result| Box::pin(verifier(args, result)));
-        self.state.custom_tools.register_verified(
-            name, description, input_schema, needs_approval, callback, verification,
+        self.register_verified_tool_with_limits(
+            name,description,input_schema,needs_approval,ToolLimits::default(),
+            handler,verifier,
+        )
+    }
+
+    /// Bounded verified Rust tool callback and separately bounded verifier.
+    /// Verification failure or timeout preserves unknown side-effect state.
+    pub fn register_verified_tool_with_limits<F,Fut,V,VFut>(
+        &self,name:&str,description:&str,input_schema:Value,
+        needs_approval:bool,limits:ToolLimits,handler:F,verifier:V,
+    )->Result<String,String>
+    where
+        F:Fn(Value)->Fut+Send+Sync+'static,
+        Fut:std::future::Future<Output=Result<Value,String>>+Send+'static,
+        V:Fn(Value,Value)->VFut+Send+Sync+'static,
+        VFut:std::future::Future<Output=Result<bool,String>>+Send+'static,
+    {
+        let callback:crate::engine::custom_tools::Callback =
+            std::sync::Arc::new(move |args|Box::pin(handler(args)));
+        let verifier:crate::engine::custom_tools::Verifier =
+            std::sync::Arc::new(move |args,result|Box::pin(verifier(args,result)));
+        self.state.custom_tools.register_with_limits(
+            name,description,input_schema,needs_approval,callback,Some(verifier),limits,
         )
     }
 
@@ -450,6 +487,40 @@ mod tests {
         assert!(events.iter().any(|event| event["type"] == "done"));
         drop(sdk);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn sdk_tool_timeout_is_a_durable_unknown_effect_not_a_retryable_failure(){
+        let (sdk,root)=fresh();
+        let name=sdk.register_tool_with_limits(
+            "maybe_changed","May have changed an external service",
+            json!({"type":"object","properties":{"id":{"type":"string"}}}),
+            false,
+            ToolLimits{
+                execution_timeout:std::time::Duration::from_millis(5),
+                verification_timeout:std::time::Duration::from_secs(1),
+                max_result_bytes:4096,
+            },
+            |_args|async{
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                Ok(json!({"changed":true}))
+            },
+        ).unwrap();
+        let args=json!({"id":"external-1"});
+        let returned=sdk.state.custom_tools.execute(&name,&args).await.unwrap();
+        assert_eq!(returned["outcomeUnknown"],true);
+        let prepared=engine::effect::prepare("owner-session",&name,&args,&[]);
+        let sealed=engine::effect::seal(
+            &root,&name,&args,&returned,false,false,false,&prepared,
+        ).await;
+        assert_eq!(sealed["effectState"],"effect_unknown");
+        let attempts=vec![json!({
+            "effectId":prepared["effectId"],
+            "effectState":"effect_unknown",
+        })];
+        assert!(engine::effect::unresolved(&prepared,&attempts).is_some(),
+            "unknown external outcomes must block an identical retry");
+        drop(sdk);let _=std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
