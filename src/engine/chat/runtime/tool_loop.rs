@@ -82,6 +82,60 @@ impl ReadLoopGuard{
     }
 }
 
+
+/// Detect repeated *failed* tool batches, including non-read operations.
+/// A successful call in the batch resets this guard: never claim that a
+/// repeated write failed merely because its textual output looks similar.
+/// Error records must be observed, not guessed from model commentary.
+#[derive(Default)]
+pub(super) struct ErrorLoopGuard {
+    previous:Option<String>,
+    repeats:u8,
+}
+impl ErrorLoopGuard {
+    pub(super) fn observe(&mut self,calls:&[ToolCall],messages:&[Value])->LoopDecision {
+        let reset=|guard:&mut Self|{
+            guard.previous=None;
+            guard.repeats=0;
+            LoopDecision::Normal
+        };
+        if calls.is_empty()||calls.len()>24{return reset(self);}
+        let mut failed=Vec::with_capacity(calls.len());
+        for call in calls {
+            let observations=messages.iter().filter(|item|
+                item["role"]=="tool"&&item["tool_call_id"].as_str()==Some(call.id.as_str())
+            ).collect::<Vec<_>>();
+            if observations.len()!=1{return reset(self);}
+            let content=observations[0]["content"].as_str().unwrap_or("");
+            let value:Value=match serde_json::from_str(content){
+                Ok(value)=>value,
+                Err(_)=>return reset(self),
+            };
+            let is_error=value["error"].as_str().is_some_and(|s|!s.is_empty())
+                ||value["success"]==false||value["ok"]==false
+                ||matches!(value["status"].as_str(),Some("error"|"failed"|"denied"));
+            if !is_error{return reset(self);}
+            let args:Value=match serde_json::from_str(&call.arguments){
+                Ok(value)=>value,
+                Err(_)=>return reset(self),
+            };
+            failed.push(format!("{}|{}|{:x}",call.name,args,
+                Sha256::digest(content.as_bytes())));
+        }
+        failed.sort_unstable();
+        let signature=format!("{:x}",Sha256::digest(failed.join("\n").as_bytes()));
+        if self.previous.as_deref()==Some(signature.as_str()){
+            self.repeats=self.repeats.saturating_add(1);
+        }else {
+            self.previous=Some(signature);
+            self.repeats=0;
+        }
+        if self.repeats>=4 {LoopDecision::Stuck}
+        else if self.repeats==2 {LoopDecision::Nudge}
+        else {LoopDecision::Normal}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,6 +178,31 @@ mod tests {
         let write=ToolCall{id:"w".into(),name:"workspace_write".into(),arguments:"{}".into()};
         assert_eq!(guard.observe(&[write],&[result("w","done")]),LoopDecision::Normal);
         assert_eq!(guard.observe(&[read],&[result("a","v1")]),LoopDecision::Normal);
+    }
+    #[test]
+    fn identical_failed_effectful_tool_calls_cannot_spin_forever(){
+        let mut guard=ErrorLoopGuard::default();
+        for round in 0..5 {
+            let id=format!("retry-{round}");
+            let call=ToolCall{id:id.clone(),name:"workspace_write".into(),
+                arguments:r#"{"path":"out.txt","content":"x"}"#.into()};
+            let decision=guard.observe(&[call],&[result(&id,r#"{"error":"stale sha"}"#)]);
+            assert_eq!(decision,if round==4{LoopDecision::Stuck}
+                else if round==2{LoopDecision::Nudge}else{LoopDecision::Normal});
+        }
+    }
+    #[test]
+    fn changed_errors_and_successful_effects_reset_failure_streak(){
+        let mut guard=ErrorLoopGuard::default();
+        let call=ToolCall{id:"id".into(),name:"shell_exec".into(),
+            arguments:r#"{"command":"cargo test"}"#.into()};
+        assert_eq!(guard.observe(&[call.clone()],&[result("id",r#"{"error":"compile fail"}"#)]),LoopDecision::Normal);
+        assert_eq!(guard.observe(&[call.clone()],&[result("id",r#"{"error":"compile fail"}"#)]),LoopDecision::Normal);
+        assert_eq!(guard.observe(&[call.clone()],&[result("id",r#"{"error":"test fail"}"#)]),LoopDecision::Normal);
+        assert_eq!(guard.observe(&[call.clone()],&[result("id",r#"{"ok":true}"#)]),LoopDecision::Normal);
+        assert_eq!(guard.observe(&[call.clone()],&[result("id",r#"{"error":"compile fail"}"#)]),LoopDecision::Normal);
+        let other=ToolCall{arguments:r#"{"command":"cargo check"}"#.into(),..call};
+        assert_eq!(guard.observe(&[other],&[result("id",r#"{"error":"compile fail"}"#)]),LoopDecision::Normal);
     }
     #[test]
     fn parallel_read_order_does_not_hide_identical_observations(){
