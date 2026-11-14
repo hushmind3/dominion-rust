@@ -156,6 +156,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         return error(StatusCode::BAD_REQUEST, &message);
     }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    if body.get("tokenBudget").is_some_and(|value|
+        value.as_u64().is_none_or(|n|n>2_000_000)) {
+        return error(StatusCode::BAD_REQUEST,"목표 토큰 상한은 0~200만으로 입력하세요.");
+    }
     let max_iterations = body
         .get("maxIterations")
         .cloned()
@@ -174,6 +178,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
             "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
             "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
+            "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
             "replans":0,"planHistory":[],"reviewHistory":[],
             "status": "queued",
             "iterations": 0,
