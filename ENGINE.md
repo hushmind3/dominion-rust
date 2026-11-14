@@ -198,3 +198,10 @@ DM·음성·파일 첨부·슬래시 명령·Gateway 실시간 이벤트는 이�
 - [Hermes 스킬](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
 - [Discord 메시지 API](https://docs.discord.com/developers/resources/message)
 - [Discord 요청 제한](https://docs.discord.com/developers/topics/rate-limits)
+
+
+## Native autonomous SDK boundary — 2026-11-15
+
+`src/sdk.rs` provides an in-process Rust contract for durable autonomous execution through `GoalOptions`, `enqueue_goal`, `goal`, `goal_diff`, `goal_receipt`, `wait_job`, `cancel_job` and `cancel_goal`. Admission is centralized in `src/engine/goals/enqueue.rs`: validated owner input -> atomic persisted `goal` + `job` -> audit and bus events -> existing Rust worker/planner/tools -> acceptance/receipt. `src/api/goals.rs` is now only an HTTP adapter for admission. `src/engine/jobs/cancellation.rs` is the common REST/native cancellation authority; its job status CAS is sealed before session cancel. No external SDK owns decision policy, tool execution, or verification.
+
+2026 source-level comparisons, RSI methodology and proof limitations: [Sub2 native autonomous SDK](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
