@@ -488,6 +488,27 @@ pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value
                     "holdoutQuality":measurements,"error":generation["error"]});
                 text.push_str(&format!("- {}세대: {}\n",generation["attempt"],
                     evidence.to_string().chars().take(2500).collect::<String>()));
+                // Reflective trajectory feedback: a failed write and a
+                // successful source edit must not collapse to the same scalar
+                // score. Only tool-owned receipt metadata is passed forward;
+                // evaluator/oracle input and raw tool output remain excluded.
+                if let Some(receipts)=generation["writeReceipts"].as_array(){
+                    if !receipts.is_empty(){
+                        let diagnoses=receipts.iter().take(8).map(|receipt|json!({
+                            "tool":receipt["tool"],
+                            "path":receipt["path"],
+                            "written":receipt["written"]==true,
+                            "state":if receipt["written"]==true {
+                                "source_change_observed"
+                            }else{"write_rejected_or_unverified"},
+                        })).collect::<Vec<_>>();
+                        text.push_str("  SOURCE EDIT TRAJECTORY (tool receipts, not holdout traces): ");
+                        text.push_str(&json!(diagnoses).to_string()
+                            .chars().take(1_200).collect::<String>());
+                        text.push('\n');
+                    }
+                }
+
                 if generation["accepted"]!=true {
                     if let Some(id)=candidate.as_ref().and_then(|candidate|candidate["id"].as_str()) {
                         let failures=paired_behavioral_feedback(state,id);
@@ -605,6 +626,33 @@ mod repair_tests{
             "input":input,"expectedSegments":2,"observedSegments":1,
             "steps":["unexpected step"]
         }]}})
+    }
+
+    #[test]
+    fn source_edit_feedback_provides_bounded_actionable_side_information() {
+        let (state,dir)=fixture();
+        let history=json!([{
+            "attempt":1,"domain":"tools","accepted":false,
+            "writeReceipts":[
+                {"tool":"workspace_replace_range","path":"src/lib.rs",
+                    "written":false,"secretOracle":"NEVER_FORWARD_HIDDEN"},
+                {"tool":"workspace_write","path":"src/other.rs",
+                    "written":true,"secretOracle":"PRIVATE_CASE"}
+            ],
+            "evaluation":{"verdict":"inconclusive","metrics":{
+                "regressions":0,"pairedCases":0}}
+        }]);
+        let prompt=generation_context(&state,&json!({
+            "rsiObjective":"Improve tool operations",
+            "rsiKnowledgeSource":dir.to_string_lossy()
+        }),&json!({"history":history}));
+        assert!(prompt.contains("SOURCE EDIT TRAJECTORY"));
+        assert!(prompt.contains("write_rejected_or_unverified"));
+        assert!(prompt.contains("source_change_observed"));
+        assert!(prompt.contains("src/lib.rs"));
+        assert!(!prompt.contains("NEVER_FORWARD_HIDDEN"));
+        assert!(!prompt.contains("PRIVATE_CASE"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
