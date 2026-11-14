@@ -68,9 +68,11 @@ pub(super) fn build(state:&AppState, goal:&Value)->Value {
         "operations":operations,
         "gitChanges":super::git::report(&workdir,&goal["gitBaseline"]),
         "sessionUsage":goal["sessionId"].as_str().filter(|id|!id.is_empty())
-            .map(|id|state.store.session_usage(id)).unwrap_or(Value::Null),
+            .map(|id|state.store.session_tree_usage(id).unwrap_or_else(|error|
+                json!({"scope":"goal_session_tree","unavailable":true,"error":error})))
+            .unwrap_or(Value::Null),
         "tokenBudget":goal["tokenBudget"],
-        "tokenBudgetScope":"session executor and planner/reviewer/replanner model usage",
+        "tokenBudgetScope":"goal root, planner/reviewer and all durable delegated descendant sessions",
         "tokenBudgetIsExactBillingCap":false,
         "reportedAt":chrono::Utc::now().to_rfc3339()
     })
