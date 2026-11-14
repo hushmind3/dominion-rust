@@ -280,7 +280,22 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(busy&&text!=='/stop')return;
    await executeCommand(text);return;
   }
-  if(stream.current||selectedSession?.roomId||(current&&sessions.loading))return;
+  // DeepSeek-style owner steering: a new instruction can join the *running*
+  // Rust turn at its next decision boundary instead of being rejected by the
+  // session lease. The server persists the owner message before acknowledging.
+  if(stream.current){
+   const activeId=turnSession||current;
+   if(!busy||!activeId||selectedSession?.roomId)return;
+   try{
+    await post('/api/sessions/'+encodeURIComponent(activeId)+'/steer',{input:text});
+    setInput(previous=>previous.trim()===text?'':previous);
+    if(inputRef.current)inputRef.current.style.height='';
+    setError('');setCommandInfo(t('chat.steerQueued'));
+    refresh();jumpDown();
+   }catch(e){setError(translateError((e as Error).message))}
+   return;
+  }
+  if(selectedSession?.roomId||(current&&sessions.loading))return;
   if(providerId&&!selectedProvider){setError(t('chat.err.agentApi'));return;}
   if(!providerId){setError(t('chat.err.connectApi'));return;}
   if(!model){setError(t('chat.err.pickModel'));return;}
@@ -430,7 +445,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
       </div>
       <div className="ml-auto flex items-center gap-2">
        <span className="hidden text-[10px] text-[#9C9388] sm:inline">{t('chat.enterHint')}</span>
-       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={busy||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t('chat.send')}>{busy?<LoaderCircle size={18} className="animate-spin"/>:<ArrowUp size={19}/>}</Button>
+       <Button className="grid size-9 shrink-0 place-items-center rounded-full !border-[#C96442] !bg-[#C96442] !text-white hover:!bg-[#A94E30] disabled:opacity-40" disabled={(busy&&!Boolean(turnSession||current))||Boolean(selectedSession?.roomId)||(Boolean(current)&&sessions.loading)||!input.trim()} type="submit" title={t(busy?'chat.steer':'chat.send')}><ArrowUp size={19}/></Button>
       </div>
      </div>
     </form></div><div className="mt-2 text-center text-[10px] text-[#9C9388]">{t('chat.reasoningNote')}</div>
