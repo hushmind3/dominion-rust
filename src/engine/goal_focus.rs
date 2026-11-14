@@ -52,6 +52,7 @@ pub(crate) fn view(state:&AppState,baseline:&Value)->Value{
         let observed=digest(&full);
         let status=if !exists&&record["initialExists"]!=true{"not_created"}
             else if !exists{"removed"}
+            else if record["initialExists"]!=true{"created"}
             else if initial.is_none(){"inspect_large_file"}
             else if observed.as_deref()==initial{"unchanged"}
             else{"modified"};
