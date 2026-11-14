@@ -6,6 +6,7 @@ pub mod rsi;
 pub mod translation;
 pub mod settings;
 pub mod goals;
+pub mod workflows;
 pub mod improvements;
 pub mod executions;
 pub mod tasks;
@@ -178,6 +179,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/gateways/freellmapi", get(gateways::freellmapi))
         .route("/api/providers/:id/gateway", get(gateways::inspect))
         // agents
+        // Durable workflow run and resulting deliverable are linked to real
+        // agent/provider identities. Static UI routes alone are not execution.
+        .route("/api/workflows",get(workflows::list).post(workflows::save))
+        .route("/api/workflows/deliverables/:id",get(workflows::deliverable))
+        .route("/api/workflows/:id",axum::routing::delete(workflows::delete))
+        .route("/api/workflows/:id/run",post(workflows::run))
+        .route("/api/workflows/:id/runs",get(workflows::history))
         .route("/api/agents", get(agents::list_agents).post(agents::save_agent))
         .route("/api/agents/bulk-model", post(agents::bulk_agent_model))
         .route("/api/personas/import/preview", get(personas::preview))
