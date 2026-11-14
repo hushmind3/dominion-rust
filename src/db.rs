@@ -1030,6 +1030,8 @@ impl Store {
         let mut completion = 0u64;
         let mut total = 0u64;
         let mut estimated = 0u64;
+        let mut quote_krw = 0.0f64;
+        let mut quote_known_calls = 0u64;
         for row in rows.flatten() {
             let Ok(detail) = serde_json::from_str::<Value>(&row) else {
                 continue;
@@ -1069,6 +1071,15 @@ impl Store {
                 entry["estimatedCalls"] =
                     json!(entry["estimatedCalls"].as_u64().unwrap_or(0) + 1);
             }
+            if let Some(cost)=detail["costQuoteKrw"].as_f64()
+                .filter(|cost|cost.is_finite()&&*cost>=0.0){
+                quote_krw+=cost;
+                quote_known_calls+=1;
+                entry["costQuoteKrw"]=json!(
+                    entry["costQuoteKrw"].as_f64().unwrap_or(0.0)+cost);
+                entry["costQuoteKnownCalls"]=json!(
+                    entry["costQuoteKnownCalls"].as_u64().unwrap_or(0)+1);
+            }
         }
         let mut groups = groups.into_values().collect::<Vec<_>>();
         groups.sort_by(|a, b| {
@@ -1084,6 +1095,9 @@ impl Store {
             "completionTokens": completion,
             "totalTokens": total,
             "estimatedCalls": estimated,
+            "costQuoteKrw": (quote_krw*100.0).round()/100.0,
+            "costQuoteKnownCalls": quote_known_calls,
+            "actualBilledKrw": Value::Null,
             "groups": groups,
         })
     }
@@ -1134,7 +1148,10 @@ impl Store {
                     COALESCE(SUM(CAST(json_extract(detail,'$.promptTokens') AS INTEGER)),0),
                     COALESCE(SUM(CAST(json_extract(detail,'$.completionTokens') AS INTEGER)),0),
                     COALESCE(SUM(CAST(json_extract(detail,'$.totalTokens') AS INTEGER)),0),
-                    COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0)
+                    COALESCE(SUM(CASE WHEN json_extract(detail,'$.estimated')=1 THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CAST(json_extract(detail,'$.costQuoteKrw') AS REAL)),0),
+                    COALESCE(SUM(CASE WHEN json_type(detail,'$.costQuoteKrw') IN ('real','integer')
+                        THEN 1 ELSE 0 END),0)
              FROM audit
              WHERE event='model.usage' AND json_extract(detail,'$.sessionId')=?1",
             [session_id],
@@ -1145,19 +1162,25 @@ impl Store {
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, i64>(6)?,
                 ))
             },
         );
         match summary {
-            Ok((calls, prompt, completion, total, estimated)) => json!({
+            Ok((calls, prompt, completion, total, estimated, quote_krw, quote_calls)) => json!({
                 "calls": calls.max(0),
                 "promptTokens": prompt.max(0),
                 "completionTokens": completion.max(0),
                 "totalTokens": total.max(0),
                 "estimatedCalls": estimated.max(0),
+                "costQuoteKrw": (quote_krw.max(0.0)*100.0).round()/100.0,
+                "costQuoteKnownCalls": quote_calls.max(0),
+                "actualBilledKrw": Value::Null,
             }),
             Err(_) => json!({
-                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0
+                "calls":0,"promptTokens":0,"completionTokens":0,"totalTokens":0,"estimatedCalls":0,
+                "costQuoteKrw":0.0,"costQuoteKnownCalls":0,"actualBilledKrw":Value::Null
             }),
         }
     }
