@@ -35,6 +35,10 @@ use tool_loop::{check_tool_result_pairs,ReadLoopGuard,ErrorLoopGuard,LoopDecisio
 #[path = "runtime/tool_selection.rs"]
 mod tool_selection;
 use tool_selection::{tool_advertised, tool_is_read_only, mark_tool_argument_signal, normalize_tool_arguments, tool_name, room_tool_request, recent_room_tools, select_room_tools, select_tool_definitions, trim_tool_definitions, budgeted_tool_definitions};
+#[path = "runtime/tool_discovery.rs"]
+mod tool_discovery;
+use tool_discovery::{menu as discoverable_tool_menu,search as discover_tools,
+    restore_revealed,TOOL_SEARCH_NAME};
 #[path = "runtime/program.rs"]
 mod program_execution;
 use program_execution::{scope_program_node_ids, execute_nodes, save_revised_program, propose_program_revision, run_program};
