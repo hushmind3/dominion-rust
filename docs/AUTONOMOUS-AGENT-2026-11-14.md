@@ -74,3 +74,18 @@
 - `GoalConsole.tsx`: 완료 검증, 시간, 도구 증거 수, 검토 라운드 및 보고된 토큰 사용량을 표시하고, 실행 중 계획 수정과 선택적 저비용 Planner/Reviewer 지정이 가능해졌습니다.
 
 **관련 정적 검토/테스트 소스:** `src/engine/goal_plan.rs`, `goal_intake.rs`, `goal_metrics.rs`, `goal_review.rs`, `goal_verification.rs`, `goals/tests.rs`, `jobs/tests.rs`. 함수와 회귀 테스트를 추가했으며 이번 세션에서 실행·빌드·CI를 하지 않았습니다. 측정된 작업 완수율 및 기준 점수 상승은 별도 실제 평가가 있어야 합니다.
+
+
+## 7. 2026-11-14 후속 구현: 병렬 조사·코드 diff·명시적 복원
+
+- `src/engine/tools/batch.rs::delegate_batch`가 `delegate_tasks` 도구의 1~4개 병렬 조사 작업을 실제 `gateway::delegate`/영속 Job/`jobs::start_now`로 연결합니다. 각 자식은 독립 Session과 `delegatedReadOnly=true` 권한 축소를 갖습니다. 작업 중·대기 중인 같은 부모의 병렬 조사는 최대 4개이며, 완료는 부모가 `task_status/task_result`로 수집합니다. 부모만 소스 변경·결과 통합을 수행합니다. **코딩 서브에이전트의 별도 worktree 간 소스 자동 병합과는 다릅니다.**
+- 읽기 전용 권한은 프롬프트 문장이 아니라 `tools/batch.rs::delegation_allows`로 검사합니다. 모델이 볼 수 있는 Tool Schema는 `chat/runtime/turn.rs`에서 줄이고, 일반 네이티브 디스패치(`tools/dispatch.rs`)와 MCP/모델 도구 실행(`chat/runtime/tool_dispatch.rs`) 및 결정적 직접 실행 모두 같은 제한을 적용합니다. `shell_exec`, 소스 쓰기, Git API 변경, MCP, 브라우저 상태 변경, 추가 위임은 이 모드에서 차단됩니다.
+- `src/engine/goal_changes.rs::baseline`은 **모델/도구 호출 이전** Git HEAD와 작업 공간 clean 상태를 기록합니다. `preview`는 실제 성공한 쓰기 도구의 `written:true` 증거에 나타난 경로만 `git diff HEAD`로 비교합니다. `undo`는 **목표 종료 + 시작 상태 clean + HEAD 동일 + 해당 목표 도구의 실제 쓰기 증거 + 현재 파일 SHA-256 동일 + 원본 Git 일반 파일 및 60KB 제한 + 다른 작업 미실행**에서만 지정된 1개 파일을 복원합니다. 파일 변형은 기존 DOMINION의 per-file mutation lock을 이용합니다. 전체 `git reset`/`git clean`/자동 브랜치 삭제는 없습니다. 외부 에디터가 동시에 바꾸는 경쟁까지 완전히 배제할 수 있다고 주장하지 않습니다.
+- `src/api/goals.rs::{changes,undo_change}`와 `/api/goals/:id/changes`, `/api/goals/:id/undo`를 통해 실제 제품 API가 연결됩니다. `GoalConsole`의 `GoalChanges.tsx`는 파일별 diff, 복원 제한 사유, 복원 전 확인 대화창과 서버 결과를 표시합니다.
+- 검증 소스: `tools/batch.rs`는 허용 도구 정책 단위 테스트, `goal_changes.rs`는 실제 Git 임시 저장소의 baseline·diff·해시 검증·복원 테스트를 포함합니다.
+
+### 엔진/RSI와의 책임 경계
+
+일반 Goal은 `episode`·`learning`에 실증 결과를 보내지만 RSI의 동결 평가 결과를 생성하거나 특정 후손을 자동 채택하지 않습니다. 자율 병렬 조사는 **읽기 전용**이므로, 둘 이상의 에이전트가 같은 공유 작업 공간에 소스를 동시에 쓰고 `git merge`로 해결할 수 있다고 가장하지 않습니다. 복수 실행자의 독립 worktree 소스 생성·컴파일·순차 승인 병합은 아직 별도 구현 범위입니다.
+
+**검증 현황:** 이전 Sub1 HEAD `79383ad`는 GitHub CI `43531904929`에서 npm 타입 검사·React 빌드·`cargo test --release`가 성공했습니다. 이후 병렬 도구와 diff/복원 구현에서도 GitHub Actions가 실행되고 있으며, 그 새 커밋의 검사 결과를 최종 확인해야 합니다.
