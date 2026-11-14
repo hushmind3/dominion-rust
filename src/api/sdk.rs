@@ -14,6 +14,29 @@ fn bad(message:String)->Response {
     (StatusCode::BAD_REQUEST,Json(json!({"error":message}))).into_response()
 }
 
+/// Stable, read-only discovery contract for Rust and TypeScript SDK clients.
+/// Reports supported *native* operations, never claims external model health.
+pub async fn info()->Json<Value>{
+    Json(json!({
+        "protocol":"dominion-native-agent",
+        "apiVersion":1,
+        "engine":"rust",
+        "transports":["http_json","sse"],
+        "capabilities":[
+            "durable_goals","goal_worktree","goal_acceptance",
+            "goal_steering","review_resume","native_threads",
+            "thread_steering","thread_cancellation","event_replay",
+            "mcp_tools","rsi_independent_evaluation"
+        ],
+        "semantics":{
+            "runPostIdempotent":false,
+            "disconnectCancelsExecution":false,
+            "eventReplayGetIdempotent":true,
+            "externalToolApproval":"engine_enforced"
+        }
+    }))
+}
+
 pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Response {
     match DominionSdk::new(state).start_thread(&body){
         Ok(session)=>Json(session).into_response(),
