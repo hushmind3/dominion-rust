@@ -108,6 +108,14 @@
 OpenEvolve·EvoAgentX MAP-Elites의 탐색 다양성을 Rust 자체 엔진에 적용한
 경량 기능이며, 동결 평가 결과가 확인된 후보의 부모 선택에만 적용된다.
 
+## RSI: 후손 소스 버전에 일치하는 학습 기록
+
+`src/engine/rsi/execution.rs`는 모델 프롬프트의 경험 부분을 부모 입력이 아닌
+후손의 `child_input`으로 구성한다. `rsiRepairLessonReceipt`에
+후손 실제 커밋, 유효한 이전 실패 개수, 컨텍스트 예산 적용 후 실제 전달된
+교훈 개수와 출처 세대 ID를 기록하고 `rsi_generation.repairLessonReceipt`로 계승한다.
+예산 때문에 경험이 제외되었다면 전달된 것처럼 기록하지 않는다.
+
 ## 목표 하네스
 
 모델은 계획과 검토를 제안하고, Rust가 완료 상태를 결정합니다.

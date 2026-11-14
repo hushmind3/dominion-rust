@@ -503,7 +503,11 @@ pub(super) async fn run_loop(
                 });
             }
         }
-        let inherited = generation_context(&context.state, input, record);
+        // The assembled child input owns the actual next binary commit,
+        // canonical source partition and campaign. The parent input can still
+        // refer to the PRE-adoption revision and must not select its lessons.
+        let repair_lessons=inherited_training_repairs(&context.state,&child_input);
+        let inherited = generation_context(&context.state, &child_input, record);
         let digest = research_digest(&context.state, input, record);
         let focus = focus_file_context(&context.state, record, &child_input);
         let model_bound=child_input["model"].as_str().is_some_and(|s|!s.is_empty())
@@ -522,6 +526,19 @@ pub(super) async fn run_loop(
         child_input["rsiPromptInherited"]=json!(inherited);
         child_input["rsiPromptResearch"]=json!(digest);
         child_input["prompt"]=json!(composed);
+        let lessons_delivered=fit["priorExperienceDeferred"]!=true;
+        child_input["rsiRepairLessonReceipt"]=json!({
+            "source":"same_revision_training_feedback_v1",
+            "generatorCommit":head,
+            "availableCount":repair_lessons.len(),
+            "deliveredCount":if lessons_delivered {repair_lessons.len()}else{0},
+            "sourceGenerationIds":if lessons_delivered{
+                repair_lessons.iter().map(|row|row["sourceGenerationId"].clone())
+                    .collect::<Vec<_>>()
+            }else{Vec::new()},
+            "holdoutInputsExposed":false,
+            "feedbackIsNotAdoptionEvidence":true,
+        });
         child_input["rsiParentContextFit"]=fit;
         child_input["rsiRemainingCampaignTokens"]=json!(available);
         child_input["rsiGenerationTokenLimit"]=json!(available);
@@ -609,6 +626,7 @@ pub(super) async fn run_loop(
                 json!(rows)
             }).unwrap_or_else(||json!([]));
         generation["archiveSelection"]=current["input"]["rsiArchiveSelection"].clone();
+        generation["repairLessonReceipt"]=current["input"]["rsiRepairLessonReceipt"].clone();
         generation["inheritedCandidateId"]=current["input"]["rsiInheritedCandidateId"].clone();
         generation["systemBlueprint"]=current["input"]["rsiSystemBlueprint"].clone();
         generation["systemAgenda"]=current["input"]["rsiSystemAgenda"].clone();

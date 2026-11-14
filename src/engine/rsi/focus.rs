@@ -267,7 +267,7 @@ fn training_behavioral_failures(plan:&Value, report:&Value)->Vec<String>{
 /// Bounded lessons from unrelated campaign IDs but the SAME source commit,
 /// owner objective and repository memory partition. This is not an acceptance
 /// result and never exposes frozen holdout inputs, expected outputs or traces.
-fn inherited_training_repairs(state:&AppState,input:&Value)->Vec<Value>{
+pub(super) fn inherited_training_repairs(state:&AppState,input:&Value)->Vec<Value>{
     let Some(commit)=input["rsiGeneratorCommit"].as_str()
         .or_else(||input["rsiBaseCommit"].as_str()) else{return Vec::new()};
     if commit.len()!=40||!commit.bytes().all(|byte|byte.is_ascii_hexdigit()){
