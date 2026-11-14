@@ -543,6 +543,28 @@ pub(crate) async fn run_prompt(context: &JobContext, job: &Value) -> Result<Valu
             json!({"status":"needs_review","reason":"중단된 프롬프트 작업 결과를 확인해야 합니다."}),
         );
     }
+    // Child model calls share the owner's durable token budget. The parent
+    // can still be spending concurrently, so this is admission against
+    // observed usage rather than a reservation of future billed tokens.
+    if input["delegation"] == true {
+        if let Some(parent) = input["parentSessionId"].as_str() {
+            if let Some((root, goal)) = context.state.store.enclosing_goal(parent) {
+                let limit = goal["tokenBudget"].as_u64().unwrap_or(150_000);
+                if limit > 0 {
+                    let usage = context.state.store.session_tree_usage(&root)?;
+                    let consumed = usage["totalTokens"].as_u64().unwrap_or(0);
+                    if consumed >= limit {
+                        return Ok(json!({
+                            "status":"needs_review",
+                            "reason":format!("상위 목표 토큰 예산({limit})에 도달해 하위 모델 작업을 시작하지 않았습니다."),
+                            "observedTokens":consumed,
+                            "tokenBudget":limit,
+                        }));
+                    }
+                }
+            }
+        }
+    }
     let rsi_workspace = if input["rsiSourceDir"].is_string() {
         Some(crate::engine::rsi_worktree::prepare(context,&input).await?)
     } else { None };
