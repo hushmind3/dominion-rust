@@ -163,11 +163,17 @@ test('independently imported Docker verdicts require unchanged native prediction
   const evidence=join(logs,model,rows[0].instance_id,'report.json');
   mkdirSync(dirname(evidence),{recursive:true});
   writeFileSync(evidence,JSON.stringify({[rows[0].instance_id]:{resolved:true}}));
+  const gradedPatch=join(dirname(evidence),'patch.diff');
+  writeFileSync(gradedPatch,patch);
   const trial=rows.map(row=>({...row}));
   importOfficialVerdicts(trial,preds,model,logs);
   assert.equal(trial[0].officialSolved,true);
   assert.equal(trial[1].officialSolved,false);
   assert.equal(summarize(trial).officialResolveRate,0.5);
+  writeFileSync(gradedPatch,patch.replace('new','old'));
+  assert.throws(()=>importOfficialVerdicts(rows,preds,model,logs),
+    'a past official report cannot certify a different generated patch');
+  writeFileSync(gradedPatch,patch);
   assert.throws(()=>importOfficialVerdicts(rows,
     [{...preds[0],model_patch:patch.replace('new','bad')},preds[1]],
     model,logs),'same-sized tampered diffs cannot inherit earlier Docker results');
