@@ -512,6 +512,30 @@ impl DominionSdk {
         engine::goals::diff_for_goal(&self.state, id).await
     }
 
+    /// Apply only the full, reviewed SHA-256 worktree patch, through the
+    /// existing Rust source/goal verifier. This does not auto-approve,
+    /// publish, merge or bypass any original checkout conflict checks.
+    pub async fn apply_goal_patch(
+        &self, goal_id: &str, expected_patch_sha256: &str,
+    ) -> Result<Value, String> {
+        let digest = expected_patch_sha256.trim();
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("reviewed full patch SHA-256 must be 64 hexadecimal bytes".into());
+        }
+        engine::goal_workspace::apply_reviewed(&self.state, goal_id, digest).await
+    }
+
+    /// Dispose a goal's isolated worktree only after an explicit owner
+    /// confirmation. Never deletes the original repository checkout.
+    pub async fn discard_goal_worktree(
+        &self, goal_id: &str, confirmation: &str,
+    ) -> Result<Value, String> {
+        if confirmation != "DISCARD_GOAL_WORKTREE" {
+            return Err("explicit DISCARD_GOAL_WORKTREE confirmation required".into());
+        }
+        engine::goal_workspace::discard(&self.state, goal_id).await
+    }
+
     /// Cancel a job using the same atomic transition as the HTTP endpoint.
     /// A stale cancellation cannot stop a completed job's active session.
     pub fn cancel_job(&self, id: &str) -> Result<Value, String> {
