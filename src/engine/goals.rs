@@ -96,6 +96,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let max_replans = goal["maxReplans"].as_u64().unwrap_or(6).min(16) as usize;
     let replan_after = goal["replanAfter"].as_u64().unwrap_or(2).clamp(1, 8) as usize;
     let mut replans = goal["replans"].as_u64().unwrap_or(0) as usize;
+    let mut applied_plan_revision=goal["appliedPlanRevision"].as_u64().unwrap_or(0);
     let mut plan_history = goal["planHistory"].as_array().cloned().unwrap_or_default();
     let mut review_history = goal["reviewHistory"]
         .as_array()
@@ -229,6 +230,22 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         if control.is_cancelled() {
             return Ok(finish(context, goal_id, "cancelled", gaps, None));
         }
+        // Accept a concurrent owner revision only between entire executor
+        // turns. The owner cannot alter the verification contract or approvals.
+        if let Some((revision,owner_plan))=
+            crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
+            plan=owner_plan;
+            applied_plan_revision=revision;
+            stalled=0;
+            plan_history.push(json!({"version":plan_history.len(),
+                "ownerRevision":revision,"plan":plan,"reason":"owner_steering",
+                "at":chrono::Utc::now().to_rfc3339()}));
+            patch_goal(state,goal_id,json!({"plan":plan,
+                "appliedPlanRevision":applied_plan_revision,
+                "planHistory":plan_history,"phase":"execute"}));
+            context.emit(json!({"type":"goal_owner_plan_applied",
+                "goalId":goal_id,"revision":revision,"iteration":index+1}));
+        }
         // Session-scoped provider token usage is metered by the actual gateway,
         // including usage from earlier manually reviewed continuations.
         // The planner/reviewer may use separate model calls; this bounds the
@@ -329,6 +346,11 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         patch_goal(state, goal_id, json!({"reviewHistory":review_history}));
         gaps.sort();
         gaps.dedup();
+        // Never seal a completion against a plan the owner has superseded
+        // while the executor or reviewer was still running.
+        if crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision).is_some(){
+            gaps.push("사용자가 새 계획을 제출했습니다. 다음 실행 턴에서 적용하고 검증해야 합니다.".into());
+        }
         let complete = complete && gaps.is_empty();
         patch_goal(
             state,
@@ -344,7 +366,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             return Ok(finish(context, goal_id, "completed", vec![], None));
         }
         stalled += 1;
-        if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans {
+        if index + 1 < max_iterations && stalled >= replan_after && replans < max_replans
+            && crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision).is_none() {
             patch_goal(state, goal_id, json!({"phase":"replan"}));
             context.emit(json!({"type":"goal_replan_started","goalId":goal_id,"iteration":index+1,"replans":replans}));
             let revised=control.complete(&plan_provider,&plan_model,
@@ -450,6 +473,11 @@ fn finish(
     // filesystem/tool check at the exact point the goal is sealed. A file
     // changed by another process between review and finish cannot pass.
     let final_report=report::build(&context.state,&prior);
+    if status=="completed" && crate::engine::goal_steering::pending(
+        &context.state,id,prior["appliedPlanRevision"].as_u64().unwrap_or(0)).is_some() {
+        status="needs_review";
+        gaps.push("완료 저장 전에 새로운 사용자 계획이 제출됐습니다. 기존 계획으로 완료 처리하지 않습니다.".into());
+    }
     if status=="completed" && final_report["accepted"]!=true {
         status="needs_review";
         gaps.extend(final_report["gaps"].as_array().into_iter().flatten()
