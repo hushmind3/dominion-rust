@@ -141,6 +141,13 @@ pub async fn list_jobs(State(state): State<AppState>) -> Json<Value> {
         .map(video::public_job)
         .collect::<Vec<_>>()))
 }
+/// Owner-visible reference KRW quote. This endpoint never queues a paid job.
+pub async fn price_quote(State(state):State<AppState>,Json(body):Json<Value>)->Response{
+    match video::paid_quote(&state,&body){
+        Ok(quote)=>Json(quote).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,message)
+    }
+}
 pub async fn create_job(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     match video::enqueue(&state, &body) {
         Ok(j) => (StatusCode::ACCEPTED, Json(j)).into_response(),
