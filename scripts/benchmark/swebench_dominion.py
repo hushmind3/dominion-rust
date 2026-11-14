@@ -195,6 +195,7 @@ def run_one(row: dict, args, root: Path) -> tuple[dict, dict]:
         if not isinstance(description, str) or not description.strip():
             raise ValueError("Official problem_statement is empty")
         request = {"goal": description, "isolateWorktree": True,
+                   "requireTests": True,
                    "maxIterations": args.max_iterations, "maxReplans": args.max_replans,
                    "executor": {"providerId": args.provider_id, "model": args.model}}
         goal = api(base, "/api/goals", token, request)
