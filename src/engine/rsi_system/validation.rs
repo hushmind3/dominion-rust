@@ -41,10 +41,34 @@ fn validate_source_entry(state:&crate::state::AppState,root:&Path,index_id:&str,
     let sha=entry[hash_key].as_str().ok_or("소스 해시가 없습니다.")?;
     let base=fs::canonicalize(root).map_err(|e|e.to_string())?;
     let actual=fs::canonicalize(base.join(path)).map_err(|e|e.to_string())?;
-    if !actual.starts_with(&base) || !actual.is_file()
-        || crate::engine::code_index::indexed_source_hash(state,index_id,path).as_deref()!=Some(sha)
-        || format!("{:x}",Sha256::digest(fs::read(actual).map_err(|e|e.to_string())?))!=sha {
-        return Err(format!("현재 소스와 다른 탐색 근거: {path}"));
+    if !actual.starts_with(&base) || !actual.is_file() {
+        return Err(format!("소스 경계 밖의 탐색 근거: {path}"));
+    }
+    let actual_sha=format!("{:x}",Sha256::digest(
+        fs::read(&actual).map_err(|e|e.to_string())?));
+    if actual_sha!=sha {
+        // The actual pinned file differs. No index rebuild can make this
+        // model-generated evidence trustworthy: reject the plan.
+        return Err(format!("현재 소스와 다른 탐색 근거: {path} (on-disk SHA differs)"));
+    }
+    let indexed=crate::engine::code_index::indexed_source_hash(state,index_id,path);
+    if indexed.as_deref()!=Some(sha){
+        // A recorded index can be stale or missing after a persistent store
+        // migration. Reconstruct it from the SAME pinned checkout, then
+        // compare both the index identity and the actual source bytes again.
+        // This is a consistency repair, never an acceptance override.
+        let refreshed=crate::engine::code_index::refresh(state,&base)?;
+        let rebuilt=refreshed["id"].as_str()==Some(index_id)
+            && crate::engine::code_index::indexed_source_hash(state,index_id,path)
+                .as_deref()==Some(sha);
+        let stable=fs::read(&actual).map_err(|e|e.to_string())?
+            .as_slice()==fs::read(&base.join(path)).map_err(|e|e.to_string())?
+                .as_slice();
+        let final_sha=format!("{:x}",Sha256::digest(
+            fs::read(&actual).map_err(|e|e.to_string())?));
+        if !rebuilt || !stable || final_sha!=sha {
+            return Err(format!("현재 소스와 다른 탐색 근거: {path} (index mismatch after reindex)"));
+        }
     }
     Ok(())
 }
