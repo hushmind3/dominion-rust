@@ -323,7 +323,7 @@ pub(super) async fn run(ctx:&JobContext,input:&Value,dir:&Path)->Result<Value,St
     std::fs::rename(target,dir.join("output.mp4")).map_err(|e|e.to_string())?;
     let total=input["render"]["film"]["totalDuration"].as_u64()
         .ok_or("원본 동결된 영상 길이가 없습니다.")?;
-    let report=quality::inspect(cfg,&dir.join("output.mp4"),total,aspect,
+    let report=quality::inspect(cfg,&dir.join("output.mp4"),Some(total),aspect,
         true).await
         .map_err(|e|format!("needs_review: 최종 영상 결합 기술 검수 실패: {e}. 개별 유료 장면은 보존됩니다."))?;
     Ok(json!({"engine":"ltx","mode":"film","shots":clips.len(),"model":input["ltxModel"],
