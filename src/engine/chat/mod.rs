@@ -11,6 +11,7 @@ mod evidence;
 pub(crate) use evidence::prepare_owner_action;
 mod protocol;
 mod qwen_compat;
+mod owner_intent;
 mod provider;
 mod runtime;
 #[cfg(test)]
