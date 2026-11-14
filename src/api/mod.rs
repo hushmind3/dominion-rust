@@ -7,6 +7,7 @@ pub mod translation;
 pub mod settings;
 pub mod goals;
 pub mod workflows;
+pub mod automations;
 pub mod improvements;
 pub mod executions;
 pub mod tasks;
@@ -181,6 +182,8 @@ pub fn router(state: AppState) -> Router {
         // agents
         // Durable workflow run and resulting deliverable are linked to real
         // agent/provider identities. Static UI routes alone are not execution.
+        .route("/api/automations",get(automations::list).post(automations::save))
+        .route("/api/automations/:id",axum::routing::delete(automations::delete))
         .route("/api/workflows",get(workflows::list).post(workflows::save))
         .route("/api/workflows/deliverables/:id",get(workflows::deliverable))
         .route("/api/workflows/:id",axum::routing::delete(workflows::delete))
