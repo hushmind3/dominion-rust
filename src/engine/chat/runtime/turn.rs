@@ -766,6 +766,7 @@ pub(super) async fn run_turn_body(
     let mut rsi_decision_checkpoint = false;
     let mut rsi_edit_only_announced = false;
     let mut rsi_edit_retry = false;
+    let mut rsi_tool_start_retry = false;
     let mut rsi_edit_stage_requested = false;
     let mut rsi_last_program_phase = String::new();
     let mut rsi_last_rule_id = String::new();
@@ -1375,6 +1376,32 @@ pub(super) async fn run_turn_body(
                 // ordinary three-tool threshold. In that case, run one real
                 // edit-focused continuation rather than counting more research
                 // as successful implementation.
+                if !has_write && !has_read
+                    && session["rsiFocusContextReady"] != true
+                    && round + 1 < max_rounds
+                {
+                    if let Some(target)=rsi_no_tool_recovery_target(
+                        &session,&round_tools,rsi_tool_start_retry
+                    ){
+                        rsi_tool_start_retry=true;
+                        state.store.audit("rsi.first_tool_recovery",json!({
+                            "sessionId":session_id,"executionId":execution_id,
+                            "round":round,"target":target,
+                            "reason":"model_responded_without_any_source_tool_call"
+                        }));
+                        // A model has declined an entire complex RSI assignment
+                        // without using a single tool. The native planner has
+                        // already selected an exact source file; narrow the
+                        // *next action* instead of accepting prose as progress.
+                        // Only the normal advertised read tool can execute.
+                        messages.push(json!({"role":"user",
+                            "content":format!(
+                                "전체 시스템의 개선을 설명하거나 사용자에게 파일을 다시 요청하지 마세요. 이전에 선정된 소스 파일 '{}'에 대해 지금 workspace_read_range 도구를 호출해 실제 내용·라인 범위·sourceSha256을 확인하세요. 이 호출만 먼저 수행하세요. 이후 관찰된 실제 코드에 맞춰 편집 도구로 계속 진행하세요. 아직 소스 변경이 없으므로 완료했다고 답하지 마세요.",
+                                target),
+                        }));
+                        continue;
+                    }
+                }
                 if !has_write && (has_read || session["rsiFocusContextReady"] == true) {
                     rsi_edit_retry = true;
                     rsi_edit_stage_requested = true;
