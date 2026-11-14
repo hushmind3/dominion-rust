@@ -90,6 +90,10 @@ pub async fn run(context:&JobContext,job:&Value)->Result<Value,String>{
         .map(PathBuf::from).unwrap_or_else(|_|PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("scripts/agent_sdk/qwen_agent_runner.py"));
     if !script.is_file(){return Err("Qwen-Agent SDK 작업기 파일이 없습니다.".into())}
+    let criteria=job["input"]["successCriteria"].as_array().cloned().unwrap_or_default();
+    // Freeze the machine-verifiable checks BEFORE SDK edits are permitted.
+    // A file that already existed must not be mistaken for a new output.
+    let checks=crate::engine::verification::baseline_checks(state,criteria);
     let mut spec=input.clone();
     spec["workspace"]=json!(workdir.to_string_lossy().to_string());
     context.checkpoint(json!({"sdkState":{"inFlight":true,
@@ -141,7 +145,19 @@ pub async fn run(context:&JobContext,job:&Value)->Result<Value,String>{
             "sdk":"QwenLM/Qwen-Agent","sdkReportedStatus":value["status"],
             "modelUsage":Value::Null})),
     };
-    let complete=value["status"]=="completed" && value["completedWithVerifiedWrites"]==true;
+    let tool_evidence=receipts.iter().map(|receipt|json!({
+        "tool":receipt["tool"],"arguments":{"path":receipt["path"]},
+        "result":{"ok":true,"written":true,"sha256":receipt["sha256"]}
+    })).collect::<Vec<_>>();
+    let gaps=crate::engine::verification::check_acceptance(
+        state,job["input"]["prompt"].as_str().unwrap_or(""),
+        &checks,&tool_evidence);
+    // A write receipt is useful progress, NOT proof that the whole request
+    // succeeded. Without explicit satisfied checks, request human review.
+    let complete=value["status"]=="completed"
+        && value["completedWithVerifiedWrites"]==true
+        && !checks.as_array().is_none_or(|v|v.is_empty())
+        && gaps.is_empty();
     let result=json!({
         "status":if complete{"completed"}else{"needs_review"},
         "sdk":"QwenLM/Qwen-Agent","sdkLicense":"Apache-2.0",
@@ -149,6 +165,7 @@ pub async fn run(context:&JobContext,job:&Value)->Result<Value,String>{
         "output":value["output"],"fileReceipts":receipts,
         "verifiedFileWrites":receipts.len(),
         "verifiedBy":"rust_disk_sha256_after_sdk",
+        "acceptanceChecks":checks,"acceptanceGaps":gaps,
         "independentTaskQualityVerified":false,
         "modelUsage":Value::Null,
         "providerBillingKrw":Value::Null,
