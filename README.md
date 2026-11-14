@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Goal worker provenance in the Rust prompt compiler
+
+The original user goal and later direct corrections are owner-authored.
+`src/engine/chat/runtime/turn.rs` now stores generated autonomous goal
+executor turns as `authorKind=goal-runtime`. The transcript renderer marks
+them `goal-task` rather than falsely labeling a model-generated plan as the
+user's verbatim instruction. `owner_intent.rs` keeps retrieved context
+before the active task envelope while preserving separate authenticated owner
+frames. This distinction survives context processing and is tested in Rust.
+
 ## 2026-11-14 Preempt stale Rust goal rounds for newest owner commands
 
 `src/engine/chat/runtime/turn.rs` checks the durable owner revision

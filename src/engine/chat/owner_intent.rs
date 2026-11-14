@@ -38,8 +38,13 @@ pub(super) fn preserve_original(history: &mut Vec<Value>, source: Option<&Value>
 /// an injected user-role frame to an authenticated owner command.
 /// This deliberately does not move or split provider assistant/tool call pairs.
 pub(super) fn insert_context_before_owner(history: &mut Vec<Value>, frame: Value) {
+    // A compiled goal task is an execution envelope, not an authenticated
+    // owner message. It still needs to be the latest action prompt, so inject
+    // lower-trust context before that task without promoting its author kind.
     let anchor = history.iter().rposition(|message| {
-        message["role"] == "user" && message["_dominion_origin"] == "owner"
+        message["role"] == "user"
+            && (message["_dominion_origin"] == "owner"
+                || message["_dominion_origin"] == "goal-task")
     }).or_else(|| history.iter().rposition(|message| {
         message["role"] == "user" && message.get("_dominion_origin").is_none()
             && message.get("_dominion_frame").is_none()
@@ -93,6 +98,25 @@ mod tests {
         assert_eq!(history[2]["_dominion_origin"],"retrieval-data");
         assert_eq!(history[4]["tool_calls"][0]["id"],"call-a");
         assert_eq!(history[5]["tool_call_id"],"call-a");
+    }
+
+    #[test]
+    fn goal_worker_prompt_is_not_a_verbatim_owner_message() {
+        let runtime=json!({"id":"g1","role":"user","content":"model-generated plan",
+            "metadata":{"authorKind":"goal-runtime"}});
+        let mut history=vec![
+            json!({"role":"user","_dominion_origin":"owner",
+                "_dominion_frame":"owner-1","content":"원본 사용자 목표"}),
+            json!({"role":"user","_dominion_origin":"goal-task",
+                "_dominion_frame":"runtime-1","content":"엔진 실행 계획"}),
+        ];
+        assert!(!preserve_original(&mut history,Some(&runtime)));
+        insert_context_before_owner(&mut history,json!({
+            "role":"user","_dominion_origin":"retrieval-data","content":"기억 검색 결과"
+        }));
+        assert_eq!(history[0]["_dominion_origin"],"owner");
+        assert_eq!(history[1]["_dominion_origin"],"retrieval-data");
+        assert_eq!(history[2]["_dominion_origin"],"goal-task");
     }
 
     #[test]

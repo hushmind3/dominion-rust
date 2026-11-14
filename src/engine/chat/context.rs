@@ -548,9 +548,12 @@ pub(super) fn render_history(
             let owner = message["metadata"]["authorKind"] == "owner"
                 || (!is_room && message["agent_id"].is_null()
                     && message["metadata"]["authorKind"].is_null());
+            let origin = if owner { "owner" }
+                else if message["metadata"]["authorKind"] == "goal-runtime" { "goal-task" }
+                else { "external" };
             out.push(json!({
                 "role": "user",
-                "_dominion_origin": if owner { "owner" } else { "external" },
+                "_dominion_origin": origin,
                 "content": content,
             }));
         }
@@ -590,6 +593,21 @@ mod tests {
             crate::vault::Vault::open(&config.key_path()),
         );
         (state, dir)
+    }
+
+    #[test]
+    fn compiled_goal_prompt_is_rendered_as_execution_data_not_owner_authorship() {
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"goal-session","goalId":"goal-id"})).unwrap();
+        let window=vec![json!({"id":"internal-1","session_id":"goal-session",
+            "role":"user","content":"goal executor prompt",
+            "metadata":{"authorKind":"goal-runtime"}})];
+        let rendered=render_history(&state,"goal-session",None,&window,vec![]);
+        assert_eq!(rendered.len(),1);
+        assert_eq!(rendered[0]["_dominion_origin"],"goal-task");
+        assert_eq!(rendered[0]["_dominion_frame"],"internal-1");
+        drop(state);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
