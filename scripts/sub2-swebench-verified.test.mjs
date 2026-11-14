@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger,positiveBenchmarkLimit} from './sub2-swebench-verified.mjs';
+import {taskPublicView,prediction,summarize,verifyManifest,toolLedger,executionLedger,positiveBenchmarkLimit,attributedSessionIds,aggregateSessionUsage} from './sub2-swebench-verified.mjs';
 const issue={
  instance_id:'django__django-10000',
  repo:'django/django',
@@ -112,4 +112,28 @@ test('replan recovery is counted only when independent grading and native eviden
     recoveryEvidence:null,officialSolved:false}]);
   assert.equal(missing.observedReplans,null);
   assert.equal(missing.officialResolvedAfterReplanRate,null);
+});
+
+test('delegated child-agent work counts in the same real goal and unrelated sessions do not',()=>{
+ const sessions=[
+   {id:'root',goalId:'goal-a'},
+   {id:'child-a',parentSessionId:'root'},
+   {id:'child-b',parentSessionId:'child-a'},
+   {id:'unrelated',goalId:'goal-other'},
+   {id:'unrelated-child',parentSessionId:'unrelated'},
+ ];
+ const ids=attributedSessionIds('root',sessions);
+ assert.deepEqual([...ids].sort(),['child-a','child-b','root']);
+ assert.equal(ids.has('unrelated-child'),false);
+ const usage=aggregateSessionUsage([
+   {calls:2,promptTokens:120,completionTokens:30,totalTokens:150,estimatedCalls:0},
+   {calls:1,promptTokens:70,completionTokens:30,totalTokens:100,estimatedCalls:1},
+   {calls:3,promptTokens:300,completionTokens:40,totalTokens:340,estimatedCalls:0},
+ ]);
+ assert.deepEqual(usage,{
+   calls:6,promptTokens:490,completionTokens:100,totalTokens:590,estimatedCalls:1,
+ });
+ assert.throws(()=>attributedSessionIds('root',sessions.slice(1)));
+ assert.throws(()=>attributedSessionIds('root',[...sessions,sessions[0]]));
+ assert.throws(()=>aggregateSessionUsage([{calls:0,totalTokens:12}]));
 });
