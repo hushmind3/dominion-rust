@@ -194,8 +194,8 @@ test('goal lifecycle SDK uses the exact Rust resume and reviewed-diff contracts'
   }})
   const goal = sdk.resumeGoal('g1')
   assert.equal((await goal.changes()).reviewDigest,'sha256-reviewed-1')
-  await assert.rejects(goal.applyChanges(''), /reviewed change digest/)
-  await assert.rejects(goal.resume({}), /acknowledgeUnknownEffects/)
+  assert.throws(() => goal.applyChanges(''), /reviewed change digest/)
+  assert.throws(() => goal.resume({}), /acknowledgeUnknownEffects/)
   await goal.applyChanges('sha256-reviewed-1')
   await goal.resume({acknowledgeUnknownEffects:true})
   assert.deepEqual(calls[1], {url:'/api/goals/g1/apply',body:{
