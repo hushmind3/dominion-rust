@@ -398,6 +398,50 @@ mod sub3_goal_resume_tests {
     }
 
     #[tokio::test]
+    async fn resume_creates_exactly_one_job_under_competing_requests(){
+        let state=state();
+        state.store.put("goal",&json!({
+            "id":"same-resume","status":"needs_review","iterations":1,
+            "maxIterations":8,"resumeCount":0
+        })).unwrap();
+        let (first,second)=tokio::join!(
+            resume(&state,"same-resume",json!({"acknowledgeUnknownEffects":true})),
+            resume(&state,"same-resume",json!({"acknowledgeUnknownEffects":true}))
+        );
+        let successes=[first.status(),second.status()].into_iter()
+            .filter(|s|*s==StatusCode::OK).count();
+        assert_eq!(successes,1);
+        let stored=state.store.get("goal","same-resume").unwrap();
+        assert_eq!(stored["resumeCount"],1);
+        let jobs=state.store.all("job").into_iter()
+            .filter(|job|job["input"]["goalId"]=="same-resume")
+            .collect::<Vec<_>>();
+        assert_eq!(jobs.len(),1);
+        assert_eq!(stored["jobId"],jobs[0]["id"]);
+        assert!(jobs[0]["goalState"].is_object());
+    }
+
+    #[tokio::test]
+    async fn failed_resume_job_write_rolls_back_goal_status_together(){
+        let state=state();
+        state.store.put("goal",&json!({
+            "id":"rollback-resume","status":"needs_review","resumeCount":0
+        })).unwrap();
+        let mut altered=state.store.get("goal","rollback-resume").unwrap();
+        altered["status"]=json!("queued");
+        altered["resumeCount"]=json!(1);
+        let bad_job=json!({"kind":"goal","status":"queued"});
+        assert!(state.store.transaction_if_status("goal","rollback-resume",
+            "needs_review",&[
+                ("goal".to_string(),altered),("job".to_string(),bad_job)
+            ]).is_err());
+        let recovered=state.store.get("goal","rollback-resume").unwrap();
+        assert_eq!(recovered["status"],"needs_review");
+        assert_eq!(recovered["resumeCount"],0);
+        assert!(state.store.all("job").is_empty());
+    }
+
+    #[tokio::test]
     async fn live_job_and_final_result_cannot_be_restarted(){
         let state=state();
         state.store.put("goal",&json!({"id":"done","status":"completed"})).unwrap();
