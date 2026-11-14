@@ -1636,7 +1636,7 @@ mod tests {
             "generatorCommit": commit, "domainSelection": "algorithm_active",
             "tokens": tokens, "elapsedMs": elapsed,
             "evaluationProfileSha256":"e".repeat(64),
-            "objectiveId":"1".repeat(64),
+            "objectiveId":crate::engine::memory::stable_id(&["frozen-rsi-objective"]),
             "pairedMeasured":true,
             "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
         })
@@ -1658,7 +1658,7 @@ mod tests {
             "searchStrategy": {"id": candidate, "mode": "trial"},
             "tokens": tokens, "elapsedMs": elapsed,
             "evaluationProfileSha256":"e".repeat(64),
-            "objectiveId":"1".repeat(64),
+            "objectiveId":crate::engine::memory::stable_id(&["frozen-rsi-objective"]),
             "pairedMeasured":true,
             "evaluation": {"verdict": if accepted { "improved" } else { "inconclusive" }}
         })
@@ -2359,6 +2359,8 @@ mod tests {
     fn rsi_trial_frozen_evaluator_and_objective_are_required_for_support() {
         let baseline=active_generation("baseline",1,"context",false,"head-a",1200,100);
         let mut trial=trial_generation("trial",2,"context",true,"head-a",900,80,"algo");
+        assert_eq!(baseline["objectiveId"].as_str().unwrap().len(),32,
+            "the production memory stable_id is 128-bit, never 64 hex");
         let candidate=json!({"rsiTrial":{"trials":[]}});
         assert!(comparable_trial_baseline(&[baseline.clone()],&trial,&candidate).is_some());
         assert_eq!(trial_verdict(&trial,&baseline).0,"supported");
@@ -2366,7 +2368,7 @@ mod tests {
         assert!(comparable_trial_baseline(&[baseline.clone()],&trial,&candidate).is_none());
         assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
         trial["evaluationProfileSha256"]=baseline["evaluationProfileSha256"].clone();
-        trial["objectiveId"]=json!("2".repeat(64));
+        trial["objectiveId"]=json!("2".repeat(32));
         assert_eq!(trial_verdict(&trial,&baseline).0,"inconclusive");
         trial["objectiveId"]=baseline["objectiveId"].clone();
         trial["pairedMeasured"]=json!(false);
