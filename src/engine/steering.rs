@@ -35,6 +35,14 @@ pub fn enqueue(state: &AppState, session_id: &str, instruction: &str) -> Result<
     Ok(saved)
 }
 
+/// A model may have proposed an entire tool batch before the owner changed
+/// the task. No *unstarted* tool from that obsolete plan should be dispatched.
+pub fn has_pending(state:&AppState,session_id:&str)->bool{
+    state.store.all("chat_steer").into_iter().any(|record|
+        record["sessionId"].as_str()==Some(session_id)
+            &&record["status"]=="queued")
+}
+
 /// Claim each queued steer with an idempotently persisted user message.
 /// The same record ID is the message ID, so a crash between message commit
 /// and status transition cannot duplicate the owner's instruction on replay.
