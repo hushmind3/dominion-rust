@@ -201,7 +201,7 @@ export function AutonomousGoalsPage({openSession}:{openSession:(id:string)=>void
      {diffs[goal.id].canApply&&!active(goal.status)&&
       <Button size="sm" variant="primary" disabled={busy!==''} onClick={()=>void applyReviewed(goal)}>
        검토된 변경 원본에 적용
-      </Button>}}
+      </Button>}
      {diffs[goal.id].status&&<pre className="overflow-auto whitespace-pre-wrap text-[11px]">{diffs[goal.id].status}</pre>}
      {diffs[goal.id].diff&&<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white p-3 font-mono text-[11px]">{diffs[goal.id].diff}</pre>}
      {diffs[goal.id].untracked&&<p className="break-all text-[11px] text-[#7C7469]">미추적 파일: {diffs[goal.id].untracked}</p>}
