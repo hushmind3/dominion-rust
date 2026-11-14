@@ -74,3 +74,9 @@ Remaining: OS-level process sandboxing for untrusted commands; owner-controlled 
 - OpenAI Developers (2026-08-19), [Codex as a platform](https://developers.openai.com/blog/codex-as-a-platform) — explicit approval and continuing tool execution.
 - Anthropic (2026-02-05), [Building a C compiler with parallel Claudes](https://www.anthropic.com/engineering/building-c-compiler) — parallel task constraints and orchestration.
 - Anthropic (2026-03-24), [Harness design for long-running application development](https://www.anthropic.com/research/harness-design-long-running-apps) — independent verification and long-horizon work.
+
+### Video technical verification (post-render, no paid retries)
+
+`engine/video.rs::run` now routes **all native, ComfyUI and LTX outputs** through `engine/video/quality.rs::inspect` after the output file exists and before reporting completion. An available local `ffprobe` is used to test video dimensions, aspect, playback duration and expected LTX audio. The structured `technicalQuality` result is stored both in `videoState` and the returned video job result. Invalid actual media returns a `needs_review:` error; no generation API is automatically retried. Missing `ffprobe` produces `status:not_verified`, never a fake pass.
+
+This is **technical stream inspection, not subjective scene quality or shot continuity**. The new path and regression unit test have not been compiled or run. The old 942-test green CI on `ffcb6f6` does not cover this change.

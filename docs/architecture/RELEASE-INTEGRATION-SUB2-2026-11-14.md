@@ -79,3 +79,7 @@ New opt-in production route: `GoalConsole → POST /api/goals → goals::run →
 New parallel route: `tools::definitions("delegate_tasks") → tools/batch.rs::delegate_many → tools::delegate → jobs::enqueue("prompt")`, capped at 4 active read-only child jobs; schema filter and native/MCP runtime deny all other tools for the child. Normal goal receipts now include worktree mode and base commit. `rsi_system::source_role` exposes both executable additions to the rebuilt descendant frontier.
 
 The static judge's prior **57/100** and earlier `ffcb6f6` green CI are historical references. These new changes have **not** been built, tested, CI-validated or paid-model benchmarked.
+
+### 2026-11-14: Measurable MP4 output metadata, separate from aesthetic quality
+
+After all three render engines return an `output.mp4`, `video.rs::run` calls `video/quality.rs::inspect` with the frozen job configuration and expected duration/aspect/audio. A valid local `ffprobe` provides actual stream-level metadata. Requested-vs-actual mismatch ends with `needs_review:` and **no paid regeneration**. If no `ffprobe` is installed, the output says `not_verified` instead of claiming verified. There is no semantic video QA, temporal coherence model or automatic scene-only replacement. The added path has not been CI-validated.
