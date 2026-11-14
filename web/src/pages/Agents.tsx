@@ -26,6 +26,7 @@ import {
   Sparkles,
   Trash2,
   UsersRound,
+  Workflow,
   X,
 } from "lucide-react";
 import { Agent, Provider, Room, del, get, post } from "../api";
@@ -95,6 +96,19 @@ export function AgentsPage() {
     } finally {
       setSaving(false);
     }
+  };
+  const [creatingFlow,setCreatingFlow]=useState<string>('');
+  const createHandoff=async(agent:Agent)=>{
+    if(creatingFlow)return
+    const reviewer=agents.value.find(item=>item.id!==agent.id)?.id||agent.id
+    setCreatingFlow(agent.id);setError('')
+    try{
+      await post('/api/agents/'+encodeURIComponent(agent.id)+'/workflow',{
+        reviewerAgentId:reviewer
+      })
+      window.location.hash='#/workflows'
+    }catch(e){setError((e as Error).message)}
+    finally{setCreatingFlow('')}
   };
   const applyBulk = async () => {
     if (!selected.length || !bulkProvider || !bulkModel.trim() || bulkBusy)
@@ -322,6 +336,10 @@ export function AgentsPage() {
               </span>
               {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}
               <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
+              <Button size="sm" variant="secondary" disabled={!!creatingFlow}
+                onClick={()=>void createHandoff(a)}>
+                <Workflow size={14}/> {creatingFlow===a.id?'워크플로 연결 중…':'조사→검토 워크플로 만들기'}
+              </Button>
             </div>
           </Panel>
         ))}
