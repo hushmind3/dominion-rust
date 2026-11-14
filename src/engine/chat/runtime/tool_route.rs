@@ -266,6 +266,34 @@ mod tests{
         assert!(select(&allowed,"write a poem",0,&[]).is_none());
     }
     #[test]
+    fn measured_schema_budget_recovers_target_mcp_hidden_by_prefix_first_selection(){
+        let mut catalog=crate::engine::tools::definitions();
+        let weather=schema("mcp__weather__query","short");
+        let jira=schema("mcp__jira__update_ticket","short");
+        catalog.push(weather.clone());
+        catalog.push(jira.clone());
+        let size=|value:&Value|serde_json::to_string(value).unwrap().len();
+        let required=["workspace_read_range","workspace_replace_range","shell_exec","code_search"];
+        let budget=catalog.iter().filter(|tool|required.contains(&tool_name(tool)))
+            .map(size).sum::<usize>()+size(&jira).max(size(&weather));
+        let baseline=super::super::tool_catalog::trim_tool_definitions(
+            catalog.clone(),budget);
+        assert!(names(&baseline).contains(&"mcp__weather__query"),
+            "fixture expects old prefix-based selection to favor wrong MCP");
+        assert!(!names(&baseline).contains(&"mcp__jira__update_ticket"),
+            "fixture must represent a real opportunity, not a fabricated gain");
+        let routed=select(&catalog,
+            "Fix Rust parser bug and update Jira issue ticket via MCP",0,&[]
+        ).unwrap();
+        let selected=super::super::tool_catalog::trim_tool_definitions(
+            routed.tools,budget);
+        assert!(names(&selected).contains(&"mcp__jira__update_ticket"),
+            "the target external tool must survive a real schema byte cap");
+        assert!(!names(&selected).contains(&"mcp__weather__query"));
+        assert!(selected.iter().map(size).sum::<usize>()<=budget);
+    }
+
+    #[test]
     fn ordered_subset_of_advertised_catalog_preserves_cache_prefix(){
         let catalog=full();
         let got=select(&catalog,"Search docs then patch Rust repository code",0,&[]).unwrap();
