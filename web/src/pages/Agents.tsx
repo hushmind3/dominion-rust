@@ -57,7 +57,11 @@ export function AgentsPage() {
   const agents = useRemote<Agent[]>("/api/agents", []),
     providers = useRemote<Provider[]>("/api/providers", []),
     skills = useRemote<{id:string;name:string;description?:string;enabled?:boolean;status?:string}[]>("/api/skills", []);
-  const [edit, setEdit] = useState<Partial<Agent> | null>(null),
+  const linkedSkill=new URLSearchParams(window.location.hash.split('?')[1]||'').get('skill')||'';
+  const [edit, setEdit] = useState<Partial<Agent> | null>(linkedSkill?{
+    name:'새 에이전트',description:'',systemPrompt:'',providerId:'',model:'',
+    skillIds:[linkedSkill]
+  }:null),
     [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
   const [bulk, setBulk] = useState(false),
