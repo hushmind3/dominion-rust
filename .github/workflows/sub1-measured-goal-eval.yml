@@ -80,16 +80,36 @@ jobs:
           echo "DOMINION_DATA=$ROOT/data" >> "$GITHUB_ENV"
           echo "DOMINION_WORKSPACE=$ROOT/workspace" >> "$GITHUB_ENV"
           echo "DOMINION_ENGINE_INSTANCE=goal-eval-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          # Earlier revision failed before any model task because Axum
+          # panicked on a duplicate GET /api/skills route. The current
+          # router guards that registration; preserve a useful panic trace
+          # if another boot regression occurs.
           DOMINION_DATA="$ROOT/data" \
             DOMINION_WORKSPACE="$ROOT/workspace" \
             DOMINION_ENGINE_INSTANCE="goal-eval-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
-            nohup ./target/release/dominion-rust > "$ROOT/engine.log" 2>&1 &
+            RUST_BACKTRACE=1 \
+            nohup ./target/release/dominion-rust < /dev/null > "$ROOT/engine.log" 2>&1 &
+          echo $! > "$ROOT/engine.pid"
+          READY=0
           for i in $(seq 1 90); do
-            if curl -fsS "$DOMINION_BASE/api/health" >/dev/null 2>&1; then break; fi
+            if curl --max-time 2 -fsS "$DOMINION_BASE/api/health" >/dev/null 2>&1; then
+              READY=1
+              break
+            fi
+            if ! kill -0 "$(cat "$ROOT/engine.pid")" 2>/dev/null; then
+              echo "Rust engine exited during readiness" >&2
+              break
+            fi
             sleep 2
           done
-          curl -fsS "$DOMINION_BASE/api/health" >/dev/null
-          curl -fsS "$DOMINION_BASE/api/benchmark/identity"
+          if [ "$READY" -ne 1 ]; then
+            echo "Native Rust engine failed readiness; diagnostic log follows" >&2
+            tail -n 120 "$ROOT/engine.log" >&2 || true
+            exit 1
+          fi
+          curl --max-time 5 -fsS "$DOMINION_BASE/api/health"
+          curl --max-time 5 -fsS "$DOMINION_BASE/api/benchmark/identity"
+          echo "Native engine readiness passed before any model goal"
 
       - name: Measure actual goal tool turns against private host oracle
         run: |
