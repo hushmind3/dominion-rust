@@ -26,8 +26,32 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
 pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id)else{return error(StatusCode::NOT_FOUND,"작업이 없습니다.")};
     if !matches!(job["status"].as_str(),Some("queued"|"running")){return error(StatusCode::CONFLICT,"진행 중인 작업만 중단할 수 있습니다.");}
-    if let Some(session)=job["sessionId"].as_str(){state.cancel_session(session);}
+    // Goal jobs may be cancelled before their first checkpoint has written a
+    // sessionId. Look it up on the goal so cancellation reaches any old turn.
+    let attached_goal=if job["kind"]=="goal" {
+        job["input"]["goalId"].as_str().and_then(|goal_id|state.store.get("goal",goal_id))
+    }else{None};
+    if let Some(session)=job["sessionId"].as_str()
+        .or_else(||attached_goal.as_ref().and_then(|goal|goal["sessionId"].as_str())){
+        state.cancel_session(session);
+    }
     match state.store.patch_if("job",&id,"status",&job["status"],&json!({"status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339()})){
-        Some(saved)=>{state.bus.record("job",&saved);Json(saved).into_response()},None=>state.store.get("job",&id).map(|j|Json(j).into_response()).unwrap_or_else(||error(StatusCode::CONFLICT,"작업 상태가 변경되었습니다."))
+        Some(saved)=>{
+            state.bus.record("job",&saved);
+            if let Some(goal)=attached_goal {
+                if !matches!(goal["status"].as_str(),Some("completed"|"cancelled"|"failed"|"needs_review")){
+                    if let Some(goal_id)=goal["id"].as_str(){
+                        if let Some(stopped)=state.store.patch_if("goal",goal_id,"status",&goal["status"],
+                            &json!({"status":"cancelled","phase":"cancelled",
+                                "finishedAt":chrono::Utc::now().to_rfc3339()})){
+                            state.bus.record("goal",&stopped);
+                        }
+                    }
+                }
+            }
+            Json(saved).into_response()
+        },
+        None=>state.store.get("job",&id).map(|j|Json(j).into_response())
+            .unwrap_or_else(||error(StatusCode::CONFLICT,"작업 상태가 변경되었습니다."))
     }
 }
