@@ -25,6 +25,8 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+#[path = "runtime/read_batch.rs"]
+mod read_batch;
 #[path = "runtime/turn.rs"]
 mod turn_body;
 use turn_body::run_turn_body;
