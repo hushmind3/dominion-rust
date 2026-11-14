@@ -68,7 +68,15 @@ export class DominionClient {
       get: (id, options) => this.request('GET', 'api/sessions/' + enc(id), undefined, options),
       messages: (id, options) => this.request('GET', 'api/sessions/' + enc(id) + '/messages', undefined, options),
       usage: (id, options) => this.request('GET', 'api/sessions/' + enc(id) + '/usage', undefined, options),
-      cancel: (id, options) => this.request('POST', 'api/sessions/' + enc(id) + '/cancel', {}, options)
+      cancel: (id, options) => this.request('POST', 'api/sessions/' + enc(id) + '/cancel', {}, options),
+      // Targets the current execution. A late message is durably marked
+      // deferred rather than silently carried into an unrelated run.
+      steer: (id, input, options) => {
+        if (typeof input !== 'string' || !input.trim()) {
+          throw new TypeError('steer requires a non-empty owner instruction');
+        }
+        return this.request('POST', 'api/sessions/' + enc(id) + '/steer', {input}, options);
+      }
     };
     this.approvals = {
       pending: options => this.request('GET', 'api/approvals', undefined, options),
