@@ -215,7 +215,7 @@ pub(crate) fn learn_verified(state:&crate::state::AppState)->Value{
     }).collect::<Vec<_>>();
     let mut result=learn(&vetted);
     result["trustedInputGenerations"]=json!(vetted.len());
-    result["productionEvidence"]="source_replayed_and_audited";
+    result["productionEvidence"]=json!("source_replayed_and_audited");
     result
 }
 
