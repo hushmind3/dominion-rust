@@ -51,6 +51,14 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         return error(StatusCode::BAD_REQUEST,"requireTests must be a boolean.");
     }
     let require_tests=body["requireTests"].as_bool().unwrap_or(false);
+    let token_budget=match body.get("tokenBudget"){
+        None|Some(Value::Null)=>Value::Null,
+        Some(v)=>match v.as_u64(){
+            Some(limit) if (1_000..=2_000_000).contains(&limit)=>json!(limit),
+            _=>return error(StatusCode::BAD_REQUEST,
+                "tokenBudget must be an integer between 1000 and 2000000."),
+        },
+    };
     let isolate=body["isolateWorktree"].as_bool().unwrap_or(false);
     if body.get("isolateWorktree").is_some() && !body["isolateWorktree"].is_boolean(){
         return error(StatusCode::BAD_REQUEST,"isolateWorktree must be a boolean.");
@@ -73,6 +81,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         "taskId":uuid::Uuid::new_v4().to_string(),
         "goal":text,"successCriteria":criteria,"isolateWorktree":isolate,
         "requireTests":require_tests,
+        "tokenBudget":token_budget,
         "executor":executor,
         "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
         "planner":body.get("planner").cloned().unwrap_or(json!({})),
