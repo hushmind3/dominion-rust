@@ -996,8 +996,11 @@ pub(super) async fn run_turn_body(
                 // before queue settlement, history() already loaded this ID.
                 // A later correction with identical text has a different ID
                 // and remains an independent owner instruction.
+                // render_history stamps persistent message identity as
+                // _dominion_frame, not id. This check must survive an SQLite
+                // message write followed by a crash BEFORE steer status PATCH.
                 let already_in_history=messages.iter().any(|message|
-                    message["id"].as_str()==Some(steer_id.as_str()));
+                    message["_dominion_frame"].as_str()==Some(steer_id.as_str()));
                 if !already_in_history {
                     messages.push(steering_message);
                 }
