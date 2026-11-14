@@ -1262,9 +1262,20 @@ pub(super) async fn run_turn_body(
                 "모델이 이번 턴에 제공되지 않은 도구를 호출하려 했습니다.".into(),
             );
         }
+        // A native-model endpoint may still return an explicitly tagged
+        // Qwen/Hermes text tool call when its server-side parser declines to
+        // produce choices[].delta.tool_calls. Treat that as a PROPOSAL, not
+        // permission: only names in this round's selected tool contract are
+        // passed to the existing Rust policy, approval and audit gateway.
+        let explicit_text_call=completion.content.contains("<tool_call>")
+            || (completion.content.contains("invoke name=\\\"")
+                && completion.content.contains("parameter name=\\\""))
+            || super::super::protocol::single_json_tool_envelope(&completion.content);
         if completion.tool_calls.is_empty()
-            && request.tools_enabled
+            && request.tools_enabled && request.tools_execution_enabled
+            && !round_tools.is_empty()
             && (provider.tool_mode != "native" || has_dsml_call
+                || explicit_text_call
                 || ((session["rsiExplicitFocus"]==true
                      || session["rsiSystemEvolution"]==true) && rsi_edit_only_announced))
             && !force_final
