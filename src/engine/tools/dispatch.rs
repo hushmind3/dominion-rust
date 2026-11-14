@@ -9,6 +9,9 @@ pub async fn execute(
     args: &Value,
     run_id: &str,
 ) -> Result<Value, String> {
+    if !delegation_allows(ctx.store, ctx.session_id, name) {
+        return Err("읽기 전용 병렬 조사 에이전트는 변경·실행 도구를 사용할 수 없습니다.".into());
+    }
     let isolated_rsi = ctx.store.get("session",ctx.session_id)
         .is_some_and(|s|s["rsiRun"]==true);
     if isolated_rsi && !rsi_allowed(name) {
@@ -341,6 +344,7 @@ pub async fn execute(
             Ok(crate::engine::unsafe_audit::audit_path(&path))
         }
         "delegate_task" => delegate(ctx, args).await,
+        "delegate_tasks" => delegate_batch(ctx,args).await,
         "task_status" => task_payload(ctx, args, false),
         "task_result" => task_payload(ctx, args, true),
         "account_status" => Ok(json!({
