@@ -8,6 +8,13 @@ use std::{io::Read, path::Path, time::{Duration, Instant}};
 const API: &str = "https://api.ltx.io/v2/text-to-video";
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 
+fn reject_unknown_paid_replay(job:&Value)->Result<(),String>{
+    if job["videoState"]["inFlight"]==true {
+        return Err("needs_review: 이전 LTX 유료 제출 결과가 미확정입니다. 재제출하지 않고 수동 검토를 요청합니다.".into());
+    }
+    Ok(())
+}
+
 pub(super) fn ready(state: &AppState) -> bool {
     state.store.has_secret("video:ltx:api")
 }
@@ -149,6 +156,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .ok_or("needs_review: 영상 원화 승인 한도가 없습니다.")?;
     let job=ctx.state.store.get("job",&ctx.job_id)
         .ok_or("needs_review: 영속 영상 작업이 없습니다.")?;
+    reject_unknown_paid_replay(&job)?;
     let attempts=job["paidSubmissionAttempts"].as_u64().unwrap_or(0);
     let reserved=job["paidReservedKrw"].as_u64().unwrap_or(0);
     let next=reserved.checked_add(clip_quote["referenceKrw"].as_u64()
@@ -234,6 +242,13 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uncertain_ltx_post_is_not_submitted_twice(){
+        assert!(reject_unknown_paid_replay(&json!({"videoState":{"inFlight":true},
+            "paidSubmissionAttempts":1})).is_err());
+        assert!(reject_unknown_paid_replay(&json!({"videoState":{"inFlight":false}})).is_ok());
+        assert!(reject_unknown_paid_replay(&json!({})).is_ok());
+    }
     #[test]
     fn quality_profiles_are_validated_before_billing() {
         let cfg=json!({"videoModel":"ltx-2-5-pro","videoQuality":"1080p"});
