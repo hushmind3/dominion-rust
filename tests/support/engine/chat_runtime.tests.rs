@@ -729,6 +729,57 @@ mod harness_tool_selection_tests {
     }
 
     #[test]
+    fn room_tool_intent_uses_full_english_words_not_accidental_substrings() {
+        let tools = vec![
+            json!({"function":{"name":"workspace_read","description":"Read file"}}),
+            json!({"function":{"name":"shell_exec","description":"Run shell"}}),
+            json!({"function":{"name":"web_search","description":"Search web"}}),
+        ];
+        let none = std::collections::HashSet::new();
+        let casual = "The latest profile thread on brunch and capitalization";
+        assert!(!room_tool_request(casual));
+        assert!(select_room_tools(tools.clone(), casual, &none, false).is_empty());
+
+        assert!(room_tool_request("Please read files and run tests"));
+        let selected = select_room_tools(tools, "read files and run tests", &none, false);
+        assert!(selected.iter().any(|tool| tool_name(tool) == "workspace_read"));
+        assert!(selected.iter().any(|tool| tool_name(tool) == "shell_exec"));
+    }
+
+    #[test]
+    fn room_tool_history_is_used_only_for_explicit_continuation() {
+        let definitions = vec![
+            json!({"function":{"name":"workspace_write","description":"Write workspace content"}}),
+            json!({"function":{"name":"shell_exec","description":"Run shell commands"}}),
+        ];
+        let recent = std::collections::HashSet::from(["shell_exec".to_string()]);
+        let new_action = select_room_tools(definitions.clone(), "수정해", &recent, false);
+        assert!(new_action.iter().any(|tool| tool_name(tool) == "workspace_write"));
+        assert!(new_action.iter().all(|tool| tool_name(tool) != "shell_exec"));
+        let continuation = select_room_tools(definitions, "계속", &recent, false);
+        assert!(continuation.iter().any(|tool| tool_name(tool) == "shell_exec"));
+    }
+
+    #[test]
+    fn room_code_edit_exposes_surgical_editing_and_source_discovery() {
+        let definitions = vec![
+            json!({"function":{"name":"code_search"}}),
+            json!({"function":{"name":"workspace_read_range"}}),
+            json!({"function":{"name":"workspace_replace_range"}}),
+            json!({"function":{"name":"workspace_replace_function"}}),
+            json!({"function":{"name":"web_search"}}),
+        ];
+        let selected = select_room_tools(
+            definitions, "이 코드 버그를 수정해", &std::collections::HashSet::new(), false,
+        );
+        let names = selected.iter().map(tool_name).collect::<Vec<_>>();
+        assert!(names.contains(&"code_search"), "{names:?}");
+        assert!(names.contains(&"workspace_replace_range"), "{names:?}");
+        assert!(names.contains(&"workspace_replace_function"), "{names:?}");
+        assert!(!names.contains(&"web_search"), "{names:?}");
+    }
+
+    #[test]
     fn path_arguments_are_normalized_only_when_the_kernel_is_active() {
         let raw = json!({"path":"  ./sub//file.txt  ","content":"x"});
         let untouched = normalize_tool_arguments(raw.clone(), "none");
