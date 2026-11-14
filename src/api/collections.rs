@@ -309,11 +309,11 @@ pub async fn action(
             }
         },
         ("workflow", "run") => {
-            if state.store.get("workflow",&id).is_none() {
+            let Some(definition)=state.store.get("workflow",&id) else {
                 return (StatusCode::NOT_FOUND,Json(json!({
                     "error":"실행할 워크플로를 찾지 못했습니다."
                 }))).into_response();
-            }
+            };
             let (input,source)=match crate::engine::workflows::resolve_run_input(&state,&body){
                 Ok(data)=>data,
                 Err(message)=>return (StatusCode::BAD_REQUEST,
@@ -321,8 +321,8 @@ pub async fn action(
             };
             let budget=body["tokenBudget"].as_u64().unwrap_or(0).min(2_000_000);
             enqueue_job(&state,"workflow",json!({
-                "workflowId":id,"input":input,"sourceArtifact":source,
-                "tokenBudget":budget
+                "workflowId":id,"definition":definition,
+                "input":input,"sourceArtifact":source,"tokenBudget":budget
             }))
         },
         ("room", "run") => enqueue_job(
