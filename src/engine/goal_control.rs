@@ -59,7 +59,7 @@ impl GoalControl {
             .ok_or_else(cancelled)?;
         let token_budget = goal["tokenBudget"].as_u64().unwrap_or(150_000);
         if token_budget > 0 {
-            let observed = self.context.state.store.session_usage(&self.session_id)["totalTokens"]
+            let observed = self.context.state.store.session_tree_usage(&self.session_id)?["totalTokens"]
                 .as_u64().unwrap_or(0);
             if observed >= token_budget {
                 return Err(format!(
