@@ -304,6 +304,31 @@ pub async fn action(
                 None=>(StatusCode::CONFLICT,Json(json!({"error":"기억 변경 충돌입니다. 목록을 새로고침하세요."}))).into_response()
             }
         },
+        ("automation","review")=>{
+            if body["acknowledgeFutureRuns"]!=true{
+                return (StatusCode::BAD_REQUEST,Json(json!({
+                    "error":"이전 작업 검토와 향후 반복 실행을 명시적으로 승인해야 합니다."
+                }))).into_response();
+            }
+            let job_id=body["lastJobId"].as_str().unwrap_or("");
+            let note=body["resolutionNote"].as_str().unwrap_or("").trim();
+            match state.store.acknowledge_automation_review(&id,job_id,note){
+                Ok(Some((automation,job)))=>{
+                    state.bus.record("automation",&automation);
+                    state.bus.record("job",&job);
+                    state.store.audit("automation.owner_review",json!({
+                        "automationId":id,"jobId":job_id,
+                        "nextAt":automation["nextAt"],
+                        "ownerApprovedFutureRuns":true,
+                    }));
+                    Json(json!({"ok":true,"automation":automation,"job":job})).into_response()
+                }
+                Ok(None)=>(StatusCode::CONFLICT,Json(json!({
+                    "error":"해당 자동화의 보류 작업이 이미 변경됐습니다. 다시 확인하세요."
+                }))).into_response(),
+                Err(reason)=>(StatusCode::BAD_REQUEST,Json(json!({"error":reason}))).into_response(),
+            }
+        },
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
