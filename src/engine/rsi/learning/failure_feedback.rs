@@ -6,10 +6,14 @@ use serde_json::{json,Value};
 use std::collections::BTreeMap;
 
 fn measured(g:&Value)->bool{
+    // replay.rs revalidates the original paired candidate receipt even when
+    // the candidate was rejected. pairedRevalidated means ADOPTED, not
+    // independently evaluated; requiring it would erase failed experiments.
     g["pairedMeasured"]==true
-        && g["pairedRevalidated"]==true
+        && g["pairedReceiptReplayed"]==true
         && g["evaluation"]["metrics"]["measurements"].is_array()
-        && g["generatorCommit"].as_str().is_some_and(|x|x.len()==40)
+        && g["generatorCommit"].as_str().is_some_and(|x|
+            x.len()==40 && x.bytes().all(|b|b.is_ascii_hexdigit()))
 }
 fn signal(metric:&Value)->Option<(&'static str,f64)>{
     let baseline=metric["baseline"].as_f64()?;
@@ -93,6 +97,7 @@ pub(crate) fn reflective_feedback(history:&[Value],domain:&str)->Value{
     let mut prior_successes=Vec::new();
     for generation in history.iter().rev().filter(|g|measured(g)).take(20) {
         if generation["accepted"]!=true
+            || generation["pairedRevalidated"]!=true
             || generation["evaluation"]["metrics"]["eligible"]!=true
             || !generation["acceptedCommit"].as_str()
                 .is_some_and(|hash|hash.len()==40
@@ -148,6 +153,7 @@ mod tests{
  fn gen(id:&str,commit:&str,case:&str,key:&str,a:f64,b:f64,regressed:bool)->Value{
     json!({"id":id,"generatorCommit":commit,"domain":"tools",
         "pairedMeasured":true,"pairedRevalidated":true,
+        "pairedReceiptReplayed":true,
         "evaluation":{"metrics":{"measurements":[{"id":case,"domain":"tools",
             "metrics":[{"key":key,"direction":"higher",
                 "baseline":a,"candidate":b,"improved":b>a,"regressed":regressed}]}]}}})
@@ -166,7 +172,7 @@ mod tests{
  fn forged_and_satisfied_cases_do_not_influence_next_generation(){
     let hash="b".repeat(40);
     let mut forged=gen("forged",&hash,"fake","quality",0.2,0.0,true);
-    forged["pairedRevalidated"]=json!(false);
+    forged["pairedReceiptReplayed"]=json!(false);
     let solved=gen("solved",&hash,"done","quality",1.0,1.0,false);
     let report=reflective_feedback(&[forged,solved],"tools");
     assert_eq!(report["signals"].as_array().unwrap().len(),0);
@@ -192,6 +198,17 @@ mod tests{
     let mut history=vec![meaningful];history.extend(noise);
     let result=reflective_feedback(&history,"tools");
     assert_eq!(result["signals"][0]["caseId"],"case");
+ }
+ #[test]
+ fn rejected_but_independently_replayed_regression_teaches_next_descendant(){
+    let hash="f".repeat(40);
+    let mut rejected=gen("rejected",&hash,"broken","quality",0.9,0.2,true);
+    rejected["pairedRevalidated"]=json!(false);
+    rejected["accepted"]=json!(false);
+    let report=reflective_feedback(&[rejected],"tools");
+    assert_eq!(report["signals"][0]["caseId"],"broken");
+    assert_eq!(report["signals"][0]["classification"],"regression");
+    assert_eq!(report["priorSuccesses"].as_array().unwrap().len(),0);
  }
  #[test]
  fn retrieves_only_independently_validated_adopted_successes(){
