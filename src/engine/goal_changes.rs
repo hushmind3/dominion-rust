@@ -214,12 +214,14 @@ mod tests {
         std::fs::create_dir_all(&cfg.data_dir).unwrap();
         let state=AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),
             Vault::open(&cfg.key_path()));
-        // runtime/ is ignored by Git for this fixture; capture before the
-        // app creates any untracked runtime files in real production.
+        // A user-owned untracked file must deny rollback regardless of
+        // whether this repository happens to ignore runtime databases.
+        std::fs::write(dir.join("untracked-marker.txt"),"user content").unwrap();
         let prior=baseline(&dir).await;
         assert!(prior["available"]==true);
-        assert!(prior["clean"]==false,"untracked database must disable undo");
+        assert!(prior["clean"]==false,"untracked user files must disable undo");
         std::fs::remove_dir_all(&cfg.data_dir).unwrap();
+        std::fs::remove_file(dir.join("untracked-marker.txt")).unwrap();
         let clean=baseline(&dir).await;
         assert_eq!(clean["clean"],true);
         std::fs::write(dir.join("a.txt"),"after\\n").unwrap();
