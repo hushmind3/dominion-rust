@@ -374,15 +374,18 @@ pub(crate) fn select_tool_definitions(
 /// The tool executor still checks the same owner policy, file scope, approval
 /// and exact SHA. This is a native Rust counterpart to progressive tool
 /// selection in modern agent frameworks, not a foreign SDK runner.
-pub(crate) fn autonomous_code_tool_window(definitions:Vec<Value>,input:&str)->Vec<Value>{
+pub(crate) fn autonomous_code_task(input:&str)->bool{
     let lower=input.to_lowercase();
-    let coding= intent_has_any(&lower,&[
-        "코드","소스","파일","수정","개발","구현","편집","검증",
+    intent_has_any(&lower,&[
+        "코드","소스","파일","개발","구현","편집",
         "code","source","file","fix","edit","modify","patch","implement",
         "module","function","translation","locale","config","script",
     ]) || [".rs",".py",".js",".mjs",".ts",".tsx",".json",".md"].iter()
-        .any(|extension|lower.contains(extension));
-    if !coding {return definitions}
+        .any(|extension|lower.contains(extension))
+}
+pub(crate) fn autonomous_code_tool_window(definitions:Vec<Value>,input:&str)->Vec<Value>{
+    if !autonomous_code_task(input) {return definitions}
+    let lower=input.to_lowercase();
     let preferred=[
         "workspace_list","workspace_read","workspace_read_range",
         "code_search","workspace_replace","workspace_write",
@@ -447,6 +450,9 @@ mod sub1_native_autonomous_tool_tests {
         assert_eq!(names,vec!["workspace_list","workspace_read","workspace_read_range",
             "code_search","workspace_replace","workspace_write","workspace_replace_range"]);
         assert_eq!(autonomous_code_tool_window(tools.clone(),"How are you?").len(),tools.len());
+        assert!(!autonomous_code_task("계획을 검증하세요. 결과를 조사하세요."),
+            "Generic work review must not become a code-writing run");
+        assert!(autonomous_code_task("Fix trial/code/lib/price.mjs and create FIXED.txt"));
         let rust=autonomous_code_tool_window(tools.clone(),"Update src/lib.rs then cargo test");
         assert!(rust.iter().any(|v|tool_name(v)=="workspace_replace_function"));
         assert!(rust.iter().any(|v|tool_name(v)=="shell_exec"));
