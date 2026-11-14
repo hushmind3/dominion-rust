@@ -20,6 +20,23 @@ pub(super) struct Route {
     pub candidate_count: usize,
 }
 
+/// A completed tool invocation is not necessarily a useful result. An
+/// unchanged or unverified edit must not teach the routing bandit that a
+/// source edit succeeded merely because the tool returned HTTP 200.
+fn operation_succeeded(operation:&Value)->bool {
+    if operation["status"]!="completed"
+        || !super::planning::tool_succeeded(&operation["result"]) {
+        return false;
+    }
+    let name=operation["tool"].as_str().unwrap_or("");
+    if matches!(name,"workspace_write"|"workspace_replace"|
+        "workspace_replace_range"|"file_write") {
+        return operation["toolReceipt"]["verified"]==true
+            && operation["effectState"]=="verified";
+    }
+    true
+}
+
 fn mentions(haystack: &str, terms: &[&str]) -> bool {
     terms.iter().any(|term| haystack.contains(term))
 }
@@ -112,10 +129,9 @@ pub(super) fn select(
         let Some(name) = operation["tool"].as_str() else { continue };
         let status = operation["status"].as_str().unwrap_or("");
         let observed = outcomes.entry(name).or_default();
-        if status == "completed" && super::planning::tool_succeeded(&operation["result"]) {
+        if operation_succeeded(operation) {
             observed.0 = observed.0.saturating_add(1);
-        } else if matches!(status, "failed"|"error"|"denied"|"needs_review")
-            || (status == "completed" && operation["result"].is_object()) {
+        } else if matches!(status, "failed"|"error"|"denied"|"needs_review"|"completed") {
             observed.1 = observed.1.saturating_add(1);
         }
     }
@@ -127,11 +143,12 @@ pub(super) fn select(
         let Some(name)=operation["tool"].as_str() else{continue};
         let status=operation["status"].as_str().unwrap_or("");
         used.insert(name);
-        if status=="completed" && matches!(name,
+        if operation_succeeded(operation) && matches!(name,
             "workspace_write"|"workspace_replace"|"workspace_replace_range"|"file_write") {
             saw_write = true;
         }
-        if matches!(status,"failed"|"error"|"denied"|"needs_review") {
+        if matches!(status,"failed"|"error"|"denied"|"needs_review")
+            || (status=="completed" && !operation_succeeded(operation)) {
             saw_failure = true;
             if last_fail.is_none(){last_fail=Some(name)}
         }
@@ -327,9 +344,25 @@ mod tests{
         assert!(names(&got.tools).contains(&"workspace_replace"));
     }
     #[test]
+    fn unchanged_or_unverified_edit_never_promotes_verification_stage(){
+        let catalog=full();
+        let stale=json!({"tool":"workspace_replace_range","status":"completed",
+            "result":{"written":false},"toolReceipt":{"verified":false},
+            "effectState":"applied"});
+        assert!(!operation_succeeded(&stale));
+        let routed=select(&catalog,"Fix Rust source bug",2,&[stale],
+            "outcome-aware").unwrap();
+        assert_eq!(routed.stage,"recover");
+        assert!(names(&routed.tools).contains(&"workspace_read_range"));
+        assert!(names(&routed.tools).contains(&"workspace_replace"));
+    }
+
+    #[test]
     fn successful_edit_promotes_verification_without_removing_edit(){
         let catalog=full();
-        let ops=vec![json!({"tool":"workspace_replace_range","status":"completed"})];
+        let ops=vec![json!({"tool":"workspace_replace_range","status":"completed",
+            "result":{"written":true,"postSha256":"a".repeat(64)},
+            "toolReceipt":{"verified":true},"effectState":"verified"})];
         let got=select(&catalog,"Fix code and test",1,&ops,"outcome-aware").unwrap();
         assert_eq!(got.stage,"verify");
         for tool in ["shell_exec","workspace_read_range","workspace_replace_range"] {
