@@ -12,6 +12,9 @@ const extensions=source('web/src/pages/Extensions.tsx')
 const market=source('web/src/pages/Capabilities.tsx')
 const app=source('web/src/App.tsx')
 const rsi=source('web/src/pages/SelfImprovement.tsx')
+const memory=source('web/src/pages/Memory.tsx')
+const collections=source('src/api/collections.rs')
+const router=source('src/api/mod.rs')
 const notice=source('web/src/components/ImprovementNotice.tsx')
 
 test('one public connections sidebar item, retaining memory, RSI and champion goals',()=>{
@@ -57,4 +60,16 @@ test('no unsolicited self-improvement prompt, background poll or screen overlay'
  assert.match(rsi,/<Notice message=\{error/)
  assert.match(rsi,/campaign\?\.error/)
  assert.match(app,/page==='rsi'&&<SelfImprovementPage\/>/)
+})
+
+
+test('manual memory editing preserves identity and scope while leaving learned evidence untouched',()=>{
+ assert.match(memory,/memory\.source!=='user'/)
+ assert.match(memory,/retrievalEligible:_eligibility/)
+ assert.match(memory,/post\('\/api\/memories\/['+]encodeURIComponent\(memory\.id\)/)
+ assert.match(memory,/editedAt:new Date\(\)\.toISOString\(\)/)
+ assert.match(memory,/m\.source==='user'&&<Button/)
+ assert.match(memory,/t\('memory\.update'\)/)
+ assert.match(router,/get\(collections::one\)[\s\S]*?post\(collections::save\)/)
+ assert.match(collections,/"memories"/)
 })
