@@ -9,6 +9,7 @@ const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.Cha
 const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
 const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
+const GoalsPage=lazy(()=>import('./pages/Goals').then(module=>({default:module.GoalsPage})))
 const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
@@ -193,6 +194,7 @@ export default function App(){
     {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}
+    {page==='goals'&&<GoalsPage openSession={id=>navigate('chat',id)}/>}
     {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
     {page==='connections'&&<ConnectionsPage initialSection={connectionSection}/>}
     {page==='developer'&&<DeveloperPage/>}
