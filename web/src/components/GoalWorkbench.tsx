@@ -13,7 +13,7 @@ type Goal={
  acceptanceChecks?:{type?:string;path?:string;tool?:string}[];
  receipt?:{verified?:boolean;successfulToolEvidence?:number;tokenUsage?:{totalTokens?:number;calls?:number}};
  workspaceSnapshot?:{stack?:string[];manifests?:string[]};
- gitWorktree?:{path?:string;branch?:string;baseCommit?:string;rolledBack?:boolean};
+ gitWorktree?:{path?:string;branch?:string;baseCommit?:string;rolledBack?:boolean;appliedAt?:string};
  publishPr?:boolean;
 }
 type GoalJob={id:string;kind:string;status:string;input?:{goalId?:string}}
@@ -30,7 +30,8 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
  const [isolated,setIsolated]=useState(false)
  const [publishPr,setPublishPr]=useState(false)
  const [verifyPreset,setVerifyPreset]=useState('none')
- const [diff,setDiff]=useState<{diff:string;status:string;untracked:string;truncated?:boolean}|null>(null)
+ const [diff,setDiff]=useState<{diff:string;status:string;untracked:string;truncated?:boolean;
+  review?:{sha256:string;bytes:number;canApply:boolean;notice?:string};reviewError?:string}|null>(null)
  const [selectedId,setSelectedId]=useState('')
  const [busy,setBusy]=useState(false)
  const [error,setError]=useState('')
@@ -70,6 +71,16 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
   setBusy(true);setError('')
   try{setDiff(await get('/api/goals/'+selected.id+'/changes'))}
   catch(reason){setError((reason as Error).message)}finally{setBusy(false)}
+ }
+ const applyPatch=async()=>{
+  if(!selected||!diff?.review?.canApply||busy)return
+  const sha=diff.review.sha256
+  if(!window.confirm('Git 패치 '+sha.slice(0,16)+'…의 변경 내역을 확인하셨습니까? 깨끗한 원본 Git 작업공간에 적용합니다.'))return
+  setBusy(true);setError('')
+  try{
+   await post('/api/goals/'+selected.id+'/apply',{expectedPatchSha256:sha})
+   setDiff(null);await goals.reload();onJobsChanged()
+  }catch(reason){setError((reason as Error).message)}finally{setBusy(false)}
  }
  const discard=async()=>{
   if(!selected||busy)return
@@ -148,6 +159,11 @@ export function GoalWorkbench({agents,jobs,onJobsChanged}:Props){
      <p className="mt-2 text-[11px] text-[#7C7469]">상태: {diff.status||'clean'}</p>
      {diff.untracked&&<p className="mt-1 break-all text-[11px]">추가 파일: {diff.untracked}</p>}
      <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all bg-[#FAF7F1] p-2 text-[10px]">{diff.diff||'추적 파일의 변경이 없습니다.'}</pre>
+     {diff.review?.sha256&&<p className="mt-2 break-all text-[11px] text-[#7C7469]">패치 SHA-256: <code>{diff.review.sha256}</code> · {diff.review.bytes.toLocaleString()} bytes</p>}
+     {diff.reviewError&&<p className="mt-1 text-[11px] text-rose-700">원본 적용 불가: {diff.reviewError}</p>}
+     {diff.review?.notice&&<p className="mt-1 text-[10px] text-[#8A8176]">{diff.review.notice}</p>}
+     {diff.review?.canApply&&!active(selected.status)&&<Button size="sm" variant="secondary" disabled={busy} onClick={()=>void applyPatch()}>검토한 패치 원본에 적용</Button>}
+     {selected.gitWorktree?.appliedAt&&<p className="mt-1 text-[11px]">✅ 적용 완료: {selected.gitWorktree.appliedAt}</p>
     </details>}
     {selected.workspaceSnapshot?.stack?.length? <p className="mt-2 text-[11px] text-[#7C7469]">프로젝트: {selected.workspaceSnapshot.stack.join(', ')}</p>:null}
     <details open className="mt-3 border-t border-[#ECE4D8] pt-3">
