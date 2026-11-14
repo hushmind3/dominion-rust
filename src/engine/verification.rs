@@ -772,6 +772,33 @@ mod inference_tests {
     }
 
     #[test]
+    fn code_implementation_cannot_complete_with_read_and_green_build_alone() {
+        let read=json!({"tool":"workspace_read","status":"completed",
+            "result":{"content":"old Rust module"}});
+        let check=json!({"tool":"shell_exec","status":"completed",
+            "arguments":{"command":"cargo test"},"result":{"exitCode":0}});
+        let goal="Rust 하네스 알고리즘을 구현해라";
+        let checks=json!([]);
+        let gaps=acceptance_gaps_in(Path::new("."),goal,&checks,
+            &[read.clone(),check.clone()]);
+        assert!(gaps.iter().any(|gap|gap.contains("소스 변경 영수증")),
+            "a passing build must not masquerade as implementing an edit: {gaps:?}");
+        let changed=json!({"tool":"workspace_replace_range","status":"completed",
+            "arguments":{"path":"src/engine/algorithms.rs"},
+            "result":{"written":true,"changed":true}});
+        assert!(acceptance_gaps_in(Path::new("."),goal,&checks,
+            &[read,changed,check]).is_empty());
+    }
+
+    #[test]
+    fn successful_build_only_request_does_not_require_source_change() {
+        let check=json!({"tool":"shell_exec","status":"completed",
+            "arguments":{"command":"cargo build"},"result":{"exitCode":0}});
+        assert!(acceptance_gaps_in(Path::new("."),"프로젝트 빌드해",
+            &json!([]),&[check]).is_empty());
+    }
+
+    #[test]
     fn reading_an_input_does_not_require_it_to_change() {
         let checks = infer_criteria("a.txt를 읽고 b.txt에 결과를 저장해");
         assert_eq!(checks.len(), 1, "{checks:?}");
