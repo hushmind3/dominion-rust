@@ -1484,6 +1484,23 @@ pub(super) async fn run_turn_body(
             .ok_or("도구 호출 메시지를 저장할 수 없습니다.")?;
         state.bus.message(&saved);
 
+        // At this point the model's entire proposed tool-call envelope is
+        // durable. If the owner corrected the request while the model was
+        // thinking, none of the obsolete proposed tools may start.
+        if !is_room && crate::engine::steering::has_pending(state,session_id){
+            for call in &completion.tool_calls {
+                skip_for_new_owner_instruction(state,session_id,call,&mut messages)?;
+            }
+            check_tool_result_pairs(
+                &completion.tool_calls,&messages[tool_round_message_start..]
+            )?;
+            state.store.audit("harness.owner_revision_batch_skipped",json!({
+                "sessionId":session_id,"executionId":execution_id,
+                "round":round,"skippedCalls":completion.tool_calls.len()
+            }));
+            continue;
+        }
+
         let ordering = crate::engine::algorithms::choose_for_agent(
             state,
             "execution.ordering",
@@ -1637,6 +1654,13 @@ pub(super) async fn run_turn_body(
         let mut ordering_ok = true;
         let mut rsi_patch_written = false;
         for (call_index, call) in round_calls.iter().enumerate() {
+            // A correction may arrive after an earlier call in the batch.
+            // Already-started effects settle normally; remaining calls are
+            // paired with explicit skipped results rather than executed.
+            if !is_room && crate::engine::steering::has_pending(state,session_id){
+                skip_for_new_owner_instruction(state,session_id,call,&mut messages)?;
+                continue;
+            }
             // A disconnected SSE client must not stop work already promised by
             // the model; explicit cancel and budgets remain the stop signals.
             if !budget.charge_proposal() {
