@@ -4,7 +4,16 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+[features]
+default = []
+# Opt-in to GitHub's first-party Rust coding-agent harness. Existing local
+# Ollama/OpenAI-compatible providers remain available without this SDK.
+copilot-harness = ["dep:github-copilot-sdk"]
+
 [dependencies]
+# Official Copilot Agent SDK (MIT). No runtime/auth/token use unless selected.
+# The CLI must be installed and authenticated when the opt-in feature is enabled.
+github-copilot-sdk = { version = "=1.0.34", default-features = false, features = ["runtime"], optional = true }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
