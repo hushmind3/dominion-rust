@@ -257,6 +257,19 @@ pub async fn action(
             let Some(old)=state.store.get("memory",&id) else {
                 return (StatusCode::NOT_FOUND, Json(json!({"error":"기억을 찾을 수 없습니다."}))).into_response();
             };
+            // Learned/derived memories carry evidence and attribution that a text
+            // edit would falsify. Only explicitly owner-authored active records
+            // without model/source-quote provenance are editable in place.
+            // A learned memory can instead be superseded by a separately
+            // grounded correction through the learning pipeline.
+            if old["source"]!="user" || old["status"]!="active"
+                || old["verification"]=="source_quote"
+                || old["evidenceQuote"].as_str().is_some_and(|q|!q.is_empty())
+                || old["sourceMessageIds"].as_array().is_some_and(|ids|!ids.is_empty())
+            {
+                return (StatusCode::FORBIDDEN,Json(json!({"error":
+                    "사용자가 직접 등록한 활성 기억만 수정할 수 있습니다. 학습 근거와 보관 기록은 변경하지 않습니다."}))).into_response();
+            }
             if old["text"].as_str()!=Some(expected) {
                 return (StatusCode::CONFLICT, Json(json!({"error":"다른 실행에서 기억이 변경됐습니다. 새로고침 후 다시 검토하세요."}))).into_response();
             }
@@ -335,8 +348,7 @@ mod owner_memory_edit_tests {
             crate::vault::Vault::open(&config.key_path()));
         state.store.put("memory",&json!({"id":"m1","text":"old content",
             "scope":"agent","agentId":"a1","status":"active",
-            "source":"learn","evidenceQuote":"original source phrase",
-            "sourceMessageIds":["msg1"],"verification":"source_quote"})).unwrap();
+            "source":"user","verification":"owner_direct"})).unwrap();
         let uri=axum::http::Uri::from_static("/api/memories/m1/edit");
         let bad=action(State(state.clone()),OriginalUri(uri.clone()),
             Json(json!({"text":"replacement","expectedText":"stale"}))).await;
@@ -348,12 +360,35 @@ mod owner_memory_edit_tests {
         assert_eq!(saved["text"],"replacement");
         assert_eq!(saved["agentId"],"a1");
         assert_eq!(saved["scope"],"agent");
-        assert_eq!(saved["evidenceQuote"],"original source phrase");
-        assert_eq!(saved["sourceMessageIds"][0],"msg1");
+        assert!(saved["evidenceQuote"].is_null());
+        assert!(saved["sourceMessageIds"].is_null());
+        assert_eq!(saved["source"],"user");
         assert_eq!(saved["verification"],"owner_revision");
         let stale=action(State(state.clone()),OriginalUri(uri),
             Json(json!({"text":"clobber","expectedText":"old content"}))).await;
         assert_eq!(stale.status(),StatusCode::CONFLICT);
+        // Rewriting learned evidence as a user correction must be impossible.
+        for (id,source,status) in [("learned","learn","active"),
+            ("archived","user","archived")] {
+            state.store.put("memory",&json!({"id":id,"text":"source truth",
+                "scope":"agent","agentId":"a1","status":status,
+                "source":source,"verification":"source_quote",
+                "sourceMessageIds":["source-message"],"evidenceQuote":"source truth"})).unwrap();
+            let uri=format!("/api/memories/{id}/edit").parse::<axum::http::Uri>().unwrap();
+            let response=action(State(state.clone()),OriginalUri(uri),
+                Json(json!({"text":"rewritten","expectedText":"source truth"}))).await;
+            assert_eq!(response.status(),StatusCode::FORBIDDEN);
+            assert_eq!(state.store.get("memory",id).unwrap()["text"],"source truth");
+        }
+        // An active manually created memory with later attached source
+        // provenance is also immutable, regardless of its source label.
+        state.store.put("memory",&json!({"id":"protected","text":"evidence",
+            "scope":"shared","status":"active","source":"user",
+            "evidenceQuote":"source text","sourceMessageIds":["id1"]})).unwrap();
+        let protected=action(State(state.clone()),OriginalUri(
+            axum::http::Uri::from_static("/api/memories/protected/edit")),
+            Json(json!({"text":"changed","expectedText":"evidence"}))).await;
+        assert_eq!(protected.status(),StatusCode::FORBIDDEN);
         drop(state);
         let _=std::fs::remove_dir_all(dir);
     }
