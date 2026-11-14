@@ -23,5 +23,8 @@ jobs:
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
       - run: node --test scripts/sub2-goal-eval.test.mjs
+      # Baseline policy tests never load/install the Copilot SDK or call models.
+      - run: node --check scripts/copilot-sdk-baseline/runner.mjs
+      - run: node --test scripts/copilot-sdk-baseline/runner.test.mjs
       - run: bash -n scripts/rsi-lab.sh
       - run: cargo test --release
