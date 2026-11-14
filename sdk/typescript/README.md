@@ -144,3 +144,19 @@ as implemented SDK capabilities.
 `npm test` uses an in-process mock HTTP/SSE transport and does **not**
 claim a live provider execution, real workspace patch, or production recovery
 measurement. See `tests/sdk.test.mjs`. Live acceptance is separate.
+
+## Native server capability discovery
+
+```ts
+const capabilities = await sdk.sdkInfo();
+if (capabilities.apiVersion !== 1) throw new Error("Unsupported server API");
+if (!capabilities.capabilities.includes("durable_goals")) {
+  throw new Error("Autonomous goals not available on this server");
+}
+// Never automatically retry an interrupted run POST:
+console.log(capabilities.semantics.runPostIdempotent); // false
+```
+
+`sdkInfo()` is a **read-only GET** to `/api/sdk/info`; it cannot
+execute work and does not import an external agent harness.
+
