@@ -233,6 +233,11 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .ok_or("Runway Dev API 키를 영상 설정에 저장하세요.")?;
     let cfg = &input["config"];
     let chosen_model = model(cfg);
+    let quality_enabled=cfg["runwayQualityGate"].as_bool().unwrap_or(true);
+    // Verify ffprobe availability BEFORE any paid remote submission.
+    if quality_enabled && super::quality::executable(cfg).is_none() {
+        return Err("유료 영상 자동 검수에는 FFmpeg와 ffprobe가 필요합니다. FFmpeg 경로를 설정하거나 검수를 해제하세요.".into());
+    }
     let clips = if chosen_model == "kling_4" {
         super::kling4::clip_durations(input["duration"].as_u64().unwrap_or(15))?
     } else {
@@ -267,6 +272,7 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e| e.to_string())?;
     let mut task_ids = Vec::<String>::new();
+    let mut quality_reports=Vec::<Value>::new();
     for (index, seconds) in clips.iter().enumerate() {
         let mut payload = if chosen_model == "kling_4" {
             super::kling4::request(
@@ -313,12 +319,27 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         let path = dir.join(format!("clip-{index:02}.mp4"));
         let bytes = download(ctx, &client, &url, &path).await
             .map_err(|e| format!("needs_review: 이미 생성된 Runway 영상 다운로드 실패: {e}"))?;
+        let quality=if quality_enabled {
+            super::quality::inspect(cfg,&path,*seconds,
+                input["aspectRatio"].as_str().unwrap_or("9:16"),
+                chosen_model=="kling_4" || cfg["runwayAudio"].as_bool().unwrap_or(true))
+                .await.map_err(|e|format!("needs_review: 결제한 클립의 기술 검수 실패. 다음 클립은 제출하지 않았습니다: {e}"))?
+        } else { json!({"verified":false,"reason":"owner-disabled-quality-gate"}) };
+        quality_reports.push(quality);
         checkpoint_video(ctx,json!({"phase":"rendering","progress":5 + 75 * (index + 1) as u64 / clips.len() as u64,
             "videoState":{"inFlight":false,"remoteTaskId":null,"completedClips":index+1,
-                "lastClipBytes":bytes,"taskIds":task_ids}}))?;
+                "lastClipBytes":bytes,"taskIds":task_ids,"qualityReports":quality_reports}}))?;
     }
     progress(ctx, "encoding", 85)?;
     merge_clips(ctx, input, dir, clips.len()).await?;
+    let final_quality=if quality_enabled {
+        super::quality::inspect(cfg,&dir.join("output.mp4"),
+            input["duration"].as_u64().unwrap_or(15),
+            input["aspectRatio"].as_str().unwrap_or("9:16"),
+            chosen_model=="kling_4" || cfg["runwayAudio"].as_bool().unwrap_or(true))
+            .await.map_err(|e|format!("needs_review: 병합 출력 검수 실패. 추가 결제 없이 파일을 확인하세요: {e}"))?
+    } else { json!({"verified":false,"reason":"owner-disabled-quality-gate"}) };
+    checkpoint_video(ctx,json!({"videoState":{"finalQuality":final_quality}}))?;
     Ok(json!({
         "engine":"runway","provider":"Runway Dev","model":chosen_model,
         "description":if chosen_model=="kling_4" {"Kling 4.0 cinematic native-audio video"}
@@ -328,6 +349,8 @@ pub(super) async fn run(ctx: &JobContext, input: &Value, dir: &Path) -> Result<V
         "shotMode":if chosen_model=="kling_4"{"kling4_native_continuous"}else{"kling3_native_multishot"},
         "frameAnchoredClips":if use_frames{clips.len()-1}else{0},
         "taskIds":task_ids,
+        "clipQuality":quality_reports,
+        "finalQuality":final_quality,
         "audio":cfg["runwayAudio"].as_bool().unwrap_or(true),
     }))
 }
