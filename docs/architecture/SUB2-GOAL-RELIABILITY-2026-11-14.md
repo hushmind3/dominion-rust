@@ -50,6 +50,7 @@ Previously, `stalled += 1` happened after **every** unsuccessful reviewer turn, 
 run_quiet_outcome
  -> record real successful tool effects
  -> Store::session_has_uncertain_effects(sessionId)
+    idx_session_parent -> recursive bounded descendant session IDs (depth <= 16)
     idx_execution_session -> execution rows
     idx_operation_run -> execution_operation rows
     status: running/interrupted OR outcomeUnknown=true
@@ -57,9 +58,9 @@ run_quiet_outcome
  -> only fully reconciled sessions continue verification/next tool turn
 ```
 
-Previously, unresolved external effects were inspected **only if the model turn itself returned an error**. A model could produce a successful message even while a tool operation was interrupted or its remote side effects were unknown. Such work now stops without replaying it. The new read is scoped by indexed executor session, avoiding a global scan of all agents' operation receipts. The SQLite index exists in the normal `Store::open` migration path.
+Previously, unresolved external effects were inspected **only if the model turn itself returned an error**. A model could produce a successful message even while a tool operation was interrupted or its remote side effects were unknown. Such work now stops without replaying it. The new read is scoped to the executor session **and its delegated descendants (up to depth 16)**, using indexed session-parent, execution-session and operation-run joins. Unrelated rooms and agents do not block the goal. The SQLite index exists in the normal `Store::open` migration path.
 
-The regression fixture writes actual `execution` and `execution_operation` records: another session's unknown operation cannot block the goal; a completed operation is allowed; unknown, interrupted and running operations are detected. Error-on-query uses the same fail-closed treatment.
+The regression fixture writes actual `session`, `execution` and `execution_operation` records: another session's unknown operation cannot block the goal; a completed operation is allowed; unknown, interrupted and running operations are detected. A **grandchild** session's uncertain external effect blocks the parent until reconciled. Error-on-query uses the same fail-closed treatment.
 
 ## 4. Incremental goal context instead of repeated self-claims
 
@@ -79,7 +80,7 @@ The persisted session already contains the actual messages and tool outputs. Re-
 
 - **Previous baseline:** [`d1638cb4` CI](https://github.com/hushmind3/dominion-rust/actions/runs/43559631946) succeeded.
 - **Current changes:** GitHub Actions separately executes web typecheck/build and `cargo test --release` on each branch commit; see [live branch CI](https://github.com/hushmind3/dominion-rust/actions?query=branch%3Adominion-sub2). Source and added test cases must not be conflated with passing CI until that exact HEAD run completes.
-- **Reproducible test coverage:** atomic insert/rollback with injected SQLite failure; cross-session uncertain effects; acceptance-based progress and repeated ineffective tool calls; bounded incremental prompts.
+- **Reproducible test coverage:** atomic insert/rollback with injected SQLite failure; cross-session and multi-generation delegated unknown effects; acceptance-based progress and repeated ineffective tool calls; bounded incremental prompts.
 - **Not measured in this update:** paid model multi-hour completion, SWE-bench task passes, actual billed-token reductions, OS-specific deployment behavior and public product economics.
 
 ## Related external research, with limited applicability
