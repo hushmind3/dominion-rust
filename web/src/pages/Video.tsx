@@ -9,7 +9,7 @@ import {FilmRetake} from './video/FilmRetake'
 
 type Workflow={id:string;name:string;bytes:number}
 type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:string;outputUrl?:string;
- shotCount?:number;shotProgress?:number;
+ shotCount?:number;shotProgress?:number;paidSubmissionAttempts?:number;
  film?:{clips?:unknown[]};
  result?:{bytes:number;attemptedGenerations?:number;
  technicalQuality?:{verified:boolean;width:number;height:number;durationSeconds:number};
@@ -244,6 +244,10 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
        {videoJob.result.technicalQuality.width}×{videoJob.result.technicalQuality.height} ·
        {videoJob.result.technicalQuality.durationSeconds.toFixed(1)}초
       </p>}
+      {typeof videoJob.paidSubmissionAttempts==='number'&&videoJob.paidSubmissionAttempts>0&&
+       <p className="text-[11px] text-[#7C7469]">
+        LTX 유료 전송 시도 {videoJob.paidSubmissionAttempts}회 · 실제 청구 여부와 원화 금액은 제공자 청구서에서 확인
+       </p>}
       {videoJob.result?.attemptedGenerations!==undefined&&<p className="text-[11px] text-[#7C7469]">
        영상 생성 {videoJob.result.attemptedGenerations}회 · 실제 제작비는 연결된 환경에 따라 달라집니다.
       </p>}
