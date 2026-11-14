@@ -216,3 +216,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     payload["jobId"] = job_id;
     Json(payload).into_response()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/goals_api_lifecycle_tests.rs"]
+mod lifecycle_tests;
