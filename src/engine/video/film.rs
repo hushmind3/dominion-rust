@@ -131,10 +131,17 @@ pub(super) fn scenes(state:&crate::state::AppState,job:&Value)->Result<Value,Str
         let available=std::fs::symlink_metadata(&output).is_ok_and(|m|
             m.file_type().is_file()&&m.len()>=1024&&m.len()<=MAX_MP4);
         let digest=if available{file_sha(&output).ok()}else{None};
-        let verified=available&&saved_receipt(&path,clip,i).ok().flatten().is_some();
+        let receipt=if available{saved_receipt(&path,clip,i).ok().flatten()}else{None};
+        let verified=receipt.is_some();
         verified_all &=verified;
+        // Keep owner-visible defect evidence tied to the original clip SHA.
+        // A warning never triggers an unapproved paid regeneration.
+        let visual=receipt.as_ref().map(|r|
+            r["technicalQuality"]["visualDiagnostics"].clone()).unwrap_or(Value::Null);
         rows.push(json!({"index":i,"duration":clip["duration"],
-            "isAvailable":available,"outputSha256":digest,"receiptVerified":verified}));
+            "isAvailable":available,"outputSha256":digest,"receiptVerified":verified,
+            "visualDiagnostics":visual,
+            "reviewRecommended":visual["potentialVisualDefect"]==true}));
     }
     let safe=terminal&&verified_all&&job["videoState"]["inFlight"]!=true;
     for row in &mut rows{
