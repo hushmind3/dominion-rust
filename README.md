@@ -1,5 +1,18 @@
 # dominion-rust
 
+## 2026-11-15 서브1 — 다중 파일 목표 미완료 추적
+
+실제 Qwen3 4B 2개 과제에서 일부 파일만 수정한 뒤 목표가 미완료로
+종료된 영수증을 근거로, 자율 목표의 원문에 **직접 언급된 파일 경로**를
+기존 최소 검증 조건 외에도 선별합니다. 실행 전 SHA 기준선을 1회
+저장한 뒤 실행 회차마다 현재 워크스페이스의 작은 텍스트 파일과
+아직 미변경된 파일 목록을 다시 제공해 다음 편집 대상을 놓치지
+않도록 했습니다. 최대 6개 파일, 파일당 2,000바이트로 제한하고
+범위 밖 경로/시크릿/숨김 파일은 자동 주입하지 않습니다. 이 정보는
+**실행 힌트**이지 독립 채점 증거가 아닙니다.
+[엔진·실제 호출 경로](ENGINE.md)를 참고하세요.
+
+
 2026-11-15: Added scripts/swebench-official-compare.mjs to compare original
 independent Docker grader receipts for two identical Verified issue sets.
 Model, provider, limits, tool approval and sealed Git identity are audited.
