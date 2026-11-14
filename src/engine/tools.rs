@@ -35,6 +35,7 @@ pub fn definitions() -> Vec<Value> {
         tool("workspace_list", "List files and folders in the workspace", object(json!({"path": text("Relative folder path")}), vec![])),
         tool("workspace_read", "Read a UTF-8 file from the workspace", object(json!({"path": text("Relative file path")}), vec!["path"])),
         tool("workspace_read_range", "Read only a line range from a workspace file. Use the line numbers from the repository index instead of reading a large file end to end.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1, "description":"Inclusive end line; at most 400 lines are returned"})}), vec!["path","startLine"])),
+        tool("workspace_diff", "Read bounded Git status and unstaged/staged diffs without executing arbitrary shell commands. Call after source edits and before reporting verified completion.", object(json!({"path":text("Optional relative file path; omit to inspect the current workspace"),"paths":json!({"type":"array","items":{"type":"string"},"maxItems":20})}),vec![])),
         tool("code_search", "Search the persistent repository index for file paths, symbols and line numbers. Use this before reading a large file.", object(json!({"query": text("Function, type, path or keyword fragment"), "limit": json!({"type":"integer","minimum":1,"maximum":50})}), vec!["query"])),
         tool("workspace_replace_range", "Replace a previously read inclusive line range with newText only. Use startLine/endLine and sourceSha256 returned by workspace_read_range; old text is not required.", object(json!({"path": text("Relative file path"), "startLine": json!({"type":"integer","minimum":1}), "endLine": json!({"type":"integer","minimum":1,"description":"Inclusive line number; at most 120 lines"}), "newText": text("Replacement lines (without old source text)"), "expectedSha256": text("Exact sourceSha256 from the successful prior read")}), vec!["path","startLine","endLine","newText","expectedSha256"])),
         tool("workspace_replace", "Edit a small source range without rewriting the whole file (approval required). Either supply a unique oldText, or the startLine/endLine and expectedSha256 from workspace_read_range. For line mode, newText replaces those inclusive lines.", object(json!({"path": text("Relative file path"), "oldText": text("Option A: exact existing source text, occurring once"), "startLine":json!({"type":"integer","minimum":1,"description":"Option B: first line from workspace_read_range"}), "endLine":json!({"type":"integer","minimum":1,"description":"Option B: inclusive last line; max 120 lines"}), "newText": text("Replacement code text (do not include numbered line prefixes)"), "expectedSha256": text("Required in line mode: sourceSha256 from workspace_read_range; optional in oldText mode")}), vec!["path","newText"])),
@@ -223,6 +224,16 @@ pub async fn execute(
                 output["fileObservation"] = observation.clone();
             }
             Ok(output)
+        }
+        "workspace_diff" => {
+            let paths=if let Some(entries)=args["paths"].as_array(){
+                entries.iter().map(|value|value.as_str().map(str::to_string)
+                    .ok_or("diff paths must all be strings".to_string()))
+                    .collect::<Result<Vec<_>,_>>()?
+            } else if let Some(path)=args["path"].as_str().filter(|s|!s.is_empty()) {
+                vec![path.to_string()]
+            } else {Vec::new()};
+            crate::engine::agent_diff::inspect(ctx.workspace,&paths).await
         }
         "code_search" => {
             let query = required_arg(args, "query")?;

@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn tool_is_read_only(name: &str) -> bool {
     matches!(
         name,
-        "workspace_list" | "workspace_read" | "workspace_read_range" | "file_list" | "file_read"
+        "workspace_list" | "workspace_read" | "workspace_read_range" | "workspace_diff" | "file_list" | "file_read"
             | "web_search" | "http_fetch" | "memory_search"
             | "task_status" | "task_result" | "account_status"
     )
@@ -114,7 +114,7 @@ pub(super) fn select_room_tools(
                 "파일", "폴더", "읽고", "읽어", "읽어줘", "읽어봐", "읽기",
                 "열어줘", "열어봐", "보여줘", "보여 줘", "read", "file",
             ],
-            &["workspace_list", "workspace_read", "workspace_read_range", "file_list", "file_read"],
+            &["workspace_list", "workspace_read", "workspace_read_range", "workspace_diff", "file_list", "file_read"],
         ),
         (
             &[
@@ -213,7 +213,7 @@ pub(super) fn select_tool_definitions(
         return definitions;
     }
     let default_core = [
-        "workspace_list", "workspace_read", "workspace_read_range", "workspace_replace_range", "workspace_replace", "workspace_write", "shell_exec",
+        "workspace_list", "workspace_read", "workspace_read_range", "workspace_diff", "workspace_replace_range", "workspace_replace", "workspace_write", "shell_exec",
         "web_search", "memory_store", "memory_search", "delegate_task",
         "task_status", "task_result",
     ];

@@ -552,3 +552,6 @@ Video Studio supports LTX-2.5 Pro/Fast with native audio and remote generation r
 - The autonomous goal reviewer/replanner now receives a bounded deterministic `goal_evidence::synopsis` (10,500 characters maximum), not a growing replay of full tool responses at every iteration. The Rust `verification::acceptance_gaps`, artifact collection, execution operations and goal checkpoints retain full original evidence. The summary cannot grant success, and no extra model/API call is needed.
 
 - The goal acceptance gate also treats Korean "고치다/변경/리팩터" and English `fix/repair/refactor/implement/patch` as actual action requests. Those goals cannot be closed on read-only observations or a model's unverified final answer. Existing genuine non-action explanations remain valid.
+
+### Verified workspace diffs
+`tools::execute("workspace_diff")` → `agent_diff::inspect` performs read-only Git status, staged and unstaged diff with a bounded timeout and output budget. Goals explicitly request the diff before claiming completion; it does not auto-approve commands or accept self-reported tool success. `chat/runtime/tool_selection.rs` classifies it as read-only.

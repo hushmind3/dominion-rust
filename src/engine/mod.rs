@@ -1,4 +1,5 @@
 pub mod goal_control;
+pub mod agent_diff;
 pub mod goal_context;
 pub mod goal_evidence;
 pub mod goal_steering;

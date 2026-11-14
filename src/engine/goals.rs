@@ -301,7 +301,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             agent_id:agent_id.clone(),provider_id:Some(provider_id.clone()).filter(|s| !s.is_empty()),model:Some(model.clone()).filter(|s| !s.is_empty()),
             attachment_ids: Vec::new(),tools_enabled:true,tools_execution_enabled:true,thinking:None,auto_learning:false,reasoning_effort:None,reasoning_language:None,
             task_id:Some(task_id.clone()),parent_task_id:Some(task_id.clone()),task_revision:task_revision.clone(),verification_owner:Some("parent".into()),
-            system_override:Some("You are executing a durable autonomous goal. Use real tools and verify actual results. Never claim a result that a tool did not produce. Acceptance checks are enforced by the Rust harness.".into()),
+            system_override:Some("You are executing a durable autonomous goal. Discover files with code_search, inspect small source ranges, make approved edits, then use workspace_diff and task-appropriate tests to inspect actual changes. Fix failures before claiming completion. Only delegate independent investigations; reconcile their results yourself. The Rust harness owns acceptance and all tool approvals.".into()),
         };
         let (outcome, stats) = run_quiet_outcome(state, &request).await;
         let turn_error = outcome.as_ref().err().cloned();
