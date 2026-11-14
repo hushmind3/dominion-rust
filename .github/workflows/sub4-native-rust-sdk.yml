@@ -1,0 +1,24 @@
+name: Sub4 native Rust SDK
+
+on:
+  push:
+    branches: [dominion-sub4]
+    paths:
+      - 'sdk/rust/**'
+      - '.github/workflows/sub4-native-rust-sdk.yml'
+  workflow_dispatch:
+
+jobs:
+  native-rust-sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk/rust
+      - name: Rust SDK compile, protocol and real stdio MCP tests
+        run: cargo test --manifest-path sdk/rust/Cargo.toml --all-targets

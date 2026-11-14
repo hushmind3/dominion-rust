@@ -8,6 +8,18 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 DOMINION Rust-native Agent SDK (primary)
+
+The first-party **Rust crate** is at [sdk/rust](sdk/rust/README.md).
+It exposes native Rust \`DominionClient\`, durable goal/thread handlers,
+explicit owner instruction steering, SSE event recovery, guarded review/apply,
+and a real Rust stdio MCP tool server supporting asynchronous Rust callbacks.
+Run \`cargo test --manifest-path sdk/rust/Cargo.toml --all-targets\`.
+The Rust engine owns actual reasoning, tools and effects. The crate is an
+**external Rust client** to that engine; embedding the engine as an in-process
+Rust library remains future work. TypeScript in \`sdk/typescript\` is optional UI
+integration, never the primary SDK.
+
 ## 2026-11-14 DOMINION 자체 Agent SDK
 
 외부 Copilot/Claude/Codex 실행 엔진에 위임하지 않는 **1차 DOMINION Agent SDK**를 구현했습니다. 독립 패키지 [`sdk/typescript`](sdk/typescript/README.md)는 실제 Rust API 위에 `startThread / resumeThread / run / runStreamed / startGoal / resumeGoal / watchEvents / resolveApproval`을 제공합니다. 기존 웹 채팅도 `web/src/api.ts → sdk/typescript/src/index.ts → POST /api/chat → engine/chat` 경로로 SDK를 사용합니다.
