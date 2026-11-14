@@ -47,6 +47,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if let Err(message) = engine::goals::validate_criteria(&criteria) {
         return error(StatusCode::BAD_REQUEST, &message);
     }
+    if body.get("requireTests").is_some() && !body["requireTests"].is_boolean(){
+        return error(StatusCode::BAD_REQUEST,"requireTests must be a boolean.");
+    }
+    let require_tests=body["requireTests"].as_bool().unwrap_or(false);
     let isolate=body["isolateWorktree"].as_bool().unwrap_or(false);
     if body.get("isolateWorktree").is_some() && !body["isolateWorktree"].is_boolean(){
         return error(StatusCode::BAD_REQUEST,"isolateWorktree must be a boolean.");
@@ -68,6 +72,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         "id":goal_id,"jobId":job_id,
         "taskId":uuid::Uuid::new_v4().to_string(),
         "goal":text,"successCriteria":criteria,"isolateWorktree":isolate,
+        "requireTests":require_tests,
         "executor":executor,
         "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
         "planner":body.get("planner").cloned().unwrap_or(json!({})),
