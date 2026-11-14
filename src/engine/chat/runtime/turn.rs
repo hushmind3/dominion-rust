@@ -1557,8 +1557,14 @@ pub(super) async fn run_turn_body(
                     && round_tools.iter().any(|schema|tool_name(schema)==call.name))
                 .cloned()
                 .collect::<Vec<_>>();
-            let valid_read_count=read_calls.iter().filter(|call|
-                serde_json::from_str::<Value>(&call.arguments).is_ok()).count();
+            let valid_read_count=read_calls.iter().filter(|call|{
+                let Ok(arguments)=serde_json::from_str::<Value>(&call.arguments)
+                    else{return false};
+                arguments.is_object() && round_tools.iter()
+                    .find(|definition|tool_name(definition)==call.name.as_str())
+                    .is_some_and(|definition|
+                        super::tool_schema::validate(definition,&arguments).is_ok())
+            }).count();
             // All parallel reads must charge the same proposal/execution
             // budget as sequential dispatch. Admission is all-or-nothing so
             // a failed batch reservation falls back to the bounded serial loop.
@@ -1579,6 +1585,26 @@ pub(super) async fn run_turn_body(
                 for (offset, call) in read_calls.iter().enumerate() {
                     match serde_json::from_str::<Value>(&call.arguments) {
                         Ok(arguments) => {
+                            let validation=round_tools.iter()
+                                .find(|definition|tool_name(definition)==call.name.as_str())
+                                .ok_or("tool was not advertised this turn")
+                                .and_then(|definition|
+                                    super::tool_schema::validate(definition,&arguments)
+                                        .map_err(|_|"invalid tool arguments"));
+                            if let Err(error)=validation {
+                                messages.push(json!({
+                                    "role":"tool","tool_call_id":call.id,
+                                    "content":json!({"error":format!(
+                                        "입력 스키마 검사에서 거절됐습니다: {error}"),
+                                        "invalidToolSchema":true}).to_string(),
+                                }));
+                                mark_tool_argument_signal(state,request,execution_id,false);
+                                crate::engine::algorithms::mark_signal(
+                                    state,execution_id,"tool.selection",false);
+                                crate::engine::algorithms::mark_signal(
+                                    state,execution_id,"recovery.strategy",false);
+                                continue;
+                            }
                             valid_calls.push((call.clone(), offset));
                             futures.push(dispatch_tool_call(
                                 state,
@@ -1729,6 +1755,26 @@ pub(super) async fn run_turn_body(
                     continue;
                 }
             };
+            if let Some(definition)=round_tools.iter()
+                .find(|definition|tool_name(definition)==call.name.as_str())
+            {
+                if let Err(error)=super::tool_schema::validate(definition,&arguments){
+                    mark_tool_argument_signal(state,request,execution_id,false);
+                    record_soft_tool_error(
+                        state,tx,session_id,request,execution_id,
+                        &call.name,&call.id,&error,metrics,
+                    );
+                    state.store.audit("tool.schema_rejected",json!({
+                        "sessionId":session_id,"executionId":execution_id,
+                        "round":round,"tool":call.name,"reason":error,
+                    }));
+                    messages.push(json!({
+                        "role":"tool","tool_call_id":call.id,
+                        "content":json!({"error":error,"invalidToolSchema":true}).to_string(),
+                    }));
+                    continue;
+                }
+            }
             let completed_operations = state
                 .store
                 .all("execution_operation")
