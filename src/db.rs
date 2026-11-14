@@ -139,8 +139,9 @@ impl Store {
                  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                  PRIMARY KEY(kind, id)
              );
-             CREATE INDEX IF NOT EXISTS idx_live_job_status
-                ON records(json_extract(data,'$.status'))
+             DROP INDEX IF EXISTS idx_live_job_status;
+              CREATE INDEX IF NOT EXISTS idx_live_jobs_kind_status
+                ON records(kind,json_extract(data,'$.status'))
                 WHERE kind='job';
               CREATE TABLE IF NOT EXISTS messages(
                  id TEXT PRIMARY KEY,
