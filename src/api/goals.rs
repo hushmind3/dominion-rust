@@ -15,6 +15,23 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+/// The immutable proof for the *current* goal attempt only. Do not
+/// accidentally reuse a previous successful job receipt after a resume.
+pub async fn goal_receipt(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    let Some(goal)=state.store.get("goal",&id) else{
+        return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");
+    };
+    let Some(job_id)=goal["jobId"].as_str() else{
+        return error(StatusCode::NOT_FOUND,"이 목표의 실행 영수증이 없습니다.");
+    };
+    let receipt_id=format!("goal-receipt:{id}:{job_id}");
+    match state.store.get("goal_receipt",&receipt_id){
+        Some(receipt)=>Json(receipt).into_response(),
+        None=>error(StatusCode::NOT_FOUND,
+            "이 실행 작업의 검증 영수증이 아직 없습니다.")
+    }
+}
+
 pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(goal)=state.store.get("goal",&id) else{return error(StatusCode::NOT_FOUND,"목표를 찾을 수 없습니다.");};
     if matches!(goal["status"].as_str(),Some("queued"|"running")){
