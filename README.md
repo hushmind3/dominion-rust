@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 Native Rust program failure recovery
+
+`src/engine/chat/runtime/program.rs` treats a failed tool call or
+delegated subagent as a **pending, repairable operation**, not a completed
+effect. The regular program repair planner can now replace that pending
+node after reading the real failure receipt. Only successful calls or
+explicit `onFailure=continue` steps settle, and completed effects remain
+immutable across revisions. Native unit tests exercise this exact
+settlement predicate and the actual revision-acceptance contract.
+
 ## 2026-11-14 Native Rust parallel operation identity
 
 The parallel program interpreter now reserves a **non-overlapping opSeq

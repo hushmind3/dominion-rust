@@ -10,6 +10,12 @@ fn save_program_checkpoint(state: &AppState, execution_id: &str, checkpoint: &Va
     }
 }
 
+/// The real settlement contract used by ordinary and delegated tool nodes.
+/// A failed node is only closed when the plan explicitly says `onFailure:continue`.
+fn program_tool_settled(node:&Value,result:&Value)->bool{
+    tool_succeeded(result) || node["onFailure"] == "continue"
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_program_tool(
     state: &AppState,
@@ -77,7 +83,7 @@ async fn execute_program_tool(
     // interpreting its receipt makes replacePendingNodes impossible.
     // Explicit onFailure=continue means the owner intended a best-effort
     // operation and deliberately accepts its failure as a settled step.
-    if tool_succeeded(&result) || node["onFailure"] == "continue" {
+    if program_tool_settled(node,&result) {
         mark_program_completed(checkpoint, node_id);
     }
     if !checkpoint["observationRefs"].is_object() {
@@ -1006,8 +1012,13 @@ mod program_effect_receipt_tests {
                 {"id":"write","type":"call_tool","tool":"workspace_write","inputs":{"path":"a","content":"b"}}
             ]})
         );
-        assert!(!tool_succeeded(&fail));
-        if tool_succeeded(&fail) {
+        let required=json!({"onFailure":"revise"});
+        let best_effort=json!({"onFailure":"continue"});
+        assert!(!program_tool_settled(&required,&fail));
+        assert!(!program_tool_settled(&json!({}),&fail));
+        assert!(program_tool_settled(&best_effort,&fail));
+        assert!(program_tool_settled(&required,&json!({"success":true})));
+        if program_tool_settled(&required,&fail) {
             mark_program_completed(&mut checkpoint,"write");
         }
         assert!(!crate::engine::program::checkpoint_skip_completed(&checkpoint,"write"));
