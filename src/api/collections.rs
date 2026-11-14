@@ -83,6 +83,55 @@ pub async fn save(
         )
             .into_response();
     }
+    if kind == "memory" {
+        // User creation is insert-only. Every existing memory, including a
+        // learned one, is immutable through this generic collection endpoint.
+        // Owner edits must use the constrained /edit action below.
+        if id_from_uri(&uri).is_some() || body.get("id").is_some() {
+            return (StatusCode::CONFLICT, Json(json!({
+                "error":"기존 기억은 수정 전용 API를 사용하세요. 새 기억 ID는 서버가 발급합니다."
+            }))).into_response();
+        }
+        if body.get("source").is_some_and(|value| value != "user")
+            || body.get("status").is_some_and(|value| value != "active") {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error":"수동 등록은 사용자 출처의 활성 기억만 생성할 수 있습니다."
+            }))).into_response();
+        }
+        let Some(text) = body["text"].as_str().map(str::trim)
+            .filter(|text| !text.is_empty() && text.chars().count() <= 4096) else {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error":"기억은 1~4096자여야 합니다."
+            }))).into_response();
+        };
+        let scope = body["scope"].as_str().unwrap_or("shared");
+        if !matches!(scope, "shared" | "agent") {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error":"수동 기억의 범위는 공유 또는 에이전트만 지정할 수 있습니다."
+            }))).into_response();
+        }
+        let agent_id = body["agentId"].as_str().unwrap_or("");
+        if scope == "agent" && (agent_id.is_empty()
+            || state.store.get("agent", agent_id).is_none()) {
+            return (StatusCode::BAD_REQUEST, Json(json!({
+                "error":"지정한 기억 담당 에이전트를 찾을 수 없습니다."
+            }))).into_response();
+        }
+        let record = json!({
+            "id":uuid::Uuid::new_v4().to_string(),
+            "text":text,"source":"user","status":"active",
+            "scope":scope,
+            "agentId":if scope=="agent" {json!(agent_id)}else{Value::Null},
+            "createdAt":chrono::Utc::now().to_rfc3339(),
+            "revision":0
+        });
+        return match state.store.put_if_absent("memory",&record) {
+            Some(saved) => {state.bus.record("memory",&saved);Json(saved).into_response()},
+            None => (StatusCode::INTERNAL_SERVER_ERROR,Json(json!({
+                "error":"기억 저장에 실패했습니다."
+            }))).into_response()
+        };
+    }
     let mut body = body;
     if kind == "mcp" {
         let id = body
@@ -236,6 +285,42 @@ pub async fn action(
         .to_string();
 
     match (kind.as_str(), action.as_str()) {
+        ("memory", "edit") => {
+            if body.as_object().is_none_or(|fields|fields.len()!=2
+                || !fields.contains_key("text") || !fields.contains_key("expectedText")) {
+                return (StatusCode::BAD_REQUEST,Json(json!({
+                    "error":"text와 expectedText만 보내세요."
+                }))).into_response();
+            }
+            let Some(expected) = body["expectedText"].as_str() else {
+                return (StatusCode::BAD_REQUEST,Json(json!({
+                    "error":"수정 전에 읽은 기억 내용이 필요합니다."
+                }))).into_response();
+            };
+            let Some(text) = body["text"].as_str().map(str::trim)
+                .filter(|text|!text.is_empty()&&text.chars().count()<=4096) else {
+                return (StatusCode::BAD_REQUEST,Json(json!({
+                    "error":"기억 내용은 1~4096자여야 합니다."
+                }))).into_response();
+            };
+            if state.store.get("memory",&id).is_none() {
+                return (StatusCode::NOT_FOUND,Json(json!({
+                    "error":"기억을 찾을 수 없습니다."
+                }))).into_response();
+            }
+            match state.store.edit_manual_memory(&id,expected,text) {
+                Some(updated) => {
+                    state.store.audit("memory.owner_edited",json!({
+                        "id":id,"scope":updated["scope"],"revision":updated["revision"]
+                    }));
+                    state.bus.record("memory",&updated);
+                    Json(updated).into_response()
+                },
+                None => (StatusCode::CONFLICT,Json(json!({
+                    "error":"기억이 변경되었거나 사용자 작성 활성 기억이 아닙니다. 새로고침 후 다시 확인하세요."
+                }))).into_response(),
+            }
+        },
         ("workflow", "run") => enqueue_job(
             &state,
             "workflow",
