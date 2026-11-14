@@ -696,6 +696,19 @@ impl Store {
         query_message(&conn, &id)
     }
 
+    /// Fast indexed-by-kind owner correction probe at every tool boundary.
+    /// Avoid materializing all JSON records for a single in-flight session.
+    pub fn has_queued_owner_instruction(&self, session_id:&str)->bool{
+        let conn=self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM records WHERE kind='chat_steer' 
+                AND json_extract(data,'$.sessionId')=?1
+                AND json_extract(data,'$.status')='queued' LIMIT 1)",
+            [session_id],
+            |row|row.get::<_,i64>(0)
+        ).map(|value|value==1).unwrap_or(false)
+    }
+
     pub fn message(&self, id: &str) -> Option<Value> {
         query_message(&self.conn.lock().unwrap(), id)
     }
