@@ -67,3 +67,19 @@ niche+parent balancing, with identical frozen tasks, model, source baseline,
 token budget, total calls and independent held-out oracle. Log actual source
 hashes, accepted descendant reuse, tool costs and solved test cases. Adoption
 or increased scores cannot be inferred from an archive selection change alone.
+
+## Configurable search-strategy ablation
+
+The operator can select either strategy without changing Rust source or any
+held-out evaluation fixture. Set DOMINION_RSI_PARENT_SEARCH=parent_only_v2
+to reproduce the original least-used-parent selector. Leave the variable
+unset or set DOMINION_RSI_PARENT_SEARCH=measured-niche-diversity-v1 to
+select the new least-explored-training-niche policy. Both paths share the
+same admissible candidates, training-only Pareto frontier, branch/source
+and independent paired receipts, and frozen holdout promotion rule.
+
+The selected strategy is captured in each candidate search receipt
+as searchStrategy. Rust regression tests demonstrate that both strategies
+choose different candidates on the same controlled state, without changing
+any acceptance criterion. This makes an experimental ablation possible;
+it does not itself establish a performance improvement.

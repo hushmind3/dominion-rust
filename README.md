@@ -814,3 +814,5 @@ The Rust RSI archive now ranks eligible neutral worktree candidates using traini
 ### Reproducible real-model SWE-bench Verified adapter
 
 Run the existing Rust autonomous goals engine on real SWE-bench Verified source checkouts with scripts/sub2-swebench-verified.mjs. It emits actual Git patches and usage receipts for every attempted task; optionally invokes the upstream official Docker grader. Hidden test patches are never passed to the agent. The adapter never fabricates an official solved count. See docs/benchmarks/DOMINION-SWEBENCH-VERIFIED-SUB2-2026-11-14.md.
+
+RSI A/B control: set `DOMINION_RSI_PARENT_SEARCH=parent_only_v2` to use the original least-used-parent policy or leave unset to run the native measured niche strategy. Both are held to the same frozen independent A/B evaluator. See the RSI search architecture document for controlled comparisons.
