@@ -129,3 +129,16 @@ a new agent executor or evidence that a live model ran.
 The TypeScript and Rust SDK suites each include a mock HTTP integration
 asserting the GET route and execution semantics.
 
+## 2026-11-15 continuation: rejected-candidate RSI and benchmark trace correctness
+
+**Crucial provenance distinction:** `rsi_system/replay.rs::revalidated_history` sets `pairedReceiptReplayed` after verifying the original independent paired candidate receipt **even for a rejected candidate**, while `pairedRevalidated` means the experiment has been **adopted**. Previously `failure_feedback.rs::measured` required the latter, preventing rejected experiments from teaching the next worker. The corrected decision is:
+
+- failure/counterexample eligibility: `pairedMeasured && pairedReceiptReplayed` plus real per-case metrics and source commit;
+- prior-success retrieval: the above **and** `accepted && pairedRevalidated && eligible` plus accepted commit provenance.
+
+An independent rejected regression now appears in next-generation diagnostic input without promoting it to the selected source. Tests explicitly cover this status difference.
+
+**Benchmark fixes:** `scripts/benchmark/swebench_dominion.py` resolves `--output` before running the official evaluator in that output directory. It recognizes both official grader report layouts by the exact run ID and verifies the submitted cohort. It counts failed and uncertain tool operations rather than labeling only completed operations as all calls. The receipt records `failedToolCalls`, `successfulToolCalls`, `uncertainToolCalls`, `observedFailureCases`, `observedRecoveryCases`, `observedFailureRecoveryRate`, with unknown metrics kept null when telemetry cannot be read.
+
+[Draft PR #11](https://github.com/hushmind3/dominion-rust/pull/11) isolates CI/review from automatic main-branch merge. No remote Docker evaluation, paid model inference or local Rust compilation was performed by this chat.
+
