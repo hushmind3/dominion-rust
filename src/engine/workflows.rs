@@ -168,26 +168,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let before_ops=state.store.session_execution_operations(&session_id)?
             .into_iter().filter_map(|op|op["id"].as_str().map(str::to_string))
             .collect::<std::collections::HashSet<_>>();
-        let (outcome,stats,sdk_events,sdk_runtime) =
-            if step["executionMode"]=="copilot_sdk" {
-                // Existing local agent IDs may specify Qwen/Ollama-only models.
-                // Do not feed them to an unrelated Copilot runtime; use the
-                // official runtime's own default unless explicitly overridden.
-                let sdk_model=step["model"].as_str().filter(|m|!m.is_empty());
-                match crate::engine::copilot_harness::run(
-                    state,&session_id,&request.input,sdk_model,
-                    step["copilotAllowTools"]==true,600,
-                ).await {
-                    Ok(done)=>(Ok(Some(done.message)),
-                        crate::engine::TurnStats::default(),
-                        done.events,Some(done.runtime_session)),
-                    Err(error)=>(Err(error),crate::engine::TurnStats::default(),
-                        Vec::new(),None),
-                }
-            }else{
-                let (outcome,stats)=run_quiet_outcome(state,&request).await;
-                (outcome,stats,Vec::new(),None)
-            };
+        let (outcome,stats)=run_quiet_outcome(state,&request).await;
         let message = match outcome {
             Ok(Some(message)) => message,
             Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
@@ -228,10 +209,6 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "toolEvidenceCount":actual_actions,
             "toolOperationIds":action_ids,
             "toolErrors":stats.tool_errors,
-            "executionMode":step["executionMode"],
-            "sdkRuntimeSession":sdk_runtime,
-            "sdkEventCount":sdk_events.len(),
-            "sdkBillingVerified":false,
             "modelUsageSnapshot":state.store.session_usage(&session_id),
             "name": step_name,
             "content": message.get("content").cloned().unwrap_or(json!("")),
