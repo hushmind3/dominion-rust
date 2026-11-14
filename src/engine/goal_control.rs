@@ -49,7 +49,26 @@ impl GoalControl {
         if self.is_cancelled() {
             return Err(cancelled());
         }
-        let completion = llm::complete(&self.context.state, provider, model, system, prompt);
+        // Planner/reviewer/replanner calls belong to the same durable goal
+        // session as executor turns. Previously these helper tokens were
+        // unattributed, so the UI understated goal spending.
+        let goal = self.context.state.store.get("goal", &self.goal_id)
+            .ok_or_else(cancelled)?;
+        let budget = goal["tokenBudget"].as_u64().unwrap_or(150_000);
+        if budget > 0 {
+            let observed = self.context.state.store.session_usage(&self.session_id)["totalTokens"]
+                .as_u64().unwrap_or(0);
+            if observed >= budget {
+                return Err(format!(
+                    "목표 토큰 예산({budget})에 도달했습니다 (기록 {observed}토큰). 계획·검토 호출을 중단합니다."
+                ));
+            }
+        }
+        // Admission is observed-usage based; an in-flight response can cross
+        // the remaining budget, and providers may omit usage entirely.
+        let completion = llm::complete_for_session(
+            &self.context.state, provider, model, system, prompt, &self.session_id,
+        );
         tokio::pin!(completion);
         loop {
             tokio::select! {
