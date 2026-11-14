@@ -5,6 +5,25 @@
 모델은 OpenAI 호환 HTTP API로 호출하고, Discord는 공식 REST v10으로 연결합니다.
 이번 변경은 Cargo 의존성을 추가하지 않습니다. `web/`의 Node 도구는 UI 빌드에 사용합니다.
 
+## 영상·장기 작업 이벤트 검증 경로 (2026-11-15)
+
+- 영상: `web/src/pages/Video.tsx` → `api/video.rs::create_job` →
+  `engine/video.rs::enqueue` (input 동결) → `jobs.rs` →
+  `engine/video/cinematic.rs::render` → `quality.rs::inspect_shot` →
+  `visual_scan.rs::inspect` (로컬 FFmpeg 전체 프레임 디코드 + blackdetect/freezedetect).
+  검수 실패는 해당 샷 1회 이하 재생성 또는 실패로 기록하며, 기존 샷
+  재사용은 같은 검수 정책을 다시 통과할 때만 허용한다. 원격 제출
+  `needs_review` 게이트를 우회하지 않는다.
+- 이벤트: `events.rs::Bus::emit` (dispatch gate → SQLite 순차 저장 →
+  broadcast) → `api/system.rs::events` (subscribe-before-replay →
+  `Bus::replay_available` 다중 페이지 → 재연결·Lagged 백필) →
+  `sdk/typescript/src/index.ts::watchEventsResilient` (읽기 전용).
+  보존 기간 초과 시 `replay_gap`을 내보내므로 고객 앱은
+  `/api/goals/:id`, `/api/jobs/:id` 등의 권위 있는 현재 상태를 다시 읽는다.
+- 평가 경계: 프레임 검수 통과는 영화적 완성도·의미/시각 일관성의
+  모델 기반 평가가 아니다. 재생성 빈도·CPU 검사 시간은 운영 기록이며
+  GPU 전력 요금과 실제 공급자 청구액으로 환산하지 않는다.
+
 ## SDK와 엔진의 분리 (2026-11-14)
 
 ```text
