@@ -66,7 +66,7 @@ test('no unsolicited self-improvement prompt, background poll or screen overlay'
 test('manual memory editing preserves identity and scope while leaving learned evidence untouched',()=>{
  assert.match(memory,/memory\.source!=='user'/)
  assert.match(memory,/retrievalEligible:_eligibility/)
- assert.match(memory,/post\('\/api\/memories\/['+]encodeURIComponent\(memory\.id\)/)
+ assert.match(memory,/post\('\/api\/memories\/'\+encodeURIComponent\(memory\.id\)/)
  assert.match(memory,/editedAt:new Date\(\)\.toISOString\(\)/)
  assert.match(memory,/m\.source==='user'&&<Button/)
  assert.match(memory,/t\('memory\.update'\)/)
