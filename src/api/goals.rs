@@ -215,6 +215,23 @@ pub async fn goal_diff(State(state):State<AppState>,Path(id):Path<String>)->Resp
     }
 }
 
+/// Owner-reviewed promotion requires the SHA-256 of exactly the patch shown
+/// by /diff. No implicit Git commit or merge is performed.
+pub async fn apply_workspace(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    if body.as_object().is_none_or(|object|
+        object.len()!=1 || !object.contains_key("expectedPatchSha256")){
+        return error(StatusCode::BAD_REQUEST,"검토한 패치 SHA-256만 제출하세요.");
+    }
+    let Some(digest)=body["expectedPatchSha256"].as_str() else{
+        return error(StatusCode::BAD_REQUEST,"패치 SHA-256이 문자열이 아닙니다.");
+    };
+    match engine::goal_workspace::apply_reviewed(&state,&id,digest).await{
+        Ok(receipt)=>Json(receipt).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message)
+    }
+}
+
 /// Destructive operation is explicitly opt-in, and never touches the source
 /// checkout. The owner must inspect the diff before discarding local edits.
 pub async fn discard_workspace(State(state):State<AppState>,Path(id):Path<String>,

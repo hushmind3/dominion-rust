@@ -9,7 +9,7 @@ type Artifact={path:string;bytes:number;sha256?:string}
 type Goal={
  id:string;goal:string;status:string;phase?:string;plan?:string;planScore?:{total?:number};createdAt?:string;finalSummary?:string;
  jobId?:string;sessionId?:string;iterations?:number;maxIterations?:number;maxExecutorTokens?:number;
- isolateWorktree?:boolean;gitWorktree?:{path?:string;baseCommit?:string;discarded?:boolean;mode?:string};
+ isolateWorktree?:boolean;gitWorktree?:{path?:string;baseCommit?:string;discarded?:boolean;mode?:string;appliedAt?:string};
  gaps?:string[];deliverables?:{files?:Artifact[];writeEvidence?:number};
  workspaceInspection?:{entries?:{name:string;kind:string}[];projectFiles?:{file:string}[]};
  resumeHistory?:{at:string;resolutionNote:string}[];
@@ -34,7 +34,7 @@ export function GoalConsole(){
  const [editingPlan,setEditingPlan]=useState(false),[planDraft,setPlanDraft]=useState('')
  const [approvalBusy,setApprovalBusy]=useState('')
  const [acknowledged,setAcknowledged]=useState(false)
- const [diff,setDiff]=useState<{id:string;text:string}|null>(null)
+ const [diff,setDiff]=useState<{id:string;text:string;patchSha256?:string;canApply?:boolean}|null>(null)
  const chosen=goals.value.find(g=>g.id===selected)||[...goals.value].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''))[0]
  const approvals=useRemote<GoalApproval[]>(chosen?.sessionId?'/api/goals/'+encodeURIComponent(chosen.id)+'/approvals':null,[])
  const pendingApprovals=approvals.value.filter(item=>item.status==='pending'||item.status==='interrupted')
@@ -85,6 +85,18 @@ export function GoalConsole(){
    setNotice('사용자 수정 계획을 다음 작업에 적용했습니다.');setEditingPlan(false);await reload()}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
+ const applyWorktree=async()=>{
+  if(!chosen||busy||!diff||diff.id!==chosen.id||!diff.canApply||!diff.patchSha256)return
+  if(!window.confirm('검토한 Git 변경을 원본 체크아웃에 반영합니다. 반영 후 원본 Git 파일이 변경되며 자동 커밋은 생성하지 않습니다. 진행할까요?'))return
+  setBusy(true);setError('');setNotice('')
+  try{
+   await post('/api/goals/'+encodeURIComponent(chosen.id)+'/apply',{
+    expectedPatchSha256:diff.patchSha256
+   })
+   setNotice('SHA-256으로 고정한 전체 패치를 검증해 원본 체크아웃에 적용했습니다.')
+   setDiff(null);await reload()
+  }catch(e){setError((e as Error).message)}finally{setBusy(false)}
+ }
  const discardWorktree=async()=>{
   if(!chosen?.gitWorktree||busy||running(chosen.status))return
   if(!window.confirm('이 목표의 격리 Git 작업폴더와 커밋하지 않은 파일을 영구 폐기합니다. 원본 폴더는 유지됩니다. 폐기할까요?'))return
@@ -97,11 +109,12 @@ export function GoalConsole(){
  const showDiff=async()=>{
   if(!chosen||busy)return
   setBusy(true);setError('')
-  try{const data=await get<{diff:string;note?:string;workspaceMode?:string;status?:string;untracked?:string;baseCommit?:string}>('/api/goals/'+encodeURIComponent(chosen.id)+'/diff')
+  try{const data=await get<{diff:string;note?:string;workspaceMode?:string;status?:string;untracked?:string;baseCommit?:string;patchSha256?:string;canApply?:boolean}>('/api/goals/'+encodeURIComponent(chosen.id)+'/diff')
    const summary=data.workspaceMode==='isolated'
     ?'격리된 Git 작업폴더 · 기준 커밋 '+(data.baseCommit||'')+'\n상태:\n'+(data.status||'없음')+'\n추적되지 않은 파일:\n'+(data.untracked||'없음')+'\n\n'
     :''
-   setDiff({id:chosen.id,text:summary+(data.diff||data.note||'변경된 추적 파일의 diff가 없습니다.')})}
+   setDiff({id:chosen.id,text:summary+(data.diff||data.note||'변경된 추적 파일의 diff가 없습니다.'),
+    patchSha256:data.patchSha256,canApply:data.canApply})}
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  return <Panel className="mb-5 p-5">
@@ -151,6 +164,8 @@ export function GoalConsole(){
      {chosen.planScore?.total!==undefined&&<span className="text-[11px] text-[#7C7469]">계획 품질 지표 {Math.round(chosen.planScore.total*100)}%</span>}
      {running(chosen.status)&&<Button variant="danger" size="sm" onClick={()=>void stop()} disabled={busy}><Square size={13}/> 중단</Button>}
      <Button size="sm" variant="secondary" onClick={()=>void showDiff()} disabled={busy||chosen.gitWorktree?.discarded}><FileCode2 size={13}/> Diff 확인</Button>
+     {chosen.isolateWorktree&&chosen.gitWorktree&&!chosen.gitWorktree.discarded&&!chosen.gitWorktree.appliedAt&&!running(chosen.status)&&diff?.id===chosen.id&&diff.canApply&&
+      <Button size="sm" variant="primary" onClick={()=>void applyWorktree()} disabled={busy}><ShieldCheck size={13}/> 검토한 패치 원본 적용</Button>}
      {chosen.isolateWorktree&&chosen.gitWorktree&&!chosen.gitWorktree.discarded&&!running(chosen.status)&&
       <Button size="sm" variant="danger" onClick={()=>void discardWorktree()} disabled={busy}><Trash2 size={13}/> 격리 폴더 폐기</Button>}
     </div>
@@ -201,6 +216,9 @@ export function GoalConsole(){
       <Button variant="secondary" disabled={busy} onClick={()=>void resume()}><RotateCcw size={14}/> 새 작업으로 재개</Button>
      </div>}
      {diff?.id===chosen.id&&<details open><summary className="cursor-pointer text-xs font-semibold">실제 Git Diff</summary>
+      {diff.patchSha256&&<div className="mt-2 break-all rounded bg-[#F2EADF] p-2 text-[11px]">검토한 전체 패치 SHA-256: {diff.patchSha256}
+       <p className="mt-1 text-[#7C7469]">{diff.canApply?'원본 적용 가능 · 원본 HEAD/파일 상태는 적용 직전 다시 확인됩니다.':'원본 적용 불가 · 미추적 파일 또는 목표 상태를 확인하세요.'}</p>
+      </div>}
       <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#FAF7F1] p-2 text-[10px]">{diff.text}</pre></details>}
      </>:<p className="text-sm text-[#8A8176]">목표를 선택하면 계획·검증·복구 정보를 볼 수 있습니다.</p>}
    </div>
