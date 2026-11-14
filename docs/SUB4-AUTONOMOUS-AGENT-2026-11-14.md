@@ -76,3 +76,14 @@ Engine: goals.rs::run
 - Red Hat real-world SWE benchmark (2026-10): https://github.com/redhat-et/rh-swe-bench
 
 2026 경쟁 프레임의 목표는 벤치마크 점수를 주장하는 것이 아니라, **원본 목표와 실제 검증 가능한 산출물의 동일한 실행 계보**를 만드는 것이다. 기존 심판 결과의 `50/100`은 새 변경 전 비교이며, 이 소스 변경에 따른 재채점은 하지 않았다.
+
+## 6. Git diff · 하위 작업 중단 전파 (CI 실행 대상)
+
+- `goals/git.rs::{snapshot,report}`는 목표의 첫 도구 실행 전에 저장소 HEAD와 시작 상태를 동결하고, 완료 시 HEAD 변경·수정 파일·상태·최대 24KiB diff 미리보기를 기록한다. 단순한 저장소 변경 관측이며 실제 에이전트의 수정 증거는 `execution_operation`과 별도 구분한다. 저장소 루트가 작업공간과 같을 때에만 조회하고 임의 셸 문자열은 조합하지 않는다.
+- `state.rs::cancel_delegated_descendants`는 부모 세션의 중단을 모든 하위 위임 세션으로 전파한다. 자식의 영속 취소 epoch와 queued/running job 취소 표시를 갱신하여 이전 모델 호출이 다시 활성화되지 않게 한다.
+- `tests/unit/goal_git_report_tests.rs`와 `tests/unit/state_delegation_cancel_tests.rs`에 실제 Git 변경 탐지와 다단계 위임 취소·재시작 후 취소 유지 회귀 검사를 추가했다.
+- 변경은 `rsi_system.rs`의 실제 compiled descendant 역할 지도에 등록했다. 모델 가중치 학습과 무관하다.
+
+## 7. CI 결과 해석
+
+`.github/workflows/ci.yml`와 `.github/workflows/sub4-proof-audit.yml`는 서브4 HEAD push에서 자동 실행된다. 타입검사, Vite 빌드, Rust release 모든 타깃 테스트, 계보·구조 감사를 수행하며, 중간 커밋의 중복 실행은 concurrency 설정에 따라 취소된다. `sub4-native-reproduction.yml`와 `sub4-system-live-rsi.yml`는 별도 고비용 실모델 증명 캠페인이므로 CI 성공과 동일시하지 않는다. 실모델·유료 영상 API 실행 결과는 별도 영수증으로 검증한다.
