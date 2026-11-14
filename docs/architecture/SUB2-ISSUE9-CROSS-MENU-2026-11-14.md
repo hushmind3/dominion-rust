@@ -103,3 +103,34 @@ Home / Activity / Workflows:
 7. Compare local vs remote model completion and recorded token usage on the **same** acceptance criteria. Treat missing provider data and real provider invoice as separate concerns.
 
 See [Issue #9](https://github.com/hushmind3/dominion-rust/issues/9) for the complete product acceptance objectives.
+
+## 2026-11-14 native verified workflow repair (post-64-point review)
+
+**Not an SDK integration and not a user-request judgment policy.** 2026 public work on [long-running build/evaluate/repair](https://www.anthropic.com/research/harness-design-long-running-apps), [step-driven durable Rust agent state](https://rig.rs/docs/concepts/runs), and [concrete verifier feedback](https://arxiv.org/abs/2607.14167) was used as a conceptual reference. Every new execution path is DOMINION's own Rust, with the existing providers, tools, user request, SQLite state and file verifier. No Copilot/Claude SDK package is linked or installed.
+
+### Concrete caller path
+
+```text
+Workflows.tsx (select agent, file acceptance checks, maxAttempts:1..4)
+  -> POST /api/workflows     collections.rs validates checks + retry bound
+  -> POST /api/workflows/:id/run -> job queued
+  -> jobs.rs::run_job -> workflows.rs::run
+  -> each verified step, max 3 attempts by default:
+     -> SQLite workflowState{inFlight:true,activeStepIndex,activeAttempt}
+     -> native chat::run_quiet_outcome(TurnRequest{verificationOwner:"parent"})
+     -> tool operation receipts (all attempts) + real workspace file predicates
+     -> pass: append verified step output and let next agent run
+     -> mismatch: append observed failed checks + tool error -> next same-agent turn
+     -> still mismatched at limit: needs_review with all attempted evidence
+     -> unknown external outcome: needs_review immediately; never blind retry
+  -> job result includes verification.attempts/repairAttempts/repairHistory,
+     actual model calls/tokens from state.store.session_usage
+```
+
+Verified steps no longer have *two independent acceptance owners*. The child chat turn skips duplicate autonomous acceptance when the parent workflow owns exact file checks. This prevents a preliminary child review from suppressing useful tool results before the workflow's real file gate. Legacy steps without explicit checks still make one turn and remain marked `unchecked` instead of inventing completion evidence.
+
+The owner can opt out of repair with `maxAttempts:1`, or choose 2–4. The repair prompt retains the full original instruction (including `{{input}}` and `{{previous}}` substitutions) and adds only bounded, observed failure hints. This is a retry/resource choice, not a rule deciding which user requests to perform. Checked steps do not ask a second LLM to judge whether the owner's instruction deserves execution.
+
+### Proof and remaining work
+
+A local mock OpenAI-compatible provider integration fixture intentionally writes `WRONG` to a file; the Rust gate must detect it, pass the failure to the next turn, receive a corrected `EXPECTED` file and only then hand off to the next agent. Existing tests also require missing files to leave `needs_review` and never run the next agent. Unit tests cover retry bounds and original-request preservation. Real paid/local model pass@1, invoice and large codebase benchmarks are **not measured** by these tests. CI state must be checked per HEAD; new unit tests alone are not a claim of live-model success.
