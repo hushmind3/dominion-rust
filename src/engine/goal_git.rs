@@ -147,6 +147,54 @@ pub(crate) async fn rollback(state:&AppState,id:&str)->Result<Value,String>{
 #[cfg(test)]
 mod tests{
  use super::*;
+ #[tokio::test]
+ async fn isolated_goal_diff_and_discard_never_change_source_checkout(){
+     use std::process::Command as StdCommand;
+     let root=std::env::temp_dir().join(format!("dominion-goal-git-{}",uuid::Uuid::new_v4()));
+     let source=root.join("source");
+     let data=root.join("data");
+     std::fs::create_dir_all(&source).unwrap();
+     std::fs::create_dir_all(&data).unwrap();
+     let git_ok=|args:&[&str]|{
+         let output=StdCommand::new("git").current_dir(&source)
+             .args(args).output().unwrap();
+         assert!(output.status.success(),
+             "git {:?}: {}",args,String::from_utf8_lossy(&output.stderr));
+     };
+     git_ok(&["init","-q"]);
+     git_ok(&["config","user.name","DOMINION Test"]);
+     git_ok(&["config","user.email","ci@example.invalid"]);
+     std::fs::write(source.join("sample.rs"),"fn original() {}").unwrap();
+     git_ok(&["add","sample.rs"]);
+     git_ok(&["commit","-qm","original source"]);
+     let config=crate::config::Config{port:0,data_dir:data.clone(),
+         web_dir:root.join("web"),workspace:source.clone()};
+     let store=crate::db::Store::open(&config.db_path()).unwrap();
+     let vault=crate::vault::Vault::open(&config.key_path());
+     let state=AppState::new(config,store,vault);
+     let id=uuid::Uuid::new_v4().to_string();
+     state.store.put("goal",&json!({"id":id,"status":"queued",
+         "isolateWorktree":true})).unwrap();
+     let info=prepare(&state,&id).await.unwrap();
+     assert_eq!(info["rolledBack"],false);
+     state.store.put("session",&json!({"id":"session","goalId":id})).unwrap();
+     let isolated=workspace_for_session(&state,"session").unwrap();
+     assert_ne!(isolated,source.canonicalize().unwrap());
+     std::fs::write(isolated.join("sample.rs"),"fn changed() {}").unwrap();
+     let diff=changes(&state,&id).await.unwrap();
+     assert!(diff["diff"].as_str().unwrap().contains("fn changed()"));
+     assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
+         "fn original() {}");
+     let goal=state.store.get("goal",&id).unwrap();
+     state.store.patch_if("goal",&id,"status",&goal["status"],
+         &json!({"status":"completed"})).unwrap();
+     let result=rollback(&state,&id).await.unwrap();
+     assert_eq!(result["localWorktreeRemoved"],true);
+     assert!(!isolated.exists());
+     assert!(workspace_for_session(&state,"session").is_err());
+     assert_eq!(std::fs::read_to_string(source.join("sample.rs")).unwrap(),
+         "fn original() {}");
+ }
  #[test]
  fn rejects_attacker_selected_ids(){
      let root=std::env::temp_dir();
