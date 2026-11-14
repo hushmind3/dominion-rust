@@ -8,6 +8,23 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 2026-11-14 DOMINION 자체 Agent SDK
+
+외부 Copilot/Claude/Codex 실행 엔진에 위임하지 않는 **1차 DOMINION Agent SDK**를 구현했습니다. 독립 패키지 [`sdk/typescript`](sdk/typescript/README.md)는 실제 Rust API 위에 `startThread / resumeThread / run / runStreamed / startGoal / resumeGoal / watchEvents / resolveApproval`을 제공합니다. 기존 웹 채팅도 `web/src/api.ts → sdk/typescript/src/index.ts → POST /api/chat → engine/chat` 경로로 SDK를 사용합니다.
+
+- 모델·도구·승인·메모리·계획·검증·복구·RSI는 여전히 **DOMINION Rust 엔진이 소유**합니다. 외부 SDK의 정책·CLI·런타임은 새로 추가하지 않았습니다.
+- `/api/events?after=seq`로 durable job/승인 이벤트를 재구독합니다. 끊긴 실행을 자동 재시도하지 않고 원래 목표/세션 ID로 복구합니다.
+- 사용자 직접 지시를 검색된 기억/경험보다 최신 실행 기준으로 보존합니다. `chat/context.rs`가 검색 내용을 최신 주인 요청 앞에 배치하고, `chat/runtime/turn.rs`가 실제 모델 요청에 연결합니다.
+- SDK 스트림 프로토콜, Unicode chunk, 오류, 중단, 승인, 작업 제어와 이벤트 replay 테스트를 `sdk/typescript/tests`에 작성했습니다. **현재 커밋의 실행 테스트 결과는 따로 확인이 필요**합니다.
+
+```bash
+cd sdk/typescript
+npm install
+npm run check
+```
+
+SDK 인터페이스와 2026 공식 기술 비교: [SDK 원본 조사](docs/AGENT-SDK-REUSE-2026-11-14.md).
+
 ## 2026-11-14 서브4 출시 제품 통합 업그레이드
 
 자기개선 RSI 외에 **영상 제작, 그룹 대화 비용, 모델 자동 선택, 채팅 사용자 경험**을 같은 Rust 엔진에 연결했습니다.
