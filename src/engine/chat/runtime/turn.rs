@@ -791,7 +791,7 @@ pub(super) async fn run_turn_body(
                     "sessionId":session_id,"executionId":execution_id,
                     "candidateTools":source_count,"visibleTools":round_tools.len(),
                     "candidateSchemaBytes":source_bytes,"visibleSchemaBytes":selected_bytes,
-                    "budgetBytes":budget,"strategy":"dominion-relevance-v1",
+                    "budgetBytes":budget,"strategy":"dominion-coding-chain-v2",
                     "measuredInputTokens":null
                 }));
             }
