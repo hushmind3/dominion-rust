@@ -3,7 +3,7 @@ import {useEffect,useState} from 'react'
 import {Check,Code2,Eye,GitCommit,Hammer,Package,Play,RefreshCw,Square,Terminal,TestTube2,UploadCloud} from 'lucide-react'
 import {Button,TextInput,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
-import {get,post} from '../api'
+import {Provider,get,post} from '../api'
 
 type DevStatus={
  config:{sourceDir:string;repoUrl:string;branch:string;previewPort:number};
@@ -24,12 +24,31 @@ export function DeveloperPage(){
  const status=useRemote<DevStatus>('/api/dev/status',{config:{sourceDir:'',repoUrl:'',branch:'main',previewPort:5174},exists:false,nodeModules:false,git:false,preview:{status:'stopped',url:''},platform:'',arch:'',installedExe:''})
  const updates=useRemote<UpdateStatus>('/api/dev/update',{supported:false,available:false})
  const flows=useRemote<{id:string;name:string;steps:{agentId:string}[]}[]>('/api/workflows',[])
+ const sdkProviders=useRemote<Provider[]>('/api/providers',[])
  const [sourceDir,setSourceDir]=useState(''),[repoUrl,setRepoUrl]=useState(''),[branch,setBranch]=useState('main')
  const [job,setJob]=useState<DevJob|null>(null),[jobId,setJobId]=useState('')
  const [diff,setDiff]=useState<DiffResult|null>(null),[commitMessage,setCommitMessage]=useState('')
  const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState('')
  const [reviewFlow,setReviewFlow]=useState(''),[reviewBusy,setReviewBusy]=useState(false)
  const [reviewRequestId,setReviewRequestId]=useState('')
+ const [sdkPrompt,setSdkPrompt]=useState(''),[sdkProvider,setSdkProvider]=useState('')
+ const [sdkModel,setSdkModel]=useState(''),[sdkCheckPath,setSdkCheckPath]=useState('')
+ const [sdkApproved,setSdkApproved]=useState(false),[sdkBusy,setSdkBusy]=useState(false)
+ const [sdkJobId,setSdkJobId]=useState(''),[sdkJob,setSdkJob]=useState<any|null>(null)
+ const [sdkRequestId,setSdkRequestId]=useState('')
+ useEffect(()=>{
+  if(!sdkJobId)return;
+  let active=true;const timer=setInterval(async()=>{
+   try{
+    const next=await get<any>('/api/jobs/'+encodeURIComponent(sdkJobId))
+    if(!active)return
+    setSdkJob(next)
+    if(['completed','failed','needs_review','cancelled'].includes(next.status))
+      clearInterval(timer)
+   }catch(e){if(active)setError((e as Error).message)}
+  },2300)
+  return()=>{active=false;clearInterval(timer)}
+ },[sdkJobId])
  useEffect(()=>{setSourceDir(status.value.config.sourceDir||'');setRepoUrl(status.value.config.repoUrl||'');setBranch(status.value.config.branch||'main')},[status.value.config.sourceDir,status.value.config.repoUrl,status.value.config.branch])
  useEffect(()=>{
   if(!jobId)return
@@ -86,6 +105,28 @@ export function DeveloperPage(){
   }catch(e){setError((e as Error).message+' · 동일 요청 ID로 재시도하면 중복 실행을 피합니다.')}
   finally{setReviewBusy(false)}
  }
+ const runLocalSdk=async()=>{
+  if(!sdkProvider||!sdkPrompt.trim()||!sdkApproved||sdkBusy)return
+  setSdkBusy(true);setError('');setMessage('')
+  const requestId=sdkRequestId||crypto.randomUUID()
+  setSdkRequestId(requestId)
+  try{
+   const request={
+    requestId,kind:'sdk_local',
+    input:{
+     providerId:sdkProvider,model:sdkModel.trim()||undefined,
+     prompt:sdkPrompt.trim(),maxSeconds:420,maxEdits:12,
+     approvedLocalWrite:true,
+     successCriteria:sdkCheckPath.trim()?[{type:'file_changed',path:sdkCheckPath.trim()}]:[]
+    }
+   }
+   const job=await post<{id:string}>('/api/jobs',request)
+   setSdkRequestId('');setSdkJobId(job.id)
+   setSdkJob({id:job.id,kind:'sdk_local',status:'queued'})
+   setMessage('공식 Qwen-Agent SDK 로컬 코딩 작업을 등록했습니다. 기존 모델과 도구 엔진 대신 실제 SDK 실행기를 사용합니다.')
+  }catch(e){setError((e as Error).message+' · 요청 ID를 유지하므로 다시 누를 때 중복 등록을 막습니다.')}
+  finally{setSdkBusy(false)}
+ }
  const commit=async()=>{
   const message=commitMessage.trim();
   if(!message){setError(t('dev.commitMessageRequired'));return}
@@ -125,6 +166,46 @@ export function DeveloperPage(){
       <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#EFE9DF] pt-3"><Button variant="secondary" disabled={!s.exists||s.preview.status==='running'} onClick={()=>void preview('start')}><Play size={14}/> {t('dev.previewStart')}</Button><Button variant="secondary" disabled={s.preview.status!=='running'} onClick={()=>void preview('stop')}><Square size={14}/> {t('dev.stop')}</Button><Button variant="primary" disabled={!s.preview.url} onClick={()=>void openPreview()}><Eye size={14}/> {t('dev.previewOpen')}</Button><span className="text-[10px] text-[#8A8176]">{s.preview.status==='running'?s.preview.url:s.preview.status}</span></div>
      </div>
      {s.installer&&<div className="mt-4 rounded-xl border border-[#E7E0D5] bg-[#FAF7F1] p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><strong className="block truncate text-[12px] text-[#3A342D]">{s.installer.name}</strong><small className="text-[10px] text-[#8A8176]">{fmtBytes(s.installer.bytes)} · {formatDateTime(s.installer.mtime)}</small></div></div><p className="mt-2 text-[10px] leading-4 text-[#8A8176]">{t('dev.installerNote')}</p></div>}
+    </Panel>
+    <Panel className="min-w-0 p-5">
+     <Subheading title="오픈소스 Qwen-Agent SDK · 로컬 코딩" extra={<Code2 size={18}/>}/>
+     <p className="mb-3 text-[11px] leading-5 text-[#7C7469]">
+      Qwen 공식 Apache-2.0 에이전트 SDK의 도구 호출 파서를 사용합니다. 설치: pip install 'qwen-agent&gt;=0.0.26,&lt;0.1'.
+      실행 모델은 127.0.0.1 로컬 제공자만 가능하며, 원격 유료 API는 연결하지 않습니다.
+      승인된 DOMINION 작업공간의 읽기·쓰기·정확한 부분 교체만 허용됩니다. 셸 실행은 제공하지 않습니다.
+     </p>
+     <div className="grid gap-2">
+      <SelectInput value={sdkProvider} onChange={e=>{setSdkProvider(e.target.value);setSdkModel('')}}>
+       <option value="">로컬 Qwen / Ollama 모델 제공자 선택</option>
+       {sdkProviders.value.filter(p=>p.enabled!==false&&/^http:\/\/(127\.0\.0\.1|\[::1\])(?::\d+)?\//.test(p.baseUrl||''))
+        .map(p=><option value={p.id} key={p.id}>{p.name} · {p.model||'모델 입력 필요'}</option>)}
+      </SelectInput>
+      <TextInput value={sdkModel} onChange={e=>setSdkModel(e.target.value)}
+       placeholder="모델 이름 (비워두면 제공자 설정 사용)"/>
+      <FormField label="SDK에 실제로 맡길 작업"><TextInput value={sdkPrompt} onChange={e=>{setSdkPrompt(e.target.value);setSdkRequestId('')}}
+       placeholder="예: src/example.rs의 계산 오류를 수정하고 검증용 파일을 작성"/></FormField>
+      <FormField label="성공 검증 파일 (선택)" hint="기존 파일의 내용이 실제로 바뀌어야 완료 판정을 합니다. 비워두면 파일을 고쳐도 검토 필요로 남깁니다.">
+       <TextInput value={sdkCheckPath} onChange={e=>setSdkCheckPath(e.target.value)} placeholder="src/example.rs"/>
+      </FormField>
+      <label className="flex gap-2 text-xs text-[#5E5144]">
+       <input type="checkbox" checked={sdkApproved} onChange={e=>setSdkApproved(e.target.checked)}/>
+       로컬 에이전트가 승인된 워크스페이스 파일을 실제로 수정하는 데 동의합니다.
+      </label>
+      <div className="flex flex-wrap items-center gap-2">
+       <Button variant="secondary" disabled={!sdkApproved||!sdkProvider||!sdkPrompt.trim()||sdkBusy}
+        onClick={()=>void runLocalSdk()}>{sdkBusy?'SDK 등록 중':'공식 Qwen-Agent SDK로 실제 파일 작업'}</Button>
+       {sdkJobId&&<span className="text-[11px] text-[#7C7469]">Job {sdkJobId.slice(0,12)} · {sdkJob?.status||'조회 중'}</span>}
+      </div>
+      {sdkJob&&<div className="rounded-xl bg-[#FAF7F1] p-3 text-[11px]">
+       <strong>SDK 작업 영수증 · {sdkJob.status}</strong>
+       {sdkJob.result?.verifiedFileWrites!==undefined&&<p>실제 SHA 확인 파일 수정 {sdkJob.result.verifiedFileWrites}개 · 독립 작업 품질 검사 미수행</p>}
+       {sdkJob.result?.acceptanceGaps?.length>0&&<p className="text-amber-800">미충족 검증: {sdkJob.result.acceptanceGaps.join(' · ')}</p>}
+       {sdkJob.result?.reason&&<p>{String(sdkJob.result.reason)}</p>}
+       {sdkJob.error&&<p className="text-rose-700">{String(sdkJob.error)}</p>}
+       {sdkJob.result?.output&&<pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words">{String(sdkJob.result.output).slice(0,6000)}</pre>}
+       {sdkJob.result?.fileReceipts?.length>0&&<p className="break-all">변경 파일: {sdkJob.result.fileReceipts.map((r:any)=>r.path).join(', ')}</p>}
+      </div>}
+     </div>
     </Panel>
     <Panel className="min-w-0 p-5">
      <Subheading title={t('dev.changes')} extra={<div className="flex items-center gap-2"><Button variant="ghost" className="!px-2 !py-1 !text-[10px]" onClick={()=>void loadDiff()}><RefreshCw size={12}/> {t('dev.refresh')}</Button><span className="text-[11px] text-[#8A8176]">{t('dev.count',{count:diff?.count||0})}</span></div>}/>
