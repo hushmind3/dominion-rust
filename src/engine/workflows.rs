@@ -323,6 +323,7 @@ pub fn render(template: &str, input: &str, previous: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::render;
+    use serde_json::{json,Value};
 
     #[tokio::test]
     async fn actual_multi_agent_turns_persist_a_reusable_deliverable() {
