@@ -44,7 +44,7 @@
 ## 4. 기억 화면 개선과 근거 보존
 
 - 원래의 수동 저장·검색·상태/범위 필터·삭제·학습 기록/성장 대시보드를 유지합니다.
-- **사용자 작성·활성·검색 가능 기억만 수정**합니다. `POST /api/memories/:id/edit`는 새 본문과 `expectedText`만 받습니다. `Store::edit_manual_memory`가 동시 수정 CAS·source/status/expiry를 같은 SQLite 연결 락 아래 검증합니다. 기존 ID·scope·agentId·partitionKey는 수정되지 않고 revision/editHistory/감사 기록을 남깁니다.
+- **사용자 작성·활성·검색 가능 기억만 수정**합니다. `POST /api/memories/:id/edit`는 새 본문과 `expectedText`만 받습니다. `Store::edit_manual_memory`가 `expectedText`와 `expectedRevision`을 동시에 비교하고 source/status/expiry를 같은 SQLite 연결 락 아래 검증합니다. ABA 충돌도 거절합니다. 기존 ID·scope·agentId·partitionKey는 수정되지 않고 revision/editHistory/감사 기록을 남깁니다.
 - 서버가 동적으로 계산하는 `retrievalEligible`은 저장 페이로드에 넣지 않습니다. 예전 문장에 연결된 인용 근거·verification은 수정 시 폐기해 최신 문장의 증거로 잘못 취급하지 않으며, 일반 `POST /api/memories`도 서버 생성 ID의 수동 기억 삽입만 허용합니다.
 - 학습으로 생성된 기록과 원문 증거는 수동 텍스트 편집 대상에 넣지 않습니다.
 - 실제 검색 정책과 범위 격리는 `engine/memory.rs`에서 유지됩니다.
