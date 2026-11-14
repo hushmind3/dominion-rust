@@ -984,7 +984,8 @@ fn schedule_automations(state: &AppState) {
             .cloned()
             .unwrap_or_else(|| json!({}));
         let job_kind = if kind == "meeting" { "room" } else { kind };
-        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
+        if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal")
+            || (job_kind=="workflow" && automation["confirmRecurringModelCosts"]!=true) {
             continue;
         }
         let Some(automation_id)=automation["id"].as_str().filter(|id|!id.is_empty()) else {
@@ -995,7 +996,7 @@ fn schedule_automations(state: &AppState) {
         // on completion the scheduler will catch up with one new run.
         if state.store.all("job").iter().any(|job|
             job["input"]["automationId"]==automation_id
-            && matches!(job["status"].as_str(),Some("queued"|"running"))) {
+            && matches!(job["status"].as_str(),Some("queued"|"running"|"needs_review"))) {
             continue;
         }
         let key=format!("dominion:automation:{automation_id}:{next_at}");
