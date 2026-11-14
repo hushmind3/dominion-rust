@@ -25,6 +25,25 @@ fn matched_trial_envelope(candidate: &Value, control: &Value) -> bool {
         && candidate["objectiveId"] == control["objectiveId"]
 }
 
+/// The planner runs before the new descendant has an objective digest or
+/// frozen evaluator receipt. It may discover a measured control but must not
+/// pretend the *future* trial has already been independently scored.
+pub(super) fn available_trial_baseline(
+    prior_history:&[Value],commit:&str,domain:&str,candidate:&Value
+)->bool {
+    prior_history.iter().rev().any(|row| {
+        row["domainSelection"]=="algorithm_active"
+            && row["generatorCommit"].as_str()==Some(commit)
+            && row["domain"].as_str()==Some(domain)
+            && measured_generation(row)
+            && row["accepted"].is_boolean()
+            && row["jobId"].as_str().is_some_and(|id|!id.is_empty())
+            && !candidate["rsiTrial"]["trials"].as_array()
+                .into_iter().flatten().any(|trial|
+                    trial["comparison"]["baselineJobId"]==row["jobId"])
+    })
+}
+
 /// Finds a prior generation that used the globally active strategy under the
 /// same generator commit and target domain. Different domains, different
 /// source revisions, a missing evaluation or a control already paired with
