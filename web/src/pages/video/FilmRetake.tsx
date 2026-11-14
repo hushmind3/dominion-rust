@@ -4,7 +4,10 @@ import {post} from '../../api'
 import {Button,TextArea} from '../../components/Primitives'
 import {Notice,useRemote} from '../../components/UI'
 
+type RetakeQuote={referenceKrw:number;totalUsdCents:number;quoteDigest:string;billableSeconds:number;
+ paidCalls:number;pricingAsOf:string;fxAsOf:string}
 type Shot={index:number;duration:number;outputSha256?:string;isAvailable:boolean;
+ retakeQuote?:RetakeQuote;
  receiptVerified:boolean;qualityStatus?:string;canRetake:boolean;expectedPaidCalls:number}
 type SceneManifest={clips?:Shot[];terminal?:boolean;unknownEffect?:boolean}
 type RetakeResult={id:string;status:string;kind:'video';[key:string]:unknown}
@@ -21,16 +24,19 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
  const eligible=(data.value.clips||[]).filter(clip=>clip.canRetake)
  const shot=eligible.find(clip=>clip.index===selected)??eligible[0]
  const retake=async()=>{
-  if(!shot||!accepted||busy||!shot.outputSha256)return
+  if(!shot||!accepted||busy||!shot.outputSha256||!shot.retakeQuote)return
   const message='장면 '+(shot.index+1)+'을 다시 생성합니다. 새 유료 호출 '+shot.expectedPaidCalls+
-   '회가 발생할 수 있습니다. 정상 장면은 기존 영수증 검증 후 재사용합니다. 계속할까요?'
+   '회 · 예상 '+shot.retakeQuote.referenceKrw.toLocaleString('ko-KR')+
+   '원입니다. 정상 장면은 기존 영수증 검증 후 재사용합니다. 계속할까요?'
   if(!window.confirm(message))return
   setBusy(true);setError('');setResult('')
   try{
    const job=await post<RetakeResult>('/api/video/jobs/'+encodeURIComponent(jobId)+'/retake',{
     index:shot.index,expectedSha256:shot.outputSha256,
     confirmedPaidCallCount:shot.expectedPaidCalls,
-    confirmNewPaidCalls:true,...(prompt.trim()?{prompt:prompt.trim()}:{})
+    confirmNewPaidCalls:true,approvedPaidQuote:true,
+    maxUsdCents:shot.retakeQuote.totalUsdCents,quoteDigest:shot.retakeQuote.quoteDigest,
+    ...(prompt.trim()?{prompt:prompt.trim()}:{})
    })
    setResult('새 영상 작업을 등록했습니다. 기존 성공 장면은 재구매하지 않습니다.')
    onCreated(job)
@@ -59,15 +65,18 @@ export function FilmRetake({jobId,onCreated}:{jobId:string;onCreated:(job:Retake
   </label>)}
   {shot&&<div className="mt-3 grid gap-2">
    <span className="text-xs font-medium">선택 장면 {shot.index+1} · 예상 신규 유료 호출 {shot.expectedPaidCalls}회</span>
+   {shot.retakeQuote?<p className="text-xs text-[#5C544A]">추가 비용 견적 <strong>{shot.retakeQuote.referenceKrw.toLocaleString('ko-KR')}원</strong>
+    {' '}· {shot.retakeQuote.billableSeconds}초. 요금표 {shot.retakeQuote.pricingAsOf} · 환율 기준 {shot.retakeQuote.fxAsOf}. 실제 청구액·세금은 별도입니다.</p>:
+    <p className="text-xs text-amber-800">이 장면의 가격을 계산할 수 없어 재생성이 차단됩니다.</p>}
    <TextArea rows={2} value={prompt} onChange={e=>setPrompt(e.target.value)}
     placeholder="선택: 이 장면의 새 연출 프롬프트. 비워 두면 기존 장면 프롬프트 재사용"
     maxLength={4750}/>
    <label className="flex items-start gap-2 text-[11px]">
-    <input type="checkbox" checked={accepted} onChange={e=>setAccepted(e.target.checked)}/>
-    <span>정상 장면은 재사용하고 나머지 {shot.expectedPaidCalls}개의 유료 호출이 필요함을 확인했습니다.</span>
+    <input type="checkbox" checked={accepted} disabled={!shot.retakeQuote} onChange={e=>setAccepted(e.target.checked)}/>
+    <span>정상 장면은 재사용하고 나머지 {shot.expectedPaidCalls}개의 유료 호출과 위 예상 금액 상한을 승인합니다.</span>
    </label>
    <div className="flex justify-end">
-    <Button size="sm" disabled={busy||!accepted} onClick={()=>void retake()}>
+    <Button size="sm" disabled={busy||!accepted||!shot.retakeQuote} onClick={()=>void retake()}>
      <RotateCcw size={13}/> 선택 장면만 다시 제작
     </Button>
    </div>
