@@ -982,7 +982,15 @@ fn schedule_automations(state: &AppState) {
                     continue;
                 }
             };
+            let Some(definition)=state.store.get("workflow",
+                input["workflowId"].as_str().unwrap_or("")) else {
+                state.store.audit("automation.workflow_missing",json!({
+                    "automationId":automation_id,"workflowId":input["workflowId"]
+                }));
+                continue;
+            };
             let mut job_input=input.clone();
+            job_input["definition"]=definition;
             job_input["input"]=json!(resolved);
             job_input["sourceArtifact"]=json!(origin);
             job_input["automationId"]=json!(automation_id);
