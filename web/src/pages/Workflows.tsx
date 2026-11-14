@@ -12,7 +12,7 @@ type Step={id?:string;name:string;prompt:string;agentId:string;providerId:string
 type Flow={id?:string;name:string;description:string;steps:Step[]}
 type WorkflowArtifact={id:string;workflowId:string;jobId:string;sessionId:string;
  preview?:string;content?:string;sha256:string;steps:number;createdAt:string;
- usage?:{totalTokens?:number;calls?:number;estimatedCalls?:number}}
+ usage?:{totalTokens?:number;calls?:number;estimatedCalls?:number};stepReceipts?:{stepId?:string;agentId?:string;messageId?:string;toolEvidenceCount?:number;toolOperationIds?:string[]}[]}
 type WorkflowJob={id:string;kind:string;status:string;stepIndex?:number;stepTotal?:number;
  input?:{workflowId?:string};result?:{sessionId?:string;artifactId?:string;reason?:string}}
 const emptyStep=(agentId=''):Step=>({name:t('wf.newStep'),prompt:'',agentId,providerId:'',model:''});
@@ -78,6 +78,14 @@ export function WorkflowsPage({openSession}:{openSession:(id:string)=>void}){
      {expandedArtifact===a.id&&<div className="mt-2">
        <p className="text-[#7C7469]">SHA-256 {a.sha256}</p>
        <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-[#EFE9DF] bg-white p-3 text-xs">{artifactDetail?.id===a.id?artifactDetail.content:'원문 불러오는 중…'}</pre>
+       {artifactDetail?.id===a.id&&artifactDetail.stepReceipts?.length?
+        <div className="mt-2 rounded-lg border border-[#EFE9DF] p-2 text-[11px]">
+         <strong>단계별 원본 도구 실행 영수증</strong>
+         {artifactDetail.stepReceipts.map((step,i)=><div key={step.stepId||i} className="mt-1 break-all">
+          {i+1}단계 · 에이전트 {step.agentId||'미지정'} · 검증된 작업 {step.toolEvidenceCount??0}개
+          {step.toolOperationIds?.length?<small className="block text-[#7C7469]">DB operation IDs: {step.toolOperationIds.join(', ')}</small>:null}
+         </div>)}
+        </div>:null}
       </div>}
     </div>)}</div>}
  </Panel>
