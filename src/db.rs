@@ -443,6 +443,51 @@ impl Store {
         Some(record)
     }
 
+    /// Owner-only memory edits compare the old text and trusted record metadata
+    /// under the same SQLite connection lock. No client-controlled fields or
+    /// inferred source provenance can overwrite an existing memory.
+    pub fn edit_manual_memory(&self, id: &str, expected: &str, new_text: &str) -> Option<Value> {
+        let conn = self.conn.lock().ok()?;
+        let mut record = conn.query_row(
+            "SELECT data,id,created_at,updated_at FROM records WHERE kind='memory' AND id=?1",
+            [id],
+            record_from_row,
+        ).ok()?;
+        if record["source"] != "user"
+            || record["status"].as_str().is_some_and(|status| status != "active")
+            || record["text"].as_str() != Some(expected)
+            || !crate::engine::memory::retrieval_eligible(&record)
+        {
+            return None;
+        }
+        if expected == new_text {
+            return Some(record);
+        }
+        let revision = record["revision"].as_u64().unwrap_or(0).saturating_add(1);
+        let edited_at = chrono::Utc::now().to_rfc3339();
+        let mut history = record["editHistory"].as_array().cloned().unwrap_or_default();
+        history.push(json!({"revision":revision,"editedAt":edited_at}));
+        if history.len() > 50 {
+            history = history.split_off(history.len() - 50);
+        }
+        record["text"] = json!(new_text);
+        record["revision"] = json!(revision);
+        record["editHistory"] = json!(history);
+        record["updatedAt"] = json!(edited_at);
+        // A quotation tied to the *old* text must never be advertised as
+        // evidence for the edited text. Preserve source and scope, not stale proof.
+        if let Some(fields) = record.as_object_mut() {
+            for field in ["evidenceQuote", "sourceMessageIds", "verification"] {
+                fields.remove(field);
+            }
+        }
+        conn.execute(
+            "UPDATE records SET data=?2,updated_at=datetime('now') WHERE kind='memory' AND id=?1",
+            params![id, record.to_string()],
+        ).ok()?;
+        Some(record)
+    }
+
     pub fn patch_records(&self, kind: &str, ids: &[String], patch: &Value) -> Option<Vec<Value>> {
         let patch = patch.as_object()?;
         let mut conn = self.conn.lock().unwrap();
