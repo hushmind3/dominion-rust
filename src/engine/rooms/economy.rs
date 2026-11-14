@@ -53,7 +53,7 @@ pub(super) fn observed_delta(baseline:&Value,current:&Value)->Value {
         let delta=baseline[key].as_u64().and_then(|start|{
             current[key].as_u64().map(|observed|observed.saturating_sub(start))
         });
-        out.insert(key.into(),delta.map(serde_json::json).unwrap_or(Value::Null));
+        out.insert(key.into(),delta.map(|value|serde_json::json!(value)).unwrap_or(Value::Null));
     }
     out.insert("scope".into(),Value::String("one-room-exchange".into()));
     out.insert("cacheCoverage".into(),Value::String("reported-only".into()));
