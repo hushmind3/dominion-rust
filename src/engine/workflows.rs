@@ -30,7 +30,19 @@ fn pin_skill(state:&AppState,step:&Value)->Result<Option<Value>,String>{
 /// A run is immutable after enqueue: edits to the workflow cannot change
 /// the model/tool program under a queued job. An explicit requestId makes
 /// network retries idempotent without forbidding intentional repeat runs.
-pub fn enqueue_run(state:&AppState, workflow_id:&str,body:&Value)->Result<Value,String>{
+pub fn enqueue_run(state:&AppState,workflow_id:&str,body:&Value)->Result<Value,String>{
+    enqueue_run_with_origin(state,workflow_id,body,None)
+}
+/// Called only by the durable scheduler; public HTTP bodies cannot forge
+/// automation ownership or escape the same immutable execution contract.
+pub fn enqueue_automation_run(
+    state:&AppState,workflow_id:&str,body:&Value,automation_id:&str
+)->Result<Value,String>{
+    enqueue_run_with_origin(state,workflow_id,body,Some(automation_id))
+}
+fn enqueue_run_with_origin(
+    state:&AppState,workflow_id:&str,body:&Value,origin:Option<&str>
+)->Result<Value,String>{
     if body.as_object().is_none_or(|fields|fields.keys().any(|key|
         !matches!(key.as_str(),"input"|"requestId")))
         ||body.get("input").is_some_and(|value|!value.is_string())
@@ -54,7 +66,8 @@ pub fn enqueue_run(state:&AppState, workflow_id:&str,body:&Value)->Result<Value,
     if let Some(saved)=state.store.get("job",&job_id){
         if saved["kind"]=="workflow"&&saved["input"]["workflowId"]==workflow_id
             && saved["input"]["input"]==payload
-            && saved["input"]["requestId"]==request_id {
+            && saved["input"]["requestId"]==request_id
+            && saved["input"]["automationId"]==json!(origin) {
             return Ok(saved);
         }
         return Err("워크플로 실행 키가 이미 다른 입력에 사용됐습니다.".into());
@@ -74,7 +87,7 @@ pub fn enqueue_run(state:&AppState, workflow_id:&str,body:&Value)->Result<Value,
         step["skillSnapshot"]=pin_skill(state,step)?.unwrap_or(Value::Null);
     }
     let input=json!({"workflowId":workflow_id,"input":payload,
-        "requestId":request_id,"definition":definition});
+        "requestId":request_id,"automationId":origin,"definition":definition});
     jobs::enqueue_once(state,&job_id,"workflow",input)
         .ok_or("동일한 실행 키가 다른 내용으로 등록됐습니다.".into())
 }
