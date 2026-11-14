@@ -41,13 +41,22 @@ fn next_recovery_branch<'a>(nodes: &'a [Value], index: usize, observation: &str)
 /// pretending it succeeded or blindly retrying that external operation.
 fn settle_conditional_failure(
     nodes: &[Value], index: usize, node: &Value, result: &Value,
-    checkpoint: &mut Value,
+    resolved: &Value, checkpoint: &mut Value,
 ) -> bool {
     // Explicit failure-handling instructions override inferred branch recovery.
     if node.get("onFailure").is_some_and(|value| !value.is_null()) { return false; }
     let node_id = node["id"].as_str().unwrap_or("");
     let result_key = node["saveAs"].as_str().filter(|key| !key.is_empty()).unwrap_or(node_id);
     let Some(branch) = next_recovery_branch(nodes,index,result_key) else { return false; };
+    // The branch can consume this failure only when its complete predicate is
+    // already decidable from the durable observation. An Unknown or invalid
+    // predicate must NOT mark the failed operation as handled; it remains
+    // available for model repair instead of silently being skipped on resume.
+    if !matches!(crate::engine::program::predicate_verdict(&branch["predicate"],resolved),
+        Ok(crate::engine::program::PredicateVerdict::True
+          |crate::engine::program::PredicateVerdict::False)) {
+        return false;
+    }
     let mut handled = checkpoint["handledToolFailures"].as_array().cloned().unwrap_or_default();
     handled.push(json!({"nodeId":node_id,"observation":result_key,"result":result,
         "handler":branch["id"]}));
@@ -281,7 +290,7 @@ fn execute_nodes<'a>(
                     let failed = !tool_succeeded(&result);
                     resolved["last"] = result.clone();
                     let recovered_by_branch = failed && settle_conditional_failure(
-                        &nodes,index,node,&result,&mut checkpoint);
+                        &nodes,index,node,&result,&resolved,&mut checkpoint);
                     if failed && !program_tool_settled(node,&result) && !recovered_by_branch {
                         let failure = json!({
                             "nodeId": node_id,
@@ -663,7 +672,7 @@ fn execute_nodes<'a>(
                     let failed = !tool_succeeded(&result);
                     resolved["last"] = result.clone();
                     let recovered_by_branch = failed && settle_conditional_failure(
-                        &nodes,index,node,&result,&mut checkpoint);
+                        &nodes,index,node,&result,&resolved,&mut checkpoint);
                     if failed && !program_tool_settled(node,&result) && !recovered_by_branch {
                         let failure = json!({
                             "nodeId": node_id,
@@ -1069,7 +1078,8 @@ mod program_effect_receipt_tests {
         let arr=nodes.as_array().unwrap();
         let mut checkpoint=crate::engine::program::new_checkpoint(&json!({
             "revision":"explicit","nodes":arr}));
-        assert!(!settle_conditional_failure(arr,0,&arr[0],&json!({"exitCode":7}),&mut checkpoint));
+        assert!(!settle_conditional_failure(arr,0,&arr[0],&json!({"exitCode":7}),
+            &json!({"try":{"exitCode":7}}),&mut checkpoint));
         assert!(!crate::engine::program::checkpoint_skip_completed(&checkpoint,"try"));
     }
 
@@ -1091,7 +1101,8 @@ mod program_effect_receipt_tests {
             "revision":"fallback","nodes":items}));
         let failed=json!({"exitCode":7});
         assert!(!tool_succeeded(&failed));
-        assert!(settle_conditional_failure(items,0,&items[0],&failed,&mut checkpoint));
+        assert!(settle_conditional_failure(items,0,&items[0],&failed,
+            &json!({"try":failed}),&mut checkpoint));
         assert!(crate::engine::program::checkpoint_skip_completed(&checkpoint,"try"));
         assert_eq!(checkpoint["handledToolFailures"][0]["handler"],"recover");
         assert_eq!(checkpoint["handledToolFailures"][0]["result"]["exitCode"],7);
@@ -1099,6 +1110,15 @@ mod program_effect_receipt_tests {
         assert!(next_recovery_branch(&[items[0].clone(),intervening,items[1].clone()],0,"try").is_none());
         assert!(predicate_reads_observation(&json!({
             "type":"not","predicate":items[1]["predicate"]}),"try"));
+        // Missing exitCode is an Unknown predicate, not evidence that the
+        // fallback was executed. Preserve the failed operation for repair.
+        let mut unknown_checkpoint=crate::engine::program::new_checkpoint(&json!({
+            "revision":"unknown-result","nodes":items}));
+        assert!(!settle_conditional_failure(items,0,&items[0],
+            &json!({"error":"failed to spawn"}),
+            &json!({"try":{"error":"failed to spawn"}}),&mut unknown_checkpoint));
+        assert!(!crate::engine::program::checkpoint_skip_completed(
+            &unknown_checkpoint,"try"));
         assert!(!predicate_reads_observation(&json!({
             "type":"equals","from":"other","value":"try"}),"try"));
     }
