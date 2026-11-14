@@ -31,3 +31,5 @@ README와 sdk/js/README.md를 진입점으로 유지한다.
 실제 외부 유료 API 요청/장기 과제 완수율 측정은 해당 테스트가 입증하지 않는다.
 
 추가 Node 실행 계약: `@dominion/agent-sdk/node`의 `DominionRuntime.start({binaryPath,port:0})` → `node:child_process`로 DOMINION Rust 바이너리 실행 → `DOMINION_DESKTOP_PARENT` stdin 종료 수명주기 → stdout 실제 바인드 포트 파싱 → `/api/health.instanceId` 검증 → `runtime.client`로 기존 도구·세션·승인·goal 엔진 호출. 타사 CLI/SDK 실행 파일은 시작하지 않음. `sdk/js/test/runtime.test.mjs`에서 프로세스 소유·종료 계약을 모의 검증.
+
+비밀 보호: SDK HTTP 요청의 목적지 origin이 configured baseUrl과 다르면 실행 전에 거부하며 HTTP 리다이렉트를 따라 토큰을 전송하지 않는다. 종료 시 부모 stdin EOF 후 응답하지 않는 **자체 자식 프로세스에만** TERM/KILL 단계가 적용된다. 이를 Mock Fetch/ChildProcess 테스트로 확인한다.

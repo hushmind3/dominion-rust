@@ -101,11 +101,18 @@ export class DominionRuntime {
       const finish = () => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
         child.off('close', finish);
         resolve();
       };
-      const timer = setTimeout(() => {child.kill('SIGTERM'); finish();}, timeoutMs);
+      const termTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      }, timeoutMs);
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        finish(); // Do not hang the host indefinitely on a misbehaving binary.
+      }, timeoutMs + 1500);
       child.on('close', finish);
       child.stdin.end(); // DOMINION_DESKTOP_PARENT: clean shutdown on EOF.
     });

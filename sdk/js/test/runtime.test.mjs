@@ -38,3 +38,19 @@ test('Node SDK owns only its launched Rust instance and releases on stdin EOF', 
 test('Node SDK refuses to spawn an unconfigured binary path', async () => {
   await assert.rejects(DominionRuntime.start({}), /binaryPath/);
 });
+
+test('misbehaving native child receives termination after graceful EOF timeout', async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.stdin = {end() {}};
+  const signals = [];
+  child.kill = signal => {
+    signals.push(signal);
+    child.signalCode = signal;
+    child.emit('close', null, signal);
+  };
+  const runtime = new DominionRuntime({process:child,client:null,port:47312});
+  await runtime.close({timeoutMs:5});
+  assert.deepEqual(signals,['SIGTERM']);
+});

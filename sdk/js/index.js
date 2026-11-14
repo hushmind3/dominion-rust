@@ -101,12 +101,16 @@ export class DominionClient {
 
   async raw(method, path, body, {signal} = {}) {
     checkAbort(signal);
+    const targetUrl = new URL(path, this.baseUrl);
+    if (targetUrl.origin !== this.baseUrl.origin) {
+      throw new TypeError('DOMINION SDK requests cannot cross the configured server origin');
+    }
     const headers = new Headers(this.headers);
     if (this.token) headers.set('X-Dominion-Token', this.token);
     if (body !== undefined) headers.set('Content-Type', 'application/json');
-    const response = await this.transport(new URL(path, this.baseUrl).toString(), {
+    const response = await this.transport(targetUrl.toString(), {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-      signal, cache: 'no-store'
+      signal, cache: 'no-store', redirect: 'error'
     });
     if (response.ok) return response;
     const text = await response.text().catch(() => '');

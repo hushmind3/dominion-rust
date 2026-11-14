@@ -103,3 +103,17 @@ test('HTTP errors and local abort do not claim remote cancellation', async () =>
   await assert.rejects(sdk.goals.wait('g',{signal:ac.signal,pollIntervalMs:1}),/local stop/);
   assert.deepEqual(calls,['/api/goals/g']);
 });
+
+test('SDK token is never sent to another origin and requests reject redirects', async () => {
+  let called = 0;
+  const sdk = new DominionClient({baseUrl:'http://127.0.0.1:4317',token:'secret',
+    fetch: async (_url, init) => {
+      called++;
+      assert.equal(init.redirect,'error');
+      return json({ok:true});
+    }});
+  await assert.rejects(sdk.request('GET','https://other.example/steal'), /cannot cross/);
+  assert.equal(called,0);
+  assert.deepEqual(await sdk.request('GET','api/health'),{ok:true});
+  assert.equal(called,1);
+});

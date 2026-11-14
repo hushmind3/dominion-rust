@@ -68,3 +68,5 @@ The launcher owns its child process, chooses an available port with port=0,
 checks /api/health against a unique process instance ID to avoid connecting to
 an unrelated server, and shuts down via DOMINION_DESKTOP_PARENT stdin EOF.
 It does not download, bundle or substitute another vendor's agent engine.
+
+The SDK refuses to forward the DOMINION owner token to a different origin or follow HTTP redirects. Native launcher shutdown first closes the parent-owned stdin and then escalates to process termination if its own Rust child ignores EOF.
