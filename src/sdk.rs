@@ -602,6 +602,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_goal_resume_creates_new_job_without_reusing_old_receipt() {
+        let (sdk, root) = fresh();
+        // The first attempt can be cancelled before any worktree was
+        // provisioned; this is a legitimate clean resume.
+        let goal = sdk.enqueue_goal(GoalOptions::new("Repair then verify")).unwrap();
+        let id = goal["id"].as_str().unwrap();
+        let old_job_id = goal["jobId"].as_str().unwrap();
+        sdk.cancel_goal(id).unwrap();
+        let resumed = sdk.resume_goal(id, GoalResumeOptions::default()).unwrap();
+        let next_job = resumed["jobId"].as_str().unwrap();
+        assert_ne!(old_job_id, next_job);
+        assert_eq!(sdk.goal(id).unwrap()["jobId"], next_job);
+        assert_eq!(sdk.job(old_job_id).unwrap()["status"], "cancelled");
+        assert_eq!(sdk.job(next_job).unwrap()["status"], "queued");
+        assert!(sdk.goal_receipt(id).is_none());
+        assert_eq!(resumed["reviewAcknowledged"], false);
+        assert!(sdk.resume_goal(id, GoalResumeOptions::default()).is_err(),
+            "a second resume cannot enqueue a duplicate job");
+        sdk.cancel_goal(id).unwrap();
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn native_goal_resume_requires_review_for_unknown_tool_outcome() {
+        let (sdk, root) = fresh();
+        let mut options = GoalOptions::new("Reconcile external operation");
+        options.isolate_worktree = false;
+        let goal = sdk.enqueue_goal(options).unwrap();
+        let id = goal["id"].as_str().unwrap();
+        let old_job_id = goal["jobId"].as_str().unwrap();
+        sdk.cancel_goal(id).unwrap();
+        sdk.state.store.patch_if("job", old_job_id, "status", &json!("cancelled"),
+            &json!({"goalState":{"inFlight":true,"nextIteration":1,
+                "transcript":"external operation may have executed"}})).unwrap();
+        assert!(sdk.resume_goal(id, GoalResumeOptions::default()).is_err());
+        assert_eq!(sdk.goal(id).unwrap()["status"], "cancelled");
+        let options = GoalResumeOptions {
+            acknowledge_external_effects: true,
+            resolution_note: Some(
+                "Owner inspected the external operation and reconciled actual state".into()
+            ),
+            ..GoalResumeOptions::default()
+        };
+        let resumed = sdk.resume_goal(id, options).unwrap();
+        assert_eq!(resumed["nextIteration"], 2);
+        assert_eq!(resumed["reviewAcknowledged"], true);
+        assert_eq!(sdk.goal(id).unwrap()["resumeHistory"][0]["unknownEffectsAcknowledged"],true);
+        let new_job_id = resumed["jobId"].as_str().unwrap();
+        assert_ne!(new_job_id, old_job_id);
+        assert_eq!(sdk.goal(id).unwrap()["resumeState"]["inFlight"], false);
+        assert_eq!(sdk.goal(id).unwrap()["resumeState"]["nextIteration"], 2);
+        sdk.cancel_goal(id).unwrap();
+        drop(sdk);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn native_sdk_job_wait_is_bounded_without_workers() {
         let (sdk, root) = fresh();
         let goal = sdk.enqueue_goal(GoalOptions::new("Wait for external worker")).unwrap();
