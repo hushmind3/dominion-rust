@@ -1,3 +1,18 @@
+/** Read-only, versioned native Rust harness capabilities and retry semantics. */
+export interface SdkInfo {
+  protocol: "dominion-native-agent";
+  apiVersion: number;
+  engine: "rust";
+  transports: string[];
+  capabilities: string[];
+  semantics: {
+    runPostIdempotent: false;
+    disconnectCancelsExecution: false;
+    eventReplayGetIdempotent: true;
+    externalToolApproval: "engine_enforced";
+  };
+}
+
 /** Dominion engine-owned records. Extra fields remain visible as the API evolves. */
 export interface DominionRecord {
   id: string;
