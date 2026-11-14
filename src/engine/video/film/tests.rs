@@ -117,5 +117,13 @@ fn retake_quote_counts_only_selected_and_unrendered_shots(){
     assert_eq!(raw["input"]["paidQuote"]["billableSeconds"],16);
     assert_eq!(raw["input"]["paidApprovalMaxUsdCents"],208);
     assert_ne!(raw["id"],job["id"]);
+    // Even a missing MP4 cannot be rebought while the original provider
+    // submission is unresolved and could still produce a charged result.
+    state.store.patch_if("job",id,"status",&json!("needs_review"),
+        &json!({"videoState":{"inFlight":true,"remoteJobId":"pending-remote"}}));
+    let blocked=super::super::film_scenes(&state,id).unwrap();
+    assert_eq!(blocked["unknownEffect"],true);
+    assert_eq!(blocked["clips"][0]["canRetake"],false);
+    assert!(super::super::enqueue_retake(&state,id,&request).is_err());
     let _=std::fs::remove_dir_all(home);
 }
