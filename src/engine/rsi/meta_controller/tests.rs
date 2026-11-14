@@ -240,8 +240,16 @@
         let mut ungrounded=tested.clone();
         ungrounded["evaluation"]["evidenceSha256"]=Value::Null;
         assert!(!paired_outcome_observed(&ungrounded));
-        assert_eq!(feedback(&synthesize(&[],&[target.clone()],&["context"],None),
-            &ungrounded)["categoricalBrier"],Value::Null);
+        let policy=synthesize(&[],&[target.clone()],&["context"],None);
+        ungrounded["systemAgenda"]["target"]=policy["target"].clone();
+        let ungrounded_feedback=feedback(&policy,&ungrounded);
+        assert_eq!(ungrounded_feedback["independentlyMeasured"],false);
+        assert_eq!(ungrounded_feedback["categoricalBrier"],Value::Null);
+        let mut verified=tested.clone();
+        verified["systemAgenda"]["target"]=policy["target"].clone();
+        let verified_feedback=feedback(&policy,&verified);
+        assert_eq!(verified_feedback["independentlyMeasured"],true);
+        assert!(verified_feedback["categoricalBrier"].as_f64().is_some());
         let mut next=history.clone();
         next.push(tested);
         let paired=synthesize(&next,&[target.clone()],&["context"],None);
