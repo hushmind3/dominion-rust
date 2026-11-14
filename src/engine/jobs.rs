@@ -1273,6 +1273,11 @@ mod tests {
         let state = temp_state();
         let job = enqueue(&state, "room", json!({ "roomId": "missing", "goal": "x" })).unwrap();
         let id = job["id"].as_str().unwrap().to_string();
+        // The worker must atomically claim queued work before recording a
+        // terminal result; the old test invoked run_job before that claim.
+        let running = state.store.patch_if("job",&id,"status",&json!("queued"),
+            &json!({"status":"running","attempts":1})).unwrap();
+        let job = running;
         let _ = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

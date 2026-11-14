@@ -552,7 +552,7 @@ mod tests {
                 let path = verify_path.clone();
                 async move {
                     let text=tokio::fs::read_to_string(path).await.map_err(|e|e.to_string())?;
-                    Ok(output["written"]==true && args["text"]==text)
+                    Ok(output["written"]==true && args["text"].as_str()==Some(text.as_str()))
                 }
             },
         ).unwrap();
