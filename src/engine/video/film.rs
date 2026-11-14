@@ -38,12 +38,35 @@ fn max_clip(model:&str,quality:&str,fps:u64)->Result<u64,String>{
     }
 }
 fn shot_prompt(brief:&str,index:usize,total:usize,custom:Option<&str>)->String{
-    if let Some(prompt)=custom.filter(|p|!p.trim().is_empty()){
-        return prompt.trim().chars().take(4750).collect();
+    // Previously a custom scene bypassed the recurring character/environment
+    // anchor entirely. Keep user scene text verbatim, and spend ONLY the
+    // remaining prompt budget on visual context. The scene overrides any
+    // contradictory global story direction.
+    if let Some(scene)=custom.filter(|s|!s.trim().is_empty()){
+        let scene=scene.trim();
+        let prefix=format!("Film shot {}/{}. Owner's scene direction (priority): ",
+            index+1,total);
+        let continuity=" Preserve recurring character appearance, wardrobe, lighting, location \
+            and voice unless this scene explicitly changes them. ";
+        let budget=4700usize;
+        // A long owner scene has priority; never silently cut its tail to
+        // insert our continuity suggestion.
+        if prefix.chars().count()+scene.chars().count()
+            +continuity.chars().count()>=budget {
+            return scene.to_owned();
+        }
+        let mut result=format!("{prefix}{scene}.{continuity}");
+        let remain=budget.saturating_sub(result.chars().count());
+        if remain>35 && !brief.trim().is_empty(){
+            let header="Shared story context (reference only): ";
+            result.push_str(header);
+            result.extend(brief.trim().chars()
+                .take(remain.saturating_sub(header.chars().count())));
+        }
+        return result;
     }
-    // Without an extra planning model or API call, carry one immutable
-    // character/environment anchor across scenes. These are instructions to
-    // the video model and are not a claim that visual continuity is proven.
+    // No additional planning/API call. A shared anchor is a video prompt
+    // strategy, not a claim that semantic continuity has been measured.
     format!("Continuous film, shot {}/{}. Maintain the same characters, wardrobe, lighting, location, color palette and voice across all cuts. No title cards. Original story: {}. Compose shot {} as the next coherent event.",index+1,total,
         brief.chars().take(4200).collect::<String>(),index+1)
 }
@@ -196,7 +219,11 @@ pub(super) fn retake_input(state:&crate::state::AppState,job:&Value,
         if prompt.is_empty()||prompt.chars().count()>4750{
             return Err("새 장면 프롬프트는 1~4750자입니다.".into());
         }
-        input["render"]["film"]["clips"][index]["render"]["prompt"]=json!(prompt);
+        let total=input["render"]["film"]["clips"].as_array().map(Vec::len)
+            .ok_or("원본 장면 목록을 읽을 수 없습니다.")?;
+        let full=shot_prompt(input["brief"].as_str().unwrap_or(""),index,total,Some(prompt));
+        ltx::cinematic_prompt(&full,input["ltxStyle"].as_str().unwrap_or("cinematic"))?;
+        input["render"]["film"]["clips"][index]["render"]["prompt"]=json!(full);
     }
     let source=job["id"].as_str().ok_or("기존 영상 ID가 없습니다.")?;
     let fingerprint=format!("{:x}",Sha256::digest(

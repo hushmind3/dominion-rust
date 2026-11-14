@@ -65,9 +65,28 @@ fn retake_consent_counts_only_missing_and_target_shots(){
     assert!(retake_input(&state,&job,1,&digest,Some("new shot"),1).is_err());
     let planned=retake_input(&state,&job,1,&digest,Some("new shot"),2).unwrap();
     assert_eq!(planned["retake"]["newPaidCalls"],2);
-    assert_eq!(planned["render"]["film"]["clips"][1]["render"]["prompt"],"new shot");
+    let revised=planned["render"]["film"]["clips"][1]["render"]["prompt"].as_str().unwrap();
+    assert!(revised.contains("new shot"));
+    assert!(revised.contains("recurring character"),
+        "a paid retake must keep the same continuity anchor when room allows");
     assert_eq!(planned["retake"]["sourceJobId"],id);
     assert!(retake_input(&state,&job,1,&"0".repeat(64),Some("new shot"),2).is_err());
     drop(state);
     std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn paid_custom_scene_preserves_owner_words_and_shared_visual_bible(){
+    let global="The woman in a red jacket crosses the rainy street.";
+    let custom="She enters a bookstore, speaks one line, and meets her friend.";
+    let prompt=shot_prompt(global,1,3,Some(custom));
+    assert!(prompt.contains(custom));
+    assert!(prompt.contains(global));
+    assert!(prompt.contains("recurring character"));
+    assert!(prompt.contains("2/3"));
+    assert!(ltx::cinematic_prompt(&prompt,"cinematic").is_ok());
+    // The owner may intentionally replace a long scene; the helper must
+    // never cut actual user instructions merely to insert its own anchor.
+    let long=format!("{}END_MARKER","x".repeat(4600));
+    assert_eq!(shot_prompt(global,0,2,Some(&long)),long);
 }
