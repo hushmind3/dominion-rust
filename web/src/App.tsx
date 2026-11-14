@@ -94,7 +94,7 @@ function locationState(){
  const legacySection=name==='extensions'||name==='capabilities'?name:undefined
  const page=(legacySection?'connections':valid?name:'chat') as PageId
  const requestedSection=legacySection||(page==='connections'?params.get('section'):null)
- const section=(requestedSection==='extensions'||requestedSection==='capabilities')?requestedSection:'channels'
+ const section: 'channels'|'extensions'|'capabilities'=(requestedSection==='extensions'||requestedSection==='capabilities')?requestedSection:'channels'
  return {page,section,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
