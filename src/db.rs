@@ -171,7 +171,10 @@ impl Store {
                  WHERE kind='execution';
              CREATE INDEX IF NOT EXISTS idx_execution_session
                  ON records(json_extract(data,'$.sessionId'))
-                 WHERE kind='execution';",
+                 WHERE kind='execution';
+             CREATE INDEX IF NOT EXISTS idx_session_parent
+                 ON records(json_extract(data,'$.parentSessionId'))
+                 WHERE kind='session';",
         )?;
         // Older databases predate reasoning/tool columns.
         for (column, decl) in [
@@ -212,7 +215,7 @@ impl Store {
     }
 
     /// Fail-closed scan for unfinished or ambiguous external tool effects
-    /// belonging ONLY to this goal's executor session. Joining from the
+    /// belonging ONLY to this goal's executor session and its delegated children. Joining from the
     /// session's execution records through indexed operation.runId avoids
     /// scanning every operation made by other agents and workspaces.
     pub fn session_has_uncertain_effects(&self,session_id:&str)->Result<bool,String>{
@@ -221,13 +224,23 @@ impl Store {
         }
         let conn=self.conn.lock().map_err(|e|e.to_string())?;
         let found:i64=conn.query_row(
-            "SELECT EXISTS (
+            "WITH RECURSIVE owned_sessions(id,depth) AS (
+                SELECT ?1, 0
+                UNION ALL
+                SELECT child.id, owned.depth+1
+                FROM records AS child
+                JOIN owned_sessions AS owned
+                  ON json_extract(child.data,'$.parentSessionId')=owned.id
+                WHERE child.kind='session' AND owned.depth<16
+             )
+             SELECT EXISTS (
                 SELECT 1 FROM records AS execution
                 INNER JOIN records AS operation
                     ON operation.kind='execution_operation'
                     AND json_extract(operation.data,'$.runId')=execution.id
                 WHERE execution.kind='execution'
-                    AND json_extract(execution.data,'$.sessionId')=?1
+                    AND json_extract(execution.data,'$.sessionId')
+                        IN (SELECT id FROM owned_sessions)
                     AND (json_extract(operation.data,'$.outcomeUnknown')=1
                          OR json_extract(operation.data,'$.status') IN
                             ('running','interrupted'))
