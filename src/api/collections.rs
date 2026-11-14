@@ -317,3 +317,60 @@ fn enqueue_job(state: &AppState, kind: &str, input: Value) -> Response {
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod manual_memory_edit_tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    fn state() -> (AppState,std::path::PathBuf) {
+        let root=std::env::temp_dir().join(format!("dominion-memory-edit-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cfg=Config{port:0,data_dir:root.clone(),web_dir:root.join("web"),workspace:root.clone()};
+        (AppState::new(cfg.clone(),Store::open(&cfg.db_path()).unwrap(),Vault::open(&cfg.key_path())),root)
+    }
+
+    async fn edit(state:&AppState,id:&str,body:Value) -> Response {
+        action(State(state.clone()),
+            OriginalUri(format!("/api/memories/{id}/edit").parse().unwrap()),
+            Json(body)).await
+    }
+
+    #[tokio::test]
+    async fn manual_memory_edit_preserves_scope_and_removes_stale_quote() {
+        let (state,root)=state();
+        state.store.put("memory",&json!({
+            "id":"manual","source":"user","scope":"agent","agentId":"a",
+            "text":"old","verification":"source_quote","sourceMessageIds":["prior"],
+            "evidenceQuote":"old","importance":0.9
+        }));
+        let response=edit(&state,"manual",json!({"text":"new","expectedText":"old"})).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        let saved=state.store.get("memory","manual").unwrap();
+        assert_eq!(saved["text"],"new");
+        assert_eq!(saved["agentId"],"a");
+        assert_eq!(saved["scope"],"agent");
+        assert_eq!(saved["importance"],0.9);
+        assert_eq!(saved["verification"],"manual_edit");
+        assert_eq!(saved["sourceMessageIds"],json!([]));
+        assert!(saved["evidenceQuote"].is_null());
+        assert_eq!(edit(&state,"manual",json!({"text":"stale","expectedText":"old"})).await.status(),StatusCode::CONFLICT);
+        assert_eq!(state.store.get("memory","manual").unwrap()["text"],"new");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn learned_memories_and_invalid_edits_are_rejected() {
+        let (state,root)=state();
+        state.store.put("memory",&json!({
+            "id":"learned","source":"learn","scope":"session","sessionId":"s",
+            "text":"original","sourceMessageIds":["evidence"]
+        }));
+        assert_eq!(edit(&state,"learned",json!({"text":"tampered","expectedText":"original"})).await.status(),StatusCode::FORBIDDEN);
+        assert_eq!(state.store.get("memory","learned").unwrap()["text"],"original");
+        state.store.put("memory",&json!({"id":"manual","source":"user","text":"yes"}));
+        assert_eq!(edit(&state,"manual",json!({"text":" ","expectedText":"yes"})).await.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(edit(&state,"missing",json!({"text":"new","expectedText":"old"})).await.status(),StatusCode::NOT_FOUND);
+        let _=std::fs::remove_dir_all(root);
+    }
+}
