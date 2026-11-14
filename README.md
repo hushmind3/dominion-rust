@@ -12,7 +12,7 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 
 - 왼쪽 **확장·연결 → 연결 채널** 메뉴 하나에 **채널 연결 / MCP·스킬 / 역량 마켓** 탭을 합쳤습니다. 이미 구현된 `web/src/pages/Extensions.tsx`(MCP·플러그인·스킬 마켓/설치) 및 `Capabilities.tsx`(역량 카탈로그) API를 제거하지 않고 `Connections.tsx`에서 그대로 호출합니다. 사이드바/명령 팔레트의 중복 항목만 정리했습니다.
 - **불필요한 자기개선 자동 제안**은 표시하지 않습니다. `components/ImprovementNotice.tsx`는 글로벌 polling·팝업 없는 호환 모듈이며, 사용자에게 실제로 필요한 오류·승인·실행 상태는 해당 페이지와 활동 기록에 남깁니다.
-- 독립적인 **기억** 화면에서 사용자 작성 활성 기억만 수정할 수 있습니다. `POST /api/memories/:id/edit` → `collections.rs` → `db.rs::edit_manual_memory`가 기존 문장 CAS·출처/상태·만료 검사를 **한 SQLite 연결 락 아래** 시행합니다. ID·scope·agentId는 서버가 보존하고, 편집 이력/감사 로그를 남기며 옛 문장에 대한 인용 근거는 제거합니다. 일반 `POST /api/memories`는 삽입 전용입니다.
+- 독립적인 **기억** 화면에서 사용자 작성 활성 기억만 수정할 수 있습니다. `POST /api/memories/:id/edit` → `collections.rs` → `db.rs::edit_manual_memory`가 기존 문장과 `expectedRevision`의 **2중 CAS**, 출처·상태·만료를 같은 SQLite 연결 락 아래 검증합니다. 문장이 이전 내용으로 돌아와도 낡은 편집 요청은 거절합니다. ID·scope·agentId는 서버가 보존하고, 편집 이력/감사 로그를 남기며 옛 문장에 대한 인용 근거는 제거합니다. 일반 `POST /api/memories`는 삽입 전용입니다.
 - **챔피온 고유의 자율 목표**에 검토 후 재개를 연결했습니다. `POST /api/goals/:id/resume`은 `failed`/`needs_review` 상태와 소유자 확인이 있어야 실행되며, 과거 작업·증거를 유지하고 새 영속 작업을 체크포인트와 함께 원자적으로 등록합니다. 불확실한 실행 중 도구 호출은 재시도하지 않고 읽기 전용 상태 재확인을 지시합니다. 작업 생성 실패나 워커 오류는 목표에도 기록합니다.
 - 기존 RSI·영상·그룹대화 엔진과 비용·캐시 계측을 유지했습니다. 영상의 유료 부분 재생성은 이번 변경 범위에 포함하지 않았습니다.
 - 회귀 테스트 `node --test scripts/champion-ui-menu.test.mjs`를 CI에 연결하고, 기억 편집·목표 재개 Rust API 테스트 4개를 추가했습니다. 이 변경분의 브라우저 실사용·유료 모델 연동은 별도 검증이 필요합니다.
