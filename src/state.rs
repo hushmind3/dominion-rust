@@ -317,3 +317,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/state_delegation_cancel_tests.rs"]
+mod delegation_cancel_tests;
