@@ -91,7 +91,10 @@ pub(crate) fn goal_for_session(state:&AppState,session_id:&str)->Result<Option<S
     let mut visited=HashSet::new();
     for _ in 0..8{
         if !visited.insert(current.clone()){return Err("위임 세션 계보에 순환이 있습니다.".into());}
-        let Some(session)=state.store.get("session",&current)else{return Ok(None);};
+        let Some(session)=state.store.get("session",&current)else{
+            return if visited.len()==1{Ok(None)}
+                else{Err("위임 세션의 상위 기록이 사라져 공용 작업폴더로 전환할 수 없습니다.".into())};
+        };
         if let Some(id)=session["goalId"].as_str().filter(|id|!id.is_empty()){
             if state.store.get("goal",id).is_none(){return Err("목표가 삭제된 세션입니다.".into());}
             return Ok(Some(id.to_owned()));
