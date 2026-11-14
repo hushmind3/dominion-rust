@@ -136,6 +136,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     let workdir=crate::engine::goal_workspace::workspace_for_goal(state,&goal)?;
     let mut scoped_state=state.clone();
     scoped_state.config.workspace=workdir.clone();
+    let expected_status = goal["status"].clone();
     goal["status"] = json!("running");
     goal["phase"] = json!("plan");
     goal["startedAt"] = goal
@@ -200,7 +201,7 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
     // A cancelled goal cannot be resurrected by a stale worker's broad put.
     // The limited patch also preserves concurrent owner plan overrides.
     let Some(saved) = state.store.patch_if("goal", goal_id, "status",
-        &json!("queued"), &json!({
+        &expected_status, &json!({
             "status":"running","phase":"plan","startedAt":goal["startedAt"],
             "sessionId":session_id,"gitWorktree":goal["gitWorktree"],
             "acceptanceChecks":criteria,"taskId":task_id,
