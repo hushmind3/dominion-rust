@@ -834,3 +834,19 @@ The **in-process** `dominion_rust::sdk::DominionSdk` exposes `GoalOptions`, `enq
 See [native SDK + research and RSI audit](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md). New Rust tests exercise invalid admission, durable linkage, current-attempt receipt semantics, cancellation and bounded waiting. Live model benchmark results and billing costs are separate from these tests.
 
 Parallel read-only tool calls are now bounded to four concurrent native Rust dispatches, with a write/unknown-tool ordering barrier, preserved model-order result messages, and normal proposal-budget accounting. The optional `read-first` ordering policy cannot silently combine with this parallel mode. See the [Sub2 scheduler proof and limitations](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
+
+
+### Native goal recovery and reproducible benchmark budgets (2026-11-15)
+
+The Rust SDK also exposes `GoalResumeOptions` and `DominionSdk::resume_goal`
+to continue failed, cancelled or review-paused autonomous tasks. It shares
+`engine::goals::resume_goal` with the REST adapter; a resumed attempt gets
+a new durable job and may not replay an unknown side effect without a
+recorded owner reconciliation. Existing goals and all previous executions
+remain available for review.
+
+For SWE-bench Verified, set `DOMINION_SWE_MAX_TOKENS` to compare models
+under the same exact goal token cap; invalid iteration, token, task and time
+limits fail before model calls. Official benchmark success and diagnostic
+repair observations are separately recorded. See
+[2026 native SDK integration](docs/architecture/SUB2-NATIVE-AUTONOMOUS-SDK-2026-11-15.md).
