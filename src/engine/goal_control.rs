@@ -49,7 +49,12 @@ impl GoalControl {
         if self.is_cancelled() {
             return Err(cancelled());
         }
-        let completion = llm::complete(&self.context.state, provider, model, system, prompt);
+        // Planner, reviewer and replanner calls belong to the same durable
+        // goal session as executor turns. Without this attribution they bypass
+        // the goal's configured token budget and disappear from its receipt.
+        let completion = llm::complete_for_session(
+            &self.context.state, provider, model, system, prompt, &self.session_id,
+        );
         tokio::pin!(completion);
         loop {
             tokio::select! {
