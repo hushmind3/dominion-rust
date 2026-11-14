@@ -6,8 +6,10 @@ use std::path::Path;
 
 fn asks_for_tests(goal: &str) -> bool {
     let lower=goal.to_lowercase();
-    ["테스트","test","pytest","cargo test","go test","스위트"].iter()
-        .any(|word|lower.contains(word))
+    crate::engine::text_intent::has_any(&lower, &[
+        "테스트", "스위트", "test", "tests", "testing", "pytest",
+        "cargo test", "go test",
+    ])
 }
 
 /// Adds at most two deterministic, user-requested project checks. The
@@ -58,6 +60,24 @@ mod tests {
         assert_eq!(inferred_checks(&root,"구현하고 테스트까지 수행하세요")[0]["command"],"cargo test");
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn embedded_english_test_substrings_do_not_force_a_build() {
+        let root=std::env::temp_dir().join(format!("goal-lexical-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n").unwrap();
+        for phrase in [
+            "summarize the latest profile thread",
+            "prepare a protest article",
+            "review the testament",
+        ] {
+            assert!(inferred_checks(&root, phrase).is_empty(), "unexpected test gate: {phrase}");
+        }
+        for phrase in ["run tests", "add testing before delivery", "코드 테스트까지 수행"] {
+            assert_eq!(inferred_checks(&root, phrase)[0]["command"], "cargo test");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn node_check_requires_real_script_and_uses_declared_manager() {
         let root=std::env::temp_dir().join(format!("goal-js-{}",uuid::Uuid::new_v4()));
