@@ -121,6 +121,9 @@ export function SkillsPanel(p:Props){
             )}
           </h3>
           <p>{x.instructions.slice(0, 170)}</p>
+          {x.enabled&&<a href="#/workflows" className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#B45736] hover:underline">
+            워크플로의 담당 에이전트 단계에 이 스킬 배정 <ArrowRight size={13}/>
+          </a>}
           <div className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-[#EFE9DF] pt-3">
             <StateTag online={x.enabled}>
               {x.enabled ? t('sp.active') : t('sp.suggested')}
