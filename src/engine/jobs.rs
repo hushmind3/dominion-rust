@@ -1,3 +1,4 @@
+use sha2::Digest;
 use crate::engine::chat::TurnRequest;
 use crate::engine::run_quiet;
 use crate::engine::{goals, learning, reflect, rooms, workflows};
@@ -964,7 +965,37 @@ fn schedule_automations(state: &AppState) {
         if !matches!(job_kind, "prompt" | "workflow" | "room" | "learn" | "goal") {
             continue;
         }
-        enqueue(state, job_kind, input);
+        if job_kind=="workflow" {
+            let Some(automation_id)=automation["id"].as_str() else {continue};
+            // A schedule slot is a permanent idempotency key. Restarting the
+            // scheduler after queue insertion can never create a second paid
+            // model job for the same occurrence.
+            let slot=format!("{automation_id}:{next_at}");
+            let slot_hash=format!("{:x}",sha2::Sha256::digest(slot.as_bytes()));
+            let job_id=format!("scheduled-workflow-{}",&slot_hash[..32]);
+            let (resolved,origin)=match crate::engine::workflows::resolve_run_input(state,&input){
+                Ok(data)=>data,
+                Err(error)=>{
+                    state.store.audit("automation.workflow_invalid",json!({
+                        "automationId":automation_id,"error":error
+                    }));
+                    continue;
+                }
+            };
+            let mut job_input=input.clone();
+            job_input["input"]=json!(resolved);
+            job_input["sourceArtifact"]=json!(origin);
+            job_input["automationId"]=json!(automation_id);
+            job_input["scheduledFor"]=json!(next_at);
+            if enqueue_once(state,&job_id,"workflow",job_input).is_none(){
+                state.store.audit("automation.workflow_enqueue_failed",json!({
+                    "automationId":automation_id,"jobId":job_id
+                }));
+                continue;
+            }
+        }else{
+            enqueue(state,job_kind,input);
+        }
         let mut updated = automation.clone();
         let interval = automation
             .get("intervalMinutes")
