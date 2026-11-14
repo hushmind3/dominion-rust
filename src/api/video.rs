@@ -38,6 +38,7 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     let reachable = comfy_reachable(cfg["comfyUrl"].as_str().unwrap_or("")).await;
     let comfy = reachable && cfg["comfyWorkflow"].is_object();
     let omni = cfg["hasVideoKey"] == true;
+    let ltx_ready = cfg["hasLtxKey"] == true;
     let workflows = workflows_from_config(&cfg);
     let jobs = state.store.all("job").iter()
         .filter(|job| job["kind"] == "video")
@@ -45,20 +46,22 @@ pub async fn status(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "config": cfg,
         "runtime": "rust",
-        "available": executable.is_some() || comfy || omni,
+        "available": executable.is_some() || comfy || omni || ltx_ready,
         "native": {"available": executable.is_some()},
         "ffmpeg": {"available": executable.is_some(), "path": executable},
         "quality":{"available":quality_ready,"method":"ffprobe","visualSemanticReview":false},
         "comfy": {"reachable": reachable, "available": comfy},
         "omni": {"available": omni, "model":cfg["omniModel"], "targetDurationSeconds":8},
+        "ltx": {"available":ltx_ready,"models":["ltx-2-5-fast","ltx-2-5-pro"],"audio":true},
         "engines": [
             {"id":"native","name":"자막 카드 영상","available":executable.is_some(),"reason":if executable.is_some(){""}else{"FFmpeg 실행 파일 필요"}},
             {"id":"comfyui","name":"ComfyUI","available":comfy,"reason":if comfy{""}else{"서버와 API 워크플로 설정 필요"}},
-            {"id":"omni","name":"Google Gemini Omni Flash · 음성 포함 고화질","available":omni,"reason":if omni{""}else{"Gemini API 키 등록 필요"}}
+            {"id":"omni","name":"Google Gemini Omni Flash · 음성 포함 고화질","available":omni,"reason":if omni{""}else{"Gemini API 키 등록 필요"}},
+            {"id":"ltx","name":"LTX 2.5 · 다중 장면/음성 제작","available":ltx_ready,"reason":if ltx_ready{""}else{"LTX API 키 등록 필요"}}
         ],
         "jobs": jobs,
-        "models": [],
-        "modelsReady": false,
+        "models":if ltx_ready {json!([{"id":"ltx-2-5-fast"},{"id":"ltx-2-5-pro"}])}else{json!([])},
+        "modelsReady": ltx_ready,
         "workflows": workflows,
         "installed": reachable
     }))
@@ -117,7 +120,7 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
             "워크플로는 1MiB 이하로 저장하세요.",
         );
     }
-    if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"omni")) {
+    if !matches!(cfg["engine"].as_str(),Some("native"|"comfyui"|"omni"|"ltx")) {
         return error(StatusCode::BAD_REQUEST,"영상 엔진 선택 오류");
     }
     if !matches!(cfg["omniModel"].as_str(),Some("gemini-omni-1.2-flash"|"gemini-omni-1.1-flash"))
@@ -128,9 +131,17 @@ pub async fn save_config(State(state): State<AppState>, Json(body): Json<Value>)
     if new_key.is_some_and(|key| key.len()>512 || key.chars().any(char::is_whitespace)) {
         return error(StatusCode::BAD_REQUEST,"Gemini API 키 형식을 확인하세요.");
     }
+    // Keep LTX and Gemini credentials in distinct encrypted secrets.
+    // The browser never receives either credential from GET /api/video/config.
+    let ltx_key=body["ltxApiKey"].as_str().map(str::trim).filter(|value|!value.is_empty());
+    if ltx_key.is_some_and(|value|value.len()>512||value.chars().any(char::is_whitespace)){
+        return error(StatusCode::BAD_REQUEST,"LTX API 키 형식을 확인하세요.");
+    }
     if state.store.put("video_config", &cfg).is_none() {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "영상 설정을 저장할 수 없습니다.");
     }
+    if body["removeLtxApiKey"]==true {state.store.remove_secret("video:ltx-api");}
+    else if let Some(key)=ltx_key {state.save_secret("video:ltx-api",key);}
     if body["removeVideoApiKey"]==true {state.store.remove_secret("video:api");}
     else if let Some(key)=new_key {state.save_secret("video:api",key);}
     state.bus.record("video_config", &json!({"id":"default"}));
@@ -159,6 +170,56 @@ pub async fn job(State(state): State<AppState>, Path(id): Path<String>) -> Respo
     {
         Some(j) => Json(video::public_job(&j)).into_response(),
         None => error(StatusCode::NOT_FOUND, "영상 작업을 찾을 수 없습니다."),
+    }
+}
+/// Read-only, output-digest-bound manifest for multi-shot film retakes.
+pub async fn film_scenes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match video::film_scenes(&state,&id){
+        Ok(value)=>Json(value).into_response(),
+        Err(error)=>self::error(StatusCode::BAD_REQUEST,error)
+    }
+}
+/// Owner-confirmed retake creates one idempotent new job; never retries an unknown paid POST.
+pub async fn retake_scene(State(state):State<AppState>,Path(id):Path<String>,
+    Json(body):Json<Value>)->Response{
+    match video::enqueue_retake(&state,&id,&body){
+        Ok(value)=>(StatusCode::ACCEPTED,Json(value)).into_response(),
+        Err(error)=>self::error(StatusCode::BAD_REQUEST,error)
+    }
+}
+/// Preview one generated scene before deciding which paid clip to retake.
+/// Only local, bounded regular MP4 files under the UUID-owned job directory.
+pub async fn scene_content(State(state):State<AppState>,Path((id,index)):Path<(String,usize)>,
+    request:Request<Body>)->Response{
+    let manifest=match video::film_scenes(&state,&id){
+        Ok(value)=>value,
+        Err(error)=>return self::error(StatusCode::NOT_FOUND,error)
+    };
+    if index>=6 || manifest["clips"][index]["isAvailable"]!=true{
+        return self::error(StatusCode::NOT_FOUND,"재생 가능한 영상 장면이 없습니다.");
+    }
+    let root=match video::directory(&state,&id).and_then(|path|
+        path.canonicalize().map_err(|_|"영상 디렉터리가 없습니다.".to_string())){
+        Ok(root)=>root,
+        Err(error)=>return self::error(StatusCode::NOT_FOUND,error)
+    };
+    let original=root.join(format!("clip-{index:02}")).join("output.mp4");
+    if !std::fs::symlink_metadata(&original).is_ok_and(|meta|
+        meta.file_type().is_file() && meta.len()>=1024 && meta.len()<=256*1024*1024){
+        return self::error(StatusCode::NOT_FOUND,"영상 장면을 확인할 수 없습니다.");
+    }
+    let target=match original.canonicalize(){
+        Ok(path) if path.starts_with(&root)=>path,
+        _=>return self::error(StatusCode::FORBIDDEN,"영상 디렉터리 밖의 파일은 제공하지 않습니다.")
+    };
+    match tower_http::services::ServeFile::new(target).try_call(request).await{
+        Ok(response)=>{
+            let mut response=response.into_response();
+            response.headers_mut().insert("x-content-type-options","nosniff".parse().unwrap());
+            response.headers_mut().insert("cache-control","no-store".parse().unwrap());
+            response
+        }
+        Err(error)=>self::error(StatusCode::INTERNAL_SERVER_ERROR,error.to_string())
     }
 }
 pub async fn upload(
