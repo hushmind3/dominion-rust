@@ -17,6 +17,7 @@ fn probe_executable(cfg:&Value)->Option<PathBuf>{
         .into_iter().map(|folder|PathBuf::from(folder).join(name)));
     choices.into_iter().find(|path|path.is_file())
 }
+pub(super) fn available(cfg:&Value)->bool{probe_executable(cfg).is_some()}
 fn duration_seconds(value:&Value)->Option<f64>{
     value.as_str().and_then(|s|s.parse::<f64>().ok())
         .or_else(||value.as_f64())
