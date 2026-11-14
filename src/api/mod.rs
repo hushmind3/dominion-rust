@@ -141,6 +141,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/system/restore", post(system::restore_backup))
         .route("/api/chat", post(chat::chat))
+        .route("/api/sdk/info", get(sdk::info))
         .route("/api/sdk/threads", post(sdk::create))
         .route("/api/sdk/threads/:id", get(sdk::resume))
         .route("/api/sdk/threads/:id/history", get(sdk::history))
