@@ -69,7 +69,7 @@ test('standalone goals keep durable workflow console, cancellation and reviewed 
  assert.ok(goalConsole.includes('tokenBudget'))
  for(const route of ['/api/goals/:id/cancel','/api/goals/:id/resume'])
   assert.ok(api.includes(route),'missing '+route)
- assert.ok(goalsAPI.includes('enqueue_once'))
+ assert.ok(goalsAPI.includes('transaction_if_status'))
  assert.ok(runner.includes('resumeCheckpoint'))
  assert.ok(runner.includes('expected_status'))
 })
