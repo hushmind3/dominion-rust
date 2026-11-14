@@ -1,7 +1,10 @@
 """Offline contract tests; no test here claims a SWE-bench resolved task."""
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -90,6 +93,46 @@ class ExactPatchContract(unittest.TestCase):
         self.assertEqual(counts["toolCalls"],0)
         self.assertEqual(counts["failedToolCalls"],0)
         self.assertEqual(counts["successfulToolCalls"],0)
+
+    def test_offline_missing_mirror_never_forges_score_and_writes_manifest(self):
+        # Exercise the actual CLI without a real provider or a Docker grader.
+        # A synthetic fixture must ALWAYS remain setup_failed/unscored.
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            (work / "empty-state").mkdir()
+            binary = work / "fake-binary"
+            binary.write_bytes(b"not an executable and never invoked")
+            task = {"instance_id":"synthetic__case-1",
+                    "repo":"example/repository",
+                    "base_commit":"a" * 40,
+                    "problem_statement":"Synthetic fixture. Not a SWE-bench result."}
+            rows = work / "fixture.jsonl"
+            rows.write_text(json.dumps(task) + "\\n", encoding="utf-8")
+            command = [
+                sys.executable, str(ROOT),
+                "--tasks-jsonl", str(rows), "--binary", str(binary),
+                "--state-template", str(work / "empty-state"),
+                "--provider-id", "offline-test", "--model", "none",
+                "--model-name", "synthetic-contract-only",
+                "--offline", "--cache", str(work / "empty-cache"),
+                "--output", "relative-results"
+            ]
+            proc = subprocess.run(command, cwd=work,
+                                  capture_output=True, text=True, timeout=20)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            output = work / "relative-results"
+            manifest = json.loads((output / "run-manifest.json").read_text())
+            summary = json.loads((output / "summary.json").read_text())
+            traces = [json.loads(line) for line in
+                      (output / "traces.jsonl").read_text().splitlines()]
+            self.assertEqual(manifest["binarySha256"],
+                             hashlib.sha256(binary.read_bytes()).hexdigest())
+            self.assertEqual(manifest["instanceIds"], ["synthetic__case-1"])
+            self.assertEqual(summary["attemptedInstances"],1)
+            self.assertFalse(summary["officialEvaluated"])
+            self.assertIsNone(summary["officialResolved"])
+            self.assertEqual(summary["nonemptyPatches"],0)
+            self.assertEqual(traces[0]["status"],"setup_failed")
 
     def test_swe_bench_verified_is_pinned_not_user_label(self):
         self.assertEqual(runner.DATASET, "princeton-nlp/SWE-bench_Verified")
