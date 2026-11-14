@@ -8,6 +8,8 @@ mod director;
 mod film;
 #[path = "video/quality.rs"]
 mod quality;
+#[path = "video/diagnostics.rs"]
+mod diagnostics;
 #[path = "video/pricing.rs"]
 mod pricing;
 #[path = "video/cinematic.rs"]
