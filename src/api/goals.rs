@@ -15,6 +15,19 @@ pub async fn get_goal(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+pub async fn changes(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match engine::goal_git::changes(&state,&id).await{
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
+pub async fn rollback(State(state):State<AppState>,Path(id):Path<String>)->Response{
+    match engine::goal_git::rollback(&state,&id).await{
+        Ok(value)=>Json(value).into_response(),
+        Err(message)=>error(StatusCode::CONFLICT,&message),
+    }
+}
+
 pub async fn delete_goal(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     state.store.remove("goal", &id);
     state
