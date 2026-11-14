@@ -804,3 +804,8 @@ During an active chat turn the send control becomes **실행 중 사용자 지�
 ### Autonomous goal redirection (full owner control)
 
 `POST /api/goals/:id/objective` accepts `{expectedRevision, goal, successCriteria?}`. Native Rust `owner_objective` stages/adopts the latest owner objective, re-baselines checks against current workspace, archives old evidence and creates a fresh task contract. `goals.rs` replans before the next executor turn. Completion against the stale objective is blocked. Home dashboard `GoalDirector` and optional `goals.redirect` SDK expose control. If iteration budget ends, status becomes needs_review instead of falsely claiming completion.
+
+
+### RSI evolutionary search: source-level improvement with held-out isolation
+
+The Rust RSI archive now ranks eligible neutral worktree candidates using training-only Pareto fitness and training-only measured behavior niches. Parent exploration balances observed descendant attempts across niches, preserving already-implemented independent paired promotion, source SHA lineage and crash durable archive. Hidden oracle results remain in the independent evaluator and no longer influence next-parent ranking. Code: src/engine/rsi_archive.rs. Design and source comparison: docs/architecture/DOMINION-RSI-OPEN-EVOLVE-SEARCH-SUB2-2026-11-14.md.
