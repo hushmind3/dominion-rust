@@ -98,6 +98,9 @@ mod tests {
         let index_id=meta["id"].as_str().unwrap();
         let sha=format!("{:x}",Sha256::digest(fs::read(root.join(file)).unwrap()));
         let row=json!({"path":file,"sourceSha256":sha});
+        assert_eq!(crate::engine::code_index::indexed_source_hash(&state,index_id,file).as_deref(),
+            row["sourceSha256"].as_str(),
+            "실제 Rust runtime 모듈이 소스 인덱스에 저장돼야 합니다");
         let initial=validate_source_entry(&state,&root,index_id,&row,"sourceSha256");
         assert!(initial.is_ok(),"initial index validation failed: {initial:?}; index={:?}; meta={:?}; cachedRecords={:?}",
             crate::engine::code_index::indexed_source_hash(&state,index_id,file),
