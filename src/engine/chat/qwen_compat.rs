@@ -65,13 +65,12 @@ pub(super) fn parse_legacy(
         } else if let Some(args) = trimmed.strip_prefix(ARGS) {
             match &mut pending {
                 Some((_, slot)) if slot.is_none() => *slot = Some(args.to_string()),
-                Some((name, slot)) => {
+                Some((name, _)) => {
                     // A repeated ARGS marker means another call to the same
                     // function. Keep the first before starting the next.
                     let next_name = name.clone();
                     record(&mut pending, known, &mut calls);
                     pending = Some((next_name, Some(args.to_string())));
-                    let _ = slot;
                 }
                 None => visible.push_str(line),
             }
