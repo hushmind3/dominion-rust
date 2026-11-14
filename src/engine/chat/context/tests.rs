@@ -23,6 +23,36 @@
     }
 
     #[test]
+    fn assigned_active_skills_are_scoped_per_agent_in_chat_and_workflow_context(){
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"s"})).unwrap();
+        state.store.put("agent",&json!({"id":"researcher","name":"Researcher",
+            "skillIds":["research"]})).unwrap();
+        state.store.put("agent",&json!({"id":"editor","name":"Editor",
+            "skillIds":["editing"]})).unwrap();
+        for (id,active) in [("research",true),("editing",true),("disabled",false)]{
+            state.store.put("skill",&json!({"id":id,"name":id,
+                "instructions":format!("SKILL_{id}"),"enabled":active,
+                "status":"active","scope":"global"})).unwrap();
+        }
+        let (research,items,_) = context_block_with_manifest(
+            &state,"s",Some("researcher"),"Investigate",None,None).unwrap();
+        assert!(research.contains("SKILL_research"));
+        assert!(!research.contains("SKILL_editing"));
+        assert_eq!(items.iter().filter(|v|v["kind"]=="skill").count(),1);
+        let (editing,_,_) = context_block_with_manifest(
+            &state,"s",Some("editor"),"Edit",None,None).unwrap();
+        assert!(editing.contains("SKILL_editing"));
+        assert!(!editing.contains("SKILL_research"));
+        state.store.patch_if("agent","researcher","id",&json!("researcher"),
+            &json!({"skillIds":[]})).unwrap();
+        let context=context_block_with_manifest(
+            &state,"s",Some("researcher"),"none",None,None);
+        assert!(!context.as_ref().is_some_and(|(text,_,_)|text.contains("SKILL_research")));
+        drop(state);std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn room_history_preserves_stored_reasoning_for_provider_specific_replay() {
         let (state, dir) = state();
         state

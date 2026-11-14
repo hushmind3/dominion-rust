@@ -20,6 +20,30 @@ pub async fn save_agent(State(state): State<AppState>, Json(body): Json<Value>) 
     {
         return error(StatusCode::BAD_REQUEST, "에이전트 이름이 필요합니다.");
     }
+    // Explicit agent skill assignments are the same across chat, rooms and
+    // workflow steps. Never bind a disabled/draft or deleted skill.
+    // Omitted skillIds preserves compatibility with the legacy shared catalog.
+    if let Some(selected)=body.get("skillIds"){
+        let Some(ids)=selected.as_array().filter(|ids|ids.len()<=5) else{
+            return error(StatusCode::BAD_REQUEST,
+                "에이전트 스킬은 최대 5개의 ID 배열로 지정하세요.");
+        };
+        let mut seen=std::collections::HashSet::new();
+        for id in ids{
+            let Some(id)=id.as_str().filter(|s|!s.trim().is_empty()) else{
+                return error(StatusCode::BAD_REQUEST,"스킬 ID가 올바르지 않습니다.");
+            };
+            if !seen.insert(id){
+                return error(StatusCode::BAD_REQUEST,"중복된 에이전트 스킬 ID입니다.");
+            }
+            let active=state.store.get("skill",id).is_some_and(|skill|
+                skill["enabled"]!=false && skill["status"]!="draft");
+            if !active{
+                return error(StatusCode::BAD_REQUEST,
+                    "비활성화되었거나 삭제된 스킬은 에이전트에게 배정할 수 없습니다.");
+            }
+        }
+    }
     let saved = match state.store.put("agent", &body) {
         Some(record) => record,
         None => return error(StatusCode::BAD_REQUEST, "에이전트를 저장할 수 없습니다."),

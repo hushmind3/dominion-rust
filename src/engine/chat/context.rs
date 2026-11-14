@@ -173,6 +173,11 @@ fn context_block_with_manifest(
     let (memories, mut items) =
         crate::engine::memory::context_block_with_manifest_at(state, &scope, query, execution_id);
 
+    // A list explicitly configured on an agent controls the actual
+    // skill context in all execution surfaces. [] means no skills; a missing
+    // field keeps legacy shared-skill behaviour for existing agents.
+    let agent_skills=agent_id.and_then(|id|state.store.get("agent",id))
+        .and_then(|agent|agent.get("skillIds").and_then(Value::as_array).cloned());
     let mut skills = state
         .store
         .all("skill")
@@ -180,6 +185,9 @@ fn context_block_with_manifest(
         .filter(|skill| crate::engine::memory::visible(skill, &scope))
         .filter(|skill| skill.get("status").and_then(Value::as_str) != Some("draft"))
         .filter(|skill| skill.get("enabled").and_then(|v| v.as_bool()) != Some(false))
+        .filter(|skill|agent_skills.as_ref().is_none_or(|ids|
+            ids.iter().any(|id|id.as_str()==skill["id"].as_str())))
+        .take(5)
         .filter_map(|skill| {
             let id = skill.get("id").and_then(|v| v.as_str())?.to_string();
             let name = skill.get("name").and_then(|v| v.as_str())?.to_string();
