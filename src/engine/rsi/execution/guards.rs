@@ -360,3 +360,47 @@ pub(super) fn bind_inherited_target(input:&mut Value, next:&Value) {
     }
 }
 
+
+#[cfg(test)]
+mod curated_worker_context_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_descendant_prompt_receives_curated_success_and_failure() {
+        let hash="a".repeat(40);
+        let generation=json!({
+            "id":"generation-1","generatorCommit":hash,"domain":"tools",
+            "pairedMeasured":true,"pairedRevalidated":true,
+            "accepted":true,"acceptedCommit":"b".repeat(40),
+            "changedSourcePaths":["src/engine/chat/runtime/tool_selection.rs"],
+            "evaluation":{"metrics":{"eligible":true,"measurements":[
+                {"id":"regression","domain":"tools","metrics":[{
+                    "key":"quality","baseline":0.8,"candidate":0.4,
+                    "direction":"higher","regressed":true,"improved":false}]},
+                {"id":"gain","domain":"tools","metrics":[{
+                    "key":"cost","baseline":5.0,"candidate":3.0,
+                    "direction":"lower","regressed":false,"improved":true}]}
+            ]}}
+        });
+        let (prompt,plan)=fit_worker_prompt(
+            "Fix the native harness", "tools", "tool dispatch", &[generation], None
+        ).expect("native descendant prompt");
+        assert!(prompt.contains("regression"));
+        assert!(prompt.contains("독립 재검증으로 채택된 과거 수정"));
+        assert_eq!(plan["measuredCounterexamplesDelivered"],1);
+        assert_eq!(plan["adoptedSuccessExamplesDelivered"],1);
+        assert_eq!(plan["adoptedSuccessExamplesAvailable"],1);
+    }
+
+    #[test]
+    fn compact_context_preserves_owner_and_does_not_fake_success() {
+        let history=vec![json!({"pairedMeasured":false,"accepted":true,
+            "acceptedCommit":"b".repeat(40),
+            "evaluation":{"metrics":{"eligible":true}}})];
+        let (prompt,plan)=fit_worker_prompt(
+            "Preserve the goal", "tools", "dispatch", &history, Some(15_000)
+        ).expect("prompt remains within budget");
+        assert!(prompt.contains("Preserve the goal"));
+        assert_eq!(plan["adoptedSuccessExamplesAvailable"],0);
+    }
+}
