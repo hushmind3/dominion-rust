@@ -139,6 +139,14 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let mut checks = configured.as_array().cloned().unwrap_or_default();
         if checks.is_empty() {
             checks = infer_criteria(&text);
+            // The user's explicit test request becomes an immutable completion
+            // contract: only real post-edit tool success can satisfy it.
+            for implied in crate::engine::goal_checks::inferred_checks(&workdir,&text) {
+                if !checks.iter().any(|old|old["type"]==implied["type"]
+                    && old["command"]==implied["command"]) {
+                    checks.push(implied);
+                }
+            }
         }
         crate::engine::verification::baseline_checks_in(&workdir, checks)
     });
