@@ -41,3 +41,5 @@
 
 - Goal routing uses `router::select_provider` (at least standard complexity) and stores `resolvedExecutor` for durable resume; user-selected executor roles win. `GoalControl::complete` charges planner/reviewer tokens to the same goal session.
 - `algorithms::choose_decomposition_for_agent` → `decompose::decompose` → frozen goal `decomposition` → planner/executor → independently verified goal completion → idempotent `goal_policy_reward` → `algorithms::record_owner_feedback("task.decomposition", revision, true)`. Human-edited plans and unverified runs receive no positive reward.
+
+- `engine/goal_evidence.rs::synopsis` bounds retrospective reviewer/replanner evidence tokens without discarding deterministic verifier inputs. Full original evidence is used by `verification::acceptance_gaps` and source artifacts; summaries are explicitly lossy and must not serve as validation records.

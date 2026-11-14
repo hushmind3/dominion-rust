@@ -1,5 +1,6 @@
 pub mod goal_control;
 pub mod goal_context;
+pub mod goal_evidence;
 pub mod goal_steering;
 pub mod goal_artifacts;
 pub mod adaptation_loop;
