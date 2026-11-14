@@ -55,7 +55,9 @@ const accents = [
 export function AgentsPage() {
   useLocale();
   const agents = useRemote<Agent[]>("/api/agents", []),
-    providers = useRemote<Provider[]>("/api/providers", []);
+    providers = useRemote<Provider[]>("/api/providers", []),
+    skills = useRemote<{id:string;name:string;enabled:boolean;status?:string}[]>("/api/skills", []),
+    jobs = useRemote<{kind:string;status:string;input?:{definition?:{steps?:{agentId?:string}[]}};result?:{deliverableId?:string};queuedAt?:string}[]>("/api/jobs", []);
   const [edit, setEdit] = useState<Partial<Agent> | null>(null),
     [error, setError] = useState(""), [saving, setSaving] = useState(false);
   const [showPersonaImport,setShowPersonaImport]=useState(false);
@@ -312,6 +314,9 @@ export function AgentsPage() {
             </div>
             <h3>{a.name}</h3>
             {a.role&&<span className="text-[11px] font-semibold text-[#9B8064]">{String(a.role)}</span>}
+            {a.preferredSkillIds?.length>0&&<p className="text-[11px] text-[#6C6155]">
+              연결된 스킬: {(a.preferredSkillIds||[]).map(id=>skills.value.find(sk=>sk.id===id)?.name||'삭제된 스킬').join(' · ')}
+            </p>}
             <p className="line-clamp-2" title={a.description || ""}>{a.description || t('agents.noDescription')}</p>
             <div className="my-2 h-px bg-[#F3EEE5]" />
             <div className="mt-auto flex flex-col gap-1 border-t border-[#EFE9DF] pt-3 text-xs text-[#7C7469]">
@@ -321,6 +326,12 @@ export function AgentsPage() {
                   (a.providerId ? t('agents.providerMissing') : t('agents.modelInChat'))}
               </span>
               {a.providerId&&<span>{a.model || enabledProviders.find(p=>p.id===a.providerId)?.model || t('agents.modelNeeded')}</span>}
+              <a href={"#/workflows?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#4F6C96] hover:underline">이 에이전트로 다단계 작업 구성 <ArrowRight size={13}/></a>
+              {jobs.value.filter(j=>j.kind==='workflow'&&j.input?.definition?.steps?.some(step=>step.agentId===a.id)).length>0&&
+               <span className="text-[11px] text-[#7C7469]">
+                실제 참여 작업 {jobs.value.filter(j=>j.kind==='workflow'&&j.input?.definition?.steps?.some(step=>step.agentId===a.id)).length}건 ·
+                산출물 {jobs.value.filter(j=>j.kind==='workflow'&&j.result?.deliverableId&&j.input?.definition?.steps?.some(step=>step.agentId===a.id)).length}건
+               </span>}
               <a href={"#/chat?agent="+encodeURIComponent(a.id)} className="mt-1 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline">{t('agents.chatWith')} <ArrowRight size={13}/></a>
             </div>
           </Panel>
@@ -455,6 +466,17 @@ export function AgentsPage() {
                       {t('agents.remove')}
                     </Button>
                   )}
+                </div>
+              </FormField>
+              <FormField label="실행에 우선 사용할 설치된 스킬" hint="선택 스킬은 실제 채팅·그룹대화·워크플로의 에이전트 컨텍스트에서 우선 주입됩니다. 최대 8개, 도구 실행 권한은 기존 승인 정책을 따릅니다.">
+                <div className="grid max-h-36 grid-cols-1 gap-2 overflow-auto rounded-xl border border-[#E7E0D5] p-3 sm:grid-cols-2">
+                  {skills.value.filter(sk=>sk.enabled&&sk.status!=='draft').map(sk=><label key={sk.id} className="flex items-center gap-2 text-xs text-[#554C42]">
+                    <input type="checkbox" checked={(edit.preferredSkillIds||[]).includes(sk.id)}
+                     disabled={saving||(!(edit.preferredSkillIds||[]).includes(sk.id)&&(edit.preferredSkillIds||[]).length>=8)}
+                     onChange={e=>setEdit({...edit,preferredSkillIds:e.target.checked?[...(edit.preferredSkillIds||[]),sk.id]:(edit.preferredSkillIds||[]).filter(id=>id!==sk.id)})}/>
+                    {sk.name}
+                  </label>)}
+                  {!skills.value.some(sk=>sk.enabled&&sk.status!=='draft')&&<p className="text-xs text-[#8F8174]">설치된 스킬이 없습니다. 연결 메뉴에서 먼저 스킬을 설치하세요.</p>}
                 </div>
               </FormField>
               <FormField label={t('agents.instructions')} hint={t('agents.instructions.hint')}>
