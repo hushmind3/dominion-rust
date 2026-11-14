@@ -1,5 +1,5 @@
 use crate::engine::jobs::JobContext;
-use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification, goal_artifacts, jobs};
+use crate::engine::{chat::TurnRequest, run_quiet_outcome, verification, goal_artifacts, jobs, agent_sdk};
 use crate::state::AppState;
 use sha2::{Digest,Sha256};
 use serde_json::{json, Value};
@@ -44,7 +44,7 @@ fn enqueue_run_with_origin(
     state:&AppState,workflow_id:&str,body:&Value,origin:Option<&str>
 )->Result<Value,String>{
     if body.as_object().is_none_or(|fields|fields.keys().any(|key|
-        !matches!(key.as_str(),"input"|"requestId")))
+        !matches!(key.as_str(),"input"|"requestId"|"sdkCostApproved"|"sdkToolsApproved")))
         ||body.get("input").is_some_and(|value|!value.is_string())
         ||body.get("requestId").is_some_and(|value|!value.is_string()){
         return Err("워크플로 실행 입력은 input 문자열과 requestId UUID만 지정하세요.".into());
@@ -83,6 +83,7 @@ fn enqueue_run_with_origin(
                 state.store.get("agent",id).is_some()) {
             return Err("실행할 워크플로의 에이전트 또는 단계가 잘못됐습니다.".into());
         }
+        agent_sdk::validate(step,body,origin.is_some())?;
         // Ignore untrusted snapshots in the editable workflow definition.
         step["skillSnapshot"]=pin_skill(state,step)?.unwrap_or(Value::Null);
     }
@@ -266,40 +267,73 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
-        let usage_before=state.store.session_usage(&session_id);
-        let (outcome,stats)=run_quiet_outcome(state,&request).await;
-        // Persist observed effects on all paths, including model error.
-        // Never silently reissue an interrupted turn whose tools may have run.
-        let evidence=stats.evidence.iter().filter(|item|verification::successful_evidence(item))
-            .cloned().collect::<Vec<_>>();
-        let artifacts=goal_artifacts::collect(state,&evidence);
-        let tool_receipts=evidence.iter().take(48).map(|item|json!({
-            "tool":verification::tool_name(item),"callId":item["callId"]
-        })).collect::<Vec<_>>();
-        let usage=usage_delta(&usage_before,&state.store.session_usage(&session_id));
-        let unresolved=state.store.session_has_uncertain_effects(&session_id)
-            .map_err(|err|format!("needs_review: 작업 도구 영수증을 읽을 수 없습니다: {err}"))?;
-        if unresolved{
-            context.checkpoint(json!({"workflowState":{"sessionId":session_id,
-                "outputs":outputs,"definition":definition,"inFlight":true,
-                "activeStepIndex":index,"lastToolReceipts":tool_receipts,
-                "lastObservedArtifacts":artifacts,"lastStepUsage":usage}}))?;
-            return Err("needs_review: 워크플로 단계의 외부 도구 결과가 미확정입니다. 상태 확인 후 재개하세요.".into());
-        }
-        let message=match outcome{
-            Ok(Some(message))=>message,
-            Ok(None)=>return Err(format!("needs_review: {step_name} 단계가 빈 응답을 반환했습니다.")),
-            Err(_) if state.is_cancelled(&session_id)=>return Ok(json!({
-                "workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"
-            })),
-            Err(error)=>{
-                context.checkpoint(json!({"workflowState":{"sessionId":session_id,
-                    "outputs":outputs,"definition":definition,"inFlight":true,
-                    "activeStepIndex":index,"lastToolReceipts":tool_receipts,
-                    "lastObservedArtifacts":artifacts,"lastStepUsage":usage}}))?;
-                return Err(format!("needs_review: 실행 단계 오류: {error}"));
-            }
-        };
+        let (message,tool_receipts,tool_errors,artifacts,usage,harness_provenance)=
+            if step["harness"]=="copilot-sdk" {
+                // The official SDK CLI owns its own session/tool lifecycle.
+                // No SDK tool event is promoted to a DOMINION-verified file
+                // receipt without independent disk observation.
+                let sdk=agent_sdk::run(step,&request.input,&state.config.workspace).await
+                    .map_err(|e|format!("needs_review: 외부 SDK 실행 상태 확인 필요: {e}"))?;
+                let text=sdk["content"].as_str()
+                    .ok_or("needs_review: SDK가 텍스트 결과를 반환하지 않았습니다.")?;
+                (
+                    json!({"content":text,"id":null}),
+                    Vec::<Value>::new(),Vec::<String>::new(),Vec::<Value>::new(),
+                    sdk["usage"].clone(),
+                    json!({"harness":"github-copilot-sdk",
+                        "sdkSessionId":sdk["sdkSessionId"],
+                        "toolEventCounts":{
+                            "started":sdk["usage"]["toolStarts"],
+                            "success":sdk["usage"]["toolSuccessEvents"],
+                            "error":sdk["usage"]["toolErrorEvents"]
+                        },
+                        "verifiedFileReceipts":false,
+                        "actualBilledKrw":null})
+                )
+            }else{
+                let usage_before=state.store.session_usage(&session_id);
+                let (outcome,stats)=run_quiet_outcome(state,&request).await;
+                // Preserve native, independently observed tool results and
+                // its existing conservative external-effect barrier.
+                let evidence=stats.evidence.iter()
+                    .filter(|item|verification::successful_evidence(item))
+                    .cloned().collect::<Vec<_>>();
+                let artifacts=goal_artifacts::collect(state,&evidence);
+                let tool_receipts=evidence.iter().take(48).map(|item|json!({
+                    "tool":verification::tool_name(item),"callId":item["callId"]
+                })).collect::<Vec<_>>();
+                let usage=usage_delta(&usage_before,&state.store.session_usage(&session_id));
+                let unresolved=state.store.session_has_uncertain_effects(&session_id)
+                    .map_err(|error|format!("needs_review: 실행 도구 영수증 조회 실패: {error}"))?;
+                if unresolved{
+                    context.checkpoint(json!({"workflowState":{"sessionId":session_id,
+                        "outputs":outputs,"definition":definition,"inFlight":true,
+                        "activeStepIndex":index,"lastToolReceipts":tool_receipts,
+                        "lastObservedArtifacts":artifacts,"lastStepUsage":usage}}))?;
+                    return Err("needs_review: 워크플로 단계의 외부 도구 결과가 미확정입니다. 상태 확인 후 재개하세요.".into());
+                }
+                let message=match outcome{
+                    Ok(Some(message))=>message,
+                    Ok(None)=>return Err(format!("needs_review: {step_name} 단계가 빈 응답을 반환했습니다.")),
+                    Err(_) if state.is_cancelled(&session_id)=>return Ok(json!({
+                        "workflowId":workflow_id,"sessionId":session_id,
+                        "outputs":outputs,"status":"cancelled"
+                    })),
+                    Err(error)=>{
+                        context.checkpoint(json!({"workflowState":{"sessionId":session_id,
+                            "outputs":outputs,"definition":definition,"inFlight":true,
+                            "activeStepIndex":index,"lastToolReceipts":tool_receipts,
+                            "lastObservedArtifacts":artifacts,"lastStepUsage":usage}}))?;
+                        return Err(format!("needs_review: 실행 단계 오류: {error}"));
+                    }
+                };
+                (
+                    message,tool_receipts,stats.tool_errors,artifacts,usage,
+                    json!({"harness":"dominion-rust",
+                        "verifiedFileReceipts":true,
+                        "sdkSessionId":null})
+                )
+            };
         outputs.push(json!({
             "stepId":step.get("id"),"name":step_name,
             "agentId":step.get("agentId"),"providerId":step.get("providerId"),
@@ -307,8 +341,9 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             "skillRevision":step["skillSnapshot"]["revision"],
             "content":message.get("content")
                 .cloned().unwrap_or(json!("")),"messageId":message.get("id"),
-            "toolReceipts":tool_receipts,"toolErrors":stats.tool_errors,
+            "toolReceipts":tool_receipts,"toolErrors":tool_errors,
             "artifacts":artifacts,"usage":usage,
+            "harnessProvenance":harness_provenance,
         }));
 
         context.checkpoint(json!({
