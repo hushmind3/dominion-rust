@@ -1126,8 +1126,10 @@ pub(super) async fn run_turn_body(
 
         let has_dsml_call = completion.content.contains("invoke name=\"")
             && completion.content.contains("parameter name=\"");
+        let has_qwen_call = completion.content.contains("✿FUNCTION✿:")
+            && completion.content.contains("✿ARGS✿:");
         if (!request.tools_enabled || !request.tools_execution_enabled)
-            && (!completion.tool_calls.is_empty() || has_dsml_call)
+            && (!completion.tool_calls.is_empty() || has_dsml_call || has_qwen_call)
         {
             return Err(
                 "도구가 비활성인 대화에서 모델이 도구 실행을 요청했습니다.".into(),
@@ -1202,14 +1204,14 @@ pub(super) async fn run_turn_body(
             completion.tool_calls.clear();
         }
 
-        if has_dsml_call && round_tools.is_empty() {
+        if (has_dsml_call || has_qwen_call) && round_tools.is_empty() {
             return Err(
                 "모델이 이번 턴에 제공되지 않은 도구를 호출하려 했습니다.".into(),
             );
         }
         if completion.tool_calls.is_empty()
             && request.tools_enabled
-            && (provider.tool_mode != "native" || has_dsml_call
+            && (provider.tool_mode != "native" || has_dsml_call || has_qwen_call
                 || rsi_textual_edit_fallback(session["rsiRun"] == true,
                     session["rsiExplicitFocus"] == true || session["rsiAutoFocus"] == true,
                     rsi_edit_only_announced))
@@ -1233,9 +1235,9 @@ pub(super) async fn run_turn_body(
                         arguments,
                     })
                     .collect();
-            } else if has_dsml_call {
-                // A malformed/unknown DSML call must not be shown as a final
-                // answer. Remove the protocol block and fail the turn.
+            } else if has_dsml_call || has_qwen_call {
+                // A malformed/unknown text-protocol call must not be shown as
+                // a completed task or silently counted as real tool work.
                 completion.content = cleaned;
                 return Err(
                     "모델이 지원되지 않는 도구 호출 형식을 출력했습니다.".into(),
