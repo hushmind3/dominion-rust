@@ -5,6 +5,7 @@ import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
+const GoalsPage=lazy(()=>import('./pages/Goals').then(module=>({default:module.GoalsPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
 const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
@@ -201,6 +202,7 @@ export default function App(){
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
     {page==='home'&&<HomePage navigate={navigate}/>}
     {page==='memory'&&<MemoryPage/>}
+    {page==='goals'&&<GoalsPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
     {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
     {page==='video'&&<VideoPage navigate={navigate}/>}
