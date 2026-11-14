@@ -19,13 +19,16 @@ fn duration(value:&Value)->Option<f64>{
         .or_else(||value.as_f64()).filter(|x|x.is_finite()&&*x>0.0)
 }
 pub(super) fn evaluate(probe:&Value,expected_seconds:u64,aspect:&str,require_audio:bool)->Result<Value,String>{
+    evaluate_min(probe,expected_seconds,aspect,640,require_audio)
+}
+fn evaluate_min(probe:&Value,expected_seconds:u64,aspect:&str,min_short:u64,require_audio:bool)->Result<Value,String>{
     let streams=probe["streams"].as_array().ok_or("ffprobe 영상 스트림 정보가 없습니다.")?;
     let video=streams.iter().find(|stream|stream["codec_type"]=="video")
         .ok_or("MP4에 재생 가능한 비디오 스트림이 없습니다.")?;
     let width=video["width"].as_u64().unwrap_or(0);
     let height=video["height"].as_u64().unwrap_or(0);
-    if width<640 || height<640 {
-        return Err(format!("해상도가 너무 낮습니다: {width}x{height}"));
+    if width.min(height)<min_short.max(160) {
+        return Err(format!("해상도가 너무 낮습니다: {width}x{height} / required short edge {min_short}"));
     }
     let actual_ratio=width as f64/height as f64;
     let desired_ratio=expected_ratio(aspect);
@@ -48,6 +51,10 @@ pub(super) fn evaluate(probe:&Value,expected_seconds:u64,aspect:&str,require_aud
 }
 
 pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,audio:bool)->Result<Value,String>{
+    inspect_min(cfg,path,seconds,aspect,640,audio).await
+}
+pub(super) async fn inspect_min(cfg:&Value,path:&Path,seconds:u64,aspect:&str,
+    min_short:u64,audio:bool)->Result<Value,String>{
     let probe=executable(cfg).ok_or("영상 검수에는 FFmpeg와 같은 폴더의 ffprobe가 필요합니다.")?;
     let mut command=tokio::process::Command::new(probe);
     command.kill_on_drop(true).args(["-v","error","-show_entries",
@@ -63,7 +70,7 @@ pub(super) async fn inspect(cfg:&Value,path:&Path,seconds:u64,aspect:&str,audio:
     if output.stdout.len()>32768 {return Err("영상 검수 출력이 비정상적으로 큽니다.".into());}
     let report:Value=serde_json::from_slice(&output.stdout)
         .map_err(|e|format!("ffprobe JSON 해석 오류: {e}"))?;
-    evaluate(&report,seconds,aspect,audio)
+    evaluate_min(&report,seconds,aspect,min_short,audio)
 }
 
 #[cfg(test)]
@@ -76,6 +83,13 @@ mod tests{
         let result=evaluate(&probe,8,"9:16",true).unwrap();
         assert_eq!(result["verified"],true);
         assert_eq!(result["audioStream"],true);
+    }
+    #[test]
+    fn independent_local_shot_may_be_lower_resolution_than_final_export(){
+        let probe=json!({"streams":[{"codec_type":"video","width":360,"height":640}],
+            "format":{"duration":"8.00"}});
+        assert!(evaluate_min(&probe,8,"9:16",270,false).is_ok());
+        assert!(evaluate(&probe,8,"9:16",false).is_err());
     }
     #[test]
     fn rejects_missing_stream_wrong_ratio_or_duration(){

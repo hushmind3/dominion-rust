@@ -8,6 +8,8 @@ mod director;
 mod film;
 #[path = "video/quality.rs"]
 mod quality;
+#[path = "video/cinematic.rs"]
+mod cinematic;
 use crate::{
     engine::{
         jobs::{self, JobContext},
@@ -102,7 +104,9 @@ pub fn public_job(job: &Value) -> Value {
     } else {
         &job["videoState"]["scenes"]
     };
-    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":storyboard,"filmCompleted":job["videoState"]["filmCompleted"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
+    json!({"id":id,"kind":job["kind"],"title":job["input"]["title"],"brief":job["input"]["brief"],"engine":job["input"]["engine"],"status":job["status"],"phase":job.get("phase").unwrap_or(&job["status"]),"progress":job["progress"],"error":job["error"],"createdAt":job.get("createdAt").or(job.get("created_at")),"videoJobId":job["input"]["videoJobId"],"privacyStatus":job["input"]["privacyStatus"],"outputUrl":ready.then(||format!("/api/video/jobs/{id}/content")),"storyboard":storyboard,"filmCompleted":job["videoState"]["filmCompleted"],
+    "cinematic":job["input"]["cinematic"],"shotProgress":job["videoState"]["shotIndex"],
+    "shotCount":job["videoState"]["shotCount"],"result":job["result"],"duration":job["input"]["duration"],"aspectRatio":job["input"]["aspectRatio"],"videoModel":job["input"]["render"]["model"],"videoQuality":job["input"]["render"]["quality"]})
 }
 pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     let cfg = config(state);
@@ -168,8 +172,27 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
     };
     // Freeze the owner's technical proof preference before remote billing.
     // LTX defaults to an actual ffprobe gate, native cards remain opt-in.
+    let cinematic=engine=="comfyui" && body["cinematic"]==true;
+    if cinematic {
+        let workflow=cfg["comfyWorkflow"].to_string();
+        if !workflow.contains("{{prompt}}") || !workflow.contains("{{duration}}") {
+            return Err("Cinematic ComfyUI workflow must bind {{prompt}} and {{duration}}".into());
+        }
+        if duration>120 {return Err("Cinematic mode supports at most 120 seconds".into());}
+        if ffmpeg_from_config(&cfg).is_none() {
+            return Err("FFmpeg is required for ComfyUI multi-shot export".into());
+        }
+    }
+    let bad_shot_retries=body["badShotRetries"].as_u64().unwrap_or(0);
+    if bad_shot_retries>1 || (bad_shot_retries>0 &&
+        (!cinematic || body["confirmRetryCosts"]!=true)){
+        return Err("Extra shot generations require cinematic mode, a maximum of 1 retry and explicit confirmRetryCosts".into());
+    }
     let technical_gate=body["technicalGate"].as_bool()
-        .or(cfg["technicalGate"].as_bool()).unwrap_or(engine=="ltx");
+        .or(cfg["technicalGate"].as_bool()).unwrap_or(engine=="ltx"||cinematic);
+    if cinematic && !technical_gate{
+        return Err("Cinematic mode requires per-shot technical validation".into());
+    }
     if technical_gate && quality::executable(&cfg).is_none(){
         return Err("영상 검수용 ffprobe가 필요합니다. FFmpeg와 ffprobe를 같은 경로에 설치하거나 기술 검수를 명시적으로 해제하세요.".into());
     }
@@ -185,6 +208,8 @@ pub fn enqueue(state: &AppState, body: &Value) -> Result<Value, String> {
         "brief":brief, "title":title, "engine":engine, "duration":duration,
         "aspectRatio":aspect, "config":cfg, "publish":false,
         "technicalGate":technical_gate,
+        "cinematic":cinematic,"badShotRetries":bad_shot_retries,
+        "confirmRetryCosts":body["confirmRetryCosts"]==true,
         "render":{"prompt":brief,"negative":negative_prompt,"negativePrompt":negative_prompt,
                   "duration":duration,"width":width,"height":height,"fps":fps,"frames":duration*fps,"seed":seed}
     });
@@ -533,6 +558,8 @@ pub async fn run(ctx: &JobContext, job: &Value) -> Result<Value, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let input = &job["input"];
     let result = match input["engine"].as_str() {
+        Some("comfyui") if input["cinematic"]==true =>
+            cinematic::render(ctx,input,&dir).await,
         Some("comfyui") => comfy(ctx, input, &dir).await,
         Some("ltx") if input["render"]["film"]["clips"].as_array()
             .is_some_and(|clips|clips.len()>1) => film::run(ctx,input,&dir).await,
