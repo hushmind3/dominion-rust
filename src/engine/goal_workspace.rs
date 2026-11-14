@@ -128,20 +128,88 @@ pub(crate) fn workspace_for_session(state:&AppState,session_id:&str)->Result<Pat
 // Binary/non-UTF8 and overly large changes require external Git/PR review.
 const MAX_REVIEW_PATCH:usize=128*1024;
 static APPLY_LOCK:tokio::sync::Mutex<()>=tokio::sync::Mutex::const_new(());
+// The original checkout index and the goal worktree index are deliberately
+// never staged for review. An ephemeral index based on the frozen base can
+// mark new regular files intent-to-add, making one exact Git patch cover
+// tracked edits AND newly authored source files without touching either index.
+struct ReviewIndex(PathBuf);
+impl Drop for ReviewIndex {
+    fn drop(&mut self) {
+        let _=std::fs::remove_file(&self.0);
+        let _=std::fs::remove_file(self.0.with_extension("lock"));
+    }
+}
+async fn review_git(root:&Path,index:Option<&Path>,args:&[&str])->Result<Vec<u8>,String>{
+    let mut command=Command::new("git");
+    command.current_dir(root).args(args).stdin(Stdio::null()).kill_on_drop(true);
+    if let Some(index)=index{command.env("GIT_INDEX_FILE",index);}
+    let output=tokio::time::timeout(Duration::from_secs(30),command.output())
+        .await.map_err(|_|"Git 변경 검토 제한 시간 초과".to_string())?
+        .map_err(|e|format!("Git 변경 검토 실행 실패: {e}"))?;
+    if !output.status.success(){
+        return Err(format!("Git 변경 검토 실패: {}",
+            String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>()));
+    }
+    Ok(output.stdout)
+}
+async fn untracked_review_paths(root:&Path)->Result<Vec<String>,String>{
+    let bytes=review_git(root,None,&["ls-files","--others","--exclude-standard","-z"]).await?;
+    if bytes.len()>32*1024{return Err("검토할 미추적 파일 경로가 너무 많습니다.".into());}
+    let canonical_root=root.canonicalize().map_err(|e|e.to_string())?;
+    let mut result=Vec::new();
+    for raw in bytes.split(|b|*b==0).filter(|part|!part.is_empty()){
+        if result.len()>=64{return Err("새 파일이 64개를 넘어 별도의 PR 검토가 필요합니다.".into());}
+        let relative=std::str::from_utf8(raw)
+            .map_err(|_|"UTF-8로 표시할 수 없는 새 파일 이름입니다.")?;
+        let path=Path::new(relative);
+        if path.is_absolute()||!path.components().all(|component|
+            matches!(component,std::path::Component::Normal(_))){
+            return Err("새 파일의 상대 경로가 안전하지 않습니다.".into());
+        }
+        let file=canonical_root.join(path);
+        let metadata=std::fs::symlink_metadata(&file).map_err(|e|e.to_string())?;
+        if !metadata.file_type().is_file()||metadata.len()>MAX_REVIEW_PATCH as u64{
+            return Err("새 파일의 형식이나 크기가 직접 검토 한도를 넘었습니다.".into());
+        }
+        let canonical_file=file.canonicalize().map_err(|e|e.to_string())?;
+        if !canonical_file.starts_with(&canonical_root){
+            return Err("Git 격리 폴더 외부 파일은 승인 패치에 넣지 않습니다.".into());
+        }
+        // Reject binary and undecodable new files instead of showing a
+        // misleading text patch. Existing binaries are checked below.
+        let content=std::fs::read(&file).map_err(|e|e.to_string())?;
+        if content.contains(&0)||std::str::from_utf8(&content).is_err(){
+            return Err("새 바이너리 파일은 별도 Git/PR 검토가 필요합니다.".into());
+        }
+        result.push(relative.to_owned());
+    }
+    Ok(result)
+}
 async fn patch_bytes(root:&Path,base:&str)->Result<Vec<u8>,String>{
-    let output=tokio::time::timeout(Duration::from_secs(30),
-        Command::new("git").current_dir(root)
-            .args(["diff","--binary","--no-ext-diff","--no-textconv","--no-color",base])
-            .stdin(Stdio::null()).kill_on_drop(true).output())
-        .await.map_err(|_|"변경 패치 검토 시간 초과".to_string())?
-        .map_err(|e|e.to_string())?;
-    if !output.status.success(){return Err(format!("Git 변경 조회 실패: {}",
-        String::from_utf8_lossy(&output.stderr).chars().take(300).collect::<String>()));}
-    if output.stdout.len()>MAX_REVIEW_PATCH{
+    let new_files=untracked_review_paths(root).await?;
+    // A temporary Git index captures intent-to-add without staging source
+    // checkout changes. It is generated anew for every preview/apply, so a
+    // changed new file always changes the owner-reviewed patch digest.
+    let temp=ReviewIndex(std::env::temp_dir().join(
+        format!("dominion-review-index-{}",uuid::Uuid::new_v4())));
+    review_git(root,Some(&temp.0),&["read-tree",base]).await?;
+    if !new_files.is_empty(){
+        let mut args=vec!["add".to_string(),"-N".to_string(),"--".to_string()];
+        args.extend(new_files);
+        let borrowed=args.iter().map(String::as_str).collect::<Vec<_>>();
+        review_git(root,Some(&temp.0),&borrowed).await?;
+    }
+    let patch=review_git(root,Some(&temp.0),
+        &["diff","--binary","--no-ext-diff","--no-textconv","--no-color",base]).await?;
+    if patch.len()>MAX_REVIEW_PATCH{
         return Err("검토할 Git 변경이 128KiB를 넘어 PR 검토가 필요합니다.".into());
     }
-    std::str::from_utf8(&output.stdout).map_err(|_|"텍스트로 검토할 수 없는 Git 패치입니다.")?;
-    Ok(output.stdout)
+    let text=std::str::from_utf8(&patch)
+        .map_err(|_|"텍스트로 검토할 수 없는 Git 패치입니다.")?;
+    if text.contains("\nGIT binary patch\n")||text.contains("\nBinary files "){
+        return Err("바이너리 변경은 별도 Git/PR 검토가 필요합니다.".into());
+    }
+    Ok(patch)
 }
 async fn apply_patch(root:&Path,patch:&[u8],check:bool)->Result<(),String>{
     use tokio::io::AsyncWriteExt;
@@ -173,13 +241,13 @@ pub(crate) async fn preview(state:&AppState,id:&str)->Result<Value,String>{
     let untracked=git(&work,&["ls-files","--others","--exclude-standard"]).await?;
     let sha=format!("{:x}",Sha256::digest(&patch));
     Ok(json!({"patchSha256":sha,"patchBytes":patch.len(),
-        "canApply":!patch.is_empty() && untracked.trim().is_empty()
+        "canApply":!patch.is_empty()
             && goal["gitWorktree"]["appliedAt"].is_null()
             && matches!(goal["status"].as_str(),
                 Some("completed"|"failed"|"cancelled"|"needs_review")),
         "untracked":untracked,"diff":std::str::from_utf8(&patch).unwrap_or(""),
         "requiresExplicitOwnerApply":true,
-        "reviewIncludesAllTrackedBytes":true}))
+        "reviewIncludesAllTrackedBytes":true,"reviewIncludesNewRegularFiles":true}))
 }
 /// Owner-confirmed, exact-SHA-pinned promotion of one reviewed patch to the
 /// original clean checkout. Never force-reset, merge, stage or auto-commit.
@@ -213,9 +281,6 @@ pub(crate) async fn apply_reviewed(state:&AppState,id:&str,expected:&str)->Resul
     }
     if !git(&root,&["status","--porcelain","--untracked-files=all"]).await?.trim().is_empty(){
         return Err("원본 체크아웃이 깨끗하지 않아 덮어쓰기를 거부했습니다.".into());
-    }
-    if !git(&work,&["ls-files","--others","--exclude-standard"]).await?.trim().is_empty(){
-        return Err("격리 폴더의 미추적 파일은 적용 대상에 포함되지 않습니다. 먼저 검토하세요.".into());
     }
     let patch=patch_bytes(&work,base).await?;
     if patch.is_empty(){return Err("원본에 적용할 추적 파일 변경이 없습니다.".into());}
@@ -362,14 +427,60 @@ mod tests{
         let sha=review["patchSha256"].as_str().unwrap();
         assert!(apply_reviewed(&state,&id,&"0".repeat(64)).await.is_err());
         assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
-        std::fs::write(work.join("untracked.tmp"),"review me separately").unwrap();
-        assert_eq!(preview(&state,&id).await.unwrap()["canApply"],false);
-        assert!(apply_reviewed(&state,&id,sha).await.is_err());
-        std::fs::remove_file(work.join("untracked.tmp")).unwrap();
-        let receipt=apply_reviewed(&state,&id,sha).await.unwrap();
+        std::fs::create_dir_all(work.join("new")).unwrap();
+        std::fs::write(work.join("new/module.rs"),"pub fn created()->u8 { 7 }\n").unwrap();
+        let with_new=preview(&state,&id).await.unwrap();
+        assert_eq!(with_new["canApply"],true);
+        assert!(with_new["diff"].as_str().unwrap().contains("new file mode"));
+        assert!(with_new["diff"].as_str().unwrap().contains("new/module.rs"));
+        assert!(apply_reviewed(&state,&id,sha).await.is_err(),
+            "a new file invalidates a previously reviewed digest");
+        let current_sha=with_new["patchSha256"].as_str().unwrap().to_string();
+        let receipt=apply_reviewed(&state,&id,&current_sha).await.unwrap();
+        assert_eq!(std::fs::read_to_string(source.join("new/module.rs")).unwrap(),
+            "pub fn created()->u8 { 7 }\n");
         assert_eq!(receipt["verified"],true);
         assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"reviewed change");
         assert!(apply_reviewed(&state,&id,sha).await.is_err());
+        discard(&state,&id).await.unwrap();
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn untracked_new_file_review_detects_content_tampering(){
+        let (state,root,source)=setup();
+        let id=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":id,"status":"completed",
+            "isolateWorktree":true})).unwrap();
+        prepare(&state,&id).await.unwrap();
+        let goal=state.store.get("goal",&id).unwrap();
+        let work=workspace_for_goal(&state,&goal).unwrap();
+        std::fs::write(work.join("fresh.txt"),"first\n").unwrap();
+        let first=preview(&state,&id).await.unwrap();
+        assert_eq!(first["canApply"],true);
+        assert_eq!(std::fs::read_to_string(source.join("src.txt")).unwrap(),"original");
+        std::fs::write(work.join("fresh.txt"),"second\n").unwrap();
+        assert!(apply_reviewed(&state,&id,first["patchSha256"].as_str().unwrap()).await.is_err());
+        assert!(!source.join("fresh.txt").exists());
+        let second=preview(&state,&id).await.unwrap();
+        assert_ne!(first["patchSha256"],second["patchSha256"]);
+        assert_eq!(apply_reviewed(&state,&id,second["patchSha256"].as_str().unwrap())
+            .await.unwrap()["verified"],true);
+        assert_eq!(std::fs::read_to_string(source.join("fresh.txt")).unwrap(),"second\n");
+        discard(&state,&id).await.unwrap();
+        let _=std::fs::remove_dir_all(root);
+    }
+    #[tokio::test]
+    async fn binary_new_file_never_gets_an_approvable_text_patch(){
+        let (state,root,_source)=setup();
+        let id=uuid::Uuid::new_v4().to_string();
+        state.store.put("goal",&json!({"id":id,"status":"completed",
+            "isolateWorktree":true})).unwrap();
+        prepare(&state,&id).await.unwrap();
+        let goal=state.store.get("goal",&id).unwrap();
+        let work=workspace_for_goal(&state,&goal).unwrap();
+        std::fs::write(work.join("opaque.bin"),[0u8,255,6,0]).unwrap();
+        assert!(preview(&state,&id).await.is_err());
+        assert!(apply_reviewed(&state,&id,&"0".repeat(64)).await.is_err());
         discard(&state,&id).await.unwrap();
         let _=std::fs::remove_dir_all(root);
     }
