@@ -1,11 +1,11 @@
 use crate::error::{DominionError, Result};
 use crate::streaming::{ChatStream, EventStream};
 use crate::types::{
-    ChatEvent, ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,
+    ChatRequest, Goal, GoalCreate, Job, Message, ModelSelection,
     Session, SessionCreate, WaitOptions, WatchOptions,
 };
 use futures_util::StreamExt;
-use reqwest::{header::HeaderValue, Method, Response, StatusCode, Url};
+use reqwest::{header::HeaderValue, Method, Response, Url};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::{collections::HashSet, time::Duration};
