@@ -23,6 +23,26 @@ pub async fn create(State(state):State<AppState>,Json(body):Json<Value>)->Respon
     };
     match engine::jobs::enqueue(&state,kind,clean){Some(job)=>(StatusCode::ACCEPTED,Json(job)).into_response(),None=>error(StatusCode::INTERNAL_SERVER_ERROR,"작업을 대기열에 저장할 수 없습니다.")}
 }
+/// Jobs created for a persistent session can still be running before their
+/// first checkpoint writes a top-level sessionId. Resolve the original session
+/// from all durable job ownership paths so Stop reaches the active Rust turn.
+fn cancellable_session(state:&AppState,job:&Value)->Option<String>{
+    for path in [
+        "/sessionId","/input/sessionId","/goalState/sessionId",
+        "/promptState/sessionId","/roomState/sessionId","/workflowState/sessionId"
+    ] {
+        if let Some(id)=job.pointer(path).and_then(Value::as_str).filter(|s|!s.is_empty()){
+            return Some(id.to_string());
+        }
+    }
+    if job["kind"]=="goal" {
+        let goal_id=job.pointer("/input/goalId").and_then(Value::as_str)?;
+        return state.store.get("goal",goal_id)
+            .and_then(|goal|goal["sessionId"].as_str().map(str::to_string));
+    }
+    None
+}
+
 pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Response{
     let Some(job)=state.store.get("job",&id)else{return error(StatusCode::NOT_FOUND,"작업이 없습니다.")};
     if job["kind"]=="rsi_evolve" {
@@ -30,8 +50,10 @@ pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Respons
         engine::jobs::cancel_rsi_children(&state,&id);
         if job["status"]=="cancelled" {return Json(job).into_response();}
     }
+    // Stop is idempotent across duplicate UI clicks and timeout retries.
+    if job["status"]=="cancelled"{return Json(job).into_response();}
     if !matches!(job["status"].as_str(),Some("queued"|"running")){return error(StatusCode::CONFLICT,"진행 중인 작업만 중단할 수 있습니다.");}
-    if let Some(session)=job["sessionId"].as_str(){state.cancel_session(session);}
+    if let Some(session)=cancellable_session(&state,&job){state.cancel_session(&session);}
     match state.store.patch_if("job",&id,"status",&job["status"],&json!({"status":"cancelled","cancelRequested":true,"finishedAt":chrono::Utc::now().to_rfc3339()})){
         Some(saved)=>{
             state.bus.record("job",&saved);
@@ -52,5 +74,54 @@ pub async fn cancel(State(state):State<AppState>,Path(id):Path<String>)->Respons
         },
         None=>state.store.get("job",&id).map(|j|Json(j).into_response())
             .unwrap_or_else(||error(StatusCode::CONFLICT,"작업 상태가 변경되었습니다."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    fn state()->(AppState,std::path::PathBuf){
+        let dir=std::env::temp_dir().join(format!("dominion-cancel-api-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.clone(),web_dir:dir.join("web"),workspace:dir.clone()};
+        let store=Store::open(&config.db_path()).unwrap();
+        let vault=Vault::open(&config.key_path());
+        (AppState::new(config,store,vault),dir)
+    }
+
+    #[tokio::test]
+    async fn stop_reaches_input_session_before_first_job_checkpoint(){
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"child"})).unwrap();
+        state.store.put("job",&json!({"id":"job","kind":"prompt",
+            "status":"running","input":{"sessionId":"child"}})).unwrap();
+        let response=cancel(State(state.clone()),Path("job".into())).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        assert!(state.is_cancelled("child"));
+        let job=state.store.get("job","job").unwrap();
+        assert_eq!(job["status"],"cancelled");
+        assert_eq!(job["cancelRequested"],true);
+        // Repeating Stop must report the existing durable result, not 409.
+        let repeat=cancel(State(state.clone()),Path("job".into())).await;
+        assert_eq!(repeat.status(),StatusCode::OK);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_uses_goal_session_even_without_job_checkpoint(){
+        let (state,dir)=state();
+        state.store.put("session",&json!({"id":"goal-session"})).unwrap();
+        state.store.put("goal",&json!({"id":"goal-1","sessionId":"goal-session",
+            "status":"running"})).unwrap();
+        state.store.put("job",&json!({"id":"goal-job","kind":"goal","status":"running",
+            "input":{"goalId":"goal-1"}})).unwrap();
+        let response=cancel(State(state.clone()),Path("goal-job".into())).await;
+        assert_eq!(response.status(),StatusCode::OK);
+        assert!(state.is_cancelled("goal-session"));
+        assert_eq!(state.store.get("goal","goal-1").unwrap()["status"],"cancelled");
+        assert_eq!(state.store.get("job","goal-job").unwrap()["status"],"cancelled");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

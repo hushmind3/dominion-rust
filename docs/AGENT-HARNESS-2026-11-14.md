@@ -132,3 +132,17 @@
 회귀: `tools::tests::delegated_result_preserves_late_edits_after_many_reads`,
 `verification::inference_tests::delegated_writes_satisfy_source_mutation_but_no_op_or_read_does_not`.
 독립 SWE-bench 실모델 평가와는 별개입니다.
+
+## 2026-11-15 · UI 중단 명령과 실행 세션 연결
+
+`POST /api/jobs/:id/cancel`의 종전 구현은 `job.sessionId`만 읽었습니다.
+`run_prompt`의 첫 체크포인트 이전 또는 재개 작업에는 `job.input.sessionId`,
+`goalState.sessionId` 또는 원본 `goal.sessionId`만 저장돼 있을 수 있습니다.
+현재 `api::jobs::cancellable_session`이 해당 실제 세션을 찾아
+`AppState::cancel_session → Store::cancel_session_family`로 전달합니다.
+중복 Stop은 기존 `cancelled` 응답을 그대로 반환하고 다른 완료 작업은
+계속 409로 보호합니다. 모델/셸/하위 도구의 각 중단 검사는 기존 Rust 경로를 유지합니다.
+
+`api::jobs::tests`의 `stop_reaches_input_session_before_first_job_checkpoint`,
+`stop_uses_goal_session_even_without_job_checkpoint`는 실행 중 작업의
+실제 입력 소유자와 목표 소유자 각각을 Stop API에서 검증합니다.
