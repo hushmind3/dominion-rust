@@ -92,3 +92,24 @@ test('real benchmark budgets are exact bounded integers, never silently clamped'
   assert.throws(()=>positiveBenchmarkLimit('2000001','tokens',5000,2000000));
   assert.throws(()=>positiveBenchmarkLimit('4999','tokens',5000,2000000));
 });
+
+test('replan recovery is counted only when independent grading and native evidence exist',()=>{
+  const rows=[
+    {patchBytes:10,officialSolved:true,usage:{totalTokens:100},
+      toolLedger:{total:4,failed:2},recoveryEvidence:{replanCount:1}},
+    {patchBytes:10,officialSolved:false,usage:{totalTokens:300},
+      toolLedger:{total:9,failed:1},recoveryEvidence:{replanCount:2}},
+    {patchBytes:10,officialSolved:true,usage:{totalTokens:200},
+      toolLedger:{total:1,failed:0},recoveryEvidence:{replanCount:0}},
+  ];
+  const measured=summarize(rows);
+  assert.equal(measured.observedReplans,3);
+  assert.equal(measured.officialResolvedAfterReplanRate,0.5);
+  assert.equal(measured.actualBilledKRW,null);
+  const ungraded=summarize(rows.map(row=>({...row,officialSolved:null})));
+  assert.equal(ungraded.officialResolvedAfterReplanRate,null);
+  const missing=summarize([...rows,{patchBytes:0,usage:null,toolLedger:null,
+    recoveryEvidence:null,officialSolved:false}]);
+  assert.equal(missing.observedReplans,null);
+  assert.equal(missing.officialResolvedAfterReplanRate,null);
+});
