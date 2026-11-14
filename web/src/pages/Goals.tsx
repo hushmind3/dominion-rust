@@ -8,7 +8,8 @@ import {FormField,Headline,Notice,Panel,useRemote} from '../components/UI'
 type Agent={id:string;name:string;model?:string}
 type CheckResult={type?:string;path?:string|null;command?:string|null;passed?:boolean;gaps?:string[]}
 type Artifact={path:string;bytes:number;sha256?:string;hashOmitted?:boolean}
-type GoalReport={accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;tokenBudget?:number;sessionUsage?:{calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;cachedPromptTokens?:number};operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
+type GitChanges={baselineHead?:string;currentHead?:string;initialStatus?:string;currentStatus?:string;changedFiles?:{change:string;path:string}[];diffStat?:string;diffPreview?:string|null;diffPreviewTruncated?:boolean}
+type GoalReport={gitChanges?:GitChanges|null;accepted:boolean;checks:CheckResult[];gaps:string[];artifacts:Artifact[];successfulToolEvidence:number;toolEvidenceRecorded:number;tokenBudget?:number;sessionUsage?:{calls?:number;totalTokens?:number;promptTokens?:number;completionTokens?:number;cachedPromptTokens?:number};operations:{tool:string;path?:string|null;exitCode?:number|null}[]}
 type Goal={id:string;goal:string;status:string;phase?:string;createdAt?:string;jobId?:string;sessionId?:string;plan?:string;
  iterations?:number;maxIterations?:number;tokenBudget?:number;replans?:number;planHistory?:{version:number;plan:string}[];
  reviewHistory?:{iteration:number;complete:boolean;gaps:string[]}[];
@@ -133,6 +134,16 @@ export function GoalsPage({openSession}:{openSession:(id:string)=>void}){
        {report.sessionUsage&&<p className="text-xs text-[#7C7469]">모델 실행 사용량 {Number(report.sessionUsage.totalTokens||0).toLocaleString()}토큰 · {Number(report.sessionUsage.calls||0)}회 · 캐시 적중 입력 {Number(report.sessionUsage.cachedPromptTokens||0).toLocaleString()}토큰</p>}
        {report.checks.map((check,i)=><div key={i} className="flex items-start gap-2 rounded-lg bg-[#FAF7F1] p-3 text-xs"><span>{check.passed?'✅':'⚠️'}</span><span><strong>{check.type}</strong> {check.path||check.command}{check.gaps?.map((g,j)=><small key={j} className="block text-[#9A5947]">{g}</small>)}</span></div>)}
        {!!report.artifacts.length&&<div><h4 className="mb-2 text-xs font-semibold">확인된 파일 산출물</h4>{report.artifacts.map(file=><div key={file.path} className="mb-2 rounded-lg border border-[#EEE5D9] p-3 text-xs"><FileCheck2 size={14} className="mr-2 inline"/><strong>{file.path}</strong><span className="ml-2 text-[#8A8176]">{file.bytes.toLocaleString()} bytes</span>{file.sha256&&<code className="mt-1 block break-all text-[10px] text-[#8A8176]">SHA-256 {file.sha256}</code>}</div>)}</div>}
+       {report.gitChanges&&<details className="rounded-lg border border-[#EEE5D9] p-3 text-xs">
+        <summary className="cursor-pointer font-semibold">Git 변경 기록 · {report.gitChanges.changedFiles?.length||0}개 추적 파일</summary>
+        <p className="mt-2 text-[#8A8176]">기준 {report.gitChanges.baselineHead?.slice(0,10)||'초기 커밋 없음'} → 현재 {report.gitChanges.currentHead?.slice(0,10)||'정보 없음'}</p>
+        <p className="my-1 text-[#8A8176]">Git 변경 기록은 저장소 관측 결과이며 특정 에이전트의 작업 증명과는 구별됩니다.</p>
+        {!!report.gitChanges.changedFiles?.length&&<ul className="my-2 list-inside list-disc">{report.gitChanges.changedFiles.map((file,i)=><li key={i}>{file.change} · {file.path}</li>)}</ul>}
+        {report.gitChanges.diffStat&&<pre className="overflow-auto whitespace-pre-wrap rounded-md bg-[#FAF7F1] p-3">{report.gitChanges.diffStat}</pre>}
+        {report.gitChanges.currentStatus&&<pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-[#8A8176]">{report.gitChanges.currentStatus}</pre>}
+        {report.gitChanges.diffPreview&&<details className="mt-2"><summary className="cursor-pointer">변경 diff 미리 보기</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded-md bg-[#FAF7F1] p-3">{report.gitChanges.diffPreview}</pre></details>}
+        {report.gitChanges.diffPreviewTruncated&&<p className="text-amber-700">변경 diff가 커서 요약만 기록했습니다.</p>}
+       </details>}
        {!!report.operations.length&&<details className="text-xs"><summary className="cursor-pointer">성공한 실행 도구 {report.operations.length}개</summary>{report.operations.map((op,i)=><p key={i} className="mt-2 rounded-md bg-[#FAF7F1] p-2">{op.tool}{op.path?' · '+op.path:''}{op.exitCode!==undefined?' · 종료 코드 '+op.exitCode:''}</p>)}</details>}
       </>:<p className="text-xs text-[#8A8176]">최종 검증 보고서는 실행 종료 시 생성됩니다. 중간 단계 증거 {selected.evidence?.length||0}건을 기록 중입니다.</p>}
       {!!selected.gaps?.length&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs"><strong>남은 문제</strong>{selected.gaps.map((gap,i)=><p className="mt-1" key={i}>{gap}</p>)}</div>}
