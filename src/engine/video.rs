@@ -679,8 +679,31 @@ pub fn enqueue_retake(state:&AppState,id:&str,body:&Value)->Result<Value,String>
     let index=body["index"].as_u64().ok_or("장면 번호가 없습니다.")? as usize;
     let digest=body["expectedSha256"].as_str().ok_or("기존 장면 SHA-256이 없습니다.")?;
     let count=body["confirmedPaidCallCount"].as_u64().ok_or("추가 결제 장면 수에 동의해야 합니다.")?;
-    let input=film::retake_input(state,&source,index,digest,
+    let mut input=film::retake_input(state,&source,index,digest,
         body["prompt"].as_str(),count)?;
+    let manifest=film::scenes(state,&source)?;
+    let planned=input["render"]["film"]["clips"].as_array().ok_or("장면 계획 오류")?;
+    let seen=manifest["clips"].as_array().ok_or("장면 영수증 오류")?;
+    let mut pending_durations=Vec::new();
+    for (position,clip) in planned.iter().enumerate(){
+        if position==index || seen.get(position).is_none_or(|item|item["receiptVerified"]!=true){
+            pending_durations.push(clip["duration"].as_u64().ok_or("유료 장면 길이 오류")?);
+        }
+    }
+    if pending_durations.len() as u64!=count {
+        return Err("장면 재생성 전 유료 호출 수가 변경됐습니다.".into());
+    }
+    let quote=pricing::quote_durations(
+        input["ltxModel"].as_str().unwrap_or(""),
+        input["ltxQuality"].as_str().unwrap_or(""),&pending_durations)?;
+    let ceiling=body["maxEstimatedKrw"].as_u64();
+    let expected=quote["estimatedKrw"].as_u64().unwrap_or(u64::MAX);
+    if body["approvedPaidQuote"]!=true||ceiling.is_none_or(|max|max<expected){
+        return Err(format!("장면 재생성 예상 비용 {expected}원을 승인해야 합니다."));
+    }
+    input["retake"]["newPaidDurations"]=json!(pending_durations);
+    input["costQuote"]=quote;
+    input["maxEstimatedKrw"]=json!(ceiling.unwrap_or(0));
     let fingerprint=input["retake"]["fingerprint"].as_str().ok_or("재생성 식별자가 없습니다.")?;
     let raw=sha2::Sha256::digest(fingerprint.as_bytes());
     let mut bytes=[0u8;16];
