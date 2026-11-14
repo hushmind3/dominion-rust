@@ -48,7 +48,13 @@ function safeRelativePath(root,path){
   }
   return full;
 }
-function lstatMaybe(path){try{return lstatSync(path)}catch{return null}}
+function lstatMaybe(path){
+  try{return lstatSync(path)}
+  catch(error){
+    if(error?.code==="ENOENT")return null;
+    throw error; // EACCES and IO errors are not proof of file_absence.
+  }
+}
 export function oracle(workspace,checks){
   const rows=checks.map(check=>{
     let passed=false,details="failed";
@@ -73,10 +79,11 @@ export function oracle(workspace,checks){
   });
   return {passed:rows.length>0&&rows.every(x=>x.passed),checks:rows};
 }
-export function verifiedGoal(status,receipt,jobId,independentOracle){
+export function verifiedGoal(status,receipt,jobId,independentOracle,usage){
   return status==="completed"&&
     receipt?.jobId===jobId&&receipt?.verifiedCompletion===true&&
-    receipt?.actionEvidenceCount>0&&independentOracle?.passed===true;
+    receipt?.actionEvidenceCount>0&&independentOracle?.passed===true&&
+    Number(usage?.calls)>0;
 }
 export function summarize(records){
   const attempts=records.length;
@@ -176,10 +183,11 @@ async function run(){
     createdAt:iso(),head:commit,runnerRunId:rootId,
     engineInstanceId:identity.instanceId,providerId,model,
     parameters:{maxIterations,maxTokens,maxMinutes},
-    verifiedModelRun:true,paidProviderAllowed:!localProvider(provider),
+    modelCallUsageObserved:false,paidProviderAllowed:!localProvider(provider),
     cases:[],summary:null,completedAt:null};
   const persist=()=>{
     record.summary=summarize(record.cases);
+    record.modelCallUsageObserved=record.cases.some(row=>Number(row.usage?.calls)>0);
     writeFileSync(output,JSON.stringify(record,null,2)+"\n");
   };
   persist();
@@ -238,7 +246,8 @@ async function run(){
         try{row.usage=await request(base,`/api/sessions/${current.sessionId}/usage`)}
         catch(error){row.error=`usage: ${error.message}`;}
       }
-      row.verified=verifiedGoal(row.status,row.receipt,row.jobId,row.independentOracle);
+      row.verified=verifiedGoal(row.status,row.receipt,row.jobId,
+        row.independentOracle,row.usage);
     }catch(error){row.status="error";row.error=String(error.message);}
     row.durationMs=Date.now()-began;
     persist();
