@@ -1203,6 +1203,18 @@ pub(super) async fn run_turn_body(
         }
 
         if completion.tool_calls.is_empty() {
+            // If an owner revision arrived while the provider streamed its
+            // answer, this is not the final task outcome. Preserve the model
+            // completion as context, then consume the owner's newest input
+            // at the next model-step boundary.
+            if !is_room && round+1<max_rounds
+                && crate::engine::steering::has_pending(state,session_id) {
+                messages.push(json!({"role":"assistant","content":completion.content}));
+                state.store.audit("harness.owner_revision_continued",json!({
+                    "sessionId":session_id,"executionId":execution_id,"round":round
+                }));
+                continue;
+            }
             // A focused RSI job is not finished by another explanation of
             // its code. Give the model one bounded corrective opportunity to
             // issue a real source edit; never fabricate a patch or verdict.
@@ -1620,7 +1632,11 @@ pub(super) async fn run_turn_body(
                         }
                     }
                 }
-                let results = futures_util::future::join_all(futures).await;
+                // Bounded, in-order read dispatch. Tool bodies run at most
+                // four at a time; outcomes still pair with the model's call
+                // IDs in original order even if completion timing differs.
+                let results = futures_util::stream::iter(futures)
+                    .buffered(4).collect::<Vec<_>>().await;
                 // A dispatch can complete while the tool itself failed
                 // (`Ok((value, false, content))`). Combination credit requires
                 // every combined read to actually succeed.
