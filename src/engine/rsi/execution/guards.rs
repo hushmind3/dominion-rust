@@ -370,8 +370,8 @@ mod curated_worker_context_tests {
         let hash="a".repeat(40);
         let generation=json!({
             "id":"generation-1","generatorCommit":hash,"domain":"tools",
-            "pairedMeasured":true,"pairedRevalidated":true,
-            "accepted":true,"acceptedCommit":"b".repeat(40),
+            "pairedMeasured":true,"pairedReceiptReplayed":true,
+            "pairedRevalidated":true,"accepted":true,"acceptedCommit":"b".repeat(40),
             "changedSourcePaths":["src/engine/chat/runtime/tool_selection.rs"],
             "evaluation":{"metrics":{"eligible":true,"measurements":[
                 {"id":"regression","domain":"tools","metrics":[{
