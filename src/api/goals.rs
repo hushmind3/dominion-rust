@@ -54,6 +54,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         return error(StatusCode::BAD_REQUEST,"Git 격리 옵션은 참/거짓으로 지정해야 합니다.");
     }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    if body.get("tokenBudget").is_some_and(|value|
+        value.as_u64().is_none_or(|n| n > 2_000_000)) {
+        return error(StatusCode::BAD_REQUEST, "목표 토큰 상한은 0~200만으로 입력하세요.");
+    }
     let max_iterations = body
         .get("maxIterations")
         .cloned()
@@ -71,6 +75,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
             "executor": executor,
             "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
             "planner":body.get("planner").cloned().unwrap_or(json!({})),
+            "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
             "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
             "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
             "replans":0,"planHistory":[],"reviewHistory":[],
@@ -107,6 +112,123 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     let mut payload = saved;
     payload["jobId"] = job_id;
     Json(payload).into_response()
+}
+
+/// Cancel the durable goal and its worker, not just the frontend button.
+pub async fn cancel_goal(
+    State(state): State<AppState>, Path(id): Path<String>,
+) -> Response {
+    let Some(goal) = state.store.get("goal", &id) else {
+        return error(StatusCode::NOT_FOUND, "목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(), Some("queued" | "running")) {
+        return error(StatusCode::CONFLICT, "이미 종료된 목표는 중단할 수 없습니다.");
+    }
+    let Some(saved) = state.store.patch_if("goal", &id, "status", &goal["status"],
+        &json!({"status":"cancelled","phase":"cancelled",
+            "finishedAt":chrono::Utc::now().to_rfc3339()})) else {
+        return error(StatusCode::CONFLICT, "목표 상태가 변경됐습니다.");
+    };
+    state.bus.record("goal", &saved);
+    if let Some(session) = saved["sessionId"].as_str() {
+        state.cancel_session(session);
+    }
+    // The durable job must also reject any in-flight checkpoint or restart.
+    for job in state.store.all("job").into_iter().filter(|job| {
+        job["kind"] == "goal" && job["input"]["goalId"] == id
+            && matches!(job["status"].as_str(), Some("queued" | "running"))
+    }) {
+        if let Some(job_id) = job["id"].as_str() {
+            if let Some(cancelled) = state.store.patch_if("job", job_id, "status",
+                &job["status"], &json!({"status":"cancelled","cancelRequested":true,
+                "finishedAt":chrono::Utc::now().to_rfc3339()})) {
+                state.bus.record("job", &cancelled);
+            }
+        }
+    }
+    state.store.audit("goal.owner_cancelled", json!({"goalId":id}));
+    Json(saved).into_response()
+}
+
+/// Owner-reviewed continuation. A fresh durable job starts at the last
+/// *completed* iteration, carrying only persisted evidence and plan history.
+/// Unknown external effects are never replayed automatically.
+pub async fn resume_goal(
+    State(state): State<AppState>, Path(id): Path<String>, Json(body): Json<Value>,
+) -> Response {
+    if body.as_object().is_none_or(|fields|
+        fields.len()!=1 || body["acknowledgeUnknownEffects"]!=true) {
+        return error(StatusCode::BAD_REQUEST,
+            "이전 외부 작업을 확인했으면 acknowledgeUnknownEffects=true를 제출하세요.");
+    }
+    let Some(goal) = state.store.get("goal", &id) else {
+        return error(StatusCode::NOT_FOUND, "목표를 찾을 수 없습니다.");
+    };
+    if !matches!(goal["status"].as_str(), Some("needs_review" | "failed")) {
+        return error(StatusCode::CONFLICT, "검토 대기 또는 실패한 목표만 이어갈 수 있습니다.");
+    }
+    if state.store.all("job").iter().any(|job| {
+        job["kind"]=="goal" && job["input"]["goalId"]==id
+            && matches!(job["status"].as_str(), Some("queued"|"running"))
+    }) {
+        return error(StatusCode::CONFLICT, "이전 목표 작업이 아직 실행 중입니다.");
+    }
+    let iterations = goal["iterations"].as_u64().unwrap_or(0);
+    let max = goal["maxIterations"].as_u64().unwrap_or(16).min(64);
+    let next_max = if max<=iterations {max.saturating_add(8).min(64)} else {max};
+    if next_max<=iterations {
+        return error(StatusCode::CONFLICT, "목표 최대 반복 횟수(64회)에 도달했습니다.");
+    }
+    let next = goal["resumeCount"].as_u64().unwrap_or(0)+1;
+    if next>12 {
+        return error(StatusCode::CONFLICT, "사용자 승인 재개 한도(12회)에 도달했습니다.");
+    }
+    let prior_job=goal["jobId"].as_str().and_then(|job_id|state.store.get("job",job_id))
+        .unwrap_or(Value::Null);
+    // If a tool was in flight, the owner sees the uncertainty and a new
+    // executor turn starts AFTER the last committed iteration. The old job
+    // checkpoint cannot be silently replayed by the new worker.
+    let prior_state=&prior_job["goalState"];
+    let next_iteration=iterations.max(prior_state["nextIteration"].as_u64().unwrap_or(0));
+    let checkpoint=json!({
+        "nextIteration":next_iteration,
+        "evidence":goal.get("evidence").cloned().unwrap_or_else(||json!([])),
+        "transcript":prior_state["transcript"].as_str().unwrap_or(""),
+        "gaps":goal.get("gaps").cloned().unwrap_or_else(||json!([])),
+        "stalled":prior_state["stalled"].as_u64().unwrap_or(0),
+        "priorInFlight":prior_state["inFlight"]==true,
+        "readOnlyReinspection":true,
+    });
+    let job_id=format!("goal-job-{id}-resume-{next}");
+    let mut history=goal["resumeHistory"].as_array().cloned().unwrap_or_default();
+    history.push(json!({"jobId":job_id,"previousJobId":goal["jobId"],
+        "previousStatus":goal["status"],"startIteration":next_iteration,
+        "acknowledgedBy":"owner","at":chrono::Utc::now().to_rfc3339()}));
+    let Some(saved)=state.store.patch_if("goal",&id,"status",&goal["status"],&json!({
+        "status":"queued","phase":"resume","jobId":job_id,"resumeCount":next,
+        "resumeHistory":history,"resumeCheckpoint":checkpoint,"maxIterations":next_max,
+        "finishedAt":null,"metrics":null,"error":null
+    })) else {
+        return error(StatusCode::CONFLICT, "목표가 다른 작업에서 변경됐습니다.");
+    };
+    let result=crate::engine::jobs::enqueue_once(&state,&job_id,"goal",
+        json!({"goalId":id,"resumeAfterReview":true}));
+    if result.is_none() {
+        if let Some(rolled)=state.store.patch_if("goal",&id,"jobId",&json!(job_id),&json!({
+            "status":"needs_review","phase":"resume_enqueue_failed",
+            "error":"재개 작업 등록 실패","jobId":goal["jobId"]
+        })) {state.bus.record("goal",&rolled);}
+        return error(StatusCode::INTERNAL_SERVER_ERROR,"재개 작업을 등록하지 못했습니다.");
+    }
+    if let Some(session) = saved["sessionId"].as_str() {
+        state.clear_cancel(session);
+    }
+    state.bus.record("goal", &saved);
+    state.store.audit("goal.owner_reviewed_resume",json!({
+        "goalId":id,"jobId":job_id,"startIteration":next_iteration,
+        "previousJobId":goal["jobId"],"priorInFlight":prior_state["inFlight"]==true
+    }));
+    Json(saved).into_response()
 }
 
 pub async fn update_plan(
