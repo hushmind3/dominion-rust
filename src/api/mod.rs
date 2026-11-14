@@ -233,6 +233,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/:id/fork", post(sessions::fork_session))
         .route("/api/sessions/:id/compact", post(sessions::compact_session))
         .route("/api/sessions/:id/cancel", post(sessions::cancel_session))
+        .route("/api/sessions/:id/steer", post(sessions::steer_session))
         .route("/api/sessions/:id/archive", post(sessions::archive_session))
         .route("/api/sessions/:id/learn", post(sessions::learn))
         .route(
