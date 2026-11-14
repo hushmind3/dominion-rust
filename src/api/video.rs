@@ -375,6 +375,27 @@ mod tests {
         std::fs::remove_dir_all(s.config.data_dir.clone()).unwrap();
     }
     #[tokio::test]
+    async fn film_scene_preview_serves_only_bounded_job_owned_files() {
+        let state=state();
+        let job=state.store.put("job",&json!({
+            "kind":"video","status":"completed",
+            "input":{"engine":"ltx","ltxFilm":true,"render":{
+                "film":{"clips":[{"duration":6}]}}}
+        })).unwrap();
+        let id=job["id"].as_str().unwrap().to_string();
+        let clip_dir=video::directory(&state,&id).unwrap().join("clip-00");
+        std::fs::create_dir_all(&clip_dir).unwrap();
+        std::fs::write(clip_dir.join("output.mp4"),vec![b'a';2048]).unwrap();
+        let get=||Request::builder().uri("/").body(Body::empty()).unwrap();
+        let ok=scene_content(State(state.clone()),Path((id.clone(),0usize)),get()).await;
+        assert_eq!(ok.status(),StatusCode::OK);
+        let denied=scene_content(State(state.clone()),Path((id.clone(),6usize)),get()).await;
+        assert_eq!(denied.status(),StatusCode::NOT_FOUND);
+        drop(ok);
+        let _=std::fs::remove_dir_all(&state.config.data_dir);
+    }
+
+    #[tokio::test]
     async fn native_pipeline_produces_a_real_playable_container() {
         let s = state();
         if video::ffmpeg(&s).is_none() {
