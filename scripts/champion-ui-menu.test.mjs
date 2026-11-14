@@ -55,6 +55,6 @@ test('no unsolicited self-improvement prompt, background poll or screen overlay'
  // Preserve manual issue creation and inline genuine error/status access.
  assert.match(notice,/openImprovementIssue/)
  assert.match(rsi,/<Notice message=\{error/)
- assert.match(rsi,/campaign\.error/)
+ assert.match(rsi,/campaign\?\.error/)
  assert.match(app,/page==='rsi'&&<SelfImprovementPage\/>/)
 })
