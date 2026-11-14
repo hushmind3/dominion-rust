@@ -18,7 +18,8 @@ const groups=[{id:'all',name:'conn.group.all'},{id:'messaging',name:'conn.group.
 const badge=(s:string)=>{const keys:Record<string,LocaleKey>={connected:'conn.status.connected',outbound_ready:'conn.status.outbound_ready',sync_disabled:'conn.status.sync_disabled',webhook_ready:'conn.status.webhook_ready',starting:'conn.status.starting',reconnecting:'conn.status.reconnecting',error:'conn.status.error',disabled:'conn.status.disabled',not_started:'conn.status.not_started',stopped:'conn.status.stopped'};return keys[s]?t(keys[s]):s};
 const active=(s:string)=>s==='connected';
 
-export function ConnectionsPage(){
+type ConnectionSection='channels'|'extensions'|'capabilities'
+export function ConnectionsPage({initialSection='channels'}:{initialSection?:ConnectionSection}={}){
  useLocale()
  const registry=useRemote<ChannelEntry[]>('/api/channels/catalog',[]);
  const channels=useRemote<Channel[]>('/api/channels',[]);
@@ -28,7 +29,12 @@ export function ConnectionsPage(){
  const rooms=useRemote<any[]>('/api/rooms',[]);
  const providers=useRemote<any[]>('/api/providers',[]);
  const [query,setQuery]=useState(''),[category,setCategory]=useState('all'),[view,setView]=useState<'channels'|'accounts'>('channels');
- const [section,setSection]=useState<'channels'|'extensions'|'capabilities'>('channels');
+ const [section,setSection]=useState<ConnectionSection>(initialSection);
+ useEffect(()=>setSection(initialSection),[initialSection]);
+ const selectSection=(next:ConnectionSection)=>{
+  setSection(next);
+  window.history.replaceState(null,'','#/connections?section='+next);
+ };
  const [editor,setEditor]=useState<{entry:ChannelEntry;record:any}|null>(null);
  const [error,setError]=useState(''),[info,setInfo]=useState(''),[probe,setProbe]=useState<Record<string,string>>({}),[saving,setSaving]=useState(false);
  const installed=useMemo(()=>new Set(channels.value.map(x=>x.kind)),[channels.value]);
@@ -61,19 +67,22 @@ export function ConnectionsPage(){
   setError('');
   try{await openOAuth(id)}catch(e){setError((e as Error).message)}
  };
- const sectionTabs=<div className="mb-4 flex flex-wrap items-center gap-2">
-  <Button variant={section==='channels'?'primary':'ghost'} onClick={()=>setSection('channels')}>채널 연결</Button>
-  <Button variant={section==='extensions'?'primary':'ghost'} onClick={()=>setSection('extensions')}>MCP · 스킬</Button>
-  <Button variant={section==='capabilities'?'primary':'ghost'} onClick={()=>setSection('capabilities')}>역량 마켓</Button>
+ const sectionTabs=<div role="tablist" aria-label="연결 채널 영역" className="mb-4 flex flex-wrap items-center gap-2">
+  <Button role="tab" aria-selected={section==='channels'} variant={section==='channels'?'primary':'ghost'} onClick={()=>selectSection('channels')}>채널 연결</Button>
+  <Button role="tab" aria-selected={section==='extensions'} variant={section==='extensions'?'primary':'ghost'} onClick={()=>selectSection('extensions')}>MCP · 스킬</Button>
+  <Button role="tab" aria-selected={section==='capabilities'} variant={section==='capabilities'?'primary':'ghost'} onClick={()=>selectSection('capabilities')}>역량 마켓</Button>
  </div>;
  if(section!=='channels'){
   return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
    {sectionTabs}
-   {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>setSection(page==='extensions'?'extensions':'channels')}/>}
+   <div role="tabpanel" aria-label={section==='extensions'?'MCP · 스킬':'역량 마켓'}>
+    {section==='extensions'?<ExtensionsPage/>:<CapabilitiesPage navigate={page=>selectSection(page==='extensions'?'extensions':'channels')}/>}
+   </div>
   </div>
  }
  return <div className="mx-auto w-full max-w-[1320px] px-5 py-4 sm:px-7 lg:px-6 lg:pb-8">
   {sectionTabs}
+  <div role="tabpanel" aria-label="채널 연결">
   <Headline eyebrow={t('ui.eyebrow.connections')} title={t('conn.title')} description={t('conn.description')} actions={<Action variant="secondary" onClick={()=>{void registry.reload();void channels.reload()}}><Activity size={16}/> {t('conn.refresh')}</Action>}/>
   <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
    <div className="flex items-center gap-4 rounded-xl border border-[#E7E0D5] bg-white p-5 shadow-sm"><span className="grid size-12 place-items-center rounded-xl bg-[#F3EEE5] text-[#7C7469]"><Globe2 size={20}/></span><div><small className="block text-[11px] text-[#8A8176]">{t('conn.platforms')}</small><strong className="mt-0.5 block text-[19px] font-bold leading-none text-[#24211D]">{registry.value.length}</strong></div></div>
@@ -127,5 +136,6 @@ export function ConnectionsPage(){
    {error&&<Notice message={error}/>}
    <div className="flex flex-wrap justify-end gap-2 border-t border-[#EFE9DF] p-5"><Action variant="secondary" onClick={()=>setEditor(null)}>{t('conn.cancel')}</Action><Action onClick={save} disabled={saving||Boolean(editor.entry.requiresRoom&&!editor.record.roomId)}><Check size={16}/>{saving?t('conn.save'):t('conn.save')}</Action></div>
   </DialogPanel></DialogBackdrop>}
+  </div>
  </div>
 }
