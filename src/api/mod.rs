@@ -241,6 +241,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/goals/:id/plan",post(goals::edit_plan))
         .route("/api/goals/:id/cancel",post(goals::cancel_goal))
         .route("/api/goals/:id/resume",post(goals::resume_goal))
+        .route("/api/goals/:id/changes",get(goals::changes))
+        .route("/api/goals/:id/apply",post(goals::apply_changes))
+        .route("/api/goals/:id/discard",post(goals::discard_changes))
         // approvals
         .route(
             "/api/approvals",
