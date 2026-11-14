@@ -1,5 +1,5 @@
 use crate::engine::jobs::JobContext;
-use crate::engine::{chat::TurnRequest, run_quiet};
+use crate::engine::{chat::TurnRequest, run_quiet_outcome};
 use serde_json::{json, Value};
 
 /// Sequential workflow runner. Each step is a real Rust engine turn, the
@@ -33,10 +33,12 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             json!({"workflowId":workflow_id,"sessionId":existing.get("sessionId"),"status":"needs_review","reason":"중단된 단계의 도구 실행 여부를 확인해야 합니다."}),
         );
     }
-    let definition = existing
-        .get("definition")
-        .cloned()
-        .unwrap_or_else(|| workflow.clone());
+    // A queued run owns an immutable, admission-validated agent+model
+    // snapshot. Editing a reusable workflow or agent must not silently alter
+    // the provider of a previously approved run after a crash.
+    let definition = existing.get("definition").filter(|v|v.is_object())
+        .or_else(||input.get("definition").filter(|v|v.is_object()))
+        .cloned().unwrap_or_else(||workflow.clone());
     let steps = definition
         .get("steps")
         .and_then(|value| value.as_array())
@@ -153,21 +155,30 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
             verification_owner: None,
         };
 
-        let message = match run_quiet(state, &request).await {
-            Ok(Some(message)) => message,
-            Ok(None) => return Err(format!("{step_name} 단계가 빈 응답을 반환했습니다.")),
+        let (turn, stats)=run_quiet_outcome(state, &request).await;
+        let receipt_ids=stats.evidence.iter().filter_map(|receipt|
+            receipt["id"].as_str()).map(str::to_string).collect::<Vec<_>>();
+        let message=match turn {
+            Ok(Some(message))=>message,
+            Ok(None)=>return Err(format!("needs_review: {step_name} 단계가 빈 응답을 반환했습니다. 도구 영수증을 확인하세요.")),
             Err(_) if state.is_cancelled(&session_id) => {
-                return Ok(
-                    json!({"workflowId":workflow_id,"sessionId":session_id,"outputs":outputs,"status":"cancelled"}),
-                )
-            }
-            Err(error) => return Err(error),
+                return Ok(json!({"workflowId":workflow_id,
+                    "sessionId":session_id,"outputs":outputs,"status":"cancelled"}))
+            },
+            Err(error)=>return Err(format!(
+                "needs_review: {step_name} 단계 응답이 중단됐습니다: {error}. 도구 영수증 {receipt_ids:?}을 확인하세요."
+            ))
         };
+        // A model saying 'done' is a draft deliverable, not a verified code
+        // change. Preserve the executed tool IDs, error count and role origin.
         outputs.push(json!({
-            "stepId": step.get("id"),
-            "name": step_name,
-            "content": message.get("content").cloned().unwrap_or(json!("")),
-            "messageId": message.get("id"),
+            "stepId":step.get("id"),"name":step_name,
+            "agentId":step.get("agentId"),"providerId":step.get("providerId"),
+            "model":step.get("model"),
+            "content":message.get("content").cloned().unwrap_or(json!("")),
+            "messageId":message.get("id"),"committedToolReceiptIds":receipt_ids,
+            "toolErrorCount":stats.tool_errors.len(),
+            "usageAfterStep":state.store.session_usage(&session_id),
         }));
 
         context.checkpoint(json!({
@@ -229,12 +240,31 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         }
     }
 
-    Ok(json!({
-        "workflowId": workflow_id,
-        "sessionId": session_id,
-        "outputs": outputs,
-        "status": status,
-    }))
+    let mut result=json!({
+        "workflowId":workflow_id,"sessionId":session_id,
+        "outputs":outputs,"status":status,
+    });
+    if status=="completed" {
+        // A real reusable deliverable, linked to immutable workflow version,
+        // engine message IDs, committed operation receipts and model usage.
+        // Upserting by JOB ID is idempotent after crash-between-save-and-done.
+        let last=outputs.last().cloned().unwrap_or(Value::Null);
+        let artifact=json!({
+            "id":context.job_id,"workflowId":workflow_id,"sessionId":session_id,
+            "workflowName":definition["name"],"runInput":payload,
+            "definition":definition,"steps":outputs,
+            "finalContent":last["content"],"finalMessageId":last["messageId"],
+            "modelUsage":state.store.session_usage(&session_id),
+            "verification":"model_output_with_persisted_tool_receipts",
+            "independentlyVerified":false,
+            "completedAt":chrono::Utc::now().to_rfc3339(),
+        });
+        let saved=state.store.put("workflow_deliverable",&artifact)
+            .ok_or("워크플로 산출물 저장에 실패했습니다.")?;
+        state.bus.record("workflow_deliverable",&saved);
+        result["deliverableId"]=saved["id"].clone();
+    }
+    Ok(result)
 }
 
 fn optional(value: &Value, key: &str) -> Option<String> {
