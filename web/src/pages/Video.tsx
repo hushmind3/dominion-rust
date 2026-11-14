@@ -12,7 +12,8 @@ type VideoJob=JobState & {progress?:number;kind:'video';title?:string;brief:stri
  shotCount?:number;shotProgress?:number;paidSubmissionAttempts?:number;
  film?:{clips?:unknown[]};
  result?:{bytes:number;attemptedGenerations?:number;
- technicalQuality?:{verified:boolean;width:number;height:number;durationSeconds:number};
+ technicalQuality?:{verified:boolean;width:number;height:number;durationSeconds:number;
+ visualDiagnostics?:{status?:string;blackSeconds?:number;frozenSeconds?:number;potentialVisualDefect?:boolean}};
  shotResults?:{index:number;reused:boolean;technicalRetries:number}[]}}
 type VideoEngine='native'|'comfyui'|'ltx'
 type VideoStatus={config:{engine:VideoEngine;comfyUrl:string;hasLtxKey?:boolean;videoModel?:string;videoQuality?:string};ltx?:{available:boolean};native?:{available:boolean};comfy:{reachable:boolean;available?:boolean};workflows:Workflow[];jobs:VideoJob[]}
