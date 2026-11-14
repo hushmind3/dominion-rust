@@ -8,6 +8,16 @@ DOMINION을 **Rust 백엔드 + Rust 실행 엔진**으로 다시 구현한 저�
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 🏆 챔피온 2026-11-14: 검증 신선도 · 원자적 목표 · 실제 진전 · 원화 견적 승인
+
+- **소스 변경 후 검증 무효화:** src/engine/verification.rs의 fresh_command_matches는 성공한 테스트 명령보다 뒤에 소스가 수정되면 과거 성공을 검증 조건 통과로 인정하지 않습니다. 같은 실행의 runId/opSeq, 교차 실행의 RFC3339 시각을 확인하며 순서가 불분명하면 보수적으로 무효화합니다.
+- **목표 생성 원자성:** POST /api/goals → Store::transaction(goal, job) → 작업 워커. 목표와 실행 작업을 한 SQLite 트랜잭션으로 저장하고, 실패 시 둘 다 롤백합니다. 커밋 뒤에만 이벤트가 발생합니다.
+- **진전 기반 재계획:** src/engine/goals/progress.rs의 고유 성공 도구 영수증과 완료된 검증 조건으로 정체를 판정합니다. 모델의 반복 주장이나 같은 도구 인수 재실행은 진전으로 계산하지 않습니다.
+- **미확정 외부 작업 차단:** Store::uncertain_session_operation_ids는 현재·하위 세션의 미확정 도구 결과를 조회합니다. DB 조회 오류도 검토 대기로 처리합니다. 사용자가 검토하고 재개한 과거 작업 ID만 체크포인트에서 예외로 두며, 새 미확정 작업은 계속 중단합니다. 영수증은 삭제하지 않습니다.
+- **원화 견적·승인:** Video.tsx → POST /api/video/quote → video/pricing.rs → 명시 승인 → POST /api/video/jobs → ltx.rs. 모델·해상도·영상 길이·유료 호출 횟수·가격표 버전에 묶인 견적 해시를 검증하고 원화 승인 상한을 저장합니다. 각 유료 전송 전 누적 금액 예약과 가격표 버전을 재검증합니다. 선택 장면 재생성도 같은 조건을 적용합니다.
+- **가격 한계:** https://docs.ltx.io/pricing 의 2026-09-08 LTX 2.5 참고 가격표와 2026-11-13 기준 1달러=1,336원 환산 참고치를 사용합니다. 실시간 가격·환율·세금·환불 여부 및 공급자 실제 청구액을 확인한 값은 아닙니다. 공급자가 변경한 요금은 가격표 코드·버전을 갱신해야 반영되며 갱신 시 구버전 승인을 차단합니다.
+- **검증:** scripts/champion-ui-menu.test.mjs의 연결 테스트, verification.rs의 테스트 신선도 회귀, api/goals.rs의 원자적 생성·재개, goals/progress.rs의 진전 측정, video/pricing.rs의 원화 상한 테스트를 추가했습니다. 실제 유료 API 및 실모델 장기 완수율은 별도 검증해야 합니다.
+
 ## 🏆 챔피온 2026-11-14: LTX 2.5 영상 장면별 SHA 영수증 · 유료 부분 재생성
 
 - **실제 호출 경로:** `Video.tsx` → `video/FilmRetake.tsx` → `GET /api/video/jobs/:id/scenes` → `POST /api/video/jobs/:id/retake` → `video.rs::enqueue_retake` → `jobs::enqueue_once` → `film.rs::reuse_other_shots/run`.
