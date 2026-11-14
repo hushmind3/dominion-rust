@@ -20,6 +20,9 @@ mod tests;
 mod transport;
 
 pub use protocol::parse_text_tool_calls;
+pub(crate) fn evaluate_tool_routing() -> Vec<serde_json::Value> {
+    runtime::evaluate_tool_routing()
+}
 pub use runtime::{run_room_turn, run_turn, run_turn_background, run_turn_resume};
 
 /// The coordinator owns the fixture and assertions. Only aliases to the real
