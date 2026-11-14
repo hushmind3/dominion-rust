@@ -17,7 +17,13 @@ pub(crate) fn final_report(state:&AppState, goal:&Value, status:&str, gaps:&[Str
     let checks = goal["acceptanceChecks"].as_array().map(Vec::len).unwrap_or(0);
     json!({
         "source":"goal_final_audit_v1",
-        "verifiedCompleted":status=="completed"&&gaps.is_empty(),
+        // A terminal "completed" label with zero machine checks or zero
+        // durable tool receipts is NOT evidence of an executed coding goal.
+        "verifiedCompleted":status=="completed"&&gaps.is_empty()
+            &&checks>0&&evidence_count>0,
+        "verificationLevel":if checks>0&&evidence_count>0 {
+            "deterministic_checks_and_committed_tool_receipts"
+        }else{"no_machine_verified_action"},
         "status":status,"durationMs":duration_ms,
         "iterations":goal["iterations"].as_u64().unwrap_or(0),
         "replans":goal["replans"].as_u64().unwrap_or(0),
@@ -155,7 +161,10 @@ mod tests {
         state.store.audit("model.usage",json!({"sessionId":"s1",
             "promptTokens":82,"completionTokens":18,"totalTokens":100,
             "estimated":false}));
-        let mut audit=final_report(&state,&json!({"sessionId":"s1"}),"completed",&[]);
+        let mut audit=final_report(&state,&json!({"sessionId":"s1",
+            "acceptanceChecks":[{"type":"file_exists","path":"proof.txt"}],
+            "evidence":[{"tool":"workspace_write","result":{"written":true}}]}),
+            "completed",&[]);
         audit["durationMs"]=json!(1050);
         state.store.put("goal",&json!({"id":"verified","status":"completed",
             "sessionId":"s1","metrics":audit}));
@@ -195,6 +204,11 @@ mod tests {
         assert!(report["durationMs"].is_null());
         assert!(report["billingAmount"].is_null());
         assert_eq!(report["successfulToolEvidenceCount"],1);
+        assert_eq!(report["verificationLevel"],
+            "deterministic_checks_and_committed_tool_receipts");
+        let model_claim_only=final_report(&state,
+            &json!({"acceptanceChecks":[],"evidence":[]}),"completed",&[]);
+        assert_eq!(model_claim_only["verifiedCompleted"],false);
         let failed=final_report(&state,&goal,"needs_review",&["missing".into()]);
         assert_eq!(failed["verifiedCompleted"],false);
         std::fs::remove_dir_all(dir).unwrap();
