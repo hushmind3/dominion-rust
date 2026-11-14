@@ -344,6 +344,7 @@ mod tests {
             "id":id,"kind":"video","status":"completed",
             "input":{"engine":"ltx","brief":"demo","duration":16,
                 "technicalGate":true,"render":{"model":"ltx-2-5-pro",
+                    "quality":"1080p","resolution":"1920x1080","fps":24,
                     "generate_audio":true,
                     "film":{"duration":16,"clips":clips}}}
         })).unwrap();
@@ -360,19 +361,38 @@ mod tests {
                 "technicalQuality":{"verified":true}
             })).unwrap();
         }
-        let manifest=scenes(&state,&source).unwrap();
+        // Exercise the public manifest, including the frozen model/quality
+        // inputs that determine the reference-KRW approval contract.
+        let manifest=super::super::film_scenes(&state,&id).unwrap();
         assert_eq!(manifest["allReceiptsVerified"],true);
         assert_eq!(manifest["clips"][1]["expectedPaidCalls"],1);
+        let quote=&manifest["clips"][1]["expectedQuote"];
+        assert_eq!(quote["quality"],"1080p");
+        assert_eq!(quote["seconds"],8);
+        assert_eq!(quote["paidCalls"],1);
+        assert_eq!(quote["referenceKrw"],1817);
         let expected=manifest["clips"][1]["outputSha256"].as_str().unwrap();
         assert!(retake_input(&state,&source,1,expected,Some("revised ending"),2).is_err());
         assert!(retake_input(&state,&source,1,&"0".repeat(64),None,1).is_err());
         let planned=retake_input(&state,&source,1,expected,Some("revised ending"),1).unwrap();
         assert_eq!(planned["render"]["film"]["clips"][0]["prompt"],"opening scene");
         assert_eq!(planned["render"]["film"]["clips"][1]["prompt"],"revised ending");
-        let body=json!({"index":1,"expectedSha256":expected,
+        let mut body=json!({"index":1,"expectedSha256":expected,
             "confirmedPaidCallCount":1,"confirmNewPaidCalls":true,
             "prompt":"revised ending"});
+        // No implicit paid approval, stale quote or below-budget consent.
+        assert!(super::super::enqueue_retake(&state,&id,&body).is_err());
+        body["approvedPaidQuote"]=json!(true);
+        body["approvedQuoteFingerprint"]=json!("wrong-price-snapshot");
+        body["maxApprovedKrw"]=quote["referenceKrw"].clone();
+        assert!(super::super::enqueue_retake(&state,&id,&body).is_err());
+        body["approvedQuoteFingerprint"]=quote["fingerprint"].clone();
+        body["maxApprovedKrw"]=json!(1816);
+        assert!(super::super::enqueue_retake(&state,&id,&body).is_err());
+        body["maxApprovedKrw"]=quote["referenceKrw"].clone();
         let first=super::super::enqueue_retake(&state,&id,&body).unwrap();
+        assert_eq!(first["costQuote"]["fingerprint"],quote["fingerprint"]);
+        assert_eq!(first["maxApprovedKrw"],1817);
         let second=super::super::enqueue_retake(&state,&id,&body).unwrap();
         assert_eq!(first["id"],second["id"]);
         assert_eq!(state.store.all("job").len(),2);
