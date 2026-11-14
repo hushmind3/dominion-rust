@@ -392,6 +392,30 @@ mod manual_memory_edit_tests {
     }
 
     #[tokio::test]
+    async fn independent_sqlite_connections_cannot_overwrite_the_same_revision() {
+        use crate::db::ManualMemoryEditError;
+        let (state,root)=state();
+        state.store.put("memory",&json!({"id":"shared","source":"user",
+            "status":"active","text":"original","scope":"shared"}));
+        // Two genuinely separate DB connections, not clones sharing the same mutex.
+        let other=Store::open(&state.config.db_path()).unwrap();
+        let first=state.store.clone();
+        let a=tokio::task::spawn_blocking(move||
+            first.edit_manual_memory("shared","original","first"));
+        let b=tokio::task::spawn_blocking(move||
+            other.edit_manual_memory("shared","original","second"));
+        let (a,b)=tokio::join!(a,b);
+        let (a,b)=(a.unwrap(),b.unwrap());
+        assert_eq!(u8::from(a.is_ok())+u8::from(b.is_ok()),1);
+        assert!(matches!(a,Err(ManualMemoryEditError::Conflict))
+            || matches!(b,Err(ManualMemoryEditError::Conflict)));
+        let saved=state.store.get("memory","shared").unwrap();
+        assert!(saved["text"]=="first"||saved["text"]=="second");
+        assert_eq!(saved["scope"],"shared");
+        let _=std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn archived_or_disabled_manual_memory_is_not_reactivated_by_edit() {
         let (state,root)=state();
         state.store.put("memory",&json!({"id":"archived","source":"user",
