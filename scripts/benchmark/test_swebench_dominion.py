@@ -16,13 +16,17 @@ class ExactPatchContract(unittest.TestCase):
         self.patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
         self.base = "a" * 40
         self.value = {
-            "source": "isolated_git_binary_diff_after_terminal_goal_v1",
+            "source": "isolated_git_worktree_complete_patch_v2",
             "complete": True, "baseCommit": self.base, "untrackedFiles": 0,
             "modelPatch": self.patch, "bytes": len(self.patch.encode("utf-8")),
             "sha256": hashlib.sha256(self.patch.encode("utf-8")).hexdigest(),
         }
 
     def test_only_exact_worktree_source_passes(self):
+        self.assertEqual(runner.validated_patch(self.value, self.base), self.patch)
+
+    def test_complete_new_file_patch_is_admissible(self):
+        self.value["untrackedFiles"] = 1
         self.assertEqual(runner.validated_patch(self.value, self.base), self.patch)
 
     def test_wrong_commit_is_never_graded(self):
@@ -33,7 +37,7 @@ class ExactPatchContract(unittest.TestCase):
         for key, replacement in (
             ("modelPatch", self.patch[:-1]), ("bytes", 0),
             ("sha256", "0" * 64), ("source", "ui_clipped_diff_v1"),
-            ("complete", False), ("untrackedFiles", 1),
+            ("complete", False), ("untrackedFiles", -1),
         ):
             invalid = dict(self.value)
             invalid[key] = replacement
