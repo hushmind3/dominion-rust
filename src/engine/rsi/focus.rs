@@ -232,6 +232,92 @@ pub(super) fn focus_file_context(state: &AppState, record: &Value, input: &Value
 /// Extract failed behavior from the *actual* frozen baseline/candidate
 /// evaluation, not the model's own summary. Exact candidate + evaluation
 /// identifiers and hashes must match before descendants may learn from it.
+/// Only public/training cases may become concrete repair examples. The
+/// frozen paired report does NOT carry the holdout flag: it is owned by the
+/// candidate's immutable case plan. Joining on case IDs is mandatory.
+fn training_behavioral_failures(plan:&Value, report:&Value)->Vec<String>{
+    let exposed=plan.as_array().into_iter().flatten()
+        .filter(|case|case["holdout"]==false)
+        .filter_map(|case|case["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    let mut failures=Vec::new();
+    let mut visited=BTreeSet::new();
+    for case in report["cases"].as_array().into_iter().flatten() {
+        let Some(name)=case["id"].as_str() else{continue};
+        if !exposed.contains(name)||!visited.insert(name){continue;}
+        for observed in case["behavioralCounterexamples"]["candidate"]
+            .as_array().into_iter().flatten() {
+            let Some(input)=observed["input"].as_str() else{continue};
+            let Some(expected)=observed["expectedSegments"].as_u64() else{continue};
+            let Some(actual)=observed["observedSegments"].as_u64() else{continue};
+            if expected==actual{continue;}
+            let steps=observed["steps"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).take(5).collect::<Vec<_>>().join(" / ");
+            failures.push(format!(
+                "{name}: training input={:?}, expected={expected} steps, got={actual}, actual split={:?}",
+                input.chars().take(180).collect::<String>(),
+                steps.chars().take(230).collect::<String>()
+            ));
+            if failures.len()>=3 {return failures;}
+        }
+    }
+    failures
+}
+
+/// Bounded lessons from unrelated campaign IDs but the SAME source commit,
+/// owner objective and repository memory partition. This is not an acceptance
+/// result and never exposes frozen holdout inputs, expected outputs or traces.
+fn inherited_training_repairs(state:&AppState,input:&Value)->Vec<Value>{
+    let Some(commit)=input["rsiGeneratorCommit"].as_str()
+        .or_else(||input["rsiBaseCommit"].as_str()) else{return Vec::new()};
+    if commit.len()!=40||!commit.bytes().all(|byte|byte.is_ascii_hexdigit()){
+        return Vec::new();
+    }
+    let partition=research_scope(input).partition_key;
+    let objective=crate::engine::memory::stable_id(&[
+        input["rsiObjective"].as_str().unwrap_or("")
+    ]);
+    let campaign=input["rsiCampaignId"].as_str().unwrap_or("");
+    let mut previous=state.store.all("rsi_generation").into_iter()
+        .filter(|row|row["generatorCommit"]==commit
+            && row["knowledgePartition"]==partition
+            && row["objectiveId"]==objective
+            && row["campaignId"].as_str()!=Some(campaign)
+            && row["accepted"]!=true)
+        .collect::<Vec<_>>();
+    previous.sort_by(|a,b|generation_completion_millis(b)
+        .cmp(&generation_completion_millis(a))
+        .then_with(||b["id"].as_str().cmp(&a["id"].as_str())));
+    let mut seen=BTreeSet::new();
+    let mut result=Vec::new();
+    for row in previous {
+        let Some(id)=row["candidateId"].as_str() else{continue};
+        let Some(candidate)=state.store.get("rsi_candidate",id) else{continue};
+        if candidate["baseCommit"]!=commit
+            || candidate["pairedComparisonComplete"]!=true
+            || candidate["evaluation"]["source"]!="server_invoked_local_paired_git_worktrees"
+            || !seen.insert(candidate["patchSha256"].as_str().unwrap_or("").to_string()) {
+            continue;
+        }
+        let failures=paired_behavioral_feedback(state,id);
+        let metrics=&candidate["evaluation"]["metrics"];
+        result.push(json!({
+            "sourceGenerationId":row["id"],"candidateId":id,
+            "patchSha256":candidate["patchSha256"],
+            "paths":candidate["paths"].as_array().into_iter().flatten()
+                .take(3).cloned().collect::<Vec<_>>(),
+            "verdict":candidate["evaluation"]["verdict"],
+            "trainingCounterexamples":failures,
+            "pairedCases":metrics["pairedCases"],
+            "improvedHoldouts":metrics["improvedHoldouts"],
+            "regressions":metrics["regressions"],
+            "lesson":"Repair the observed TRAINING failure mechanism in current source; independently re-evaluate unseen cases.",
+        }));
+        if result.len()>=3{break;}
+    }
+    result
+}
+
 pub(super) fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec<String> {
     let Some(candidate)=state.store.get("rsi_candidate",candidate_id) else {
         return Vec::new();
@@ -251,25 +337,7 @@ pub(super) fn paired_behavioral_feedback(state:&AppState,candidate_id:&str)->Vec
         || !pair["report"]["cases"].is_array() {
         return Vec::new();
     }
-    let mut failures=Vec::new();
-    for case in pair["report"]["cases"].as_array().into_iter().flatten() {
-        let name=case["id"].as_str().unwrap_or("behavior");
-        for observed in case["behavioralCounterexamples"]["candidate"]
-            .as_array().into_iter().flatten() {
-            let Some(input)=observed["input"].as_str() else {continue;};
-            let Some(expected)=observed["expectedSegments"].as_u64() else {continue;};
-            let Some(actual)=observed["observedSegments"].as_u64() else {continue;};
-            if expected==actual {continue;}
-            let steps=observed["steps"].as_array().into_iter().flatten()
-                .filter_map(Value::as_str).take(5).collect::<Vec<_>>().join(" / ");
-            failures.push(format!(
-                "{name}: input={:?}, expected={expected} steps, got={actual}, actual split={:?}",
-                input.chars().take(180).collect::<String>(),
-                steps.chars().take(230).collect::<String>()));
-            if failures.len()>=3 {return failures;}
-        }
-    }
-    failures
+    training_behavioral_failures(&candidate["cases"],&pair["report"])
 }
 
 pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value) -> String {
@@ -291,6 +359,16 @@ pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value
             algorithm["revision"].as_str().unwrap_or(""),
         ));
         text.push_str("이 알고리즘은 개선 분야와 코드 파일 후보를 고르는 데 사용됩니다. 새 expression 및 targetExpression은 다음 예정된 세대에서 시험하며 실제 검증 결과가 없으면 승격하지 않습니다.\n");
+    }
+    let failures=inherited_training_repairs(state,input);
+    if !failures.is_empty(){
+        text.push_str("\n### 같은 소스 버전의 이전 캠페인 실패 학습\n");
+        text.push_str("다른 캠페인의 독립 평가 결과입니다. 학습 입력 외에 holdout의 상세 문제·정답·실행 흔적은 노출하지 않습니다. 실패를 수정할 가설을 세우고 새 소스 변경으로 검증하세요.\n");
+        for row in failures{
+            text.push_str("- ");
+            text.push_str(&row.to_string().chars().take(1_250).collect::<String>());
+            text.push('\n');
+        }
     }
     if let Some(block) = prior_experience.filter(|block| !block.trim().is_empty()) {
         text.push_str("\n### 기존 RSI 경험·지식\n");
@@ -334,7 +412,7 @@ pub(super) fn generation_context(state: &AppState, input: &Value, record: &Value
                     if let Some(id)=candidate.as_ref().and_then(|candidate|candidate["id"].as_str()) {
                         let failures=paired_behavioral_feedback(state,id);
                         if !failures.is_empty() {
-                            text.push_str("  ACTUAL FROZEN EVALUATOR FAILURES (repair these behaviors in the current source):\n");
+                            text.push_str("  PUBLIC TRAINING COUNTEREXAMPLES (holdout details hidden):\n");
                             for failure in failures {
                                 text.push_str("    - ");
                                 text.push_str(&failure);
@@ -425,3 +503,99 @@ pub(super) fn generation_model_error(current: &Value) -> Option<&str> {
             && !error.starts_with("rsi_generation_quota_reached:"))
 }
 
+
+#[cfg(test)]
+mod repair_tests{
+    use super::*;
+    use crate::{config::Config,db::Store,vault::Vault};
+
+    fn fixture()->(AppState,std::path::PathBuf){
+        let dir=std::env::temp_dir().join(format!("rsi-repair-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config=Config{port:0,data_dir:dir.join("data"),web_dir:dir.join("web"),
+            workspace:dir.clone()};
+        std::fs::create_dir_all(&config.data_dir).unwrap();
+        let state=AppState::new(config.clone(),Store::open(&config.db_path()).unwrap(),
+            Vault::open(&config.key_path()));
+        (state,dir)
+    }
+
+    fn example(id:&str,input:&str)->Value{
+        json!({"id":id,"behavioralCounterexamples":{"candidate":[{
+            "input":input,"expectedSegments":2,"observedSegments":1,
+            "steps":["unexpected step"]
+        }]}})
+    }
+
+    #[test]
+    fn frozen_holdout_inputs_are_not_forwarded_to_any_descendant(){
+        let cases=json!([
+            {"id":"train","holdout":false},
+            {"id":"hidden","holdout":true}
+        ]);
+        let report=json!({"cases":[
+            example("hidden","PRIVATE_HOLDOUT_SECRET"),
+            example("train","PUBLIC_TRAINING_INPUT"),
+            example("unplanned","UNDECLARED_CASE"),
+            example("train","DUPLICATE_TRAINING_CASE")
+        ]});
+        let rows=training_behavioral_failures(&cases,&report);
+        assert_eq!(rows.len(),1);
+        assert!(rows[0].contains("PUBLIC_TRAINING_INPUT"));
+        let output=json!(rows).to_string();
+        assert!(!output.contains("PRIVATE_HOLDOUT_SECRET"));
+        assert!(!output.contains("UNDECLARED_CASE"));
+        assert!(!output.contains("DUPLICATE_TRAINING_CASE"));
+        assert!(training_behavioral_failures(&json!([{"id":"all","holdout":true}]),
+            &json!({"cases":[example("all","SECRET")]})).is_empty());
+    }
+
+    #[test]
+    fn authenticated_failures_transfer_across_campaigns_only_for_same_revision_and_owner(){
+        let (state,dir)=fixture();
+        let commit="a".repeat(40);
+        let digest="b".repeat(64);
+        let patch="c".repeat(64);
+        let candidate=json!({"id":"candidate","baseCommit":commit,
+            "patchSha256":patch,"oracleVersion":"frozen-v1",
+            "pairedComparisonComplete":true,"paths":["src/engine/memory.rs"],
+            "cases":[{"id":"train","holdout":false},{"id":"secret","holdout":true}],
+            "evaluation":{"id":"ev1","evidenceSha256":digest,
+                "source":"server_invoked_local_paired_git_worktrees",
+                "verdict":"inconclusive",
+                "metrics":{"pairedCases":2,"improvedHoldouts":0,"regressions":1}}});
+        state.store.put("rsi_candidate",&candidate).unwrap();
+        state.store.put("rsi_pair",&json!({"id":"pair1","candidateId":"candidate",
+            "evaluationId":"ev1","evidenceSha256":digest,
+            "report":{"reportSha256":digest,"patchSha256":patch,
+                "baseCommit":commit,"oracleVersion":"frozen-v1",
+                "cases":[example("train","REPAIR_THIS"),
+                    example("secret","NEVER_SHOW_THIS")]}})).unwrap();
+        let scope=research_scope(&json!({"rsiKnowledgeSource":dir.to_string_lossy()}));
+        let objective="Improve memory retrieval";
+        state.store.put("rsi_generation",&json!({
+            "id":"generation","campaignId":"old-campaign",
+            "generatorCommit":commit,"knowledgePartition":scope.partition_key,
+            "objectiveId":crate::engine::memory::stable_id(&[objective]),
+            "accepted":false,"candidateId":"candidate","completedAt":"2026-11-14T00:00:00Z"
+        })).unwrap();
+        let input=json!({"rsiGeneratorCommit":commit,
+            "rsiCampaignId":"new-campaign","rsiKnowledgeSource":dir.to_string_lossy(),
+            "rsiObjective":objective});
+        let output=inherited_training_repairs(&state,&input);
+        assert_eq!(output.len(),1);
+        assert_eq!(output[0]["trainingCounterexamples"].as_array().unwrap().len(),1);
+        let prompt=generation_context(&state,&input,&json!({"history":[]}));
+        assert!(prompt.contains("REPAIR_THIS"));
+        assert!(!prompt.contains("NEVER_SHOW_THIS"));
+        let wrong=json!({"rsiGeneratorCommit":"e".repeat(40),
+            "rsiCampaignId":"new-campaign","rsiKnowledgeSource":dir.to_string_lossy(),
+            "rsiObjective":objective});
+        assert!(inherited_training_repairs(&state,&wrong).is_empty());
+        let wrong_owner=json!({"rsiGeneratorCommit":commit,
+            "rsiCampaignId":"new-campaign","rsiKnowledgeSource":dir.to_string_lossy(),
+            "rsiObjective":"Unrelated request"});
+        assert!(inherited_training_repairs(&state,&wrong_owner).is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
