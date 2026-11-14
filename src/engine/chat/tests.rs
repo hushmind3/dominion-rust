@@ -231,10 +231,18 @@ fn room_history_keeps_speakers_distinct_and_drops_orphan_tool_results() {
     assert_eq!(messages[0]["role"], "user");
     assert!(messages[0]["content"].as_str().unwrap().contains("설계자"));
     assert_eq!(messages[1]["role"], "assistant");
-    assert_eq!(
-        messages.iter().filter(|row| row["role"] == "tool").count(),
-        1
-    );
+    // The interrupted tool call has an unknown outcome; a synthetic
+    // protocol reply is required, but never counts as verified execution.
+    let tools = messages.iter().filter(|row| row["role"] == "tool")
+        .collect::<Vec<_>>();
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools.iter().find(|r| r["tool_call_id"] == "c1").unwrap()["content"], "{}");
+    let interrupted = tools.iter().find(|r| r["tool_call_id"] == "missing").unwrap();
+    let unknown: Value = serde_json::from_str(
+        interrupted["content"].as_str().unwrap(),
+    ).unwrap();
+    assert_eq!(unknown["effectUnknown"], true);
+    assert_eq!(unknown["requiresInspection"], true);
     assert!(messages.last().unwrap().get("tool_calls").is_none());
     assert!(!json!(messages).to_string().contains("orphan secret"));
     let _ = std::fs::remove_dir_all(&state.config.data_dir);
