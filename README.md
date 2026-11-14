@@ -18,6 +18,11 @@
 - 저장소: SQLite (WAL), 레코드는 JSON 문서
 - Node.js: 런타임이 아니라 **빌드 도구로만** 사용 (`vite build`)
 
+## 서브3 · 2026-11-14 영상 엔진·원화 견적 보강
+
+- **저비용 유료 멀티샷:** 기존 native/ComfyUI/Omni 경로에 LTX 2.5 비동기 V2를 추가했습니다. `api/video.rs` → `engine/video.rs` → `video/{ltx,film,pricing,quality}.rs`에서 실제 장면 생성, 오디오·길이·해상도 FFprobe 검사, FFmpeg 합치기, clip SHA-256 영수증, 정상 장면 재사용·새 유료 작업의 중복 접수를 제어합니다.
+- **원화 견적 선승인:** `POST /api/video/quote`의 공식 가격표/참고환율 스냅샷 → VideoPage의 원화 참고견적 확인 → `approvedPaidQuote/maxEstimatedKrw` 서버 검증 → 유료 호출 직전 재검사. LTX 키는 Gemini와 분리해 암호화 보관합니다. **원화 견적은 공급자 실청구액이 아닙니다.** 별도 실유료 영상 생성·과금 영수증·시각적 품질 측정은 아직 수행하지 않았습니다. [실행 경로/가격 기준/검증 한계](docs/research/SUB3-LTX-VIDEO-RECEIPTS-KRW-2026-11-14.md).
+
 ## 서브3 · 출시 후 전체 시스템 개선 (2026-11-14)
 
 - **프론트 15메뉴·자율 목표 통합·RSI 자동 팝업 제거 (심판 이슈 #8):** `WorkspaceShell`의 4개 카테고리·15메뉴와 최신 메인의 연결 채널 단일 진입점을 맞췄습니다. `ConnectionsPage` 안에서 **채널 연결 / MCP·스킬 / 역량 마켓**을 탭으로 통합하고, MCP·스킬·마켓의 기존 설치/조회 API를 유지하면서 비활성 탭의 대형 번들/채널 훅 선로딩을 피합니다. 과거 `#/extensions`·`#/capabilities` 북마크도 새 탭으로 연결됩니다. 전역 `ImprovementNotice`와 15초 RSI 추천 조회를 삭제하고, 채팅에서 직접 실행하는 `POST /api/rsi/issues`는 유지합니다. [14메뉴 화면→API→엔진·복구 점검표와 회귀 테스트](docs/FRONTEND-MENU-AUDIT-SUB3-2026-11-14.md). 기억은 독립 메뉴로 보존했고 **기억 직접 편집**은 사용자 작성·활성 기록에 한해 제공하며, SQLite 원자적 내용 대조·출처 보호·동일 트랜잭션 감사 기록을 구현했습니다. **자율 목표 독립 화면과 검토 후 재개 API**도 추가했습니다. GitHub CI 실행 결과와 실브라우저 작동 검증은 분리해 보고합니다.
