@@ -348,8 +348,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let mut before_gaps=if goal["isolateWorktree"]==true {
             crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence)
         }else{acceptance_gaps(state,&text,&criteria,&evidence)};
-        before_gaps.extend(crate::engine::verification::coding_test_gaps(
-            &evidence,goal["requireTests"]==true));
+        before_gaps.extend(crate::engine::verification::goal_test_gaps(
+            state,&session_id,&evidence,goal["requireTests"]==true));
         if let Some((revision,owner))=
             crate::engine::goal_steering::pending(state,goal_id,applied_plan_revision) {
             plan=owner;
@@ -443,8 +443,8 @@ pub async fn run(context: &JobContext, job: &Value) -> Result<Value, String> {
         let mut gate_gaps = if goal["isolateWorktree"]==true {
             crate::engine::verification::acceptance_gaps_in(&workdir,&text,&criteria,&evidence)
         }else{acceptance_gaps(state,&text,&criteria,&evidence)};
-        gate_gaps.extend(crate::engine::verification::coding_test_gaps(
-            &evidence,goal["requireTests"]==true));
+        gate_gaps.extend(crate::engine::verification::goal_test_gaps(
+            state,&session_id,&evidence,goal["requireTests"]==true));
         let turn_progress=progress::measure(&previous_evidence,&evidence,&before_gaps,&gate_gaps,stats.tool_errors.len());
         let artifact_changes=progress::observed_artifact_changes(&before_artifacts,&artifacts);
         let material_progress=progress::materially_advanced(
