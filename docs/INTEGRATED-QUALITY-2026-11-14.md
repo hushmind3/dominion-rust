@@ -108,3 +108,7 @@ RSI: `rsi_scan::report`의 `goal_signals::collect`가 최근 실제 목표의 �
 
 `src/engine/text_intent.rs::{has_term,has_any}`를 그룹 도구 선택과 `goal_verification::asks_for_tests`의 공통 규칙으로 사용한다. 영어 `test`를 `latest`·`testament`·`protest`의 부분문자열로 오인하여 `cargo test`를 완료 조건에 추가하지 않으며, 명시적 `tests`·`testing`·`테스트` 요청은 유지한다. `goal_verification.rs` 회귀 테스트는 코드에 추가했으며 이 커밋의 컴파일·CI 수행 결과는 없다.
 
+
+## 2026-11-14: Judge issue #8 frontend integration
+
+`docs/SUB1-UX-MENU-CONTRACT-2026-11-14.md` traces all 14 visible sidebar destinations and existing backend entry points. Connections is the sole sidebar entry for channel bindings, MCP/skills and capability-market discovery. Legacy tabs still load through one page. The root does not display unsolicited self-improvement prompts. Owner memory text can be edited via a provenance- and concurrency-guarded API. Static source checks were added, but browser click scenarios, real providers and full paid RSI evolutionary runs remain separate verification gates.
