@@ -224,6 +224,11 @@ impl Engine {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
                 self.check_subagent(id,child).await
+            } else if call.name == "read_subagent_file" {
+                let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
+                let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
+                let path=call.arguments.get("path").and_then(Value::as_str).ok_or("subagent file path required")?;
+                self.read_subagent_file(id,child,path).await
             } else {
                 tools::execute(&self.settings,id,&call).await
             }
@@ -293,6 +298,13 @@ impl Engine {
             max_steps:input.max_steps
         },self.settings.max_steps)?;
         child.parent_run_id=Some(parent);
+        if let Some(repository)=root.repository.as_deref(){
+            let commit=crate::workspace::attach_at(
+                &self.settings,child.id,repository,root.base_commit.as_deref()
+            ).await?;
+            child.repository=Some(repository.to_string());
+            child.base_commit=Some(commit);
+        }
         child.event("delegated",format!("Delegated by parent {parent} with {budget} KRW reserved"),None);
         self.store.put(child.clone()).await?;
         self.launch(child.id).await?;
@@ -309,10 +321,21 @@ impl Engine {
             "answer":run.answer,
             "steps":run.steps,
             "cost_krw":run.cost_krw,
+            "base_commit":run.base_commit,
+            "repository":run.repository,
             "error":run.events.iter().rev().find(|e|e.kind=="error"||e.kind=="paused_error").map(|e|&e.message)
         }).to_string())
     }
 
+    /// Read-only child artifact access scoped to the owning parent.
+    pub async fn read_subagent_file(&self,parent:Uuid,child:Uuid,path:&str)->Result<String,String>{
+        let run=self.store.get(child).await.ok_or("subagent not found")?;
+        if run.parent_run_id!=Some(parent) {return Err("subagent does not belong to this parent".into());}
+        tools::execute(&self.settings,child,&ToolCall{
+            id:"parent-inspection".into(),name:"read_file".into(),
+            arguments:json!({"path":path})
+        }).await
+    }
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         self.store.mutate(id,|run| {
             if run.terminal() { return Err("execution already finished".into()); }

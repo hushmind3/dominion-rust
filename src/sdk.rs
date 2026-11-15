@@ -82,6 +82,9 @@ impl Dominion {
     }
     pub async fn create_group(&self,req:NewRoom)->Result<Room,String>{self.engine.groups.create(req).await}
     pub async fn say_group(&self,id:Uuid,input:Say)->Result<Room,String>{self.engine.groups.say(id,input.content).await}
+    pub async fn read_subagent_file(&self,parent:Uuid,child:Uuid,path:&str)->Result<String,String>{
+        self.engine.read_subagent_file(parent,child,path).await
+    }
     pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{self.engine.groups.next(&self.engine.model,id).await}
     pub async fn create_video(&self,req:NewVideo)->Result<Video,String>{self.engine.videos.create(&self.engine.model,req).await}
     pub async fn render_video(&self,id:Uuid)->Result<Video,String>{self.engine.videos.start(id).await}
