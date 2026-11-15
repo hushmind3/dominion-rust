@@ -147,6 +147,25 @@ impl Dominion {
 mod tests {
     use super::*;
 
+
+    #[tokio::test]
+    async fn sdk_catalog_does_not_advertise_operator_denied_tools(){
+        let root=std::env::temp_dir().join(format!("dominion-sdk-mask-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        settings.denied_tools=vec!["write_file".into(),"read_file".into()];
+        let sdk=Dominion::open(settings).await.unwrap();
+        let catalog=sdk.tool_catalog().await;
+        let names=catalog.iter().filter_map(|v|v.pointer("/function/name")
+            .and_then(Value::as_str)).collect::<Vec<_>>();
+        assert!(!names.contains(&"write_file"));
+        assert!(!names.contains(&"read_file"));
+        assert!(names.contains(&"list_files"));
+        drop(sdk);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn approved_unstarted_write_replays_once_after_sdk_restart(){
         let dir=std::env::temp_dir().join(format!("dominion-approved-restart-{}",Uuid::new_v4()));
