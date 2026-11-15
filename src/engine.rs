@@ -35,7 +35,9 @@ impl Engine {
                 let Some(engine)=weak.upgrade() else {break};
                 for _ in 0..200 {
                     let Some(run)=engine.store.get(id).await else {break};
-                    let ready=(run.status==RunStatus::Paused && !run.waiting_for_children
+                    let ready=(run.status==RunStatus::Queued
+                            && run.in_flight.is_none() && !run.waiting_for_children)
+                        || (run.status==RunStatus::Paused && !run.waiting_for_children
                             && run.in_flight.is_none()
                             && (run.pending_approval.is_none() || run.approval_decision.is_some()))
                         || (run.status==RunStatus::AwaitingApproval
@@ -471,10 +473,22 @@ impl Engine {
             self.store.mutate(parent,|run|{run.reserved_budget_krw=(run.reserved_budget_krw-budget).max(0.0);Ok(())}).await?;
             return Err(error);
         }
-        if let Err(error)=self.launch(child.id).await{
-            self.store.mutate(parent,|run|{run.reserved_budget_krw=(run.reserved_budget_krw-budget).max(0.0);Ok(())}).await?;
-            let _=self.store.mutate(child.id,|run|{run.status=RunStatus::Failed;run.event("start_failed",error.clone(),None);Ok(())}).await;
-            return Err(error);
+        // Only the independent scheduler is allowed to call launch().
+        // Calling launch().await from this model-driven tool would recursively
+        // embed drive() inside its own Send future (and deadlock on retries).
+        // The child is durably queued before the scheduler receives its ID.
+        if let Err(error)=self.wake_tx.send(child.id){
+            let reason=format!("subagent scheduler unavailable: {error}");
+            self.store.mutate(parent,|run|{
+                run.reserved_budget_krw=(run.reserved_budget_krw-budget).max(0.0);
+                Ok(())
+            }).await?;
+            let _=self.store.mutate(child.id,|run|{
+                run.status=RunStatus::Failed;
+                run.event("start_failed",reason.clone(),None);
+                Ok(())
+            }).await;
+            return Err(reason);
         }
         self.store.get(child.id).await.ok_or("subagent missing after spawn".into())
     }
