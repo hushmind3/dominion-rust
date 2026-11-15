@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, knowledge::Knowledge};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify};
@@ -143,6 +143,17 @@ impl Engine {
                 } else {
                     self.store.mutate(id,|run|journal::deny(run,&pending)).await?;
                 }
+                continue;
+            }
+            // Codex/DeepSeek-style concurrency: pure inspection calls are
+            // grouped in a bounded pool. Exclusive mutations are barriers.
+            // A single Store transaction logs batch intent before dispatch,
+            // then another atomically saves model-ordered tool receipts.
+            let parallel=tool_batch::parallel_prefix(&run);
+            if parallel.len()>1{
+                self.store.mutate(id,|run|journal::begin_read_batch(run,&parallel)).await?;
+                let outcomes=tool_batch::execute_reads(&self.settings,id,parallel.clone()).await;
+                self.store.mutate(id,|run|journal::finish_read_batch(run,&parallel,&outcomes)).await?;
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {

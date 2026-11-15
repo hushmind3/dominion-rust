@@ -8,6 +8,7 @@ pub mod group;
 pub mod knowledge;
 pub mod journal;
 pub mod tool_schema;
+pub mod tool_batch;
 pub mod improvement;
 pub mod mcp;
 pub mod policy;
