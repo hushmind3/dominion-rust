@@ -226,10 +226,10 @@ mod tests{
     fn enum_constant_and_nested_structures(){
         assert!(check(json!({"type":"object","properties":{
             "mode":{"type":"string","enum":["fast","safe"]},
-            "metadata":{"type":"object","properties":{"n":{"type":"null","const":null}}}}},
+            "metadata":{"type":"object","properties":{"n":{"type":"null","const":null}}}}}),
             json!({"mode":"safe","metadata":{"n":null}})).is_ok());
         assert!(check(json!({"type":"object","properties":{
-            "mode":{"type":"string","enum":["fast","safe"]}}},
+            "mode":{"type":"string","enum":["fast","safe"]}}}),
             json!({"mode":"unsafe"})).is_err());
     }
 }
