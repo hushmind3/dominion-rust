@@ -16,6 +16,27 @@ export interface ModelConfig {
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;
 }
+
+export interface Participant { name: string; role: string; economy: boolean }
+export interface Utterance { speaker: string; content: string; at_ms: number; model: string | null }
+export interface GroupRoom {
+  id: string; topic: string; participants: Participant[]; messages: Utterance[];
+  status: 'open' | 'finished'; rounds: number; max_rounds: number;
+  cost_krw: number; budget_krw: number; created_at_ms: number; updated_at_ms: number;
+}
+export interface CreateGroup {
+  topic: string; participants: Participant[]; max_rounds?: number; budget_krw?: number;
+}
+export interface VideoScene { heading: string; narration: string; seconds: number }
+export interface VideoJob {
+  id: string; prompt: string; scenes: VideoScene[]; status: 'draft' | 'rendering' | 'completed' | 'failed';
+  cost_krw: number; render_seconds: number; error: string | null;
+  output: string | null; created_at_ms: number; updated_at_ms: number;
+}
+export interface CreateVideo {
+  prompt: string; scenes?: VideoScene[];
+}
+
 export interface ClientOptions {
   baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch;
 }
@@ -54,6 +75,28 @@ export class Dominion {
     instruct: (id: string, instruction: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/directive',{instruction}),
     files: (id: string) => this.request<{files:string[]}>('GET','/runs/'+encodeURIComponent(id)+'/files'),
     file: (id: string, path: string) => this.request<{path:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/files/'+path.split('/').map(encodeURIComponent).join('/')),
+  };
+
+  readonly groups = {
+    create: (input: CreateGroup) => this.request<GroupRoom>('POST','/groups',input),
+    list: () => this.request<GroupRoom[]>('GET','/groups'),
+    get: (id: string) => this.request<GroupRoom>('GET','/groups/'+encodeURIComponent(id)),
+    say: (id: string, content: string) => this.request<GroupRoom>('POST','/groups/'+encodeURIComponent(id)+'/messages',{content}),
+    next: (id: string) => this.request<GroupRoom>('POST','/groups/'+encodeURIComponent(id)+'/next',{}),
+  };
+  readonly videos = {
+    create: (input: CreateVideo) => this.request<VideoJob>('POST','/videos',input),
+    list: () => this.request<VideoJob[]>('GET','/videos'),
+    get: (id: string) => this.request<VideoJob>('GET','/videos/'+encodeURIComponent(id)),
+    render: (id: string) => this.request<VideoJob>('POST','/videos/'+encodeURIComponent(id)+'/render',{}),
+    changeScene: (id: string, index: number, scene: VideoScene) =>
+      this.request<VideoJob>('POST','/videos/'+encodeURIComponent(id)+'/scenes/'+index,scene),
+    download: async (id: string): Promise<Blob> => {
+      const headers: Record<string,string> = this.token ? { Authorization: 'Bearer '+this.token } : {};
+      const response = await this.fetcher(this.baseUrl+'/api/v1/videos/'+encodeURIComponent(id)+'/download',{headers});
+      if (!response.ok) throw new DominionError(response.status,'video download failed: HTTP '+response.status);
+      return response.blob();
+    }
   };
   /** HTTP SSE streaming: yields replayable sequence-numbered events until the run is terminal. */
   async *events(id: string, options: {since?: number; signal?: AbortSignal} = {}): AsyncGenerator<TimelineEvent, void, unknown> {

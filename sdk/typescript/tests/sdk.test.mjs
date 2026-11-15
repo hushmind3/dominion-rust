@@ -33,3 +33,16 @@ test('SSE stream parses split frames and does not replay duplicate sequence',asy
   for await (const event of client.events('run')) events.push(event.seq);
   assert.deepEqual(events,[1,2]);
 });
+
+test('group and video endpoints use the same authenticated Rust API',async()=>{
+  const seen=[];
+  const client=new Dominion({token:'private',fetch:async(url,options)=>{
+    seen.push({url,options});
+    return new Response(JSON.stringify({id:'a',status:'open'}),{status:200,headers:{'content-type':'application/json'}});
+  }});
+  await client.groups.next('group-id');
+  await client.videos.changeScene('video-id',1,{heading:'intro',narration:'text',seconds:4});
+  assert.ok(seen[0].url.endsWith('/api/v1/groups/group-id/next'));
+  assert.ok(seen[1].url.endsWith('/api/v1/videos/video-id/scenes/1'));
+  assert.equal(seen[1].options.headers.Authorization,'Bearer private');
+});

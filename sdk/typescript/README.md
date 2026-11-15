@@ -18,3 +18,31 @@ console.log(finished.status, finished.answer);
 - `sdk.wait(id)` waits for a terminal execution state with cancellation/timeout support.
 
 Node 20+ and modern browsers with `fetch`/streaming support. `npm run build` compiles the SDK with TypeScript.
+
+## Group collaboration
+
+```ts
+const room = await sdk.groups.create({
+  topic: 'Review product architecture',
+  participants: [
+    {name:'architect', role:'design', economy:false},
+    {name:'critic', role:'failure analysis', economy:true},
+  ],
+  budget_krw: 5000
+});
+await sdk.groups.say(room.id, '@critic challenge the proposal');
+const response = await sdk.groups.next(room.id);
+```
+
+## Local-first video rendering
+
+```ts
+const video = await sdk.videos.create({
+  prompt:'Five-second product teaser',
+  scenes:[{heading:'Hello', narration:'Welcome to Dominion', seconds:5}]
+});
+// Poll sdk.videos.get(video.id) until status === 'completed'.
+const mp4 = await sdk.videos.download(video.id);
+```
+
+The video subsystem uses installed FFmpeg; `espeak` is optional and narration quality depends on the local voice backend. Individual scenes can be revised and re-rendered.
