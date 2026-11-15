@@ -7,11 +7,11 @@ export interface Run {
   id: string; instruction: string; status: RunStatus; plan: string | null; answer: string | null;
   messages: unknown[]; events: TimelineEvent[]; queued_calls: ToolCall[];
   pending_approval: ToolCall | null; approval_decision: boolean | null; in_flight: ToolCall | null;
-  steps: number; input_tokens: number; output_tokens: number; cost_krw: number;
+  steps: number; input_tokens: number; output_tokens: number; cost_krw: number; context_chars_avoided?: number;
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
-  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; mcp_server_count: number;
+  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; context_max_chars?: number; mcp_server_count: number;
 }
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;

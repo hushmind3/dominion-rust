@@ -96,12 +96,17 @@ impl Engine {
             if run.plan.is_none() {
                 let messages = vec![
                     json!({"role":"system","content":"Produce a concise actionable numbered plan for the request. Avoid asserting results. This plan is guidance and may change during execution."}),
-                    json!({"role":"user","content":run.instruction}),
+                    json!({"role":"user","content":format!("{}\n\nAdditional user instructions already received:\n{}",run.instruction,serde_json::to_string(&run.messages).unwrap_or_default())}),
                 ];
+                let planning_history_len=run.messages.len();
                 let reply = self.model.complete(&messages,&[],true).await?;
                 self.store.mutate(id, |run| {
                     Self::account(run,&reply);
-                    if run.terminal() {return Ok(());}
+                    if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
+                    if run.messages.len()!=planning_history_len {
+                        run.event("stale_plan","New user directive arrived during planning; recomputing",None);
+                        return Ok(());
+                    }
                     run.plan = Some(reply.text.clone());
                     run.messages = vec![
                         json!({"role":"system","content":SYSTEM}),
@@ -123,13 +128,27 @@ impl Engine {
             if run.cost_krw > run.budget_krw { return Err("budget exceeded".into()); }
             let mut catalog = tools::definitions(self.settings.shell_enabled);
             catalog.extend(self.mcp.definitions().await);
-            let reply = self.model.complete(&run.messages, &catalog, false).await?;
+            let projection=crate::context::compact(&run.messages,self.settings.context_max_chars);
+            let expected_history=run.messages.len();
+            let reply = self.model.complete(&projection.messages, &catalog, false).await?;
             let terminal_candidate = reply.calls.is_empty();
+            let mut accepted=false;
             self.store.mutate(id, |run| {
                 Self::account(run,&reply);
+                if projection.projected_chars < projection.original_chars {
+                    let saved=projection.original_chars-projection.projected_chars;
+                    run.context_chars_avoided=run.context_chars_avoided.saturating_add(saved as u64);
+                    run.event("context_projected",format!("Model input reduced by {saved} serialized characters"),
+                        Some(json!({"source_chars":projection.original_chars,"outbound_chars":projection.projected_chars,"omitted_messages":projection.omitted_messages})));
+                }
+                if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
+                if run.messages.len()!=expected_history {
+                    run.event("stale_response","A newer user directive superseded the model response",None);
+                    return Ok(());
+                }
+                accepted=true;
                 run.steps += 1;
                 run.messages.push(reply.message.clone());
-                if run.terminal() {return Ok(());}
                 if !reply.calls.is_empty() {
                     run.queued_calls.extend(reply.calls.clone());
                     run.event("tool_requests", format!("{} tool call(s) requested",reply.calls.len()),Some(json!(reply.calls)));
@@ -138,7 +157,7 @@ impl Engine {
                 }
                 Ok(())
             }).await?;
-            if !terminal_candidate { continue; }
+            if !accepted || !terminal_candidate { continue; }
             let latest = self.store.get(id).await.ok_or("execution not found")?;
             if latest.terminal() { return Ok(()); }
             let workspace = self.settings.workspace_dir.join(id.to_string());
@@ -149,12 +168,19 @@ impl Engine {
                 json!({"role":"system","content":"You are the execution verifier. Return only PASS or REVISE: followed by the concrete missing work. Use the actual tool history and workspace file list; do not assume unexecuted actions happened. Evaluate completion against the user request."}),
                 json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\nExecution messages:\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(24000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
             ];
+            let expected_verify_history=latest.messages.len();
             let verdict = self.model.complete(&verify_messages,&[],true).await?;
             let passed = verdict.text.trim().starts_with("PASS");
+            let mut verified=false;
             self.store.mutate(id, |run| {
                 Self::account(run,&verdict);
+                if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
+                if run.messages.len()!=expected_verify_history {
+                    run.event("stale_verification","New instructions arrived during verification; verifying again after continuation",None);
+                    return Ok(());
+                }
+                verified=true;
                 run.event("verification",verdict.text.clone(),None);
-                if run.status == RunStatus::Failed { return Ok(()); }
                 if passed {
                     run.answer = Some(reply.text.clone());
                     run.status = RunStatus::Completed;
@@ -165,7 +191,7 @@ impl Engine {
                 }
                 Ok(())
             }).await?;
-            if passed { return Ok(()); }
+            if verified && passed { return Ok(()); }
         }
     }
     async fn perform_tool(&self, id: Uuid, call: ToolCall, approved: bool) -> Result<(), String> {

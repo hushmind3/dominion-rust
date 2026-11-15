@@ -38,6 +38,8 @@ pub struct Run {
     pub in_flight: Option<ToolCall>,
     #[serde(default)]
     pub parent_run_id: Option<Uuid>,
+    #[serde(default)]
+    pub context_chars_avoided: u64,
     pub steps: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -65,6 +67,7 @@ pub struct PublicSettings {
     pub shell_enabled: bool,
     pub max_steps: usize,
     pub mcp_server_count: usize,
+    pub context_max_chars: usize,
 }
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -81,7 +84,7 @@ impl Run {
         let mut run = Self {
             id, instruction, status: RunStatus::Queued, plan: None, answer: None,
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(),
-            pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, steps: 0,
+            pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, context_chars_avoided: 0, steps: 0,
             input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             created_at_ms: time, updated_at_ms: time,

@@ -28,6 +28,7 @@
         '인증/로컬 연결: '+(config.configured?'설정됨':'API 키 미설정'),
         '셸 도구: '+(config.shell_enabled?'승인 후 실행':'비활성'),
         '최대 기본 라운드: '+config.max_steps,
+        '모델 문맥 상한: '+Number(config.context_max_chars||0).toLocaleString()+'자',
         '연결된 MCP 서버: '+(config.mcp_server_count??0)
       ].join('\n');
       status('● 서버 연결됨',true);
@@ -61,6 +62,8 @@
       <div class="metric"><span>API 예상 비용</span><b>${krw(run.cost_krw)}원</b></div>
       <div class="metric"><span>실행 라운드</span><b>${run.steps}/${run.max_steps}</b></div>
       <div class="metric"><span>모델 토큰</span><b>${(run.input_tokens+run.output_tokens).toLocaleString()}</b></div></div>`;
+    if(run.context_chars_avoided) content+=`<p class="muted">컨텍스트 재투영으로 전송을 줄인 문자 수: ${Number(run.context_chars_avoided).toLocaleString()}자 (실제 청구 토큰과 다름)</p>`;
+    content+=``;
     if(run.plan) content+=`<h2>실행 계획</h2><div class="output">${safe(run.plan)}</div>`;
     if(run.pending_approval && !run.in_flight) content+=`<div class="approval"><b>⚠️ 명령 실행 승인 필요</b><code>${safe(run.pending_approval.name + ': '+ (run.pending_approval.arguments.command || JSON.stringify(run.pending_approval.arguments)))}</code><div class="actions"><button class="primary" id="allow">승인</button><button class="danger" id="deny">거부</button></div></div>`;
     if(run.in_flight) content+=`<div class="approval"><b>⚠️ 중단된 도구 확인 필요</b><p>실제로 도구가 실행됐을 수 있습니다. 파일·출력을 확인해 결과를 기록하면 중복 실행 없이 작업을 재개할 수 있습니다.</p><code>${safe(run.in_flight.name)} · ${safe(JSON.stringify(run.in_flight.arguments))}</code><label for="reconcile-result">확인한 실행 결과 또는 오류</label><textarea id="reconcile-result" placeholder="직접 확인한 결과를 적어주세요."></textarea><div class="actions"><button class="primary" id="reconcile-ok">성공 결과 기록</button><button class="danger" id="reconcile-failed">실패 결과 기록</button></div></div>`;
