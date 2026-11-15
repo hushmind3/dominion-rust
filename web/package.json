@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "cargo test --release --manifest-path ../Cargo.toml",
     "check": "npm run typecheck && npm test && npm run build",
+    "e2e": "playwright test",
     "gate:engine": "cargo test --release --manifest-path ../Cargo.toml --test e2e",
     "desktop:prepare": "node ../scripts/prepare-desktop.mjs",
     "desktop:dev": "node ../scripts/build-desktop.mjs --dev",
