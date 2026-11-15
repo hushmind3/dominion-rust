@@ -142,3 +142,11 @@ The engine can discover external MCP Streamable HTTP tools and expose them to th
 ## Generative motion video via Veo 3.1
 
 The video API supports `backend: "local"` (default) and `backend: "veo"`. Local FFmpeg renders captioned scenes without a cloud video provider. The Veo backend submits long-running generated-motion scenes through the current Gemini OpenAI-compatible Videos API. Export `DOMINION_VEO_API_KEY`, then select Veo in the Studio. Each scene must be 4, 6, or 8 seconds. The server persists remote operation IDs and reuses them on retries to avoid unnecessary duplicate requests. Clips are normalized and assembled into an MP4 through FFmpeg. Remote-provider cost depends on your billing agreement; configure `DOMINION_VEO_KRW_PER_SECOND` for an estimated KRW amount. At zero, the display omits any video-provider charge even if the remote provider bills you. The Veo integration has a mock HTTP test; a paid live generation test has not been run. The retired Sora Videos API is not used.
+
+## Rust agent hardening revision (2026-11-15)
+
+The 2026 frontier-driven work now enforces durable hierarchical child budget escrow and idempotent settlement (`src/policy.rs`, `src/engine.rs`), read-only delegated workers, explicit approval/conflict-check before adopting a child Git patch, transient API retry, workspace file pagination beyond the former 200-file limit, project-specific persistent memory (`src/knowledge.rs`) and lazy SKILL.md procedures (`src/skills.rs`). The bundled main React frontend uses the same native Rust routes for these operations; the optional TypeScript SDK now exposes their API surfaces.
+
+The model interface accepts optional OpenAI-specific prompt-cache TTL/key options, and reports provider-supplied cache read/write token counts separately with configurable KRW rates. Approved shell and RSI test scripts use fail-closed Bubblewrap/Seatbelt confinement by default. User cancellation during an executing tool leaves an auditable outcome and only becomes terminal after the tool receipt or explicit reconciliation.
+
+These changes have source-level tests but have **not** passed a fresh Rust build, a full browser E2E or a real-provider task suite in this revision. Full CI and SWE-bench are deferred until source-residue cleanup and acceptance checks under the project rules; no frontier-performance score is claimed.
