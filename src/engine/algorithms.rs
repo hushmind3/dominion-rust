@@ -1586,6 +1586,7 @@ pub fn rebuild_stats_from_usage(state: &AppState) -> Result<Value, String> {
 }
 
 /// A compact per-agent view of which judgment kernels have worked.
+#[cfg(test)]
 pub fn agent_context_block(state: &AppState, agent_id: &str) -> Option<(String, Vec<Value>)> {
     let stats = state
         .store
