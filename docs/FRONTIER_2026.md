@@ -73,3 +73,7 @@ No new goals.rs or goals.api file is introduced.
 
 Avoid calling a feature production-ready based on the presence of one
 route, a named module or a mock model test.
+
+## Main frontend preservation
+
+The sub4 branch now contains the complete main React 19/Vite source tree and mounts the original workspace navigation shell. `web/src/pages/RustWorkspace.tsx` is the v1 API-connected surface for real Rust operations; the former ad-hoc static HTML/JS frontend was removed. Main-only pages remain as preserved source, not as claims that the main SQLite/Tauri backend has been migrated. See `docs/ARCHITECTURE.md` for the mounted routes and `README.md` for production build/development commands. Browser/e2e parity not yet verified.

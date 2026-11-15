@@ -11,7 +11,7 @@ the larger `main` React/Tauri/SQLite desktop product.
 | Group turns | `/groups/{id}/next` | `group.rs → provider.rs` |
 | Video storyboard and local rendering | `/videos/{id}/render` | `video.rs` with FFmpeg |
 | RSI isolated evaluation and adoption | `/improvements/{id}/approve`, `/adopt`, `/descendant` | `improvement.rs` with detached Git worktrees |
-| TypeScript SDK and GUI | `sdk/typescript/src/index.ts`, `web/app.js` | Both call identical Rust routes |
+| TypeScript SDK and GUI | `sdk/typescript/src/index.ts`, `web/src/App.tsx`, `web/src/pages/RustWorkspace.tsx` | Main React/Vite UI and SDK use the native Rust v1 routes |
 
 ## Write-ahead tool state
 
@@ -75,3 +75,7 @@ cached input tokens when configured with accurate KRW rates.
 
 See `docs/FRONTIER_2026.md` for concrete frontier reference gaps and
 `docs/RUST_SDK.md` for the supported host entrypoint.
+
+## Main React frontend adopted (2026-11-15)
+
+All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation and i18n are reused. The mounted `RustWorkspacePage` performs real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. This branch deliberately does not run the old main frontend feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Build/test against actual Rust and browser remain pending the source-residue review and CI gate.

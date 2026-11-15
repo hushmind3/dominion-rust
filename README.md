@@ -20,8 +20,37 @@ This is a **clean rebuild** on `dominion-sub4`. It does not inherit the previous
 | Existing Git projects | `POST /api/v1/runs/from-repository` | Creates an isolated detached worktree; original checkout is not edited |
 | Subagents | `/api/v1/runs/{id}/subagents` | Child native workers with lineage, isolated history/worktrees, sibling budget reservations and parent-visible results |
 | Context optimization | `src/context.rs` | Non-destructive request projection preserving explicit user directives and tool call/result pairing; estimated saved characters tracked |
-| Studio | `http://127.0.0.1:8787` | Korean workspaces for execution, group conversation, video, improvement and model connection |
+| Studio | `web/src/App.tsx` and `web/src/pages/RustWorkspace.tsx` | Adopted `main` React 19/Vite shell and Korean navigation, connected to real Rust v1 run/group/video/RSI/config routes |
 | TypeScript helper SDK | `sdk/typescript` | Typed HTTP convenience client; has no independent agent policy or runtime |
+
+## Frontend adoption from main (2026-11-15)
+
+The **full React/Vite frontend source tree from the main branch** was imported into
+`web/` (including navigation, branding, i18n, visual components and original
+page source). The old sub4 `web/app.js` and HTML-only Studio were removed.
+The Rust server now serves built `web/dist` static assets by default;
+`DOMINION_WEB_DIR` can point to a relocated build.
+
+`web/src/App.tsx` retains main's navigation, sidebar, search palette, theme and user
+profile chrome. `web/src/pages/RustWorkspace.tsx` provides directly connected
+workspaces for native runs, approvals, directives, tool reconciliation, code artifacts,
+delegated subagents, group discussions, video render/scene editing, RSI evaluation/
+adoption and current model configuration. `web/src/api.ts` handles JSON and
+authenticated binary video responses. No second agent engine is embedded in React.
+
+The original main branch feature pages remain as source, but their old `/api/*` calls
+expect the larger main backend and are **not mounted as functional pages** until each
+capability is migrated to the current Rust API. In particular, main's desktop/Tauri
+host, advanced provider management, channel system and SQLite state are **not**
+present in the sub4 Rust backend. The original frontend source is not a claim of
+feature parity. The Rust-linked workspaces are the currently supported UI path.
+
+For frontend development, run `cargo run` in the repository root, then
+`cd web && npm run dev` in another terminal. Vite proxies `/api` to
+`http://127.0.0.1:8787` by default. Before starting the packaged Rust HTTP
+server, run `cd web && npm ci && npm run build` at least once. A missing
+`web/dist` build intentionally returns a static 404 instead of presenting a
+fake standalone fallback UI.
 
 ## Native Rust SDK (primary)
 
@@ -32,13 +61,17 @@ The model adapter cannot replace the Rust planning/tool/recovery loop.
 
 ## Start
 
-Requires a modern Rust toolchain. FFmpeg with `libx264` and `drawtext` enables MP4 rendering; local `espeak` is optional for basic narration. TypeScript SDK build uses Node 20+.
+Requires a modern Rust toolchain and Node.js 20.19+. The original `main` React/Vite frontend is now the canonical UI. FFmpeg with `libx264` and `drawtext` enables MP4 rendering; local `espeak` is optional for basic narration.
 
 ```bash
 cp .env.example .env
 # Export the desired environment variables from .env in your shell.
 export DOMINION_API_KEY="your-provider-key"
 export DOMINION_MODEL="your-provider-model"
+cd web
+npm ci
+npm run build
+cd ..
 cargo run
 ```
 
