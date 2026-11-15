@@ -215,7 +215,7 @@ impl Improvements {
         if Some(head.trim())!=item.base_commit.as_deref(){return Err("repository HEAD changed since evaluation; refusing adoption".into());}
         if !git(&repo,&["status","--porcelain"]).await?.is_empty(){return Err("repository has uncommitted changes".into());}
         let commit=item.candidate_commit.as_deref().ok_or("missing candidate commit")?;
-        git(&repo,&["cherry-pick",commit]).await?;
+        execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost","cherry-pick",commit],&repo,45).await?;
         item.status=ImprovementStatus::Adopted;item.updated_at_ms=now_ms();
         self.put(item).await
     }
@@ -241,4 +241,59 @@ mod tests {
     }
     #[test]
     fn rejects_traversal(){assert!(relative("../outside").is_err());assert!(relative("/root").is_err());}
+}
+
+#[cfg(test)]
+mod full_cycle_tests {
+    use super::*;
+    use crate::config::Settings;
+    use axum::{routing::post,Json,Router};
+    use serde_json::Value;
+    async fn proposal(Json(_request):Json<Value>)->Json<Value>{
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"1\n"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}))
+    }
+    #[tokio::test]
+    async fn adopts_only_a_scored_improvement_and_inherits_reflection() {
+        if Command::new("git").arg("--version").output().await.is_err(){return;}
+        let root=std::env::temp_dir().join(format!("dominion-improvement-{}",Uuid::new_v4()));
+        let workspace=root.join("workspace");
+        let repo=workspace.join("repo");
+        fs::create_dir_all(&repo).await.unwrap();
+        git(&repo,&["init"]).await.unwrap();
+        fs::write(repo.join("score.txt"),"0\n").await.unwrap();
+        git(&repo,&["add","score.txt"]).await.unwrap();
+        execute("git",&["-c","user.name=Test","-c","user.email=test@example.com","commit","-m","base"],&repo,30).await.unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move {
+            axum::serve(listener,Router::new().route("/chat/completions",post(proposal))).await.unwrap();
+        });
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{addr}");settings.main.api_key.clear();
+        let model=ModelClient::new(&settings).unwrap();
+        let service=Arc::new(Improvements::open(root.join("data"),workspace).await.unwrap());
+        let item=service.create(NewImprovement{
+            repository:"repo".into(),target_file:"score.txt".into(),instruction:"increase score".into(),
+            test_command:"test -f score.txt".into(),score_command:Some("cat score.txt".into()),parent:None
+        }).await.unwrap();
+        service.start(model,item.id,true).await.unwrap();
+        let mut result=None;
+        for _ in 0..150 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let current=service.get(item.id).await.unwrap();
+            if current.status!=ImprovementStatus::Running{result=Some(current);break;}
+        }
+        let result=result.expect("evaluation timed out");
+        assert_eq!(result.status,ImprovementStatus::Evaluated,"error: {:?}",result.error);
+        assert!(result.accepted);
+        assert_eq!(result.baseline.as_ref().unwrap().score,Some(0.0));
+        assert_eq!(result.candidate.as_ref().unwrap().score,Some(1.0));
+        let adopted=service.adopt(item.id).await.unwrap();
+        assert_eq!(adopted.status,ImprovementStatus::Adopted);
+        assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"1\n");
+        let next=service.descendant(item.id).await.unwrap();
+        assert_eq!(next.parent,Some(item.id));
+        server.abort();
+        fs::remove_dir_all(root).await.unwrap();
+    }
 }

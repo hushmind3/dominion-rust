@@ -205,3 +205,34 @@ mod tests {
         fs::remove_dir_all(dir).await.unwrap();
     }
 }
+
+#[cfg(test)]
+mod production_tests {
+    use super::*;
+    use crate::config::Settings;
+    #[tokio::test]
+    async fn renders_real_mp4_from_manual_scenes() {
+        if Command::new("ffmpeg").arg("-version").output().await.is_err() { return; }
+        let dir=std::env::temp_dir().join(format!("dominion-video-production-{}",Uuid::new_v4()));
+        let settings=Settings::from_env().unwrap();
+        let model=ModelClient::new(&settings).unwrap();
+        let videos=Arc::new(Videos::open(dir.clone()).await.unwrap());
+        let video=videos.create(&model,NewVideo{
+            prompt:"A short smoke test".into(),
+            scenes:Some(vec![Scene{heading:"Runtime".into(),narration:"The local renderer produces an artifact.".into(),seconds:2}])
+        }).await.unwrap();
+        let id=video.id;
+        videos.start(id).await.unwrap();
+        let mut result=None;
+        for _ in 0..150 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let snapshot=videos.get(id).await.unwrap();
+            if snapshot.status!=VideoStatus::Rendering {result=Some(snapshot);break;}
+        }
+        let result=result.expect("ffmpeg render timed out");
+        assert_eq!(result.status,VideoStatus::Completed,"render error: {:?}",result.error);
+        let file=videos.output_path(id).await.unwrap();
+        assert!(fs::metadata(&file).await.unwrap().len()>1000);
+        fs::remove_dir_all(dir).await.unwrap();
+    }
+}
