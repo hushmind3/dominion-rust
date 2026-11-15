@@ -299,6 +299,7 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
       }
     }
   }
+  crate::frontend_channels::dispatch_room(engine,&room).await;
   Ok((room,turns))
 }
 async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
