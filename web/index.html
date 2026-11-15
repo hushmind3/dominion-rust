@@ -38,6 +38,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 <div class="workspace">
 <div class="stack">
 <div class="panel"><h2>새 작업</h2><label for="instruction">무엇을 완성할까요?</label><textarea id="instruction" placeholder="예: 고객용 견적서 템플릿을 HTML과 CSS로 제작하고 사용 방법까지 작성해 주세요."></textarea>
+<label for="repository" style="margin-top:12px">기존 Git 프로젝트 폴더 (선택)</label><input id="repository" placeholder="예: repos/my-project"><p class="muted" style="margin:8px 0">입력하면 원본은 보존하고 별도 작업공간에서 수정합니다. 비워두면 새 작업으로 시작합니다.</p>
 <div class="fieldgrid"><div><label for="budget">예상 API 비용 한도 (원)</label><input id="budget" type="number" min="0" max="1000000" value="10000"></div><div><label for="steps">최대 실행 라운드</label><input id="steps" type="number" min="1" max="100" value="30"></div></div>
 <div class="actions"><button id="create" class="primary">▶ 실행 시작</button><span class="muted" id="create-message"></span></div></div>
 <div class="panel"><h2>작업 목록</h2><div id="run-list" class="runs"><p>작업이 없습니다.</p></div></div>

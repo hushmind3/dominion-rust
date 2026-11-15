@@ -35,6 +35,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
         .route("/config",get(config))
         .route("/runs",get(list_runs).post(create_run))
+        .route("/runs/from-repository",post(create_repository_run))
         .route("/runs/{id}",get(get_run))
         .route("/runs/{id}/resume",post(resume))
         .route("/runs/{id}/cancel",post(cancel))
@@ -75,10 +76,20 @@ async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
 }
 async fn list_runs(State(engine): State<Arc<Engine>>) -> Json<Vec<Run>> { Json(engine.store.list().await) }
 async fn create_run(State(engine): State<Arc<Engine>>, Json(req): Json<CreateRun>) -> Result<(StatusCode,Json<Run>), ApiError> {
-    let run = Run::new(req,engine.settings.max_steps).map_err(bad)?;
-    engine.store.put(run.clone()).await.map_err(bad)?;
-    engine.launch(run.id).await.map_err(bad)?;
-    Ok((StatusCode::CREATED,Json(engine.store.get(run.id).await.unwrap_or(run))))
+    let run=crate::sdk::Dominion::from_engine(engine).submit(req).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(run)))
+}
+#[derive(Deserialize)]
+struct RepositoryRunRequest {
+    instruction:String,
+    repository:String,
+    budget_krw:Option<f64>,
+    max_steps:Option<usize>,
+}
+async fn create_repository_run(State(engine):State<Arc<Engine>>,Json(input):Json<RepositoryRunRequest>)->Result<(StatusCode,Json<Run>),ApiError>{
+    let req=CreateRun{instruction:input.instruction,budget_krw:input.budget_krw,max_steps:input.max_steps};
+    let run=crate::sdk::Dominion::from_engine(engine).submit_from_repository(req,&input.repository).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(run)))
 }
 async fn get_run(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>) -> Result<Json<Run>,ApiError> {
     engine.store.get(id).await.map(Json).ok_or_else(not_found)

@@ -18,10 +18,24 @@ impl Dominion {
         let engine=Engine::new(settings,store,groups,videos,improvements)?;
         Ok(Self{engine})
     }
+    pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
     pub fn engine(&self)->Arc<Engine>{Arc::clone(&self.engine)}
     pub fn http_router(&self)->Router{api::router(Arc::clone(&self.engine))}
     pub async fn submit(&self,input:CreateRun)->Result<Run,String>{
         let run=Run::new(input,self.engine.settings.max_steps)?;
+        self.engine.store.put(run.clone()).await?;
+        self.engine.launch(run.id).await?;
+        self.get(run.id).await
+    }
+    /// Run a coding task against an isolated Git worktree of an existing project.
+    /// The original checkout remains unchanged until the user explicitly adopts edits.
+    pub async fn submit_from_repository(&self,input:CreateRun,repository:&str)->Result<Run,String>{
+        let mut run=Run::new(input,self.engine.settings.max_steps)?;
+        let repo=repository.trim();
+        let commit=crate::workspace::attach(&self.engine.settings,run.id,repo).await?;
+        run.repository=Some(repo.to_string());
+        run.base_commit=Some(commit.clone());
+        run.event("repository_attached",format!("Isolated checkout at commit {commit}"),None);
         self.engine.store.put(run.clone()).await?;
         self.engine.launch(run.id).await?;
         self.get(run.id).await

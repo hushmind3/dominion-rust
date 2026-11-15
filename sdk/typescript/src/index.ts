@@ -7,7 +7,7 @@ export interface Run {
   id: string; instruction: string; status: RunStatus; plan: string | null; answer: string | null;
   messages: unknown[]; events: TimelineEvent[]; queued_calls: ToolCall[];
   pending_approval: ToolCall | null; approval_decision: boolean | null; in_flight: ToolCall | null;
-  steps: number; input_tokens: number; output_tokens: number; cost_krw: number; context_chars_avoided?: number;
+  steps: number; input_tokens: number; output_tokens: number; cost_krw: number; context_chars_avoided?: number; repository?: string | null; base_commit?: string | null;
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
@@ -84,6 +84,7 @@ export class Dominion {
   get config(): Promise<ModelConfig> {return this.request('GET','/config');}
   readonly runs = {
     create: (input: CreateRun) => this.request<Run>('POST','/runs',input),
+    fromRepository: (input: CreateRun & {repository:string}) => this.request<Run>('POST','/runs/from-repository',input),
     list: () => this.request<Run[]>('GET','/runs'),
     get: (id: string) => this.request<Run>('GET','/runs/'+encodeURIComponent(id)),
     resume: (id: string) => this.request<{ok:boolean}>('POST','/runs/'+encodeURIComponent(id)+'/resume',{}),

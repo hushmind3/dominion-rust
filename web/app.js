@@ -64,6 +64,7 @@
       <div class="metric"><span>모델 토큰</span><b>${(run.input_tokens+run.output_tokens).toLocaleString()}</b></div></div>`;
     if(run.context_chars_avoided) content+=`<p class="muted">컨텍스트 재투영으로 전송을 줄인 문자 수: ${Number(run.context_chars_avoided).toLocaleString()}자 (실제 청구 토큰과 다름)</p>`;
     content+=``;
+    if(run.repository) content+=`<p class="muted">작업 대상: ${safe(run.repository)} · 원본 Git 커밋: ${safe((run.base_commit||'').slice(0,12))}</p>`;
     if(run.plan) content+=`<h2>실행 계획</h2><div class="output">${safe(run.plan)}</div>`;
     if(run.pending_approval && !run.in_flight) content+=`<div class="approval"><b>⚠️ 명령 실행 승인 필요</b><code>${safe(run.pending_approval.name + ': '+ (run.pending_approval.arguments.command || JSON.stringify(run.pending_approval.arguments)))}</code><div class="actions"><button class="primary" id="allow">승인</button><button class="danger" id="deny">거부</button></div></div>`;
     if(run.in_flight) content+=`<div class="approval"><b>⚠️ 중단된 도구 확인 필요</b><p>실제로 도구가 실행됐을 수 있습니다. 파일·출력을 확인해 결과를 기록하면 중복 실행 없이 작업을 재개할 수 있습니다.</p><code>${safe(run.in_flight.name)} · ${safe(JSON.stringify(run.in_flight.arguments))}</code><label for="reconcile-result">확인한 실행 결과 또는 오류</label><textarea id="reconcile-result" placeholder="직접 확인한 결과를 적어주세요."></textarea><div class="actions"><button class="primary" id="reconcile-ok">성공 결과 기록</button><button class="danger" id="reconcile-failed">실패 결과 기록</button></div></div>`;
@@ -98,7 +99,10 @@
   $('create').addEventListener('click',async()=>{
     $('create').disabled=true;$('create-message').textContent='작업 생성 중';
     try {
-      const run=await request('/runs',{method:'POST',body:JSON.stringify({instruction:$('instruction').value,budget_krw:Number($('budget').value),max_steps:Number($('steps').value)})});
+      const repository=$('repository').value.trim();
+      const payload={instruction:$('instruction').value,budget_krw:Number($('budget').value),max_steps:Number($('steps').value)};
+      if(repository) payload.repository=repository;
+      const run=await request(repository?'/runs/from-repository':'/runs',{method:'POST',body:JSON.stringify(payload)});
       state.selected=run.id;$('instruction').value='';$('create-message').textContent='실행을 시작했습니다.';await load();
     }catch(err){$('create-message').textContent=err.message}finally{$('create').disabled=false}
   });
