@@ -1,6 +1,7 @@
 //! Stateless MCP Streamable HTTP client (2026-07-28), with explicit tool approval.
 //! Server endpoints and tokens are configured by the process owner, never the model.
 use crate::domain::ToolCall;
+use uuid::Uuid;
 use reqwest::{header, Client, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -8,6 +9,11 @@ use std::{collections::{HashMap, HashSet}, net::IpAddr, time::{Duration, Instant
 use tokio::sync::{Mutex,watch,mpsc};
 
 const VERSION: &str = "2026-07-28";
+/// Stable across process crashes and human audit. The JSON-RPC ID is derived
+/// from the already-persisted run ID and unique model call ID.
+pub fn request_identity(run:Uuid,call:&ToolCall)->String{
+    format!("dominion-{run}-{}",call.id)
+}
 const BODY_MAX: usize = 262_144;
 const CACHE_SECONDS: u64 = 60;
 
@@ -214,7 +220,7 @@ impl Mcp {
 
     async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,
         extra_headers:&[(String,String)])->Result<Value,String>{
-        match self.rpc_cancellable(server,method,params,name,extra_headers,None,None).await?{
+        match self.rpc_cancellable(server,method,params,name,extra_headers,None,None,None).await?{
             RpcOutcome::Settled(result)=>result,
             RpcOutcome::Uncertain(reason)=>Err(reason)
         }
@@ -223,8 +229,9 @@ impl Mcp {
     async fn rpc_cancellable(&self,server:&Server,method:&str,mut params:Value,
         name:Option<&str>,extra_headers:&[(String,String)],
         mut cancellation:Option<watch::Receiver<bool>>,
-        progress_tx:Option<mpsc::Sender<McpProgress>>)->Result<RpcOutcome,String>{
-        let id=uuid::Uuid::new_v4().to_string();
+        progress_tx:Option<mpsc::Sender<McpProgress>>,
+        requested_id:Option<String>)->Result<RpcOutcome,String>{
+        let id=requested_id.unwrap_or_else(||Uuid::new_v4().to_string());
         params["_meta"]=json!({
             "io.modelcontextprotocol/protocolVersion":VERSION,
             "io.modelcontextprotocol/clientInfo":{"name":"dominion-rust","version":"0.1.0"},
@@ -398,20 +405,21 @@ impl Mcp {
         combined
     }
     pub async fn call(&self,call:&ToolCall)->Result<String,String>{
-        match self.call_inner(call,None,None).await?{
+        match self.call_inner(call,None,None,None).await?{
             McpCallOutcome::Settled(result)=>result,
             McpCallOutcome::Uncertain(reason)=>Err(reason),
         }
     }
     pub async fn call_cooperative(&self,call:&ToolCall,cancellation:watch::Receiver<bool>)
         ->Result<McpCallOutcome,String>{
-        self.call_inner(call,Some(cancellation),None).await
+        self.call_inner(call,None,Some(cancellation),None).await
     }
-    pub async fn call_with_progress(&self,call:&ToolCall,cancellation:watch::Receiver<bool>,
+    pub async fn call_with_progress(&self,run:Uuid,call:&ToolCall,cancellation:watch::Receiver<bool>,
         progress:mpsc::Sender<McpProgress>)->Result<McpCallOutcome,String>{
-        self.call_inner(call,Some(cancellation),Some(progress)).await
+        self.call_inner(call,Some(run),Some(cancellation),Some(progress)).await
     }
-    async fn call_inner(&self,call:&ToolCall,mut cancellation:Option<watch::Receiver<bool>>,
+    async fn call_inner(&self,call:&ToolCall,run:Option<Uuid>,
+        mut cancellation:Option<watch::Receiver<bool>>,
         progress:Option<mpsc::Sender<McpProgress>>)
         ->Result<McpCallOutcome,String>{
         if !call.name.starts_with("mcp__"){return Err("not an MCP tool".into());}
@@ -447,7 +455,7 @@ impl Mcp {
         }
         let result=match self.rpc_cancellable(server,"tools/call",
             json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),
-            &headers,cancellation,progress).await?{
+            &headers,cancellation,progress,run.map(|id|request_identity(id,call))).await?{
             RpcOutcome::Settled(Ok(value))=>value,
             RpcOutcome::Settled(Err(error))=>return Ok(McpCallOutcome::Settled(Err(error))),
             RpcOutcome::Uncertain(reason)=>return Ok(McpCallOutcome::Uncertain(reason)),
@@ -564,13 +572,14 @@ mod tests {
         let (client,_fixture,server)=fixture_server().await;
         let (_tx,rx)=watch::channel(false);
         let (progress_tx,mut progress_rx)=mpsc::channel(8);
-        let result=client.call_with_progress(&test_call("fast"),rx,progress_tx).await.unwrap();
+        let run=Uuid::new_v4();
+        let result=client.call_with_progress(run,&test_call("fast"),rx,progress_tx).await.unwrap();
         assert!(matches!(result,McpCallOutcome::Settled(Ok(_))));
         let progress=progress_rx.recv().await.expect("matching progress not delivered");
         assert_eq!(progress.progress,1.0);
         assert_eq!(progress.total,Some(4.0));
         assert_eq!(progress.message.as_deref(),Some("started"));
-        assert!(!progress.request_id.is_empty());
+        assert_eq!(progress.request_id,request_identity(run,&test_call("fast")));
         assert!(progress_rx.try_recv().is_err(),
             "unrelated request token must not enter this progress channel");
         server.abort();

@@ -148,7 +148,10 @@ pub fn begin(run:&mut Run,call:&ToolCall)->Result<(),String>{
     }
     run.in_flight=Some(call.clone());
     run.event("tool_started",format!("Recorded execution intent for {} ({})",call.name,call.id),
-        Some(json!({"name":call.name,"id":call.id,"arguments":call.arguments})));
+        Some(json!({"name":call.name,"id":call.id,"arguments":call.arguments,
+            "remote_request_id":if call.name.starts_with("mcp__"){
+                Some(crate::mcp::request_identity(run.id,call))
+            }else{None::<String>}})));
     Ok(())
 }
 
@@ -238,7 +241,9 @@ pub fn mark_remote_unknown(run:&mut Run,call:&ToolCall,reason:&str)->Result<(),S
     run.status=RunStatus::Paused;
     run.event("mcp_remote_outcome_unknown",
         format!("MCP tool {} may still have remote effects; do not retry",call.name),
-        Some(json!({"call_id":call.id,"reason":reason.chars().take(1000).collect::<String>(),
+        Some(json!({"call_id":call.id,
+            "remote_request_id":crate::mcp::request_identity(run.id,call),
+            "reason":reason.chars().take(1000).collect::<String>(),
             "reconciliation_required":true})));
     Ok(())
 }
@@ -439,6 +444,8 @@ mod tests{
         assert_eq!(run.in_flight.as_ref().unwrap().id,"payment-1");
         assert!(run.cancel_after_tool);
         assert_eq!(run.events.last().unwrap().kind,"mcp_remote_outcome_unknown");
+        assert_eq!(run.events.last().unwrap().detail.as_ref().unwrap()["remote_request_id"],
+            crate::mcp::request_identity(run.id,&call));
         assert!(!recover(&mut run),"uncertain remote work must never auto-resume");
         assert_eq!(run.in_flight.as_ref().unwrap().id,"payment-1");
         finish(&mut run,&call,&Ok("confirmed by remote audit".into()),true).unwrap();

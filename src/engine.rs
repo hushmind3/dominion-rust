@@ -413,7 +413,7 @@ impl Engine {
     async fn invoke_mcp_with_progress(&self,id:Uuid,call:&ToolCall,
         cancellation:watch::Receiver<bool>)->Result<McpCallOutcome,String>{
         let (tx,mut rx)=mpsc::channel::<McpProgress>(16);
-        let remote=self.mcp.call_with_progress(call,cancellation,tx);
+        let remote=self.mcp.call_with_progress(id,call,cancellation,tx);
         tokio::pin!(remote);
         let mut forwarded=0usize;
         let mut last_progress=None::<f64>;
@@ -928,6 +928,11 @@ mod tests {
         let observed=uncertain.expect("MCP cancellation failed to retain uncertain result");
         assert_eq!(observed.status,RunStatus::Paused);
         assert_eq!(observed.in_flight.as_ref().unwrap().id,"remote-1");
+        let expected_remote=crate::mcp::request_identity(id,observed.in_flight.as_ref().unwrap());
+        let intent=observed.events.iter().find(|e|e.kind=="tool_started").unwrap();
+        let unknown=observed.events.iter().find(|e|e.kind=="mcp_remote_outcome_unknown").unwrap();
+        assert_eq!(intent.detail.as_ref().unwrap()["remote_request_id"],expected_remote);
+        assert_eq!(unknown.detail.as_ref().unwrap()["remote_request_id"],expected_remote);
         assert!(observed.cancel_after_tool);
         assert_eq!(observed.events.iter().filter(|e|e.kind=="tool_result").count(),0);
         assert_eq!(called.load(Ordering::SeqCst),1);
