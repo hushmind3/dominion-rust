@@ -149,7 +149,7 @@ impl Engine {
             // grouped in a bounded pool. Exclusive mutations are barriers.
             // A single Store transaction logs batch intent before dispatch,
             // then another atomically saves model-ordered tool receipts.
-            let parallel=tool_batch::parallel_prefix(&run);
+            let parallel=tool_batch::parallel_prefix(&run,self.settings.max_parallel_reads);
             if parallel.len()>1{
                 self.store.mutate(id,|run|journal::begin_read_batch(run,&parallel)).await?;
                 let outcomes=tool_batch::execute_reads(&self.settings,id,parallel.clone()).await;

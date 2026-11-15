@@ -8,10 +8,10 @@ use uuid::Uuid;
 
 /// Only contiguous safe inspection calls can share a batch. Mutations,
 /// unknown tools and denied calls stop the prefix before any invocation.
-pub fn parallel_prefix(run:&Run)->Vec<ToolCall>{
+pub fn parallel_prefix(run:&Run,limit:usize)->Vec<ToolCall>{
     let mut calls=Vec::new();
     for call in &run.queued_calls {
-        if calls.len()==4 || !journal::parallel_safe(&call.name)
+        if calls.len()==limit.clamp(1,8) || !journal::parallel_safe(&call.name)
             || !policy::allowed_tool(run,&call.name) {
             break;
         }
@@ -40,7 +40,7 @@ where
     let mut join=JoinSet::new();
     let mut results=(0..count).map(|_|None).collect::<Vec<Option<Result<R,String>>>>();
     let mut running=0usize;
-    for _ in 0..limit.clamp(1,4).min(count){
+    for _ in 0..limit.clamp(1,8).min(count){
         if let Some((index,input))=pending.next(){
             let op=Arc::clone(&operation);
             join.spawn(async move{(index,op(input).await)});
@@ -67,7 +67,7 @@ where
 
 pub async fn execute_reads(settings:&Settings,id:Uuid,calls:Vec<ToolCall>)->Vec<Result<String,String>>{
     let settings=Arc::new(settings.clone());
-    ordered_pool(calls,4,move |call|{
+    ordered_pool(calls,settings.max_parallel_reads,move |call|{
         let settings=Arc::clone(&settings);
         async move{
             match tokio::time::timeout(Duration::from_secs(30),tools::execute(&settings,id,&call)).await{
@@ -113,12 +113,12 @@ mod tests{
         let read=|id:&str|ToolCall{id:id.into(),name:"read_file".into(),arguments:json!({"path":"a.txt"})};
         let write=ToolCall{id:"w".into(),name:"write_file".into(),arguments:json!({"path":"a.txt","content":"replace"})};
         run.queued_calls.extend([read("r1"),read("r2"),write,read("r3")]);
-        let batch=parallel_prefix(&run);
+        let batch=parallel_prefix(&run,4);
         assert_eq!(batch.len(),2);
         assert_eq!(batch[0].id,"r1");
         assert_eq!(batch[1].id,"r2");
         run.read_only=true;
-        assert_eq!(parallel_prefix(&run).len(),2);
+        assert_eq!(parallel_prefix(&run,4).len(),2);
     }
     #[tokio::test]
     async fn parallel_real_file_reads_preserve_order_and_errors(){

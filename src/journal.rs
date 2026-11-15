@@ -84,8 +84,8 @@ pub fn begin_read_batch(run:&mut Run,calls:&[ToolCall])->Result<(),String>{
         || !run.read_batch_in_flight.is_empty() || run.pending_approval.is_some(){
         return Err("read batch cannot start in current run state".into());
     }
-    if calls.len()<2 || calls.len()>4 || calls.len()>run.queued_calls.len(){
-        return Err("parallel read batch requires 2..4 queued tool calls".into());
+    if calls.len()<2 || calls.len()>8 || calls.len()>run.queued_calls.len(){
+        return Err("parallel read batch requires 2..8 queued tool calls".into());
     }
     for (a,b) in calls.iter().zip(run.queued_calls.iter()){
         if !same_call(a,b)||!parallel_safe(&a.name)||!policy::allowed_tool(run,&a.name){

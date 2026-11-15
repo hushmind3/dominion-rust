@@ -24,6 +24,8 @@ pub struct Settings {
     pub economy: ModelSettings,
     pub max_steps: usize,
     pub shell_enabled: bool,
+    /// Maximum concurrent side-effect-free inspections per model step.
+    pub max_parallel_reads: usize,
     /// Maximum serialized characters sent to a model in one agent turn.
     pub context_max_chars: usize,
 }
@@ -79,6 +81,7 @@ impl Settings {
             workspace_dir: PathBuf::from(var("DOMINION_WORKSPACE_DIR", "./workspace")),
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
+            max_parallel_reads:var("DOMINION_MAX_PARALLEL_READS","4").parse::<usize>().unwrap_or(4).clamp(1,8),
             context_max_chars: var("DOMINION_CONTEXT_MAX_CHARS", "80000").parse::<usize>().unwrap_or(80000).clamp(8000,500000),
         })
     }
