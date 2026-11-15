@@ -36,6 +36,10 @@ jobs:
           workspaces: |
             . -> target/desktop-engine
             src-tauri -> target
+      - name: Reject repository residue before native packaging
+        run: |
+          node --test scripts/tests/check-repo-hygiene.test.mjs
+          node scripts/check-repo-hygiene.mjs
       - run: npm ci --prefix web
       - run: npm run typecheck --prefix web
       - run: cargo test --locked --release
