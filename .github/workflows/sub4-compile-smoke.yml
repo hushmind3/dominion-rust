@@ -1,0 +1,24 @@
+name: Sub4 compile smoke
+on:
+  push:
+    branches: [dominion-sub4]
+  workflow_dispatch:
+jobs:
+  native-and-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check all Rust targets
+        run: cargo check --all-targets
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.12.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Typecheck preserved main frontend
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
