@@ -16,6 +16,9 @@ impl Dominion {
         let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await?);
         let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await?);
         let engine=Engine::new(settings,store,groups,videos,improvements)?;
+        // Recover orphaned RSI controller states from the independent durable
+        // evaluator before any new campaign may start. Never silently adopt.
+        crate::frontend_rsi::reconcile_recovered_campaigns(&engine).await?;
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
         let snapshots=engine.store.list().await;
