@@ -43,6 +43,8 @@ pub struct UiSession {
     pub created_at:String,
     pub updated_at:String,
     #[serde(default)]
+    pub room_id:Option<String>,
+    #[serde(default)]
     pub pending_run:Option<Uuid>,
     #[serde(default)]
     pub messages:Vec<UiMessage>,

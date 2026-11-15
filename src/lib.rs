@@ -20,6 +20,7 @@ pub mod profile;
 pub mod frontend_state;
 pub mod frontend_api;
 pub mod frontend_video;
+pub mod frontend_rooms;
 pub mod sandbox;
 pub mod sdk;
 pub mod skills;

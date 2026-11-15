@@ -73,6 +73,7 @@ pub fn router()->Router<Arc<Engine>>{
         // Unimplemented main features return a precise JSON error instead of
         // silently serving index.html (which the UI could mistake for success).
         .merge(crate::frontend_video::routes())
+        .merge(crate::frontend_rooms::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
@@ -290,7 +291,7 @@ fn public_session(session:&UiSession)->Value{
         "id":session.id,"title":session.title,"agentId":session.agent_id,
         "providerId":session.provider_id,"model":session.model,
         "createdAt":session.created_at,"updatedAt":session.updated_at,
-        "archived":false
+        "roomId":session.room_id,"archived":false
     })
 }
 async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>{
@@ -351,7 +352,7 @@ async fn create_session(State(engine):State<Arc<Engine>>,Json(body):Json<CreateS
         agent_id:agent_id.into(),provider_id:"dominion-native".into(),
         model:engine.settings.main.name.clone(),
         created_at:timestamp(now_ms()),updated_at:timestamp(now_ms()),
-        pending_run:None,messages:Vec::new()
+        room_id:None,pending_run:None,messages:Vec::new()
     };
     engine.frontend.mutate(|store|{
         if store.sessions.len()>=256{return Err("maximum 256 chat sessions reached".into());}
@@ -370,6 +371,9 @@ async fn delete_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     sync_session(&engine,&id).await.map_err(broken)?;
     engine.frontend.mutate(|store|{
+        if store.sessions.get(&id).is_some_and(|s|s.room_id.is_some()){
+            return Err("room-linked sessions must be removed from the group management page".into());
+        }
         if store.sessions.get(&id).is_some_and(|s|s.pending_run.is_some()){
             return Err("stop the active chat run before deleting the session".into());
         }
@@ -382,12 +386,22 @@ async fn session_messages(State(engine):State<Arc<Engine>>,Path(id):Path<String>
     ->Result<Json<Vec<UiMessage>>,Fault>{
     sync_session(&engine,&id).await.map_err(broken)?;
     let record=engine.frontend.session(&id).await.ok_or_else(||missing("session not found"))?;
+    if let Some(room_id)=record.room_id{
+        let rid=Uuid::parse_str(&room_id).map_err(|_|missing("room binding invalid"))?;
+        let room=engine.groups.get(rid).await.ok_or_else(||missing("bound room not found"))?;
+        return Ok(Json(crate::frontend_rooms::message_rows(&room)));
+    }
     Ok(Json(record.messages))
 }
 async fn session_usage(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     sync_session(&engine,&id).await.map_err(broken)?;
     let record=engine.frontend.session(&id).await.ok_or_else(||missing("session not found"))?;
+    if let Some(room_id)=record.room_id{
+        let rid=Uuid::parse_str(&room_id).map_err(|_|missing("room binding invalid"))?;
+        let room=engine.groups.get(rid).await.ok_or_else(||missing("bound room not found"))?;
+        return Ok(Json(json!({"totalTokens":room.used_tokens})));
+    }
     let total=record.messages.iter().map(|m|m.metadata.as_ref()
         .and_then(|v|v.pointer("/usage/totalTokens")).and_then(Value::as_u64).unwrap_or(0)).sum::<u64>();
     Ok(Json(json!({"totalTokens":total})))
@@ -409,6 +423,7 @@ async fn clear_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     sync_session(&engine,&id).await.map_err(broken)?;
     engine.frontend.mutate(|store|{
         let session=store.sessions.get_mut(&id).ok_or("session not found")?;
+        if session.room_id.is_some(){return Err("reset room-linked transcripts through the room UI".into());}
         if session.pending_run.is_some(){return Err("cannot clear an active conversation".into());}
         session.messages.clear();
         session.updated_at=timestamp(now_ms());
@@ -419,11 +434,19 @@ async fn clear_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
 async fn fork_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     sync_session(&engine,&id).await.map_err(broken)?;
+    let original=engine.frontend.session(&id).await.ok_or_else(||missing("session not found"))?;
+    let source_messages=if let Some(room_id)=&original.room_id{
+        let rid=Uuid::parse_str(room_id).map_err(|_|bad("bound room invalid"))?;
+        let room=engine.groups.get(rid).await.ok_or_else(||missing("bound room not found"))?;
+        crate::frontend_rooms::message_rows(&room)
+    }else{original.messages.clone()};
     let fork=engine.frontend.mutate(|store|{
         let original=store.sessions.get(&id).ok_or("session not found")?.clone();
         if original.pending_run.is_some(){return Err("cannot fork an active conversation".into());}
         if store.sessions.len()>=256{return Err("maximum 256 chat sessions reached".into());}
         let mut next=original;
+        next.room_id=None;
+        next.messages=source_messages;
         next.id=Uuid::new_v4().to_string();
         next.title=format!("{} (fork)",next.title);
         next.created_at=timestamp(now_ms());next.updated_at=next.created_at.clone();
@@ -441,6 +464,11 @@ async fn fork_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
 async fn cancel_session(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     let record=engine.frontend.session(&id).await.ok_or_else(||missing("session not found"))?;
+    if let Some(room_id)=record.room_id{
+        let rid=Uuid::parse_str(&room_id).map_err(|_|bad("bound room invalid"))?;
+        engine.groups.stop(rid).await.map_err(bad)?;
+        return Ok(Json(json!({"cancelled":true})));
+    }
     let Some(run_id)=record.pending_run else{return Ok(Json(json!({"cancelled":false})));};
     let run=engine.store.get(run_id).await.ok_or_else(||missing("bound native run missing"))?;
     if run.terminal(){
@@ -483,6 +511,7 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
     }
     sync_session(&engine,&input.session_id).await.map_err(broken)?;
     let record=engine.frontend.session(&input.session_id).await.ok_or_else(||missing("session not found"))?;
+    if record.room_id.is_some(){return Err(bad("post room messages through the room API; direct chat is disabled for a room-linked session"));}
     if record.pending_run.is_some(){return Err(busy("another turn in this session is running"));}
     let agent=engine.frontend.agents().await.into_iter()
         .find(|a|a.id==input.agent_id).ok_or_else(||bad("agent not found"))?;
