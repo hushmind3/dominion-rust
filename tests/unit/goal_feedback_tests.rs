@@ -14,9 +14,9 @@ fn goal_receipt_preserves_rsi_evaluation_boundary_and_reuses_job_id(){
         "id":"g","status":"completed","iterations":3,"isolateWorktree":true,
         "finalReport":{
             "accepted":true,"successfulToolEvidence":4,"sessionUsage":{"totalTokens":2451},
-            "gaps":[],"artifacts":[{"path":"src/engine/goals.rs","bytes":12}],
-            "checks":[{"path":"src/engine/goals.rs","passed":true}],
-            "gitChanges":{"changedFiles":[{"path":"src/engine/goals.rs","change":"M"},
+            "gaps":[],"artifacts":[{"path":"src/engine/goals/mod.rs","bytes":12}],
+            "checks":[{"path":"src/engine/goals/mod.rs","passed":true}],
+            "gitChanges":{"changedFiles":[{"path":"src/engine/goals/mod.rs","change":"M"},
                 {"path":"../../escape","change":"M"}]}
         }
     });
@@ -26,8 +26,8 @@ fn goal_receipt_preserves_rsi_evaluation_boundary_and_reuses_job_id(){
     let receipt=app.store.get("goal_receipt","goal-receipt-job-1").unwrap();
     assert_eq!(receipt["verifiedCompletion"],true);
     assert_eq!(receipt["independentRsiGain"],false);
-    assert_eq!(receipt["sourcePathsObserved"],json!(["src/engine/goals.rs"]));
-    let context=context(&app,&json!(["src/engine/goals.rs"]));
+    assert_eq!(receipt["sourcePathsObserved"],json!(["src/engine/goals/mod.rs"]));
+    let context=context(&app,&json!(["src/engine/goals/mod.rs"]));
     assert!(context.contains("owner_goal_execution_v1"));
     assert!(context.contains("independentRsiGain"));
     assert!(!context.contains("../../escape"));
