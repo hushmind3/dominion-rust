@@ -1,4 +1,4 @@
-use crate::{hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
+use crate::{mcp::McpCallOutcome,hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
@@ -23,8 +23,16 @@ pub struct Engine {
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>, improvements: Arc<crate::improvement::Improvements>) -> Result<Arc<Self>, String> {
-        let model = ModelClient::new(&settings)?;
-        let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
+        let mcp=Arc::new(crate::mcp::Mcp::from_env()?);
+        Self::new_with_mcp(settings,store,groups,videos,improvements,mcp)
+    }
+    /// Explicit MCP dependency injection keeps server integration tests
+    /// isolated and enables alternate transports without replacing the engine.
+    pub fn new_with_mcp(settings:Settings,store:Arc<Store>,
+        groups:Arc<crate::group::Groups>,videos:Arc<crate::video::Videos>,
+        improvements:Arc<crate::improvement::Improvements>,
+        mcp:Arc<crate::mcp::Mcp>)->Result<Arc<Self>,String>{
+        let model=ModelClient::new(&settings)?;
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
@@ -399,9 +407,17 @@ impl Engine {
         }
         // In-flight intent MUST be synced to disk before any outside effect.
         self.store.mutate(id,|run|journal::begin(run,&call)).await?;
+        let mut remote_uncertain=None;
         let execute = async {
             if call.name.starts_with("mcp__") {
-                self.mcp.call(&call).await
+                match self.mcp.call_cooperative(&call,cancellation.clone()).await {
+                    Ok(McpCallOutcome::Settled(result))=>result,
+                    Ok(McpCallOutcome::Uncertain(reason))=>{
+                        remote_uncertain=Some(reason.clone());
+                        Err(reason)
+                    }
+                    Err(error)=>Err(error),
+                }
             } else if call.name == "spawn_subagent" {
                 let instruction=call.arguments.get("instruction").and_then(Value::as_str)
                     .ok_or("spawn_subagent needs instruction")?;
@@ -457,6 +473,12 @@ impl Engine {
         }else{
             execute.await
         };
+        if let Some(reason)=remote_uncertain {
+            // A dropped Streamable HTTP response is a cancellation signal,
+            // NOT proof that the remote side effect was rolled back.
+            self.store.mutate(id,|run|journal::mark_remote_unknown(run,&call,&reason)).await?;
+            return Ok(());
+        }
         chain.after(&snapshot,&call,&mut output);
         // Receipt + dequeuing + cancellation are one durable Store mutation.
         self.store.mutate(id,|run|journal::finish(run,&call,&output,false)).await?;

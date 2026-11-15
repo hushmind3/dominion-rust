@@ -227,6 +227,22 @@ pub fn reject_approved_hook(run:&mut Run,call:&ToolCall,code:&str,reason:&str)->
     Ok(())
 }
 
+
+/// Remote execution was dispatched but the transport could not establish its
+/// outcome. Keep the immutable intent and tool arguments for reconciliation.
+/// Never write a fake failure receipt, return the budget, or retry.
+pub fn mark_remote_unknown(run:&mut Run,call:&ToolCall,reason:&str)->Result<(),String>{
+    if !run.in_flight.as_ref().is_some_and(|pending|same_call(pending,call)){
+        return Err("uncertain remote result does not match the durable tool intent".into());
+    }
+    run.status=RunStatus::Paused;
+    run.event("mcp_remote_outcome_unknown",
+        format!("MCP tool {} may still have remote effects; do not retry",call.name),
+        Some(json!({"call_id":call.id,"reason":reason.chars().take(1000).collect::<String>(),
+            "reconciliation_required":true})));
+    Ok(())
+}
+
 /// Applies the durable receipt in the same state-store transaction that
 /// releases the intent. It is legal to finish while cancellation is pending.
 pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observed:bool)->Result<(),String>{
@@ -408,6 +424,27 @@ mod tests{
         assert_eq!(run.status,RunStatus::Cancelled);
         assert!(run.queued_calls.is_empty());
         assert_eq!(run.messages.iter().filter(|m|m["role"]=="tool").count(),3);
+    }
+
+    #[test]
+    fn cancelled_remote_mcp_request_preserves_unconfirmed_intent(){
+        let mut run=running();
+        let call=tool("mcp__remote__charge","payment-1");
+        run.queued_calls.push(call.clone());
+        begin(&mut run,&call).unwrap();
+        run.cancel_after_tool=true;
+        run.status=RunStatus::Paused;
+        mark_remote_unknown(&mut run,&call,"MCP HTTP stream dropped").unwrap();
+        assert_eq!(run.status,RunStatus::Paused);
+        assert_eq!(run.in_flight.as_ref().unwrap().id,"payment-1");
+        assert!(run.cancel_after_tool);
+        assert_eq!(run.events.last().unwrap().kind,"mcp_remote_outcome_unknown");
+        assert!(!recover(&mut run),"uncertain remote work must never auto-resume");
+        assert_eq!(run.in_flight.as_ref().unwrap().id,"payment-1");
+        finish(&mut run,&call,&Ok("confirmed by remote audit".into()),true).unwrap();
+        assert_eq!(run.status,RunStatus::Cancelled);
+        assert!(run.in_flight.is_none());
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_reconciled").count(),1);
     }
 
     #[test]
