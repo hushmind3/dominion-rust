@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const state = { selected: null, runs: [], token: '', run: null, selectedGroup:null, groups:[], group:null, selectedVideo:null, videos:[], video:null };
+  const state = { selected: null, runs: [], token: '', run: null, selectedGroup:null, groups:[], group:null, selectedVideo:null, videos:[], video:null, selectedImprovement:null, improvements:[], improvement:null };
   const safe = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const krw = value => Number(value || 0).toLocaleString('ko-KR',{maximumFractionDigits:3});
   const time = ms => new Date(ms).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -20,8 +20,8 @@
   }
   async function load() {
     try {
-      const [runs,config,groups,videos] = await Promise.all([request('/runs'),request('/config'),request('/groups'),request('/videos')]);
-      state.groups=groups;state.videos=videos;
+      const [runs,config,groups,videos,improvements] = await Promise.all([request('/runs'),request('/config'),request('/groups'),request('/videos'),request('/improvements')]);
+      state.groups=groups;state.videos=videos;state.improvements=improvements;
       state.runs = runs;
       $('config-list').textContent = [
         '기본 모델: '+config.model,'경제형 모델: '+config.economy_model,
@@ -30,12 +30,14 @@
         '최대 기본 라운드: '+config.max_steps
       ].join('\n');
       status('● 서버 연결됨',true);
-      renderGroupList();renderVideoList();
+      renderGroupList();renderVideoList();renderImproveList();
       renderList();
       if (state.selectedGroup) { const group=groups.find(g=>g.id===state.selectedGroup);if(group && (!state.group || state.group.updated_at_ms!==group.updated_at_ms))renderGroup(group); }
       else if(groups.length){state.selectedGroup=groups[0].id;renderGroup(groups[0]);}
       if (state.selectedVideo) { const video=videos.find(v=>v.id===state.selectedVideo);if(video && (!state.video || state.video.updated_at_ms!==video.updated_at_ms))renderVideo(video); }
       else if(videos.length){state.selectedVideo=videos[0].id;renderVideo(videos[0]);}
+      if(state.selectedImprovement){const i=improvements.find(x=>x.id===state.selectedImprovement);if(i&&(!state.improvement||state.improvement.updated_at_ms!==i.updated_at_ms))renderImprove(i);}
+      else if(improvements.length){state.selectedImprovement=improvements[0].id;renderImprove(improvements[0]);}
       if (state.selected) {
         const found = runs.find(r=>r.id===state.selected);
         if (found) renderRun(found); else state.selected=null;
@@ -95,7 +97,7 @@
   });
   document.querySelectorAll('nav button').forEach(button=>button.addEventListener('click',()=>{
     document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('active',b===button));
-    ['runs','groups','video','settings'].forEach(name=>$('page-'+name).classList.toggle('hidden',name!==button.dataset.page));
+    ['runs','groups','video','improve','settings'].forEach(name=>$('page-'+name).classList.toggle('hidden',name!==button.dataset.page));
   }));
   $('connect').addEventListener('click',()=>{state.token=$('token').value;$('token').value='';load()});
 
@@ -186,6 +188,46 @@
       state.selectedVideo=v.id;state.video=null;$('video-error').textContent='렌더 시작';await load();
     }catch(error){$('video-error').textContent=error.message}
     finally{$('video-create').disabled=false}
+  });
+
+  function renderImproveList(){
+    $('improve-list').innerHTML=state.improvements.length?state.improvements.map(i=>`<button class="run ${i.id===state.selectedImprovement?'selected':''}" data-improve="${safe(i.id)}"><div class="run-title">${safe(i.instruction)}</div><div class="run-meta"><span>${safe(i.status)}</span><span>${safe(i.target_file)}</span><span>${krw(i.cost_krw)}원</span></div></button>`).join(''):'<p>아직 실험이 없습니다.</p>';
+    document.querySelectorAll('[data-improve]').forEach(button=>button.addEventListener('click',()=>{
+      state.selectedImprovement=button.dataset.improve;renderImproveList();renderImprove(state.improvements.find(i=>i.id===state.selectedImprovement));
+    }));
+  }
+  function renderImprove(i){
+    if(!i)return;state.improvement=i;$('improve-status').textContent=i.status;
+    const outcome=m=>m?`<span style="font-weight:600">${m.tests_passed?'테스트 통과':'테스트 실패'}</span><p>점수: ${m.score??'설정 없음'}</p><div class="output" style="margin-top:9px;max-height:170px">${safe(m.log)}</div>`:'<p>아직 평가하지 않았습니다.</p>';
+    let content=`<p>${safe(i.instruction)}</p><div class="metrics">
+      <div class="metric"><span>대상 파일</span><b style="font-size:12px;overflow-wrap:anywhere">${safe(i.target_file)}</b></div>
+      <div class="metric"><span>모델 비용</span><b>${krw(i.cost_krw)}원</b></div>
+      <div class="metric"><span>개선 판정</span><b>${i.accepted?'향상':'미충족'}</b></div></div>
+      <h2>실행 대상 · 승인 범위</h2><div class="output">${safe(i.repository)} / ${safe(i.target_file)}\n\n테스트: ${safe(i.test_command)}\n평가 점수: ${safe(i.score_command||'없음')}</div>`;
+    if(i.error)content+=`<div class="approval" style="margin-top:15px">${safe(i.error)}</div>`;
+    if(i.base_commit)content+=`<p class="muted" style="margin:12px 0">기준 커밋: ${safe(i.base_commit)}</p>`;
+    if(i.proposal)content+=`<p class="muted" style="margin:12px 0">제안 변경: ${safe(i.proposal)}</p>`;
+    content+=`<div class="workspace" style="grid-template-columns:1fr 1fr;gap:9px;margin-top:20px"><div><h2>동결 기준 평가</h2>${outcome(i.baseline)}</div><div><h2>후보 평가</h2>${outcome(i.candidate)}</div></div>`;
+    if(i.reflection)content+=`<h2 style="margin-top:18px">다음 세대에 전달할 개선 기록</h2><div class="output">${safe(i.reflection)}</div>`;
+    content+='<div class="actions" style="margin-top:19px">';
+    if(i.status==='awaiting_approval')content+='<button class="primary" id="improve-approve">평가 명령 승인 후 실행</button>';
+    if(i.status==='evaluated'&&i.accepted)content+='<button class="primary" id="improve-adopt">검증된 변경 채택</button>';
+    if(i.status==='adopted')content+='<button class="secondary" id="improve-descendant">학습 기록을 이어서 다음 후보 만들기</button>';
+    content+='</div>';
+    $('improve-detail').innerHTML=content;
+    const post=async(path)=>{try{$('improve-error').textContent='처리 중';const result=await request('/improvements/'+i.id+'/'+path,{method:'POST',body:'{}'});$('improve-error').textContent='';if(path==='descendant'){state.selectedImprovement=result.id;state.improvement=null;}await load();}catch(error){$('improve-error').textContent=error.message}};
+    $('improve-approve')?.addEventListener('click',()=>{if(confirm('격리된 Git 작업공간에서 지정한 셸 테스트/점수 명령을 실행하시겠습니까?'))post('approve')});
+    $('improve-adopt')?.addEventListener('click',()=>{if(confirm('원본 Git 저장소에 검증된 후보 커밋을 적용하시겠습니까?'))post('adopt')});
+    $('improve-descendant')?.addEventListener('click',()=>post('descendant'));
+  }
+  $('improve-create').addEventListener('click',async()=>{
+    try{
+      const input={repository:$('improve-repo').value,target_file:$('improve-file').value,
+        instruction:$('improve-instruction').value,test_command:$('improve-test').value};
+      const score=$('improve-score').value.trim();if(score)input.score_command=score;
+      const improvement=await request('/improvements',{method:'POST',body:JSON.stringify(input)});
+      state.selectedImprovement=improvement.id;state.improvement=null;$('improve-error').textContent='실험 대기 생성';await load();
+    }catch(error){$('improve-error').textContent=error.message}
   });
   load();setInterval(()=>{if(!document.hidden)load()},2500);
 })();
