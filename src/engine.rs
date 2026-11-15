@@ -30,6 +30,7 @@ impl Engine {
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
             if run.in_flight.is_some() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
+            if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}
             if run.pending_approval.is_some() && run.approval_decision.is_none() {
                 return Err("approval required before resuming".into());
             }
@@ -54,6 +55,16 @@ impl Engine {
                 }).await;
             }
             engine.active.lock().await.remove(&id);
+            // A completed worker releases unused budget to its parent. The
+            // notification propagates up the delegation tree, and may wake a
+            // parent that explicitly suspended itself waiting for children.
+            if let Some(child)=engine.store.get(id).await {
+                if let Some(parent)=child.parent_run_id {
+                    if let Err(error)=engine.settle_and_wake_ancestors(parent).await{
+                        tracing::warn!(%id,"child settlement needs retry: {error}");
+                    }
+                }
+            }
         });
         Ok(())
     }
@@ -167,6 +178,18 @@ impl Engine {
                 Ok(())
             }).await?;
             if !accepted || !terminal_candidate { continue; }
+            let active_children=self.store.list().await.into_iter().filter(|r|r.parent_run_id==Some(id) && !r.terminal()).map(|r|r.id).collect::<Vec<_>>();
+            if !active_children.is_empty() {
+                self.store.mutate(id,|run|{
+                    if run.terminal()||run.status!=RunStatus::Running{return Ok(());}
+                    run.waiting_for_children=true;
+                    run.status=RunStatus::Paused;
+                    run.messages.push(json!({"role":"user","content":"Delegated workers are not finished. After they complete, check each result, inspect artifacts, reconcile any failures, and explicitly integrate necessary patches before concluding."}));
+                    run.event("subagents_wait",format!("Waiting on {} delegated worker(s)",active_children.len()),Some(json!({"children":active_children})));
+                    Ok(())
+                }).await?;
+                return Ok(());
+            }
             let latest = self.store.get(id).await.ok_or("execution not found")?;
             if latest.terminal() { return Ok(()); }
             let workspace = self.settings.workspace_dir.join(id.to_string());
@@ -289,6 +312,68 @@ impl Engine {
                 Some(json!({"call_id":call.id,"succeeded":input.succeeded})));
             Ok(())
         }).await
+    }
+
+    /// Settle finished child allocations exactly once and wake parents that
+    /// paused *specifically* for child completion. Never auto-resume a human
+    /// approval, an uncertain side effect, or a generic paused failure.
+    async fn settle_and_wake_ancestors(self:&Arc<Self>,start:Uuid)->Result<(),String>{
+        let mut ancestor=Some(start);
+        while let Some(id)=ancestor {
+            {
+                let _guard=self.delegate_lock.lock().await;
+                let all=self.store.list().await;
+                let direct=all.iter().filter(|r|r.parent_run_id==Some(id)).collect::<Vec<_>>();
+                let finished=direct.iter().filter(|child|{
+                    if !child.terminal(){return false;}
+                    // A cancelled child may still own active grandchildren.
+                    // Its unused allocation is returned only after those bills
+                    // have also been durably settled into that child's record.
+                    let grandchildren=all.iter().filter(|r|r.parent_run_id==Some(child.id)).collect::<Vec<_>>();
+                    grandchildren.iter().all(|r|r.terminal()&&child.settled_child_ids.contains(&r.id))
+                }).map(|r|(*r).clone()).collect::<Vec<_>>();
+                if !finished.is_empty(){
+                    self.store.mutate(id,|run|{
+                        for child in &finished {
+                            if run.settled_child_ids.contains(&child.id){continue;}
+                            run.reserved_budget_krw=(run.reserved_budget_krw-child.budget_krw).max(0.0);
+                            let actual=child.cost_krw+child.delegated_spent_krw;
+                            run.delegated_spent_krw+=actual;
+                            run.settled_child_ids.push(child.id);
+                            run.event("budget_settled",format!("Child {} used {:.4} of {:.4} KRW",child.id,actual,child.budget_krw),
+                                Some(json!({"child_id":child.id,"cost_krw":actual,"released_krw":(child.budget_krw-actual).max(0.0)})));
+                        }
+                        if run.cost_krw>policy::effective_budget_krw(run) && !run.terminal(){
+                            run.status=RunStatus::Failed;
+                            run.event("budget_exceeded","Aggregate parent and delegated model charges exceeded budget",None);
+                        }
+                        Ok(())
+                    }).await?;
+                }
+            }
+            let all=self.store.list().await;
+            let pending=all.iter().any(|r|r.parent_run_id==Some(id)&&!r.terminal());
+            let parent=self.store.get(id).await.ok_or("parent run missing")?;
+            if parent.waiting_for_children && !pending && !parent.terminal(){
+                self.store.mutate(id,|run|{
+                    if run.waiting_for_children && run.status==RunStatus::Paused && run.in_flight.is_none() && run.pending_approval.is_none(){
+                        run.waiting_for_children=false;
+                        run.event("subagents_ready","All delegated workers finished; resuming parent verification",None);
+                    }
+                    Ok(())
+                }).await?;
+                // The parent worker may still be releasing its active marker.
+                for _ in 0..50{
+                    if !self.active.lock().await.contains(&id) {
+                        self.launch(id).await?;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            ancestor=parent.parent_run_id;
+        }
+        Ok(())
     }
 
     /// Native delegated work: separate durable transcript and workspace.

@@ -4,7 +4,7 @@ use crate::domain::Run;
 use serde_json::Value;
 
 pub fn effective_budget_krw(run:&Run)->f64{
-    (run.budget_krw-run.reserved_budget_krw).max(0.0)
+    (run.budget_krw-run.reserved_budget_krw-run.delegated_spent_krw).max(0.0)
 }
 
 pub fn allowed_tool(run:&Run,name:&str)->bool{
@@ -39,6 +39,9 @@ mod tests{
     fn reserved_child_budgets_reduce_parent_effective_limit(){
         let mut run=Run::new(CreateRun{instruction:"x".into(),budget_krw:Some(100.0),max_steps:None},5).unwrap();
         run.reserved_budget_krw=60.0;
+        assert_eq!(effective_budget_krw(&run),40.0);
+        run.reserved_budget_krw=40.0;
+        run.delegated_spent_krw=20.0;
         assert_eq!(effective_budget_krw(&run),40.0);
         run.cost_krw=39.0;
         assert!(run.cost_krw<=effective_budget_krw(&run));

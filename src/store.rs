@@ -25,6 +25,25 @@ impl Store {
             }
             state.insert(run.id, run);
         }
+        // Backward-compatible recovery: earlier revisions allocated child
+        // budgets but did not persist the reservation on the parent.
+        let child_allocations=state.values().filter_map(|child|
+            child.parent_run_id.map(|parent|(parent,child.id,child.budget_krw)))
+            .collect::<Vec<_>>();
+        let mut legacy_reserved=HashMap::<Uuid,f64>::new();
+        for (parent,child,budget) in child_allocations {
+            if state.get(&parent).is_some_and(|r|!r.settled_child_ids.contains(&child)){
+                *legacy_reserved.entry(parent).or_default()+=budget;
+            }
+        }
+        for (parent,amount) in legacy_reserved{
+            if let Some(run)=state.get_mut(&parent){
+                if run.reserved_budget_krw==0.0 && amount>0.0 {
+                    run.reserved_budget_krw=amount;
+                    run.event("reservation_migrated","Recovered pre-escrow child budget reservations",None);
+                }
+            }
+        }
         let store = Self { root, state: Mutex::new(state) };
         // Persist recovery markers to make restart behavior stable across crashes.
         for run in store.list().await { store.put(run).await?; }

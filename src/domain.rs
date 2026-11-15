@@ -54,6 +54,15 @@ pub struct Run {
     /// Child budgets are durably reserved before workers can start.
     #[serde(default)]
     pub reserved_budget_krw: f64,
+    /// Final bill for child subtrees whose unused budget has been returned.
+    #[serde(default)]
+    pub delegated_spent_krw: f64,
+    /// Durable settlement IDs prevent double charging after process crashes.
+    #[serde(default)]
+    pub settled_child_ids: Vec<Uuid>,
+    /// Paused only until already-started child workers become terminal.
+    #[serde(default)]
+    pub waiting_for_children: bool,
     /// Constrained investigator: no filesystem writes, shell or merge.
     #[serde(default)]
     pub read_only: bool,
@@ -100,7 +109,7 @@ impl Run {
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(),
             pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, context_chars_avoided: 0, repository: None, base_commit: None, steps: 0,
             input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
-            reserved_budget_krw:0.0, read_only:false, tool_schema_chars_avoided:0,
+            reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             created_at_ms: time, updated_at_ms: time,
         };
