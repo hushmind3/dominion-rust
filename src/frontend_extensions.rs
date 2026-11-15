@@ -165,8 +165,7 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/skills/{id}",axum::routing::delete(skill_delete))
         .route("/skills/{id}/export",get(skill_export))
         .route("/skill-catalog",get(skill_catalog))
-        .route("/skill-catalog/import",post(skill_import_unavailable))
-        .route("/skills/import-repo",post(skill_import_unavailable))
+        // GitHub imports are handled by the pinned-source native importer.
 }
 async fn mcp_list(State(engine):State<Arc<Engine>>)->Json<Value>{
     Json(json!(engine.extensions.mcp_list().await.iter().map(|v|json!({
