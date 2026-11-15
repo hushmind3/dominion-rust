@@ -106,7 +106,10 @@ impl Engine {
         let settings=self.providers.resolve(&run.provider_id,&run.model_name,&self.settings.main)?;
         if run.provider_id.is_empty()||run.provider_id=="dominion-native"{
             Ok(self.model.clone())
-        }else{Ok(self.model.with_primary(settings))}
+        }else{
+            let record=self.providers.get(&run.provider_id).ok_or("provider registry entry unavailable")?;
+            self.model.with_primary_protocol(settings,&record.kind)
+        }
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {

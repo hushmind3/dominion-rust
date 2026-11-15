@@ -289,7 +289,11 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
     engine.providers.throttle(&provider).await;
     let selected_model=if provider=="dominion-native"{
         engine.model.clone()
-    }else{engine.model.with_primary(settings)};
+    }else{
+        let kind=engine.providers.get(&provider)
+            .ok_or_else(||bad("room model provider missing"))?.kind;
+        engine.model.with_primary_protocol(settings,&kind).map_err(bad)?
+    };
     room=engine.groups.next(&selected_model,id).await.map_err(bad)?;
     turns+=1;
     if config.auto_learning{

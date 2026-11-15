@@ -110,13 +110,18 @@ fn active<'a>(engine:&'a Engine,id:&str)->Result<(ModelSettings,Option<Provider>
     let settings=engine.providers.resolve(id,&item.model,&engine.settings.main).map_err(bad)?;
     Ok((settings,Some(item)))
 }
-async fn fetch_models(settings:&ModelSettings)->Result<Vec<Value>,String>{
+async fn fetch_models(settings:&ModelSettings,protocol:&str)->Result<Vec<Value>,String>{
     let client=reqwest::Client::builder().timeout(Duration::from_secs(12))
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|e|e.to_string())?;
     let url=format!("{}/models",settings.base_url.trim_end_matches('/'));
     let mut req=client.get(url);
-    if !settings.api_key.is_empty(){req=req.bearer_auth(&settings.api_key);}
+    if protocol=="anthropic"{
+        req=req.header("anthropic-version","2023-06-01");
+        if !settings.api_key.is_empty(){req=req.header("x-api-key",&settings.api_key);}
+    }else if !settings.api_key.is_empty(){
+        req=req.bearer_auth(&settings.api_key);
+    }
     let response=req.send().await.map_err(|e|e.to_string())?;
     if !response.status().is_success(){
         return Err(format!("provider models returned HTTP {}",response.status()));
@@ -135,8 +140,9 @@ async fn fetch_models(settings:&ModelSettings)->Result<Vec<Value>,String>{
 }
 async fn models(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
-    let (settings,_)=active(&engine,&id)?;
-    let list=match fetch_models(&settings).await{
+    let (settings,selected)=active(&engine,&id)?;
+    let protocol=selected.as_ref().map(|p|p.kind.as_str()).unwrap_or("openai");
+    let list=match fetch_models(&settings,protocol).await{
         Ok(models)=>models,
         Err(error)=>{
             // An explicitly configured model is not a live-discovered model.
@@ -157,11 +163,11 @@ struct Probe{
 }
 async fn test(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     Json(body):Json<Probe>)->Result<Json<Value>,Fault>{
-    let (mut settings,_) = if id=="new"{
+    let (mut settings,record) = if id=="new"{
         let url=body.base_url.as_deref().ok_or_else(||bad("provider test requires a URL"))?;
         let (base_url,_)=provider_registry::normalized_url(url).map_err(bad)?;
         let kind=body.kind.as_deref().unwrap_or("openai");
-        if !matches!(kind,"openai"|"ollama"){
+        if !matches!(kind,"openai"|"ollama"|"anthropic"){
             return Err(unsupported("This provider protocol has no native model adapter"));
         }
         let mut settings=engine.settings.main.clone();
@@ -186,7 +192,9 @@ async fn test(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
         }
         if let Some(key)=body.api_key.filter(|s|!s.is_empty()){settings.api_key=key;}
     }
-    let model=engine.model.with_primary(settings);
+    let protocol=if id=="new"{body.kind.as_deref().unwrap_or("openai")}
+        else{record.as_ref().map(|p|p.kind.as_str()).unwrap_or("openai")};
+    let model=engine.model.with_primary_protocol(settings,protocol).map_err(bad)?;
     let response=model.complete(&[json!({"role":"user",
         "content":"Reply with the single word OK."})],&[],false).await;
     Ok(Json(match response{

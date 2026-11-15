@@ -240,7 +240,11 @@ async fn drive_reserved(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
                 &engine.settings.main)?;
             let client=if state.provider_id=="dominion-native"{
                 engine.model.clone()
-            }else{engine.model.with_primary(profile)};
+            }else{
+                let kind=engine.providers.get(&state.provider_id)
+                    .ok_or("RSI provider missing")?.kind;
+                engine.model.with_primary_protocol(profile,&kind)?
+            };
             engine.providers.throttle(&state.provider_id).await;
             engine.improvements.start(client,trial.id,engine.settings.shell_enabled).await?;
             trial.id

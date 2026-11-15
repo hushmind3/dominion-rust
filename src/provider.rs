@@ -8,6 +8,8 @@ pub struct ModelClient {
     http: Client,
     strong: ModelSettings,
     economy: ModelSettings,
+    strong_protocol:String,
+    economy_protocol:String,
 }
 pub struct Reply {
     pub message: Value,
@@ -26,28 +28,40 @@ impl ModelClient {
             // Never forward operator-owned credentials to a redirect target.
             .redirect(reqwest::redirect::Policy::none())
             .build().map_err(|e| e.to_string())?;
-        Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone() })
+        Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone(),
+            strong_protocol:"openai".into(),economy_protocol:"openai".into() })
     }
     /// Snapshot the selected provider for a single native Run. Requests
     /// never fall back to a different vendor or model without user choice.
     pub fn with_primary(&self,selected:ModelSettings)->Self{
-        Self{http:self.http.clone(),strong:selected.clone(),economy:selected}
+        Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
+            strong_protocol:"openai".into(),economy_protocol:"openai".into()}
+    }
+    pub fn with_primary_protocol(&self,selected:ModelSettings,protocol:&str)->Result<Self,String>{
+        if !matches!(protocol,"openai"|"ollama"|"anthropic"){
+            return Err("unsupported native model protocol".into());
+        }
+        Ok(Self{http:self.http.clone(),strong:selected.clone(),economy:selected,
+            strong_protocol:protocol.to_owned(),economy_protocol:protocol.to_owned()})
     }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
         if economy {
-            match self.request(&self.economy, messages, tools).await {
+            match self.request(&self.economy,&self.economy_protocol,messages,tools).await {
                 Ok(reply) => return Ok(reply),
-                Err(error) if self.economy.base_url == self.strong.base_url && self.economy.name == self.strong.name => return Err(error),
+                Err(error) if self.economy.base_url == self.strong.base_url &&
+                    self.economy.name == self.strong.name &&
+                    self.economy_protocol==self.strong_protocol => return Err(error),
                 Err(_) => {} // explicit fallback: main model, with its actual metered cost
             }
         }
-        self.request(&self.strong, messages, tools).await
+        self.request(&self.strong,&self.strong_protocol,messages,tools).await
     }
-    async fn request(&self, settings: &ModelSettings, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
+    async fn request(&self,settings:&ModelSettings,protocol:&str,messages:&[Value],tools:&[Value])
+        ->Result<Reply,String>{
         // Retry only transient HTTP/transport failures. A completed model reply
         // is never replayed through the harness; tool side effects are journaled separately.
         for attempt in 0..3u32 {
-            match self.request_once(settings,messages,tools).await {
+            match self.request_once(settings,protocol,messages,tools).await {
                 Ok(reply)=>return Ok(reply),
                 Err(error) if retryable(&error) && attempt<2=>{
                     let delay=250u64.saturating_mul(1u64<<attempt);
@@ -59,7 +73,11 @@ impl ModelClient {
         }
         Err("provider retries exhausted".into())
     }
-    async fn request_once(&self, settings: &ModelSettings, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
+    async fn request_once(&self, settings:&ModelSettings,protocol:&str,
+        messages:&[Value],tools:&[Value])->Result<Reply,String>{
+        if protocol=="anthropic"{
+            return self.request_anthropic(settings,messages,tools).await;
+        }
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
         // OpenAI-specific cache controls are explicitly gated to the native
         // endpoint so OpenAI-compatible third-party servers are not broken.
@@ -109,6 +127,161 @@ impl ModelClient {
         let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
         Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_krw, model: settings.name.clone() })
     }
+
+    async fn request_anthropic(&self,settings:&ModelSettings,messages:&[Value],tools:&[Value])
+        ->Result<Reply,String>{
+        let (system,conversation)=anthropic_messages(messages)?;
+        let mut body=json!({
+            "model":settings.name,"messages":conversation,
+            "max_tokens":4096,"stream":false
+        });
+        if !system.is_empty(){body["system"]=json!(system);}
+        if !tools.is_empty(){
+            let mut supported=Vec::new();
+            for tool in tools{
+                let function=tool.get("function").ok_or("missing native tool function schema")?;
+                let name=function.get("name").and_then(Value::as_str)
+                    .ok_or("native tool missing name")?;
+                let schema=function.get("parameters").cloned().ok_or("tool parameters missing")?;
+                if !schema.is_object(){return Err("Anthropic tool schema must be an object".into());}
+                supported.push(json!({
+                    "name":name,"description":function.get("description").and_then(Value::as_str).unwrap_or(""),
+                    "input_schema":schema
+                }));
+            }
+            body["tools"]=json!(supported);
+            body["tool_choice"]=json!({"type":"auto"});
+        }
+        let url=format!("{}/messages",settings.base_url.trim_end_matches('/'));
+        let mut request=self.http.post(url).json(&body)
+            .header("anthropic-version","2023-06-01");
+        if !settings.api_key.is_empty(){
+            request=request.header("x-api-key",&settings.api_key);
+        }
+        let response=request.send().await.map_err(|e|format!("provider transport: {e}"))?;
+        let status=response.status();
+        let bytes=response.bytes().await.map_err(|e|format!("provider body: {e}"))?;
+        if !status.is_success(){
+            let text=String::from_utf8_lossy(&bytes);
+            return Err(format!("provider HTTP {status}: {}",
+                text.chars().take(500).collect::<String>()));
+        }
+        let raw:Value=serde_json::from_slice(&bytes)
+            .map_err(|e|format!("invalid Anthropic JSON: {e}"))?;
+        if raw.get("type").and_then(Value::as_str)!=Some("message"){
+            return Err("Anthropic provider did not return a message object".into());
+        }
+        let blocks=raw.get("content").and_then(Value::as_array)
+            .ok_or("Anthropic message has no content blocks")?;
+        let mut text=Vec::new();
+        let mut calls=Vec::new();
+        let mut tool_calls=Vec::new();
+        for block in blocks{
+            match block.get("type").and_then(Value::as_str){
+                Some("text")=>{
+                    let value=block.get("text").and_then(Value::as_str)
+                        .ok_or("Anthropic text block missing text")?;
+                    text.push(value.to_owned());
+                },
+                Some("tool_use")=>{
+                    let id=block.get("id").and_then(Value::as_str)
+                        .ok_or("Anthropic tool_use missing ID")?.to_owned();
+                    let name=block.get("name").and_then(Value::as_str)
+                        .ok_or("Anthropic tool_use missing name")?.to_owned();
+                    let arguments=block.get("input").cloned()
+                        .ok_or("Anthropic tool_use missing input")?;
+                    if !arguments.is_object(){return Err("Anthropic tool input must be object".into());}
+                    tool_calls.push(json!({
+                        "id":id,"type":"function",
+                        "function":{"name":name,"arguments":arguments.to_string()}
+                    }));
+                    calls.push(ToolCall{id,name,arguments});
+                },
+                Some("thinking"|"redacted_thinking")=>{},
+                Some(other)=>return Err(format!("unsupported Anthropic response content block: {other}")),
+                None=>return Err("Anthropic content block missing type".into()),
+            }
+        }
+        let joined=text.join("\n");
+        let mut message=json!({"role":"assistant","content":joined});
+        if !tool_calls.is_empty(){message["tool_calls"]=json!(tool_calls);}
+        let usage=raw.get("usage").ok_or("Anthropic usage missing")?;
+        let input_tokens=usage.get("input_tokens").and_then(Value::as_u64)
+            .ok_or("Anthropic billed input token count missing")?;
+        let output_tokens=usage.get("output_tokens").and_then(Value::as_u64)
+            .ok_or("Anthropic billed output token count missing")?;
+        let cached_input_tokens=usage.get("cache_read_input_tokens")
+            .and_then(Value::as_u64).unwrap_or(0);
+        let cache_write_tokens=usage.get("cache_creation_input_tokens")
+            .and_then(Value::as_u64).unwrap_or(0);
+        let input_total=input_tokens.saturating_add(cached_input_tokens)
+            .saturating_add(cache_write_tokens);
+        let cost_krw=estimate_cost(settings,input_total,cached_input_tokens,
+            cache_write_tokens,output_tokens);
+        Ok(Reply{
+            message,text:joined,calls,input_tokens:input_total,
+            cached_input_tokens,cache_write_tokens,output_tokens,
+            cost_krw,model:raw.get("model").and_then(Value::as_str)
+                .unwrap_or(&settings.name).to_owned()
+        })
+    }
+}
+
+fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
+    let mut system=Vec::<String>::new();
+    let mut messages=Vec::<Value>::new();
+    for record in original{
+        let role=record.get("role").and_then(Value::as_str)
+            .ok_or("model history entry missing role")?;
+        let content=match record.get("content"){
+            Some(Value::String(s))=>s.as_str(),
+            Some(Value::Null)|None=>"",
+            _=>return Err("Anthropic model adapter requires plain-text history content".into()),
+        };
+        match role{
+            "system"|"developer"=>{if !content.is_empty(){system.push(content.to_owned());}},
+            "user"=>messages.push(json!({"role":"user","content":[
+                {"type":"text","text":content}
+            ]})),
+            "assistant"=>{
+                let mut blocks=Vec::<Value>::new();
+                if !content.is_empty(){blocks.push(json!({"type":"text","text":content}));}
+                if let Some(tool_calls)=record.get("tool_calls").and_then(Value::as_array){
+                    for call in tool_calls{
+                        let id=call.get("id").and_then(Value::as_str)
+                            .ok_or("previous native tool call lacks ID")?;
+                        let name=call.pointer("/function/name").and_then(Value::as_str)
+                            .ok_or("previous native tool call lacks name")?;
+                        let raw=call.pointer("/function/arguments").and_then(Value::as_str)
+                            .ok_or("previous native tool call lacks arguments")?;
+                        let input:Value=serde_json::from_str(raw)
+                            .map_err(|e|format!("previous tool input is invalid: {e}"))?;
+                        blocks.push(json!({"type":"tool_use","id":id,"name":name,"input":input}));
+                    }
+                }
+                if blocks.is_empty(){return Err("assistant message contains no content".into());}
+                messages.push(json!({"role":"assistant","content":blocks}));
+            },
+            "tool"=>{
+                let call_id=record.get("tool_call_id").and_then(Value::as_str)
+                    .ok_or("tool receipt missing associated call ID")?;
+                let result=json!({"type":"tool_result","tool_use_id":call_id,"content":content});
+                if let Some(last)=messages.last_mut(){
+                    if last.get("role").and_then(Value::as_str)==Some("user"){
+                        if let Some(blocks)=last.get_mut("content").and_then(Value::as_array_mut){
+                            if blocks.iter().all(|v|v["type"]=="tool_result"){
+                                blocks.push(result);continue;
+                            }
+                        }
+                    }
+                }
+                messages.push(json!({"role":"user","content":[result]}));
+            },
+            other=>return Err(format!("unsupported native message role for Anthropic: {other}")),
+        }
+    }
+    if messages.is_empty(){return Err("Anthropic request has no conversation messages".into());}
+    Ok((system.join("\n\n"),messages))
 }
 fn retryable(error:&str)->bool{
     error.starts_with("provider transport:") ||

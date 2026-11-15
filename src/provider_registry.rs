@@ -131,8 +131,8 @@ impl Registry{
     pub fn upsert(&self,draft:Draft)->Result<Provider,String>{
         if draft.name.trim().is_empty()||draft.name.len()>120||draft.model.len()>240
             ||draft.requests_per_minute>100_000{return Err("invalid provider name/model/rate".into());}
-        if !matches!(draft.kind.as_str(),"openai"|"ollama"){
-            return Err("native model client currently supports OpenAI-compatible APIs and Ollama; other protocols require a native adapter".into());
+        if !matches!(draft.kind.as_str(),"openai"|"ollama"|"anthropic"){
+            return Err("native model client supports OpenAI-compatible, Ollama and Anthropic Messages APIs".into());
         }
         let (base_url,loopback)=normalized_url(&draft.base_url)?;
         if draft.local&&!loopback{
