@@ -200,3 +200,9 @@ security shortcut and does not imply measured real-provider accuracy.
 ## Repository-aware RSI without manual file input
 
 `NewImprovement::target_file` can now be an empty string, or omitted from JSON API requests. `NewImprovement::target_files` may be `None` to enable native Rust Git source discovery after approval. The response persists `target_files` and `selection_reason` after the model identifies relevant modules. The frozen judge and existing adopting state continue to control actual source changes. No external agent SDK is involved.
+
+## Evidence-based strategy retrieval (2026-11-15)
+
+`Dominion::search_strategies(repository, goal, max)` returns bounded, project-specific `StrategyEvidence` with source run/trial UUID, provenance, measured scores where available, attempts, actual provider charges and a conditional method note. Adoption and strict completion, not model opinion, determine whether a candidate counts as positive evidence. The native agent plan and RSI candidate generator query the same evidence internally; the REST adapter exposes `GET /api/v1/strategies`. This non-weight strategy layer is implemented within Rust and is independent of the configured provider.
+
+Strategy reuse is controlled by `Settings::from_env` / `DOMINION_STRATEGY_LEARNING=false`; the getter still allows users to inspect the recorded evidence without executing new model calls. `PublicSettings.strategy_learning_enabled` reports its effective value.

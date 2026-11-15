@@ -24,6 +24,8 @@ pub struct Settings {
     pub economy: ModelSettings,
     pub max_steps: usize,
     pub shell_enabled: bool,
+    /// User-controlled evidence reuse; never changes configured model weights.
+    pub strategy_learning_enabled: bool,
     /// Maximum concurrent side-effect-free inspections per model step.
     pub max_parallel_reads: usize,
     /// Operator-enforced names that cannot enter a tool dispatcher.
@@ -85,6 +87,7 @@ impl Settings {
             workspace_dir: PathBuf::from(var("DOMINION_WORKSPACE_DIR", "./workspace")),
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
+            strategy_learning_enabled: var("DOMINION_STRATEGY_LEARNING","true")!="false",
             max_parallel_reads:var("DOMINION_MAX_PARALLEL_READS","4").parse::<usize>().unwrap_or(4).clamp(1,8),
             denied_tools:var("DOMINION_DENIED_TOOLS","").split(',')
                 .map(str::trim).filter(|name|!name.is_empty())

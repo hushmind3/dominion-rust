@@ -288,3 +288,9 @@ restart. The multi-file end-to-end fixture simulates this interruption.
 ### Next frontier capability: source discovery instead of manually named RSI files
 
 The Rust RSI path now has bounded Git-indexed module discovery, goal-sensitive path ranking, context-efficient signature sampling and model-driven selection validated against the source index before candidate generation. UI defaults to discovery; TypeScript and REST allow omitting target_file. This closes the manual-target dependency while retaining current strict worktree evaluation and adoption. It is not yet unrestricted autonomous repository restructuring, cross-domain A-B-A adaptation, real-model performance validation or a complete replacement for plan-act tooling. CI has not been run for this step on user request.
+
+### Verified strategy learning and agent/RSI feedback bridge (2026-11-15)
+
+Native `strategy.rs` now ranks independently evidenced, repository-scoped cases. Frozen RSI outcomes are projected from durable experiments, strict-pass completed agent task evidence from the existing run journal, and conditional methods from a small, metered LLM reflection of measured Git patches. Rejected trials are never promoted to successes. The same evidence now enters the Rust planner, in-flight agent model context, and the next RSI improvement prompt. SDK/REST/Studio expose it without an external agent harness. Existing source checkout and promotion authority remain under the core engine. This is an implementation claim, not a benchmark score. New code has not been executed during this step.
+
+This cross-run evidence retrieval can be disabled by the operator independently from the model provider, via `DOMINION_STRATEGY_LEARNING=false`. The UI reports the active policy; the strategy list itself is always inspectable.

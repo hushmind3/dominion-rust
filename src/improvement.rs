@@ -1,7 +1,7 @@
 use crate::{domain::now_ms, provider::ModelClient};
 use serde::{Deserialize,Serialize};
 use serde_json::json;
-use std::{collections::{HashMap,HashSet},path::{Component,Path,PathBuf},process::Stdio,sync::Arc,time::Duration};
+use std::{collections::{HashMap,HashSet},path::{Component,Path,PathBuf},process::Stdio,sync::{Arc,OnceLock,atomic::{AtomicBool,Ordering}},time::Duration};
 use tokio::{fs,io::{AsyncReadExt,AsyncWriteExt},process::Command,sync::Mutex};
 use uuid::Uuid;
 
@@ -20,6 +20,8 @@ pub struct Improvement {
     pub attempts:usize,
     #[serde(default)]
     pub selection_reason:Option<String>,
+    #[serde(default)]
+    pub strategy:Option<crate::strategy::StrategyHypothesis>,
     pub instruction:String, pub test_command:String, pub score_command:Option<String>,
     pub status:ImprovementStatus, pub base_commit:Option<String>,pub candidate_commit:Option<String>,
     pub baseline:Option<Measurement>,pub candidate:Option<Measurement>,pub proposal:Option<String>,
@@ -37,7 +39,9 @@ pub struct NewImprovement {
 }
 pub struct Improvements {
     root:PathBuf, workspace:PathBuf,
-    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>,adoption_lock:Mutex<()>
+    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>,adoption_lock:Mutex<()>,
+    runs:OnceLock<Arc<crate::store::Store>>,
+    strategy_learning_enabled:AtomicBool,
 }
 fn relative(raw:&str)->Result<&Path,String>{
     if raw.is_empty()||raw.len()>1024||raw.as_bytes().contains(&0){return Err("invalid relative path".into());}
@@ -175,6 +179,26 @@ async fn persist_improvement(root:&Path,item:&Improvement)->Result<(),String>{
 }
 
 impl Improvements {
+    /// Attach the existing durable agent store without duplicating its receipts.
+    /// Standalone native RSI clients can operate with RSI-only evidence.
+    pub fn attach_runs(&self,store:Arc<crate::store::Store>){
+        let _=self.runs.set(store);
+    }
+    pub fn set_strategy_learning(&self,enabled:bool){
+        self.strategy_learning_enabled.store(enabled,Ordering::Relaxed);
+    }
+    fn learn_enabled(&self)->bool{
+        self.strategy_learning_enabled.load(Ordering::Relaxed)
+    }
+    pub async fn strategy_evidence(&self,repository:&str,goal:&str,max:usize)
+        ->Vec<crate::strategy::StrategyEvidence>{
+        let mut proof=self.items.lock().await.values()
+            .filter_map(crate::strategy::from_improvement).collect::<Vec<_>>();
+        if let Some(store)=self.runs.get(){
+            proof.extend(store.strategy_evidence(repository).await);
+        }
+        crate::strategy::rank(proof,repository,goal,max)
+    }
     pub async fn open(root:PathBuf,workspace:PathBuf)->Result<Self,String>{
         fs::create_dir_all(&root).await.map_err(|e|e.to_string())?;
         fs::create_dir_all(&workspace).await.map_err(|e|e.to_string())?;
@@ -196,7 +220,7 @@ impl Improvements {
         }
         // Recovery is durable before clients can observe the recovered state.
         for item in &recovered {persist_improvement(&root,item).await?;}
-        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new()),adoption_lock:Mutex::new(())})
+        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new()),adoption_lock:Mutex::new(()),runs:OnceLock::new(),strategy_learning_enabled:AtomicBool::new(true)})
     }
     async fn put(&self,item:Improvement)->Result<Improvement,String>{
         let mut lock=self.items.lock().await;
@@ -234,7 +258,7 @@ impl Improvements {
         let status=ImprovementStatus::AwaitingApproval;
         let now=now_ms();
         self.put(Improvement{id:Uuid::new_v4(),parent:input.parent,repository:input.repository,target_file:input.target_file,
-            target_files,attempts:0,selection_reason:None,
+            target_files,attempts:0,selection_reason:None,strategy:None,
             instruction:input.instruction,test_command:input.test_command,score_command:input.score_command,status,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,proposal:None,reflection:None,
             accepted:false,cost_krw:0.0,error:None,created_at_ms:now,updated_at_ms:now}).await
@@ -338,14 +362,16 @@ impl Improvements {
         let inherited=if let Some(parent)=item.parent {
             self.get(parent).await.and_then(|p|p.reflection).unwrap_or_default()
         }else{String::new()};
+        let previous=if self.learn_enabled(){self.strategy_evidence(&item.repository,&item.instruction,4).await}else{Vec::new()};
+        let prior_guidance=crate::strategy::guidance(&previous);
         let baseline=self.measure(reference,&item.test_command,item.score_command.as_deref()).await?;
         item.baseline=Some(baseline.clone());
         self.put(item.clone()).await?;
         let mut prompts=vec![
             json!({"role":"system","content":"Improve the designated source files. For multiple files return ONLY JSON of shape {\"files\":[{\"path\":\"exact designated path\",\"content\":\"complete source text\"}]}. Include each specified path exactly once. For one source file, a complete plain-text file is accepted. Never edit tests, evaluation commands, configuration or other paths. Preserve functionality and user goals; a separate fixed judge checks your work."}),
             json!({"role":"user","content":format!(
-                "Improvement goal:\n{}\nInherited measured lessons:\n{}\nExact authorized files and original source:\n{}\nThe tests and scoring commands are frozen; no changes outside these files are admitted.",
-                item.instruction,inherited,serde_json::to_string(&sources).map_err(|e|e.to_string())?
+                "Improvement goal:\n{}\nParent measured lessons:\n{}\nEarlier independently evaluated strategy evidence (non-authoritative, prefer current goal):\n{}\nExact authorized files and original source:\n{}\nThe tests and scoring commands are frozen; no changes outside these files are admitted.",
+                item.instruction,inherited,prior_guidance,serde_json::to_string(&sources).map_err(|e|e.to_string())?
             )})
         ];
         let base=item.base_commit.as_deref().ok_or("missing frozen base revision")?.to_owned();
@@ -437,6 +463,16 @@ impl Improvements {
                 // discard it when the candidate worktree is removed.
                 let pin=format!("refs/dominion/rsi/{}",item.id);
                 git(candidate,&["update-ref",&pin,&commit]).await?;
+                let evidence_diff=git(candidate,&["show","--format=","--no-ext-diff","HEAD"])
+                    .await.unwrap_or_else(|_|"Patch exceeded the bounded reflection window".into());
+                let (hypothesis,cost)=if self.learn_enabled(){
+                    crate::strategy::reflect(
+                        model,&item.instruction,&item.target_files,&evidence_diff,
+                        &baseline,item.candidate.as_ref().unwrap(),true
+                    ).await
+                }else{(None,0.0)};
+                item.cost_krw+=cost;
+                item.strategy=hypothesis;
                 item.status=ImprovementStatus::Evaluated;
                 self.put(item.clone()).await?;
                 return Ok(());
@@ -450,6 +486,18 @@ impl Improvements {
         }
         item.status=ImprovementStatus::Rejected;
         item.accepted=false;
+        if let Some(failed)=item.candidate.as_ref(){
+            let evidence_diff=git(candidate,&["show","--format=","--no-ext-diff","HEAD"])
+                .await.unwrap_or_default();
+            let (hypothesis,cost)=if self.learn_enabled(){
+                crate::strategy::reflect(
+                    model,&item.instruction,&item.target_files,&evidence_diff,
+                    &baseline,failed,false
+                ).await
+            }else{(None,0.0)};
+            item.cost_krw+=cost;
+            item.strategy=hypothesis;
+        }
         item.error=Some(format!("Three source attempts did not satisfy frozen evaluation: {last_problem}"));
         item.updated_at_ms=now_ms();
         self.put(item.clone()).await?;
@@ -572,7 +620,7 @@ mod tests {
         let id=Uuid::new_v4();
         let item=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"src/lib.rs".into(),
-            target_files:vec![],attempts:0,selection_reason:None,
+            target_files:vec![],attempts:0,selection_reason:None,strategy:None,
             instruction:"repair behavior".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::Running,
             base_commit:None,candidate_commit:None,
@@ -599,7 +647,7 @@ mod tests {
         let id=Uuid::new_v4();
         let original=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"file.txt".into(),
-            target_files:vec![],attempts:0,selection_reason:None,
+            target_files:vec![],attempts:0,selection_reason:None,strategy:None,
             instruction:"preserve state".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::AwaitingApproval,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,

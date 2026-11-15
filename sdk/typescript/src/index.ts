@@ -15,7 +15,7 @@ export interface Run {
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
-  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; context_max_chars?: number; mcp_server_count: number; max_parallel_reads?: number; denied_tools?: string[]; tool_result_max_chars?: number;
+  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; strategy_learning_enabled?: boolean; max_steps: number; context_max_chars?: number; mcp_server_count: number; max_parallel_reads?: number; denied_tools?: string[]; tool_result_max_chars?: number;
 }
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;
@@ -50,9 +50,19 @@ export interface CreateVideo {
 
 export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'adopting' | 'rejected' | 'adopted' | 'failed';
 export interface Measurement { tests_passed: boolean; score: number | null; log: string }
+export interface StrategyHypothesis {
+  principle: string; when_to_use: string; failure_mode: string;
+}
+export interface StrategyEvidence {
+  source_id: string; source: 'rsi' | 'agent'; repository: string;
+  goal: string; principle: string; when_to_use: string; failure_mode: string;
+  files: string[]; outcome: 'adopted' | 'rejected' | 'verified';
+  baseline_score: number | null; resulting_score: number | null;
+  attempts: number; cost_krw: number; updated_at_ms: number;
+}
 export interface Improvement {
   id: string; parent: string | null; repository: string; target_file: string;
-  target_files?: string[]; attempts?: number; selection_reason?: string | null;
+  target_files?: string[]; attempts?: number; selection_reason?: string | null; strategy?: StrategyHypothesis | null;
   instruction: string; test_command: string; score_command: string | null;
   status: ImprovementStatus; base_commit: string | null; candidate_commit: string | null;
   baseline: Measurement | null; candidate: Measurement | null; proposal: string | null;
@@ -140,6 +150,13 @@ export class Dominion {
     }
   };
 
+  /** Durable, evidence-ranked cross-task strategy retrieval owned by Rust. */
+  readonly strategies = {
+    search: (repository:string, query:string, limit=6) => this.request<StrategyEvidence[]>(
+      'GET','/strategies?repository='+encodeURIComponent(repository)+
+      '&query='+encodeURIComponent(query)+'&limit='+Math.min(6,Math.max(1,limit))
+    ),
+  };
   /** Non-weight improvement: only explicitly approved, frozen-evaluation winners can be adopted. */
   readonly improvements = {
     create: (input: NewImprovement) => this.request<Improvement>('POST','/improvements',input),

@@ -36,6 +36,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
         .route("/config",get(config))
         .route("/memory",get(list_memory).post(save_memory))
+        .route("/strategies",get(list_strategies))
         .route("/runs",get(list_runs).post(create_run))
         .route("/runs/from-repository",post(create_repository_run))
         .route("/runs/{id}",get(get_run))
@@ -88,12 +89,20 @@ async fn save_memory(State(engine):State<Arc<Engine>>,Json(req):Json<SaveMemory>
     Ok((StatusCode::CREATED,Json(note)))
 }
 
+#[derive(Deserialize)]
+struct StrategyQuery { repository:String, query:Option<String>, limit:Option<usize> }
+async fn list_strategies(State(engine):State<Arc<Engine>>,Query(q):Query<StrategyQuery>)
+    ->Json<Vec<crate::strategy::StrategyEvidence>>{
+    Json(engine.improvements.strategy_evidence(
+        &q.repository,q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)
+    ).await)
+}
 async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
     Json(PublicSettings {
         model:engine.settings.main.name.clone(),
         economy_model:engine.settings.economy.name.clone(),
         configured:!engine.settings.main.api_key.is_empty() || engine.settings.main.base_url.contains("localhost") || engine.settings.main.base_url.contains("127.0.0.1"),
-        shell_enabled:engine.settings.shell_enabled,max_steps:engine.settings.max_steps,mcp_server_count:engine.mcp.server_count(),context_max_chars:engine.settings.context_max_chars,max_parallel_reads:engine.settings.max_parallel_reads,
+        shell_enabled:engine.settings.shell_enabled,strategy_learning_enabled:engine.settings.strategy_learning_enabled,max_steps:engine.settings.max_steps,mcp_server_count:engine.mcp.server_count(),context_max_chars:engine.settings.context_max_chars,max_parallel_reads:engine.settings.max_parallel_reads,
         denied_tools:engine.settings.denied_tools.clone(),
         tool_result_max_chars:engine.settings.tool_result_max_chars,
     })

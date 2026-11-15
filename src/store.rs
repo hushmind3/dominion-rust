@@ -81,6 +81,16 @@ impl Store {
         guard.insert(run.id, run);
         Ok(())
     }
+    /// Produce compact proven lessons without copying unbounded transcripts
+    /// from the durable run store on each LLM request.
+    pub(crate) async fn strategy_evidence(&self,repository:&str)
+        ->Vec<crate::strategy::StrategyEvidence>{
+        let runs=self.state.lock().await;
+        runs.values()
+            .filter(|run|run.repository.as_deref()==Some(repository))
+            .filter_map(crate::strategy::from_run)
+            .take(256).collect()
+    }
     pub async fn get(&self, id: Uuid) -> Option<Run> { self.state.lock().await.get(&id).cloned() }
     pub async fn list(&self) -> Vec<Run> {
         let mut runs: Vec<_> = self.state.lock().await.values().cloned().collect();

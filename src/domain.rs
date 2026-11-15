@@ -99,6 +99,7 @@ pub struct PublicSettings {
     pub economy_model: String,
     pub configured: bool,
     pub shell_enabled: bool,
+    pub strategy_learning_enabled: bool,
     pub max_steps: usize,
     pub mcp_server_count: usize,
     pub context_max_chars: usize,

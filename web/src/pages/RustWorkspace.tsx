@@ -10,8 +10,9 @@ type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:s
 type Room={id:string;topic:string;status:string;participants:{name:string;role:string;economy:boolean}[];messages:{speaker:string;content:string}[];rounds:number;max_rounds:number;cost_krw:number;budget_krw:number}
 type Scene={heading:string;narration:string;seconds:number}
 type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];error?:string|null;cost_krw:number}
-type Improvement={id:string;repository:string;target_file:string;target_files?:string[];attempts?:number;selection_reason?:string|null;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
-type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number;denied_tools:string[];tool_result_max_chars:number}
+type StrategyEvidence={source_id:string;source:string;goal:string;principle:string;when_to_use:string;failure_mode:string;outcome:string;baseline_score:number|null;resulting_score:number|null;attempts:number;cost_krw:number}
+type Improvement={id:string;repository:string;target_file:string;target_files?:string[];attempts?:number;selection_reason?:string|null;strategy?:{principle:string;when_to_use:string;failure_mode:string}|null;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
+type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;strategy_learning_enabled?:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number;denied_tools:string[];tool_result_max_chars:number}
 type MemoryNote={id:string;scope:string;title:string;content:string;updated_at_ms:number}
 type ProjectSkill={name:string;path:string}
 
@@ -59,6 +60,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
  const [rooms,setRooms]=useState<Room[]>([])
  const [videos,setVideos]=useState<Video[]>([])
  const [improvements,setImprovements]=useState<Improvement[]>([])
+ const [strategyEvidence,setStrategyEvidence]=useState<StrategyEvidence[]>([])
  const [config,setConfig]=useState<Config|null>(null)
  const [notes,setNotes]=useState<MemoryNote[]>([])
  const [noteTitle,setNoteTitle]=useState('')
@@ -251,14 +253,25 @@ export function RustWorkspacePage({area}:{area:PageId}){
   </>}
   {mode==='rsi'&&<>
    <section className={panel}><h2 className="mb-3 flex items-center gap-2 text-[14px] font-bold"><BrainCircuit size={17}/> 비가중치 재귀적 개선 실험</h2>
-    <label className="block text-[11px]">개선할 Git 저장소 (작업공간 상대 경로)<input className={field} value={rsiRepo} onChange={e=>setRsiRepo(e.target.value)} placeholder="my-project"/></label>
+    <label className="block text-[11px]">개선할 Git 저장소 (작업공간 상대 경로)<input className={field} value={rsiRepo} onChange={e=>{setRsiRepo(e.target.value);setStrategyEvidence([])}} placeholder="my-project"/></label>
     <label className="mt-3 flex items-center gap-2 text-[12px] font-semibold text-[#51463A]"><input type="checkbox" checked={automaticSelection} onChange={e=>setAutomaticSelection(e.target.checked)}/> AI가 코드 구조를 살펴보고 개선할 파일 자동 선택</label>
     <p className="mt-1 text-[11px] text-[#82776B]">자동 선택은 승인 후 시작합니다. 파일을 직접 지정하려면 선택을 해제하세요.</p>
     {!automaticSelection&&<div className="mt-3 grid gap-3 sm:grid-cols-2">
      <label className="text-[11px]">첫 번째 파일<input className={field} value={target} onChange={e=>setTarget(e.target.value)} placeholder="src/lib.rs"/></label>
      <label className="text-[11px]">추가 파일 (쉼표로 구분, 최대 8개)<input className={field} value={extraTargets} onChange={e=>setExtraTargets(e.target.value)} placeholder="src/engine.rs, src/sdk.rs"/></label>
     </div>}
-    <textarea className={field+' mt-3'} rows={3} aria-label="개선 목표" value={rsiGoal} onChange={e=>setRsiGoal(e.target.value)} placeholder="무엇을 개선할까요?"/>
+    <textarea className={field+' mt-3'} rows={3} aria-label="개선 목표" value={rsiGoal} onChange={e=>{setRsiGoal(e.target.value);setStrategyEvidence([])}} placeholder="무엇을 개선할까요?"/>
+    <button type="button" className={btn+' mt-3'} disabled={busy||!rsiRepo.trim()||!rsiGoal.trim()} onClick={()=>void perform(async()=>{
+      setStrategyEvidence(await get<StrategyEvidence[]>('/api/v1/strategies?repository='+encodeURIComponent(rsiRepo.trim())+'&query='+encodeURIComponent(rsiGoal.trim())+'&limit=6'))
+    })}>비슷한 작업에서 배운 전략 보기</button>
+    {strategyEvidence.length>0&&<div className="mt-3 space-y-2" aria-label="실제 성과를 근거로 찾은 전략">
+      {strategyEvidence.map(item=><div key={item.source_id} className="rounded-lg border border-[#ECE5DC] bg-[#FCFAF7] p-3 text-[12px]">
+        <strong>{item.outcome==='adopted'?'실제 채택된 개선':item.outcome==='verified'?'검증된 에이전트 작업':'재사용 주의 · 실패 사례'}</strong>
+        <p className="mt-1 whitespace-pre-wrap">{item.principle}</p>
+        <p className="mt-1 text-[11px] text-[#81776D]">적용 조건: {item.when_to_use||'원래 작업과의 관련성을 확인'} · 시도 {item.attempts}회 · {money(item.cost_krw)}</p>
+        {item.failure_mode&&<p className="mt-1 text-[11px] text-[#9D5147]">주의: {item.failure_mode}</p>}
+      </div>)}
+    </div>}
     <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-[11px]">테스트 명령<input className={field} value={testCommand} onChange={e=>setTestCommand(e.target.value)}/></label><label className="text-[11px]">개선 점수 명령 (기존 테스트가 통과한다면 필요)<input className={field} value={scoreCommand} onChange={e=>setScoreCommand(e.target.value)} placeholder="마지막 줄에 높은 점수가 좋도록 숫자 출력"/></label></div>
     <button type="button" className={primary+' mt-3'} disabled={busy||!rsiRepo.trim()||(!automaticSelection&&!target.trim())||!rsiGoal.trim()||!testCommand.trim()} onClick={()=>void perform(async()=>{const trial=await post<Improvement>('/api/v1/improvements',{repository:rsiRepo,target_file:automaticSelection?'':target.trim(),target_files:automaticSelection?null:[target,...extraTargets.split(/[,\n]/)].map(s=>s.trim()).filter((s,i,all)=>!!s&&all.indexOf(s)===i),instruction:rsiGoal,test_command:testCommand,score_command:scoreCommand||null});setSelectedId(trial.id)},'개선 후보를 생성했습니다. 승인 후 독립 평가를 실행합니다.')}><BrainCircuit size={14}/> 개선 후보 생성</button>
    </section>
@@ -268,6 +281,12 @@ export function RustWorkspacePage({area}:{area:PageId}){
      {improvement.selection_reason&&<p className="mt-3 rounded-lg bg-[#F8F5F1] p-3 text-[12px]">자동 탐색: {improvement.selection_reason}<span className="mt-1 block text-[11px] text-[#807469]">{improvement.target_files?.join(' · ')}</span></p>}
      {improvement.baseline&&<p className="mt-3 text-[12px]">기준: {improvement.baseline.tests_passed?'테스트 통과':'테스트 실패'} · 점수 {improvement.baseline.score??'없음'}</p>}
      {improvement.candidate&&<p className="mt-2 text-[12px]">후보: {improvement.candidate.tests_passed?'테스트 통과':'테스트 실패'} · 점수 {improvement.candidate.score??'없음'}</p>}
+     {improvement.strategy&&<section className="mt-3 rounded-lg bg-[#F8F5F1] p-3 text-[12px]">
+      <strong>이번 실험에서 추출한 개선 방법</strong>
+      <p className="mt-1 whitespace-pre-wrap">{improvement.strategy.principle}</p>
+      <p className="mt-1 text-[11px]">활용 조건: {improvement.strategy.when_to_use}</p>
+      <p className="mt-1 text-[11px]">주의할 실패: {improvement.strategy.failure_mode}</p>
+     </section>}
      {improvement.reflection&&<p className="mt-3 whitespace-pre-wrap rounded-lg bg-[#F8F5F1] p-3 text-[12px]">{improvement.reflection}</p>}
      {improvement.error&&<p role="alert" className="mt-3 text-[12px] text-rose-700">{improvement.error}</p>}
      <div className="mt-4 flex flex-wrap gap-2">
@@ -318,7 +337,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
     <p className="mb-3 text-[12px] text-[#796E62]">이 화면은 메인 프런트엔드의 UI를 사용하면서 독립 Rust SDK의 실제 설정을 읽습니다.</p>
     <label className="block text-[11px]">서버 접근 토큰 (설정된 경우)
      <div className="mt-1 flex gap-2"><input type="password" autoComplete="off" className={field} value={token} onChange={e=>setToken(e.target.value)} placeholder="DOMINION_ACCESS_TOKEN"/><button type="button" className={primary} onClick={()=>{setAuthToken(token);void refresh().catch(e=>setError((e as Error).message))}}>연결</button></div></label>
-    {config?<div className="mt-5 grid gap-3 sm:grid-cols-2">{([['메인 모델',config.model],['경제 모델',config.economy_model],['모델 인증',config.configured?'연결됨':'미설정'],['셸 사용',config.shell_enabled?'허용':'비활성'],['최대 실행 턴',String(config.max_steps)],['MCP 서버',String(config.mcp_server_count)],['컨텍스트 상한',config.context_max_chars.toLocaleString()+'자'],['병렬 조회 상한',String(config.max_parallel_reads)+'개'],['차단 도구',config.denied_tools.length?config.denied_tools.join(', '):'없음'],['도구 결과 상한',config.tool_result_max_chars.toLocaleString()+'자']] as [string,string][]).map(([k,v])=><div key={k} className="rounded-lg bg-[#FAF7F2] p-3"><div className="text-[11px] text-[#8B8175]">{k}</div><strong className="mt-1 block text-[13px]">{v}</strong></div>)}</div>:<p className="mt-4 text-[12px] text-[#8B8175]">설정 정보를 읽는 중이거나 서버 인증이 필요합니다.</p>}
+    {config?<div className="mt-5 grid gap-3 sm:grid-cols-2">{([['메인 모델',config.model],['경제 모델',config.economy_model],['모델 인증',config.configured?'연결됨':'미설정'],['셸 사용',config.shell_enabled?'허용':'비활성'],['검증된 전략 재사용',config.strategy_learning_enabled?'사용':'중지'],['최대 실행 턴',String(config.max_steps)],['MCP 서버',String(config.mcp_server_count)],['컨텍스트 상한',config.context_max_chars.toLocaleString()+'자'],['병렬 조회 상한',String(config.max_parallel_reads)+'개'],['차단 도구',config.denied_tools.length?config.denied_tools.join(', '):'없음'],['도구 결과 상한',config.tool_result_max_chars.toLocaleString()+'자']] as [string,string][]).map(([k,v])=><div key={k} className="rounded-lg bg-[#FAF7F2] p-3"><div className="text-[11px] text-[#8B8175]">{k}</div><strong className="mt-1 block text-[13px]">{v}</strong></div>)}</div>:<p className="mt-4 text-[12px] text-[#8B8175]">설정 정보를 읽는 중이거나 서버 인증이 필요합니다.</p>}
     <p className="mt-4 text-[11px] text-[#82776B]">서버의 모델·요금·실행 정책은 Rust 환경설정(.env.example)을 기준으로 변경합니다. 이 화면에서 바뀌지 않은 설정을 변경한 것처럼 표시하지 않습니다.</p>
    </section>}
  </PageContainer>

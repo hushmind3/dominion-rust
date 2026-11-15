@@ -108,3 +108,7 @@ the native Rust experiment record; TypeScript does not execute an agent loop.
 ### Automatic RSI source selection
 
 Call `improvements.create({ repository, instruction, test_command, score_command })` without `target_file` to request goal-based Git source discovery. After explicit evaluation approval, Rust records the chosen `target_files` and `selection_reason` in `Improvement`. Supply `target_file` and `target_files` to select files manually. This is Rust engine behavior, not an alternate TypeScript agent implementation.
+
+## Shared Rust strategy retrieval (2026-11-15)
+
+`await dominion.strategies.search(repository, goal, 4)` returns repository-scoped case evidence. Entries distinguish adopted RSI experiments, independent-verifier completed agent runs and rejected RSI counterexamples. These are direct Rust HTTP records, not a TypeScript implementation of a self-improvement loop. Use `improvements.get(id).strategy` to inspect any recorded conditional strategy hypothesis for an individual trial.

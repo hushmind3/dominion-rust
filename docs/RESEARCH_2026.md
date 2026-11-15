@@ -18,3 +18,12 @@ Date of review: 2026-11-15. These are source-informed design references, **not c
 ## Evidence boundaries
 
 The listed projects are comparative research inputs. Dominion's code is a clean independent implementation. References support design choices; feature readiness is determined by executable code paths and tests. The current MP4 renderer makes styled scene slides with optional local speech, not generative motion footage, and should not be marketed as a premium cinematic generator.
+
+## 2026 reflection and memory source comparison (2026-11-15)
+
+- GEPA, *Reflective Prompt Evolution Can Outperform Reinforcement Learning*, ICLR 2026: https://proceedings.iclr.cc/paper_files/paper/2026/hash/0e9e708b6f48e14fd0ac29e167413f76-Abstract-Conference.html — extracts reusable textual rules from measured traces and evaluates revisions rather than treating self-assessment as ground truth.
+- Qwen Code multi-agent coordination: https://github.com/QwenLM/qwen-code-docs/blob/main/website/content/en/users/features/multi-agent-coordination.md — separate investigator workers, ordered task state and writer-owned worktree.
+- Qwen Code memory: https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/memory.md — persistent written instructions and agent memory across sessions, with optional shared memory.
+- Anthropic Claude platform memory tool: https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool — memory I/O is controlled by the host application instead of the LLM platform, with cross-session retrieval.
+
+Dominion's implementation decision: keep independent Rust evaluation/adoption authority and reuse the existing durable Run and Improvement records as the source of truth. A separate memory record is not itself proof of success; only independently checked task receipts and adopted Git candidates feed the ranked case index. Unlike full GEPA, the current implementation does not evolve a Pareto population of prompt policies or conduct same-task comparative optimization. No external SDK has been adopted.

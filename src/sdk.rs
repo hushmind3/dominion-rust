@@ -112,6 +112,12 @@ impl Dominion {
     pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{self.engine.groups.next(&self.engine.model,id).await}
     pub async fn create_video(&self,req:NewVideo)->Result<Video,String>{self.engine.videos.create(&self.engine.model,req).await}
     pub async fn render_video(&self,id:Uuid)->Result<Video,String>{self.engine.videos.start(id).await}
+    /// Evidence-ranked lessons from adopted RSI work and verified agent runs.
+    /// Never combines private repositories or treats unadopted experiments as successes.
+    pub async fn search_strategies(&self,repository:&str,goal:&str,max:usize)
+        ->Vec<crate::strategy::StrategyEvidence>{
+        self.engine.improvements.strategy_evidence(repository,goal,max).await
+    }
     pub async fn create_improvement(&self,req:NewImprovement)->Result<Improvement,String>{self.engine.improvements.create(req).await}
     pub async fn evaluate_improvement(&self,id:Uuid)->Result<Improvement,String>{
         self.engine.improvements.start(self.engine.model.clone(),id,self.engine.settings.shell_enabled).await
