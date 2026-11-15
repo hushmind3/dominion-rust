@@ -503,6 +503,11 @@ mod tests {
         let response=async_stream::stream!{
             let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
                 "params":{"progressToken":token,"progress":1,"total":4,"message":"started"}});
+            let unrelated=json!({"jsonrpc":"2.0","method":"notifications/progress",
+                "params":{"progressToken":"other-request","progress":999}});
+            yield Ok::<Bytes,Infallible>(Bytes::from(format!(
+                "event: message\r\ndata: {}\r\n\r\n",unrelated
+            )));
             yield Ok::<Bytes,Infallible>(Bytes::from(format!(
                 "event: message\r\ndata: {}\r\n\r\n",progress
             )));
@@ -566,6 +571,8 @@ mod tests {
         assert_eq!(progress.total,Some(4.0));
         assert_eq!(progress.message.as_deref(),Some("started"));
         assert!(!progress.request_id.is_empty());
+        assert!(progress_rx.try_recv().is_err(),
+            "unrelated request token must not enter this progress channel");
         server.abort();
     }
 

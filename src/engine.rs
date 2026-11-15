@@ -840,9 +840,10 @@ mod tests {
         }
         if method!="tools/call"{return axum::http::StatusCode::BAD_REQUEST.into_response();}
         called.fetch_add(1,Ordering::SeqCst);
+        let progress_token=body["params"]["_meta"]["progressToken"].clone();
         let stream=async_stream::stream!{
             let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
-                "params":{"progressToken":"op","progress":1}});
+                "params":{"progressToken":progress_token,"progress":1,"total":10,"message":"remote processing"}});
             yield Ok::<Bytes,Infallible>(Bytes::from(format!("data: {}\n\n",progress)));
             started.notify_one();
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -904,6 +905,14 @@ mod tests {
         engine.approve(id,true).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2),started.notified())
             .await.expect("approved MCP tool never entered remote stream");
+        let mut progress_saved=false;
+        for _ in 0..100{
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if store.get(id).await.unwrap().events.iter().any(|e|e.kind=="mcp_progress"){
+                progress_saved=true;break;
+            }
+        }
+        assert!(progress_saved,"MCP progress was not delivered to the native timeline");
         let cancelled=engine.cancel(id).await.unwrap();
         assert_eq!(cancelled.status,RunStatus::Paused);
         assert!(cancelled.cancel_after_tool);
