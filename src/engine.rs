@@ -226,7 +226,7 @@ mod tests {
         let message=match current {
             0=>json!({"role":"assistant","content":"1. Write output file. 2. Verify."}),
             1=>json!({"role":"assistant","content":null,"tool_calls":[{
-                "id":"call-1","type":"function","function":{"name":"write_file","arguments":"{\\"path\\":\\"result.txt\\",\\"content\\":\\"created by the harness\\"}"}
+                "id":"call-1","type":"function","function":{"name":"write_file","arguments":json!({"path":"result.txt","content":"created by the harness"}).to_string()}
             }]}),
             2=>json!({"role":"assistant","content":"Created result.txt containing the requested artifact."}),
             _=>json!({"role":"assistant","content":"PASS"}),
@@ -238,7 +238,7 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr=listener.local_addr().unwrap();
         let count=Arc::new(AtomicUsize::new(0));
-        let server=tokio::spawn(axum::serve(listener,Router::new().route("/chat/completions",post(fake_model)).with_state(count.clone())).into_future());
+        let server=tokio::spawn(async move { axum::serve(listener,Router::new().route("/chat/completions",post(fake_model)).with_state(count.clone())).await.unwrap(); });
         let dir=std::env::temp_dir().join(format!("dominion-cycle-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();
         settings.data_dir=dir.join("data");
