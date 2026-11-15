@@ -16,6 +16,8 @@ pub struct Discovery {
     pub paths: Vec<String>,
     pub explanation: String,
     pub cost_krw: f64,
+    pub input_tokens:u64,
+    pub output_tokens:u64,
 }
 
 fn eligible(path: &str) -> bool {
@@ -178,5 +180,6 @@ pub async fn discover(repo: &Path, goal: &str, model: &ModelClient) -> Result<Di
     ];
     let reply = model.complete(&messages, &[], false).await?;
     let (paths, explanation) = parse_selection(&reply.text, &catalog)?;
-    Ok(Discovery { paths, explanation, cost_krw: reply.cost_krw })
+    Ok(Discovery { paths, explanation, cost_krw: reply.cost_krw,
+        input_tokens:reply.input_tokens,output_tokens:reply.output_tokens })
 }

@@ -23,6 +23,8 @@ pub mod frontend_video;
 pub mod frontend_rooms;
 pub mod provider_registry;
 pub mod frontend_providers;
+pub mod rsi_campaign;
+pub mod frontend_rsi;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;

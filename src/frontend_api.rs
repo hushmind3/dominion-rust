@@ -70,6 +70,7 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_rooms::routes())
         .merge(crate::frontend_workflows::routes())
         .merge(crate::frontend_providers::routes())
+        .merge(crate::frontend_rsi::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
@@ -716,6 +717,14 @@ async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
     for job in engine.workflows.jobs().await{
         if let Ok(value)=serde_json::to_value(job){all.push(value);}
     }
+    for campaign in engine.campaigns.list().await{
+        all.push(json!({"id":campaign.id,"kind":"rsi_evolve",
+            "status":campaign.status,"input":{"rsiCampaignId":campaign.id,
+                "goal":campaign.objective},
+            "createdAt":timestamp(campaign.started_ms),
+            "stepIndex":campaign.attempts,"stepTotal":campaign.max_attempts,
+            "result":if campaign.status=="completed"{Some(campaign.view())}else{None}}));
+    }
     all.sort_by(|a,b|b.get("createdAt").and_then(Value::as_str).cmp(&a.get("createdAt").and_then(Value::as_str)));
     Json(Value::Array(all))
 }
@@ -752,6 +761,9 @@ async fn create_job(State(engine):State<Arc<Engine>>,Json(req):Json<NewJob>)
 }
 async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if let Some(campaign)=engine.campaigns.get(id).await{
+        return Ok(Json(campaign.view()));
+    }
     if let Some(job)=engine.workflows.job(id).await{
         return serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()));
     }
@@ -759,6 +771,10 @@ async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if engine.campaigns.get(id).await.is_some(){
+        let campaign=crate::frontend_rsi::stop(&engine,id).await.map_err(bad)?;
+        return Ok(Json(campaign.view()));
+    }
     if engine.workflows.job(id).await.is_some(){
         let job=crate::frontend_workflows::cancel(&engine,id).await.map_err(bad)?;
         return serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()));

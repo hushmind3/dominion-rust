@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
-pub enum ImprovementStatus { AwaitingApproval, Running, Evaluated, Adopting, Rejected, Adopted, Failed }
+pub enum ImprovementStatus { AwaitingApproval, Running, Evaluated, Adopting, Rejected, Adopted, Failed, Cancelled }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Measurement { pub tests_passed:bool, pub score:Option<f64>, pub log:String }
 #[derive(Clone,Debug,Serialize,Deserialize)]
@@ -25,7 +25,10 @@ pub struct Improvement {
     pub instruction:String, pub test_command:String, pub score_command:Option<String>,
     pub status:ImprovementStatus, pub base_commit:Option<String>,pub candidate_commit:Option<String>,
     pub baseline:Option<Measurement>,pub candidate:Option<Measurement>,pub proposal:Option<String>,
-    pub reflection:Option<String>,pub accepted:bool,pub cost_krw:f64,pub error:Option<String>,
+    pub reflection:Option<String>,pub accepted:bool,pub cost_krw:f64,
+    #[serde(default)]pub input_tokens:u64,
+    #[serde(default)]pub output_tokens:u64,
+    pub error:Option<String>,
     pub created_at_ms:u64,pub updated_at_ms:u64,
 }
 #[derive(Deserialize)]
@@ -39,7 +42,8 @@ pub struct NewImprovement {
 }
 pub struct Improvements {
     root:PathBuf, workspace:PathBuf,
-    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>,adoption_lock:Mutex<()>,
+    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>,
+    cancelled:Mutex<HashSet<Uuid>>,adoption_lock:Mutex<()>,
     runs:OnceLock<Arc<crate::store::Store>>,
     strategy_learning_enabled:AtomicBool,
 }
@@ -220,7 +224,8 @@ impl Improvements {
         }
         // Recovery is durable before clients can observe the recovered state.
         for item in &recovered {persist_improvement(&root,item).await?;}
-        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new()),adoption_lock:Mutex::new(()),runs:OnceLock::new(),strategy_learning_enabled:AtomicBool::new(true)})
+        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new()),
+            cancelled:Mutex::new(HashSet::new()),adoption_lock:Mutex::new(()),runs:OnceLock::new(),strategy_learning_enabled:AtomicBool::new(true)})
     }
     async fn put(&self,item:Improvement)->Result<Improvement,String>{
         let mut lock=self.items.lock().await;
@@ -261,7 +266,24 @@ impl Improvements {
             target_files,attempts:0,selection_reason:None,strategy:None,
             instruction:input.instruction,test_command:input.test_command,score_command:input.score_command,status,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,proposal:None,reflection:None,
-            accepted:false,cost_krw:0.0,error:None,created_at_ms:now,updated_at_ms:now}).await
+            accepted:false,cost_krw:0.0,input_tokens:0,output_tokens:0,
+            error:None,created_at_ms:now,updated_at_ms:now}).await
+    }
+    pub async fn request_cancel(&self,id:Uuid)->Result<Improvement,String>{
+        let Some(mut trial)=self.get(id).await else{return Err("trial not found".into());};
+        match trial.status{
+            ImprovementStatus::AwaitingApproval=>{
+                trial.status=ImprovementStatus::Cancelled;
+                trial.error=Some("cancelled before evaluation".into());
+                trial.updated_at_ms=now_ms();
+                self.put(trial).await
+            },
+            ImprovementStatus::Running=>{
+                self.cancelled.lock().await.insert(id);
+                Ok(trial)
+            },
+            _=>Err("trial is not awaiting or running an evaluation".into())
+        }
     }
     pub async fn start(self:&Arc<Self>,model:ModelClient,id:Uuid,shell_enabled:bool)->Result<Improvement,String>{
         if !shell_enabled{return Err("DOMINION_ENABLE_SHELL=true is required to execute approved evaluation commands".into());}
@@ -275,11 +297,14 @@ impl Improvements {
             let result=service.evaluate(&model,item).await;
             if let Err(error)=result {
                 if let Some(mut item)=service.get(id).await {
-                    item.status=ImprovementStatus::Failed;item.error=Some(error);item.updated_at_ms=now_ms();
+                    let cancelled=service.cancelled.lock().await.contains(&id);
+                    item.status=if cancelled{ImprovementStatus::Cancelled}else{ImprovementStatus::Failed};
+                    item.error=Some(error);item.updated_at_ms=now_ms();
                     let _=service.put(item).await;
                 }
             }
             service.active.lock().await.remove(&id);
+            service.cancelled.lock().await.remove(&id);
         });
         self.get(id).await.ok_or("trial missing after start".into())
     }
@@ -300,6 +325,8 @@ impl Improvements {
             item.target_files=chosen;
             item.selection_reason=Some(selection.explanation);
             item.cost_krw+=selection.cost_krw;
+            item.input_tokens=item.input_tokens.saturating_add(selection.input_tokens);
+            item.output_tokens=item.output_tokens.saturating_add(selection.output_tokens);
             item.updated_at_ms=now_ms();
             self.put(item.clone()).await?;
         }
@@ -377,10 +404,18 @@ impl Improvements {
         let base=item.base_commit.as_deref().ok_or("missing frozen base revision")?.to_owned();
         let mut last_problem=String::new();
         for attempt in 1..=3 {
+            if self.cancelled.lock().await.contains(&item.id){
+                return Err("trial cancelled by operator".into());
+            }
             item.attempts=attempt;
             let reply=model.complete(&prompts,&[],false).await?;
             item.cost_krw+=reply.cost_krw;
+            item.input_tokens=item.input_tokens.saturating_add(reply.input_tokens);
+            item.output_tokens=item.output_tokens.saturating_add(reply.output_tokens);
             self.put(item.clone()).await?;
+            if self.cancelled.lock().await.contains(&item.id){
+                return Err("trial cancelled after model response".into());
+            }
             // Reset and clean only the private disposable worktree created
             // for this trial, never the user's original source checkout.
             git(candidate,&["reset","--hard",&base]).await?;
@@ -458,6 +493,9 @@ impl Improvements {
             ));
             item.accepted=accepted;
             item.updated_at_ms=now_ms();
+            if self.cancelled.lock().await.contains(&item.id){
+                return Err("trial cancelled after independent evaluation".into());
+            }
             if accepted {
                 // Pin accepted detached commit so Git garbage collection cannot
                 // discard it when the candidate worktree is removed.
@@ -566,6 +604,19 @@ impl Improvements {
         let _=git(&repo,&["update-ref","-d",&pin]).await;
         Ok(adopted)
     }
+    /// Actual checkout HEAD after the native cherry-pick. Git may create a
+    /// new commit hash distinct from the detached candidate's commit ID.
+    pub async fn adopted_head(&self,id:Uuid)->Result<String,String>{
+        let item=self.get(id).await.ok_or("trial not found")?;
+        if item.status!=ImprovementStatus::Adopted||!item.accepted{
+            return Err("trial was not adopted".into());
+        }
+        let root=self.workspace.canonicalize().map_err(|e|e.to_string())?;
+        let repo=root.join(relative(&item.repository)?)
+            .canonicalize().map_err(|e|e.to_string())?;
+        if !repo.starts_with(&root){return Err("repository escapes workspace".into());}
+        git(&repo,&["rev-parse","HEAD"]).await
+    }
     pub async fn descendant(&self,id:Uuid)->Result<Improvement,String>{
         let parent=self.get(id).await.ok_or("trial not found")?;
         self.create(NewImprovement{
@@ -625,7 +676,7 @@ mod tests {
             score_command:None,status:ImprovementStatus::Running,
             base_commit:None,candidate_commit:None,
             baseline:None,candidate:None,proposal:None,reflection:None,
-            accepted:false,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
+            accepted:false,cost_krw:0.0,input_tokens:0,output_tokens:0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
         };
         persist_improvement(&data,&item).await.unwrap();
         let first=Improvements::open(data.clone(),workspace.clone()).await.unwrap();
@@ -652,7 +703,7 @@ mod tests {
             score_command:None,status:ImprovementStatus::AwaitingApproval,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,
             proposal:None,reflection:None,accepted:false,cost_krw:0.0,
-            error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
+            input_tokens:0,output_tokens:0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
         };
         persist_improvement(&root,&original).await.unwrap();
         let persisted=fs::read(root.join(format!("{id}.json"))).await.unwrap();
