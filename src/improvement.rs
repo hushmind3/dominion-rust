@@ -251,9 +251,12 @@ impl Improvements {
         if let Some(parent)=input.parent{
             let parent=self.get(parent).await.ok_or("parent experiment not found")?;
             if parent.status!=ImprovementStatus::Adopted{return Err("parent trial must be adopted before a descendant".into());}
-            if parent.repository!=input.repository || parent.target_file!=input.target_file
-                || (!parent.target_files.is_empty() && parent.target_files!=target_files) {
-                return Err("descendant repository and file set must match parent".into());
+            // An adopted ancestor may teach a new source domain in the same
+            // repository. The inherited reflection is evidence, not a forced
+            // restriction to the previous files. Frozen judging remains local
+            // to each generation's independently selected source set.
+            if parent.repository!=input.repository {
+                return Err("descendant must use the parent's repository".into());
             }
         }
         let root=self.workspace.canonicalize().map_err(|e|e.to_string())?;
@@ -922,4 +925,41 @@ mod full_cycle_tests {
         server.abort();
         fs::remove_dir_all(root).await.unwrap();
     }
+}
+
+#[cfg(test)]
+mod lineage_tests {
+ use super::*;
+ #[tokio::test]
+ async fn adopted_lineage_allows_new_files_in_same_repo_but_not_another_repo(){
+  let root=std::env::temp_dir().join(format!("dominion-lineage-{}",Uuid::new_v4()));
+  let workspace=root.join("workspace");
+  fs::create_dir_all(workspace.join("alpha/.git")).await.unwrap();
+  fs::create_dir_all(workspace.join("beta/.git")).await.unwrap();
+  let service=Improvements::open(root.join("data"),workspace).await.unwrap();
+  let mut parent=service.create(NewImprovement{
+   repository:"alpha".into(),target_file:"src/a.rs".into(),target_files:None,
+   instruction:"improve a".into(),test_command:"true".into(),
+   score_command:None,parent:None,
+  }).await.unwrap();
+  parent.status=ImprovementStatus::Adopted;
+  parent.accepted=true;
+  parent.reflection=Some("independently judged a change".into());
+  service.put(parent.clone()).await.unwrap();
+  let child=service.create(NewImprovement{
+   repository:"alpha".into(),target_file:String::new(),target_files:None,
+   instruction:"improve another module".into(),test_command:"true".into(),
+   score_command:None,parent:Some(parent.id),
+  }).await.unwrap();
+  assert_eq!(child.parent,Some(parent.id));
+  assert!(child.target_files.is_empty());
+  assert_eq!(child.status,ImprovementStatus::AwaitingApproval);
+  let wrong=service.create(NewImprovement{
+   repository:"beta".into(),target_file:String::new(),target_files:None,
+   instruction:"improve beta".into(),test_command:"true".into(),
+   score_command:None,parent:Some(parent.id),
+  }).await;
+  assert!(wrong.is_err());
+  fs::remove_dir_all(root).await.unwrap();
+ }
 }
