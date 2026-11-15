@@ -29,6 +29,11 @@ async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Re
             return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Bearer access token required"}))).into_response();
         }
     }
+    if crate::frontend_system::maintenance(&engine.settings)
+        && !matches!(*request.method(),axum::http::Method::GET|axum::http::Method::HEAD|axum::http::Method::OPTIONS)
+        && !request.uri().path().contains("/system/") {
+        return (StatusCode::LOCKED,Json(json!({"error":"maintenance mode is active; write operations are paused"}))).into_response();
+    }
     next.run(request).await
 }
 /// Prefer the installed application's adjacent React bundle when --home is used.
