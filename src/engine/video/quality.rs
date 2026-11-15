@@ -1,6 +1,5 @@
 //! Decode-proof media quality gate after paid remote generation.
 //! This is a deterministic technical inspection, NOT a semantic film critic.
-use super::*;
 use serde_json::{json,Value};
 use std::path::{Path,PathBuf};
 use std::time::Duration;
