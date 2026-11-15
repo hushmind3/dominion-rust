@@ -81,6 +81,16 @@ impl Knowledge{
 mod tests{
     use super::*;
     #[tokio::test]
+    async fn failed_persist_does_not_publish_non_durable_memory(){
+        let dir=std::env::temp_dir().join(format!("dominion-memory-failure-{}",Uuid::new_v4()));
+        let knowledge=Knowledge::open(dir.clone()).unwrap();
+        // Force a rename failure by placing a directory at the destination.
+        fs::create_dir(dir.join("knowledge.json")).await.unwrap();
+        assert!(knowledge.remember("global","important","must persist").await.is_err());
+        assert!(knowledge.search("global","important",5).await.is_empty());
+        fs::remove_dir_all(dir).await.unwrap();
+    }
+    #[tokio::test]
     async fn memory_persists_with_scope_and_idempotent_revisions(){
         let root=std::env::temp_dir().join(format!("dominion-memory-{}",Uuid::new_v4()));
         let k=Knowledge::open(root.clone()).unwrap();

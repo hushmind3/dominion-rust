@@ -338,6 +338,11 @@ impl Engine {
             run.event(if output.is_ok() {"tool_result"}else{"tool_error"},
                 format!("{}: {}",call.name,if output.is_ok() {"ok"}else{"failed"}),
                 Some(json!({"call_id":call.id,"result":body.chars().take(1000).collect::<String>()})));
+            if run.cancel_after_tool{
+                run.cancel_after_tool=false;
+                run.status=RunStatus::Cancelled;
+                run.event("cancelled","Cancellation finalized after active tool receipt",None);
+            }
             Ok(())
         }).await?;
         Ok(())
@@ -359,6 +364,11 @@ impl Engine {
             run.event("tool_reconciled",
                 format!("Observed result for {}: {}",call.name,if input.succeeded{"success"}else{"failure"}),
                 Some(json!({"call_id":call.id,"succeeded":input.succeeded})));
+            if run.cancel_after_tool{
+                run.cancel_after_tool=false;
+                run.status=RunStatus::Cancelled;
+                run.event("cancelled","Cancellation finalized after inspected tool outcome",None);
+            }
             Ok(())
         }).await
     }
@@ -527,8 +537,9 @@ impl Engine {
                 // A side effect can already be executing. Do not pretend a
                 // cancelled run's external effects were stopped atomically.
                 run.status=RunStatus::Paused;
+                run.cancel_after_tool=true;
                 run.event("cancel_pending_reconciliation",
-                    "Cancellation requested while a tool was active; inspect and reconcile its outcome before final cancellation",None);
+                    "Cancellation requested during tool execution; final cancellation follows its receipt or manual reconciliation",None);
             }else{
                 run.status = RunStatus::Cancelled;
                 run.event("cancelled","Execution cancelled by user",None);
@@ -655,6 +666,35 @@ mod recovery_tests {
         drop(engine);drop(store);
         let reopened=Store::open(settings.data_dir.join("runs")).await.unwrap();
         assert_eq!(reopened.get(parent.id).await.unwrap().delegated_spent_krw,70.0);
+        tokio::fs::remove_dir_all(base).await.unwrap();
+    }
+
+
+    #[tokio::test]
+    async fn cancellation_of_uncertain_tool_completes_after_reconciliation(){
+        let base=std::env::temp_dir().join(format!("dominion-cancel-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=base.join("data");
+        settings.workspace_dir=base.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups,videos,improvements).unwrap();
+        let call=ToolCall{id:"write-1".into(),name:"write_file".into(),arguments:json!({"path":"a.txt","content":"original"})};
+        let mut run=Run::new(CreateRun{instruction:"write".into(),budget_krw:Some(10.0),max_steps:None},5).unwrap();
+        run.status=RunStatus::Running;
+        run.in_flight=Some(call.clone());
+        run.queued_calls.push(call);
+        store.put(run.clone()).await.unwrap();
+        let cancelled=engine.cancel(run.id).await.unwrap();
+        assert_eq!(cancelled.status,RunStatus::Paused);
+        assert!(cancelled.cancel_after_tool);
+        let finalized=engine.reconcile(run.id,ReconcileTool{succeeded:true,result:"observed complete".into()}).await.unwrap();
+        assert_eq!(finalized.status,RunStatus::Cancelled);
+        assert!(finalized.in_flight.is_none());
+        assert!(!finalized.cancel_after_tool);
+        assert_eq!(finalized.messages.last().unwrap()["tool_call_id"],"write-1");
         tokio::fs::remove_dir_all(base).await.unwrap();
     }
 
