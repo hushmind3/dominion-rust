@@ -62,7 +62,7 @@ Rust Axum API ── authentication / approvals / safe tool gateway
 | `src/engine/video.rs`, `src/engine/video/` | Multi-shot generation, FFprobe metadata and FFmpeg pixel checks |
 | `src/engine/maintenance.rs`, `src/engine/maintenance/artifacts.rs` | Encrypted rolling backups and safe generated-artifact pruning |
 | `src/engine/rsi/` | Frozen candidate/control evaluation, bounded adoption, learned strategies |
-| `sdk/rust/`, `sdk/typescript/` | External clients to the same server-side policy |
+| `sdk/rust/`, `sdk/typescript/` | Native client APIs for goals, models, rooms, video, memory, skills and RSI, using the same Rust server policy as React |
 | `web/src/` | React UI, models, goals, group discussions, memory, video, operations |
 
 ## Main capabilities
@@ -71,8 +71,12 @@ Rust Axum API ── authentication / approvals / safe tool gateway
 trusted from assistant claims. The local engine supports source editing,
 command execution, HTTP, memory, tools registered through MCP, and
 bounded subagent delegation. A cancelled or ambiguous side-effecting operation
-is not blindly replayed. Each goal can use an isolated Git worktree with an
-owner-reviewed diff and explicit apply/discard decision.
+is not blindly replayed. Owner-steered goal plans are versioned, and the
+`reviewPolicy=acceptance_ready` option avoids a model review only while actual
+Rust acceptance criteria remain unmet. Independent final review stays mandatory.
+A `command_succeeded` criterion can require a fresh post-edit test receipt.
+Each goal can use an isolated Git worktree with an owner-reviewed diff and
+explicit apply/discard decision.
 
 **Model/provider choice.** Connect cloud providers or local GGUF/MLX models.
 Tokens, cache reports and usage telemetry are kept separately from estimates;
@@ -104,7 +108,7 @@ side-effecting requests. See [SDK documentation](sdk/typescript/README.md).
 | --- | --- |
 | Health and stream | `GET /api/health`, `GET /api/events` |
 | Chat | `POST /api/chat` (streaming) |
-| Goals | `POST /api/goals`, `GET /api/goals/:id`, owner steering and cancel routes |
+| Goals | `POST /api/goals`, `GET /api/goals/strategies`, `GET /api/goals/:id`, owner steering and cancel routes |
 | Durable work | `GET /api/jobs`, `GET /api/executions` |
 | Sessions | `GET /api/sessions`, `GET /api/sessions/:id/messages` |
 | Group chat | `GET/POST /api/rooms/:id/messages`, `GET /api/rooms/:id/state` |
