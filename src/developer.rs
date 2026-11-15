@@ -222,15 +222,15 @@ impl Developer{
    let task=async{
     let result=match kind.as_str(){
      "setup"=>execute(&root.join("web"),"npm",&["ci","--ignore-scripts"],600).await.map(|log|json!({"log":log})),
-     "test"=>execute(&root,"cargo",&["test","--locked"],900).await.map(|log|json!({"log":log})),
-     "build"=>execute(&root,"cargo",&["build","--release","--locked"],900).await.map(|log|json!({"log":log})),
+     "test"=>execute(&root,"cargo",&["test"],900).await.map(|log|json!({"log":log})),
+     "build"=>execute(&root,"cargo",&["build","--release"],900).await.map(|log|json!({"log":log})),
      "package"=>{
        let frontend=root.join("web");
        if !frontend.join("node_modules").is_dir(){
         return Err("install the main web dependencies before packaging".into());
        }
        execute(&frontend,"npm",&["run","build"],600).await?;
-       execute(&root,"cargo",&["build","--release","--locked"],900).await?;
+       execute(&root,"cargo",&["build","--release"],900).await?;
        let binary=if cfg!(windows){"target/release/dominion.exe"}
          else{"target/release/dominion"};
        if !root.join(binary).is_file() || !frontend.join("dist/index.html").is_file(){
