@@ -28,11 +28,18 @@ mod execution;
 mod lifecycle;
 #[path = "review.rs"]
 mod review;
+#[path = "strategy.rs"]
+mod strategy;
+pub use strategy::catalog as strategy_catalog;
 
 pub use execution::run;
 pub use review::parse_review;
 use lifecycle::{finish,role_model,optional,tail,patch_goal};
 use operations::{in_goal_session_tree,unknown_new_goal_operations};
+
+#[cfg(test)]
+#[path = "../../../tests/unit/goal_strategy_tests.rs"]
+mod strategy_tests;
 
 #[cfg(test)]
 #[path = "../../../tests/unit/engine_goals_tests.rs"]
