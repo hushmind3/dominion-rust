@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[serde(rename_all="camelCase")]
 pub struct Attempt {
     pub trial_id:Uuid,
+    #[serde(default)]pub parent_trial:Option<Uuid>,
     pub attempt:usize,
     pub accepted:bool,
     pub selected:Option<String>,
@@ -56,6 +57,15 @@ pub struct Campaign {
     pub stop_reason:Option<String>,
     pub requested_cancel:bool,
 }
+/// Inherit only from a previously adopted generation with a durable Git
+/// receipt. Rejected or merely evaluated candidates must not become parents.
+pub fn adopted_parent(history:&[Attempt])->Option<Uuid>{
+    history.iter().rev()
+        .find(|row|row.accepted && row.selected.as_deref()==Some("candidate")
+            && row.accepted_commit.is_some())
+        .map(|row|row.trial_id)
+}
+
 /// Only report paired judge measurements when both numeric scores exist.
 /// An accepted Git receipt is not itself a fabricated benchmark measurement.
 fn paired_metrics(row:&Attempt)->Value{
@@ -113,6 +123,7 @@ impl Campaign {
                 "selection":h.selected,
                 "domain":h.domain,"newFindings":0,
                 "generatorCommit":h.generator_commit,"acceptedCommit":h.accepted_commit,
+                "parentTrial":h.parent_trial,
                 "focusFiles":h.focus_files,
                 "trialOutcome":{"status":if h.accepted{"evaluated"}else{"rejected"},
                     "verdict":if h.accepted{"independent_judge_pass"}else{"not_accepted"}},
@@ -123,7 +134,7 @@ impl Campaign {
 }
 pub fn from_trial(trial:&Improvement,number:usize)->Attempt{
     Attempt{
-        trial_id:trial.id,attempt:number,accepted:trial.accepted,
+        trial_id:trial.id,parent_trial:trial.parent,attempt:number,accepted:trial.accepted,
         selected:None,domain:trial.selection_reason.clone()
             .unwrap_or_else(||trial.target_file.clone()),
         generator_commit:trial.base_commit.clone(),accepted_commit:None,
@@ -243,7 +254,7 @@ mod score_evidence_tests {
  #[test]
  fn campaign_comparison_only_exposes_observed_frozen_scores(){
   let mut trial=Attempt{
-   trial_id:Uuid::new_v4(),attempt:1,accepted:false,selected:None,
+   trial_id:Uuid::new_v4(),parent_trial:None,attempt:1,accepted:false,selected:None,
    domain:"fixture".into(),generator_commit:None,accepted_commit:None,
    candidate_commit:None,focus_files:vec![],error:None,
    baseline_score:None,candidate_score:None,model_calls:0,tokens:0,
@@ -262,5 +273,15 @@ mod score_evidence_tests {
   assert_eq!(loss["measurements"][0]["metrics"][0]["regressed"],true);
   trial.candidate_score=Some(f64::NAN);
   assert_eq!(paired_metrics(&trial)["pairedCases"],0);
+  assert_eq!(adopted_parent(&[trial.clone()]),None);
+  trial.accepted=true;
+  trial.selected=Some("candidate".into());
+  trial.accepted_commit=Some("adopted-head".into());
+  assert_eq!(adopted_parent(&[trial.clone()]),Some(trial.trial_id));
+  let mut later=trial.clone();
+  later.trial_id=Uuid::new_v4();
+  later.selected=Some("baseline".into());
+  later.accepted_commit=None;
+  assert_eq!(adopted_parent(&[trial.clone(),later]),Some(trial.trial_id));
  }
 }
