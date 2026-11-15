@@ -125,6 +125,25 @@ pub fn reject_policy(run:&mut Run,call:&ToolCall)->Result<(),String>{
     Ok(())
 }
 
+
+/// Complete a malformed, stale, unavailable, or unsupported model tool call
+/// without ever entering tool dispatch. It stays correlated to the exact
+/// assistant call ID, so the next model step can correct its input.
+pub fn reject_admission(run:&mut Run,call:&ToolCall,code:&str,reason:&str)->Result<(),String>{
+    if run.status!=RunStatus::Running || run.in_flight.is_some() ||
+        run.pending_approval.is_some() || !queued_exact(run,call){
+        return Err("admission rejection does not match queued tool call".into());
+    }
+    let index=run.queued_calls.iter().position(|c|same_call(c,call)).ok_or("tool not queued")?;
+    run.queued_calls.remove(index);
+    let reason=reason.chars().take(650).collect::<String>();
+    let body=format!("TOOL ERROR [{code}]: {reason}");
+    run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));
+    run.event("tool_admission_rejected",format!("Rejected {} ({code})",call.name),
+        Some(json!({"call_id":call.id,"name":call.name,"code":code,"reason":reason})));
+    Ok(())
+}
+
 /// Applies the durable receipt in the same state-store transaction that
 /// releases the intent. It is legal to finish while cancellation is pending.
 pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observed:bool)->Result<(),String>{
@@ -275,6 +294,15 @@ mod tests{
         assert_eq!(run.events.iter().filter(|e|e.kind=="tool_policy_denied").count(),1);
         assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),0);
         assert_eq!(run.messages.last().unwrap()["tool_call_id"],"blocked-1");
+    }
+    #[test]
+    fn invalid_model_tool_is_rejected_without_dispatch(){
+        let mut run=running();let call=tool("unavailable","invalid");
+        run.queued_calls.push(call.clone());
+        reject_admission(&mut run,&call,"UNKNOWN_TOOL","Not in advertised catalog").unwrap();
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert!(run.in_flight.is_none());
+        assert!(run.messages.last().unwrap()["content"].as_str().unwrap().contains("UNKNOWN_TOOL"));
     }
     #[test]
     fn malformed_or_reused_model_call_ids_cannot_dispatch(){

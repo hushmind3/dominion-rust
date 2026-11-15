@@ -62,7 +62,7 @@ impl ModelClient {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
-            body["parallel_tool_calls"] = json!(false);
+            body["parallel_tool_calls"] = json!(settings.parallel_tool_calls);
         }
         let mut req = self.http.post(format!("{}/chat/completions", settings.base_url)).json(&body);
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }

@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, knowledge::Knowledge};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{mpsc,Mutex,Notify};
@@ -130,6 +130,13 @@ impl Engine {
             let run = self.store.get(id).await.ok_or("execution not found")?;
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
             if let Some(pending) = run.pending_approval.clone() {
+                // Approval only authorizes the exact frozen tool + arguments.
+                // Re-check against the advertised schema before starting.
+                if !run.advertised_tools.is_empty(){
+                    if let Err(error)=tool_schema::admit(&pending,&run.advertised_tools){
+                        return Err(format!("approved tool no longer matches its model-turn schema: {}",error.reason));
+                    }
+                }
                 let Some(allowed) = run.approval_decision else { return Ok(()); };
                 if allowed {
                     self.perform_tool(id,pending).await?;
@@ -139,6 +146,16 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
+                // The catalog is frozen when the model turn is accepted and
+                // survives crash recovery. Legacy sessions without a snapshot
+                // retain the previous policy-based execution semantics.
+                if !run.advertised_tools.is_empty(){
+                    if let Err(error)=tool_schema::admit(&call,&run.advertised_tools){
+                        self.store.mutate(id,|run|journal::reject_admission(
+                            run,&call,error.code.as_str(),&error.reason)).await?;
+                        continue;
+                    }
+                }
                 if !policy::allowed_tool(&run,&call.name){
                     self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
                     continue;
@@ -243,6 +260,7 @@ impl Engine {
                 }
                 accepted=true;
                 run.steps += 1;
+                run.advertised_tools=catalog.clone();
                 run.messages.push(reply.message.clone());
                 if !reply.calls.is_empty() {
                     run.queued_calls.extend(reply.calls.clone());

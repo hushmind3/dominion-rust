@@ -11,6 +11,7 @@ pub struct ModelSettings {
     pub cache_write_krw_per_million: f64,
     pub cache_ttl: Option<String>,
     pub cache_key: Option<String>,
+    pub parallel_tool_calls: bool,
 }
 
 #[derive(Clone)]
@@ -50,6 +51,7 @@ impl Settings {
         let cache_key=env::var("DOMINION_PROMPT_CACHE_KEY").ok().filter(|v|!v.is_empty()&&v.len()<=128);
         let cache_multiplier=if cache_ttl.as_deref()==Some("12h"){2.5}else{1.25};
         let main_input=price("DOMINION_INPUT_KRW_PER_MTOK",0.0);
+        let parallel_tool_calls=var("DOMINION_PARALLEL_TOOL_CALLS","true")!="false";
         let main = ModelSettings {
             name: nonempty_var("DOMINION_MODEL", "gpt-6.1-sol"),
             base_url: nonempty_var("DOMINION_BASE_URL", "https://api.openai.com/v1").trim_end_matches('/').to_string(),
@@ -58,7 +60,7 @@ impl Settings {
             cached_input_krw_per_million: price("DOMINION_CACHED_INPUT_KRW_PER_MTOK",price("DOMINION_INPUT_KRW_PER_MTOK",0.0)),
             output_krw_per_million: price("DOMINION_OUTPUT_KRW_PER_MTOK", 0.0),
             cache_write_krw_per_million:price("DOMINION_CACHE_WRITE_KRW_PER_MTOK",main_input*cache_multiplier),
-            cache_ttl:cache_ttl.clone(),cache_key:cache_key.clone(),
+            cache_ttl:cache_ttl.clone(),cache_key:cache_key.clone(),parallel_tool_calls,
         };
         let economy = ModelSettings {
             name: nonempty_var("DOMINION_ECONOMY_MODEL", &main.name),
@@ -68,7 +70,7 @@ impl Settings {
             cached_input_krw_per_million: price("DOMINION_ECONOMY_CACHED_INPUT_KRW_PER_MTOK",main.cached_input_krw_per_million),
             output_krw_per_million: price("DOMINION_ECONOMY_OUTPUT_KRW_PER_MTOK", main.output_krw_per_million),
             cache_write_krw_per_million:price("DOMINION_ECONOMY_CACHE_WRITE_KRW_PER_MTOK",main.cache_write_krw_per_million),
-            cache_ttl,cache_key,
+            cache_ttl,cache_key,parallel_tool_calls,
         };
         let max_steps = var("DOMINION_MAX_STEPS", "30").parse::<usize>().unwrap_or(30).clamp(1, 100);
         Ok(Self {
