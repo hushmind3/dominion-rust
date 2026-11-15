@@ -36,7 +36,7 @@ use self::adaptation::{attempt_model_adaptation, environment_fingerprint, failur
 
 #[path = "runtime/tool_selection.rs"]
 mod tool_selection;
-use self::tool_selection::{mark_tool_argument_signal, normalize_tool_arguments, recent_room_tools, restore_program_state, select_room_tools, select_tool_definitions, tool_is_read_only, tool_name, trim_tool_definitions};
+use self::tool_selection::{mark_tool_argument_signal, normalize_tool_arguments, recent_room_tools, restore_program_state, select_room_tools, select_tool_definitions, tool_is_read_only, tool_name};
 
 #[path = "runtime/tool_discovery.rs"]
 mod tool_discovery;
@@ -57,7 +57,7 @@ use self::finalization::{compliance_detail, compliance_summary, determine_task_o
 #[path = "runtime/evidence.rs"]
 mod evidence;
 use self::evidence::{record_selection_snapshot};
-pub(super) use self::evidence::{finalize_execution, finish_attempt};
+pub(super) use self::evidence::finish_attempt;
 
 #[path = "runtime/housekeeping.rs"]
 mod housekeeping;
