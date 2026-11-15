@@ -74,6 +74,7 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_extensions::routes())
         .merge(crate::frontend_automations::routes())
         .merge(crate::frontend_developer::routes())
+        .merge(crate::frontend_growth::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{

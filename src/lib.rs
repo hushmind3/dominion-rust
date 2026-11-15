@@ -30,6 +30,7 @@ pub mod automations;
 pub mod frontend_automations;
 pub mod developer;
 pub mod frontend_developer;
+pub mod frontend_growth;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;
