@@ -87,7 +87,7 @@ test('matched benchmark adapter uses actual Rust isolated worktree and real veri
  })
  expect(proc.status,proc.stderr||proc.stdout).toBe(0)
  const result=JSON.parse(readFileSync(output,'utf8'))
- expect(result.summary[0].passed).toBe(1)
+ expect(result.summary[0].passed,JSON.stringify(result.attempts[0],null,2)).toBe(1)
  expect(result.attempts[0].passed).toBe(true)
  expect(result.attempts[0].usage.input_tokens).toBeGreaterThan(0)
  expect(result.attempts[0].usage.tool_calls).toBe(1)
