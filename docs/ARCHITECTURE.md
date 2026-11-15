@@ -39,10 +39,9 @@ The current `video.rs` renders local title-card MP4 clips and optional
 espeak narration; high-fidelity generated scenes remain future work.
 Legacy SQLite user data is not automatically imported into sub4 JSON stores.
 
-2026 reference: Barbaste et al., *Harness Engineering* (July 2026,
-arXiv:2609.00006), and OpenHarness's October 11 agent-client design.
-The architectural lesson is to keep the tool loop and durable session
-control within Dominion's own Rust runtime, independent of provider.
+2026 references are source-linked and compared in FRONTIER_2026.md.
+The key separation is to keep session state, tool execution and runtime
+authority within Dominion's independent Rust engine.
 
 ## Optional motion generation backend
 
