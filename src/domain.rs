@@ -62,6 +62,7 @@ pub struct PublicSettings {
     pub configured: bool,
     pub shell_enabled: bool,
     pub max_steps: usize,
+    pub mcp_server_count: usize,
 }
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

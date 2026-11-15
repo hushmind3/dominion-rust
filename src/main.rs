@@ -5,6 +5,7 @@ mod engine;
 mod group;
 mod video;
 mod improvement;
+mod mcp;
 mod provider;
 mod store;
 mod tools;

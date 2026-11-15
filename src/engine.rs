@@ -11,13 +11,15 @@ pub struct Engine {
     pub groups: Arc<crate::group::Groups>,
     pub videos: Arc<crate::video::Videos>,
     pub improvements: Arc<crate::improvement::Improvements>,
+    pub mcp: Arc<crate::mcp::Mcp>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>, improvements: Arc<crate::improvement::Improvements>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
-        Ok(Arc::new(Self { settings, store, groups, videos, improvements, model, active: Mutex::new(HashSet::new()) }))
+        let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
+        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, model, active: Mutex::new(HashSet::new()) }))
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
@@ -74,13 +76,16 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
-                if call.name == "shell" {
+                if call.name == "shell" || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
                         run.approval_decision = None;
                         run.status = RunStatus::AwaitingApproval;
-                        run.event("approval_required", format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")), Some(call.arguments.clone()));
+                        run.event("approval_required",
+                            if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
+                            else { format!("External MCP tool needs approval: {}",call.name) },
+                            Some(call.arguments.clone()));
                         Ok(())
                     }).await?;
                     return Ok(());
@@ -116,7 +121,8 @@ impl Engine {
                 return Ok(());
             }
             if run.cost_krw > run.budget_krw { return Err("budget exceeded".into()); }
-            let catalog = tools::definitions(self.settings.shell_enabled);
+            let mut catalog = tools::definitions(self.settings.shell_enabled);
+            catalog.extend(self.mcp.definitions().await);
             let reply = self.model.complete(&run.messages, &catalog, false).await?;
             let terminal_candidate = reply.calls.is_empty();
             self.store.mutate(id, |run| {
@@ -177,7 +183,11 @@ impl Engine {
             Ok(())
         }).await?;
         let output = if approved {
-            tools::execute(&self.settings,id,&call).await
+            if call.name.starts_with("mcp__") {
+                self.mcp.call(&call).await
+            } else {
+                tools::execute(&self.settings,id,&call).await
+            }
         } else {
             Err("User denied the requested operation".into())
         };

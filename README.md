@@ -84,3 +84,7 @@ model-token budget persists the charge and terminal status.
 
 This is single-process crash recovery, not an OS-isolated shell sandbox.
 See `docs/ARCHITECTURE.md` for current scope and migration gaps.
+
+## MCP external tools (2026-07-28)
+
+The engine can discover external MCP Streamable HTTP tools and expose them to the model through its own native function-call API. Configure `DOMINION_MCP_SERVERS` with a JSON array of up to 8 servers containing `name`, `url` and optional `bearer_token`. Plain HTTP is allowed only for loopback; HTTPS is required elsewhere. External calls always pause the run for explicit user approval, and their intent is journaled before execution to avoid accidentally replaying side effects after a crash. No MCP secret is exposed to the model or Studio. The 2026 stateless HTTP transport supports JSON and per-request SSE responses, including annotated MCP headers; MRTR user elicitation, subscription streams and legacy transport fallback are not connected yet.

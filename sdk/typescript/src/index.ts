@@ -11,7 +11,7 @@ export interface Run {
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
-  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number;
+  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; mcp_server_count: number;
 }
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;
