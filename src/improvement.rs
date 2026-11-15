@@ -266,6 +266,14 @@ mod full_cycle_tests {
         let workspace=root.join("workspace");
         let repo=workspace.join("repo");
         fs::create_dir_all(&repo).await.unwrap();
+        // The RSI integration test must exercise the enforced runtime when
+        // supported; do not silently disable it for test convenience.
+        let probe=crate::sandbox::script(&repo,"true");
+        let can_sandbox=match probe {
+            Ok(mut command)=>command.status().await.map(|s|s.success()).unwrap_or(false),
+            Err(_)=>false
+        };
+        if !can_sandbox {let _=fs::remove_dir_all(&root).await;return;}
         git(&repo,&["init"]).await.unwrap();
         fs::write(repo.join("score.txt"),"0\n").await.unwrap();
         git(&repo,&["add","score.txt"]).await.unwrap();

@@ -77,3 +77,13 @@ route, a named module or a mock model test.
 ## Main frontend preservation
 
 The sub4 branch now contains the complete main React 19/Vite source tree and mounts the original workspace navigation shell and Home dashboard, including a native Rust-backed `NativeAgentPanel`. `web/src/pages/RustWorkspace.tsx` is the v1 API-connected surface for real Rust operations; the former ad-hoc static HTML/JS frontend was removed. Main-only pages remain as preserved source, not as claims that the main SQLite/Tauri backend has been migrated. See `docs/ARCHITECTURE.md` for the mounted routes and `README.md` for production build/development commands. Browser/e2e parity not yet verified.
+
+## New verified-by-source execution surfaces (not benchmark parity)
+
+- Durable delegated budget escrow and settlement, read-only workers, parent wake after active children complete: `src/policy.rs`, `src/domain.rs`, `src/engine.rs`, `src/store.rs`.
+- Human-approved, conflict-checked worktree integration, including newly created files: `src/workspace.rs`, `src/tools.rs`.
+- Transient provider retry and test fixture, 10k-file indexed listing, pagination, line-range source reads: `src/provider.rs`, `src/tools.rs`.
+- Project-scoped non-weight memory and lazy SKILL.md loading through real model/tool/API/SDK paths: `src/knowledge.rs`, `src/skills.rs`.
+- Linux bubblewrap and macOS Seatbelt fail-closed OS shell isolation for approved agent and RSI scripts: `src/sandbox.rs`.
+
+Current runtime still needs a compatible OS sandbox backend to execute shell/RSI commands; untested sandbox paths do not count as production-ready.
