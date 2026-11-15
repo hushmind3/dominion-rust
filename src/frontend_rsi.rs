@@ -389,9 +389,16 @@ async fn choose(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
         return Err(bad("select baseline or candidate"));
     }
     let current=engine.campaigns.get(id).await.ok_or_else(missing)?;
-    if current.phase!="waiting_for_choice"||engine.campaigns.active(id).await{
+    if current.phase!="waiting_for_choice"{
         return Err(conflict("this campaign is not awaiting a choice"));
     }
+    // The controller persists the choice phase before releasing its worker
+    // marker. A user selecting immediately must not receive a spurious 409.
+    tokio::time::timeout(Duration::from_secs(3),async {
+        while engine.campaigns.active(id).await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.map_err(|_|conflict("RSI choice worker is still settling"))?;
     let last=current.history.last().ok_or_else(||bad("no evaluated trial"))?;
     if last.attempt!=input.attempt{return Err(conflict("stale comparison attempt"));}
     if input.choice=="candidate"&&!last.accepted{
