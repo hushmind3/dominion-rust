@@ -24,7 +24,14 @@ async fn git(args:&[&str],dir:&Path)->Result<String,String>{
 /// Attach a repository by creating an independent Git worktree for this run.
 /// No command, test, or source edit is executed during attachment.
 pub async fn attach(settings:&Settings,id:Uuid,relative:&str)->Result<String,String>{
+    attach_at(settings,id,relative,None).await
+}
+/// Attach an exact recorded revision for reproducible delegated checkouts.
+pub async fn attach_at(settings:&Settings,id:Uuid,relative:&str,revision:Option<&str>)->Result<String,String>{
     validate_relative(relative)?;
+    if revision.is_some_and(|r|r.len()!=40||!r.bytes().all(|b|b.is_ascii_hexdigit())){
+        return Err("invalid source commit; expected a 40-character Git SHA".into());
+    }
     fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
     let root=settings.workspace_dir.canonicalize().map_err(|e|e.to_string())?;
     let source=root.join(relative).canonicalize().map_err(|e|format!("repository unavailable: {e}"))?;
@@ -36,7 +43,7 @@ pub async fn attach(settings:&Settings,id:Uuid,relative:&str)->Result<String,Str
     if origin!=source{
         return Err("repository must refer to a Git checkout root".into());
     }
-    let baseline=git(&["rev-parse","HEAD"],&source).await?;
+    let baseline=git(&["rev-parse",revision.unwrap_or("HEAD")],&source).await?;
     let target=root.join(id.to_string());
     if fs::symlink_metadata(&target).await.is_ok(){
         return Err("run workspace already exists; refusing to overwrite".into());
