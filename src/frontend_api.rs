@@ -53,8 +53,7 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/executions",get(executions))
         .route("/executions/{id}/operations",get(execution_operations))
         .route("/executions/{id}/cancel",post(cancel_job))
-        .route("/model-library/runtime",get(model_runtime))
-        .route("/model-library/installed",get(model_installed))
+        // Local Ollama runtime routes are owned by frontend_local_models.
         .route("/channels",get(channels))
         .route("/memories",get(memories).post(save_memory))
         .route("/memories/{id}",axum::routing::delete(delete_memory))
