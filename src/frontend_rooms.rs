@@ -285,8 +285,22 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   if input.reasoning_language.as_deref().is_some_and(|v|!matches!(v,"ko"|"default"|"original")){
     return Err(bad("unsupported reasoning language"));
   }
+  let mut recipients=input.agent_ids;
+  if recipients.is_empty() {
+    // Main RoomsPage accepts plain @DisplayName mentions as well as
+    // explicit selected agent IDs. Resolve them against real room members.
+    let room=engine.groups.get(id).await.ok_or_else(missing)?;
+    let text=input.input.to_lowercase();
+    for agent in engine.frontend.agents().await {
+      if room.participants.iter().any(|p|p.name==agent.id) &&
+          !agent.name.is_empty() &&
+          text.contains(&format!("@{}",agent.name.to_lowercase())){
+        recipients.push(agent.id);
+      }
+    }
+  }
   let (before,inserted,index)=engine.groups.say_once(
-    id,input.input.trim().to_owned(),&input.client_message_id,input.agent_ids
+    id,input.input.trim().to_owned(),&input.client_message_id,recipients
   ).await.map_err(bad)?;
   let (room,turns)=if inserted{
     let mode=config_of(&before).routing_mode;
