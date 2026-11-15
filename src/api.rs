@@ -4,7 +4,7 @@ use axum::{
     http::{header, StatusCode},
     body::Body,
     middleware::{self, Next},
-    response::{sse::{Event, KeepAlive, Sse}, Html, IntoResponse, Response},
+    response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
     routing::{get, post}, Json, Router,
 };
 use futures_core::Stream;
@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use uuid::Uuid;
 use tokio_util::io::ReaderStream;
+use tower_http::services::ServeDir;
 
 type ApiError = (StatusCode, Json<Value>);
 fn bad(message: impl Into<String>) -> ApiError {
@@ -24,7 +25,7 @@ fn not_found() -> ApiError {
 async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Request, next: Next) -> Response {
     if let Some(token) = engine.settings.token.as_ref() {
         let expected = format!("Bearer {token}");
-        if request.headers().get(header::AUTHORIZATION).and_then(|h|h.to_str().ok()) != Some(expected.as_str()) {
+        if request.headers().get(header::AUTHORIZATION).and_then(|h|h.to_str().ok()) != Some(expected.as_str()) && request.headers().get("x-dominion-token").and_then(|h|h.to_str().ok()) != Some(token.as_str()) {
             return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Bearer access token required"}))).into_response();
         }
     }
@@ -61,10 +62,13 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/improvements/{id}/adopt",post(adopt_improvement))
         .route("/improvements/{id}/descendant",post(descendant_improvement))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
+    // Main's React/Vite build is the canonical UI; Rust serves the built files.
+    // The development Vite server proxies API calls to this same router.
+    let dist=std::env::var("DOMINION_WEB_DIR").map(std::path::PathBuf::from)
+        .unwrap_or_else(|_|std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/dist"));
     Router::new()
         .nest("/api/v1",api)
-        .route("/",get(|| async { Html(include_str!("../web/index.html")) }))
-        .route("/app.js",get(|| async { ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8")], include_str!("../web/app.js")) }))
+        .fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
         .with_state(engine)
 }
 async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
