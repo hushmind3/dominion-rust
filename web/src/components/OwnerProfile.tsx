@@ -15,7 +15,7 @@ export function OwnerProfileProvider({children}:{children:ReactNode}){
  const [profile,setProfile]=useState<OwnerProfile>(defaultOwnerProfile)
  useEffect(()=>{
   let live=true
-  const load=()=>{void get<OwnerProfile>('/api/v1/profile')
+  const load=()=>{void get<OwnerProfile>('/api/settings/owner-profile')
    .then(value=>{if(live)setProfile(value)}).catch(()=>{})}
   load()
   const onFocus=()=>{if(document.visibilityState==='visible')load()}
@@ -42,7 +42,7 @@ export function OwnerProfileEditor({compact=false}:{compact?:boolean}){
   if(!name.trim()){setError('표시할 이름을 입력하세요.');return}
   setWorking(true);setError('')
   try{
-   const next=await post<OwnerProfile>('/api/v1/profile',{name:name.trim(),avatar})
+   const next=await post<OwnerProfile>('/api/settings/owner-profile',{name:name.trim(),avatar})
    setProfile(next);close()
   }catch(e){setError((e as Error).message)}finally{setWorking(false)}
  }

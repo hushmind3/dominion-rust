@@ -1,18 +1,18 @@
 # Sub4 architecture, recovery and migration map — 2026-11-15
 
-This branch has an independent rebuilt Rust core and reuses the `main`
-React/Vite frontend. The older `main` Tauri/SQLite engine and its data formats
-are not fully migrated.
+This branch has an independent rebuilt Rust core with its own `/api/v1` HTTP and native SDK. **Its `web/` tree is byte-identical to the latest main frontend at commit `879dc23d`**, without the previously introduced Rust-specific replacement page. This restores main's actual route structure and UX source, not integration with the old main runtime. Main's `/api/*` backend contracts are not yet satisfied by sub4; do not count visual source parity as working product feature parity.
 
-| Operation | API route | Rust implementation |
+See [frontend exact-tree verification](FRONTEND_ALIGNMENT.md), [UI backend contract gaps](UI_FEATURE_PARITY_2026.md), and [native SDK](RUST_SDK.md).
+
+| Operation | Native Rust API | Implementation |
 | --- | --- | --- |
 | Autonomous planning / tools / verification | `/api/v1/runs` | `api.rs → engine.rs → provider.rs → tools.rs` |
-| Durable history / restart | `/runs/{id}`, `/resume` | `store.rs`, `domain.rs` |
-| Approval / crash tool reconciliation | `/runs/{id}/approval`, `/reconcile` | `engine.rs` with durable `in_flight` |
-| Group turns | `/groups/{id}/next` | `group.rs → provider.rs` |
-| Video storyboard and local rendering | `/videos/{id}/render` | `video.rs` with FFmpeg |
-| RSI isolated evaluation and adoption | `/improvements/{id}/approve`, `/adopt`, `/descendant` | `improvement.rs` with detached Git worktrees |
-| TypeScript SDK and GUI | `sdk/typescript/src/index.ts`, `web/src/App.tsx`, `web/src/pages/RustWorkspace.tsx` | Main React/Vite UI and SDK use the native Rust v1 routes |
+| Durable run history / restart | `/api/v1/runs/{id}`, `/resume` | `store.rs`, `domain.rs` |
+| Approval and crash reconciliation | `/api/v1/runs/{id}/approval`, `/reconcile` | `engine.rs`, `journal.rs` |
+| Group turns | `/api/v1/groups/{id}/next` | `group.rs` |
+| Video storyboard and rendering | `/api/v1/videos/{id}/render` | `video.rs` |
+| RSI isolated evaluation / adoption | `/api/v1/improvements/{id}/approve`, `/adopt`, `/descendant` | `improvement.rs` |
+| Main frontend | Original `/api/*` endpoints | **Not ported to native Rust contracts; the identical main UI source alone does not make these routes work** |
 
 ## Write-ahead tool state
 
@@ -77,11 +77,9 @@ cached input tokens when configured with accurate KRW rates.
 See `docs/FRONTIER_2026.md` for concrete frontier reference gaps and
 `docs/RUST_SDK.md` for the supported host entrypoint.
 
-## Main React frontend adopted (2026-11-15)
+## Main frontend source synced exactly (2026-11-15)
 
-All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation, i18n and original Home dashboard are reused. The Home `NativeAgentPanel` and mounted `RustWorkspacePage` perform real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. Except for the native-backed original Home dashboard, this branch does not run the old main feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Rust tests passed in Actions 43686024696; browser E2E and the legacy frontend migration remain outstanding.
-
-The original main profile editor is available in the preserved workspace shell. Until the main profile storage format is migrated, its cosmetic owner display name and avatar are saved in browser localStorage (`dominion.sub4.owner-profile`); Rust run state, credentials and sessions are never stored through this UI preference.
+The `web/` tree is now **exactly equal** to the latest main `web/` tree (`9e2be9b7376c1eefb6195e3ea7f9463b952456c0`). All main pages, routes, components, scripts, styles and dependencies are restored. The sub4-specific `RustWorkspace` frontend and other `web/`-only additions are absent. The native Rust backend is preserved without claiming that its existing `/api/v1` endpoints implement the main frontend's legacy `/api` feature contract. Matching main UX and restoring working features are separate work streams; backend capabilities must be genuinely implemented rather than simulated in the UI. See [FRONTEND_ALIGNMENT.md](FRONTEND_ALIGNMENT.md).
 
 ## OS sandbox boundary (new)
 
@@ -344,10 +342,6 @@ The user can override automatic selection with exact source paths. Studio, TypeS
 
 Operator control: `Settings.strategy_learning_enabled` reads `DOMINION_STRATEGY_LEARNING` (default true); the Engine applies it during planning and execution, and Improvements during RSI context selection and optional metered reflection. The read-only strategy history endpoint remains usable with the switch off.
 
-## Native Memory UI parity and scoped management
+## Current main frontend identity (supersedes prior partial UI adaptations)
 
-Main's detailed MemoryPage is mounted directly by the existing React App router, using the same design primitives as the main frontend. The page no longer calls legacy /api/memories or /api/agents; it uses the Rust Knowledge service via /api/v1/memory, /memory/all, /memory/scopes and /memory/{id}. Scope-exact listing, query filtering, stable UUID editing and deletion, duplicate-title admission, and timestamps are native operations. Forget/revise require an exact scope and durable successful persistence before in-memory publication. Knowledge persistence now uses unique staged snapshots, sync_all, atomic rename and Unix parent-directory sync. The former generic RustWorkspace memory branch is removed to prevent duplicate UI implementations. The original automatic learning-history and growth sections await actual native data models. Full remaining screen parity gaps are inventoried in docs/UI_FEATURE_PARITY_2026.md. No build or CI was run at user direction.
-
-## Canonical main frontend source: 879dc23d
-
-This source version is explicitly pinned in `web/frontend-source.json` to Git web subtree `9e2be9b7376c1eefb6195e3ea7f9463b952456c0`. Navigation, design primitives, original page/component source and i18n are preserved. The top-level App is reconstructed from this source with native backend adapters for Rust run-status polling, authentic /api/v1 profile and memory routes, and execution-feature fallback to RustWorkspace when a legacy endpoint is missing. The Main's ExecutionMonitor presentation has been rebuilt on native Rust run/event data and restored to Home. The original owner editor calls /api/v1/profile, backed by OwnerProfileStore in Engine; avatars accept only bounded image data URLs with validated MIME signatures. File persistence is atomic and uses owner-profile.json under the configured runtime data directory. Vite proxy continues to use Rust port 8787 instead of upstream 4317, and Node tooling remains compatible with sub4. Tests/CI were not run on user direction.
+Source SHA: `879dc23dce309688691c200b001b180bead95a12`. Exact `web/` subtree SHA: `9e2be9b7376c1eefb6195e3ea7f9463b952456c0`. The `web/` tree is entirely from main. Previous descriptions of customized `MemoryPage`, RustWorkspace, and adapted profile/home screens are historical and no longer describe mounted frontend code; their Rust backend data models continue to exist separately. Unimplemented `/api/*` contracts are explicitly tracked in `docs/FRONTEND_ALIGNMENT.md`. Tests/CI were not invoked for this sync.

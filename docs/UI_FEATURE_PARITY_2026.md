@@ -1,56 +1,26 @@
-# Dominion Sub4 — UI 세부 기능 이식 현황 (2026-11-15)
+# Dominion sub4 — latest main frontend baseline and native API gap
 
-## 원칙
+**As of 2026-11-15:** latest `main` HEAD is `879dc23dce309688691c200b001b180bead95a12`. Its `web/` Git tree `9e2be9b7376c1eefb6195e3ea7f9463b952456c0` is copied intact into `dominion-sub4`.
 
-메인의 화면 소스가 저장소에 있다는 사실만으로 기능이 살아 있는 것이 아니다. 실제 메뉴 → React 기능 → Rust REST/SDK → 상태 저장·실행·권한·오류 복구가 같은 동작을 보여야 세부 기능이 연결된 것으로 본다. 코어 판단은 Rust에 남고, TypeScript/React는 보조 계층이다.
+## Accurate distinction
 
-## 메인 UI 대비 연결 현황
+The **full frontend source is matched**, including all main navigation and page implementations. The native sub4 Rust server is **not** the main server: the frontend expects `/api/*` but the sub4 backend currently serves `/api/v1/*`. A page whose API is missing will not fully function. We deliberately removed the sub4 substitute screens instead of displaying incomplete features as if complete.
 
-| 메뉴 | 실제 Rust 연결 | 아직 이식되지 않은 원래 메인의 세부 기능 |
+| Original main page | Some original main service contracts | Sub4 native service(s) requiring true frontend compatibility |
 | --- | --- | --- |
-| 홈 | Rust run/config 카드 | 고급 통계와 실행 컨텍스트 확장 |
-| 채팅 | 자율 실행, 승인, 파일, 실행 기록 | 원래 Chat의 세션 분기·요약·에이전트 프로필·로컬 모델 조작 |
-| 에이전트 | 서브에이전트 실행 | 원래 에이전트 프로필 CRUD, 페르소나 가져오기 |
-| 그룹 | 그룹 생성·메시지·다음 턴 | 개별 참여자 모델 편집, 중지·초기화, 룸 지식 학습 |
-| 영상 | 장면 기획·수정·렌더·MP4 | ComfyUI 및 YouTube 업로드, 모델 다운로드 |
-| RSI | 자동 파일 탐색·수정·독립 평가·채택·후손·전략 추출 | 비교 캠페인 UI, 평가 프로필 편집, 알고리즘 선택 |
-| 모델 | 현재 모델·경제형 설정 조회 | 제공자 CRUD, 검색·선택, CLI/OAuth 로그인 |
-| 연결 | 일부 MCP 연결 실행 | 채널·OAuth 연결 CRUD, 연결 진단 |
-| 기억 | **이번 작업: 원본 MemoryPage 복원 및 native CRUD** | 원본 자동 학습 기록·성장 대시보드의 실제 Rust 데이터 연결 |
-| 확장 | 스킬 발견/읽기 및 MCP 실행 | 스킬 설치·편집·관리, MCP 카탈로그 관리 |
-| 워크플로 | 일반 Rust 작업 실행 화면 | 다단계 구성·저장·실행과 단계별 관리 |
-| 자동화 | 일반 Rust 작업 화면 | 예약·반복 실행 스케줄러 |
-| 실행 현황 | Rust run/SSE 이벤트·하위 작업·파일 | 원래 상세 실행 분석/브라우저 상태 |
-| 개발자 | Git worktree·도구·파일 | 소스 연결·미리보기·자체 업데이트 관리 UI |
-| 기능 | Rust 실행 카탈로그 일부 | 원래 기능 카탈로그와 세부 연결 |
+| Chat | `/api/sessions`, `/api/agents`, `/api/approvals` | `/api/v1/runs`, run events/approval; no full session/profile API |
+| Models | `/api/providers`, `/api/model-library/runtime` | `/api/v1/config`, configured model provider; no full provider CRUD |
+| Agents | `/api/agents`, `/api/personas/import` | `/api/v1/runs/{id}/subagents`; no profile CRUD |
+| Rooms | `/api/rooms`, room session/control/knowledge | `/api/v1/groups`; different schema/capabilities |
+| Video | `/api/video/*`, `/api/youtube/*` | `/api/v1/videos`; different operations |
+| RSI | `/api/rsi/campaigns`, `/api/rsi/start` | `/api/v1/improvements`; different experiment UI/data |
+| Memory | `/api/memories`, `/api/agents` | `/api/v1/memory`; distinct entry schema |
+| Workflows / automations | `/api/workflows`, `/api/automations`, `/api/jobs` | No equivalent complete workflow/scheduler contract |
+| Extensions / connections | `/api/mcp`, `/api/skills`, `/api/channels` | Rust skills/MCP execution, incomplete management API |
+| Operations / developer | `/api/executions`, `/api/dev/*` | Rust run journal, tools; distinct operational contract |
+| Profile | `/api/settings/owner-profile` | `/api/v1/profile`; not routed under legacy name |
+| Development server | Proxy to `127.0.0.1:4317` | Sub4 Rust binds `127.0.0.1:8787`; no full route adaptation |
 
-표의 ‘연결’은 소스에서 확인한 실행 경로다. 이번 단계는 사용자 지시로 빌드·테스트·CI를 실행하지 않았으므로 실제 사용 검증 상태와 구분한다.
+The correct follow-on work is to implement actual main API semantics **in Rust**, with durable state and proper security, while preserving original frontend source and behavior. Do not create fabricated lists, dummy buttons, synthetic success responses, or simplified page replacements.
 
-## 이번에 개선한 기억 관리 기능
-
-1. 메인의 MemoryPage 레이아웃을 다시 메뉴에 연결한다. 기존 RustWorkspace 통합 메모 패널 중복 코드 제거.
-2. 레거시 /api/memories 대신 Rust 전용 /api/v1/memory, /memory/all, /memory/scopes, /memory/{id} 사용.
-3. 전역/프로젝트별 메모 목록, 검색, 개별 수정·삭제, 최신 변경 시각, 제목·내용·ID 상세, 사용자 확인을 제공한다.
-4. 범위가 다른 메모는 개별 수정·삭제할 수 없다. 제목 중복 검사, 영구 저장 이후 가시화, 파일 fsync/원자적 rename 및 Unix 디렉터리 fsync를 적용한다.
-5. 같은 기능을 Native Rust SDK 및 TypeScript SDK에 제공한다. 원래 학습 기록·성장 차트가 아직 Rust 실측 데이터를 받지 못하므로 작동하는 척 표시하지 않는다.
-
-## 다음 구현 순서
-
-1. 모델·연결 상세: Rust 소유 제공자 등록·검증·모델 목록·선택과 메인 모델 UI 복구
-2. 워크플로·자동화: 실제 native Run 작업 및 단계별 지속 상태·승인·재시작 관리
-3. 채팅·에이전트: 세션·프로필 CRUD, 원본 Chat UI의 세부 설정
-4. 그룹·영상: 메인 상세 페이지를 Rust 그룹/영상 모델로 연결하고 빠진 실행 기능 구현
-5. RSI 캠페인·스킬/MCP 관리·개발자 도구·운영/능력 카탈로그 통합
-
-금지: 더미로 메인 API를 흉내 내기, GUI가 별도의 실행 엔진을 갖기, 미구현 버튼을 완성으로 표시하기. 현재 Sub4는 자동 CI를 비활성화한 상태다.
-
-## 2026-11-15: 프런트엔드 기준 커밋 고정
-
-- 기준 SHA: `879dc23dce309688691c200b001b180bead95a12`
-- 메인 UI 구조·스타일·메뉴·번역의 원본이 되는 스냅샷은 `web/frontend-source.json`으로 관리
-- 기준의 웹 소스 56개 중 비교 당시 46개 파일의 Git blob이 서브4와 동일했음. 나머지 10개는 API·빌드·실행 연동 차이이며, 이번 단계에서 화면이 필요한 곳을 복원·포팅
-- 원래 소유자 프로필 편집 UI를 Rust /api/v1/profile에 연결: 프로필·사진 수정, 서비스 재시작 후 지속
-- 원래 홈 실행 모니터를 다시 배치하고 작업 생성·중단·승인·재개·도구 결과·지출을 실제 Rust 기록과 연결
-- 브라우저 전용 조작 대신 Rust API를 기준으로 통일. 아직 없는 구형 API를 버튼으로 흉내 내지 않음
-- 프런트 소스 커밋은 Cargo.lock만 수정하므로 소스 기준은 해당 커밋의 web 트리라는 점을 명시
-- 이번 스냅샷 포팅은 기능 전체를 한 번에 완성한 작업이 아니며 CI/테스트를 실행하지 않았음
+See `docs/FRONTEND_ALIGNMENT.md` for exact Git object evidence. The frontend-only tree replacement was not compiled or tested; no CI was run at user direction.
