@@ -697,6 +697,106 @@ mod tests {
     use super::*;
     use axum::{extract::State, routing::post, Json, Router};
     use std::sync::atomic::{AtomicUsize,Ordering};
+
+    #[tokio::test]
+    async fn denied_pre_hook_never_dispatches_write_tool(){
+        let root=std::env::temp_dir().join(format!("dominion-hook-denied-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        settings.denied_tools=vec!["write_file".into()];
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings.clone(),store.clone(),groups,videos,improvements).unwrap();
+        let mut run=Run::new(CreateRun{
+            instruction:"write forbidden file".into(),budget_krw:Some(10.0),max_steps:Some(1)
+        },1).unwrap();
+        run.plan=Some("Run a single write".into());run.steps=1;
+        let id=run.id;
+        run.queued_calls.push(ToolCall{
+            id:"write-1".into(),name:"write_file".into(),
+            arguments:json!({"path":"forbidden.txt","content":"should not exist"})
+        });
+        store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut final_state=None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let state=store.get(id).await.unwrap();
+            if state.terminal(){final_state=Some(state);break;}
+        }
+        let state=final_state.expect("hook veto not settled");
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_admission_rejected").count(),1);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert_eq!(state.messages.iter().filter(|e|e["role"]=="tool").count(),1);
+        assert!(tokio::fs::metadata(settings.workspace_dir.join(id.to_string())
+            .join("forbidden.txt")).await.is_err());
+        for _ in 0..100 {
+            if !engine.active.lock().await.contains(&id){break;}
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    async fn slow_planner(State(started):State<Arc<AtomicUsize>>,
+        Json(_request):Json<Value>)->Json<Value>{
+        started.fetch_add(1,Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        Json(json!({"choices":[{"message":{"role":"assistant","content":"should not be accepted"}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":2}}))
+    }
+    #[tokio::test]
+    async fn cancellation_aborts_active_provider_request_without_accepting_stale_plan(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let started=Arc::new(AtomicUsize::new(0));
+        let server=tokio::spawn({
+            let started=Arc::clone(&started);
+            async move{
+                axum::serve(listener,Router::new().route("/chat/completions",post(slow_planner))
+                    .with_state(started)).await.unwrap();
+            }
+        });
+        let root=std::env::temp_dir().join(format!("dominion-model-cancel-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        settings.main.base_url=format!("http://{addr}");
+        settings.main.api_key.clear();
+        settings.economy=settings.main.clone();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups,videos,improvements).unwrap();
+        let run=Run::new(CreateRun{instruction:"create task".into(),
+            budget_krw:Some(20.0),max_steps:Some(4)},4).unwrap();
+        let id=run.id;
+        store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        for _ in 0..100{
+            if started.load(Ordering::SeqCst)>0{break;}
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(started.load(Ordering::SeqCst)>0,"test model never received the planning request");
+        engine.cancel(id).await.unwrap();
+        for _ in 0..100{
+            if !engine.active.lock().await.contains(&id){break;}
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!engine.active.lock().await.contains(&id),"cancellation did not stop model wait");
+        let state=store.get(id).await.unwrap();
+        assert_eq!(state.status,RunStatus::Cancelled);
+        assert!(state.plan.is_none(),"stale model response was applied after cancellation");
+        assert_eq!(state.events.iter().filter(|event|event.kind=="tool_started").count(),0);
+        server.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     async fn fake_model(State(turn):State<Arc<AtomicUsize>>, Json(_request):Json<Value>)->Json<Value>{
         let current=turn.fetch_add(1,Ordering::SeqCst);
         let message=match current {
