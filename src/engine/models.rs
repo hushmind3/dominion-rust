@@ -2424,7 +2424,7 @@ fn promote_download_file(partial: &Path, target: &Path) -> Result<(), String> {
     // rename onto an existing file; preserve the old model as a fallback.
     match std::fs::rename(partial, target) {
         Ok(()) => Ok(()),
-        Err(first) if target.is_file() => {
+        Err(_first) if target.is_file() => {
             let backup = PathBuf::from(format!("{}.dominion-previous", target.display()));
             if backup.exists() {
                 return Err(format!("이전 모델 백업 파일이 남아 있습니다: {}", backup.display()));
