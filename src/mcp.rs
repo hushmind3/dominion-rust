@@ -415,6 +415,114 @@ impl Mcp {
 mod tests {
     use super::*;
     use axum::{http::HeaderMap, routing::post, Json,Router};
+
+    use std::{convert::Infallible,sync::{Arc,atomic::{AtomicUsize,Ordering}}};
+    use axum::{body::{Body,Bytes},extract::State,response::IntoResponse};
+    use tokio::sync::Notify;
+
+    #[derive(Clone)]
+    struct StreamFixture{
+        started:Arc<Notify>,
+        notifications:Arc<AtomicUsize>,
+    }
+    async fn streamable_rpc(State(fixture):State<StreamFixture>,Json(body):Json<Value>)
+        ->axum::response::Response{
+        let id=body["id"].clone();
+        let method=body["method"].as_str().unwrap_or("");
+        if method=="tools/list"{
+            return Json(json!({"jsonrpc":"2.0","id":id,"result":{
+                "tools":[{"name":"run","description":"Streaming test tool","inputSchema":{
+                    "type":"object","properties":{"mode":{"type":"string"}},
+                    "required":["mode"]}}
+                ]
+            }})).into_response();
+        }
+        if method!="tools/call"{
+            fixture.notifications.fetch_add(1,Ordering::SeqCst);
+            return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":"unsupported"}))).into_response();
+        }
+        let hold=body["params"]["arguments"]["mode"]=="hold";
+        let started=Arc::clone(&fixture.started);
+        let response=async_stream::stream!{
+            let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
+                "params":{"progressToken":"opaque","progress":1}});
+            yield Ok::<Bytes,Infallible>(Bytes::from(format!(
+                "event: message\r\ndata: {}\r\n\r\n",progress
+            )));
+            started.notify_one();
+            if hold {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+            let completed=json!({"jsonrpc":"2.0","id":id,
+                "result":{"content":[{"type":"text","text":"completed"}]}});
+            // Split final event across chunks so parsing cannot rely on
+            // frame alignment with network reads.
+            let whole=format!("event: message\ndata: {}\n\n",completed);
+            let split=whole.len()/2;
+            yield Ok::<Bytes,Infallible>(Bytes::from(whole[..split].to_string()));
+            yield Ok::<Bytes,Infallible>(Bytes::from(whole[split..].to_string()));
+            // A conforming SSE server may keep a stream alive after its final
+            // reply. The client must return on the matching response frame.
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        };
+        ([(header::CONTENT_TYPE,"text/event-stream")],Body::from_stream(response)).into_response()
+    }
+    async fn fixture_server()->(Mcp,StreamFixture,tokio::task::JoinHandle<()>){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/mcp",listener.local_addr().unwrap());
+        let fixture=StreamFixture{
+            started:Arc::new(Notify::new()),notifications:Arc::new(AtomicUsize::new(0))
+        };
+        let state=fixture.clone();
+        let handle=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/mcp",post(streamable_rpc))
+                .with_state(state)).await.unwrap();
+        });
+        let client=Mcp::new(vec![Server{name:"test".into(),url,bearer_token:String::new()}]).unwrap();
+        (client,fixture,handle)
+    }
+    fn test_call(mode:&str)->ToolCall{
+        ToolCall{id:"client-tool-1".into(),name:"mcp__test__run".into(),
+            arguments:json!({"mode":mode})}
+    }
+    #[tokio::test]
+    async fn sse_stream_completes_on_matching_frame_without_waiting_for_close(){
+        let (client,fixture,server)=fixture_server().await;
+        let response=tokio::time::timeout(Duration::from_secs(2),client.call(&test_call("fast")))
+            .await.expect("SSE frame was not processed before socket close")
+            .unwrap();
+        assert!(response.contains("completed"));
+        assert_eq!(fixture.notifications.load(Ordering::SeqCst),0);
+        server.abort();
+    }
+    #[tokio::test]
+    async fn http_stream_cancel_is_unconfirmed_not_success_or_user_error(){
+        let (client,fixture,server)=fixture_server().await;
+        let (tx,rx)=watch::channel(false);
+        let task=tokio::spawn(async move{client.call_cooperative(&test_call("hold"),rx).await});
+        tokio::time::timeout(Duration::from_secs(2),fixture.started.notified())
+            .await.expect("remote MCP stream did not start");
+        tx.send_replace(true);
+        let outcome=tokio::time::timeout(Duration::from_secs(2),task).await
+            .expect("cancelled SSE did not close promptly").unwrap().unwrap();
+        assert!(matches!(outcome,McpCallOutcome::Uncertain(_)),
+            "closing a remote response never proves the side effect stopped");
+        assert_eq!(fixture.notifications.load(Ordering::SeqCst),0,
+            "MCP 2026 HTTP must not send a cancelled notification POST");
+        server.abort();
+    }
+    #[tokio::test]
+    async fn cancellation_before_remote_dispatch_is_definitively_non_mutating(){
+        let (client,_fixture,server)=fixture_server().await;
+        let (tx,rx)=watch::channel(true);
+        // Pre-cancelled tool invocation may fetch no remote result but
+        // cannot dispatch tools/call.
+        let outcome=client.call_cooperative(&test_call("hold"),rx).await.unwrap();
+        assert!(matches!(outcome,McpCallOutcome::Settled(Err(_))));
+        drop(tx);
+        server.abort();
+    }
+
     #[test]
     fn validates_endpoints_and_header_schema() {
         assert!(validate_endpoint("http://127.0.0.1:8080/mcp").is_ok());
