@@ -798,6 +798,7 @@ fn focus_terms(objective:&str,domain:&str)->Vec<String> {
 /// paths. The ranking is deterministic, model-free, and remains bounded by the
 /// indexed source snapshot. A model-authored targeting expression can replace
 /// the scoring equation without replacing the Rust harness.
+#[cfg(test)]
 pub fn rank_focus_files(
     state: &AppState,
     index_id: &str,
