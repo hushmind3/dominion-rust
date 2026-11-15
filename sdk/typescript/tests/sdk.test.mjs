@@ -85,3 +85,23 @@ test('native Rust subagent routes are exposed by thin TypeScript client',async()
   assert.equal(urls[1].options.method,'POST');
   assert.equal(JSON.parse(urls[1].options.body).budget_krw,100);
 });
+
+
+test('read-only delegation, lazy skills and durable memory use native API',async()=>{
+  const calls=[];
+  const sdk=new Dominion({fetch:async(url,options)=>{
+    calls.push({url,options});
+    return new Response(JSON.stringify({ok:true}),{status:200,headers:{'content-type':'application/json'}});
+  }});
+  await sdk.runs.delegate('parent',{instruction:'investigate only',read_only:true,budget_krw:120});
+  await sdk.runs.skills('child');
+  await sdk.runs.skill('child','review');
+  await sdk.memory.store({scope:'projects/demo',title:'build',content:'cargo test'});
+  await sdk.memory.search('projects/demo','cargo');
+  assert.equal(JSON.parse(calls[0].options.body).read_only,true);
+  assert.ok(calls[1].url.endsWith('/runs/child/skills'));
+  assert.ok(calls[2].url.endsWith('/runs/child/skills/review'));
+  assert.ok(calls[3].url.endsWith('/memory'));
+  assert.ok(calls[4].url.includes('scope=projects%2Fdemo'));
+  assert.ok(calls[4].url.includes('query=cargo'));
+});
