@@ -443,6 +443,22 @@ mod tests{
         assert!(!replay_safe("mcp__external__lookup"));
         assert!(!replay_safe("shell"));
     }
+
+    #[test]
+    fn approved_call_can_be_vetoed_by_new_hook_without_dispatch(){
+        let mut run=running();
+        let call=tool("shell","approved-then-blocked");
+        run.pending_approval=Some(call.clone());
+        run.approval_decision=Some(true);
+        reject_approved_hook(&mut run,&call,"HOOK_POLICY","blocked after approval").unwrap();
+        assert!(run.pending_approval.is_none());
+        assert!(run.in_flight.is_none());
+        assert!(run.approval_decision.is_none());
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_hook_denied").count(),1);
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert_eq!(run.messages.last().unwrap()["tool_call_id"],"approved-then-blocked");
+    }
+
     #[test]
     fn rejection_never_creates_an_uncertain_side_effect(){
         let mut run=running();let call=tool("shell","danger");
