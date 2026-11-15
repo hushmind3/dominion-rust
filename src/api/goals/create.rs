@@ -19,6 +19,10 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         return error(StatusCode::BAD_REQUEST, &message);
     }
     let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    let review_policy=match crate::engine::goals::validate_review_policy(body.get("reviewPolicy")) {
+        Ok(policy)=>policy,
+        Err(message)=>return error(StatusCode::BAD_REQUEST,&message),
+    };
     if body.get("isolateWorktree").is_some_and(|v|!v.is_boolean()) {
         return error(StatusCode::BAD_REQUEST,"Git 격리 옵션은 불리언이어야 합니다.");
     }
@@ -45,6 +49,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         "planner":body.get("planner").cloned().unwrap_or(json!({})),
         "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),
         "replanAfter":body["replanAfter"].as_u64().unwrap_or(2),
+        "reviewPolicy":review_policy,
         "tokenBudget":body["tokenBudget"].as_u64().unwrap_or(150_000),
         "isolateWorktree":body["isolateWorktree"].as_bool().unwrap_or(false),
         "replans":0,"planHistory":[],"reviewHistory":[],
