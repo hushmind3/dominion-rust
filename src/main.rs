@@ -6,6 +6,7 @@ mod group;
 mod video;
 mod improvement;
 mod mcp;
+mod veo;
 mod provider;
 mod store;
 mod tools;

@@ -9,14 +9,19 @@ pub struct Scene { pub heading:String, pub narration:String, pub seconds:u32 }
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
 pub enum VideoStatus { Draft, Rendering, Completed, Failed }
+#[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq,Default)]
+#[serde(rename_all="snake_case")]
+pub enum VideoBackend { #[default] Local, Veo }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Video {
     pub id:Uuid, pub prompt:String, pub scenes:Vec<Scene>, pub status:VideoStatus,
     pub cost_krw:f64, pub render_seconds:u64, pub error:Option<String>,
     pub output:Option<String>, pub created_at_ms:u64, pub updated_at_ms:u64,
+    #[serde(default)] pub backend:VideoBackend,
+    #[serde(default)] pub remote_operations:HashMap<usize,String>,
 }
 #[derive(Deserialize)]
-pub struct NewVideo { pub prompt:String, pub scenes:Option<Vec<Scene>> }
+pub struct NewVideo { pub prompt:String, pub scenes:Option<Vec<Scene>>, pub backend:Option<VideoBackend> }
 #[derive(Deserialize)]
 pub struct ChangeScene { pub heading:String, pub narration:String, pub seconds:u32 }
 pub struct Videos {
@@ -56,11 +61,14 @@ impl Videos {
     pub async fn create(&self,model:&ModelClient,input:NewVideo)->Result<Video,String>{
         let prompt=input.prompt.trim();
         if prompt.is_empty()||prompt.len()>10_000{return Err("video prompt must be 1..10000 characters".into());}
+        let backend=input.backend.unwrap_or_default();
+        if backend==VideoBackend::Veo { let _=crate::veo::Veo::from_env()?; }
         let (scenes,cost)=match input.scenes {
             Some(items)=>(items,0.0),
             None=>{
                 let requests=vec![
-                    json!({"role":"system","content":"You write production-ready short-form explainer video storyboards. Output only a JSON object with key scenes: an array of 3..6 objects, each containing heading, narration, seconds (integer 4..10). Narrative should be coherent, each scene different, narration concise, with a satisfying ending. Use the requested language."}),
+                    json!({"role":"system","content":format!("You write production-ready short-form video storyboards. Output only JSON: {{\"scenes\":[{{\"heading\":\"...\",\"narration\":\"...\",\"seconds\":4}}]}}. Provide 3..6 coherent scenes, concise narration, a satisfying ending, in the requested language. {}",
+                        if backend==VideoBackend::Veo {"Every scene MUST have duration 4, 6 or 8 seconds."}else{"Each scene should be 4..10 seconds."})}),
                     json!({"role":"user","content":prompt}),
                 ];
                 let answer=model.complete(&requests,&[],true).await?;
@@ -72,8 +80,11 @@ impl Videos {
             },
         };
         validate_scenes(&scenes)?;
+        if backend==VideoBackend::Veo && scenes.iter().any(|scene|!matches!(scene.seconds,4|6|8)) {
+            return Err("Veo scenes must be 4, 6 or 8 seconds".into());
+        }
         let now=now_ms();
-        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now};
+        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now,backend,remote_operations:HashMap::new()};
         self.put(video).await
     }
     pub async fn change_scene(&self,id:Uuid,index:usize,scene:ChangeScene)->Result<Video,String>{
@@ -82,6 +93,10 @@ impl Videos {
         if index>=video.scenes.len(){return Err("scene out of range".into());}
         let replacement=Scene{heading:scene.heading,narration:scene.narration,seconds:scene.seconds};
         validate_scenes(std::slice::from_ref(&replacement))?;
+        if video.backend==VideoBackend::Veo && !matches!(replacement.seconds,4|6|8) {
+            return Err("Veo scene must be 4, 6 or 8 seconds".into());
+        }
+        video.remote_operations.remove(&index);
         video.scenes[index]=replacement;
         video.status=VideoStatus::Draft;video.error=None;video.output=None;video.updated_at_ms=now_ms();
         let clip=self.root.join(id.to_string()).join(format!("scene-{index}.mp4"));
@@ -118,6 +133,9 @@ impl Videos {
         let video=self.get(id).await.ok_or("video not found")?;
         let directory=self.root.join(id.to_string());
         fs::create_dir_all(&directory).await.map_err(|e|e.to_string())?;
+        if video.backend==VideoBackend::Veo {
+            return self.render_veo(id,&video,&directory).await;
+        }
         for (index,scene) in video.scenes.iter().enumerate(){
             let clip=directory.join(format!("scene-{index}.mp4"));
             if fs::metadata(&clip).await.is_ok(){continue;}
@@ -142,12 +160,48 @@ impl Videos {
                 .arg("-shortest").arg(&clip);
             invoke(command,Duration::from_secs(120)).await?;
         }
-        let manifest=video.scenes.iter().enumerate().map(|(i,_)|format!("file 'scene-{i}.mp4'")).collect::<Vec<_>>().join("\n");
-        fs::write(directory.join("concat.txt"),format!("{manifest}\n")).await.map_err(|e|e.to_string())?;
+        self.merge_clips(id,video.scenes.len(),&directory).await
+    }
+    async fn render_veo(&self,id:Uuid,video:&Video,directory:&Path)->Result<String,String>{
+        let veo=crate::veo::Veo::from_env()?;
+        for (index,scene) in video.scenes.iter().enumerate(){
+            let clip=directory.join(format!("scene-{index}.mp4"));
+            if fs::metadata(&clip).await.is_ok(){continue;}
+            let mut latest=self.get(id).await.ok_or("video not found")?;
+            let operation=if let Some(id)=latest.remote_operations.get(&index){id.clone()}else{
+                let prompt=format!("{}\\n\\nVisual direction: {}\\n\\nDialogue and narration: {}",
+                    video.prompt,scene.heading,scene.narration);
+                let operation=veo.start(&prompt,scene.seconds).await?;
+                latest.remote_operations.insert(index,operation.clone());
+                latest.cost_krw+=veo.estimate_krw(scene.seconds);
+                latest.updated_at_ms=now_ms();
+                self.put(latest).await?;
+                operation
+            };
+            let raw=directory.join(format!("scene-{index}.original.mp4"));
+            if fs::metadata(&raw).await.is_err(){
+                let url=veo.wait(&operation).await?;
+                veo.download(&url,&raw).await?;
+            }
+            let mut command=Command::new("ffmpeg");
+            command.current_dir(directory).arg("-y").arg("-hide_banner").arg("-loglevel").arg("error")
+                .arg("-i").arg(&raw).arg("-map").arg("0:v:0").arg("-map").arg("0:a:0?")
+                .arg("-vf").arg("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24")
+                .arg("-c:v").arg("libx264").arg("-preset").arg("veryfast")
+                .arg("-crf").arg("24").arg("-pix_fmt").arg("yuv420p")
+                .arg("-c:a").arg("aac").arg("-ar").arg("44100").arg("-ac").arg("2")
+                .arg("-t").arg(scene.seconds.to_string()).arg(&clip);
+            invoke(command,Duration::from_secs(150)).await?;
+        }
+        self.merge_clips(id,video.scenes.len(),directory).await
+    }
+    async fn merge_clips(&self,id:Uuid,count:usize,directory:&Path)->Result<String,String>{
+        let manifest=(0..count).map(|i|format!("file 'scene-{i}.mp4'")).collect::<Vec<_>>().join("\\n");
+        fs::write(directory.join("concat.txt"),format!("{manifest}\\n")).await.map_err(|e|e.to_string())?;
         let tmp=directory.join("rendering.mp4");
         let final_name=directory.join("finished.mp4");
         let mut merge=Command::new("ffmpeg");
-        merge.current_dir(&directory).arg("-y").arg("-hide_banner").arg("-loglevel").arg("error")
+        merge.current_dir(directory).arg("-y").arg("-hide_banner").arg("-loglevel").arg("error")
             .arg("-f").arg("concat").arg("-safe").arg("0").arg("-i").arg("concat.txt")
             .arg("-c").arg("copy").arg(&tmp);
         invoke(merge,Duration::from_secs(120)).await?;
@@ -198,7 +252,7 @@ mod tests {
     async fn persists_scene_revisions(){
         let dir=std::env::temp_dir().join(format!("dominion-video-test-{}",Uuid::new_v4()));
         let store=Videos::open(dir.clone()).await.unwrap();
-        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms()};
+        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),backend:VideoBackend::Local,remote_operations:HashMap::new()};
         let id=video.id;store.put(video).await.unwrap();
         store.change_scene(id,0,ChangeScene{heading:"new".into(),narration:"text".into(),seconds:4}).await.unwrap();
         assert_eq!(store.get(id).await.unwrap().scenes[0].heading,"new");
@@ -219,7 +273,7 @@ mod production_tests {
         let videos=Arc::new(Videos::open(dir.clone()).await.unwrap());
         let video=videos.create(&model,NewVideo{
             prompt:"A short smoke test".into(),
-            scenes:Some(vec![Scene{heading:"Runtime".into(),narration:"The local renderer produces an artifact.".into(),seconds:2}])
+            scenes:Some(vec![Scene{heading:"Runtime".into(),narration:"The local renderer produces an artifact.".into(),seconds:2}]),backend:None
         }).await.unwrap();
         let id=video.id;
         videos.start(id).await.unwrap();
