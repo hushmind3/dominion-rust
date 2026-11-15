@@ -629,6 +629,67 @@ mod tests {
         server.abort();
     }
 
+
+    /// Real public 2026 Streamable HTTP endpoint, intentionally opt-in.
+    /// Read-only metadata lookup only; never invokes paid or modifying tools.
+    /// Run:
+    /// cargo test --lib live_public_streamable_http_interop -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "network-bound public MCP compatibility gate"]
+    async fn live_public_streamable_http_interop(){
+        let url=std::env::var("DOMINION_LIVE_MCP_URL")
+            .unwrap_or_else(|_|"https://mcp.specification.website/mcp".into());
+        let server=Mcp::new(vec![Server{
+            name:"live".into(),url:url.clone(),bearer_token:String::new()
+        }]).expect("public live MCP server configuration invalid");
+        let before=Instant::now();
+        let discovered=tokio::time::timeout(Duration::from_secs(30),server.list("live"))
+            .await.expect("public MCP discovery timeout")
+            .unwrap_or_else(|error|panic!("live discovery {url}: {error}"));
+        assert!(!discovered.is_empty(),"public MCP returned zero usable tools");
+        let selected=discovered.iter().find_map(|tool|{
+            match tool.name.as_str(){
+                "list_topics"=>Some((tool.name.clone(),json!({"limit":3}))),
+                "search"=>Some((tool.name.clone(),json!({"query":"protocol","limit":3}))),
+                "read_wiki_structure"=>Some((tool.name.clone(),
+                    json!({"repoName":"modelcontextprotocol/modelcontextprotocol"}))),
+                _=>None
+            }
+        }).expect("no known read-only public MCP tool in discovered catalog");
+        let call=ToolCall{
+            id:"interop-public-read".into(),name:format!("mcp__live__{}",selected.0),
+            arguments:selected.1
+        };
+        let (sender,signal)=watch::channel(false);
+        let (progress,mut receiver)=mpsc::channel(8);
+        let start=Instant::now();
+        let result=tokio::time::timeout(Duration::from_secs(45),
+            server.call_with_progress(Uuid::new_v4(),&call,signal,progress))
+            .await.expect("public MCP tool call timed out")
+            .unwrap_or_else(|error|panic!("live tool transport error: {error}"));
+        let response=match result{
+            McpCallOutcome::Settled(Ok(value))=>value,
+            McpCallOutcome::Settled(Err(error))=>panic!("live tool rejected call: {error}"),
+            McpCallOutcome::Uncertain(error)=>panic!("public read-only call outcome unknown: {error}")
+        };
+        assert!(!response.is_empty(),"live MCP returned empty content");
+        assert!(response.len()<=16000,"server output cap was not enforced");
+        let mut notifications=0usize;
+        while receiver.try_recv().is_ok(){notifications+=1;}
+        println!("{}",json!({
+            "live_mcp":url,
+            "server_tools":discovered.len(),
+            "tool":call.name,
+            "discovery_elapsed_ms":before.elapsed().as_millis(),
+            "call_elapsed_ms":start.elapsed().as_millis(),
+            "response_chars":response.chars().count(),
+            "progress_events":notifications,
+            "external_api_cost_krw":0,
+            "cost_note":"Unauthenticated public documentation request; provider billing not measured"
+        }));
+        drop(sender);
+    }
+
     #[test]
     fn validates_endpoints_and_header_schema() {
         assert!(validate_endpoint("http://127.0.0.1:8080/mcp").is_ok());
