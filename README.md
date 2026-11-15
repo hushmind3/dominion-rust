@@ -120,7 +120,9 @@ external completed evaluations.
 retained SQLite event log, including >500 records, and signals
 `replay_gap` when retention has expired. The TypeScript SDK can reconnect a
 read-only watch and observe a goal until a terminal state without resubmitting
-side-effecting requests. See [SDK documentation](sdk/typescript/README.md).
+side-effecting requests. Events are broadcast only after their SQLite insert
+succeeds; a failed insert neither advances the durable sequence nor announces
+a falsely replayable message. See [SDK documentation](sdk/typescript/README.md).
 
 ## Main API entry points
 
