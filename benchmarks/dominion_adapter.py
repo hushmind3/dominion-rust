@@ -105,7 +105,9 @@ def main():
     started = time.monotonic()
     while time.monotonic()-started < args.timeout:
         run = api("GET","/api/v1/runs/"+run_id)
-        if run["status"] in ("completed","failed","cancelled","awaiting_approval","paused"):
+        if run["status"] in ("completed","failed","cancelled","awaiting_approval"):
+            break
+        if run["status"]=="paused" and not run.get("waiting_for_children"):
             break
         time.sleep(0.25)
     else:

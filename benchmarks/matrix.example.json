@@ -10,11 +10,19 @@
       "model": "SET_IDENTICAL_REAL_MODEL",
       "argv": [
         "python3",
-        "REPLACE_WITH_DOMINION_ADAPTER",
+        "{dominion_adapter}",
         "--workspace",
         "{workspace}",
         "--prompt-file",
-        "{prompt_file}"
+        "{prompt_file}",
+        "--model",
+        "{model}",
+        "--budget-krw",
+        "{budget_krw}",
+        "--max-steps",
+        "{max_steps}",
+        "--telemetry-file",
+        "{telemetry_file}"
       ],
       "limits_enforced": false
     },
@@ -26,9 +34,7 @@
         "exec",
         "--model",
         "{model}",
-        "--cd",
-        "{workspace}",
-        "-"
+        "Read the exact task in .dominion-benchmark-task.txt and implement it in this workspace."
       ],
       "limits_enforced": false
     }

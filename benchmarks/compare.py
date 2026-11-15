@@ -73,6 +73,7 @@ def compare(manifest, directory, attempts, result_root):
                 fields = {
                     "workspace":str(workspace),"prompt_file":str(prompt),
                     "telemetry_file":str(telemetry),"model":model,
+                    "dominion_adapter":str((pathlib.Path(__file__).resolve().parent/"dominion_adapter.py")),
                     "budget_krw":str(budget),"max_steps":str(limit)
                 }
                 def expand(values):
@@ -80,6 +81,7 @@ def compare(manifest, directory, attempts, result_root):
                 env = os.environ.copy()
                 env.update({
                     "DOMINION_BENCH_MODEL":model,
+                    "DOMINION_WORKSPACE_DIR":str(result_root),
                     "DOMINION_BENCH_WORKSPACE":str(workspace),
                     "DOMINION_BENCH_BUDGET_KRW":str(budget),
                     "DOMINION_BENCH_MAX_STEPS":str(limit),
