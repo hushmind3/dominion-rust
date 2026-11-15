@@ -31,6 +31,15 @@ async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Re
     }
     next.run(request).await
 }
+/// Prefer the installed application's adjacent React bundle when --home is used.
+/// Cargo's compile-time manifest directory refers to the build machine and
+/// must not be the only lookup path for a portable release archive.
+fn frontend_dist(home:&std::path::Path, built:&std::path::Path, explicit:Option<std::path::PathBuf>)->std::path::PathBuf{
+    if let Some(path)=explicit{return path;}
+    let installed=home.join("web/dist");
+    if installed.join("index.html").is_file(){installed}else{built.to_path_buf()}
+}
+
 pub fn router(engine: Arc<Engine>) -> Router {
     let api = Router::new()
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
@@ -72,8 +81,11 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     // Main's React/Vite build is the canonical UI; Rust serves the built files.
     // The development Vite server proxies API calls to this same router.
-    let dist=std::env::var("DOMINION_WEB_DIR").map(std::path::PathBuf::from)
-        .unwrap_or_else(|_|std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/dist"));
+    let dist=frontend_dist(
+        &std::env::current_dir().unwrap_or_default(),
+        &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/dist"),
+        std::env::var_os("DOMINION_WEB_DIR").map(std::path::PathBuf::from),
+    );
     // The unmodified latest-main frontend makes /api/* requests. Its
     // compatibility endpoints operate on the same Rust Store/Engine as /api/v1.
     let frontend=crate::frontend_api::router()
@@ -306,4 +318,21 @@ async fn adopt_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 async fn descendant_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<(StatusCode,Json<crate::improvement::Improvement>),ApiError>{
     let result=engine.improvements.descendant(id).await.map_err(bad)?;
     Ok((StatusCode::CREATED,Json(result)))
+}
+
+#[cfg(test)]
+mod frontend_bundle_tests {
+ use super::*;
+ #[test]
+ fn portable_archive_loads_adjacent_frontend_instead_of_builder_path(){
+  let base=std::env::temp_dir().join(format!("dominion-portable-web-{}",Uuid::new_v4()));
+  let dist=base.join("web/dist");
+  std::fs::create_dir_all(&dist).unwrap();
+  std::fs::write(dist.join("index.html"),"<html>app</html>").unwrap();
+  let builder=base.join("old-machine/dist");
+  assert_eq!(frontend_dist(&base,&builder,None),dist);
+  assert_eq!(frontend_dist(&base,&builder,Some(base.join("custom"))),base.join("custom"));
+  std::fs::remove_dir_all(&base).unwrap();
+  assert_eq!(frontend_dist(&base,&builder,None),builder);
+ }
 }
