@@ -19,4 +19,5 @@ futures-core = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
+sha2 = "0.10"
 tower-http = { version = "0.6", features = ["fs"] }
