@@ -173,3 +173,21 @@ Tests added for delayed model request cancellation, pre-hook veto preventing fil
 Unfinished: full external-tool-specific cooperative cancellation and quiescence acknowledgements, persistence of dynamically registered native extension hooks across process restarts, and same-model/same-task frontier benchmarks.
 
 Focused verification: GitHub Actions run https://github.com/hushmind3/dominion-rust/actions/runs/43687107564 compiled Rust and passed 69/69 tests, plus the optional TypeScript SDK suite. This included real local HTTP-provider cancellation and hook-veto integration. A subsequent read-worker quiescence regression was added and must be verified separately; broader frontier task-success parity remains unmeasured.
+
+
+### Tool policy projection and verification
+
+The operator's DOMINION_DENIED_TOOLS is enforced twice: filtered from both
+per-run model-facing schemas in policy::select_catalog and the native Rust
+SDK catalog, and blocked again by the ordered pre-hook just before dispatch.
+This avoids wasting model tokens on unavailable tools without weakening
+approval/schema checks. Per-run filtering preserves the frozen catalog for
+crash-safe replay; dynamic SDK hooks can only add further denials.
+
+Focused code and regression checks: src/hooks.rs, src/tool_batch.rs,
+src/tool_schema.rs, src/journal.rs, src/policy.rs, src/engine.rs,
+src/sdk.rs. A previous full source check completed with 70/70 Rust tests
+and TypeScript SDK success (GitHub Actions 43687318332). The additional
+SDK catalog-mask regression is included in this revision and must pass
+the new source check before it is claimed verified. Broader model-task
+success rates remain unmeasured.
