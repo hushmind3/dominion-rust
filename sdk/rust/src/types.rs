@@ -13,6 +13,13 @@ pub struct ModelSelection {
     pub model: Option<String>,
 }
 
+#[derive(Debug,Clone,Copy,Serialize,Deserialize,PartialEq,Eq)]
+#[serde(rename_all="snake_case")]
+pub enum ReviewPolicy {
+    Always,
+    AcceptanceReady,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalCreate {
@@ -35,6 +42,8 @@ pub struct GoalCreate {
     pub max_replans: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replan_after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_policy: Option<ReviewPolicy>,
 }
 
 impl GoalCreate {
@@ -43,8 +52,12 @@ impl GoalCreate {
             goal: goal.into(),
             success_criteria: None, executor: None, reviewer: None, planner: None,
             isolate_worktree: None, token_budget: None, max_iterations: None,
-            max_replans: None, replan_after: None,
+            max_replans: None, replan_after: None, review_policy: None,
         }
+    }
+    pub fn review_policy(mut self, policy: ReviewPolicy) -> Self {
+        self.review_policy = Some(policy);
+        self
     }
     pub fn max_iterations(mut self, limit: u64) -> Self {
         self.max_iterations = Some(limit);
