@@ -256,6 +256,7 @@ fn exact_replacement(bytes: Vec<u8>, old: &str, new: &str) -> Option<String> {
     Some(content.replacen(old, new, 1))
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_path(state: &AppState, path: &str) -> Result<PathBuf, String> {
     resolve_path_from(&state.config.workspace,path)
 }
