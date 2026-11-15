@@ -3,6 +3,8 @@
 use crate::engine::jobs::JobContext;
 use crate::engine::{chat::TurnRequest,run_quiet_outcome};
 use crate::engine::verification::{infer_criteria,string,successful_evidence};
+#[cfg(test)]
+use crate::engine::verification::{acceptance_gaps,baseline_checks};
 pub use crate::engine::verification::{check_acceptance,prepare_acceptance_checks,validate_criteria};
 use crate::state::AppState;
 use serde_json::{json,Value};
