@@ -169,7 +169,7 @@ impl Videos {
             if fs::metadata(&clip).await.is_ok(){continue;}
             let mut latest=self.get(id).await.ok_or("video not found")?;
             let operation=if let Some(id)=latest.remote_operations.get(&index){id.clone()}else{
-                let prompt=format!("{}\\n\\nVisual direction: {}\\n\\nDialogue and narration: {}",
+                let prompt=format!("{}\n\nVisual direction: {}\n\nDialogue and narration: {}",
                     video.prompt,scene.heading,scene.narration);
                 let operation=veo.start(&prompt,scene.seconds).await?;
                 latest.remote_operations.insert(index,operation.clone());
@@ -196,8 +196,8 @@ impl Videos {
         self.merge_clips(id,video.scenes.len(),directory).await
     }
     async fn merge_clips(&self,id:Uuid,count:usize,directory:&Path)->Result<String,String>{
-        let manifest=(0..count).map(|i|format!("file 'scene-{i}.mp4'")).collect::<Vec<_>>().join("\\n");
-        fs::write(directory.join("concat.txt"),format!("{manifest}\\n")).await.map_err(|e|e.to_string())?;
+        let manifest=(0..count).map(|i|format!("file 'scene-{i}.mp4'")).collect::<Vec<_>>().join("\n");
+        fs::write(directory.join("concat.txt"),format!("{manifest}\n")).await.map_err(|e|e.to_string())?;
         let tmp=directory.join("rendering.mp4");
         let final_name=directory.join("finished.mp4");
         let mut merge=Command::new("ffmpeg");
