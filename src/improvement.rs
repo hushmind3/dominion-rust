@@ -303,6 +303,14 @@ mod full_cycle_tests {
         assert!(result.accepted);
         assert_eq!(result.baseline.as_ref().unwrap().score,Some(0.0));
         assert_eq!(result.candidate.as_ref().unwrap().score,Some(1.0));
+        // A persisted evaluation result can become visible just before the
+        // worker releases its active marker. Wait for the actual detach
+        // boundary before asserting adoption; avoid a timing-dependent test.
+        for _ in 0..100 {
+            if !service.active.lock().await.contains(&item.id) {break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!service.active.lock().await.contains(&item.id),"evaluator did not detach");
         let adopted=service.adopt(item.id).await.unwrap();
         assert_eq!(adopted.status,ImprovementStatus::Adopted);
         assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"1\n");
