@@ -52,6 +52,11 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/videos/{id}/render",post(render_video))
         .route("/videos/{id}/scenes/{index}",post(change_scene))
         .route("/videos/{id}/download",get(download_video))
+        .route("/improvements",get(list_improvements).post(create_improvement))
+        .route("/improvements/{id}",get(get_improvement))
+        .route("/improvements/{id}/approve",post(approve_improvement))
+        .route("/improvements/{id}/adopt",post(adopt_improvement))
+        .route("/improvements/{id}/descendant",post(descendant_improvement))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     Router::new()
         .nest("/api/v1",api)
@@ -173,4 +178,25 @@ async fn download_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->R
     let file=tokio::fs::File::open(path).await.map_err(|e|bad(e.to_string()))?;
     let body=Body::from_stream(ReaderStream::new(file));
     Ok(([(header::CONTENT_TYPE,"video/mp4"),(header::CONTENT_DISPOSITION,"attachment; filename=dominion.mp4")],body).into_response())
+}
+
+async fn list_improvements(State(engine):State<Arc<Engine>>)->Json<Vec<crate::improvement::Improvement>>{
+    Json(engine.improvements.list().await)
+}
+async fn create_improvement(State(engine):State<Arc<Engine>>,Json(input):Json<crate::improvement::NewImprovement>)->Result<(StatusCode,Json<crate::improvement::Improvement>),ApiError>{
+    let item=engine.improvements.create(input).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(item)))
+}
+async fn get_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
+    engine.improvements.get(id).await.map(Json).ok_or_else(not_found)
+}
+async fn approve_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
+    engine.improvements.start(engine.model.clone(),id,engine.settings.shell_enabled).await.map(Json).map_err(bad)
+}
+async fn adopt_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
+    engine.improvements.adopt(id).await.map(Json).map_err(bad)
+}
+async fn descendant_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<(StatusCode,Json<crate::improvement::Improvement>),ApiError>{
+    let result=engine.improvements.descendant(id).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(result)))
 }

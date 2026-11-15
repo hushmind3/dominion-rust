@@ -145,6 +145,7 @@ impl Improvements {
         item.base_commit=Some(head.clone());self.put(item.clone()).await?;
         let trial_root=self.root.join(item.id.to_string());
         fs::create_dir_all(&trial_root).await.map_err(|e|e.to_string())?;
+        let trial_root=trial_root.canonicalize().map_err(|e|e.to_string())?;
         let reference=trial_root.join("baseline");
         let candidate=trial_root.join("candidate");
         for destination in [&reference,&candidate]{
