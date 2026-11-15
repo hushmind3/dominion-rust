@@ -484,3 +484,51 @@ async fn apply(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
         "message":"Git source was adopted; build/restart must be performed separately"
     })))
 }
+
+#[cfg(test)]
+mod crash_recovery_tests {
+ use super::*;
+ use crate::{config::Settings,improvement::Improvements,sdk::Dominion};
+
+ #[tokio::test]
+ async fn sdk_restart_turns_interrupted_unstarted_rsi_trial_into_reviewable_receipt(){
+  let root=std::env::temp_dir().join(format!("dominion-rsi-crash-{}",Uuid::new_v4()));
+  let workspace=root.join("workspace");
+  let data=root.join("state");
+  tokio::fs::create_dir_all(workspace.join("repo/.git")).await.unwrap();
+  let trials=Improvements::open(data.join("improvements"),workspace.clone()).await.unwrap();
+  let trial=trials.create(NewImprovement{
+   repository:"repo".into(),target_file:"src/file.rs".into(),target_files:None,
+   instruction:"improve".into(),test_command:"true".into(),
+   score_command:Some("echo 1".into()),parent:None,
+  }).await.unwrap();
+  let campaigns=crate::rsi_campaign::Campaigns::open(data.clone()).unwrap();
+  let campaign=Campaign{
+   id:Uuid::new_v4(),status:"running".into(),phase:"diagnosing_and_editing".into(),
+   objective:"improve".into(),provider_id:"dominion-native".into(),model:"test".into(),
+   selection_policy:"automatic".into(),repository:"repo".into(),
+   test_command:"true".into(),score_command:"echo 1".into(),
+   max_attempts:3,token_budget:0,time_budget_seconds:0,started_ms:now_ms(),
+   attempts:1,accepted_generations:0,tokens:0,cost_krw:0.0,
+   current_trial:Some(trial.id),trials:vec![trial.id],history:vec![],
+   base_commit:None,head_commit:None,
+   error:None,stop_reason:None,requested_cancel:false,
+  };
+  campaigns.create(campaign.clone()).await.unwrap();
+  drop(campaigns);
+  drop(trials);
+  let mut settings=Settings::from_env().unwrap();
+  settings.data_dir=data;
+  settings.workspace_dir=workspace;
+  settings.token=None;
+  let sdk=Dominion::open(settings).await.unwrap();
+  let restored=sdk.engine().campaigns.get(campaign.id).await.unwrap();
+  assert_eq!(restored.status,"cancelled");
+  assert!(restored.current_trial.is_none());
+  assert_eq!(restored.history.len(),1);
+  assert_eq!(restored.history[0].selected.as_deref(),Some("baseline"));
+  let persisted_trial=sdk.engine().improvements.get(trial.id).await.unwrap();
+  assert_eq!(persisted_trial.status,ImprovementStatus::Cancelled);
+  let _=tokio::fs::remove_dir_all(root).await;
+ }
+}
