@@ -1,4 +1,4 @@
-use crate::{domain::{Approval, CreateRun, PublicSettings, Run}, engine::Engine, tools};
+use crate::{domain::{Approval, CreateRun, PublicSettings, ReconcileTool, Run}, engine::Engine, tools};
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
@@ -40,6 +40,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/cancel",post(cancel))
         .route("/runs/{id}/approval",post(approve))
         .route("/runs/{id}/directive",post(directive))
+        .route("/runs/{id}/reconcile",post(reconcile))
         .route("/runs/{id}/events",get(events))
         .route("/runs/{id}/files",get(list_files))
         .route("/runs/{id}/files/{*path}",get(read_file))
@@ -97,6 +98,9 @@ async fn approve(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>, Json(in
 struct Directive { instruction: String }
 async fn directive(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>, Json(input):Json<Directive>) -> Result<Json<Run>,ApiError> {
     engine.directive(id,input.instruction).await.map(Json).map_err(bad)
+}
+async fn reconcile(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<ReconcileTool>)->Result<Json<Run>,ApiError>{
+    engine.reconcile(id,input).await.map(Json).map_err(bad)
 }
 #[derive(Default,Deserialize)]
 struct EventQuery { since: Option<u64> }

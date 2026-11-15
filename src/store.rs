@@ -18,7 +18,10 @@ impl Store {
             let mut run: Run = serde_json::from_slice(&data).map_err(|e| format!("corrupt run {}: {e}", entry.path().display()))?;
             if run.status == RunStatus::Running || run.status == RunStatus::Queued {
                 run.status = RunStatus::Paused;
-                run.event("recovered", "Interrupted execution can be resumed", None);
+                run.event("recovered", "Interrupted execution paused for recovery", None);
+                if let Some(call) = run.in_flight.clone() {
+                    run.event("tool_uncertain", format!("Interrupted {} ({}) needs reconciliation",call.name,call.id), None);
+                }
             }
             state.insert(run.id, run);
         }
