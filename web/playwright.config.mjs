@@ -7,6 +7,7 @@ import fs from 'node:fs'
 const webRoot=path.dirname(fileURLToPath(import.meta.url))
 const repoRoot=path.resolve(webRoot,'..')
 const runtime=fs.mkdtempSync(path.join(os.tmpdir(),'dominion-browser-'))
+process.env.DOMINION_BROWSER_RUNTIME=runtime
 export default defineConfig({
   testDir:'./e2e',
   testMatch:'*.spec.mjs',
@@ -29,7 +30,7 @@ export default defineConfig({
         DOMINION_MODEL:'mock-benchmark',
         DOMINION_ECONOMY_MODEL:'mock-benchmark',
         DOMINION_DATA_DIR:path.join(runtime,'data'),
-        DOMINION_WORKSPACE_DIR:path.join(runtime,'workspace'),
+        DOMINION_WORKSPACE_DIR:path.join(runtime,'workspaces'),
         DOMINION_MCP_SERVERS:'[]',
         DOMINION_ACCESS_TOKEN:''
       },reuseExistingServer:!process.env.CI,timeout:200000},
