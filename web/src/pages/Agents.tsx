@@ -63,6 +63,7 @@ export function AgentsPage() {
   const [goalText,setGoalText]=useState("");
   const [goalIsolated,setGoalIsolated]=useState(false);
   const [goalBudget,setGoalBudget]=useState(60000);
+  const [verificationCommand,setVerificationCommand]=useState('');
   const [reviewPolicy,setReviewPolicy]=useState<'always'|'acceptance_ready'>('always');
   const goalStrategies=useRemote<{reviewPolicies:{id:'always'|'acceptance_ready';label:string;description:string}[]}>('/api/goals/strategies',{reviewPolicies:[]});
   const [goalBusy,setGoalBusy]=useState(false);
@@ -87,7 +88,7 @@ export function AgentsPage() {
       const created=await post<{id:string;jobId:string}>('/api/agents/'+encodeURIComponent(runner)+'/goal',{
         goal:goalText.trim(),isolateWorktree:goalIsolated,tokenBudget:goalBudget,
         reviewPolicy,
-        successCriteria:[]
+        successCriteria:verificationCommand.trim() ? [{type:'command_succeeded',command:verificationCommand.trim()}] : []
       });
       setCreatedGoal(created);setGoalText("");await portfolio.reload();
     }catch(e){setGoalError((e as Error).message)}finally{setGoalBusy(false)}
@@ -372,6 +373,7 @@ export function AgentsPage() {
           <FormField label="완수할 작업"><TextArea rows={5} value={goalText} onChange={e=>setGoalText(e.target.value)} placeholder="예: 프로젝트 로그인 오류를 분석하고 검증 가능한 수정안을 완성해 주세요."/></FormField>
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={goalIsolated} onChange={e=>setGoalIsolated(e.target.checked)}/> Git 격리 작업공간에서 수정 (사용자 검토 후 원본 반영)</label>
           <FormField label="이번 목표 토큰 예산"><TextInput type="number" min={0} max={2000000} step={10000} value={goalBudget} onChange={e=>setGoalBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
+          <FormField label="필수 검증 명령 (선택)"><TextInput value={verificationCommand} maxLength={512} onChange={e=>setVerificationCommand(e.target.value)} placeholder="예: cargo test --release 또는 npm test"/><p className="mt-1 text-xs text-[#7C7469]">이 명령의 실제 성공 영수증이 필요하며, 이후 소스가 변경되면 다시 검증해야 완료됩니다.</p></FormField>
           <FormField label="독립 검토 전략 (Rust 엔진 관리)">
            <SelectInput value={reviewPolicy} onChange={e=>setReviewPolicy(e.target.value as 'always'|'acceptance_ready')}>
             {goalStrategies.value.reviewPolicies.length>0
