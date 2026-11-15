@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dominion · Execution Studio</title>
+<style>
+:root{color-scheme:dark;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#0c111e;color:#eaf0fb}
+*{box-sizing:border-box}body{margin:0;min-height:100vh}button,input,textarea{font:inherit}button{cursor:pointer}a{color:#79a9ff}
+header{height:68px;border-bottom:1px solid #263249;display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#0e1625}
+.brand{display:flex;align-items:center;gap:12px;font-weight:800;font-size:22px;letter-spacing:.04em}.orb{height:25px;width:25px;border-radius:9px;background:linear-gradient(140deg,#4cf5d5,#628cfb 55%,#a160ff);box-shadow:0 0 28px #628cfb60}
+.pill{padding:6px 11px;border-radius:20px;border:1px solid #2a3c58;font-size:12px;color:#a9bbd5}
+.layout{display:grid;grid-template-columns:246px 1fr;min-height:calc(100vh - 68px)}
+aside{border-right:1px solid #263249;padding:28px 16px;background:#101827}nav button{display:block;width:100%;text-align:left;border:0;padding:13px 16px;color:#aebad1;background:none;border-radius:10px;margin:2px 0}nav button.active{color:white;background:#243452}
+.tiny{color:#8c9db5;font-size:12px;letter-spacing:1px;margin:24px 14px 11px}
+main{padding:38px;max-width:1430px;width:100%;margin:0 auto}.hero{margin-bottom:25px;display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}h1{font-size:28px;margin:0 0 6px;letter-spacing:-.03em}h2{font-size:17px;margin:0 0 18px}p{margin:0;color:#a9bad2;line-height:1.55}
+.workspace{display:grid;grid-template-columns:minmax(280px,1.1fr) minmax(330px,1fr);gap:20px}.panel{background:#141e30;border:1px solid #2b3c57;border-radius:17px;padding:23px;min-width:0}
+textarea,input{background:#0c1525;border:1px solid #33445f;color:#f4f6fd;border-radius:10px;padding:12px;width:100%;outline:none}textarea:focus,input:focus{border-color:#719afa}textarea{min-height:135px;resize:vertical;line-height:1.55}
+label{display:block;color:#a8b8d1;font-size:13px;margin-bottom:9px}input{height:44px}.fieldgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+button.primary{border:0;border-radius:10px;color:#0d1425;background:linear-gradient(125deg,#62ecce,#83aaff);padding:12px 19px;font-weight:800}
+button.secondary{border:1px solid #3f5271;color:#d4e0f8;background:#1d2a42;padding:10px 14px;border-radius:10px}button.danger{border:1px solid #a34b5e;color:#ffd1dc;background:#4a2132;padding:10px 14px;border-radius:10px}
+button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.muted{color:#8396af;font-size:13px}
+.runs{display:flex;flex-direction:column;gap:9px;max-height:490px;overflow:auto}.run{border:1px solid #30415d;border-radius:10px;padding:12px;background:#0f1929;text-align:left;color:inherit;width:100%}.run.selected{border-color:#6e9eff;background:#1a2d47}.run-title{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.run-meta{margin-top:8px;display:flex;gap:11px;color:#94a8c3;font-size:12px}
+.detail-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:16px}.tag{border-radius:6px;padding:4px 7px;background:#2b3a53;color:#a5d9ff;font-size:12px;text-transform:capitalize}
+.output{background:#0e1827;border:1px solid #2a3850;border-radius:12px;padding:15px;white-space:pre-wrap;line-height:1.65;font-size:14px;overflow:auto;max-height:300px;overflow-wrap:anywhere}
+.timeline{max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:12px}.event{border-left:2px solid #3b5f86;padding-left:13px;color:#bfcae0;font-size:13px}.event time{color:#7e91ac;font-size:11px}.event strong{display:block;color:#eef4ff;margin:4px 0;font-weight:600}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:16px 0}.metric{border:1px solid #2c3c56;border-radius:9px;padding:11px}.metric b{display:block;font-size:19px;margin-top:5px}.metric span{color:#9eaec5;font-size:11px}
+.approval{background:#372b22;border:1px solid #aa8558;border-radius:12px;padding:16px;margin-bottom:14px}.approval code{display:block;white-space:pre-wrap;margin:10px 0;overflow-wrap:anywhere}
+.filelink{display:block;background:none;color:#85c6ff;text-align:left;border:0;padding:7px 0}.hidden{display:none!important}.stack{display:flex;flex-direction:column;gap:18px}
+@media(max-width:1050px){.workspace{grid-template-columns:1fr}}@media(max-width:700px){.layout{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #263249;padding:8px}nav{display:flex}nav button{width:auto;flex:1;text-align:center;padding:10px}aside .tiny{display:none}main{padding:20px}header{padding:0 16px}.fieldgrid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<header><div class="brand"><div class="orb"></div>DOMINION <span class="muted">/ Studio</span></div><span class="pill" id="connection">연결 확인 중</span></header>
+<div class="layout"><aside><div class="tiny">WORKSPACE</div><nav><button class="active" data-page="runs">⚡ 실행 스튜디오</button><button data-page="settings">⚙️ 모델 · 설정</button></nav><div class="tiny">실제 결과와 실행 기록은 서버에 저장됩니다.</div></aside>
+<main>
+<section id="page-runs">
+<div class="hero"><div><h1>작업 실행</h1><p>원하는 결과를 설명하면 계획부터 실행·검증까지 진행합니다.</p></div><span class="pill">Rust core · API v1</span></div>
+<div class="workspace">
+<div class="stack">
+<div class="panel"><h2>새 작업</h2><label for="instruction">무엇을 완성할까요?</label><textarea id="instruction" placeholder="예: 고객용 견적서 템플릿을 HTML과 CSS로 제작하고 사용 방법까지 작성해 주세요."></textarea>
+<div class="fieldgrid"><div><label for="budget">예상 API 비용 한도 (원)</label><input id="budget" type="number" min="0" max="1000000" value="10000"></div><div><label for="steps">최대 실행 라운드</label><input id="steps" type="number" min="1" max="100" value="30"></div></div>
+<div class="actions"><button id="create" class="primary">▶ 실행 시작</button><span class="muted" id="create-message"></span></div></div>
+<div class="panel"><h2>작업 목록</h2><div id="run-list" class="runs"><p>작업이 없습니다.</p></div></div>
+</div>
+<div class="stack">
+<div class="panel"><div class="detail-head"><h2>선택한 작업</h2><span class="tag" id="run-status">미선택</span></div><div id="run-detail"><p>왼쪽에서 작업을 선택하세요.</p></div></div>
+<div class="panel"><h2>실행 이벤트</h2><div class="timeline" id="timeline"><p>아직 이벤트가 없습니다.</p></div></div>
+<div class="panel"><h2>작업 파일</h2><div id="files"><p>결과 파일이 여기에 표시됩니다.</p></div></div>
+</div></div>
+</section>
+<section id="page-settings" class="hidden"><div class="hero"><div><h1>모델 · 연결</h1><p>모델 제공자는 서버 환경변수로 연결하며 인증정보는 브라우저로 전송하지 않습니다.</p></div></div>
+<div class="panel" style="max-width:640px"><h2>현재 실행 설정</h2><div id="config-list" class="output">조회 중</div>
+<div style="margin-top:20px"><label for="token">원격 서버용 액세스 토큰 (이 탭에서만 유지)</label><input type="password" id="token" autocomplete="off" placeholder="DOMINION_ACCESS_TOKEN"><div class="actions" style="margin-top:12px"><button class="secondary" id="connect">연결하기</button></div></div></div></section>
+</main></div>
+<script src="/app.js" defer></script></body></html>
