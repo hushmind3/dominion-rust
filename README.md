@@ -63,11 +63,19 @@ Rust Axum API ── authentication / approvals / safe tool gateway
 | `src/engine/maintenance.rs`, `src/engine/maintenance/artifacts.rs` | Encrypted rolling backups and safe generated-artifact pruning |
 | `src/engine/rsi/` | Frozen candidate/control evaluation, bounded adoption, learned strategies |
 | `sdk/rust/`, `sdk/typescript/` | Native client APIs for goals, models, rooms, video, memory, skills and RSI, using the same Rust server policy as React |
+| `web/src/pages/home/QuickGoal.tsx` | Nontechnical goal composer, route confirmation, owner steering, live goal progress | 
 | `web/src/` | React UI, models, goals, group discussions, memory, video, operations |
 
 ## Main capabilities
 
-**Agent execution.** Tool calls and approvals are persisted as operations, not
+**Agent execution.** The Home screen now starts with a natural-language goal
+composer and a read-only model preview. Owners can launch a durable goal using
+a configured provider even without creating an agent manually. The native
+`POST /api/goals/prepare` resolves an optional registered specialist without
+calling a model, queuing work, or assuming free API usage. Confirmed goals use
+the same Rust executor, checkpoint, approval and verification system.
+
+Tool calls and approvals are persisted as operations, not
 trusted from assistant claims. The local engine supports source editing,
 command execution, HTTP, memory, tools registered through MCP, and
 bounded subagent delegation. A cancelled or ambiguous side-effecting operation
@@ -108,7 +116,7 @@ side-effecting requests. See [SDK documentation](sdk/typescript/README.md).
 | --- | --- |
 | Health and stream | `GET /api/health`, `GET /api/events` |
 | Chat | `POST /api/chat` (streaming) |
-| Goals | `POST /api/goals`, `GET /api/goals/strategies`, `GET /api/goals/:id`, owner steering and cancel routes |
+| Goals | `POST /api/goals/prepare` (no side effects), `POST /api/goals`, `GET /api/goals/strategies`, `GET /api/goals/:id`, steering and cancel |
 | Durable work | `GET /api/jobs`, `GET /api/executions` |
 | Sessions | `GET /api/sessions`, `GET /api/sessions/:id/messages` |
 | Group chat | `GET/POST /api/rooms/:id/messages`, `GET /api/rooms/:id/state` |

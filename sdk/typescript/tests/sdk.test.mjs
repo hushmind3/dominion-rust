@@ -424,3 +424,29 @@ test('RSI campaign responses retain the native campaigns envelope',async()=>{
   const response=await sdk.rsiCampaigns()
   assert.equal(response.campaigns[0].id,'r1')
 })
+
+
+test('goal preparation is read-only and automatic goal creation uses the native Rust route',async()=>{
+  const calls=[]
+  const sdk=new DominionSDK({fetch:async(url,init)=>{
+    calls.push({url,method:init.method||'GET',body:JSON.parse(init.body)})
+    if(url==='/api/goals/prepare')return asJson({
+      ready:true,taskKind:'coding',recommendedWorktree:true,
+      selection:{source:'registered_agent',agentName:'Rust 개발자',providerName:'Local',model:'m1'},
+      executor:{agentId:'coder-1',providerId:'local',model:'m1'},
+      createsJob:false,estimatedCostKrw:null,
+    })
+    if(url==='/api/goals')return asJson({id:'g1',jobId:'goal-job-g1',status:'queued',goal:'repair Rust'})
+    throw Error('Unexpected route '+url)
+  }})
+  const preview=await sdk.prepareGoal('repair Rust')
+  assert.equal(preview.ready,true)
+  assert.equal(preview.estimatedCostKrw,null)
+  assert.equal(preview.recommendedWorktree,true)
+  await sdk.startGoal({goal:'repair Rust',autoRoute:true})
+  assert.deepEqual(calls.map(({url,method})=>[method,url]),[
+    ['POST','/api/goals/prepare'],['POST','/api/goals'],
+  ])
+  assert.equal(calls[1].body.autoRoute,true)
+  assert.equal(calls[0].body.goal,'repair Rust')
+})

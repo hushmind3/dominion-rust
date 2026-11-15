@@ -119,6 +119,21 @@ register a callback or modify approval policy just by naming one.
 
 The subprocess wire path is tested in `tests/mcp_stdio.rs`.
 
+## Zero-charge preparation and automatic route
+
+`sdk.prepare_goal("Repair my project")` only checks locally stored
+providers and agent configuration and produces a reviewable candidate.
+It never runs a model. To opt into Rust-owned automatic routing at enqueue:
+
+```rust
+let goal = sdk.create_goal(GoalCreate::new("Repair my project")
+    .automatic_route()).await?;
+```
+
+If no model route is configured, the Rust API rejects admission before
+writing a goal or job. `GoalCreate::executor` remains authoritative for
+manual model selection.
+
 ## Cross-product Rust client endpoints
 
 `goal_strategies()` returns the same authoritative review-policy catalog as

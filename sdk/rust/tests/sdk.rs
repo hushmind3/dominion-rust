@@ -377,3 +377,27 @@ async fn rust_room_idempotency_nonce_and_rsi_envelope_match_persisted_contract()
     assert!(sdk.run_room("r1","owner",Value::Null).await.is_err());
     server.abort();
 }
+
+
+#[tokio::test]
+async fn rust_goal_preview_and_native_auto_route_use_identical_protocol(){
+    let app=Router::new()
+        .route("/api/goals/prepare",post(|Json(body):Json<Value>|async move{
+            assert_eq!(body["goal"],"repair Rust");
+            Json(json!({"ready":true,"executor":{"providerId":"local","model":"m1"},
+                "estimatedCostKrw":null,"createsJob":false}))
+        }))
+        .route("/api/goals",post(|Json(body):Json<Value>|async move{
+            assert_eq!(body["autoRoute"],true);
+            assert_eq!(body["goal"],"repair Rust");
+            Json(goal("g2","queued"))
+        }));
+    let (base,server)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let preview=sdk.prepare_goal("repair Rust").await.unwrap();
+    assert_eq!(preview["ready"],true);
+    assert_eq!(preview["createsJob"],false);
+    let created=sdk.create_goal(GoalCreate::new("repair Rust").automatic_route()).await.unwrap();
+    assert_eq!(created.id,"g2");
+    server.abort();
+}

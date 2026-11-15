@@ -31,6 +31,16 @@ export type MCPServerConfig = {
 }
 
 export type ReviewPolicy = 'always' | 'acceptance_ready'
+export type GoalPreparation = JsonObject & {
+  ready: boolean
+  taskKind?: 'coding'|'video'|'research'|'general'
+  message?: string
+  nextPage?: string
+  executor?: JsonObject
+  selection?: {source: string; agentName: string; providerName: string; model: string}
+  recommendedWorktree?: boolean
+  estimatedCostKrw?: number | null
+}
 export type GoalStrategyCatalog = JsonObject & {
   defaultReviewPolicy: ReviewPolicy
   reviewPolicies: {id: ReviewPolicy; label: string; description: string}[]
@@ -71,6 +81,7 @@ export type GoalOptions = {
   replanAfter?: number
   isolateWorktree?: boolean
   reviewPolicy?: ReviewPolicy
+  autoRoute?: boolean
 }
 export type RunOptions = {
   signal?: AbortSignal
@@ -409,6 +420,11 @@ export class DominionSDK {
       throw new DominionSDKError(409, typeof decision.error === 'string' ? decision.error : 'Approval already resolved')
     }
     return decision
+  }
+
+  /** Read-only model/agent readiness and route preview; creates no job. */
+  prepareGoal(goal: string): Promise<GoalPreparation> {
+    return this.post<GoalPreparation>('/api/goals/prepare', {goal})
   }
 
   async startGoal(options: GoalOptions): Promise<DominionGoal> {

@@ -44,6 +44,8 @@ pub struct GoalCreate {
     pub replan_after: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_policy: Option<ReviewPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_route: Option<bool>,
 }
 
 impl GoalCreate {
@@ -52,8 +54,12 @@ impl GoalCreate {
             goal: goal.into(),
             success_criteria: None, executor: None, reviewer: None, planner: None,
             isolate_worktree: None, token_budget: None, max_iterations: None,
-            max_replans: None, replan_after: None, review_policy: None,
+            max_replans: None, replan_after: None, review_policy: None, auto_route: None,
         }
+    }
+    pub fn automatic_route(mut self) -> Self {
+        self.auto_route=Some(true);
+        self
     }
     pub fn review_policy(mut self, policy: ReviewPolicy) -> Self {
         self.review_policy = Some(policy);

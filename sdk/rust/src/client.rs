@@ -139,6 +139,10 @@ impl DominionClient {
     }
 
     /// Canonical Rust strategy catalog used by React and both SDKs.
+    /// Read-only goal preview: never allocates a job or calls a model.
+    pub async fn prepare_goal(&self,goal:&str)->Result<Value>{
+        self.json(Method::POST,&["goals","prepare"],Some(json!({"goal":goal}))).await
+    }
     pub async fn goal_strategies(&self) -> Result<Value> {
         self.json(Method::GET, &["goals","strategies"], None).await
     }

@@ -84,6 +84,20 @@ SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라�
 
 ## 목표 하네스
 
+`POST /api/goals/prepare` is a read-only, model-call-free preflight for
+natural-language goal creation. `src/engine/goals/admission.rs` checks
+configured providers, enabled agents, selected model names and simple
+role/task affinity. It returns `ready`, a candidate `executor`, the route
+source, and `estimatedCostKrw:null` where provider billing is unknown.
+No tool, job, or permission is created by this route. Owners explicitly
+confirm a preview in Home; a confirmed executor remains pinned rather than
+silently switching paid providers. External Rust/TypeScript callers may
+choose `autoRoute:true` to perform the same check when queueing a goal.
+When no provider is configured, no job is queued and Home offers the
+existing Models menu. This is deterministic admission, not a new
+LLM-powered planner or a claim that credentials have been live-tested.
+
+
 모델은 계획과 검토를 제안하고, Rust가 완료 상태를 결정합니다.
 `POST /api/goals`에서 명시적인 `successCriteria`를 지정할 수 있습니다.
 

@@ -103,6 +103,17 @@ and signals truncated retention explicitly. It does not replay `POST /api/chat`,
 tool executions or approval decisions. Persist your last observed sequence
 where appropriate and re-fetch the canonical record on `replay_gap`.
 
+## Beginner-first goal start
+
+`sdk.prepareGoal(goal)` calls the native, side-effect-free
+`POST /api/goals/prepare`, returning the chosen agent/provider/model and
+any setup prerequisite without spending tokens or enqueueing work.
+`sdk.startGoal({goal,autoRoute:true})` lets the Rust runtime choose the same
+class of eligible route; to explicitly pin a previewed model, instead pass
+`executor: preview.executor`. The Home UI pins its confirmation and displays
+the active durable job. Missing provider credentials or runtime availability
+are still checked on execution; the preview makes no billing guarantees.
+
 ## All-menu SDK parity with Rust and React
 
 `sdk.goalStrategies()` reads the server-owned review catalog. An owner may choose

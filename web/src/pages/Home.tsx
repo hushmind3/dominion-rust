@@ -1,11 +1,12 @@
 import {Activity,ArrowRight,Bot,BrainCircuit,CheckCircle2,Cpu,FolderOpen,MessageSquare,Play,RadioTower,Workflow} from 'lucide-react'
 import {Button,PageContainer} from '../components/Primitives'
 import {ExecutionMonitor} from '../components/ExecutionMonitor'
+import {QuickGoal} from './home/QuickGoal'
 import {useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 import {t,useLocale,formatDateTime,jobKindLabel} from '../i18n'
 import type {Agent,ChatSession,Provider} from '../api'
-type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'|'rsi'|'automations'
+type Destination='home'|'chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'|'rsi'|'automations'
 export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  useLocale()
  const sessions=useRemote<ChatSession[]>('/api/sessions',[])
@@ -27,13 +28,9 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const readyProvider=authenticatedProviders>0
  const nextAction: {title:string;detail:string;page:Destination}= !readyProvider?
    {title:'모델 제공자 연결',detail:'먼저 API 키 또는 로컬 모델을 연결하세요.',page:'models'}:
-   !agents.value.length?
-   {title:'실행 에이전트 만들기',detail:'모델을 담당할 역할·도구 지침을 지정하세요.',page:'agents'}:
    pendingReview>0?
-   {title:'검토 대기 작업 확인',detail:`${pendingReview}개 목표의 외부 작업 상태나 Git 변경을 검토해야 합니다.`,page:'activity'}:
-   !workflows.value.length?
-   {title:'에이전트 협업 워크플로 만들기',detail:'단계별 에이전트를 배치해 실제 도구 영수증이 있는 결과물을 만드세요.',page:'workflows'}:
-   {title:'완성된 워크플로 실행·자동화',detail:'에이전트의 공동 결과물을 실행하고 반복 예약하세요.',page:'automations'}
+   {title:'검토할 작업 확인',detail:`${pendingReview}개 작업의 변경 사항이나 실행 결과를 확인해 주세요.`,page:'activity'}:
+   {title:'하고 싶은 일 바로 맡기기',detail:'아래 입력창에 원하는 결과를 편하게 적어 주세요. 전문 설정 없이 시작할 수 있습니다.',page:'home'}
  const metrics=[
   {name:'dashboard.metric.chat',value:sessions.value.length,icon:MessageSquare,page:'chat' as const},
   {name:'dashboard.metric.providers',value:providers.value.filter(p=>p.enabled).length,icon:Cpu,page:'models' as const},
@@ -49,10 +46,11 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">
   <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h1 className="m-0 text-[19px] font-bold tracking-tight">{t('dashboard.title')}</h1><p className="mt-1 text-[12px] text-[#7C7469]">{t('dashboard.subtitle')}</p></div><Button type="button" variant="primary" onClick={()=>navigate('chat')} className="flex h-8 items-center gap-2 rounded-lg px-3 text-[11px] font-semibold"><MessageSquare size={14}/> {t('dashboard.openChat')} <ArrowRight size={13}/></Button></div>
+  <QuickGoal navigate={navigate}/>
   <section className="mb-5 rounded-xl border border-[#E7E0D5] bg-white p-4">
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div><h2 className="text-[13px] font-bold">🚀 다음 실행 단계 · {nextAction.title}</h2><p className="mt-1 text-[11px] text-[#7C7469]">{nextAction.detail}</p></div>
-    <Button variant="primary" onClick={()=>navigate(nextAction.page)} className="inline-flex items-center gap-1 text-xs">계속하기 <ArrowRight size={14}/></Button>
+    <Button variant="primary" onClick={()=>nextAction.page==='home'?document.getElementById('dominion-quick-goal')?.focus():navigate(nextAction.page)} className="inline-flex items-center gap-1 text-xs">계속하기 <ArrowRight size={14}/></Button>
    </div>
    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-[#F0EAE1] pt-3 text-[11px] sm:grid-cols-4">
     <span>연결된 모델 {authenticatedProviders}/{enabledProviders.length}</span>
