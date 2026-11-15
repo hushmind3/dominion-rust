@@ -15,6 +15,7 @@ pub mod sdk;
 pub mod skills;
 pub mod store;
 pub mod tools;
+pub mod verification;
 pub mod video;
 pub mod workspace;
 pub mod veo;

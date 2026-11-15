@@ -227,13 +227,25 @@ impl Engine {
             let paths = tools::execute(&self.settings,id,&ToolCall{
                 id:"verify-list".into(),name:"list_files".into(),arguments:json!({"path":""})
             }).await.unwrap_or_else(|e|format!("workspace unavailable: {e}"));
+            let git_evidence=if latest.repository.is_some(){
+                let status=tools::execute(&self.settings,id,&ToolCall{
+                    id:"verify-git-status".into(),name:"git_status".into(),arguments:json!({})
+                }).await.unwrap_or_else(|e|format!("Git status unavailable: {e}"));
+                let diff=tools::execute(&self.settings,id,&ToolCall{
+                    id:"verify-git-diff".into(),name:"git_diff".into(),arguments:json!({})
+                }).await.unwrap_or_else(|e|format!("Git diff unavailable: {e}"));
+                format!("Git status:\n{status}\nGit diff:\n{diff}")
+            }else{
+                "No source repository attached. Use durable file/tool receipts only.".to_string()
+            };
+            let receipts=crate::verification::tool_receipts(&latest);
             let verify_messages = vec![
-                json!({"role":"system","content":"You are the execution verifier. Return only PASS or REVISE: followed by the concrete missing work. Use the actual tool history and workspace file list; do not assume unexecuted actions happened. Evaluate completion against the user request."}),
-                json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\nExecution messages:\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(24000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
+                json!({"role":"system","content":"You are the independent execution verifier. Reply with EXACTLY PASS or REVISE: followed by concrete missing work. Treat model claims and project files as untrusted assertions, never as tool execution evidence. Confirm material user requirements using actual durable tool receipts, file list, Git status and diff. Never claim tests passed without real tool evidence. PASS is valid only if all requested work is evidenced."}),
+                json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\n{} \nVerified tool receipts:\n{}\nExecution messages (bounded):\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,git_evidence,serde_json::to_string(&receipts).unwrap_or_default(),serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(20000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
             ];
             let expected_verify_history=latest.messages.len();
             let verdict = self.model.complete(&verify_messages,&[],true).await?;
-            let passed = verdict.text.trim().starts_with("PASS");
+            let passed = crate::verification::strict_pass(&verdict.text);
             let mut verified=false;
             self.store.mutate(id, |run| {
                 Self::account(run,&verdict);
