@@ -4,7 +4,7 @@ A thin, typed convenience client to the native **Rust SDK engine** used by Domin
 
 ```ts
 import { Dominion } from '@dominion/sdk';
-const sdk = new Dominion({baseUrl:'http://127.0.0.1:8787'});
+const sdk = new Dominion({baseUrl:'http://127.0.0.1:4317'});
 const run = await sdk.runs.create({instruction:'Create a landing page', budget_krw:3000});
 for await (const event of sdk.events(run.id)) console.log(event.kind, event.message);
 const finished = await sdk.runs.get(run.id);
@@ -120,3 +120,7 @@ Dominion.memory.list(scope), .scopes(), .store({scope,title,content}), .revise(i
 ## Owner profile API
 
 `dominion.owner.get()` returns the current owner's display profile. `dominion.owner.save({name,avatar})` persists it in Rust. The original frontend owner editor from commit `879dc23d` calls the same service, and no separate frontend-owned profile database is required.
+
+## Main frontend compatibility
+
+The TypeScript SDK now supports `sdk.frontend.agents.list/save/remove`, `sdk.frontend.sessions.list/create/messages/rename/clear/fork/cancel`, `sdk.frontend.providers.list/models`, `sdk.frontend.executions.list/create/get/cancel/resume` and `sdk.frontend.status()`. These call the real Rust-owned `/api/*` compatibility endpoints used by the unchanged latest-main frontend; the original `sdk.runs` still uses `/api/v1/*`. Unsupported native features intentionally reject with status 501.

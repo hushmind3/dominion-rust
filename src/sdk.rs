@@ -104,6 +104,18 @@ impl Dominion {
         self.get(id).await?;
         tools::execute(&self.engine.settings,id,&ToolCall{id:"sdk-read".into(),name:"read_file".into(),arguments:json!({"path":path})}).await
     }
+    /// Main frontend and native SDK share the same durable profile/session
+    /// records. These entries are presentation data; runs still execute only
+    /// through the independent Engine and Store.
+    pub async fn chat_sessions(&self)->Vec<crate::frontend_state::UiSession>{
+        self.engine.frontend.sessions().await
+    }
+    pub async fn chat_session(&self,id:&str)->Option<crate::frontend_state::UiSession>{
+        self.engine.frontend.session(id).await
+    }
+    pub async fn agent_profiles(&self)->Vec<crate::frontend_state::UiAgent>{
+        self.engine.frontend.agents().await
+    }
     pub async fn owner_profile(&self)->crate::profile::OwnerProfile{
         self.engine.owner_profile.get().await
     }

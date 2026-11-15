@@ -20,3 +20,9 @@ The sub4 `RustWorkspace` integrated replacement, extra frontend-only file additi
 ## Verification
 - Git object comparison: main `web` tree and staged sub4 `web` tree both `9e2be9b7376c1eefb6195e3ea7f9463b952456c0` (exact file-level identity).
 - No compilation, browser test, CI or main-runtime behavior was executed in this change, per the user's direction.
+
+## Backend adapter update (2026-11-15)
+
+The frontend tree remains 100% identical; backend integration has now started **behind the original UI routes**. `src/frontend_api.rs` implements the main `/api/*` schemas for Home, native SDK work, agents, basic chat sessions/SSE, approvals, memory and owner profile, backed by the existing Rust-owned services. Unsupported main UI routes return HTTP 501 JSON with a precise message rather than SPA index.html. The original Vite proxy port is now the Rust default (4317) and the Rust CLI accepts the main package's `--home` and `--open` options. See `docs/FRONTEND_RUST_CONTRACT.md`.
+
+The previous section explaining that /api/* is wholly unavailable describes the *pre-adapter* state. Advanced main UI features are still not fully operational. The web tree's identity has not changed.

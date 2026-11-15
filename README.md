@@ -2,7 +2,7 @@
 
 **Native Rust SDK and independent Rust agent engine. HTTP API, TypeScript SDK and GUI are adapters to the same engine.**
 
-The Rust core is a **clean rebuild** on `dominion-sub4`. The **entire `web/` frontend is copied without modifications from the latest verified `main` commit `879dc23dce309688691c200b001b180bead95a12`**. This preserves every main page, visual component, route, script and lockfile, and removes the sub4-specific substitute UI. The Rust server remains a separate native engine and SDK; the UI's original `/api/*` contract is **not yet fully implemented by sub4's `/api/v1/*` backend**. No full frontend feature parity is claimed.
+The Rust core is a **clean rebuild** on `dominion-sub4`. The **entire `web/` frontend is copied without modifications from the latest verified `main` commit `879dc23dce309688691c200b001b180bead95a12`**. The Rust server now exposes both its native `/api/v1/*` API and a growing `/api/*` adapter matching the main frontend's actual requests. Home, native SDK runs, basic Chat/agent/session and memory flows are wired to real Rust state; advanced providers, video, group, RSI campaign UI and many operations remain to be ported. Unsupported actions explicitly return JSON 501 instead of synthetic success. Full parity is NOT yet claimed.
 
 Read [exact Git tree evidence and the real API incompatibilities](docs/FRONTEND_ALIGNMENT.md) and [feature migration status](docs/UI_FEATURE_PARITY_2026.md).
 
@@ -16,7 +16,7 @@ Read [exact Git tree evidence and the real API incompatibilities](docs/FRONTEND_
 | RSI | `/api/v1/improvements` | Candidate edits, frozen independent judge, adoption and strategy evidence |
 | Video and multi-agent | `/api/v1/videos`, `/api/v1/groups` | Existing Rust functionality; not yet exposed through main's original frontend routes |
 | SDK helper | `sdk/typescript` | Native Rust HTTP client |
-| Main frontend | `web/` | **Unchanged main source**. End-to-end main UI functionality requires implementing the original main API contracts in Rust |
+| Main frontend | `web/` | **Unchanged main source**. Basic chat, agents, sessions, Home and native SDK execution now use Rust-owned `/api/*` handlers; other screens remain incomplete |
 
 ## Frontend source identity
 
@@ -24,7 +24,7 @@ Read [exact Git tree evidence and the real API incompatibilities](docs/FRONTEND_
 - Main `web` subtree and sub4 `web` subtree: `9e2be9b7376c1eefb6195e3ea7f9463b952456c0` (same Git object)
 - 56 upstream files. All custom `web/src/pages/RustWorkspace.tsx`, home replacements and extra testing/marker files inside `web/` removed in favor of main.
 - Native `src/` code is preserved; the frontend has **not** been adapted to unimplemented APIs or given fake buttons to imply support.
-- The upstream Vite proxy defaults to `127.0.0.1:4317`. Sub4 Rust currently binds `127.0.0.1:8787`; development requires an explicit API target such as `DOMINION_API_URL=http://127.0.0.1:8787` plus full Rust implementation of the requested main routes. Do not assume the original main package's `--home` / `--open` commands are supported by the sub4 executable.
+- The upstream Vite proxy defaults to `127.0.0.1:4317`. Sub4 Rust currently binds `127.0.0.1:4317`; development requires an explicit API target such as `DOMINION_API_URL=http://127.0.0.1:4317` plus full Rust implementation of the requested main routes. Do not assume the original main package's `--home` / `--open` commands are supported by the sub4 executable.
 
 ## Native Rust SDK (primary)
 
@@ -49,7 +49,7 @@ cd ..
 cargo run
 ```
 
-Open [http://127.0.0.1:8787](http://127.0.0.1:8787).
+Open [http://127.0.0.1:4317](http://127.0.0.1:4317).
 
 For a local OpenAI-compatible server, set `DOMINION_BASE_URL=http://127.0.0.1:8000/v1`; its key can be empty. For remote access set both `DOMINION_BIND` and `DOMINION_ACCESS_TOKEN`. The server refuses non-loopback binding without that token. API credentials are read from server environment variables and not returned through the configuration endpoint.
 
@@ -63,7 +63,7 @@ npm test
 
 ```ts
 import { Dominion } from '@dominion/sdk';
-const client = new Dominion({baseUrl:'http://127.0.0.1:8787'});
+const client = new Dominion({baseUrl:'http://127.0.0.1:4317'});
 const run = await client.runs.create({instruction:'Create a useful HTML page',budget_krw:3000});
 for await (const event of client.events(run.id)) console.log(event.kind, event.message);
 const result = await client.runs.get(run.id);
@@ -346,3 +346,18 @@ The operator switch `DOMINION_STRATEGY_LEARNING=false` disables automatic memory
 ### Main frontend source-of-truth sync — 2026-11-15
 
 Latest main `879dc23d` was applied to **the entire `web/` Git tree** with no custom RustWorkspace UI or modified page components. This supersedes the earlier partial UI adaptation described in historical sections. The native Rust backend still exposes `/api/v1` and therefore does not yet satisfy main's existing `/api` routes. Exact tree comparison and outstanding API gaps are recorded in [FRONTEND_ALIGNMENT](docs/FRONTEND_ALIGNMENT.md). No CI, build or functional tests were executed for this frontend-only alignment.
+
+## Native backend follows the unchanged main frontend (2026-11-15)
+
+This supersedes the previous *frontend-only sync* and any historical statement that the legacy `/api/*` tree is entirely absent.
+
+- **No frontend source edits**: main web Git tree stays `9e2be9b7376c1eefb6195e3ea7f9463b952456c0`.
+- `src/frontend_api.rs` provides actual Rust-backed legacy API handlers. `src/frontend_state.rs` stores user-created agents and chat sessions in durable `frontend-state.json`, with atomic writes and strict size limits. The same `Engine`, `Store`, `ModelClient`, `Knowledge` and `OwnerProfileStore` handle execution, metering, memory and user edits.
+- Home is wired to true status, model-provider state, agents, sessions, native runs, job list and execution-monitor receipts. Main `NativeAgentPanel` calls `/api/sdk/runs` and sees native checkpoint/approval/reconcile data.
+- Main chat session creation/rename/fork/clear/cancel/history and SSE `/api/chat` are backed by native runs; answers are persisted even if the SSE viewer disconnects. Main agent profiles are durable and their system prompts are included in actual agent task inputs.
+- `/api/approvals`, `/api/tools`, `/api/executions`, `/api/memories` and `/api/settings/owner-profile` use native stores. Remote access uses the same bearer or X-Dominion-Token middleware as `/api/v1`.
+- **Fail closed on unavailable features:** dynamic provider editing, arbitrary SDK verification commands, per-chat tool-disabled mode, unimplemented reasoning toggles, RSI campaigns, workflows, full room/video workflows and other missing endpoints return explicit HTTP errors. The old main UI is never swapped for a pretend replacement.
+- The default native HTTP bind is **127.0.0.1:4317** to agree with the unchanged main Vite proxy. The original main `--home` and `--open` server flags are now recognized. Other hosts/ports remain configurable through `DOMINION_BIND`.
+- `sdk/typescript` includes typed calls for the same main UI agent/session/provider/execution routes as well as the independent native Rust API.
+
+Read [the exact main frontend contract mapping](docs/FRONTEND_RUST_CONTRACT.md) for implemented endpoints, unsupported operations and known limitations. This stage is source-implemented but **not build/test/CI verified** by the user's instruction.

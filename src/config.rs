@@ -47,7 +47,7 @@ fn price(name: &str, default: f64) -> f64 {
 }
 impl Settings {
     pub fn from_env() -> Result<Self, String> {
-        let bind: SocketAddr = var("DOMINION_BIND", "127.0.0.1:8787").parse().map_err(|e| format!("invalid DOMINION_BIND: {e}"))?;
+        let bind: SocketAddr = var("DOMINION_BIND", "127.0.0.1:4317").parse().map_err(|e| format!("invalid DOMINION_BIND: {e}"))?;
         let token = env::var("DOMINION_ACCESS_TOKEN").ok().filter(|s| !s.is_empty());
         if !bind.ip().is_loopback() && token.is_none() {
             return Err("Remote bind requires DOMINION_ACCESS_TOKEN".into());

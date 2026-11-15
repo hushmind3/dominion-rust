@@ -345,3 +345,14 @@ Operator control: `Settings.strategy_learning_enabled` reads `DOMINION_STRATEGY_
 ## Current main frontend identity (supersedes prior partial UI adaptations)
 
 Source SHA: `879dc23dce309688691c200b001b180bead95a12`. Exact `web/` subtree SHA: `9e2be9b7376c1eefb6195e3ea7f9463b952456c0`. The `web/` tree is entirely from main. Previous descriptions of customized `MemoryPage`, RustWorkspace, and adapted profile/home screens are historical and no longer describe mounted frontend code; their Rust backend data models continue to exist separately. Unimplemented `/api/*` contracts are explicitly tracked in `docs/FRONTEND_ALIGNMENT.md`. Tests/CI were not invoked for this sync.
+
+## Main API contract adapters without modifying the frontend (2026-11-15)
+
+The exact main `web/` Git subtree remains intact. The frontend now consumes the Rust-owned `src/frontend_api.rs` compatibility router mounted at `/api/*` alongside native `/api/v1/*`. Both routers apply the same operator-owned token middleware. This is not the main branch's legacy harness, database or second execution loop.
+
+- `Engine.frontend` is a `FrontendStore` for ChatSession/AgentProfile records (clone-before-persist, 8 MiB cap, exclusive temporary snapshot and atomic rename). Responses use the original main camelCase types. The default agent is always tied to the configured native model.
+- Main chat turns allocate a real `Run`, persist the user message and run binding, use the recorded agent instructions, then stream real tool/approval events from `Store`. A separate native watcher persists the terminal result even after a browser SSE disconnects. Restart-time session reads reconcile terminal run IDs. It never invents an assistant reply for a failed run.
+- `ModelClient` remains operator-owned; the legacy model selector cannot silently override the live model. Unsupported settings and missing UI endpoints return HTTP 501. Dynamic provider registry, tool-free chat, user per-run reasoning-effort overrides and full workflow/video/RSI GUI contract are future integrations.
+- `GET /api/executions` and `/api/sdk/runs` project real Run snapshots/receipts, do not invent separate execution state. `/api/memories` projects native Knowledge records. `/api/settings/owner-profile` uses the existing durable profile store.
+- Default HTTP bind 4317 matches the **unchanged** main Vite proxy. `--home` and `--open` are accepted by the Rust server's CLI. The original main frontend source itself was not edited.
+- Current route coverage, deliberate rejections and auth/stream limitations are in [FRONTEND_RUST_CONTRACT.md](FRONTEND_RUST_CONTRACT.md). No compilation/tests/CI were invoked for this stage.

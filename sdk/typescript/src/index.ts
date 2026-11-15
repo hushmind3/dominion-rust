@@ -25,6 +25,29 @@ export interface MemoryEntry {
   id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
 }
 export interface OwnerProfile { name: string; avatar: string; updated_at_ms: number }
+/** Exact 2026 main frontend view schemas backed by Rust state. */
+export interface MainAgent {
+  id:string; name:string; description:string; systemPrompt:string; providerId:string;
+  model:string; color:string; role:string; aliases:string[]; avatarUrl:string;
+  reasoningEffort?:string|null; thinking?:boolean|null;
+}
+export interface MainSession {
+  id:string; title:string; agentId:string; providerId:string; model:string;
+  createdAt:string; updatedAt:string;
+}
+export interface MainMessage {
+  id:string; session_id:string; role:string; content:string; created_at:string;
+  agent_id?:string; metadata?:Record<string,unknown>;
+}
+export interface MainProvider {
+  id:string; name:string; kind:string; model:string; enabled:boolean;
+  baseUrl:string; local:boolean; hasKey:boolean;
+}
+export interface MainExecution {
+  id:string; instruction:string; status:string;
+  checkpoint?:{rounds:number;toolCalls:number;pendingCall?:ToolCall|null;answer?:string|null};
+}
+
 export interface SkillInfo { name: string; path: string }
 
 export interface Participant { name: string; role: string; economy: boolean }
@@ -86,7 +109,7 @@ export class Dominion {
   private readonly token?: string;
   private readonly fetcher: typeof fetch;
   constructor(options: ClientOptions = {}) {
-    this.baseUrl = (options.baseUrl ?? 'http://127.0.0.1:8787').replace(/\/+$/, '');
+    this.baseUrl = (options.baseUrl ?? 'http://127.0.0.1:4317').replace(/\/+$/, '');
     this.token = options.token;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
@@ -101,6 +124,50 @@ export class Dominion {
     if (!response.ok) throw new DominionError(response.status, payload.error ?? response.statusText);
     return payload as T;
   }
+
+  /** The unchanged main React UI's /api contract, not a second agent runtime. */
+  async frontendRequest<T>(method:'GET'|'POST'|'DELETE',path:string,body?:unknown):Promise<T>{
+    const headers:Record<string,string>={};
+    if(body!==undefined)headers['Content-Type']='application/json';
+    if(this.token)headers.Authorization='Bearer '+this.token;
+    const response=await this.fetcher(this.baseUrl+'/api'+path,{
+      method,headers,body:body===undefined?undefined:JSON.stringify(body)
+    });
+    const value=await response.json().catch(()=>({})) as {error?:string};
+    if(!response.ok)throw new DominionError(response.status,value.error??response.statusText);
+    return value as T;
+  }
+  /** Active main-frontend functionality, mapped onto actual native Rust services. */
+  readonly frontend={
+    agents:{
+      list:()=>this.frontendRequest<MainAgent[]>('GET','/agents'),
+      save:(record:Partial<MainAgent>&{name:string})=>this.frontendRequest<MainAgent>('POST','/agents',record),
+      remove:(id:string)=>this.frontendRequest<{ok:boolean}>('DELETE','/agents/'+encodeURIComponent(id)),
+    },
+    sessions:{
+      list:()=>this.frontendRequest<MainSession[]>('GET','/sessions'),
+      create:(input:{title?:string;agentId?:string;providerId?:string;model?:string})=>
+        this.frontendRequest<MainSession>('POST','/sessions',input),
+      messages:(id:string)=>this.frontendRequest<MainMessage[]>('GET','/sessions/'+encodeURIComponent(id)+'/messages'),
+      rename:(id:string,title:string)=>this.frontendRequest<MainSession>('POST','/sessions/'+encodeURIComponent(id)+'/rename',{title}),
+      clear:(id:string)=>this.frontendRequest<{ok:boolean}>('POST','/sessions/'+encodeURIComponent(id)+'/clear',{}),
+      fork:(id:string)=>this.frontendRequest<MainSession>('POST','/sessions/'+encodeURIComponent(id)+'/fork',{}),
+      cancel:(id:string)=>this.frontendRequest<{cancelled:boolean}>('POST','/sessions/'+encodeURIComponent(id)+'/cancel',{}),
+    },
+    providers:{
+      list:()=>this.frontendRequest<MainProvider[]>('GET','/providers'),
+      models:(id:string)=>this.frontendRequest<{id:string}[]>('GET','/providers/'+encodeURIComponent(id)+'/models'),
+    },
+    executions:{
+      list:()=>this.frontendRequest<MainExecution[]>('GET','/sdk/runs'),
+      create:(input:{instruction:string;providerId?:string;model?:string;maxRounds?:number})=>
+        this.frontendRequest<MainExecution>('POST','/sdk/runs',input),
+      get:(id:string)=>this.frontendRequest<MainExecution>('GET','/sdk/runs/'+encodeURIComponent(id)),
+      cancel:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/cancel',{}),
+      resume:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/resume',{}),
+    },
+    status:()=>this.frontendRequest<{agents:number;providers:number;jobs:number;executions:number}>('GET','/status'),
+  };
   get health(): Promise<{ok: boolean; name: string; api: string}> {return this.request('GET','/health');}
   readonly owner = {
     get: () => this.request<OwnerProfile>('GET','/profile'),

@@ -214,3 +214,7 @@ The native Dominion SDK exposes list_memory(scope), memory_scopes(), revise_memo
 ## Owner profile for the canonical frontend snapshot
 
 Native Rust `Dominion::owner_profile()` and `Dominion::save_owner_profile(NewOwnerProfile)` use `OwnerProfileStore`, owned by `Engine`. Rust REST provides `GET/POST /api/v1/profile`. Profile edits use the original `879dc23d` OwnerProfile frontend component with the endpoint remapped to Rust. The server enforces 1–60 printable name characters, a data URL with PNG/JPEG/WebP magic bytes, and a 1 MiB decoded avatar limit. Profile is durable under `Settings.data_dir/owner-profile.json` and is not an instruction to the agent.
+
+## Unchanged main frontend adapter
+
+Rust `Dominion::chat_sessions()`, `chat_session(id)`, and `agent_profiles()` access the same durable records used by `/api/sessions` and `/api/agents`. The existing `Dominion::submit`, `approve`, `cancel`, `reconcile`, and `tool_catalog` own execution while `src/frontend_api.rs` projects the original main `/api/sdk/runs`, `/api/chat`, `/api/approvals`, `/api/executions` protocols. The main front-end remains unmodified, and unimplemented main actions return explicit 501. The default bind/TypeScript SDK base URL is now `http://127.0.0.1:4317`.

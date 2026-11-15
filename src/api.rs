@@ -74,8 +74,13 @@ pub fn router(engine: Arc<Engine>) -> Router {
     // The development Vite server proxies API calls to this same router.
     let dist=std::env::var("DOMINION_WEB_DIR").map(std::path::PathBuf::from)
         .unwrap_or_else(|_|std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web/dist"));
+    // The unmodified latest-main frontend makes /api/* requests. Its
+    // compatibility endpoints operate on the same Rust Store/Engine as /api/v1.
+    let frontend=crate::frontend_api::router()
+        .route_layer(middleware::from_fn_with_state(Arc::clone(&engine),authorize));
     Router::new()
         .nest("/api/v1",api)
+        .nest("/api",frontend)
         .fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
         .with_state(engine)
 }

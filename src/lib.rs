@@ -17,6 +17,8 @@ pub mod mcp;
 pub mod policy;
 pub mod provider;
 pub mod profile;
+pub mod frontend_state;
+pub mod frontend_api;
 pub mod sandbox;
 pub mod sdk;
 pub mod skills;
