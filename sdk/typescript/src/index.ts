@@ -6,7 +6,7 @@ export interface ToolCall { id: string; name: string; arguments: Record<string, 
 export interface Run {
   id: string; instruction: string; status: RunStatus; plan: string | null; answer: string | null;
   messages: unknown[]; events: TimelineEvent[]; queued_calls: ToolCall[];
-  pending_approval: ToolCall | null; approval_decision: boolean | null;
+  pending_approval: ToolCall | null; approval_decision: boolean | null; in_flight: ToolCall | null;
   steps: number; input_tokens: number; output_tokens: number; cost_krw: number;
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
@@ -89,6 +89,7 @@ export class Dominion {
     cancel: (id: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/cancel',{}),
     approve: (id: string, allow: boolean) => this.request<{ok:boolean}>('POST','/runs/'+encodeURIComponent(id)+'/approval',{allow}),
     instruct: (id: string, instruction: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/directive',{instruction}),
+    reconcile: (id: string, input: {succeeded: boolean; result: string}) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/reconcile',input),
     files: (id: string) => this.request<{files:string[]}>('GET','/runs/'+encodeURIComponent(id)+'/files'),
     file: (id: string, path: string) => this.request<{path:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/files/'+path.split('/').map(encodeURIComponent).join('/')),
   };

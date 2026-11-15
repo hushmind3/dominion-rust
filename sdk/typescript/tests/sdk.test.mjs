@@ -58,3 +58,16 @@ test('non-weight improvement has a separate explicit approve and adopt path',asy
  assert.ok(urls[0].endsWith('/improvements/test/approve'));
  assert.ok(urls[1].endsWith('/improvements/test/adopt'));
 });
+
+test('reconcile records observed tool outcome through Rust API',async()=>{
+  const seen=[];
+  const sdk=new Dominion({token:'private',fetch:async(url,options)=>{
+    seen.push({url,options});
+    return new Response(JSON.stringify({status:'paused',in_flight:null}),{status:200});
+  }});
+  const run=await sdk.runs.reconcile('run-id',{succeeded:true,result:'file verified'});
+  assert.equal(run.status,'paused');
+  assert.ok(seen[0].url.endsWith('/api/v1/runs/run-id/reconcile'));
+  assert.deepEqual(JSON.parse(seen[0].options.body),{succeeded:true,result:'file verified'});
+  assert.equal(seen[0].options.headers.Authorization,'Bearer private');
+});

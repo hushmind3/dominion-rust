@@ -64,3 +64,15 @@ const next = await sdk.improvements.descendant(trial.id);
 ```
 
 Each trial uses detached, independent Git worktrees and runs fixed evaluation commands on baseline and candidate. Improvements inherit text-based reflections, never train or update model weights.
+
+## Resume a crashed tool safely
+
+If a run includes `in_flight`, the server refuses to replay the tool.
+Inspect the artifacts or command outcome first, then:
+
+```ts
+await sdk.runs.reconcile(run.id,{succeeded:true,result:'Observed file on disk'});
+await sdk.runs.resume(run.id);
+```
+
+Reconciliation records an observed receipt; it never repeats an external operation.
