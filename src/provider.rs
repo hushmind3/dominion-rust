@@ -116,7 +116,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retries_transient_provider_failure_then_accepts_real_response(){
-        use axum::{extract::State,routing::post,Json,Router};
+        use axum::{extract::State,response::IntoResponse,routing::post,Json,Router};
         use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
         async fn flaky(State(count):State<Arc<AtomicUsize>>)->impl axum::response::IntoResponse{
             let attempt=count.fetch_add(1,Ordering::SeqCst);
