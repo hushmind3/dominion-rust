@@ -311,14 +311,9 @@ pub(super) async fn run_turn_body(
             Some(&strategy_candidates),
             Some(execution_id),
         );
-        let history_messages = history(
-            state,
-            session_id,
-            request.agent_id.as_deref(),
-            provider.context_tokens.map(|tokens| {
-                ((tokens as usize).saturating_mul(3)).clamp(8_000, 400_000)
-            }),
-        )?;
+        let history_messages=super::super::context::history_for_route(
+            state,session_id,request.agent_id.as_deref(),
+            &provider,&prompt_context,&tool_definitions)?;
         (prompt_context, history_messages)
     };
     if session["rsiRun"] == true && session["rsiRepairPath"].is_string() {

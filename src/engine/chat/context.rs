@@ -328,6 +328,36 @@ pub(super) fn place_retrieval_before_latest_user(history: &mut Vec<Value>, retri
     super::owner_intent::insert_context_before_owner(history, frame);
 }
 
+/// Capacity from the selected provider, policy from DOMINION. Reserve its
+/// output, stable instructions, retrieval and initial tool schemas before
+/// deciding how much older history can be replayed. No summarizer call.
+pub(super) fn history_byte_budget_for_model(
+    context_tokens:u64,max_output_tokens:Option<u64>,fixed_input_bytes:usize
+)->usize{
+    if context_tokens==0{return 0;}
+    let total=context_tokens.saturating_mul(3);
+    let output=max_output_tokens.unwrap_or(context_tokens/8)
+        .max(128).min(context_tokens/2);
+    total.saturating_sub(output.saturating_mul(3))
+        .saturating_sub(total/10)
+        .saturating_sub(u64::try_from(fixed_input_bytes).unwrap_or(u64::MAX))
+        .min(400_000) as usize
+}
+
+/// Route-aware history bound; current provider metadata is authoritative.
+/// Missing capacity preserves existing historical fallback instead of
+/// inventing a token ceiling for dynamically registered models.
+pub(super) fn history_for_route(
+    state:&AppState,session_id:&str,agent_id:Option<&str>,
+    route:&crate::engine::gateway::Route,
+    prompt:&PromptContext,initial_tools:&[Value]
+)->Result<Vec<Value>,String>{
+    let fixed=prompt.prompt.len().saturating_add(prompt.dynamic_context.len())
+        .saturating_add(serde_json::to_string(initial_tools).map_or(0,|s|s.len()));
+    history(state,session_id,agent_id,route.context_tokens.map(|tokens|
+        history_byte_budget_for_model(tokens,route.max_output_tokens,fixed)))
+}
+
 pub(super) fn history(
     state: &AppState,
     session_id: &str,
@@ -574,6 +604,17 @@ pub(super) fn render_history(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn provider_specific_history_budgets_preserve_output_and_fixed_context_reserve(){
+        let small=history_byte_budget_for_model(4_096,Some(1_024),2_000);
+        let large=history_byte_budget_for_model(128_000,Some(8_192),2_000);
+        assert!(small<10_000 && large>small);
+        assert_eq!(history_byte_budget_for_model(4_096,Some(1_024),200_000),0);
+        assert!(history_byte_budget_for_model(32_768,Some(16_384),2_000)
+            <history_byte_budget_for_model(32_768,Some(512),2_000));
+        assert_eq!(history_byte_budget_for_model(0,None,0),0);
+    }
 
     fn state() -> (AppState, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(

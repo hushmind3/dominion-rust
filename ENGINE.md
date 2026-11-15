@@ -160,6 +160,36 @@ Rust·TypeScript SDK에서 같은 필드를 전달합니다. 별도 독립 테�
 | [Qwen-Agent — `qwen_agent/agents/fncall_agent.py`](https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/agents/fncall_agent.py) | 실제 function-call 반복, 모델 호출 한도, 도구 호출/재호출 | 모델별 텍스트 도구 문법·파서 의존도, 실행 증거의 독립성 | `src/engine/chat/runtime/tool_discovery.rs` + `tool_execution.rs` + `verification.rs` |
 | [Moonshot Kimi Code — agent customization](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md) | explore/coder/plan 역할 격리 및 하위 에이전트 분업 | 여러 역할만 늘리면 실행 토큰과 작업 중복이 증가 | `src/db/usage_tree.rs` 후손 세션 토큰 예산, `src/engine/goals/operations.rs` 계승 검증 |
 
+**2026-11-15 GitHub API 직접 조회:** OpenClaw 394,463★,
+DeepSeek Harness 281,124★, Hermes Agent 263,423★,
+OpenCode 226,882★, Codex 135,308★, Gemini CLI 108,834★,
+OpenHands 93,480★, Qwen Code 30,365★. 스타는 설치 수나
+독립 평가 완수율이 아닌 관심도 지표입니다.
+
+- [DeepSeek Harness — per-route context capacity and compaction](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/architecture/2026-07-20-routed-model-context-and-compaction-policy.md):
+  provider/model의 용량 메타데이터와 소비자의 압축 정책 분리.
+  Dominion도 `gateway::Route.context_tokens`를 소유자로 삼고,
+  `chat/context.rs::history_for_route`에서 출력·고정 지침·검색
+  문맥·도구 스키마 예약 후 이력 예산을 재계산합니다. 별도 모델 호출 없음.
+  공급자 오버플로 전체 복구와 동등하다는 주장은 아닙니다.
+- [OpenClaw — branch summarization](https://github.com/openclaw/openclaw/blob/main/packages/agent-core/src/harness/compaction/branch-summarization.ts):
+  분기 공통 조상과 읽은/수정한 파일을 요약에 남깁니다.
+  Dominion은 `compact.rs` 세션 요약·`goals/operations.rs`
+  실행 영수증으로 일부를 담당하지만 분기별 요약과 동일하지 않습니다.
+- [Hermes Agent — micro compaction](https://github.com/NousResearch/hermes-agent/blob/main/agent/micro_compaction.py):
+  사용자 발언을 보존하는 교환별 요약. 매번 prefix를 바꿔 캐시를
+  무효화할 수 있어 기본 비활성입니다. Dominion은 필요할 때만
+  `compact.rs` 요약을 실행하며 원문 세션은 남겨 둡니다.
+- [OpenCode — prompt preparation](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/session/prompt.ts):
+  첨부 파일·스킬·메타데이터를 처리한 뒤 세션 실행에 전달.
+  Dominion의 `chat/runtime/turn.rs` 및 `attachments.rs`와 비교.
+- [Qwen Code — multi-client permission policy](https://github.com/QwenLM/qwen-code/blob/main/packages/acp-bridge/src/permission.ts):
+  단일 승인, 지정 승인, 정족수, 로컬 전용을 분리합니다.
+  Dominion의 사용자 승인 엔진에 다중 승인 정족수까지 있다고 주장하지 않습니다.
+- [Codex — Rust agent-tree lifecycle](https://github.com/openai/codex/blob/main/codex-rs/core/src/agent/control/runtime.rs):
+  하위 에이전트 수명·종료 실패를 추적합니다. Dominion은 독립적으로
+  `jobs.rs`·`db/usage_tree.rs`·`goals/operations.rs`를 사용합니다.
+
 위 내용은 **공개 구현의 작동 구조 비교**이지 외부 에이전트의 판단 정책이나
 코드를 그대로 호출한 것이 아닙니다. 최종 선택은 **Rust 하네스가 작업 유형·모델·
 도구·검토 전략을 제한된 권한과 검증 근거에 따라 직접 판단**하게 하는 것입니다.

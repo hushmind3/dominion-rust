@@ -86,7 +86,13 @@ A `command_succeeded` criterion can require a fresh post-edit test receipt.
 Each goal can use an isolated Git worktree with an owner-reviewed diff and
 explicit apply/discard decision.
 
-**Model/provider choice.** Connect cloud providers or local GGUF/MLX models.
+**Model/provider choice.** One capability- and owner-KRW-price-aware
+native Rust router serves chat and beginner goal selection. Per-provider
+history input now reserves the routed model's output, prompt, retrieval and
+tool schemas using a conservative byte estimate; the owner task survives
+history truncation. No extra model call is required for this calculation.
+
+Connect cloud providers or local GGUF/MLX models.
 Tokens, cache reports and usage telemetry are kept separately from estimates;
 no unmeasured provider bill is presented as actual expense.
 
