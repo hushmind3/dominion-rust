@@ -1191,6 +1191,7 @@ impl Store {
 
     /// Convenience query for live observability; historical evidence must
     /// use a persisted finite end cursor via model_usage_for_session_in_window.
+    #[cfg(test)]
     pub fn model_usage_for_session_since(
         &self, session_id: &str, after_rowid: i64,
     ) -> Result<Vec<Value>, String> {
