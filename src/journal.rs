@@ -252,7 +252,8 @@ pub fn recover(run:&mut Run)->bool{
     let approved_but_not_started=run.status==RunStatus::AwaitingApproval
         && run.approval_decision.is_some();
     let malformed_terminal=run.terminal() && run.in_flight.is_some();
-    if !interrupted && !approved_but_not_started && !malformed_terminal{return false;}
+    let paused_read_batch=run.status==RunStatus::Paused && !run.read_batch_in_flight.is_empty();
+    if !interrupted && !approved_but_not_started && !malformed_terminal && !paused_read_batch{return false;}
     run.status=RunStatus::Paused;
     if !run.read_batch_in_flight.is_empty(){
         // Nothing in this batch can cause user-visible mutations.
@@ -361,6 +362,19 @@ mod tests{
         assert!(run.read_batch_in_flight.is_empty());
         assert_eq!(run.queued_calls.len(),2);
         assert_eq!(run.events.last().unwrap().kind,"recovered_ready");
+    }
+    #[test]
+    fn restart_cancellation_finishes_paused_parallel_batch_without_replay(){
+        let mut run=running();
+        let a=tool("read_file","r1");let b=tool("read_file","r2");
+        run.queued_calls.extend([a.clone(),b.clone()]);
+        begin_read_batch(&mut run,&[a,b]).unwrap();
+        run.cancel_after_tool=true;
+        run.status=RunStatus::Paused;
+        assert!(!recover(&mut run));
+        assert!(run.read_batch_in_flight.is_empty());
+        assert_eq!(run.status,RunStatus::Cancelled);
+        assert_eq!(run.messages.iter().filter(|m|m["role"]=="tool").count(),2);
     }
     #[test]
     fn cancel_parallel_batch_waits_for_ordered_receipts(){

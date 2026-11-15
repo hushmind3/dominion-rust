@@ -637,6 +637,80 @@ mod tests {
         };
         Json(json!({"choices":[{"message":message}],"usage":{"prompt_tokens":20,"completion_tokens":10}}))
     }
+
+    async fn parallel_mock_model(State(counter):State<Arc<AtomicUsize>>,Json(request):Json<Value>)->Json<Value>{
+        let step=counter.fetch_add(1,Ordering::SeqCst);
+        if step==1{
+            assert_eq!(request["parallel_tool_calls"],true,
+                "model did not receive the parallel tool-call contract");
+        }
+        let message=match step{
+            0=>json!({"role":"assistant","content":"1. Inspect inputs. 2. Write report."}),
+            1=>json!({"role":"assistant","content":null,"tool_calls":[
+                {"id":"parallel-a","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"alpha.txt\"}"}},
+                {"id":"parallel-b","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"beta.txt\"}"}},
+                {"id":"exclusive-write","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"report.txt\",\"content\":\"Report generated\"}"}}
+            ]}),
+            2=>json!({"role":"assistant","content":"Inspected both files and wrote report.txt."}),
+            _=>json!({"role":"assistant","content":"PASS"})
+        };
+        Json(json!({"choices":[{"message":message}],"usage":{"prompt_tokens":30,"completion_tokens":12}}))
+    }
+    #[tokio::test]
+    async fn model_multi_call_step_runs_reads_concurrently_then_exclusive_write(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let counter=Arc::new(AtomicUsize::new(0));
+        let server=tokio::spawn(async move {
+            axum::serve(listener,Router::new().route("/chat/completions",post(parallel_mock_model))
+                .with_state(counter)).await.unwrap();
+        });
+        let dir=std::env::temp_dir().join(format!("dominion-parallel-e2e-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=dir.join("data");
+        settings.workspace_dir=dir.join("workspace");
+        settings.main.base_url=format!("http://{address}");
+        settings.main.api_key.clear();
+        settings.main.parallel_tool_calls=true;
+        settings.economy=settings.main.clone();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings.clone(),store.clone(),groups,videos,improvements).unwrap();
+        let run=Run::new(CreateRun{instruction:"Read alpha and beta, write report".into(),
+            budget_krw:Some(1000.0),max_steps:Some(8)},8).unwrap();
+        let id=run.id;
+        let workspace=settings.workspace_dir.join(id.to_string());
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+        tokio::fs::write(workspace.join("alpha.txt"),"alpha").await.unwrap();
+        tokio::fs::write(workspace.join("beta.txt"),"beta").await.unwrap();
+        store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut terminal=None;
+        for _ in 0..100{
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let run=store.get(id).await.unwrap();
+            if run.terminal(){terminal=Some(run);break;}
+        }
+        let state=terminal.expect("multi-tool execution timed out");
+        assert_eq!(state.status,RunStatus::Completed);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="read_batch_started").count(),1);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+        let outcomes=state.messages.iter().filter_map(|v|
+            (v["role"]=="tool").then(||v["tool_call_id"].as_str().unwrap().to_owned())
+        ).collect::<Vec<_>>();
+        assert_eq!(outcomes,vec!["parallel-a","parallel-b","exclusive-write"]);
+        assert_eq!(tokio::fs::read_to_string(workspace.join("report.txt")).await.unwrap(),"Report generated");
+        for _ in 0..100 {
+            if !engine.active.lock().await.contains(&id){break;}
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        server.abort();
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
     #[tokio::test]
     async fn completes_real_plan_tool_verify_cycle() {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
