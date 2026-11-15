@@ -354,3 +354,9 @@ stops between Git cherry-pick and durable completion, a subsequent action
 checks the exact original parent commit and tree hash before finalizing,
 rather than duplicating the Git mutation. A mismatched checkout requires
 human inspection and cannot silently overwrite the repository.
+
+### Native repository-wide RSI discovery (2026-11-15)
+
+Starting an RSI trial with no `target_file` now enables goal-directed source discovery: Rust reads the checked-out Git source index, builds a bounded ranked manifest with source signatures, and asks the configured model to select up to eight relevant implementation modules. Files must match the advertised catalog and existing size/target protections. The selected paths, reason and actual provider charge are stored with the experiment and passed to the existing independent candidate/judge/adoption path. Explicit file lists remain supported. Studio defaults to automatic source selection, with manual files in an optional advanced mode; Rust REST and TypeScript SDK accept an omitted target field. The model is an advisor for scope only, while Dominion Rust owns source validation, git worktrees and evaluation. Current discovery is bounded and cannot select arbitrary new files outside the tracked Git catalog.
+
+Per user direction, this branch's GitHub Actions workflow has been switched to manual dispatch. **No tests, CI or benchmarks were invoked for this discovery change.**

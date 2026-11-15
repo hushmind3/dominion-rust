@@ -284,3 +284,7 @@ Crash-recovery delta: RSI explicit adoption now commits a durable adopting
 state, serializes adoption operations, verifies parent/tree identity after
 an interrupted cherry-pick and can finalize the existing Git change after
 restart. The multi-file end-to-end fixture simulates this interruption.
+
+### Next frontier capability: source discovery instead of manually named RSI files
+
+The Rust RSI path now has bounded Git-indexed module discovery, goal-sensitive path ranking, context-efficient signature sampling and model-driven selection validated against the source index before candidate generation. UI defaults to discovery; TypeScript and REST allow omitting target_file. This closes the manual-target dependency while retaining current strict worktree evaluation and adoption. It is not yet unrestricted autonomous repository restructuring, cross-domain A-B-A adaptation, real-model performance validation or a complete replacement for plan-act tooling. CI has not been run for this step on user request.

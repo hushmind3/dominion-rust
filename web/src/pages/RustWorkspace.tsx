@@ -10,7 +10,7 @@ type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:s
 type Room={id:string;topic:string;status:string;participants:{name:string;role:string;economy:boolean}[];messages:{speaker:string;content:string}[];rounds:number;max_rounds:number;cost_krw:number;budget_krw:number}
 type Scene={heading:string;narration:string;seconds:number}
 type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];error?:string|null;cost_krw:number}
-type Improvement={id:string;repository:string;target_file:string;target_files?:string[];attempts?:number;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
+type Improvement={id:string;repository:string;target_file:string;target_files?:string[];attempts?:number;selection_reason?:string|null;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
 type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number;denied_tools:string[];tool_result_max_chars:number}
 type MemoryNote={id:string;scope:string;title:string;content:string;updated_at_ms:number}
 type ProjectSkill={name:string;path:string}
@@ -93,6 +93,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
  const [rsiRepo,setRsiRepo]=useState('')
  const [target,setTarget]=useState('')
  const [extraTargets,setExtraTargets]=useState('')
+ const [automaticSelection,setAutomaticSelection]=useState(true)
  const [rsiGoal,setRsiGoal]=useState('')
  const [testCommand,setTestCommand]=useState('cargo test')
  const [scoreCommand,setScoreCommand]=useState('')
@@ -250,16 +251,21 @@ export function RustWorkspacePage({area}:{area:PageId}){
   </>}
   {mode==='rsi'&&<>
    <section className={panel}><h2 className="mb-3 flex items-center gap-2 text-[14px] font-bold"><BrainCircuit size={17}/> 비가중치 재귀적 개선 실험</h2>
-    <div className="grid gap-3 sm:grid-cols-2"><label className="text-[11px]">Git 저장소 (작업공간 상대 경로)<input className={field} value={rsiRepo} onChange={e=>setRsiRepo(e.target.value)} placeholder="my-project"/></label>
-     <label className="text-[11px]">개선할 첫 번째 파일<input className={field} value={target} onChange={e=>setTarget(e.target.value)} placeholder="src/lib.rs"/></label></div>
-    <label className="mt-3 block text-[11px]">함께 수정할 파일 (선택, 쉼표로 구분 · 최대 8개)<input className={field} value={extraTargets} onChange={e=>setExtraTargets(e.target.value)} placeholder="src/engine.rs, src/sdk.rs"/></label>
+    <label className="block text-[11px]">개선할 Git 저장소 (작업공간 상대 경로)<input className={field} value={rsiRepo} onChange={e=>setRsiRepo(e.target.value)} placeholder="my-project"/></label>
+    <label className="mt-3 flex items-center gap-2 text-[12px] font-semibold text-[#51463A]"><input type="checkbox" checked={automaticSelection} onChange={e=>setAutomaticSelection(e.target.checked)}/> AI가 코드 구조를 살펴보고 개선할 파일 자동 선택</label>
+    <p className="mt-1 text-[11px] text-[#82776B]">자동 선택은 승인 후 시작합니다. 파일을 직접 지정하려면 선택을 해제하세요.</p>
+    {!automaticSelection&&<div className="mt-3 grid gap-3 sm:grid-cols-2">
+     <label className="text-[11px]">첫 번째 파일<input className={field} value={target} onChange={e=>setTarget(e.target.value)} placeholder="src/lib.rs"/></label>
+     <label className="text-[11px]">추가 파일 (쉼표로 구분, 최대 8개)<input className={field} value={extraTargets} onChange={e=>setExtraTargets(e.target.value)} placeholder="src/engine.rs, src/sdk.rs"/></label>
+    </div>}
     <textarea className={field+' mt-3'} rows={3} aria-label="개선 목표" value={rsiGoal} onChange={e=>setRsiGoal(e.target.value)} placeholder="무엇을 개선할까요?"/>
     <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-[11px]">테스트 명령<input className={field} value={testCommand} onChange={e=>setTestCommand(e.target.value)}/></label><label className="text-[11px]">개선 점수 명령 (기존 테스트가 통과한다면 필요)<input className={field} value={scoreCommand} onChange={e=>setScoreCommand(e.target.value)} placeholder="마지막 줄에 높은 점수가 좋도록 숫자 출력"/></label></div>
-    <button type="button" className={primary+' mt-3'} disabled={busy||!rsiRepo.trim()||!target.trim()||!rsiGoal.trim()||!testCommand.trim()} onClick={()=>void perform(async()=>{const trial=await post<Improvement>('/api/v1/improvements',{repository:rsiRepo,target_file:target.trim(),target_files:[target,...extraTargets.split(/[,\n]/)].map(s=>s.trim()).filter((s,i,all)=>!!s&&all.indexOf(s)===i),instruction:rsiGoal,test_command:testCommand,score_command:scoreCommand||null});setSelectedId(trial.id)},'개선 후보를 생성했습니다. 승인 후 독립 평가를 실행합니다.')}><BrainCircuit size={14}/> 개선 후보 생성</button>
+    <button type="button" className={primary+' mt-3'} disabled={busy||!rsiRepo.trim()||(!automaticSelection&&!target.trim())||!rsiGoal.trim()||!testCommand.trim()} onClick={()=>void perform(async()=>{const trial=await post<Improvement>('/api/v1/improvements',{repository:rsiRepo,target_file:automaticSelection?'':target.trim(),target_files:automaticSelection?null:[target,...extraTargets.split(/[,\n]/)].map(s=>s.trim()).filter((s,i,all)=>!!s&&all.indexOf(s)===i),instruction:rsiGoal,test_command:testCommand,score_command:scoreCommand||null});setSelectedId(trial.id)},'개선 후보를 생성했습니다. 승인 후 독립 평가를 실행합니다.')}><BrainCircuit size={14}/> 개선 후보 생성</button>
    </section>
    <div className="mt-4 grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-    <section className={panel}><h2 className="mb-3 text-[13px] font-bold">실험 목록</h2>{improvements.map(i=><button type="button" key={i.id} onClick={()=>setSelectedId(i.id)} className={'mb-2 w-full rounded-lg border p-3 text-left text-[12px] '+(improvement?.id===i.id?'border-[#D7A78F] bg-[#FFF6F0]':'border-[#E8E1D7]')}>{i.instruction}<small className="mt-1 block text-[#8B8076]">{i.status} · {i.target_files?.length||1}개 파일</small></button>)}</section>
-    <section className={panel}>{improvement?<><h2 className="text-[14px] font-bold">{improvement.instruction}</h2><p className="mt-2 text-[11px] text-[#8B8076]">{improvement.repository} / {(improvement.target_files?.length||1)}개 파일 · {improvement.status} · {improvement.attempts||0}회 시도 · {money(improvement.cost_krw)}</p>
+    <section className={panel}><h2 className="mb-3 text-[13px] font-bold">실험 목록</h2>{improvements.map(i=><button type="button" key={i.id} onClick={()=>setSelectedId(i.id)} className={'mb-2 w-full rounded-lg border p-3 text-left text-[12px] '+(improvement?.id===i.id?'border-[#D7A78F] bg-[#FFF6F0]':'border-[#E8E1D7]')}>{i.instruction}<small className="mt-1 block text-[#8B8076]">{i.status} · {i.target_files?.length?`${i.target_files.length}개 파일`:'소스 자동 탐색 대기'}</small></button>)}</section>
+    <section className={panel}>{improvement?<><h2 className="text-[14px] font-bold">{improvement.instruction}</h2><p className="mt-2 text-[11px] text-[#8B8076]">{improvement.repository} / {improvement.target_files?.length?`${improvement.target_files.length}개 파일`:'파일 선택 전'} · {improvement.status} · {improvement.attempts||0}회 시도 · {money(improvement.cost_krw)}</p>
+     {improvement.selection_reason&&<p className="mt-3 rounded-lg bg-[#F8F5F1] p-3 text-[12px]">자동 탐색: {improvement.selection_reason}<span className="mt-1 block text-[11px] text-[#807469]">{improvement.target_files?.join(' · ')}</span></p>}
      {improvement.baseline&&<p className="mt-3 text-[12px]">기준: {improvement.baseline.tests_passed?'테스트 통과':'테스트 실패'} · 점수 {improvement.baseline.score??'없음'}</p>}
      {improvement.candidate&&<p className="mt-2 text-[12px]">후보: {improvement.candidate.tests_passed?'테스트 통과':'테스트 실패'} · 점수 {improvement.candidate.score??'없음'}</p>}
      {improvement.reflection&&<p className="mt-3 whitespace-pre-wrap rounded-lg bg-[#F8F5F1] p-3 text-[12px]">{improvement.reflection}</p>}

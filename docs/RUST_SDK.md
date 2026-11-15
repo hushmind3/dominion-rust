@@ -196,3 +196,7 @@ One candidate ref is kept under refs/dominion/rsi/<trial-id> until successful
 explicit adoption. In the fixed-command CI fixture, DOMINION_SHELL_SANDBOX=off
 is passed only to the isolated test process. This is not a supported production
 security shortcut and does not imply measured real-provider accuracy.
+
+## Repository-aware RSI without manual file input
+
+`NewImprovement::target_file` can now be an empty string, or omitted from JSON API requests. `NewImprovement::target_files` may be `None` to enable native Rust Git source discovery after approval. The response persists `target_files` and `selection_reason` after the model identifies relevant modules. The frozen judge and existing adopting state continue to control actual source changes. No external agent SDK is involved.

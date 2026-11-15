@@ -1,7 +1,5 @@
 name: Sub4 build checks
 on:
-  push:
-    branches: [dominion-sub4]
   workflow_dispatch:
 jobs:
   rust:

@@ -104,3 +104,7 @@ primary target_file and optionally target_files including the primary, with
 results, requires a separate approve call, and accepts adopt only after a
 frozen worktree judge reports better evidence. Declared interfaces mirror
 the native Rust experiment record; TypeScript does not execute an agent loop.
+
+### Automatic RSI source selection
+
+Call `improvements.create({ repository, instruction, test_command, score_command })` without `target_file` to request goal-based Git source discovery. After explicit evaluation approval, Rust records the chosen `target_files` and `selection_reason` in `Improvement`. Supply `target_file` and `target_files` to select files manually. This is Rust engine behavior, not an alternate TypeScript agent implementation.

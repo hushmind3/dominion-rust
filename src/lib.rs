@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod tool_schema;
 pub mod tool_batch;
 pub mod improvement;
+pub mod rsi_discovery;
 pub mod mcp;
 pub mod policy;
 pub mod provider;

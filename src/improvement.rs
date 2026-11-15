@@ -18,6 +18,8 @@ pub struct Improvement {
     pub target_files:Vec<String>,
     #[serde(default)]
     pub attempts:usize,
+    #[serde(default)]
+    pub selection_reason:Option<String>,
     pub instruction:String, pub test_command:String, pub score_command:Option<String>,
     pub status:ImprovementStatus, pub base_commit:Option<String>,pub candidate_commit:Option<String>,
     pub baseline:Option<Measurement>,pub candidate:Option<Measurement>,pub proposal:Option<String>,
@@ -26,7 +28,9 @@ pub struct Improvement {
 }
 #[derive(Deserialize)]
 pub struct NewImprovement {
-    pub repository:String, pub target_file:String,
+    pub repository:String,
+    #[serde(default)]
+    pub target_file:String,
     #[serde(default)]
     pub target_files:Option<Vec<String>>,
     pub instruction:String, pub test_command:String, pub score_command:Option<String>, pub parent:Option<Uuid>,
@@ -206,7 +210,12 @@ impl Improvements {
     }
     pub async fn create(&self,input:NewImprovement)->Result<Improvement,String>{
         relative(&input.repository)?;
-        let target_files=target_paths(&input.target_file,input.target_files.clone())?;
+        // Empty target list requests AI-led repository exploration after approval.
+        let automatic=input.target_file.trim().is_empty() &&
+            input.target_files.as_ref().is_none_or(Vec::is_empty);
+        let target_files=if automatic{Vec::new()}else{
+            target_paths(&input.target_file,input.target_files.clone())?
+        };
         if input.instruction.trim().is_empty()||input.instruction.len()>8000{return Err("invalid improvement instruction".into());}
         if input.test_command.trim().is_empty()||input.test_command.len()>2048{return Err("invalid test command".into());}
         if let Some(command)=&input.score_command{if command.trim().is_empty()||command.len()>2048{return Err("invalid score command".into());}}
@@ -225,7 +234,7 @@ impl Improvements {
         let status=ImprovementStatus::AwaitingApproval;
         let now=now_ms();
         self.put(Improvement{id:Uuid::new_v4(),parent:input.parent,repository:input.repository,target_file:input.target_file,
-            target_files,attempts:0,
+            target_files,attempts:0,selection_reason:None,
             instruction:input.instruction,test_command:input.test_command,score_command:input.score_command,status,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,proposal:None,reflection:None,
             accepted:false,cost_krw:0.0,error:None,created_at_ms:now,updated_at_ms:now}).await
@@ -257,6 +266,19 @@ impl Improvements {
         let head=head.trim().to_string();
         if !git(&repo,&["status","--porcelain"]).await?.is_empty(){return Err("repository must have a clean working tree".into());}
         item.base_commit=Some(head.clone());self.put(item.clone()).await?;
+        if item.target_file.trim().is_empty(){
+            // Choose strictly from Git-tracked source, not user-supplied
+            // shell commands. Pin the selection to the frozen base revision.
+            let selection=crate::rsi_discovery::discover(&repo,&item.instruction,model).await?;
+            let primary=selection.paths.first().ok_or("discovery returned no targets")?.clone();
+            let chosen=target_paths(&primary,Some(selection.paths))?;
+            item.target_file=primary;
+            item.target_files=chosen;
+            item.selection_reason=Some(selection.explanation);
+            item.cost_krw+=selection.cost_krw;
+            item.updated_at_ms=now_ms();
+            self.put(item.clone()).await?;
+        }
         let trial_root=self.root.join(item.id.to_string());
         fs::create_dir_all(&trial_root).await.map_err(|e|e.to_string())?;
         let trial_root=trial_root.canonicalize().map_err(|e|e.to_string())?;
@@ -550,7 +572,7 @@ mod tests {
         let id=Uuid::new_v4();
         let item=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"src/lib.rs".into(),
-            target_files:vec![],attempts:0,
+            target_files:vec![],attempts:0,selection_reason:None,
             instruction:"repair behavior".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::Running,
             base_commit:None,candidate_commit:None,
@@ -577,7 +599,7 @@ mod tests {
         let id=Uuid::new_v4();
         let original=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"file.txt".into(),
-            target_files:vec![],attempts:0,
+            target_files:vec![],attempts:0,selection_reason:None,
             instruction:"preserve state".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::AwaitingApproval,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,

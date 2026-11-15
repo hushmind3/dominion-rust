@@ -325,3 +325,9 @@ pending authorized cherry-pick runs once. Divergent or dirty checkouts require
 manual reconciliation. An adoption mutex serializes concurrent adoption calls,
 and the UI exposes recovery from adopting. This closes the Git/JSON crash
 window for the single-process path, not distributed side effects.
+
+## RSI autonomous repository exploration (2026-11-15)
+
+`POST /api/v1/improvements` -> `Improvements::create` stores a trial without a fixed `target_file`. Following explicit execution approval, `Improvements::evaluate` freezes the original Git HEAD and calls `rsi_discovery::discover`. The new Rust module reads tracked file names via `git ls-files -z` without shell evaluation, filters test/generated/sensitive paths, ranks source names against the user's goal, caps catalog and input size, and sends a bounded manifest with source signatures to the configured provider. It accepts only structured JSON paths that match catalog entries, within 1-8 sources and 180 KB total. Selection reason, selected paths and provider cost become durable experiment state before worktree construction. Existing source modification, third-worktree verification, retry, accepted commit pinning, recovery and explicit adoption paths remain authoritative. The repo checkout is never edited during discovery.
+
+The user can override automatic selection with exact source paths. Studio, TypeScript and native Rust all use the same `NewImprovement` request and persisted `Improvement` result. Discovery is intentionally restricted to Git-indexed code files; it is not yet a general multi-step repo-wide code generation planner, strategy evolution, or a replacement for the ordinary Engine tool loop. **Automatic CI trigger removed for this branch on user direction, no execution tests performed for this revision.**
