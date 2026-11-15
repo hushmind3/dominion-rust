@@ -1,12 +1,12 @@
 import { defineConfig, devices } from 'playwright/test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import os from 'node:os'
 import fs from 'node:fs'
 
 const webRoot=path.dirname(fileURLToPath(import.meta.url))
 const repoRoot=path.resolve(webRoot,'..')
-const runtime=fs.mkdtempSync(path.join(os.tmpdir(),'dominion-browser-'))
+const runtime=path.resolve(webRoot,'.browser-runtime')
+fs.mkdirSync(runtime,{recursive:true})
 process.env.DOMINION_BROWSER_RUNTIME=runtime
 export default defineConfig({
   testDir:'./e2e',

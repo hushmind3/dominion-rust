@@ -12,3 +12,4 @@
 /web/test-results/
 /web/playwright-report/
 /benchmarks/results/
+/web/.browser-runtime/
