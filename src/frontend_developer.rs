@@ -70,9 +70,18 @@ async fn diff(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
 }
 async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
  ->Result<Json<Value>,Fault>{
- let result=engine.developer.job(id).await
-  .ok_or_else(||(StatusCode::NOT_FOUND,Json(json!({"error":"developer job not found"}))))?;
- Ok(Json(json!(result)))
+ if let Some(job)=engine.developer.job(id).await{
+  return Ok(Json(json!(job)));
+ }
+ // The original RSI screen also polls this path after a source adoption.
+ // Resolve both job namespaces through this one route, without Axum overlap.
+ if let Some(c)=engine.campaigns.get(id).await{
+  let applied=c.head_commit.is_some();
+  return Ok(Json(json!({"id":id,"status":if applied{"completed"}else{"not_applied"},
+   "result":{"sourceApplied":applied,"requiresRebuild":applied},
+   "error":Value::Null})));
+ }
+ Err((StatusCode::NOT_FOUND,Json(json!({"error":"developer job not found"}))))
 }
 async fn start(State(engine):State<Arc<Engine>>,Path(kind):Path<String>,Json(input):Json<Value>)
  ->Result<Json<Value>,Fault>{
