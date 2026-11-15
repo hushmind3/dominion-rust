@@ -97,7 +97,7 @@ export default function App(){
  useEffect(()=>{
   let live=true
   const load=()=>{void get<{branch?:string;commit?:string}>('/api/v1/health')
-   .then(info=>{if(live)setEngineBuild(info)}).catch(()=>{if(live)setEngineBuild(null)})}
+   .then(info=>{if(live)setEngineBuild(info.branch&&info.commit?{branch:info.branch,commit:info.commit}:null)}).catch(()=>{if(live)setEngineBuild(null)})}
   load()
   const focus=()=>{if(document.visibilityState==='visible')load()}
   window.addEventListener('focus',focus)

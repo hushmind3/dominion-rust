@@ -1,6 +1,6 @@
 import {useCallback,useEffect,useState} from 'react'
 import {Activity,BrainCircuit,Check,Clapperboard,Cpu,FileText,GitBranch,Play,RefreshCw,ShieldAlert,Square,UsersRound} from 'lucide-react'
-import {get,post,setAuthToken} from '../api'
+import {get,getBlob,post,setAuthToken} from '../api'
 import {PageContainer} from '../components/Primitives'
 import type {PageId} from '../components/WorkspaceShell'
 
@@ -20,7 +20,7 @@ const primary='inline-flex min-h-9 items-center justify-center gap-2 rounded-lg 
 const panel='rounded-xl border border-[#E7E0D5] bg-white p-5'
 const paneTitle={home:'독자 Rust 엔진',chat:'에이전트 실행',agents:'자율 에이전트',rooms:'멀티모델 그룹',video:'영상 제작',rsi:'재귀적 자기개선',models:'모델 설정',connections:'연결 설정',settings:'엔진 설정',activity:'실행 현황',automations:'작업 실행',workflows:'작업 실행',memory:'실행 기록',extensions:'확장 기능',developer:'개발자 작업',capabilities:'실행 능력'} as Record<PageId,string>
 
-function SceneEditor({scene,index,onSave,disabled}:{scene:Scene;index:number;onSave:(scene:Scene,index:number)=>Promise<void>;disabled:boolean}){
+function SceneEditor({scene,index,onSave,disabled}:{scene:Scene;index:number;onSave:(scene:Scene,index:number)=>Promise<unknown>;disabled:boolean}){
  const [heading,setHeading]=useState(scene.heading)
  const [narration,setNarration]=useState(scene.narration)
  const [seconds,setSeconds]=useState(String(scene.seconds))
@@ -202,7 +202,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
     <section className={panel}><h2 className="mb-3 text-[13px] font-bold">영상 목록</h2>{videos.map(v=><button type="button" key={v.id} onClick={()=>setSelectedId(v.id)} className={'mb-2 w-full rounded-lg border p-3 text-left text-[12px] '+(video?.id===v.id?'border-[#D7A78F] bg-[#FFF6F0]':'border-[#E8E1D7]')}>{v.prompt}<small className="mt-1 block text-[#8B8076]">{v.status} · {v.backend}</small></button>)}</section>
     <section className={panel}>{video?<><h2 className="text-[14px] font-bold">{video.prompt}</h2><p className="mt-1 text-[11px] text-[#85776B]">{video.status} · {money(video.cost_krw)}</p>
      {video.error&&<p role="alert" className="mt-3 text-[12px] text-rose-700">{video.error}</p>}
-     {video.status==='completed'&&<video controls className="mt-4 w-full max-w-[640px] rounded-xl" src={'/api/v1/videos/'+video.id+'/download'}/>}
+     {video.status==='completed'&&<AuthenticatedVideo id={video.id}/>}
      <div className="mt-4 grid gap-3">{video.scenes.map((s,i)=><SceneEditor key={video.id+'-'+i} scene={s} index={i} onSave={saveScene} disabled={busy||video.status==='rendering'}/>)}</div>
      {['draft','failed','completed'].includes(video.status)&&<button type="button" className={primary+' mt-4'} disabled={busy} onClick={()=>void perform(()=>post('/api/v1/videos/'+video.id+'/render',{}))}><RefreshCw size={14}/> 렌더링 {video.status==='completed'?'재실행':'실행'}</button>}
     </>:<p className="text-[12px]">영상 작업을 선택하세요.</p>}</section>
@@ -244,4 +244,23 @@ function ChildList({parent}:{parent:string}){
  const [items,setItems]=useState<Run[]>([])
  useEffect(()=>{let live=true;const update=()=>{void get<Run[]>('/api/v1/runs/'+parent+'/subagents').then(data=>{if(live)setItems(data)}).catch(()=>{})};update();const timer=setInterval(update,4000);return()=>{live=false;clearInterval(timer)}},[parent])
  return <div className="mt-2 space-y-2">{items.map(child=><div key={child.id} className="rounded-lg bg-[#F8F5F1] p-3 text-[11px]"><strong>{child.status}</strong> · {child.instruction}<p className="mt-1">사용 {money(child.cost_krw)} / {money(child.budget_krw)}</p>{child.answer&&<p className="mt-2 whitespace-pre-wrap">{child.answer}</p>}</div>)}</div>
+}
+
+function AuthenticatedVideo({id}:{id:string}){
+ const [src,setSrc]=useState('')
+ const [error,setError]=useState('')
+ useEffect(()=>{
+  let alive=true
+  let url=''
+  const controller=new AbortController()
+  void getBlob('/api/v1/videos/'+id+'/download',controller.signal).then(blob=>{
+   if(!alive)return
+   url=URL.createObjectURL(blob)
+   setSrc(url)
+  }).catch(e=>{if(alive)setError((e as Error).message)})
+  return()=>{alive=false;controller.abort();if(url)URL.revokeObjectURL(url)}
+ },[id])
+ if(error)return <p role="alert" className="mt-3 text-[12px] text-rose-700">{error}</p>
+ if(!src)return <p className="mt-3 text-[12px] text-[#807469]">영상 파일 불러오는 중…</p>
+ return <video controls preload="metadata" className="mt-4 w-full max-w-[640px] rounded-xl" src={src}/>
 }

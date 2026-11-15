@@ -108,3 +108,16 @@ export async function streamChat(data: ChatRequest, onEvent: (e: StreamEvent) =>
   await reader.cancel().catch(() => {})
  }
 }
+
+
+/** Fetch an authenticated binary artifact without putting access tokens in URLs. */
+export async function getBlob(url:string,signal?:AbortSignal):Promise<Blob>{
+ const res=await apiFetch(url,{signal})
+ if(!res.ok){
+  const raw=await res.text()
+  let error='HTTP '+res.status
+  try{error=JSON.parse(raw)?.error||error}catch{}
+  throw new ApiError(res.status,translateError(error))
+ }
+ return res.blob()
+}
