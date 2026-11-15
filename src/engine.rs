@@ -105,6 +105,11 @@ impl Engine {
     /// Resolve the exact persisted provider/model identity for this run.
     /// Provider credentials never enter run journals or frontend responses.
     pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
+        if run.provider_id.is_empty()||run.provider_id=="dominion-native" {
+            if let Some(local)=crate::frontend_local_models::native_override(&self.settings,&run.model_name) {
+                return self.model.with_primary_protocol(local,"openai");
+            }
+        }
         let settings=self.providers.resolve(&run.provider_id,&run.model_name,&self.settings.main)?;
         if run.provider_id.is_empty()||run.provider_id=="dominion-native"{
             Ok(self.model.clone())
