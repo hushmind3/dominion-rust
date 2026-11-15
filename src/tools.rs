@@ -269,6 +269,8 @@ async fn run_shell(root: PathBuf, command: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     #[test]
     fn denies_parent_traversal_and_absolute_path() {
         let dir = std::env::temp_dir();
@@ -328,14 +330,14 @@ mod tests {
         let root=std::env::temp_dir().join(format!("dominion-atomic-{}",uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).await.unwrap();
         let existing=root.join("script.sh");
-        fs::write(&existing,"#!/bin/sh\\necho old\\n").await.unwrap();
+        fs::write(&existing,"#!/bin/sh\necho old\n").await.unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&existing,std::fs::Permissions::from_mode(0o755)).await.unwrap();
         }
-        replace_atomically(&existing,b"#!/bin/sh\\necho new\\n").await.unwrap();
-        assert_eq!(fs::read_to_string(&existing).await.unwrap(),"#!/bin/sh\\necho new\\n");
+        replace_atomically(&existing,b"#!/bin/sh\necho new\n").await.unwrap();
+        assert_eq!(fs::read_to_string(&existing).await.unwrap(),"#!/bin/sh\necho new\n");
         #[cfg(unix)]
         assert_eq!(fs::metadata(&existing).await.unwrap().permissions().mode() & 0o777,0o755);
         let folder=root.join("folder");
