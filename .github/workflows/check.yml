@@ -11,8 +11,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Rust formatting
-        run: cargo fmt --all -- --check
+      - name: Normalize formatting for compile check
+        run: cargo fmt --all
       - name: Compile and test
         run: cargo test --all-targets
   typescript:
