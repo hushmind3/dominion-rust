@@ -56,6 +56,22 @@ pub struct Campaign {
     pub stop_reason:Option<String>,
     pub requested_cancel:bool,
 }
+/// Only report paired judge measurements when both numeric scores exist.
+/// An accepted Git receipt is not itself a fabricated benchmark measurement.
+fn paired_metrics(row:&Attempt)->Value{
+    match (row.baseline_score,row.candidate_score){
+        (Some(baseline),Some(candidate)) if baseline.is_finite() && candidate.is_finite()=>{
+            let improved=candidate>baseline+0.000001;
+            let regressed=candidate+0.000001<baseline;
+            json!({"pairedCases":1,"regressions":usize::from(regressed),
+                "measurements":[{"id":"native-frozen-judge","metrics":[{
+                    "key":"score","baseline":baseline,"candidate":candidate,
+                    "improved":improved,"regressed":regressed
+                }]}]})
+        },
+        _=>json!({"pairedCases":0,"regressions":0,"measurements":[]})
+    }
+}
 impl Campaign {
     pub fn view(&self)->Value{
         let selected=self.history.last().and_then(|v|v.selected.as_deref());
@@ -66,8 +82,7 @@ impl Campaign {
                 "winner":if row.accepted{"candidate"}else{"baseline"},
                 "canSelectCandidate":row.accepted,
                 "selected":selected,
-                "metrics":{"pairedCases":1,"regressions":0,
-                    "measurements":[{"id":"native-frozen-judge","metrics":[]}]}
+                "metrics":paired_metrics(row)
             }))
         }else{None};
         json!({
@@ -220,4 +235,32 @@ impl Campaigns{
     }
     pub async fn release(&self,id:Uuid){self.active.lock().await.remove(&id);}
     pub async fn active(&self,id:Uuid)->bool{self.active.lock().await.contains(&id)}
+}
+
+#[cfg(test)]
+mod score_evidence_tests {
+ use super::*;
+ #[test]
+ fn campaign_comparison_only_exposes_observed_frozen_scores(){
+  let mut trial=Attempt{
+   trial_id:Uuid::new_v4(),attempt:1,accepted:false,selected:None,
+   domain:"fixture".into(),generator_commit:None,accepted_commit:None,
+   candidate_commit:None,focus_files:vec![],error:None,
+   baseline_score:None,candidate_score:None,model_calls:0,tokens:0,
+  };
+  let empty=paired_metrics(&trial);
+  assert_eq!(empty["pairedCases"],0);
+  assert_eq!(empty["measurements"].as_array().unwrap().len(),0);
+  trial.baseline_score=Some(4.0);trial.candidate_score=Some(6.0);
+  let gain=paired_metrics(&trial);
+  assert_eq!(gain["pairedCases"],1);
+  assert_eq!(gain["measurements"][0]["metrics"][0]["improved"],true);
+  assert_eq!(gain["regressions"],0);
+  trial.candidate_score=Some(2.0);
+  let loss=paired_metrics(&trial);
+  assert_eq!(loss["regressions"],1);
+  assert_eq!(loss["measurements"][0]["metrics"][0]["regressed"],true);
+  trial.candidate_score=Some(f64::NAN);
+  assert_eq!(paired_metrics(&trial)["pairedCases"],0);
+ }
 }
