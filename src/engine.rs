@@ -408,9 +408,12 @@ impl Engine {
         // In-flight intent MUST be synced to disk before any outside effect.
         self.store.mutate(id,|run|journal::begin(run,&call)).await?;
         let mut remote_uncertain=None;
+        // Keep the transport signal independent from the reader cancellation
+        // receiver borrowed by tokio::select! below.
+        let remote_cancellation=cancellation.clone();
         let execute = async {
             if call.name.starts_with("mcp__") {
-                match self.mcp.call_cooperative(&call,cancellation.clone()).await {
+                match self.mcp.call_cooperative(&call,remote_cancellation.clone()).await {
                     Ok(McpCallOutcome::Settled(result))=>result,
                     Ok(McpCallOutcome::Uncertain(reason))=>{
                         remote_uncertain=Some(reason.clone());

@@ -2,7 +2,7 @@
 //! Server endpoints and tokens are configured by the process owner, never the model.
 use crate::domain::ToolCall;
 use reqwest::{header, Client, Url};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, net::IpAddr, time::{Duration, Instant}};
 use tokio::sync::{Mutex,watch};
