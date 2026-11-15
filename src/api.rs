@@ -111,7 +111,7 @@ async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Res
     let data=tools::execute(&engine.settings,id,&crate::domain::ToolCall{
         id:"api-list".into(),name:"list_files".into(),arguments:json!({"path":""})
     }).await.map_err(bad)?;
-    let items:Value=serde_json::from_str(&data).map_err(bad)?;
+    let items:Value=serde_json::from_str(&data).map_err(|e| bad(e.to_string()))?;
     Ok(Json(json!({"files":items})))
 }
 async fn read_file(State(engine):State<Arc<Engine>>,Path((id,path)):Path<(Uuid,String)>) -> Result<Json<Value>,ApiError> {

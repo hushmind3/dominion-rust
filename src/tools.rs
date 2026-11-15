@@ -19,7 +19,7 @@ fn tool(name: &str, description: &str, parameters: Value) -> Value {
     json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})
 }
 fn validated_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
-    if raw.len() > 1024 || raw.contains('\\0') { return Err("invalid path".into()); }
+    if raw.len() > 1024 || raw.as_bytes().contains(&0) { return Err("invalid path".into()); }
     let path = Path::new(raw);
     if path.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
         return Err("absolute or parent path forbidden".into());
