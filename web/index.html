@@ -31,7 +31,7 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 </head>
 <body>
 <header><div class="brand"><div class="orb"></div>DOMINION <span class="muted">/ Studio</span></div><span class="pill" id="connection">연결 확인 중</span></header>
-<div class="layout"><aside><div class="tiny">WORKSPACE</div><nav><button class="active" data-page="runs">⚡ 실행 스튜디오</button><button data-page="groups">💬 그룹 협업</button><button data-page="video">🎬 영상 제작</button><button data-page="settings">⚙️ 모델 · 설정</button></nav><div class="tiny">실제 결과와 실행 기록은 서버에 저장됩니다.</div></aside>
+<div class="layout"><aside><div class="tiny">WORKSPACE</div><nav><button class="active" data-page="runs">⚡ 실행 스튜디오</button><button data-page="groups">💬 그룹 협업</button><button data-page="video">🎬 영상 제작</button><button data-page="improve">🧬 개선 실험</button><button data-page="settings">⚙️ 모델 · 설정</button></nav><div class="tiny">실제 결과와 실행 기록은 서버에 저장됩니다.</div></aside>
 <main>
 <section id="page-runs">
 <div class="hero"><div><h1>작업 실행</h1><p>원하는 결과를 설명하면 계획부터 실행·검증까지 진행합니다.</p></div><span class="pill">Rust core · API v1</span></div>
@@ -75,6 +75,27 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 </div><div class="panel"><h2>영상 작업 목록</h2><div id="video-list" class="runs"><p>영상 작업이 없습니다.</p></div></div></div>
 <div class="stack"><div class="panel"><div class="detail-head"><h2>영상 상세</h2><span id="video-status" class="tag">미선택</span></div><div id="video-detail"><p>영상 작업을 선택하세요.</p></div></div></div>
 </div></section>
+
+<section id="page-improve" class="hidden">
+<div class="hero"><div><h1>개선 실험</h1><p>원본 저장소와 격리된 후보를 동일한 고정 평가로 비교합니다. 채택은 별도로 승인합니다.</p></div><span class="pill">Non-weight · Frozen evaluation</span></div>
+<div class="workspace">
+<div class="stack">
+<div class="panel">
+<h2>새 개선 후보</h2>
+<p class="muted" style="margin-bottom:15px">Git 저장소는 서버에 설정한 작업공간 안에 있어야 합니다. 셸 평가는 별도 승인이 필요합니다.</p>
+<label for="improve-repo">Git 저장소 (작업공간 기준 상대 경로)</label><input id="improve-repo" placeholder="repos/my-product">
+<label for="improve-file" style="margin-top:13px">개선할 파일 (저장소 기준 상대 경로)</label><input id="improve-file" placeholder="src/optimizer.rs">
+<label for="improve-instruction" style="margin-top:13px">개선 방향</label><textarea id="improve-instruction" placeholder="비용을 줄이면서 기존 정확도를 보존하세요."></textarea>
+<label for="improve-test" style="margin-top:13px">변경 불가능한 테스트 명령</label><input id="improve-test" placeholder="cargo test">
+<label for="improve-score" style="margin-top:13px">점수 명령 (선택, 마지막 줄에 숫자 출력)</label><input id="improve-score" placeholder="./bench.sh">
+<p class="muted" style="margin:10px 0 15px">원본 테스트가 이미 통과한다면, 후보를 채택하려면 수치 점수 향상이 필요합니다.</p>
+<div class="actions"><button class="primary" id="improve-create">후보 생성 요청</button><span class="muted" id="improve-error"></span></div>
+</div>
+<div class="panel"><h2>실험 기록</h2><div id="improve-list" class="runs"><p>아직 실험이 없습니다.</p></div></div>
+</div>
+<div class="stack">
+<div class="panel"><div class="detail-head"><h2>평가 · 채택</h2><span id="improve-status" class="tag">미선택</span></div><div id="improve-detail"><p>실험을 선택하세요.</p></div></div>
+</div></div></section>
 <section id="page-settings" class="hidden"><div class="hero"><div><h1>모델 · 연결</h1><p>모델 제공자는 서버 환경변수로 연결하며 인증정보는 브라우저로 전송하지 않습니다.</p></div></div>
 <div class="panel" style="max-width:640px"><h2>현재 실행 설정</h2><div id="config-list" class="output">조회 중</div>
 <div style="margin-top:20px"><label for="token">원격 서버용 액세스 토큰 (이 탭에서만 유지)</label><input type="password" id="token" autocomplete="off" placeholder="DOMINION_ACCESS_TOKEN"><div class="actions" style="margin-top:12px"><button class="secondary" id="connect">연결하기</button></div></div></div></section>
