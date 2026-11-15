@@ -284,16 +284,8 @@ pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),F
             .ok_or_else(||bad("selected room agent was deleted"))?;
         (agent.provider_id,agent.model)
     };
-    let settings=engine.providers.resolve(&provider,&model,&engine.settings.main)
-        .map_err(bad)?;
+    let selected_model=engine.model_for_selection(&provider,&model).map_err(bad)?;
     engine.providers.throttle(&provider).await;
-    let selected_model=if provider=="dominion-native"{
-        engine.model.clone()
-    }else{
-        let kind=engine.providers.get(&provider)
-            .ok_or_else(||bad("room model provider missing"))?.kind;
-        engine.model.with_primary_protocol(settings,&kind).map_err(bad)?
-    };
     room=engine.groups.next(&selected_model,id).await.map_err(bad)?;
     turns+=1;
     if config.auto_learning{
