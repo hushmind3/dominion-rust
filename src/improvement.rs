@@ -467,7 +467,7 @@ impl Improvements {
     pub async fn descendant(&self,id:Uuid)->Result<Improvement,String>{
         let parent=self.get(id).await.ok_or("trial not found")?;
         self.create(NewImprovement{
-            repository:parent.repository,target_file:parent.target_file,
+            repository:parent.repository,target_file:parent.target_file.clone(),
             target_files:Some(if parent.target_files.is_empty(){vec![parent.target_file.clone()]}
                 else{parent.target_files.clone()}),
             instruction:parent.instruction,test_command:parent.test_command,
@@ -569,7 +569,7 @@ mod tests {
 mod full_cycle_tests {
     use super::*;
     use crate::config::Settings;
-    use axum::{routing::post,Json,Router};
+    use axum::{extract::State,routing::post,Json,Router};
     use serde_json::Value;
 
     use std::sync::atomic::{AtomicUsize,Ordering};
