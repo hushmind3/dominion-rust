@@ -135,6 +135,11 @@ impl Dominion {
     pub async fn tool_catalog(&self)->Vec<Value>{
         let mut tools=tools::definitions(self.engine.settings.shell_enabled);
         tools.extend(self.engine.mcp.definitions().await);
+        // The SDK and model must see the same operator-owned tool mask.
+        tools.retain(|tool|{
+            let name=tool.pointer("/function/name").and_then(Value::as_str).unwrap_or("");
+            !self.engine.settings.denied_tools.iter().any(|blocked|blocked==name)
+        });
         tools
     }
 }
