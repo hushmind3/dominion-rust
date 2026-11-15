@@ -59,6 +59,9 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             let meta = fs::metadata(&path).await.map_err(|e| e.to_string())?;
             if !meta.is_file() || meta.len() > 4_194_304 { return Err("file is not regular or exceeds 4 MB".into()); }
             let content=fs::read_to_string(path).await.map_err(|e|e.to_string())?;
+            if call.arguments.get("start_line").is_none() && call.arguments.get("end_line").is_none() && content.len()<=131_072 {
+                return Ok(content); // Preserve existing SDK/read_file semantics for small files.
+            }
             let start=call.arguments.get("start_line").and_then(Value::as_u64).unwrap_or(1).clamp(1,1_000_000) as usize;
             let end=call.arguments.get("end_line").and_then(Value::as_u64).unwrap_or(start.saturating_add(2999) as u64).clamp(start as u64,(start+2999) as u64) as usize;
             let mut out=String::new();
