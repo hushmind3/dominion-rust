@@ -271,6 +271,20 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
  let (width,height)=dimensions(cfg,&params.aspect_ratio);
  let frames=params.duration.checked_mul(params.fps).ok_or("frame count overflow")?;
  let mut replaced_prompt=false;
+ // Identify positive/negative text encoders by actual KSampler links, rather
+ // than assuming node-ID order or a particular language in node labels.
+ let mut positive=std::collections::HashSet::new();
+ let mut negative=std::collections::HashSet::new();
+ if let Some(nodes)=workflow.as_object(){
+  for node in nodes.values(){
+   for (field,target) in [("positive",&mut positive),("negative",&mut negative)]{
+    if let Some(source)=node["inputs"][field].as_array().and_then(|v|v.first())
+      .and_then(Value::as_str){
+     target.insert(source.to_owned());
+    }
+   }
+  }
+ }
  let mut model_applied=cfg.video_model.is_empty();
  let selected=cfg.video_model.split_once('/');
  // Workflow input schemas remain intact. Only text templates or literal
@@ -282,7 +296,9 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
   let node=graph.get_mut(&id).ok_or("missing graph node")?;
   let class=node["class_type"].as_str().unwrap_or("").to_owned();
   let title=node.pointer("/_meta/title").and_then(Value::as_str).unwrap_or("").to_lowercase();
-  let is_negative=title.contains("negative")||title.contains("네거티브");
+  let is_negative=title.contains("negative")||title.contains("네거티브")||
+   (negative.contains(&id)&&!positive.contains(&id));
+  let explicitly_positive=positive.contains(&id);
   let inputs=node.get_mut("inputs").and_then(Value::as_object_mut).ok_or("invalid workflow inputs")?;
   for (name,value) in inputs.iter_mut(){
    if let (Some((folder,filename)),Some(_))=(selected,value.as_str()){
@@ -305,13 +321,13 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
      if text.contains("{{PROMPT}}"){replaced_prompt=true;}
      *value=json!(next);
     }else if (name=="text"||name=="prompt")&&
-      (class.contains("TextEncode")||class.contains("TextEncoder")) &&
-       !replaced_prompt && !is_negative {
-      *value=json!(params.brief);
-      replaced_prompt=true;
-    }else if (name=="text"||name=="prompt")&&is_negative&&
-      (class.contains("TextEncode")||class.contains("TextEncoder")){
-      *value=json!(params.negative);
+      (class.contains("TextEncode")||class.contains("TextEncoder")) {
+      if is_negative{
+       *value=json!(params.negative);
+      }else if !replaced_prompt&&(explicitly_positive||positive.is_empty()){
+       *value=json!(params.brief);
+       replaced_prompt=true;
+      }
     }
    }else if value.is_number(){
     let mapped=match name.as_str(){
@@ -566,6 +582,23 @@ mod tests{
    aspect_ratio:"16:9".into(),duration:4,fps:16,seed:7
   },&cfg).unwrap();
   assert_eq!(rendered["1"]["inputs"]["text"],"new words");
+ }
+ #[test]
+ fn follows_sampler_positive_and_negative_links_not_numeric_node_order(){
+  let graph=json!({
+   "2":{"class_type":"CLIPTextEncode","inputs":{"text":"old negative"}},
+   "8":{"class_type":"CLIPTextEncode","inputs":{"text":"old positive"}},
+   "10":{"class_type":"KSampler","inputs":{
+    "positive":["8",0],"negative":["2",0],"seed":11}},
+   "11":{"class_type":"VHS_VideoCombine","inputs":{"images":["10",0]}}
+  });
+  let rendered=fill_template(&graph,&Create{
+   title:"test".into(),brief:"New positive".into(),negative:"New negative".into(),
+   aspect_ratio:"9:16".into(),duration:4,fps:16,seed:42
+  },&Config::default()).unwrap();
+  assert_eq!(rendered["2"]["inputs"]["text"],"New negative");
+  assert_eq!(rendered["8"]["inputs"]["text"],"New positive");
+  assert_eq!(rendered["10"]["inputs"]["seed"],42);
  }
  #[test]
  fn parse_only_verified_output_video_handles(){
