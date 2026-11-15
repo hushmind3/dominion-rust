@@ -75,7 +75,11 @@ export function BackupPanel() {
 
   const restore = () => run('restore', async () => {
     if (!selected || !confirm) return
-    await post('/api/system/restore', {path: selected, confirm: true})
+    const result = await post<{ok:boolean;staged?:boolean;requiresRestart?:boolean}>('/api/system/restore', {path: selected, confirm: true})
+    if (result.requiresRestart) {
+      setMessage('암호화 백업 검증과 복원 예약을 완료했습니다. DOMINION 엔진을 종료하고 다시 시작하면 저장된 데이터가 적용됩니다.')
+      return
+    }
     setMessage(t('ops.backup.restored'))
     window.setTimeout(() => window.location.reload(), 1200)
   })
