@@ -63,6 +63,8 @@ export function AgentsPage() {
   const [goalText,setGoalText]=useState("");
   const [goalIsolated,setGoalIsolated]=useState(false);
   const [goalBudget,setGoalBudget]=useState(60000);
+  const [reviewPolicy,setReviewPolicy]=useState<'always'|'acceptance_ready'>('always');
+  const goalStrategies=useRemote<{reviewPolicies:{id:'always'|'acceptance_ready';label:string;description:string}[]}>('/api/goals/strategies',{reviewPolicies:[]});
   const [goalBusy,setGoalBusy]=useState(false);
   const [createdGoal,setCreatedGoal]=useState<{id:string;jobId:string}|null>(null);
   const [goalError,setGoalError]=useState("");
@@ -84,6 +86,7 @@ export function AgentsPage() {
     try{
       const created=await post<{id:string;jobId:string}>('/api/agents/'+encodeURIComponent(runner)+'/goal',{
         goal:goalText.trim(),isolateWorktree:goalIsolated,tokenBudget:goalBudget,
+        reviewPolicy,
         successCriteria:[]
       });
       setCreatedGoal(created);setGoalText("");await portfolio.reload();
@@ -369,6 +372,14 @@ export function AgentsPage() {
           <FormField label="완수할 작업"><TextArea rows={5} value={goalText} onChange={e=>setGoalText(e.target.value)} placeholder="예: 프로젝트 로그인 오류를 분석하고 검증 가능한 수정안을 완성해 주세요."/></FormField>
           <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={goalIsolated} onChange={e=>setGoalIsolated(e.target.checked)}/> Git 격리 작업공간에서 수정 (사용자 검토 후 원본 반영)</label>
           <FormField label="이번 목표 토큰 예산"><TextInput type="number" min={0} max={2000000} step={10000} value={goalBudget} onChange={e=>setGoalBudget(Math.min(2000000,Math.max(0,Number(e.target.value)||0)))}/></FormField>
+          <FormField label="독립 검토 전략 (Rust 엔진 관리)">
+           <SelectInput value={reviewPolicy} onChange={e=>setReviewPolicy(e.target.value as 'always'|'acceptance_ready')}>
+            {goalStrategies.value.reviewPolicies.length>0
+             ?goalStrategies.value.reviewPolicies.map(item=><option key={item.id} value={item.id}>{item.label}</option>)
+             :<><option value="always">매 단계 독립 검토</option><option value="acceptance_ready">검증 조건 충족 시 검토</option></>}
+           </SelectInput>
+           <p className="mt-1 text-xs text-[#7C7469]">저비용 전략도 최종 완료 전에 독립 모델 검토와 Rust의 실제 증거 검증을 반드시 수행합니다.</p>
+          </FormField>
           {goalError&&<Notice message={goalError}/>}
           {createdGoal?<div className="rounded-xl border border-[#E7E0D5] p-3 text-xs"><p>✅ 목표와 실행 작업 등록 완료 · {createdGoal.id.slice(0,12)}</p><a className="mt-2 inline-flex items-center gap-1 font-semibold text-[#C96442] hover:underline" href="#/activity">활동에서 작업·검증·변경 검토 <ArrowRight size={13}/></a></div>:null}
           <div className="flex justify-end gap-2"><Button variant="ghost" onClick={()=>setRunner(null)} disabled={goalBusy}>닫기</Button><Button onClick={()=>void launchAgentGoal()} disabled={goalBusy||!goalText.trim()}><Play size={14}/>{goalBusy?'등록 중':'작업 등록'}</Button></div>
