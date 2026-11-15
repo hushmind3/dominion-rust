@@ -7,6 +7,7 @@ pub mod engine;
 pub mod group;
 pub mod improvement;
 pub mod mcp;
+pub mod policy;
 pub mod provider;
 pub mod sdk;
 pub mod store;

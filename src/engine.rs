@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -63,9 +63,9 @@ impl Engine {
         run.output_tokens = run.output_tokens.saturating_add(reply.output_tokens);
         run.cost_krw += reply.cost_krw;
         run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), Some(json!({"cached_input_tokens":reply.cached_input_tokens})));
-        if run.cost_krw > run.budget_krw {
+        if run.cost_krw > policy::effective_budget_krw(run) {
             run.status = RunStatus::Failed;
-            run.event("budget_exceeded", "Estimated token charges exceeded configured budget", None);
+            run.event("budget_exceeded", "Own model charges exceed budget remaining after delegated worker reservations", Some(json!({"cost_krw":run.cost_krw,"reserved_krw":run.reserved_budget_krw,"budget_krw":run.budget_krw})));
         }
     }
     async fn drive(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
@@ -127,9 +127,11 @@ impl Engine {
                 }).await?;
                 return Ok(());
             }
-            if run.cost_krw > run.budget_krw { return Err("budget exceeded".into()); }
-            let mut catalog = tools::definitions(self.settings.shell_enabled);
-            catalog.extend(self.mcp.definitions().await);
+            if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
+            let mut available_tools = tools::definitions(self.settings.shell_enabled);
+            available_tools.extend(self.mcp.definitions().await);
+            let has_children=self.store.list().await.iter().any(|child|child.parent_run_id==Some(id));
+            let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children);
             let projection=crate::context::compact(&run.messages,self.settings.context_max_chars);
             let expected_history=run.messages.len();
             let reply = self.model.complete(&projection.messages, &catalog, false).await?;
@@ -137,6 +139,10 @@ impl Engine {
             let mut accepted=false;
             self.store.mutate(id, |run| {
                 Self::account(run,&reply);
+                if schema_chars_saved>0 {
+                    run.tool_schema_chars_avoided=run.tool_schema_chars_avoided.saturating_add(schema_chars_saved as u64);
+                    run.event("tool_schema_scoped",format!("Omitted {schema_chars_saved} tool-schema bytes from this request"),None);
+                }
                 if projection.projected_chars < projection.original_chars {
                     let saved=projection.original_chars-projection.projected_chars;
                     run.context_chars_avoided=run.context_chars_avoided.saturating_add(saved as u64);
@@ -200,6 +206,7 @@ impl Engine {
         // Persist intent before an external side effect; receipt is a separate durable write.
         self.store.mutate(id, |run| {
             if run.status != RunStatus::Running { return Err("execution no longer running".into()); }
+            if !policy::allowed_tool(run,&call.name) {return Err("read-only agent permission denied this tool".into());}
             if run.in_flight.is_some() { return Err("another tool is in flight".into()); }
             if !run.queued_calls.iter().any(|queued| queued.id == call.id)
                 && !run.pending_approval.as_ref().is_some_and(|pending| pending.id == call.id) {
@@ -219,7 +226,8 @@ impl Engine {
                     .ok_or("spawn_subagent needs instruction")?;
                 let budget=call.arguments.get("budget_krw").and_then(Value::as_f64);
                 let steps=call.arguments.get("max_steps").and_then(Value::as_u64).map(|n|n as usize);
-                self.spawn_subagent(id,CreateRun{instruction:instruction.into(),budget_krw:budget,max_steps:steps})
+                let read_only=call.arguments.get("read_only").and_then(Value::as_bool).unwrap_or(false);
+                self.spawn_subagent_with_policy(id,CreateRun{instruction:instruction.into(),budget_krw:budget,max_steps:steps},read_only)
                     .await.map(|run|json!({"id":run.id,"status":run.status,"budget_krw":run.budget_krw}).to_string())
             } else if call.name == "check_subagent" {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
@@ -281,14 +289,16 @@ impl Engine {
     /// Native delegated work: separate durable transcript and workspace.
     /// Budget reservations across siblings prevent oversubscription.
     pub async fn spawn_subagent(self:&Arc<Self>,parent:Uuid,input:CreateRun)->Result<Run,String>{
+        self.spawn_subagent_with_policy(parent,input,false).await
+    }
+    pub async fn spawn_subagent_with_policy(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool)->Result<Run,String>{
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
         if root.terminal(){return Err("parent already terminated".into());}
         let all=self.store.list().await;
         let children=all.iter().filter(|r|r.parent_run_id==Some(parent)).collect::<Vec<_>>();
         if children.len()>=4{return Err("maximum of four direct subagents per run".into());}
-        let reserved=children.iter().map(|r|r.budget_krw).sum::<f64>();
-        let remaining=(root.budget_krw-root.cost_krw-reserved).max(0.0);
+        let remaining=(policy::effective_budget_krw(&root)-root.cost_krw).max(0.0);
         let budget=input.budget_krw.unwrap_or(remaining.min(2000.0));
         if !budget.is_finite()||budget<0.0||budget>remaining{
             return Err(format!("subagent budget {budget} KRW exceeds unreserved {remaining} KRW"));
@@ -299,6 +309,7 @@ impl Engine {
             max_steps:input.max_steps
         },self.settings.max_steps)?;
         child.parent_run_id=Some(parent);
+        child.read_only=read_only||root.read_only;
         if let Some(repository)=root.repository.as_deref(){
             let commit=crate::workspace::attach_at(
                 &self.settings,child.id,repository,root.base_commit.as_deref()
@@ -306,9 +317,27 @@ impl Engine {
             child.repository=Some(repository.to_string());
             child.base_commit=Some(commit);
         }
+        // Reserve first under the delegation lock. The parent model loop checks
+        // this same durable field before and after every charged model request.
+        self.store.mutate(parent,|run|{
+            if run.terminal(){return Err("parent already terminated".into());}
+            if budget>policy::effective_budget_krw(run)-run.cost_krw {
+                return Err("parent budget changed before child reservation".into());
+            }
+            run.reserved_budget_krw+=budget;
+            run.event("budget_reserved",format!("Reserved {budget:.4} KRW for delegated child {}",child.id),Some(json!({"child_id":child.id,"read_only":child.read_only})));
+            Ok(())
+        }).await?;
         child.event("delegated",format!("Delegated by parent {parent} with {budget} KRW reserved"),None);
-        self.store.put(child.clone()).await?;
-        self.launch(child.id).await?;
+        if let Err(error)=self.store.put(child.clone()).await {
+            self.store.mutate(parent,|run|{run.reserved_budget_krw=(run.reserved_budget_krw-budget).max(0.0);Ok(())}).await?;
+            return Err(error);
+        }
+        if let Err(error)=self.launch(child.id).await{
+            self.store.mutate(parent,|run|{run.reserved_budget_krw=(run.reserved_budget_krw-budget).max(0.0);Ok(())}).await?;
+            let _=self.store.mutate(child.id,|run|{run.status=RunStatus::Failed;run.event("start_failed",error.clone(),None);Ok(())}).await;
+            return Err(error);
+        }
         self.store.get(child.id).await.ok_or("subagent missing after spawn".into())
     }
 

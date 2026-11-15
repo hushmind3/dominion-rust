@@ -51,6 +51,14 @@ pub struct Run {
     pub output_tokens: u64,
     pub cost_krw: f64,
     pub budget_krw: f64,
+    /// Child budgets are durably reserved before workers can start.
+    #[serde(default)]
+    pub reserved_budget_krw: f64,
+    /// Constrained investigator: no filesystem writes, shell or merge.
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default)]
+    pub tool_schema_chars_avoided: u64,
     pub max_steps: usize,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -92,6 +100,7 @@ impl Run {
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(),
             pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, context_chars_avoided: 0, repository: None, base_commit: None, steps: 0,
             input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
+            reserved_budget_krw:0.0, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             created_at_ms: time, updated_at_ms: time,
         };
