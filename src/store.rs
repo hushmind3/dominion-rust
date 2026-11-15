@@ -1,4 +1,4 @@
-use crate::{domain::Run,journal};
+use crate::{domain::{Run,RunStatus},journal};
 use std::{collections::HashMap, path::{Path,PathBuf}};
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use uuid::Uuid;
