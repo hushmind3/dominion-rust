@@ -638,6 +638,61 @@ mod tests {
         Json(json!({"choices":[{"message":message}],"usage":{"prompt_tokens":20,"completion_tokens":10}}))
     }
 
+
+    async fn invalid_tool_model(State(counter):State<Arc<AtomicUsize>>,Json(_request):Json<Value>)->Json<Value>{
+        let turn=counter.fetch_add(1,Ordering::SeqCst);
+        let message=match turn {
+            0=>json!({"role":"assistant","content":"Check tools before changing files."}),
+            1=>json!({"role":"assistant","content":null,"tool_calls":[{
+                "id":"unadvertised-1","type":"function","function":{
+                    "name":"unadvertised_command",
+                    "arguments":"{\"command\":\"touch forbidden.txt\"}"
+                }
+            }]}),
+            2=>json!({"role":"assistant","content":"Unknown tool did not execute."}),
+            _=>json!({"role":"assistant","content":"PASS"})
+        };
+        Json(json!({"choices":[{"message":message}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))
+    }
+    #[tokio::test]
+    async fn unadvertised_model_tool_is_rejected_before_execution(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let counter=Arc::new(AtomicUsize::new(0));
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/chat/completions",post(invalid_tool_model))
+                .with_state(counter)).await.unwrap();
+        });
+        let root=std::env::temp_dir().join(format!("dominion-schema-e2e-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
+        settings.main.base_url=format!("http://{address}");
+        settings.main.api_key.clear();settings.economy=settings.main.clone();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings.clone(),store.clone(),groups,videos,improvements).unwrap();
+        let run=Run::new(CreateRun{instruction:"Reject unavailable tool invocation".into(),
+            budget_krw:Some(1000.0),max_steps:Some(8)},8).unwrap();
+        let id=run.id;store.put(run).await.unwrap();engine.launch(id).await.unwrap();
+        let mut finished=None;
+        for _ in 0..100{
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let run=store.get(id).await.unwrap();
+            if run.terminal(){finished=Some(run);break;}
+        }
+        let state=finished.expect("schema rejection test timed out");
+        assert_eq!(state.status,RunStatus::Completed);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_admission_rejected").count(),1);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert_eq!(state.messages.iter().filter(|m|m["role"]=="tool").count(),1);
+        assert!(tokio::fs::metadata(settings.workspace_dir.join(id.to_string())
+            .join("forbidden.txt")).await.is_err());
+        server.abort();tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     async fn parallel_mock_model(State(counter):State<Arc<AtomicUsize>>,Json(request):Json<Value>)->Json<Value>{
         let step=counter.fetch_add(1,Ordering::SeqCst);
         if step==1{
