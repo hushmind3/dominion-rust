@@ -142,6 +142,10 @@ fn agent_model(engine:&Engine,provider:Option<&str>,model:Option<&str>)->Result<
     let model=model.filter(|v|!v.is_empty()).unwrap_or(if provider=="dominion-native"{
         engine.settings.main.name.as_str()
     }else{""});
+    if provider=="dominion-native"
+        && crate::frontend_local_models::native_override(&engine.settings,model).is_some() {
+        return Ok(());
+    }
     engine.providers.resolve(provider,model,&engine.settings.main)
         .map(|_|()).map_err(bad)
 }
