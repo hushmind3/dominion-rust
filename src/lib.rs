@@ -12,6 +12,7 @@ pub mod sdk;
 pub mod store;
 pub mod tools;
 pub mod video;
+pub mod workspace;
 pub mod veo;
 pub use sdk::Dominion;
 pub use config::{ModelSettings,Settings};
