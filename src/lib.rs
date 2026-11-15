@@ -10,6 +10,7 @@ pub mod improvement;
 pub mod mcp;
 pub mod policy;
 pub mod provider;
+pub mod sandbox;
 pub mod sdk;
 pub mod skills;
 pub mod store;

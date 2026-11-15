@@ -35,9 +35,16 @@ fn relative(raw:&str)->Result<&Path,String>{
     Ok(path)
 }
 async fn execute(program:&str,args:&[&str],dir:&Path,timeout:u64)->Result<String,String>{
-    let mut child=Command::new(program);
-    child.args(args).current_dir(dir).env_clear().env("PATH","/usr/local/bin:/usr/bin:/bin")
-        .env("HOME",dir).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let mut child=if program=="sh" {
+        let script=args.last().ok_or("shell script missing")?;
+        crate::sandbox::script(dir,script)?
+    }else{
+        let mut command=Command::new(program);
+        command.args(args).current_dir(dir).env_clear().env("PATH","/usr/local/bin:/usr/bin:/bin")
+            .env("HOME",dir);
+        command
+    };
+    child.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child=child.spawn().map_err(|e|format!("{program}: {e}"))?;
     let out=child.stdout.take().ok_or("stdout unavailable")?;
     let err=child.stderr.take().ok_or("stderr unavailable")?;

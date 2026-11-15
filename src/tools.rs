@@ -218,9 +218,7 @@ async fn bounded<R: AsyncRead + Unpin>(mut reader: R) -> Result<String, String> 
 }
 async fn run_shell(root: PathBuf, command: &str) -> Result<String, String> {
     use std::process::Stdio;
-    let mut child = Command::new("sh")
-        .arg("-lc").arg(command).current_dir(&root)
-        .env_clear().env("PATH","/usr/local/bin:/usr/bin:/bin").env("HOME",&root)
+    let mut child = crate::sandbox::script(&root,command)?
         .stdout(Stdio::piped()).stderr(Stdio::piped())
         .kill_on_drop(true).spawn().map_err(|e| e.to_string())?;
     let out = child.stdout.take().ok_or("stdout unavailable")?;
