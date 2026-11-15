@@ -2,7 +2,7 @@
 //! NEVER walk a user workspace, delete completed outputs, delete evidence or
 //! prune an active/paused/needs_review job. Paths are confined to data_dir.
 use crate::state::AppState;
-use serde_json::{json,Value};
+use serde_json::Value;
 use std::{
     path::{Component,Path,PathBuf},
     time::{Duration,SystemTime},
@@ -53,7 +53,7 @@ fn older_than_file(path:&Path,now:SystemTime,grace:Duration)->bool {
 fn older_than_record(record:&Value,now:SystemTime,grace:Duration)->bool {
     record["finishedAt"].as_str()
         .and_then(|text|chrono::DateTime::parse_from_rfc3339(text).ok())
-        .and_then(|timestamp|now.duration_since(SystemTime::from(timestamp)).ok())
+        .and_then(|timestamp|now.duration_since(SystemTime::from(timestamp.with_timezone(&chrono::Utc))).ok())
         .is_some_and(|elapsed|elapsed>=grace)
 }
 fn closed(record:&Value)->bool {
@@ -95,7 +95,7 @@ fn completed_video_intermediates(state:&AppState,now:SystemTime,report:&mut Swee
         if job["status"]!="completed" {continue;}
         let final_video=directory.join("output.mp4");
         if !is_regular(&final_video)
-            || std::fs::metadata(&final_video).is_err_or(|meta|meta.len()<100) {continue;}
+            || std::fs::metadata(&final_video).map_or(true,|meta|meta.len()<100) {continue;}
         for index in 1..=12 {
             let shot=directory.join(format!("shot-{index:02}"));
             if !is_dir(&shot){continue;}
