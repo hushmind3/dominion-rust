@@ -16,7 +16,7 @@ mod worktree;
 
 pub use queries::{goal_metrics,list_goals,get_goal,delete_goal};
 pub use owner::{edit_plan,steer_goal,cancel_goal,resume_goal};
-pub use create::create_goal;
+pub use create::{create_goal,prepare_goal};
 
 pub async fn strategies()->Json<Value>{
     Json(engine::goals::strategy_catalog())

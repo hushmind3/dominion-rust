@@ -1,6 +1,13 @@
 //! Atomic goal+job creation and input validation.
 use super::*;
 
+pub async fn prepare_goal(State(state):State<AppState>,Json(body):Json<Value>)->Response{
+    match engine::goals::admission::prepare(&state,&body){
+        Ok(advice)=>Json(advice).into_response(),
+        Err(message)=>error(StatusCode::BAD_REQUEST,&message),
+    }
+}
+
 pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let text = body
         .get("goal")
@@ -8,8 +15,11 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         .unwrap_or("")
         .trim()
         .to_string();
-    if text.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "목표 내용이 필요합니다.");
+    if text.is_empty() || text.chars().count()>12_000 {
+        return error(StatusCode::BAD_REQUEST, "목표를 1~12000자로 입력하세요.");
+    }
+    if body.get("autoRoute").is_some_and(|value|!value.is_boolean()){
+        return error(StatusCode::BAD_REQUEST,"자동 모델 선택은 true/false여야 합니다.");
     }
     let criteria = body
         .get("successCriteria")
@@ -18,7 +28,21 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
     if let Err(message) = engine::goals::validate_criteria(&criteria) {
         return error(StatusCode::BAD_REQUEST, &message);
     }
-    let executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    let mut executor = body.get("executor").cloned().unwrap_or_else(|| json!({}));
+    // An explicitly selected executor always wins over automatic selection.
+    // Otherwise resolve a provider/agent before recording any queued job.
+    let route=if body["autoRoute"]==true &&
+        executor.as_object().is_some_and(|map|map.is_empty()){
+        match engine::goals::admission::prepare(&state,&body){
+            Ok(advice) if advice["ready"]==true => {
+                executor=advice["executor"].clone();
+                advice["selection"].clone()
+            },
+            Ok(advice)=>return error(StatusCode::BAD_REQUEST,
+                advice["message"].as_str().unwrap_or("사용 가능한 모델이 없습니다.")),
+            Err(message)=>return error(StatusCode::BAD_REQUEST,&message),
+        }
+    }else{Value::Null};
     let review_policy=match crate::engine::goals::validate_review_policy(body.get("reviewPolicy")) {
         Ok(policy)=>policy,
         Err(message)=>return error(StatusCode::BAD_REQUEST,&message),
@@ -45,6 +69,7 @@ pub async fn create_goal(State(state): State<AppState>, Json(body): Json<Value>)
         "id":goal_id,"jobId":job_id,
         "taskId":uuid::Uuid::new_v4().to_string(),
         "goal":text,"successCriteria":criteria,"executor":executor,
+        "routeSelection":route,
         "reviewer":body.get("reviewer").cloned().unwrap_or(json!({})),
         "planner":body.get("planner").cloned().unwrap_or(json!({})),
         "maxReplans":body["maxReplans"].as_u64().unwrap_or(6),

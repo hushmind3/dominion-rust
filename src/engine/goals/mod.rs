@@ -30,6 +30,8 @@ mod lifecycle;
 mod review;
 #[path = "strategy.rs"]
 mod strategy;
+#[path = "admission.rs"]
+pub mod admission;
 pub use strategy::catalog as strategy_catalog;
 
 pub fn validate_review_policy(value:Option<&Value>)->Result<&'static str,String>{
@@ -40,6 +42,10 @@ pub use execution::run;
 pub use review::parse_review;
 use lifecycle::{finish,role_model,optional,tail,patch_goal};
 use operations::{in_goal_session_tree,unknown_new_goal_operations};
+
+#[cfg(test)]
+#[path = "../../../tests/unit/goal_admission_tests.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 #[path = "../../../tests/unit/goal_strategy_tests.rs"]
