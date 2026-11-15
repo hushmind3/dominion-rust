@@ -290,3 +290,30 @@ mod score_evidence_tests {
   assert_eq!(adopted_parent(&[trial.clone(),later]),Some(trial.trial_id));
  }
 }
+
+#[cfg(test)]
+mod restart_state_tests {
+ use super::*;
+ #[tokio::test]
+ async fn pending_manual_choice_survives_native_controller_restart(){
+  let root=std::env::temp_dir().join(format!("dominion-rsi-choice-{}",Uuid::new_v4()));
+  let store=Campaigns::open(root.clone()).unwrap();
+  let c=Campaign{
+   id:Uuid::new_v4(),status:"running".into(),phase:"waiting_for_choice".into(),
+   objective:"improve".into(),provider_id:"dominion-native".into(),model:"test".into(),
+   selection_policy:"manual".into(),repository:"repo".into(),
+   test_command:"true".into(),score_command:"echo 1".into(),
+   max_attempts:3,token_budget:0,time_budget_seconds:0,started_ms:now_ms(),
+   attempts:1,accepted_generations:0,tokens:0,cost_krw:0.0,
+   current_trial:None,trials:vec![],history:vec![],base_commit:None,head_commit:None,
+   error:None,stop_reason:None,requested_cancel:false,
+  };
+  store.create(c.clone()).await.unwrap();
+  drop(store);
+  let reopened=Campaigns::open(root.clone()).unwrap();
+  let restored=reopened.get(c.id).await.unwrap();
+  assert_eq!(restored.status,"running");
+  assert_eq!(restored.phase,"waiting_for_choice");
+  fs::remove_dir_all(root).await.unwrap();
+ }
+}
