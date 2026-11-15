@@ -117,11 +117,19 @@ async fn start_upload(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   !matches!(input.privacy_status.as_str(),"private"|"unlisted"|"public"){
   return Err(fail(StatusCode::BAD_REQUEST,"YouTube title, description or privacy invalid"));
  }
- let video=engine.videos.get(id).await.ok_or_else(||fail(StatusCode::NOT_FOUND,"native video missing"))?;
- if !matches!(video.status,crate::video::VideoStatus::Completed){
-  return Err(fail(StatusCode::CONFLICT,"video must finish rendering before upload"));
- }
- let path=engine.videos.output_path(id).await.map_err(|e|fail(StatusCode::NOT_FOUND,e))?;
+ // Both the native FFmpeg renderer and ComfyUI produce durable artifacts
+ // under the same Video page, and are eligible for explicit YouTube upload.
+ let (path,mime)=if let Some(video)=engine.videos.get(id).await{
+  if !matches!(video.status,crate::video::VideoStatus::Completed){
+   return Err(fail(StatusCode::CONFLICT,"video must finish rendering before upload"));
+  }
+  (engine.videos.output_path(id).await.map_err(|e|fail(StatusCode::NOT_FOUND,e))?,
+   "video/mp4")
+ }else{
+  crate::frontend_comfy::output(&engine.settings,id)
+   .map_err(|e|fail(StatusCode::CONFLICT,e))?
+   .ok_or_else(||fail(StatusCode::NOT_FOUND,"video artifact missing"))?
+ };
  let len=tokio::fs::metadata(&path).await.map_err(|e|fail(StatusCode::NOT_FOUND,e.to_string()))?.len();
  if len==0||len>LIMIT{return Err(fail(StatusCode::BAD_REQUEST,"video must be 1 byte to 2 GiB"));}
  let tags=input.tags.split(',').map(str::trim).filter(|s|!s.is_empty())
@@ -142,7 +150,7 @@ async fn start_upload(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
  let worker=Arc::clone(&engine);
  let job_id=job.id;
  tokio::spawn(async move{
-  let outcome=send(&worker,&path,len,&input,tags).await;
+  let outcome=send(&worker,&path,len,mime,&input,tags).await;
   if let Err(error)=change(&worker,job_id,|job|{
    match outcome{
     Ok(ref remote_id)=>{
@@ -156,7 +164,7 @@ async fn start_upload(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
  });
  Ok((StatusCode::ACCEPTED,Json(public(&job))))
 }
-async fn send(engine:&Engine,path:&FilePath,len:u64,request:&UploadRequest,tags:Vec<String>)
+async fn send(engine:&Engine,path:&FilePath,len:u64,mime:&str,request:&UploadRequest,tags:Vec<String>)
  ->Result<String,String>{
  let access=crate::frontend_oauth::youtube_token(&engine.settings).await?;
  let http=reqwest::Client::builder().timeout(Duration::from_secs(900))
@@ -166,7 +174,7 @@ async fn send(engine:&Engine,path:&FilePath,len:u64,request:&UploadRequest,tags:
   "status":{"privacyStatus":request.privacy_status}});
  let started=http.post("https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status")
   .bearer_auth(&access)
-  .header("X-Upload-Content-Type","video/mp4")
+  .header("X-Upload-Content-Type",mime)
   .header("X-Upload-Content-Length",len.to_string())
   .json(&body).send().await.map_err(|e|format!("YouTube session request: {e}"))?;
  if !started.status().is_success(){
@@ -182,7 +190,7 @@ async fn send(engine:&Engine,path:&FilePath,len:u64,request:&UploadRequest,tags:
  }
  let input=tokio::fs::File::open(path).await.map_err(|e|e.to_string())?;
  let res=http.put(url).bearer_auth(&access)
-  .header(header::CONTENT_TYPE,"video/mp4")
+  .header(header::CONTENT_TYPE,mime)
   .header(header::CONTENT_LENGTH,len.to_string())
   .body(reqwest::Body::wrap_stream(ReaderStream::new(input)))
   .send().await.map_err(|e|format!("YouTube upload transport: {e}"))?;
