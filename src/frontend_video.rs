@@ -1,7 +1,6 @@
 //! Main Video UI uses native FFmpeg and opt-in local ComfyUI API-format workflows.
 //! Jobs and actual artifacts are backed by their respective Rust stores.
 use crate::{
-    domain::now_ms,
     engine::Engine,
     video::{NewVideo,Scene,Video,VideoBackend,VideoStatus},
 };
@@ -51,23 +50,24 @@ async fn speech_available()->bool{
         .arg("--version").kill_on_drop(true).output()).await.ok()
         .and_then(Result::ok).is_some_and(|result|result.status.success())
 }
-async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
+async fn status(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let jobs=engine.videos.list().await;
     let mut list=Vec::with_capacity(jobs.len());
     for v in &jobs{list.push(as_job(&engine,v).await);}
-    let cfg=crate::frontend_comfy::config(&engine.settings).unwrap_or_default();
+    let cfg=crate::frontend_comfy::config(&engine.settings).map_err(bad)?;
     let reachable=crate::frontend_comfy::reachable(&cfg).await;
-    if let Ok(comfy)=crate::frontend_comfy::list(&engine.settings){list.extend(comfy);}
+    list.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?);
+    list.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     let available=ffmpeg_available().await;
     let narration=speech_available().await;
     let mut config=crate::frontend_comfy::public_config(&cfg);
     if !narration{config["narration"]=json!(false);}
-    Json(json!({
+    Ok(Json(json!({
         "config":config,
         "native":{"available":available},
         "comfy":{"reachable":reachable,"available":reachable&&cfg.comfy_workflow.is_some()},
         "workflows":crate::frontend_comfy::workflows(&cfg),"jobs":list
-    }))
+    })))
 }
 async fn config(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     crate::frontend_comfy::config(&engine.settings)
@@ -82,28 +82,29 @@ async fn catalog(State(engine):State<Arc<Engine>>)->Json<Value>{
     let models=crate::frontend_comfy::catalog(&engine.settings).await;
     Json(json!({"videoModels":models}))
 }
-async fn outputs(State(engine):State<Arc<Engine>>)->Json<Value>{
+async fn outputs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let all=engine.videos.list().await;
     let mut rows=Vec::new();
     for v in &all{
         if v.status==VideoStatus::Completed{rows.push(as_job(&engine,v).await);}
     }
-    if let Ok(comfy)=crate::frontend_comfy::list(&engine.settings){
-        rows.extend(comfy.into_iter().filter(|row|row["status"]=="completed"));
-    }
-    Json(json!(rows))
+    rows.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?
+        .into_iter().filter(|row|row["status"]=="completed"));
+    rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    Ok(Json(json!(rows)))
 }
 async fn workflows(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let cfg=crate::frontend_comfy::config(&engine.settings).map_err(bad)?;
     Ok(Json(json!(crate::frontend_comfy::workflows(&cfg))))
 }
 async fn downloads()->Json<Value>{Json(json!({"downloads":[]}))}
-async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
+async fn jobs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let all=engine.videos.list().await;
     let mut rows=Vec::new();
     for v in &all{rows.push(as_job(&engine,v).await);}
-    rows.extend(crate::frontend_comfy::list(&engine.settings).unwrap_or_default());
-    Json(json!(rows))
+    rows.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?);
+    rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+    Ok(Json(json!(rows)))
 }
 async fn as_job(engine:&Engine,video:&Video)->Value{
     let status=match video.status{
