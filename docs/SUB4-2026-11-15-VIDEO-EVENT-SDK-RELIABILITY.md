@@ -58,8 +58,7 @@ FFmpeg 탐지로 입증되지 않는다. GPU 전력·시간당 요금은 미측�
 스트리밍 연결 중 알리지 못할 수 있다.
 
 새 구조:
-1. `src/events.rs::Bus::emit`이 mutex 안에서 seq 할당 → SQLite append →
-   in-process broadcast를 **동일 순서**로 수행한다.
+1. `src/events.rs::Bus::try_emit`이 mutex 안에서 다음 seq를 계산하고 SQLite append **성공 후에만** 카운터 확정 → in-process broadcast를 수행한다. SQLite 실패 시 카운터를 소모하거나 유실된 이벤트를 정상 전송하지 않는다. 기존 `Bus::emit`은 로깅하는 호환 래퍼이며, 외부 레코드의 GET 정본 조회 경로는 유지한다.
 2. SSE 핸들러가 SQL 조회보다 먼저 broadcast를 구독한다.
 3. `Bus::replay_available`가 500개 단위로 **보존된 모든 페이지**를 읽는다.
 4. 재생 데이터와 실시간 데이터는 `seq` 기준으로 중복 제외한다.
