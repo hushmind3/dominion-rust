@@ -183,7 +183,7 @@ async fn send(engine:&Engine,path:&FilePath,len:u64,request:&UploadRequest,tags:
  let input=tokio::fs::File::open(path).await.map_err(|e|e.to_string())?;
  let res=http.put(url).bearer_auth(&access)
   .header(header::CONTENT_TYPE,"video/mp4")
-  .header(header::CONTENT_LENGTH,len)
+  .header(header::CONTENT_LENGTH,len.to_string())
   .body(reqwest::Body::wrap_stream(ReaderStream::new(input)))
   .send().await.map_err(|e|format!("YouTube upload transport: {e}"))?;
  if !res.status().is_success(){return Err(format!("YouTube upload HTTP {}",res.status()));}
