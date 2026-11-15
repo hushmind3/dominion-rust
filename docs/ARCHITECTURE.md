@@ -1,7 +1,8 @@
 # Sub4 architecture, recovery and migration map — 2026-11-15
 
-This branch is a new small Rust-core rewrite, not a complete replacement for
-the larger `main` React/Tauri/SQLite desktop product.
+This branch has an independent rebuilt Rust core and reuses the `main`
+React/Vite frontend. The older `main` Tauri/SQLite engine and its data formats
+are not fully migrated.
 
 | Operation | API route | Rust implementation |
 | --- | --- | --- |
@@ -33,8 +34,8 @@ operating-system sandbox. Shell commands need separate OS/container isolation.
 ## Comparison and gaps
 
 Main has broader provider/model support, MCP/skills, channels, advanced
-memory, React/Tauri UX, generative video backends, and a multi-file RSI
-research system. Those features are not yet migrated to sub4's new schema.
+memory, native Tauri integration, generative video backends, and a multi-file RSI
+research system. The React UI source and original Home dashboard are preserved. Those features are not yet migrated to sub4's new schema.
 The current `video.rs` renders local title-card MP4 clips and optional
 espeak narration; high-fidelity generated scenes remain future work.
 Legacy SQLite user data is not automatically imported into sub4 JSON stores.
@@ -78,4 +79,4 @@ See `docs/FRONTIER_2026.md` for concrete frontier reference gaps and
 
 ## Main React frontend adopted (2026-11-15)
 
-All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation and i18n are reused. The mounted `RustWorkspacePage` performs real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. This branch deliberately does not run the old main frontend feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Build/test against actual Rust and browser remain pending the source-residue review and CI gate.
+All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation, i18n and original Home dashboard are reused. The Home `NativeAgentPanel` and mounted `RustWorkspacePage` perform real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. Except for the native-backed original Home dashboard, this branch does not run the old main feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Build/test against actual Rust and browser remain pending the source-residue review and CI gate.

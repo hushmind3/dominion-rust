@@ -2,7 +2,7 @@
 
 **Native Rust SDK and independent Rust agent engine. HTTP API, TypeScript SDK and GUI are adapters to the same engine.**
 
-This is a **clean rebuild** on `dominion-sub4`. It does not inherit the previous runtime or its old task abstraction. The Rust server controls all model calls, tool execution, decisions, persistence and recovery. The UI and SDK call that same server rather than embedding a separate agent engine.
+The Rust core is a **clean rebuild** on `dominion-sub4`; the React/Vite frontend source is adopted from `main`. The Rust core does not inherit the previous runtime or its old task abstraction. The Rust server controls all model calls, tool execution, decisions, persistence and recovery. The UI and SDK call that same server rather than embedding a separate agent engine.
 
 ## What currently runs
 
@@ -38,7 +38,9 @@ delegated subagents, group discussions, video render/scene editing, RSI evaluati
 adoption and current model configuration. `web/src/api.ts` handles JSON and
 authenticated binary video responses. No second agent engine is embedded in React.
 
-The original main branch feature pages remain as source, but their old `/api/*` calls
+The **original main Home dashboard is mounted** and reads real Rust status, run
+history and model configuration; its native-work panel creates actual Rust runs.
+Other original main feature pages remain as source, but their old `/api/*` calls
 expect the larger main backend and are **not mounted as functional pages** until each
 capability is migrated to the current Rust API. In particular, main's desktop/Tauri
 host, advanced provider management, channel system and SQLite state are **not**
@@ -109,7 +111,7 @@ console.log(result.status, result.answer);
 
 ## Current data and migration
 
-This branch was rebuilt from an empty source tree. Earlier runtime data is **not automatically imported**. The new disk layout uses explicit, stable JSON files for runs, groups, videos and experiments. Back up the `runtime` and `workspace` directories before deleting or moving a deployment.
+The Rust runtime was rebuilt with a new storage format, while the main React frontend source was preserved. Earlier runtime data is **not automatically imported**. The new disk layout uses explicit, stable JSON files for runs, groups, videos and experiments. Back up the `runtime` and `workspace` directories before deleting or moving a deployment.
 
 ## Engineering references
 
