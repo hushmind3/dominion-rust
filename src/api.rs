@@ -46,6 +46,8 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/reconcile",post(reconcile))
         .route("/runs/{id}/subagents",get(list_subagents).post(create_subagent))
         .route("/runs/{id}/events",get(events))
+        .route("/runs/{id}/skills",get(list_skills))
+        .route("/runs/{id}/skills/{name}",get(read_skill))
         .route("/runs/{id}/files",get(list_files))
         .route("/runs/{id}/files/{*path}",get(read_file))
         .route("/groups",get(list_groups).post(create_group))
@@ -167,6 +169,17 @@ async fn events(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Query(param
     };
     Ok(Sse::new(output).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
+
+async fn list_skills(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<Vec<crate::skills::SkillInfo>>,ApiError>{
+    if engine.store.get(id).await.is_none(){return Err(not_found());}
+    crate::skills::list(&engine.settings,id).await.map(Json).map_err(bad)
+}
+async fn read_skill(State(engine):State<Arc<Engine>>,Path((id,name)):Path<(Uuid,String)>)->Result<Json<Value>,ApiError>{
+    if engine.store.get(id).await.is_none(){return Err(not_found());}
+    let content=crate::skills::load(&engine.settings,id,&name).await.map_err(bad)?;
+    Ok(Json(json!({"name":name,"content":content})))
+}
+
 async fn list_files(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<Value>,ApiError> {
     if engine.store.get(id).await.is_none(){return Err(not_found());}
     let data=tools::execute(&engine.settings,id,&crate::domain::ToolCall{

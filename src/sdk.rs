@@ -94,6 +94,14 @@ impl Dominion {
     }
     pub async fn adopt_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.adopt(id).await}
     pub async fn descendant_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.descendant(id).await}
+    pub async fn list_skills(&self,run:Uuid)->Result<Vec<crate::skills::SkillInfo>,String>{
+        self.get(run).await?;
+        crate::skills::list(&self.engine.settings,run).await
+    }
+    pub async fn load_skill(&self,run:Uuid,name:&str)->Result<String,String>{
+        self.get(run).await?;
+        crate::skills::load(&self.engine.settings,run,name).await
+    }
     pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<crate::knowledge::MemoryEntry,String>{
         self.engine.knowledge.remember(scope,title,content).await
     }

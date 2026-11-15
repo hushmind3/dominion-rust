@@ -18,6 +18,8 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("merge_subagent", "Propose adopting a completed child\u0027s Git patch into the parent worktree. This requires explicit human approval and checks conflicts.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
         tool("memory_search", "Retrieve project-scoped persistent notes and reusable lessons without any model API call",json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})),
         tool("memory_store", "Store or update one reusable non-weight project note, keyed by title; visible to future runs in the same repository",json!({"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"}},"required":["title","content"]})),
+        tool("list_skills","List project SKILL.md procedures; procedure content is loaded on demand",json!({"type":"object","properties":{}})),
+        tool("load_skill","Read one project-local SKILL.md by name, without executing scripts",json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})),
     ];
     if shell_enabled {
         tools.push(tool("shell", "Execute an approved shell command in the workspace; user approval is always required", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})));

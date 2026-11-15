@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod policy;
 pub mod provider;
 pub mod sdk;
+pub mod skills;
 pub mod store;
 pub mod tools;
 pub mod video;
