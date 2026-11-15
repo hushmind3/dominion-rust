@@ -88,3 +88,11 @@ jobs:
             web/test-results/
             web/playwright-report/
           retention-days: 5
+
+  benchmark-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reproducible matched-workspace runner and honest telemetry selftest
+        run: python3 benchmarks/compare.py --selftest
