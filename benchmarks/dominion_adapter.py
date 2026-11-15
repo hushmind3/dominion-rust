@@ -23,8 +23,12 @@ def api(method, path, payload=None):
     token = os.getenv("DOMINION_ACCESS_TOKEN", "")
     if token:headers["Authorization"] = "Bearer " + token
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    with urlopen(Request(url,data=body,headers=headers,method=method),timeout=20) as response:
-        return json.load(response)
+    try:
+        with urlopen(Request(url,data=body,headers=headers,method=method),timeout=20) as response:
+            return json.load(response)
+    except HTTPError as error:
+        detail = error.read().decode("utf-8","replace")[:1200]
+        raise RuntimeError(f"{method} {path} rejected ({error.code}): {detail}") from error
 
 
 def git(cwd, *args):

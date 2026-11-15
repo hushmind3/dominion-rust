@@ -64,6 +64,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Fsync crash-recovery 256-run load and latency measurement
         run: cargo test --lib soak_parallel_durable_workloads -- --ignored --nocapture
+      - name: Thirty-second repeated crash/approval/cancel recovery soak
+        env:
+          DOMINION_LONG_SOAK_SECONDS: '30'
+        run: cargo test --lib continuous_recovery_and_cancellation_soak -- --ignored --nocapture
 
   browser-e2e:
     runs-on: ubuntu-latest
