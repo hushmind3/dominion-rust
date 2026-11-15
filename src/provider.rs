@@ -35,6 +35,22 @@ impl ModelClient {
         self.request(&self.strong, messages, tools).await
     }
     async fn request(&self, settings: &ModelSettings, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
+        // Retry only transient HTTP/transport failures. A completed model reply
+        // is never replayed through the harness; tool side effects are journaled separately.
+        for attempt in 0..3u32 {
+            match self.request_once(settings,messages,tools).await {
+                Ok(reply)=>return Ok(reply),
+                Err(error) if retryable(&error) && attempt<2=>{
+                    let delay=250u64.saturating_mul(1u64<<attempt);
+                    tracing::warn!(model=%settings.name,attempt=attempt+1,delay_ms=delay,"transient provider failure; retrying");
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+                Err(error)=>return Err(error)
+            }
+        }
+        Err("provider retries exhausted".into())
+    }
+    async fn request_once(&self, settings: &ModelSettings, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
@@ -75,6 +91,11 @@ impl ModelClient {
         Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, output_tokens, cost_krw, model: settings.name.clone() })
     }
 }
+fn retryable(error:&str)->bool{
+    error.starts_with("provider transport:") ||
+    error.starts_with("provider body:") ||
+    ["429","500","502","503","504"].iter().any(|status|error.starts_with(&format!("provider HTTP {status} ")))
+}
 fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,output:u64)->f64{
     let cached=cached.min(input);
     let noncached=input-cached;
@@ -85,6 +106,40 @@ fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,output:u64)->f64{
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_policy_is_precise(){
+        assert!(retryable("provider HTTP 429 Too Many Requests: throttled"));
+        assert!(retryable("provider HTTP 503 Service Unavailable: maintenance"));
+        assert!(retryable("provider transport: connection reset"));
+        assert!(!retryable("provider HTTP 401 Unauthorized: bad token"));
+        assert!(!retryable("invalid provider JSON: bad body"));
+    }
+    #[tokio::test]
+    async fn retries_transient_provider_failure_then_accepts_real_response(){
+        use axum::{extract::State,routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        async fn flaky(State(count):State<Arc<AtomicUsize>>)->impl axum::response::IntoResponse{
+            let attempt=count.fetch_add(1,Ordering::SeqCst);
+            if attempt==0 {
+                (axum::http::StatusCode::TOO_MANY_REQUESTS,Json(json!({"error":"slow down"}))).into_response()
+            }else{
+                (axum::http::StatusCode::OK,Json(json!({"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}))).into_response()
+            }
+        }
+        let count=Arc::new(AtomicUsize::new(0));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let router=Router::new().route("/chat/completions",post(flaky)).with_state(count.clone());
+        let handle=tokio::spawn(async move{axum::serve(listener,router).await.unwrap()});
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{address}");
+        settings.main.api_key.clear();
+        let client=ModelClient::new(&settings).unwrap();
+        let reply=client.complete(&[json!({"role":"user","content":"hi"})],&[],false).await.unwrap();
+        assert_eq!(reply.text,"ok");
+        assert_eq!(count.load(Ordering::SeqCst),2);
+        handle.abort();
+    }
     #[test]
     fn billed_usage_splits_cached_and_uncached_tokens(){
         let mut settings=Settings::from_env().unwrap().main;
