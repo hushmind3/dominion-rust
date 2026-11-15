@@ -28,8 +28,13 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/providers/{id}/test",post(test))
 }
 pub fn builtin(engine:&Engine)->Value{
-    let url=&engine.settings.main.base_url;
-    let local=url.contains("127.0.0.1")||url.contains("localhost");
+    let override_model=crate::frontend_local_models::selected(&engine.settings);
+    let local_settings=override_model.as_deref().and_then(|name|
+        crate::frontend_local_models::native_override(&engine.settings,name));
+    let url=local_settings.as_ref().map(|s|&s.base_url)
+        .unwrap_or(&engine.settings.main.base_url);
+    let local=local_settings.is_some()||
+        url.contains("127.0.0.1")||url.contains("localhost");
     let mut clean=reqwest::Url::parse(url).ok();
     if let Some(ref mut url)=clean{
         let _=url.set_username("");
@@ -41,7 +46,8 @@ pub fn builtin(engine:&Engine)->Value{
         "baseUrl":clean.map_or_else(String::new,|url|url.to_string().trim_end_matches('/').to_owned()),
         "kind":"openai","local":local,"enabled":local||!engine.settings.main.api_key.is_empty(),
         "hasKey":local||!engine.settings.main.api_key.is_empty(),
-        "model":engine.settings.main.name,"reasoningEffort":"","reflection":false,
+        "model":local_settings.as_ref().map(|s|s.name.as_str())
+            .unwrap_or(&engine.settings.main.name),"reasoningEffort":"","reflection":false,
         "pricing":"environment_configured",
     })
 }
@@ -105,7 +111,14 @@ async fn remove(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     Ok(Json(json!({"ok":true})))
 }
 fn active<'a>(engine:&'a Engine,id:&str)->Result<(ModelSettings,Option<Provider>),Fault>{
-    if id=="dominion-native"{return Ok((engine.settings.main.clone(),None));}
+    if id=="dominion-native"{
+        if let Some(model)=crate::frontend_local_models::selected(&engine.settings){
+            if let Some(settings)=crate::frontend_local_models::native_override(&engine.settings,&model){
+                return Ok((settings,None));
+            }
+        }
+        return Ok((engine.settings.main.clone(),None));
+    }
     let item=engine.providers.get(id).ok_or_else(missing)?;
     let settings=engine.providers.resolve(id,&item.model,&engine.settings.main).map_err(bad)?;
     Ok((settings,Some(item)))
