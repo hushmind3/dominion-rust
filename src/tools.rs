@@ -12,6 +12,8 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("edit_file", "Edit one exact occurrence in a file; fails when the expected text differs or appears more than once", json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"]})),
         tool("git_status", "Inspect changed files in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
         tool("git_diff", "Inspect uncommitted changes in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
+        tool("spawn_subagent", "Delegate an independent task to an isolated Rust worker with reserved budget; use check_subagent to read results", json!({"type":"object","properties":{"instruction":{"type":"string"},"budget_krw":{"type":"number"},"max_steps":{"type":"integer"}},"required":["instruction"]})),
+        tool("check_subagent", "Read a child agent status, final answer and measured cost", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
     ];
     if shell_enabled {
         tools.push(tool("shell", "Execute an approved shell command in the workspace; user approval is always required", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})));

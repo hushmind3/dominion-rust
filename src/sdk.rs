@@ -47,19 +47,9 @@ impl Dominion {
         for input in inputs{out.push(self.submit(input).await?);}
         Ok(out)
     }
-    /// A child run has explicit lineage, an independent workspace and cost limit.
-    pub async fn delegate(&self,parent:Uuid,mut input:CreateRun)->Result<Run,String>{
-        let p=self.get(parent).await?;
-        if p.terminal(){return Err("parent already finished".into());}
-        let allowance=(p.budget_krw-p.cost_krw).max(0.0);
-        if input.budget_krw.unwrap_or(allowance)>allowance{return Err("child exceeds available parent budget".into());}
-        input.budget_krw=Some(input.budget_krw.unwrap_or(allowance));
-        let mut run=Run::new(input,self.engine.settings.max_steps)?;
-        run.parent_run_id=Some(parent);
-        run.event("delegated",format!("Related to parent {parent}"),None);
-        self.engine.store.put(run.clone()).await?;
-        self.engine.launch(run.id).await?;
-        self.get(run.id).await
+    /// Reuse the engine's budget- and lineage-enforced delegated execution.
+    pub async fn delegate(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{
+        self.engine.spawn_subagent(parent,input).await
     }
     pub async fn get(&self,id:Uuid)->Result<Run,String>{self.engine.store.get(id).await.ok_or("execution not found".into())}
     pub async fn list(&self)->Vec<Run>{self.engine.store.list().await}

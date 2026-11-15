@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -14,12 +14,13 @@ pub struct Engine {
     pub mcp: Arc<crate::mcp::Mcp>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
+    delegate_lock: Mutex<()>,
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>, improvements: Arc<crate::improvement::Improvements>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
         let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
-        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, model, active: Mutex::new(HashSet::new()) }))
+        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()) }))
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
@@ -66,7 +67,7 @@ impl Engine {
             run.event("budget_exceeded", "Estimated token charges exceeded configured budget", None);
         }
     }
-    async fn drive(&self, id: Uuid) -> Result<(), String> {
+    async fn drive(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         loop {
             let run = self.store.get(id).await.ok_or("execution not found")?;
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
@@ -194,7 +195,7 @@ impl Engine {
             if verified && passed { return Ok(()); }
         }
     }
-    async fn perform_tool(&self, id: Uuid, call: ToolCall, approved: bool) -> Result<(), String> {
+    async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall, approved: bool) -> Result<(), String> {
         // Persist intent before an external side effect; receipt is a separate durable write.
         self.store.mutate(id, |run| {
             if run.status != RunStatus::Running { return Err("execution no longer running".into()); }
@@ -211,6 +212,17 @@ impl Engine {
         let output = if approved {
             if call.name.starts_with("mcp__") {
                 self.mcp.call(&call).await
+            } else if call.name == "spawn_subagent" {
+                let instruction=call.arguments.get("instruction").and_then(Value::as_str)
+                    .ok_or("spawn_subagent needs instruction")?;
+                let budget=call.arguments.get("budget_krw").and_then(Value::as_f64);
+                let steps=call.arguments.get("max_steps").and_then(Value::as_u64).map(|n|n as usize);
+                self.spawn_subagent(id,CreateRun{instruction:instruction.into(),budget_krw:budget,max_steps:steps})
+                    .await.map(|run|json!({"id":run.id,"status":run.status,"budget_krw":run.budget_krw}).to_string())
+            } else if call.name == "check_subagent" {
+                let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
+                let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
+                self.check_subagent(id,child).await
             } else {
                 tools::execute(&self.settings,id,&call).await
             }
@@ -257,6 +269,48 @@ impl Engine {
             Ok(())
         }).await
     }
+
+    /// Native delegated work: separate durable transcript and workspace.
+    /// Budget reservations across siblings prevent oversubscription.
+    pub async fn spawn_subagent(self:&Arc<Self>,parent:Uuid,input:CreateRun)->Result<Run,String>{
+        let _guard=self.delegate_lock.lock().await;
+        let root=self.store.get(parent).await.ok_or("parent execution not found")?;
+        if root.terminal(){return Err("parent already terminated".into());}
+        let all=self.store.list().await;
+        let children=all.iter().filter(|r|r.parent_run_id==Some(parent)).collect::<Vec<_>>();
+        if children.len()>=4{return Err("maximum of four direct subagents per run".into());}
+        let reserved=children.iter().map(|r|r.budget_krw).sum::<f64>();
+        let remaining=(root.budget_krw-root.cost_krw-reserved).max(0.0);
+        let budget=input.budget_krw.unwrap_or(remaining.min(2000.0));
+        if !budget.is_finite()||budget<0.0||budget>remaining{
+            return Err(format!("subagent budget {budget} KRW exceeds unreserved {remaining} KRW"));
+        }
+        let mut child=Run::new(CreateRun{
+            instruction:input.instruction,
+            budget_krw:Some(budget),
+            max_steps:input.max_steps
+        },self.settings.max_steps)?;
+        child.parent_run_id=Some(parent);
+        child.event("delegated",format!("Delegated by parent {parent} with {budget} KRW reserved"),None);
+        self.store.put(child.clone()).await?;
+        self.launch(child.id).await?;
+        self.store.get(child.id).await.ok_or("subagent missing after spawn".into())
+    }
+
+    /// A parent can observe only its own children; never return another run.
+    pub async fn check_subagent(&self,parent:Uuid,child:Uuid)->Result<String,String>{
+        let run=self.store.get(child).await.ok_or("subagent not found")?;
+        if run.parent_run_id!=Some(parent){return Err("subagent does not belong to this parent".into());}
+        Ok(json!({
+            "id":run.id,
+            "status":run.status,
+            "answer":run.answer,
+            "steps":run.steps,
+            "cost_krw":run.cost_krw,
+            "error":run.events.iter().rev().find(|e|e.kind=="error"||e.kind=="paused_error").map(|e|&e.message)
+        }).to_string())
+    }
+
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         self.store.mutate(id,|run| {
             if run.terminal() { return Err("execution already finished".into()); }
