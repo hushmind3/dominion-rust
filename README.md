@@ -100,7 +100,11 @@ no unmeasured provider bill is presented as actual expense.
 forging new owner messages. Speaker selection, per-room token ceilings,
 pause/recovery, learning and evidence inspection operate as Rust jobs.
 
-**Video.** ComfyUI multi-shot pipelines perform technical clip checks and can
+**Video.** The video page shows plain-language engine choices (FFmpeg caption
+cards, configured ComfyUI GPU, or paid Kling cinematic) and folds technical
+FPS, seed, negative prompts and multi-shot controls by default. Paid
+provider quotes and explicit owner acknowledgements remain visible.
+ComfyUI multi-shot pipelines perform technical clip checks and can
 optionally decode shot frames for mostly-black or frozen-frame defects. The
 engine avoids rerendering previously verified shots. Charged remote
 submissions preserve owner approval and unknown-outcome review.

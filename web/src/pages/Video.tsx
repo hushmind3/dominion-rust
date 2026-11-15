@@ -4,6 +4,7 @@ import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
 import {openOAuth,post} from '../api'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
+import {EngineChooser} from './video/EngineChooser'
 import {t,useLocale} from '../i18n'
 
 type Workflow={id:string;name:string;bytes:number}
@@ -27,6 +28,7 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const [workflow,setWorkflow]=useState(''),[title,setTitle]=useState(''),[prompt,setPrompt]=useState(''),[negative,setNegative]=useState(''),[ratio,setRatio]=useState<keyof typeof ratios>('9:16'),[seconds,setSeconds]=useState(3),[fps,setFps]=useState(16),[seed,setSeed]=useState('-1')
  const [cinematic,setCinematic]=useState(false),[badShotRetries,setBadShotRetries]=useState(0),[visualQualityGate,setVisualQualityGate]=useState(true)
+ const [showAdvanced,setShowAdvanced]=useState(false)
  const [engineChoice,setEngine]=useState<VideoEngine>(),[comfyUrl,setComfyUrl]=useState(''),[savingConfig,setSavingConfig]=useState(false)
  const [runwayKey,setRunwayKey]=useState(''),[runwayModel,setRunwayModel]=useState('kling3.0_pro'),[runwayAudio,setRunwayAudio]=useState(true),[runwayFrames,setRunwayFrames]=useState(true),[runwayQuality,setRunwayQuality]=useState(true)
  const [tab,setTab]=useState<'create'|'settings'>('create'),[refreshing,setRefreshing]=useState(false),[gid,setGid]=useState(''),[gsecret,setGsecret]=useState(''),[gBusy,setGBusy]=useState(false)
@@ -197,6 +199,12 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
          </label><Button variant="ghost" onClick={()=>void video.reload()}>{t('vid.recheck')}</Button></div>
     </div>}
   </>}
+  {tab==='create'&&<EngineChooser engine={engine}
+     nativeReady={Boolean(video.value.native?.available)}
+     comfyReady={Boolean(video.value.comfy.available&&workflow)}
+     paidReady={Boolean(video.value.runway?.available)}
+     busy={savingConfig} onSelect={next=>void changeEngine(next)}
+     onSettings={()=>setTab('settings')}/>}
   <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]">
    <div className="grid min-w-0 content-start gap-4">
     {tab==='create'&&<Panel className="min-w-0 p-5">
@@ -204,16 +212,18 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
      <div className="grid gap-4">
       <FormField label={t('vid.videoTitle')} hint={t('vid.videoTitleHint')}><TextInput value={title} onChange={e=>setTitle(e.target.value)} placeholder={t('vid.videoTitlePlaceholder')}/></FormField>
       <FormField label={t('vid.prompt')}><TextArea rows={4} value={prompt} onChange={e=>setPrompt(e.target.value)} placeholder={t('vid.promptPlaceholder')}/></FormField>
-      {usingComfy&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
-      {usingComfy&&<div className="space-y-2 rounded-xl border border-[#E3D9CB] p-3 text-xs">
+      {usingComfy&&<Button variant="ghost" aria-expanded={showAdvanced} className="w-fit text-[12px]"
+        onClick={()=>setShowAdvanced(value=>!value)}>{showAdvanced?'고급 영상 옵션 접기':'고급 영상 옵션 보기'} {showAdvanced?'▴':'▾'}</Button>}
+      {usingComfy&&showAdvanced&&<FormField label={t('vid.negative')} hint={t('vid.negativeHint')}><TextInput value={negative} onChange={e=>setNegative(e.target.value)} placeholder="low quality, blurry, watermark"/></FormField>}
+      {usingComfy&&showAdvanced&&<div className="space-y-2 rounded-xl border border-[#E3D9CB] p-3 text-xs">
        <label className="flex items-center gap-2 font-semibold"><input type="checkbox" checked={cinematic} onChange={e=>{setCinematic(e.target.checked);if(!e.target.checked&&seconds>9)setSeconds(9)}}/> 🎬 멀티샷 영화 만들기 (3~120초)</label>
        <p className="text-[#7C7469]">장면별 생성 후 FFprobe로 길이·비율을 검증하고, 선택한 경우 FFmpeg로 실제 프레임을 디코딩해 검은 화면·장시간 정지 결함을 탐지합니다. 검증된 클립은 재사용합니다. FFmpeg·FFprobe 및 &#123;&#123;prompt&#125;&#125;, &#123;&#123;duration&#125;&#125; 워크플로 변수가 필요합니다.</p>
        {cinematic&&<label className="flex items-center gap-2"><input type="checkbox" checked={visualQualityGate} onChange={e=>setVisualQualityGate(e.target.checked)}/> 실제 프레임 결함 검수 (로컬 FFmpeg · 추가 GPU/API 호출 없음)</label>}
        {cinematic&&<FormField label="기술 검수 실패 장면 재생성" hint="0회: 추가 GPU 비용 없음 · 1회: 불량 장면만 한 번 더 생성"><SelectInput value={String(badShotRetries)} onChange={e=>setBadShotRetries(Number(e.target.value))}><option value="0">재생성 없음</option><option value="1">최대 1회 재생성</option></SelectInput></FormField>}
        {cinematic&&!video.value.native?.available&&<p className="text-amber-700">멀티샷 최종 병합에 FFmpeg가 필요합니다.</p>}
       </div>}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={engine==='runway'?'선택 모델에 따라 720p / 1080p / 4K':`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
-      {usingComfy&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3"><FormField label={t('vid.ratio')} hint={engine==='runway'?'선택 모델에 따라 720p / 1080p / 4K':`${ratios[ratio].width}×${ratios[ratio].height}px`}><SelectInput value={ratio} onChange={e=>setRatio(e.target.value as keyof typeof ratios)}>{(Object.keys(ratios) as Array<keyof typeof ratios>).map(key=><option key={key} value={key}>{t(ratios[key].label)}</option>)}</SelectInput></FormField><FormField label={t('vid.seconds')} hint={t('vid.max',{count:maxDuration})}><TextInput type="number" min={3} max={maxDuration} value={seconds} onChange={e=>setSeconds(Number(e.target.value))}/></FormField>{usingComfy&&showAdvanced&&<FormField label="FPS" hint={t('vid.fpsHint')}><TextInput type="number" min={1} max={60} value={fps} onChange={e=>setFps(Number(e.target.value))}/></FormField>}</div>
+      {usingComfy&&showAdvanced&&<FormField label={t('vid.seed')} hint={t('vid.seedHint')}><div className="flex gap-2"><TextInput value={seed} onChange={e=>setSeed(e.target.value)} placeholder={t('vid.randomValue')}/><Button variant="secondary" className="shrink-0" onClick={()=>setSeed('-1')}>{t('vid.random')}</Button></div></FormField>}
       {engine==='runway'&&<div className="rounded-xl border border-[#E5D2BC] bg-[#FFFBF4] p-3 text-xs leading-5">
        <strong>💳 유료 생성 예상 비용 · 서버 견적</strong>
        {paidQuote?<div className="mt-2 space-y-1">
