@@ -304,7 +304,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    await streamChat({
     sessionId:id,agentId,providerId:manual?.providerId,model:manual?.model,input:text,
     toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:autoLearn,
-    reasoningLanguage:reasoningKo?'ko':undefined,reasoningEffort:reasoningEffort||undefined,thinking:selectedProvider?.kind==='codex'?(reasoningEffort==='none'?false:canDisableThinking?thinkingEnabled:undefined):thinkingEnabled,
+    reasoningLanguage:reasoningKo?'ko':'original',reasoningEffort:reasoningEffort||undefined,thinking:selectedProvider?.kind==='codex'?(reasoningEffort==='none'?false:canDisableThinking?thinkingEnabled:undefined):thinkingEnabled,
    },event=>{
     if(event.type==='assistant_saved'){saved=true;setSavedMessageId(event.messageId);refresh();}
     if(event.type==='text')setLive(old=>old+event.text);

@@ -72,6 +72,7 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/sdk/runs/{id}/reconcile",post(sdk_reconcile))
         // Unimplemented main features return a precise JSON error instead of
         // silently serving index.html (which the UI could mistake for success).
+        .merge(crate::frontend_video::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{

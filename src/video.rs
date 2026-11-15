@@ -14,14 +14,17 @@ pub enum VideoStatus { Draft, Rendering, Completed, Failed }
 pub enum VideoBackend { #[default] Local, Veo }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Video {
-    pub id:Uuid, pub prompt:String, pub scenes:Vec<Scene>, pub status:VideoStatus,
+    pub id:Uuid, pub prompt:String, #[serde(default)] pub title:Option<String>,
+    pub scenes:Vec<Scene>, pub status:VideoStatus,
     pub cost_krw:f64, pub render_seconds:u64, pub error:Option<String>,
     pub output:Option<String>, pub created_at_ms:u64, pub updated_at_ms:u64,
     #[serde(default)] pub backend:VideoBackend,
+    #[serde(default="default_aspect")] pub aspect_ratio:String,
     #[serde(default)] pub remote_operations:HashMap<usize,String>,
 }
 #[derive(Deserialize)]
-pub struct NewVideo { pub prompt:String, pub scenes:Option<Vec<Scene>>, pub backend:Option<VideoBackend> }
+pub struct NewVideo { pub prompt:String, pub scenes:Option<Vec<Scene>>, pub backend:Option<VideoBackend>, pub aspect_ratio:Option<String> }
+fn default_aspect()->String{"16:9".into()}
 #[derive(Deserialize)]
 pub struct ChangeScene { pub heading:String, pub narration:String, pub seconds:u32 }
 pub struct Videos {
@@ -62,6 +65,10 @@ impl Videos {
         let prompt=input.prompt.trim();
         if prompt.is_empty()||prompt.len()>10_000{return Err("video prompt must be 1..10000 characters".into());}
         let backend=input.backend.unwrap_or_default();
+        let aspect_ratio=input.aspect_ratio.unwrap_or_else(default_aspect);
+        if !matches!(aspect_ratio.as_str(),"16:9"|"9:16"|"1:1"){
+            return Err("unsupported video aspect ratio".into());
+        }
         if backend==VideoBackend::Veo { let _=crate::veo::Veo::from_env()?; }
         let (scenes,cost)=match input.scenes {
             Some(items)=>(items,0.0),
@@ -84,8 +91,18 @@ impl Videos {
             return Err("Veo scenes must be 4, 6 or 8 seconds".into());
         }
         let now=now_ms();
-        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now,backend,remote_operations:HashMap::new()};
+        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),title:None,scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now,backend,aspect_ratio,remote_operations:HashMap::new()};
         self.put(video).await
+    }
+    /// Display name is stored with the actual rendered job, never as a
+    /// parallel phantom record in the compatibility adapter.
+    pub async fn set_title(&self,id:Uuid,title:String)->Result<Video,String>{
+        if title.len()>180{return Err("video title too long".into());}
+        let mut item=self.get(id).await.ok_or("video not found")?;
+        if item.status!=VideoStatus::Draft{return Err("title must be set before rendering".into());}
+        item.title=Some(title);
+        item.updated_at_ms=now_ms();
+        self.put(item).await
     }
     pub async fn change_scene(&self,id:Uuid,index:usize,scene:ChangeScene)->Result<Video,String>{
         if self.active.lock().await.contains(&id){return Err("render in progress".into());}
@@ -146,9 +163,12 @@ impl Videos {
             let speech=make_speech(&directory,&scene.narration,&voice).await;
             let color=["0x16263f","0x202a48","0x27384b","0x172c3c","0x2d2948","0x24414a"][index%6];
             let filter=format!("drawtext=textfile=scene-{index}.txt:fontcolor=white:fontsize=47:line_spacing=18:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.50:boxborderw=26");
+            let (width,height)=match video.aspect_ratio.as_str(){
+                "9:16"=>(720,1280),"1:1"=>(960,960),_=>(1280,720)
+            };
             let mut command=Command::new("ffmpeg");
             command.current_dir(&directory).arg("-y").arg("-hide_banner").arg("-loglevel").arg("error")
-                .arg("-f").arg("lavfi").arg("-i").arg(format!("color=c={color}:s=1280x720:r=24:d={}",scene.seconds));
+                .arg("-f").arg("lavfi").arg("-i").arg(format!("color=c={color}:s={width}x{height}:r=24:d={}",scene.seconds));
             if speech {
                 command.arg("-i").arg(&voice).arg("-af").arg("apad");
             }else{
@@ -183,10 +203,13 @@ impl Videos {
                 let url=veo.wait(&operation).await?;
                 veo.download(&url,&raw).await?;
             }
+            let (width,height)=match video.aspect_ratio.as_str(){
+                "9:16"=>(720,1280),"1:1"=>(960,960),_=>(1280,720)
+            };
             let mut command=Command::new("ffmpeg");
             command.current_dir(directory).arg("-y").arg("-hide_banner").arg("-loglevel").arg("error")
                 .arg("-i").arg(&raw).arg("-map").arg("0:v:0").arg("-map").arg("0:a:0?")
-                .arg("-vf").arg("scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24")
+                .arg("-vf").arg(format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=24"))
                 .arg("-c:v").arg("libx264").arg("-preset").arg("veryfast")
                 .arg("-crf").arg("24").arg("-pix_fmt").arg("yuv420p")
                 .arg("-c:a").arg("aac").arg("-ar").arg("44100").arg("-ac").arg("2")
@@ -252,7 +275,7 @@ mod tests {
     async fn persists_scene_revisions(){
         let dir=std::env::temp_dir().join(format!("dominion-video-test-{}",Uuid::new_v4()));
         let store=Videos::open(dir.clone()).await.unwrap();
-        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),backend:VideoBackend::Local,remote_operations:HashMap::new()};
+        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),title:None,scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),backend:VideoBackend::Local,aspect_ratio:default_aspect(),remote_operations:HashMap::new()};
         let id=video.id;store.put(video).await.unwrap();
         store.change_scene(id,0,ChangeScene{heading:"new".into(),narration:"text".into(),seconds:4}).await.unwrap();
         assert_eq!(store.get(id).await.unwrap().scenes[0].heading,"new");
@@ -273,7 +296,7 @@ mod production_tests {
         let videos=Arc::new(Videos::open(dir.clone()).await.unwrap());
         let video=videos.create(&model,NewVideo{
             prompt:"A short smoke test".into(),
-            scenes:Some(vec![Scene{heading:"Runtime".into(),narration:"The local renderer produces an artifact.".into(),seconds:2}]),backend:None
+            scenes:Some(vec![Scene{heading:"Runtime".into(),narration:"The local renderer produces an artifact.".into(),seconds:2}]),backend:None,aspect_ratio:None
         }).await.unwrap();
         let id=video.id;
         videos.start(id).await.unwrap();

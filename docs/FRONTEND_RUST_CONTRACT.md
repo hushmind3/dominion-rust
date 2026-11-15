@@ -52,3 +52,11 @@ The actual `src/frontend_api.rs` and `src/frontend_state.rs` are the source of t
 5. Original frontend browser/desktop end-to-end verification, persisted old-main data migration and cleanup after full feature parity.
 
 **No UI source changes. No fake implementation claims. No tests or CI executed in this stage.**
+
+## 2026-11-15: Main Video page, real native rendering
+
+Main's exact frontend sources are unchanged. Rust `src/frontend_video.rs` implements `GET /api/video/status`, `/config`, `/catalog`, `/outputs`, `/workflows`, `/models/downloads`, `/jobs`, `/jobs/{id}`, `/jobs/{id}/content`, and `POST /api/video/jobs`. Native jobs create a persisted `Videos` record and actually render MP4 through FFmpeg, with requested aspect ratio and exact 3–180 second duration; output metadata/URL are read from real completed files. The user's title is persisted with the video job. The native runtime checks FFmpeg/drawtext and available speech before reporting readiness. Legacy media download streams use the same authentication as native `/api/v1`.
+
+The existing renderer makes **FFmpeg title-card and optional narration videos**, not synthesized photorealistic motion. ComfyUI and YouTube remain unconnected; no synthetic upload success or model download results are returned. Video configuration choices unsupported by the current engine reject instead of silently being ignored. Other unresolved original main features are still pending.
+
+This stage is not compiled or tested by user instruction; the code needs normal runtime verification before claims of error-free production behavior.
