@@ -3,7 +3,7 @@
 //! No synthetic "frontier generation" or invented downstream meta-evaluation.
 use crate::{
     domain::now_ms,engine::Engine,improvement::{ImprovementStatus,NewImprovement},
-    rsi_campaign::{Campaign,from_trial},
+    rsi_campaign::{Campaign,from_trial,adopted_parent},
 };
 use axum::{extract::{Path,State},http::StatusCode,routing::{get,post},Json,Router};
 use serde::Deserialize;
@@ -224,7 +224,11 @@ async fn drive_reserved(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
                 repository:state.repository.clone(),target_file:String::new(),
                 target_files:None,instruction:state.objective.clone(),
                 test_command:state.test_command.clone(),
-                score_command:Some(state.score_command.clone()),parent:None,
+                // The next generation inherits actual adopted evidence, not
+                // the last rejected or unselected candidate. It still selects
+                // its own source modules and faces the same frozen judge.
+                score_command:Some(state.score_command.clone()),
+                parent:adopted_parent(&state.history),
             }).await?;
             engine.campaigns.change(id,|c|{
                 if c.requested_cancel{return Err("campaign cancelled during trial setup".into());}
