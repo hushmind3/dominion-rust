@@ -36,6 +36,7 @@ pub mod frontend_system;
 pub mod frontend_local_models;
 pub mod frontend_channels;
 pub mod frontend_skill_import;
+pub mod frontend_oauth;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;
