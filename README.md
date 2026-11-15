@@ -70,3 +70,17 @@ This branch was rebuilt from an empty source tree. Earlier runtime data is **not
 Read [Architecture](docs/ARCHITECTURE.md) for all entrypoints, lifecycles and persistence boundaries, [2026 Research](docs/RESEARCH_2026.md) for the design evidence, and [SDK documentation](sdk/typescript/README.md) for API use.
 
 Validation: GitHub Actions compiles/tests Rust and builds/tests the SDK on pushes to this branch. In-repo tests include a simulated model completing an actual file-producing agent loop, independent Git candidate evaluation/adoption, and an FFmpeg artifact smoke test when FFmpeg is available. A green build does **not** constitute a frontier benchmark score.
+
+## Durable tool execution (2026-11-15)
+
+Rust persists `in_flight` intent before executing each tool, then atomically
+records the result and removes the pending call. If the process stops between
+those writes, the interrupted side effect must be inspected and reconciled.
+The Studio and TypeScript SDK both call `/api/v1/runs/{id}/reconcile`
+(`{"succeeded":true,"result":"observed file"}`) before manual resume.
+
+Recoverable provider failures pause the task. Exceeding the configured
+model-token budget persists the charge and terminal status.
+
+This is single-process crash recovery, not an OS-isolated shell sandbox.
+See `docs/ARCHITECTURE.md` for current scope and migration gaps.

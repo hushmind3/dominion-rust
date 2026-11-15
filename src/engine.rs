@@ -280,7 +280,8 @@ mod tests {
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr=listener.local_addr().unwrap();
         let count=Arc::new(AtomicUsize::new(0));
-        let server=tokio::spawn(async move { axum::serve(listener,Router::new().route("/chat/completions",post(fake_model)).with_state(count.clone())).await.unwrap(); });
+        let count_for_server=Arc::clone(&count);
+        let server=tokio::spawn(async move { axum::serve(listener,Router::new().route("/chat/completions",post(fake_model)).with_state(count_for_server)).await.unwrap(); });
         let dir=std::env::temp_dir().join(format!("dominion-cycle-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();
         settings.data_dir=dir.join("data");
@@ -310,5 +311,39 @@ mod tests {
         assert!(count.load(Ordering::SeqCst)>=4);
         server.abort();
         tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use crate::{domain::{CreateRun, ReconcileTool}, group::Groups, improvement::Improvements, video::Videos};
+    #[tokio::test]
+    async fn uncertain_tool_is_not_replayed_without_reconciliation() {
+        let root=std::env::temp_dir().join(format!("dominion-reconcile-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        tokio::fs::create_dir_all(&settings.workspace_dir).await.unwrap();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,Arc::clone(&store),groups,videos,improvements).unwrap();
+        let call=ToolCall{id:"call-1".into(),name:"write_file".into(),arguments:json!({"path":"a.txt","content":"done"})};
+        let mut run=Run::new(CreateRun{instruction:"Write a file".into(),budget_krw:Some(10.0),max_steps:None},5).unwrap();
+        let id=run.id;
+        run.status=RunStatus::Paused;
+        run.in_flight=Some(call.clone());
+        run.queued_calls.push(call);
+        store.put(run).await.unwrap();
+        assert!(engine.launch(id).await.unwrap_err().contains("reconcile"));
+        let reconciled=engine.reconcile(id,ReconcileTool{succeeded:true,result:"confirmed".into()}).await.unwrap();
+        assert_eq!(reconciled.status,RunStatus::Paused);
+        assert!(reconciled.in_flight.is_none());
+        assert!(reconciled.queued_calls.is_empty());
+        assert_eq!(reconciled.messages.last().unwrap()["tool_call_id"],"call-1");
+        assert!(reconciled.events.iter().any(|event|event.kind=="tool_reconciled"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }
