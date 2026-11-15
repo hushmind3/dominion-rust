@@ -325,3 +325,10 @@ The Rust MCP client now loads paginated `tools/list` results and follows server
 `ttlMs`/`cacheScope` freshness hints instead of imposing an unconditional 60-second
 cache. Missing or zero TTL means no cached discovery. This reduces stale tool
 selection and respects the server's intended tool-list update behavior.
+
+### RSI journal durability
+
+RSI experiment states, scores and adoption evidence are persisted through synced,
+atomic snapshots. Interrupted evaluations become durable failed records during
+restart instead of remaining in-memory-only recovery markers. No interrupted
+candidate is adopted without a new independent evaluation.

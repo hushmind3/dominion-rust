@@ -2,7 +2,7 @@ use crate::{domain::now_ms, provider::ModelClient};
 use serde::{Deserialize,Serialize};
 use serde_json::json;
 use std::{collections::{HashMap,HashSet},path::{Component,Path,PathBuf},process::Stdio,sync::Arc,time::Duration};
-use tokio::{fs,io::{AsyncReadExt},process::Command,sync::Mutex};
+use tokio::{fs,io::{AsyncReadExt,AsyncWriteExt},process::Command,sync::Mutex};
 use uuid::Uuid;
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
@@ -73,28 +73,61 @@ fn is_better(baseline:&Measurement,candidate:&Measurement)->bool{
     candidate.tests_passed && (!baseline.tests_passed ||
         matches!((baseline.score,candidate.score),(Some(a),Some(b)) if b>a+0.000001))
 }
+
+/// Persist RSI judgments and their candidate/baseline evidence before exposing
+/// a new state to SDK/API consumers. In particular, a completed adoption must
+/// not be lost merely because the process died between a write and a rename.
+async fn persist_improvement(root:&Path,item:&Improvement)->Result<(),String>{
+    let file=root.join(format!("{}.json",item.id));
+    let temporary=root.join(format!("{}-{}.tmp",item.id,Uuid::new_v4()));
+    let result=async {
+        let bytes=serde_json::to_vec(item).map_err(|e|e.to_string())?;
+        let mut handle=fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temporary).await.map_err(|e|format!("RSI snapshot staging failed: {e}"))?;
+        handle.write_all(&bytes).await.map_err(|e|format!("RSI snapshot write failed: {e}"))?;
+        handle.sync_all().await.map_err(|e|format!("RSI snapshot fsync failed: {e}"))?;
+        drop(handle);
+        fs::rename(&temporary,&file).await.map_err(|e|format!("RSI snapshot rename failed: {e}"))?;
+        #[cfg(unix)]
+        {
+            let dir=root.to_owned();
+            tokio::task::spawn_blocking(move||std::fs::File::open(dir)
+                .and_then(|file|file.sync_all()).map_err(|e|e.to_string()))
+                .await.map_err(|e|format!("RSI directory sync task failed: {e}"))??;
+        }
+        Ok::<(),String>(())
+    }.await;
+    if result.is_err(){let _=fs::remove_file(&temporary).await;}
+    result
+}
+
 impl Improvements {
     pub async fn open(root:PathBuf,workspace:PathBuf)->Result<Self,String>{
         fs::create_dir_all(&root).await.map_err(|e|e.to_string())?;
         fs::create_dir_all(&workspace).await.map_err(|e|e.to_string())?;
         let mut items=HashMap::new();
+        let mut recovered=Vec::new();
         let mut entries=fs::read_dir(&root).await.map_err(|e|e.to_string())?;
         while let Some(entry)=entries.next_entry().await.map_err(|e|e.to_string())?{
             if entry.path().extension().and_then(|s|s.to_str())!=Some("json"){continue;}
             let mut item:Improvement=serde_json::from_slice(&fs::read(entry.path()).await.map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             if item.status==ImprovementStatus::Running {
-                item.status=ImprovementStatus::Failed;item.error=Some("Interrupted evaluation; create a new descendant trial".into());
+                // An interrupted independent evaluation cannot be adopted or
+                // silently retried: the candidate's exact outcome is unknown.
+                item.status=ImprovementStatus::Failed;
+                item.error=Some("Interrupted evaluation; outcome unknown and never auto-adopted".into());
+                item.updated_at_ms=now_ms();
+                recovered.push(item.clone());
             }
             items.insert(item.id,item);
         }
+        // Recovery is durable before clients can observe the recovered state.
+        for item in &recovered {persist_improvement(&root,item).await?;}
         Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new())})
     }
     async fn put(&self,item:Improvement)->Result<Improvement,String>{
         let mut lock=self.items.lock().await;
-        let tmp=self.root.join(format!("{}.tmp",item.id));
-        let file=self.root.join(format!("{}.json",item.id));
-        fs::write(&tmp,serde_json::to_vec(&item).map_err(|e|e.to_string())?).await.map_err(|e|e.to_string())?;
-        fs::rename(tmp,file).await.map_err(|e|e.to_string())?;
+        persist_improvement(&self.root,&item).await?;
         lock.insert(item.id,item.clone());Ok(item)
     }
     pub async fn get(&self,id:Uuid)->Option<Improvement>{self.items.lock().await.get(&id).cloned()}
@@ -248,6 +281,59 @@ mod tests {
     }
     #[test]
     fn rejects_traversal(){assert!(relative("../outside").is_err());assert!(relative("/root").is_err());}
+    #[tokio::test]
+    async fn recovered_running_rsi_trial_is_durably_failed_on_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-rsi-recover-{}",Uuid::new_v4()));
+        let data=root.join("data");
+        let workspace=root.join("workspace");
+        fs::create_dir_all(&data).await.unwrap();
+        fs::create_dir_all(&workspace).await.unwrap();
+        let id=Uuid::new_v4();
+        let item=Improvement{
+            id,parent:None,repository:"repo".into(),target_file:"src/lib.rs".into(),
+            instruction:"repair behavior".into(),test_command:"true".into(),
+            score_command:None,status:ImprovementStatus::Running,
+            base_commit:None,candidate_commit:None,
+            baseline:None,candidate:None,proposal:None,reflection:None,
+            accepted:false,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
+        };
+        persist_improvement(&data,&item).await.unwrap();
+        let first=Improvements::open(data.clone(),workspace.clone()).await.unwrap();
+        let recovered=first.get(id).await.unwrap();
+        assert_eq!(recovered.status,ImprovementStatus::Failed);
+        assert!(recovered.error.as_deref().unwrap().contains("outcome unknown"));
+        drop(first);
+        let persisted:Improvement=serde_json::from_slice(&fs::read(data.join(format!("{id}.json"))).await.unwrap()).unwrap();
+        assert_eq!(persisted.status,ImprovementStatus::Failed);
+        let second=Improvements::open(data.clone(),workspace).await.unwrap();
+        assert_eq!(second.get(id).await.unwrap().status,ImprovementStatus::Failed);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_snapshot_staging_never_replaces_existing_trial(){
+        let root=std::env::temp_dir().join(format!("dominion-rsi-write-{}",Uuid::new_v4()));
+        fs::create_dir_all(&root).await.unwrap();
+        let id=Uuid::new_v4();
+        let original=Improvement{
+            id,parent:None,repository:"repo".into(),target_file:"file.txt".into(),
+            instruction:"preserve state".into(),test_command:"true".into(),
+            score_command:None,status:ImprovementStatus::AwaitingApproval,
+            base_commit:None,candidate_commit:None,baseline:None,candidate:None,
+            proposal:None,reflection:None,accepted:false,cost_krw:0.0,
+            error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
+        };
+        persist_improvement(&root,&original).await.unwrap();
+        let persisted=fs::read(root.join(format!("{id}.json"))).await.unwrap();
+        let blocked=root.join(format!("{}-{}.tmp",id,Uuid::new_v4()));
+        fs::create_dir(&blocked).await.unwrap();
+        // A destination outside a valid snapshot store cannot be replaced.
+        let impossible=blocked.join("not-a-directory");
+        assert!(persist_improvement(&impossible,&original).await.is_err());
+        assert_eq!(fs::read(root.join(format!("{id}.json"))).await.unwrap(),persisted);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
 }
 
 #[cfg(test)]

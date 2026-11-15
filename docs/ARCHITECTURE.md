@@ -276,3 +276,14 @@ missing/invalid hints prevent caching, and positive TTLs are capped at 5 minutes
 Cached private results remain inside one operator-configured server/token client.
 Expiry is checked on demand, not polled; real SSE `subscriptions/listen` invalidation
 is still an unimplemented extension. This follows MCP 2026-07-28 and SEP-2549.
+
+## RSI durable experiment state (2026-11-15)
+
+The `src/improvement.rs` experiment state now uses a unique create-new snapshot,
+fsynced JSON bytes, atomic rename and Unix directory sync, like the Rust run store.
+Visible statuses are committed before replacing the in-memory record. On restart,
+previously `Running` trials are explicitly marked `Failed`, with an unknown outcome
+notice, and that recovery marker is persisted before API/SDK observation. No incomplete
+candidate may be silently adopted or automatically retried. This protects experiment
+metadata; it does not replay interrupted provider calls, clean abandoned Git worktrees,
+or implement a distributed transaction across Git cherry-pick and record adoption.
