@@ -80,6 +80,7 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_channels::routes())
         .merge(crate::frontend_skill_import::routes())
         .merge(crate::frontend_oauth::routes())
+        .merge(crate::frontend_youtube::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
