@@ -24,6 +24,9 @@ pub struct Settings {
 fn var(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.into())
 }
+fn nonempty_var(name: &str, default: &str) -> String {
+    env::var(name).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(||default.to_string())
+}
 fn price(name: &str, default: f64) -> f64 {
     env::var(name).ok().and_then(|v| v.parse().ok()).filter(|v: &f64| v.is_finite() && *v >= 0.0).unwrap_or(default)
 }
@@ -35,16 +38,16 @@ impl Settings {
             return Err("Remote bind requires DOMINION_ACCESS_TOKEN".into());
         }
         let main = ModelSettings {
-            name: var("DOMINION_MODEL", "gpt-4.1"),
-            base_url: var("DOMINION_BASE_URL", "https://api.openai.com/v1").trim_end_matches('/').to_string(),
+            name: nonempty_var("DOMINION_MODEL", "gpt-6.1-sol"),
+            base_url: nonempty_var("DOMINION_BASE_URL", "https://api.openai.com/v1").trim_end_matches('/').to_string(),
             api_key: var("DOMINION_API_KEY", ""),
             input_krw_per_million: price("DOMINION_INPUT_KRW_PER_MTOK", 0.0),
             output_krw_per_million: price("DOMINION_OUTPUT_KRW_PER_MTOK", 0.0),
         };
         let economy = ModelSettings {
-            name: var("DOMINION_ECONOMY_MODEL", &main.name),
-            base_url: var("DOMINION_ECONOMY_BASE_URL", &main.base_url).trim_end_matches('/').to_string(),
-            api_key: var("DOMINION_ECONOMY_API_KEY", &main.api_key),
+            name: nonempty_var("DOMINION_ECONOMY_MODEL", &main.name),
+            base_url: nonempty_var("DOMINION_ECONOMY_BASE_URL", &main.base_url).trim_end_matches('/').to_string(),
+            api_key: nonempty_var("DOMINION_ECONOMY_API_KEY", &main.api_key),
             input_krw_per_million: price("DOMINION_ECONOMY_INPUT_KRW_PER_MTOK", main.input_krw_per_million),
             output_krw_per_million: price("DOMINION_ECONOMY_OUTPUT_KRW_PER_MTOK", main.output_krw_per_million),
         };
