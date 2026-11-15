@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
+use crate::{config::Settings, domain::{ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -26,6 +26,7 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
+            if run.in_flight.is_some() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.pending_approval.is_some() && run.approval_decision.is_none() {
                 return Err("approval required before resuming".into());
             }
@@ -43,8 +44,8 @@ impl Engine {
                 tracing::warn!(%id, "execution error: {error}");
                 let _ = engine.store.mutate(id, |run| {
                     if !run.terminal() {
-                        run.status = RunStatus::Failed;
-                        run.event("error", error.clone(), None);
+                        run.status = RunStatus::Paused;
+                        run.event("paused_error", format!("Recoverable error: {error}"), None);
                     }
                     Ok(())
                 }).await;
@@ -95,6 +96,7 @@ impl Engine {
                 let reply = self.model.complete(&messages,&[],true).await?;
                 self.store.mutate(id, |run| {
                     Self::account(run,&reply);
+                    if run.terminal() {return Ok(());}
                     run.plan = Some(reply.text.clone());
                     run.messages = vec![
                         json!({"role":"system","content":SYSTEM}),
@@ -121,6 +123,7 @@ impl Engine {
                 Self::account(run,&reply);
                 run.steps += 1;
                 run.messages.push(reply.message.clone());
+                if run.terminal() {return Ok(());}
                 if !reply.calls.is_empty() {
                     run.queued_calls.extend(reply.calls.clone());
                     run.event("tool_requests", format!("{} tool call(s) requested",reply.calls.len()),Some(json!(reply.calls)));
@@ -160,25 +163,63 @@ impl Engine {
         }
     }
     async fn perform_tool(&self, id: Uuid, call: ToolCall, approved: bool) -> Result<(), String> {
+        // Persist intent before an external side effect; receipt is a separate durable write.
+        self.store.mutate(id, |run| {
+            if run.status != RunStatus::Running { return Err("execution no longer running".into()); }
+            if run.in_flight.is_some() { return Err("another tool is in flight".into()); }
+            if !run.queued_calls.iter().any(|queued| queued.id == call.id)
+                && !run.pending_approval.as_ref().is_some_and(|pending| pending.id == call.id) {
+                return Err("tool is no longer queued".into());
+            }
+            run.in_flight = Some(call.clone());
+            run.event("tool_started", format!("Executing {} ({})",call.name,call.id),
+                Some(json!({"name":call.name,"id":call.id})));
+            Ok(())
+        }).await?;
         let output = if approved {
             tools::execute(&self.settings,id,&call).await
         } else {
             Err("User denied the requested operation".into())
         };
         self.store.mutate(id,|run| {
-            if run.terminal() { return Ok(()); }
+            if !run.in_flight.as_ref().is_some_and(|pending|pending.id == call.id) {
+                return Err("in-flight tool receipt does not match".into());
+            }
+            run.in_flight = None;
             if run.pending_approval.as_ref().is_some_and(|p| p.id == call.id) {
                 run.pending_approval = None;
                 run.approval_decision = None;
-            } else if let Some(position) = run.queued_calls.iter().position(|p| p.id == call.id) {
-                run.queued_calls.remove(position);
+            } else if let Some(pos) = run.queued_calls.iter().position(|p|p.id == call.id) {
+                run.queued_calls.remove(pos);
             }
-            let body = match &output { Ok(value) => value.clone(), Err(error) => format!("TOOL ERROR: {error}") };
-            run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));
-            run.event(if output.is_ok() {"tool_result"} else {"tool_error"},format!("{}: {}",call.name, if output.is_ok() {"ok"}else{"failed"}), Some(json!({"call_id":call.id,"result":body.chars().take(1000).collect::<String>()})));
+            let body=match &output {Ok(v)=>v.clone(),Err(e)=>format!("TOOL ERROR: {e}")};
+            if !run.terminal() {run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));}
+            run.event(if output.is_ok() {"tool_result"}else{"tool_error"},
+                format!("{}: {}",call.name,if output.is_ok() {"ok"}else{"failed"}),
+                Some(json!({"call_id":call.id,"result":body.chars().take(1000).collect::<String>()})));
             Ok(())
         }).await?;
         Ok(())
+    }
+    /// Records observed outcomes; never re-executes an interrupted tool.
+    pub async fn reconcile(&self,id:Uuid,input:ReconcileTool)->Result<Run,String> {
+        if self.active.lock().await.contains(&id) {return Err("execution worker is still active".into());}
+        if input.result.len()>16_384 {return Err("reconciliation result exceeds 16 KB".into());}
+        self.store.mutate(id,|run|{
+            if run.status!=RunStatus::Paused {return Err("execution must be paused".into());}
+            let call=run.in_flight.take().ok_or("no in-flight tool to reconcile")?;
+            if run.pending_approval.as_ref().is_some_and(|p|p.id==call.id) {
+                run.pending_approval=None;run.approval_decision=None;
+            } else if let Some(index)=run.queued_calls.iter().position(|p|p.id==call.id) {
+                run.queued_calls.remove(index);
+            }
+            let body=if input.succeeded {input.result.clone()}else{format!("TOOL ERROR: {}",input.result)};
+            run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));
+            run.event("tool_reconciled",
+                format!("Observed result for {}: {}",call.name,if input.succeeded{"success"}else{"failure"}),
+                Some(json!({"call_id":call.id,"succeeded":input.succeeded})));
+            Ok(())
+        }).await
     }
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         self.store.mutate(id,|run| {
