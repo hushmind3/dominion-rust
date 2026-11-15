@@ -60,3 +60,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Fsync crash-recovery 256-run load and latency measurement
         run: cargo test --lib soak_parallel_durable_workloads -- --ignored --nocapture
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web and Chromium
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Exercise real Rust API, React browser and mock provider
+        working-directory: web
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dominion-browser-traces
+          path: |
+            web/test-results/
+            web/playwright-report/
+          retention-days: 5
