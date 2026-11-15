@@ -147,7 +147,7 @@ use super::*;
 
     #[test]
     fn unsupported_quotes_and_single_agent_conclusions_are_rejected_or_demoted() {
-        let (state, dir) = state();
+        let (state, _dir) = state();
         let owner = message("m1", "user", None, "질문");
         let claim = message("m2", "assistant", Some("a"), "내 주장은 X다");
         state.store.write_message(&owner);
