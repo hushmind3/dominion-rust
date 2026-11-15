@@ -42,3 +42,21 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run check
+
+  external-mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Live public no-auth MCP 2026 Streamable HTTP interoperability
+        run: cargo test --lib live_public_streamable_http_interop -- --ignored --nocapture
+
+  durability-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fsync crash-recovery 256-run load and latency measurement
+        run: cargo test --lib soak_parallel_durable_workloads -- --ignored --nocapture
