@@ -145,6 +145,7 @@ impl Engine {
             self.store.mutate(id, |run| {
                 Self::account(run,&verdict);
                 run.event("verification",verdict.text.clone(),None);
+                if run.status == RunStatus::Failed { return Ok(()); }
                 if passed {
                     run.answer = Some(reply.text.clone());
                     run.status = RunStatus::Completed;
