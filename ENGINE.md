@@ -91,6 +91,7 @@ SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라�
 {
   "goal": "report.md 파일을 작성하고 결과를 확인해라",
   "maxIterations": 5,
+  "reviewPolicy": "acceptance_ready",
   "executor": {"agentId": "my-agent"},
   "successCriteria": [
     {"type": "file_changed", "path": "report.md"},
@@ -114,10 +115,43 @@ SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라�
 셸 명령의 임의 의미를 완전히 판정할 수는 없으므로 복잡한 작업에는 명시적 조건을 사용하세요.
 `tool_succeeded`는 그 도구의 성공만 확인하며 더 넓은 업무 결과를 보장하지 않습니다.
 
+기본 검토 전략은 `always`입니다. `GET /api/goals/strategies`의 Rust 소유
+카탈로그에서 `acceptance_ready`를 선택하면 결정적 검증 조건이 이미 미충족인
+턴에서는 모델 검토 호출을 건너뛰고 부족한 조건을 실행기에 전달합니다. **최종
+완료 직전에는 양쪽 전략 모두 독립 모델 검토**가 실행되어야 합니다. 검토 실행
+유무와 근거는 `reviewHistory.modelReviewExecuted` / `reviewSource`에 남습니다.
+사용자 수정 지시는 `/api/goals/:id/steer`의 revision CAS로 모델 계획보다 우선하며,
+지시 도중 이미 실행된 도구 부수 효과를 조용히 반복하지 않습니다.
+
+개발 목표에는 `command_succeeded`를 명시해 소스 수정 **이후** 테스트 명령의
+실제 성공 영수증을 필수로 지정할 수 있습니다. React 에이전트 실행창과
+Rust·TypeScript SDK에서 같은 필드를 전달합니다. 별도 독립 테스트가 없는
+모든 코드 변경의 품질을 자동 보증한다는 의미는 아닙니다.
+
 실행 후 검토 모델에 실제 도구 인수·결과와 Rust 검증의 미충족 조건을 전달합니다.
 검토 JSON이 올바르고, 완료 판정이고, 미충족 조건도 없어야 `completed`가 됩니다.
 미완료는 수정 턴으로 이어지고 한도에 도달하면 `needs_review`입니다.
 실패·취소·검토 필요 상태는 부모 작업에도 그대로 반영합니다.
+
+### 2026 공개 하네스 실제 소스 비교와 Dominion 채택 경로
+
+| 소스 구현 | 핵심 기법 / 장점 | 제한·주의 | Dominion의 독립 구현 경로 |
+| --- | --- | --- | --- |
+| [OpenAI Agents SDK — `src/agents/run.py`](https://github.com/openai/openai-agents-python/blob/main/src/agents/run.py) | Runner의 명시적 상태·핸드오프, 세션 상태 및 사용량 전달 | 제3자 Python 런타임에 실행 제어를 위임하면 독립 하네스가 아님 | `src/engine/chat/runtime/`의 도구 턴·영속 작업과 `src/events.rs`의 재연결 |
+| [Google ADK — `src/google/adk/runners.py`](https://github.com/google/adk-python/blob/main/src/google/adk/runners.py) | 실행기와 session service 분리, 이벤트 기반 상태 | 타사 runner의 모델·도구 정책을 도미니언 정책으로 혼동하면 안 됨 | `src/engine/jobs.rs` + SQLite `src/db.rs` + 웹·Rust·TS 클라이언트 분리 |
+| [Anthropic Agent SDK — `src/claude_agent_sdk/types.py`](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/types.py) | 훅, 도구 권한 콜백, subagent 실행 계약 | SDK는 Claude Code 실행기 위에서 동작; 이를 가져오면 실행 정책 종속 | `src/engine/goal_control.rs`, `tools.rs`, `goal_steering.rs`의 소유자 승인과 CAS |
+| [Qwen-Agent — `qwen_agent/agents/fncall_agent.py`](https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/agents/fncall_agent.py) | 실제 function-call 반복, 모델 호출 한도, 도구 호출/재호출 | 모델별 텍스트 도구 문법·파서 의존도, 실행 증거의 독립성 | `src/engine/chat/runtime/tool_discovery.rs` + `tool_execution.rs` + `verification.rs` |
+| [Moonshot Kimi Code — agent customization](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/agents.md) | explore/coder/plan 역할 격리 및 하위 에이전트 분업 | 여러 역할만 늘리면 실행 토큰과 작업 중복이 증가 | `src/db/usage_tree.rs` 후손 세션 토큰 예산, `src/engine/goals/operations.rs` 계승 검증 |
+
+위 내용은 **공개 구현의 작동 구조 비교**이지 외부 에이전트의 판단 정책이나
+코드를 그대로 호출한 것이 아닙니다. 최종 선택은 **Rust 하네스가 작업 유형·모델·
+도구·검토 전략을 제한된 권한과 검증 근거에 따라 직접 판단**하게 하는 것입니다.
+검토 전략은 그 첫 제품 공개 경계이며, `src/engine/goals/strategy.rs`에서
+사용자 선택을 검증하고, `execution.rs`에서 실제 실행 경로에 적용합니다.
+`sdk/rust/src/client.rs`와 `sdk/typescript/src/index.ts`는 제품 메뉴와 같은
+API에 연결되며 별도 판단 엔진을 만들지 않습니다. 현재 CI와 HTTP 계약 테스트는
+정책 전달·부수 효과 재호출 방지·실행 경로 연결을 검증합니다. **SWE-bench·
+실제 모델 호출 단가·시청 가능한 영상의 의미적 품질**은 추후 별도 실측입니다.
 
 ## 실행 기록·복구·취소
 
