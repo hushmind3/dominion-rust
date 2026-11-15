@@ -55,6 +55,7 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/jobs",get(jobs).post(create_job))
         .route("/jobs/{id}",get(job))
         .route("/jobs/{id}/cancel",post(cancel_job))
+        .route("/jobs/{id}/resume",post(resume_job))
         .route("/tools",get(tools_catalog))
         .route("/executions",get(executions))
         .route("/executions/{id}/operations",get(execution_operations))
@@ -74,6 +75,7 @@ pub fn router()->Router<Arc<Engine>>{
         // silently serving index.html (which the UI could mistake for success).
         .merge(crate::frontend_video::routes())
         .merge(crate::frontend_rooms::routes())
+        .merge(crate::frontend_workflows::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
@@ -667,7 +669,12 @@ fn as_job(run:&Run)->Value{
     })
 }
 async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
-    Json(Value::Array(engine.store.list().await.iter().map(as_job).collect()))
+    let mut all=engine.store.list().await.iter().map(as_job).collect::<Vec<_>>();
+    for job in engine.workflows.jobs().await{
+        if let Ok(value)=serde_json::to_value(job){all.push(value);}
+    }
+    all.sort_by(|a,b|b.get("createdAt").and_then(Value::as_str).cmp(&a.get("createdAt").and_then(Value::as_str)));
+    Json(Value::Array(all))
 }
 #[derive(Deserialize)]
 struct NewJob{kind:String,input:Value}
@@ -688,12 +695,27 @@ async fn create_job(State(engine):State<Arc<Engine>>,Json(req):Json<NewJob>)
 }
 async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if let Some(job)=engine.workflows.job(id).await{
+        return serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()));
+    }
     engine.store.get(id).await.map(|r|Json(as_job(&r))).ok_or_else(||missing("job not found"))
 }
 async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if engine.workflows.job(id).await.is_some(){
+        let job=crate::frontend_workflows::cancel(&engine,id).await.map_err(bad)?;
+        return serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()));
+    }
     let run=engine.cancel(id).await.map_err(bad)?;
     Ok(Json(json!({"cancelled":run.status==RunStatus::Cancelled,"status":run.status})))
+}
+async fn resume_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Value>,Fault>{
+    if engine.workflows.job(id).await.is_none(){
+        return Err(missing("workflow job not found"));
+    }
+    let job=crate::frontend_workflows::resume(&engine,id).await.map_err(bad)?;
+    serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()))
 }
 async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
     let model=engine.settings.main.name.clone();
