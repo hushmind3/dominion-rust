@@ -29,7 +29,7 @@ its reasoning harness.
 ## Native Rust API
 
 ```rust
-use dominion_sdk::{DominionClient, GoalCreate, ModelSelection, WaitOptions};
+use dominion_sdk::{DominionClient, GoalCreate, ReviewPolicy, WaitOptions};
 
 # async fn run() -> dominion_sdk::Result<()> {
 let sdk = DominionClient::new("http://127.0.0.1:4317")?;
@@ -37,6 +37,7 @@ let goal = sdk.start_goal(
     GoalCreate::new("Implement a change and verify it")
         .max_iterations(16)
         .isolate_worktree(true)
+        .review_policy(ReviewPolicy::AcceptanceReady)
 ).await?;
 
 let final_record = goal.wait(WaitOptions::default()).await?;
@@ -94,8 +95,7 @@ while let Some(event) = events.next().await {
 
 `GET /api/events?after=<seq>` is replayable and safe to reconnect.
 The SDK resumes with the last delivered sequence, rejects inconsistent IDs,
-and removes duplicate events on reconnection. If the client falls behind the
-server's 500-record replay window, reconcile by fetching current goal/job state.
+and removes duplicate events on reconnection. If the client falls behind the bounded SQLite event retention, reconcile by fetching current goal/job state after the server emits `replay_gap`. The replay implementation traverses retained pages instead of imposing a 500-event ceiling.
 
 ## First-party Rust MCP tool plugins and hooks
 
@@ -118,6 +118,23 @@ optional `before_tool`/`after_tool` host hooks. The model never gets to
 register a callback or modify approval policy just by naming one.
 
 The subprocess wire path is tested in `tests/mcp_stdio.rs`.
+
+## Cross-product Rust client endpoints
+
+`goal_strategies()` returns the same authoritative review-policy catalog as
+React's agent goal form and the TypeScript SDK. `ReviewPolicy::Always`
+reviews every turn, while `AcceptanceReady` defers independent model
+review until actual acceptance checks pass. Neither option bypasses the
+Rust verifier, owner steering, execution audit or unknown-effect admission.
+
+The native SDK also includes `start_agent_goal()`, `agent_portfolio()`,
+`model_catalog()`, `installed_models()`, `room_list()`,
+`send_room_message()`, `run_room()`, `stop_room()`,
+`video_quote()`, `create_video_job()`, `video_jobs()`,
+`skills()`, `memories()`, `workflows()`, `rsi_campaigns()`
+and `start_rsi()`. They call the actual Rust service API; no provider-owned
+agent engine runs in this SDK. Axum HTTP fixture tests verify route/payload
+parity and server authorization; real model/GPU billing is a separate test.
 
 ## Actual scope
 
