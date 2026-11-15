@@ -319,6 +319,11 @@ pub async fn youtube_token(settings:&Settings)->Result<String,String>{
  write(settings,&state)?;
  Ok(access.to_owned())
 }
+pub fn youtube_public(settings:&Settings)->Option<Value>{
+ let state=read(settings).ok()?;
+ let user=state.accounts.get("youtube")?;
+ Some(json!({"displayName":user.display_name,"scopes":user.scopes}))
+}
 pub fn youtube_connection(settings:&Settings)->bool{
  read(settings).ok().is_some_and(|s|s.accounts.get("youtube")
   .is_some_and(|row|!row.access_token.is_empty()||!row.refresh_token.is_empty()))
