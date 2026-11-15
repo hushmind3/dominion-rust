@@ -7,7 +7,11 @@ export interface Run {
   id: string; instruction: string; status: RunStatus; plan: string | null; answer: string | null;
   messages: unknown[]; events: TimelineEvent[]; queued_calls: ToolCall[];
   pending_approval: ToolCall | null; approval_decision: boolean | null; in_flight: ToolCall | null;
-  steps: number; input_tokens: number; cached_input_tokens?: number; output_tokens: number; cost_krw: number; context_chars_avoided?: number; repository?: string | null; base_commit?: string | null;
+  steps: number; input_tokens: number; cached_input_tokens?: number; cache_write_tokens?: number;
+  output_tokens: number; cost_krw: number; context_chars_avoided?: number; tool_schema_chars_avoided?: number;
+  repository?: string | null; base_commit?: string | null; parent_run_id?: string | null;
+  read_only?: boolean; reserved_budget_krw?: number; delegated_spent_krw?: number;
+  settled_child_ids?: string[]; waiting_for_children?: boolean; cancel_after_tool?: boolean;
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
@@ -16,6 +20,11 @@ export interface ModelConfig {
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;
 }
+export interface DelegateRun extends CreateRun { read_only?: boolean }
+export interface MemoryEntry {
+  id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
+}
+export interface SkillInfo { name: string; path: string }
 
 export interface Participant { name: string; role: string; economy: boolean }
 export interface Utterance { speaker: string; content: string; at_ms: number; model: string | null }
@@ -93,9 +102,19 @@ export class Dominion {
     instruct: (id: string, instruction: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/directive',{instruction}),
     reconcile: (id: string, input: {succeeded: boolean; result: string}) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/reconcile',input),
     subagents: (id: string) => this.request<Run[]>('GET','/runs/'+encodeURIComponent(id)+'/subagents'),
-    delegate: (id: string, input: CreateRun) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/subagents',input),
+    delegate: (id: string, input: DelegateRun) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/subagents',input),
+    skills: (id: string) => this.request<SkillInfo[]>('GET','/runs/'+encodeURIComponent(id)+'/skills'),
+    skill: (id: string,name: string) => this.request<{name:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/skills/'+encodeURIComponent(name)),
     files: (id: string) => this.request<{files:string[]}>('GET','/runs/'+encodeURIComponent(id)+'/files'),
     file: (id: string, path: string) => this.request<{path:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/files/'+path.split('/').map(encodeURIComponent).join('/')),
+  };
+
+  /** Persistent, project-scoped non-weight notes. */
+  readonly memory = {
+    search: (scope: string, query = '') =>
+      this.request<MemoryEntry[]>('GET','/memory?scope='+encodeURIComponent(scope)+'&query='+encodeURIComponent(query)),
+    store: (input: {scope:string;title:string;content:string}) =>
+      this.request<MemoryEntry>('POST','/memory',input),
   };
 
   readonly groups = {
