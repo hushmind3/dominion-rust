@@ -217,6 +217,31 @@ async fn json_response(response:reqwest::Response,max:u64)->Result<Value,String>
  if bytes.len() as u64>max{return Err("ComfyUI response exceeds size limit".into());}
  serde_json::from_slice(&bytes).map_err(|e|format!("ComfyUI JSON invalid: {e}"))
 }
+/// Query the installed model files from the running ComfyUI server rather
+/// than advertising a hard-coded model catalog. A selected model must belong
+/// to a concrete loader node before it can influence generation.
+pub async fn catalog(settings:&Settings)->Vec<Value>{
+ let Ok(cfg)=config(settings)else{return Vec::new()};
+ let Ok(base)=valid_url(&cfg.comfy_url)else{return Vec::new()};
+ let Ok(http)=client()else{return Vec::new()};
+ let mut items=Vec::new();
+ for folder in ["diffusion_models","checkpoints"]{
+  let result=http.get(format!("{base}/models/{folder}"))
+   .timeout(Duration::from_secs(4)).send().await;
+  let Ok(response)=result else{continue};
+  let Ok(data)=json_response(response,MAX_HISTORY).await else{continue};
+  let Some(installed)=data.as_array()else{continue};
+  for model in installed.iter().take(200){
+   let Some(name)=model.as_str()else{continue};
+   if name.is_empty()||name.len()>220||name.contains("..")||
+    name.chars().any(char::is_control){continue;}
+   items.push(json!({"id":format!("{folder}/{name}"),"name":name,
+    "kind":folder,"available":true,
+    "hint":"ComfyUI reported this file installed; selected workflow must use a compatible model loader"}));
+  }
+ }
+ items
+}
 pub async fn reachable(cfg:&Config)->bool{
  let Ok(url)=valid_url(&cfg.comfy_url)else{return false;};
  let Ok(http)=client() else{return false;};
@@ -246,6 +271,8 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
  let (width,height)=dimensions(cfg,&params.aspect_ratio);
  let frames=params.duration.checked_mul(params.fps).ok_or("frame count overflow")?;
  let mut replaced_prompt=false;
+ let mut model_applied=cfg.video_model.is_empty();
+ let selected=cfg.video_model.split_once('/');
  // Workflow input schemas remain intact. Only text templates or literal
  // numeric controls are modified; graph edges (arrays) are never rewritten.
  let mut keys=graph.as_object().ok_or("workflow not a graph")?
@@ -258,6 +285,19 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
   let is_negative=title.contains("negative")||title.contains("네거티브");
   let inputs=node.get_mut("inputs").and_then(Value::as_object_mut).ok_or("invalid workflow inputs")?;
   for (name,value) in inputs.iter_mut(){
+   if let (Some((folder,filename)),Some(_))=(selected,value.as_str()){
+    let bind=match folder{
+     "checkpoints"=>name=="ckpt_name"&&class.contains("CheckpointLoader"),
+     "diffusion_models"=>name=="unet_name"&&
+      (class.contains("UNETLoader")||class.contains("DiffusionModelLoader")),
+     _=>false
+    };
+    if bind{
+     *value=json!(filename);
+     model_applied=true;
+     continue;
+    }
+   }
    if let Some(text)=value.as_str(){
     if text.contains("{{PROMPT}}")||text.contains("{{NEGATIVE_PROMPT}}"){
      let next=text.replace("{{PROMPT}}",&params.brief)
@@ -288,6 +328,9 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
   }
  }
  if !replaced_prompt{return Err("No usable prompt input found in workflow".into());}
+ if !model_applied{
+  return Err("selected ComfyUI model is not bound to a supported checkpoint/diffusion loader in this workflow".into());
+ }
  Ok(graph)
 }
 fn read_jobs(settings:&Settings)->Result<Journal,String>{read_json(&journal_path(settings))}
@@ -334,6 +377,12 @@ pub async fn create(settings:Settings,input:Create)->Result<Value,String>{
  valid_url(&cfg.comfy_url)?;
  let workflow=cfg.comfy_workflow.as_ref().ok_or("Import a ComfyUI API workflow first")?;
  valid_graph(workflow)?;
+ if !cfg.video_model.is_empty(){
+  let installed=catalog(&settings).await;
+  if !installed.iter().any(|entry|entry["id"]==cfg.video_model){
+   return Err("selected ComfyUI model is not installed or cannot be queried".into());
+  }
+ }
  let prepared=fill_template(workflow,&input,&cfg)?;
  if !reachable(&cfg).await{return Err("ComfyUI server is not responding".into());}
  let now=now_ms();
