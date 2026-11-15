@@ -1,7 +1,7 @@
 use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc,Mutex};
 use uuid::Uuid;
 
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
@@ -16,13 +16,38 @@ pub struct Engine {
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
     delegate_lock: Mutex<()>,
+    wake_tx: mpsc::UnboundedSender<Uuid>,
 }
 impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>, improvements: Arc<crate::improvement::Improvements>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
         let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
-        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()) }))
+        let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
+        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge,
+            model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()), wake_tx });
+        // Wakeups never recursively call launch() inside the run task. The
+        // queued scheduler waits for active markers to detach and keeps only
+        // a Weak reference, so it does not keep an abandoned engine alive.
+        let weak=Arc::downgrade(&engine);
+        tokio::spawn(async move {
+            while let Some(id)=wake_rx.recv().await {
+                let Some(engine)=weak.upgrade() else {break};
+                for _ in 0..200 {
+                    let Some(run)=engine.store.get(id).await else {break};
+                    if run.status!=RunStatus::Paused || run.waiting_for_children ||
+                        run.in_flight.is_some() || run.pending_approval.is_some(){break;}
+                    if !engine.active.lock().await.contains(&id){
+                        if let Err(error)=engine.launch(id).await{
+                            tracing::warn!(%id,"queued parent wake rejected: {error}");
+                        }
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        });
+        Ok(engine)
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
@@ -57,18 +82,6 @@ impl Engine {
                 }).await;
             }
             engine.active.lock().await.remove(&id);
-            // If a child completed while the parent was still unwinding its
-            // suspended execution, the parent must self-wake on detach.
-            if let Some(latest)=engine.store.get(id).await {
-                let ready=latest.status==RunStatus::Paused && !latest.waiting_for_children
-                    && latest.pending_approval.is_none() && latest.in_flight.is_none()
-                    && latest.events.last().is_some_and(|event|event.kind=="subagents_ready");
-                if ready {
-                    if let Err(error)=engine.launch(id).await {
-                        tracing::warn!(%id,"deferred parent wake failed: {error}");
-                    }
-                }
-            }
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
             // parent that explicitly suspended itself waiting for children.
@@ -437,11 +450,9 @@ impl Engine {
                     }
                     Ok(())
                 }).await?;
-                // No polling race: if the parent is still active, its own
-                // worker callback restarts it *after* dropping its active marker.
-                if !self.active.lock().await.contains(&id) {
-                    self.launch(id).await?;
-                }
+                // The scheduler waits for the current parent's worker to
+                // detach before relaunch. No fixed-delay dropped wakeups.
+                self.wake_tx.send(id).map_err(|_|"engine wake scheduler unavailable".to_string())?;
             }
             ancestor=parent.parent_run_id;
         }
