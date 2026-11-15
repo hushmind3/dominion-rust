@@ -26,12 +26,12 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:16px 0}.metric{border:1px solid #2c3c56;border-radius:9px;padding:11px}.metric b{display:block;font-size:19px;margin-top:5px}.metric span{color:#9eaec5;font-size:11px}
 .approval{background:#372b22;border:1px solid #aa8558;border-radius:12px;padding:16px;margin-bottom:14px}.approval code{display:block;white-space:pre-wrap;margin:10px 0;overflow-wrap:anywhere}
 .filelink{display:block;background:none;color:#85c6ff;text-align:left;border:0;padding:7px 0}.hidden{display:none!important}.stack{display:flex;flex-direction:column;gap:18px}
-@media(max-width:1050px){.workspace{grid-template-columns:1fr}}@media(max-width:700px){.layout{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #263249;padding:8px}nav{display:flex}nav button{width:auto;flex:1;text-align:center;padding:10px}aside .tiny{display:none}main{padding:20px}header{padding:0 16px}.fieldgrid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:1050px){.workspace{grid-template-columns:1fr}}@media(max-width:700px){.layout{grid-template-columns:1fr}aside{border-right:0;border-bottom:1px solid #263249;padding:8px}nav{display:flex;flex-wrap:wrap}nav button{width:auto;flex:1;text-align:center;padding:10px}aside .tiny{display:none}main{padding:20px}header{padding:0 16px}.fieldgrid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
 </style>
 </head>
 <body>
 <header><div class="brand"><div class="orb"></div>DOMINION <span class="muted">/ Studio</span></div><span class="pill" id="connection">연결 확인 중</span></header>
-<div class="layout"><aside><div class="tiny">WORKSPACE</div><nav><button class="active" data-page="runs">⚡ 실행 스튜디오</button><button data-page="settings">⚙️ 모델 · 설정</button></nav><div class="tiny">실제 결과와 실행 기록은 서버에 저장됩니다.</div></aside>
+<div class="layout"><aside><div class="tiny">WORKSPACE</div><nav><button class="active" data-page="runs">⚡ 실행 스튜디오</button><button data-page="groups">💬 그룹 협업</button><button data-page="video">🎬 영상 제작</button><button data-page="settings">⚙️ 모델 · 설정</button></nav><div class="tiny">실제 결과와 실행 기록은 서버에 저장됩니다.</div></aside>
 <main>
 <section id="page-runs">
 <div class="hero"><div><h1>작업 실행</h1><p>원하는 결과를 설명하면 계획부터 실행·검증까지 진행합니다.</p></div><span class="pill">Rust core · API v1</span></div>
@@ -48,6 +48,33 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 <div class="panel"><h2>작업 파일</h2><div id="files"><p>결과 파일이 여기에 표시됩니다.</p></div></div>
 </div></div>
 </section>
+
+<section id="page-groups" class="hidden">
+<div class="hero"><div><h1>그룹 협업</h1><p>각기 다른 역할과 모델을 한 대화에 연결합니다. 발언과 비용은 서버에 기록됩니다.</p></div><span class="pill">Role-aware routing</span></div>
+<div class="workspace">
+<div class="stack">
+<div class="panel"><h2>그룹 만들기</h2><label for="group-topic">논의 주제</label><textarea id="group-topic" placeholder="팀이 함께 해결할 문제 또는 의사결정"></textarea>
+<label for="group-members" style="margin-top:15px">참가자: 한 줄에 이름 | 역할 | 모델 등급(economy 또는 main)</label>
+<textarea id="group-members">설계자 | 시스템 아키텍처와 구현 계획 | main
+비평가 | 결함, 검증, 실패 사례 탐색 | economy
+실행자 | 현실적인 방법과 다음 실행 단계 | main</textarea>
+<div class="fieldgrid"><div><label for="group-budget">비용 한도 (원)</label><input type="number" min="0" id="group-budget" value="5000"></div><div><label for="group-rounds">최대 발언</label><input type="number" min="1" max="50" id="group-rounds" value="12"></div></div>
+<div class="actions"><button id="group-create" class="primary">그룹 생성</button><span id="group-error" class="muted"></span></div>
+</div><div class="panel"><h2>그룹 목록</h2><div id="group-list" class="runs"><p>그룹이 없습니다.</p></div></div></div>
+<div class="stack"><div class="panel"><div class="detail-head"><h2>공유 대화</h2><span id="group-status" class="tag">미선택</span></div><div id="group-detail"><p>그룹을 선택하세요.</p></div></div></div>
+</div></section>
+<section id="page-video" class="hidden">
+<div class="hero"><div><h1>영상 제작</h1><p>스토리보드 구성부터 음성·장면 렌더·MP4 병합까지 연결합니다. FFmpeg 실행 환경이 필요합니다.</p></div><span class="pill">Local-first · FFmpeg</span></div>
+<div class="workspace">
+<div class="stack">
+<div class="panel"><h2>새 영상</h2><label for="video-prompt">영상 주제와 목적</label><textarea id="video-prompt" placeholder="예: 동네 소상공인을 위한 30초 매장 홍보 영상. 한국어 내레이션."></textarea>
+<label for="video-scenes" style="margin-top:15px">장면 수동 지정 (선택) · JSON 배열</label>
+<textarea id="video-scenes" style="min-height:100px" placeholder='[{"heading":"첫 장면","narration":"안녕하세요","seconds":5}]'></textarea>
+<p class="muted" style="margin:8px 0 14px">비워두면 연결된 모델이 장면을 기획합니다. 직접 입력하면 모델 호출 없이 렌더합니다.</p>
+<div class="actions"><button id="video-create" class="primary">🎬 제작 시작</button><span id="video-error" class="muted"></span></div>
+</div><div class="panel"><h2>영상 작업 목록</h2><div id="video-list" class="runs"><p>영상 작업이 없습니다.</p></div></div></div>
+<div class="stack"><div class="panel"><div class="detail-head"><h2>영상 상세</h2><span id="video-status" class="tag">미선택</span></div><div id="video-detail"><p>영상 작업을 선택하세요.</p></div></div></div>
+</div></section>
 <section id="page-settings" class="hidden"><div class="hero"><div><h1>모델 · 연결</h1><p>모델 제공자는 서버 환경변수로 연결하며 인증정보는 브라우저로 전송하지 않습니다.</p></div></div>
 <div class="panel" style="max-width:640px"><h2>현재 실행 설정</h2><div id="config-list" class="output">조회 중</div>
 <div style="margin-top:20px"><label for="token">원격 서버용 액세스 토큰 (이 탭에서만 유지)</label><input type="password" id="token" autocomplete="off" placeholder="DOMINION_ACCESS_TOKEN"><div class="actions" style="margin-top:12px"><button class="secondary" id="connect">연결하기</button></div></div></div></section>
