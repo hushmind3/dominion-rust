@@ -160,6 +160,11 @@ impl Campaigns{
         }else{Snapshot::default()};
         let mut changed=false;
         for campaign in state.campaigns.values_mut(){
+            // Waiting for an explicit winner choice has no active worker.
+            // Restore this durable decision point across server restarts.
+            if campaign.phase=="waiting_for_choice" && campaign.current_trial.is_none() {
+                continue;
+            }
             if matches!(campaign.status.as_str(),"running"|"queued"){
                 campaign.status="needs_review".into();
                 campaign.error=Some("Server restarted: reconcile the saved trial before continuing".into());
