@@ -121,6 +121,13 @@ pub fn spawn_scheduler(engine:&Arc<Engine>){
         tokio::time::sleep(Duration::from_secs(3)).await;
         loop{
             let Some(engine)=weak.upgrade() else{return};
+            // Do not claim or launch new scheduled work during the
+            // operator's consistent encrypted backup/restore window.
+            if crate::frontend_system::maintenance(&engine.settings){
+                drop(engine);
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
             match engine.automations.claim_due(now_ms()).await{
                 Ok(items)=>for job in items{
                     let worker=Arc::clone(&engine);
