@@ -79,7 +79,7 @@ See `docs/FRONTIER_2026.md` for concrete frontier reference gaps and
 
 ## Main React frontend adopted (2026-11-15)
 
-All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation, i18n and original Home dashboard are reused. The Home `NativeAgentPanel` and mounted `RustWorkspacePage` perform real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. Except for the native-backed original Home dashboard, this branch does not run the old main feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Build/test against actual Rust and browser remain pending the source-residue review and CI gate.
+All main-branch `web/` frontend source files are now preserved in sub4. The Vite production build is served by `tower-http::ServeDir` in `src/api.rs`; `/api/v1/*` stays under the original Rust approval/token middleware. The main React application shell, navigation, i18n and original Home dashboard are reused. The Home `NativeAgentPanel` and mounted `RustWorkspacePage` perform real requests for jobs, approval/recovery, groups, video, RSI and model config against the independently owned Rust SDK. When remote access is configured, the frontend supplies its access token through the `X-Dominion-Token` header; binary video fetching uses the same authenticated transport, not tokenized URLs. Dev proxy defaults to port 8787. Except for the native-backed original Home dashboard, this branch does not run the old main feature pages against unsupported legacy API endpoints; their implementation source remains available for capability-by-capability migration. The main branch's native desktop shell, state migration and advanced pages are not yet reconnected. Rust tests passed in Actions 43686024696; browser E2E and the legacy frontend migration remain outstanding.
 
 The original main profile editor is available in the preserved workspace shell. Until the main profile storage format is migrated, its cosmetic owner display name and avatar are saved in browser localStorage (`dominion.sub4.owner-profile`); Rust run state, credentials and sessions are never stored through this UI preference.
 
@@ -119,8 +119,8 @@ src/engine.rs denial via real scheduler and no tool-start record.
 
 This is NOT a claim of exactly-once external effects, complete crash recovery
 of billed model calls, or parity with an entire frontier product.
-Rust build and automated tests must be observed passing before claiming
-the milestone is verified.
+The new durable tool and read-parallelism path compiled and passed Rust tests in
+Actions 43686024696. Broad browser and real-provider benchmarks remain pending.
 
 ## Model tool-call orchestration (2026-11-15 implementation)
 

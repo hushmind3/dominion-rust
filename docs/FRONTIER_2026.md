@@ -65,8 +65,9 @@ No new goals.rs or goals.api file is introduced.
 
 - **Source-connected:** features listed above have linked Rust/API/SDK/UI
   entrypoints, with selected new unit tests.
-- **Not yet executed this revision:** full Rust compilation, full UI browser
-  simulation and real-provider tasks (CI deferred by project instruction).
+- **Executed for focused Rust tool orchestration:** Rust compilation and 64/64 automated tests,
+  plus optional TypeScript SDK success (Actions 43686024696).
+- **Not yet executed:** full UI browser simulation, real-provider tasks and public coding benchmarks.
 - **Not yet achieved:** frontier-level measured task performance, complete
   sandbox/skills/memory/channel ecosystem, mature long-run task repair,
   multi-worktree merge, premium turnkey video quality.
@@ -126,8 +127,8 @@ src/engine.rs denial via real scheduler and no tool-start record.
 
 This is NOT a claim of exactly-once external effects, complete crash recovery
 of billed model calls, or parity with an entire frontier product.
-Rust build and automated tests must be observed passing before claiming
-the milestone is verified.
+The scoped Rust orchestration implementation compiled and passed 64/64 tests
+(Actions 43686024696). This does not establish a product-wide frontier benchmark result.
 ## External reference for this focused milestone
 
 DeepSeek Harness 2026 session behavior distinguishes TOOL_NOT_STARTED

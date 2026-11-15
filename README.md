@@ -119,7 +119,7 @@ The Rust runtime was rebuilt with a new storage format, while the main React fro
 
 Read [Architecture](docs/ARCHITECTURE.md) for all entrypoints, lifecycles and persistence boundaries, [2026 Research](docs/RESEARCH_2026.md) for the design evidence, and [SDK documentation](sdk/typescript/README.md) for API use.
 
-Validation: Existing test suites and CI workflows are present. Current frontier-refactor commits deliberately use [skip ci]; full CI and public benchmarks are deferred until source residue and compatibility gaps have been reviewed. Static source wiring is not a substitute for a compile/test run. In-repo tests include a simulated model completing an actual file-producing agent loop, independent Git candidate evaluation/adoption, and an FFmpeg artifact smoke test when FFmpeg is available. A green build does **not** constitute a frontier benchmark score.
+Validation: The focused tool-orchestration revision **compiled and passed 64/64 Rust tests**, and the optional TypeScript SDK job passed in [GitHub Actions run 43686024696](https://github.com/hushmind3/dominion-rust/actions/runs/43686024696) (source commit `d55e15c`). This includes actual model-mock tool-loop integration, parallel file reads followed by an exclusive write, rejection of an unadvertised tool, crash/approval regression tests and existing group/video/RSI regression coverage. Full browser E2E, real-provider trials and public coding benchmarks remain pending. A green build is **not** a frontier-performance score.
 
 ## Durable tool execution (2026-11-15)
 
@@ -149,7 +149,7 @@ The 2026 frontier-driven work now enforces durable hierarchical child budget esc
 
 The model interface accepts optional OpenAI-specific prompt-cache TTL/key options, and reports provider-supplied cache read/write token counts separately with configurable KRW rates. Approved shell and RSI test scripts use fail-closed Bubblewrap/Seatbelt confinement by default. User cancellation during an executing tool leaves an auditable outcome and only becomes terminal after the tool receipt or explicit reconciliation.
 
-These changes have source-level tests but have **not** passed a fresh Rust build, a full browser E2E or a real-provider task suite in this revision. Full CI and SWE-bench are deferred until source-residue cleanup and acceptance checks under the project rules; no frontier-performance score is claimed.
+The targeted Rust/TypeScript build checks passed in Actions run 43686024696 (64 Rust unit/integration tests, 0 failures). A full browser E2E, real-provider task suite and SWE-bench Verified have **not** been run, so frontier-level task success is not claimed.
 
 ## Focused acceptance: durable tool lifecycle
 
@@ -179,8 +179,9 @@ src/engine.rs denial via real scheduler and no tool-start record.
 
 This is NOT a claim of exactly-once external effects, complete crash recovery
 of billed model calls, or parity with an entire frontier product.
-Rust build and automated tests must be observed passing before claiming
-the milestone is verified.
+The durable tool execution and parallel read scheduler passed a focused Rust build/test
+check on commit `d55e15c` in Actions run 43686024696. Unmeasured external-provider
+performance, full frontend integration and global frontier parity remain separate gates.
 
 ## Model tool-call orchestration (2026-11-15 implementation)
 

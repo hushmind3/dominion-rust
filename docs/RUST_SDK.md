@@ -63,8 +63,8 @@ inside the existing Rust engine's execution loop.
 
 Source and JS syntax were inspected during this refactor. Rust compilation,
 provider E2E, desktop GUI navigation, OS sandbox evaluation and SWE-bench
-comparison are still required before declaring frontier parity. Formal CI is
-deferred until source cleanup and compatibility review.
+comparison are still required before declaring frontier parity. Targeted Rust/TypeScript checks passed in GitHub Actions 43686024696;
+full browser E2E and matched real-provider evaluation remain pending.
 
 ## Optional TypeScript integration
 
@@ -98,5 +98,5 @@ src/engine.rs denial via real scheduler and no tool-start record.
 
 This is NOT a claim of exactly-once external effects, complete crash recovery
 of billed model calls, or parity with an entire frontier product.
-Rust build and automated tests must be observed passing before claiming
-the milestone is verified.
+Rust compilation and 64/64 tests passed for the focused tool orchestration
+implementation (GitHub Actions 43686024696). Global product parity is still unverified.
