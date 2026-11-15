@@ -59,9 +59,10 @@ impl Engine {
     }
     fn account(run: &mut Run, reply: &Reply) {
         run.input_tokens = run.input_tokens.saturating_add(reply.input_tokens);
+        run.cached_input_tokens = run.cached_input_tokens.saturating_add(reply.cached_input_tokens);
         run.output_tokens = run.output_tokens.saturating_add(reply.output_tokens);
         run.cost_krw += reply.cost_krw;
-        run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), None);
+        run.event("model", format!("{} · in {} / out {} tokens · {:.4} KRW", reply.model, reply.input_tokens, reply.output_tokens, reply.cost_krw), Some(json!({"cached_input_tokens":reply.cached_input_tokens})));
         if run.cost_krw > run.budget_krw {
             run.status = RunStatus::Failed;
             run.event("budget_exceeded", "Estimated token charges exceeded configured budget", None);

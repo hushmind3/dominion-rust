@@ -46,6 +46,8 @@ pub struct Run {
     pub base_commit: Option<String>,
     pub steps: usize,
     pub input_tokens: u64,
+    #[serde(default)]
+    pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub cost_krw: f64,
     pub budget_krw: f64,
@@ -89,7 +91,7 @@ impl Run {
             id, instruction, status: RunStatus::Queued, plan: None, answer: None,
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(),
             pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, context_chars_avoided: 0, repository: None, base_commit: None, steps: 0,
-            input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
+            input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             created_at_ms: time, updated_at_ms: time,
         };

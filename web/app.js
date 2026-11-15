@@ -62,6 +62,7 @@
       <div class="metric"><span>API 예상 비용</span><b>${krw(run.cost_krw)}원</b></div>
       <div class="metric"><span>실행 라운드</span><b>${run.steps}/${run.max_steps}</b></div>
       <div class="metric"><span>모델 토큰</span><b>${(run.input_tokens+run.output_tokens).toLocaleString()}</b></div></div>`;
+    if(run.cached_input_tokens) content+=`<p class="muted">제공자 보고 캐시 입력: ${Number(run.cached_input_tokens).toLocaleString()}토큰</p>`;
     if(run.context_chars_avoided) content+=`<p class="muted">컨텍스트 재투영으로 전송을 줄인 문자 수: ${Number(run.context_chars_avoided).toLocaleString()}자 (실제 청구 토큰과 다름)</p>`;
     if(run.repository) content+=`<p class="muted">작업 대상: ${safe(run.repository)} · 원본 Git 커밋: ${safe((run.base_commit||'').slice(0,12))}</p>`;
     const children=state.runs.filter(item=>item.parent_run_id===run.id);

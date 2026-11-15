@@ -6,6 +6,7 @@ pub struct ModelSettings {
     pub base_url: String,
     pub api_key: String,
     pub input_krw_per_million: f64,
+    pub cached_input_krw_per_million: f64,
     pub output_krw_per_million: f64,
 }
 
@@ -44,6 +45,7 @@ impl Settings {
             base_url: nonempty_var("DOMINION_BASE_URL", "https://api.openai.com/v1").trim_end_matches('/').to_string(),
             api_key: var("DOMINION_API_KEY", ""),
             input_krw_per_million: price("DOMINION_INPUT_KRW_PER_MTOK", 0.0),
+            cached_input_krw_per_million: price("DOMINION_CACHED_INPUT_KRW_PER_MTOK",price("DOMINION_INPUT_KRW_PER_MTOK",0.0)),
             output_krw_per_million: price("DOMINION_OUTPUT_KRW_PER_MTOK", 0.0),
         };
         let economy = ModelSettings {
@@ -51,6 +53,7 @@ impl Settings {
             base_url: nonempty_var("DOMINION_ECONOMY_BASE_URL", &main.base_url).trim_end_matches('/').to_string(),
             api_key: nonempty_var("DOMINION_ECONOMY_API_KEY", &main.api_key),
             input_krw_per_million: price("DOMINION_ECONOMY_INPUT_KRW_PER_MTOK", main.input_krw_per_million),
+            cached_input_krw_per_million: price("DOMINION_ECONOMY_CACHED_INPUT_KRW_PER_MTOK",main.cached_input_krw_per_million),
             output_krw_per_million: price("DOMINION_ECONOMY_OUTPUT_KRW_PER_MTOK", main.output_krw_per_million),
         };
         let max_steps = var("DOMINION_MAX_STEPS", "30").parse::<usize>().unwrap_or(30).clamp(1, 100);
