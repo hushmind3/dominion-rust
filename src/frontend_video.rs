@@ -78,8 +78,9 @@ async fn update_config(State(engine):State<Arc<Engine>>,Json(input):Json<Value>)
     crate::frontend_comfy::update(&engine.settings,&input)
         .map(|cfg|Json(crate::frontend_comfy::public_config(&cfg))).map_err(bad)
 }
-async fn catalog()->Json<Value>{
-    Json(json!({"videoModels":[]}))
+async fn catalog(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let models=crate::frontend_comfy::catalog(&engine.settings).await;
+    Json(json!({"videoModels":models}))
 }
 async fn outputs(State(engine):State<Arc<Engine>>)->Json<Value>{
     let all=engine.videos.list().await;
