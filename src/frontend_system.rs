@@ -69,6 +69,7 @@ fn load_keys(settings:&Settings,create:bool)->Result<Keys,String>{
 fn encrypt(ring:&Keys,plaintext:&[u8])->Result<Vec<u8>,String>{
  let key_bytes=STANDARD.decode(ring.versions.get(&ring.active).ok_or("active backup key missing")?)
   .map_err(|e|e.to_string())?;
+ if key_bytes.len()!=32{return Err("invalid backup key length".into());}
  let cipher=XChaCha20Poly1305::new(Key::from_slice(&key_bytes));
  let mut nonce=[0u8;24];OsRng.fill_bytes(&mut nonce);
  let ciphertext=cipher.encrypt(XNonce::from_slice(&nonce),plaintext)
@@ -86,6 +87,7 @@ fn decrypt(ring:&Keys,ciphertext:&[u8])->Result<Vec<u8>,String>{
  let version=u32::from_le_bytes(ciphertext[offset..offset+4].try_into().map_err(|_|"invalid key version")?);
  let secret=STANDARD.decode(ring.versions.get(&version).ok_or("backup decryption key unavailable")?)
   .map_err(|e|e.to_string())?;
+ if secret.len()!=32{return Err("invalid backup decryption key length".into());}
  let cipher=XChaCha20Poly1305::new(Key::from_slice(&secret));
  cipher.decrypt(XNonce::from_slice(&ciphertext[offset+4..offset+28]),
   &ciphertext[offset+28..]).map_err(|_|"backup integrity check failed".into())
@@ -160,6 +162,9 @@ pub fn apply_pending(settings:&Settings)->Result<(),String>{
  let pending=root(settings).join("restore-pending.dbackup");
  if !pending.exists(){return Ok(());}
  let ring=load_keys(settings,false)?;
+ if fs::metadata(&pending).map_err(|e|e.to_string())?.len()>400*1024*1024{
+  return Err("pending restore exceeds encrypted archive bound".into());
+ }
  let bytes=fs::read(&pending).map_err(|e|e.to_string())?;
  let bundle=decode_bundle(&decrypt(&ring,&bytes)?)?;
  // Validate every destination before writing a single restored entry.
@@ -277,6 +282,9 @@ async fn restore(State(engine):State<Arc<Engine>>,Json(input):Json<Restore>)
  let staged=tokio::task::spawn_blocking(move||{
   let _held=guard();
   let file=root(&settings).join(&name);
+  if fs::metadata(&file).map_err(|e|e.to_string())?.len()>400*1024*1024{
+   return Err("backup archive exceeds 400 MiB encrypted bound".into());
+  }
   let bytes=fs::read(file).map_err(|e|e.to_string())?;
   let key=load_keys(&settings,false)?;
   decode_bundle(&decrypt(&key,&bytes)?)?;
@@ -303,6 +311,9 @@ async fn rotate_backup_keys(State(engine):State<Arc<Engine>>,Json(input):Json<Ro
  let settings=engine.settings.clone();
  let result=tokio::task::spawn_blocking(move||{
   let _held=guard();
+  if root(&settings).join("restore-pending.dbackup").exists(){
+   return Err("restart to apply pending restore before rotating backup keys".into());
+  }
   let mut ring=load_keys(&settings,true)?;
   let old=ring.clone();
   let next=ring.active.checked_add(1).ok_or("backup key version exhausted")?;
