@@ -20,7 +20,8 @@ jobs:
         # Not a production sandbox override or proof of real-model quality.
         env:
           DOMINION_SHELL_SANDBOX: 'off'
-        run: cargo test --lib improvement::full_cycle_tests:: -- --ignored --nocapture
+        run: |
+          cargo test --lib improvement::full_cycle_tests:: -- --ignored --nocapture
   typescript:
     runs-on: ubuntu-latest
     defaults:
