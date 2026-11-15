@@ -714,6 +714,49 @@ mod recovery_tests {
     }
 
 
+
+    #[tokio::test]
+    async fn approval_wake_survives_more_than_old_two_second_deadline(){
+        let root=std::env::temp_dir().join(format!("dominion-late-wake-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),
+            settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups,videos,improvements).unwrap();
+        let mut run=Run::new(CreateRun{instruction:"deny after long previous worker".into(),
+            budget_krw:Some(50.0),max_steps:Some(1)},1).unwrap();
+        run.plan=Some("Approval must survive a slow detach".into());
+        run.steps=1;
+        run.status=RunStatus::AwaitingApproval;
+        run.pending_approval=Some(ToolCall{id:"slow-denial".into(),name:"shell".into(),
+            arguments:json!({"command":"false"})});
+        let id=run.id;
+        store.put(run).await.unwrap();
+        // Simulates the prior worker still winding down for longer than the
+        // former 200 x 10 ms scheduler polling limit.
+        engine.active.lock().await.insert(id);
+        engine.approve(id,false).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        assert_eq!(store.get(id).await.unwrap().approval_decision,Some(false));
+        engine.active.lock().await.remove(&id);
+        engine.active_notify.notify_waiters();
+        let mut done=None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let run=store.get(id).await.unwrap();
+            if run.terminal(){done=Some(run);break;}
+        }
+        let state=done.expect("queued approval wake was lost after worker detach");
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_denied").count(),1);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert!(state.in_flight.is_none());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn denied_approval_has_receipt_but_no_execution_intent(){
         let dir=std::env::temp_dir().join(format!("dominion-denial-{}",Uuid::new_v4()));
