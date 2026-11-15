@@ -383,8 +383,8 @@ test('native product operations use exact React route semantics without provider
   await sdk.agentPortfolio()
   await sdk.rooms()
   await sdk.roomState(roomId)
-  await sdk.sendRoomMessage(roomId,'owner text')
-  await sdk.runRoom(roomId,{maxTurns:2})
+  await sdk.sendRoomMessage(roomId,'owner text',{clientMessageId:'stable-owner-1'})
+  await sdk.runRoom(roomId,'next owner request',{agentIds:['agent-1']})
   await sdk.stopRoom(roomId)
   await sdk.videoStatus()
   await sdk.videoQuote({engine:'runway',duration:5})
@@ -410,8 +410,17 @@ test('native product operations use exact React route semantics without provider
     ['POST','/api/rsi/start'],
   ]
   assert.deepEqual(seen.map(x=>x.slice(0,2)),expected)
-  assert.equal(seen[6][2].content,'owner text')
-  assert.equal(seen[7][2].maxTurns,2)
+  assert.equal(seen[6][2].input,'owner text')
+  assert.equal(seen[6][2].clientMessageId,'stable-owner-1')
+  assert.equal(seen[7][2].input,'next owner request')
+  assert.deepEqual(seen[7][2].agentIds,['agent-1'])
   assert.equal(seen[11][2].prompt,'proof')
   assert.equal(seen[18][2].objective,'repair a source strategy')
+})
+
+
+test('RSI campaign responses retain the native campaigns envelope',async()=>{
+  const sdk=new DominionSDK({fetch:async()=>asJson({campaigns:[{id:'r1',status:'completed'}]})})
+  const response=await sdk.rsiCampaigns()
+  assert.equal(response.campaigns[0].id,'r1')
 })
