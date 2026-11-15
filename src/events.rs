@@ -30,15 +30,27 @@ impl Bus {
         }
     }
 
-    pub fn emit(&self, mut value: Value) {
-        // Assigning a sequence before waiting for SQLite lets a parallel
-        // writer persist and publish seq N+1 before seq N. One gate keeps
-        // the durable log and live notification in the same order.
+    pub fn emit(&self, value: Value) {
+        if let Err(error)=self.try_emit(value){
+            // Never publish a non-durable event as if it were replayable.
+            // The caller's underlying record may still be readable via GET.
+            eprintln!("DOMINION durable event publish skipped: {error}");
+        }
+    }
+
+    /// The append is the commit point. Only successful SQLite writes advance
+    /// the cursor or become visible to live listeners. The same lock covers
+    /// every clone, preserving sequence order across parallel emitters.
+    pub fn try_emit(&self, mut value: Value) -> Result<u64, String> {
         let _dispatch = self.dispatch.lock().unwrap();
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let seq = self.seq.load(Ordering::SeqCst).checked_add(1)
+            .filter(|value| *value<=i64::MAX as u64)
+            .ok_or("Durable event sequence exhausted")?;
         value["seq"] = json!(seq);
-        self.store.append_event(seq, &value);
+        self.store.append_event(seq, &value)?;
+        self.seq.store(seq, Ordering::SeqCst);
         let _ = self.sender.send(value);
+        Ok(seq)
     }
 
     pub fn record(&self, kind: &str, record: &Value) {
@@ -114,6 +126,37 @@ mod tests {
         let restarted = Bus::new(store);
         restarted.emit(json!({"type":"fourth"}));
         assert_eq!(restarted.replay(3, 10)[0]["seq"], 4);
+    }
+
+    #[test]
+    fn failed_sqlite_append_never_publishes_or_consumes_a_durable_sequence() {
+        let dir=std::env::temp_dir().join(format!("dominion-events-failure-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path=dir.join("events.sqlite");
+        let store=Store::open(&path).unwrap();
+        let bus=Bus::new(store.clone());
+        let mut receiver=bus.subscribe();
+        assert_eq!(bus.try_emit(json!({"type":"before"})).unwrap(),1);
+        assert_eq!(receiver.try_recv().unwrap()["seq"],1);
+
+        // Simulate an unavailable durable table through a second connection.
+        // The public API must not claim that a failed insert was replayable.
+        let admin=rusqlite::Connection::open(&path).unwrap();
+        admin.execute_batch("DROP TABLE event_log").unwrap();
+        assert!(bus.try_emit(json!({"type":"uncommitted"})).is_err());
+        assert_eq!(bus.seq.load(Ordering::SeqCst),1);
+        assert!(matches!(receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)));
+
+        admin.execute_batch("CREATE TABLE event_log (seq INTEGER PRIMARY KEY, data TEXT NOT NULL)").unwrap();
+        assert_eq!(bus.try_emit(json!({"type":"after"})).unwrap(),2);
+        assert_eq!(receiver.try_recv().unwrap()["seq"],2);
+        assert_eq!(bus.replay_available(0).iter().map(|v|v["seq"].as_u64().unwrap())
+            .collect::<Vec<_>>(),vec![2]);
+        drop(admin);
+        drop(bus);
+        drop(store);
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]
