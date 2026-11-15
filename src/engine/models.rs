@@ -527,6 +527,7 @@ fn llama_server_bin() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+#[cfg(test)]
 fn llama_available() -> bool {
     llama_server_bin().is_some()
 }
@@ -2189,6 +2190,7 @@ pub fn jobs(state: &AppState) -> Vec<Value> {
 }
 
 /// Streams a GGUF file from Hugging Face and records progress as a job.
+#[cfg(test)]
 pub fn start_download(state: AppState, repo: String, option: String) -> Result<Value, String> {
     start_download_with(state, repo, option, "gguf".into(), Vec::new())
 }
@@ -2211,6 +2213,7 @@ fn partial_download_path(target: &Path, revision: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", target.display(), suffix))
 }
 
+#[cfg(test)]
 pub fn start_download_with(
     state: AppState,
     repo: String,
