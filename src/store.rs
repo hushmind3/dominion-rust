@@ -102,6 +102,106 @@ mod tests {
     use super::*;
     use crate::domain::CreateRun;
 
+
+    /// Long-running IO/recovery soak with a real fsync-backed Store and 16
+    /// concurrent workers. It uses no model or remote API credits.
+    /// cargo test --lib soak_parallel_durable_workloads -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "disk-intensive reliability/performance test, run explicitly"]
+    async fn soak_parallel_durable_workloads(){
+        use crate::domain::ToolCall;
+        use serde_json::json;
+        use std::{sync::Arc,time::Instant};
+        let start=Instant::now();
+        let root=std::env::temp_dir().join(format!("dominion-soak-{}",Uuid::new_v4()));
+        let store=Arc::new(Store::open(root.clone()).await.unwrap());
+        let mut work=tokio::task::JoinSet::new();
+        const TOTAL:usize=256;
+        const WORKERS:usize=16;
+        for worker in 0..WORKERS {
+            let store=Arc::clone(&store);
+            work.spawn(async move{
+                let mut ids=Vec::new();
+                let mut spans=Vec::new();
+                for i in (worker..TOTAL).step_by(WORKERS){
+                    let cycle=Instant::now();
+                    let mut run=Run::new(CreateRun{
+                        instruction:format!("soak {i}"),budget_krw:Some(20.0),max_steps:Some(4)
+                    },4).unwrap();
+                    let id=run.id;
+                    let name=match i%4{
+                        0|1=>"write_file",2=>"read_file",_=>"git_diff"
+                    };
+                    let call=ToolCall{id:format!("soak-tool-{i}"),name:name.into(),
+                        arguments:json!({"path":"artifact.txt","content":"content"})};
+                    run.status=RunStatus::Running;
+                    run.queued_calls.push(call.clone());
+                    store.put(run).await.unwrap();
+                    store.mutate(id,|run|journal::begin(run,&call)).await.unwrap();
+                    if i%4==0 {
+                        store.mutate(id,|run|journal::finish(
+                            run,&call,&Ok("simulated external receipt".into()),false)
+                        ).await.unwrap();
+                    }
+                    spans.push(cycle.elapsed().as_millis() as u64);
+                    ids.push((id,i));
+                }
+                (ids,spans)
+            });
+        }
+        let mut ids=Vec::new();let mut latencies=Vec::new();
+        while let Some(next)=work.join_next().await{
+            let (mut chunk,mut samples)=next.unwrap();
+            ids.append(&mut chunk);latencies.append(&mut samples);
+        }
+        assert_eq!(ids.len(),TOTAL);
+        drop(store); // power-loss simulation: only snapshots survive
+        let restored=Store::open(root.clone()).await.unwrap();
+        let mut counts=[0usize;4];
+        for (id,i) in &ids {
+            let run=restored.get(*id).await.expect("persisted run disappeared");
+            assert_eq!(run.status,RunStatus::Paused);
+            match i%4 {
+                0=>{
+                    assert!(run.in_flight.is_none());
+                    assert_eq!(run.messages.iter().filter(|m|m["role"]=="tool").count(),1);
+                }
+                1=>{
+                    assert!(run.in_flight.is_some(),"uncertain mutating call replayed");
+                    assert_eq!(run.events.last().unwrap().kind,"tool_outcome_unknown");
+                }
+                2|3=>{
+                    assert!(run.in_flight.is_none(),"pure read not recovered");
+                    assert_eq!(run.queued_calls.len(),1);
+                    assert_eq!(run.events.last().unwrap().kind,"recovered_ready");
+                }
+                _=>unreachable!()
+            }
+            counts[i%4]+=1;
+        }
+        assert_eq!(counts,[64,64,64,64]);
+        latencies.sort_unstable();
+        let wall=start.elapsed().as_secs_f64().max(0.001);
+        let p50=latencies[latencies.len()/2];
+        let p95=latencies[latencies.len()*95/100];
+        println!("{}",json!({
+            "benchmark":"durable_tool_lifecycle_soak",
+            "snapshot_count":TOTAL,
+            "parallel_workers":WORKERS,
+            "intent_and_receipt_snapshots":256*2+64,
+            "recovered_safe_reads":128,
+            "unconfirmed_writes_blocked":64,
+            "observed_write_receipts":64,
+            "wall_seconds":wall,
+            "runs_per_second":TOTAL as f64/wall,
+            "p50_run_persist_ms":p50,
+            "p95_run_persist_ms":p95,
+            "provider_api_cost_krw":0
+        }));
+        drop(restored);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn mutating_tool_crash_never_replays_or_drops_unknown_intent(){
         use crate::{domain::ToolCall,journal};
