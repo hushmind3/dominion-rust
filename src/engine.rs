@@ -1,7 +1,7 @@
 use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
-use tokio::sync::{mpsc,Mutex};
+use tokio::sync::{mpsc,Mutex,Notify};
 use uuid::Uuid;
 
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
@@ -15,6 +15,7 @@ pub struct Engine {
     pub knowledge: Arc<Knowledge>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
+    active_notify: Notify,
     delegate_lock: Mutex<()>,
     wake_tx: mpsc::UnboundedSender<Uuid>,
 }
@@ -25,32 +26,41 @@ impl Engine {
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge,
-            model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()), wake_tx });
+            model, active: Mutex::new(HashSet::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
         // a Weak reference, so it does not keep an abandoned engine alive.
         let weak=Arc::downgrade(&engine);
         tokio::spawn(async move {
             while let Some(id)=wake_rx.recv().await {
-                let Some(engine)=weak.upgrade() else {break};
-                for _ in 0..200 {
-                    let Some(run)=engine.store.get(id).await else {break};
-                    let ready=(run.status==RunStatus::Queued
-                            && run.in_flight.is_none() && !run.waiting_for_children)
-                        || (run.status==RunStatus::Paused && !run.waiting_for_children
-                            && run.in_flight.is_none()
-                            && (run.pending_approval.is_none() || run.approval_decision.is_some()))
-                        || (run.status==RunStatus::AwaitingApproval
-                            && run.pending_approval.is_some() && run.approval_decision.is_some());
-                    if !ready {break;}
-                    if !engine.active.lock().await.contains(&id){
-                        if let Err(error)=engine.launch(id).await{
-                            tracing::warn!(%id,"queued parent wake rejected: {error}");
+                let weak=weak.clone();
+                // One stuck or slow worker must never stall other queued runs.
+                tokio::spawn(async move {
+                    let Some(engine)=weak.upgrade() else {return};
+                    loop {
+                        // Register the wake before checking the active marker,
+                        // so detachment cannot be missed between the two steps.
+                        let notified=engine.active_notify.notified();
+                        tokio::pin!(notified);
+                        notified.as_mut().enable();
+                        let Some(run)=engine.store.get(id).await else {return};
+                        let ready=(run.status==RunStatus::Queued
+                                && run.in_flight.is_none() && !run.waiting_for_children)
+                            || (run.status==RunStatus::Paused && !run.waiting_for_children
+                                && run.in_flight.is_none()
+                                && (run.pending_approval.is_none() || run.approval_decision.is_some()))
+                            || (run.status==RunStatus::AwaitingApproval
+                                && run.pending_approval.is_some() && run.approval_decision.is_some());
+                        if !ready {return;}
+                        if !engine.active.lock().await.contains(&id){
+                            if let Err(error)=engine.launch(id).await{
+                                tracing::warn!(%id,"queued worker wake rejected: {error}");
+                            }
+                            return;
                         }
-                        break;
+                        notified.await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
+                });
             }
         });
         Ok(engine)
@@ -73,6 +83,7 @@ impl Engine {
         }).await;
         if let Err(e) = started {
             self.active.lock().await.remove(&id);
+            self.active_notify.notify_waiters();
             return Err(e);
         }
         let engine = Arc::clone(self);
@@ -88,6 +99,7 @@ impl Engine {
                 }).await;
             }
             engine.active.lock().await.remove(&id);
+            engine.active_notify.notify_waiters();
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
             // parent that explicitly suspended itself waiting for children.
