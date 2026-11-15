@@ -70,6 +70,15 @@ pub use self::planner_worker_plan::{worker_plan};
 mod execution_worker;
 pub use self::execution_worker::{worker};
 
+#[cfg(test)]
+use self::execution_start::{lineage_fingerprint,snapshot_source};
+#[cfg(test)]
+use self::planner_focus::paired_behavioral_feedback;
+#[cfg(test)]
+use self::learning_trials::{adaptive_search_expression,recovery_search_expression,trial_verdict};
+#[cfg(test)]
+use self::lineage_adoption::generation_target_plan;
+
 pub const DOMAINS: &[&str] = &["memory", "tools", "context", "learning", "ui", "improver"];
 
 pub(crate) fn objective_matches(domain: &str, objective: &str) -> bool {
