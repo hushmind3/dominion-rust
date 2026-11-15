@@ -53,7 +53,7 @@ impl Engine {
         });
         Ok(())
     }
-    fn account(run: &mut Run, reply: &Reply) -> Result<(), String> {
+    fn account(run: &mut Run, reply: &Reply) {
         run.input_tokens = run.input_tokens.saturating_add(reply.input_tokens);
         run.output_tokens = run.output_tokens.saturating_add(reply.output_tokens);
         run.cost_krw += reply.cost_krw;
@@ -61,9 +61,7 @@ impl Engine {
         if run.cost_krw > run.budget_krw {
             run.status = RunStatus::Failed;
             run.event("budget_exceeded", "Estimated token charges exceeded configured budget", None);
-            return Err("budget exceeded".into());
         }
-        Ok(())
     }
     async fn drive(&self, id: Uuid) -> Result<(), String> {
         loop {
@@ -96,7 +94,7 @@ impl Engine {
                 ];
                 let reply = self.model.complete(&messages,&[],true).await?;
                 self.store.mutate(id, |run| {
-                    Self::account(run,&reply)?;
+                    Self::account(run,&reply);
                     run.plan = Some(reply.text.clone());
                     run.messages = vec![
                         json!({"role":"system","content":SYSTEM}),
@@ -120,7 +118,7 @@ impl Engine {
             let reply = self.model.complete(&run.messages, &catalog, false).await?;
             let terminal_candidate = reply.calls.is_empty();
             self.store.mutate(id, |run| {
-                Self::account(run,&reply)?;
+                Self::account(run,&reply);
                 run.steps += 1;
                 run.messages.push(reply.message.clone());
                 if !reply.calls.is_empty() {
@@ -145,7 +143,7 @@ impl Engine {
             let verdict = self.model.complete(&verify_messages,&[],true).await?;
             let passed = verdict.text.trim().starts_with("PASS");
             self.store.mutate(id, |run| {
-                Self::account(run,&verdict)?;
+                Self::account(run,&verdict);
                 run.event("verification",verdict.text.clone(),None);
                 if passed {
                     run.answer = Some(reply.text.clone());
@@ -198,7 +196,13 @@ impl Engine {
             run.event("decision",if allow {"User approved tool"} else {"User rejected tool"},None);
             Ok(())
         }).await?;
-        self.launch(id).await
+        // The worker may still be releasing its active marker after publishing
+        // the approval request. Wait for that exact worker to detach first.
+        for _ in 0..200 {
+            if !self.active.lock().await.contains(&id) { return self.launch(id).await; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        Err("approval recorded but worker is still active; use resume".into())
     }
     pub async fn directive(&self,id:Uuid,instruction:String) -> Result<Run,String> {
         let content=instruction.trim();
@@ -209,5 +213,60 @@ impl Engine {
             run.event("directive","User updated instructions",Some(json!({"text":content})));
             Ok(())
         }).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::State, routing::post, Json, Router};
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    async fn fake_model(State(turn):State<Arc<AtomicUsize>>, Json(_request):Json<Value>)->Json<Value>{
+        let current=turn.fetch_add(1,Ordering::SeqCst);
+        let message=match current {
+            0=>json!({"role":"assistant","content":"1. Write output file. 2. Verify."}),
+            1=>json!({"role":"assistant","content":null,"tool_calls":[{
+                "id":"call-1","type":"function","function":{"name":"write_file","arguments":"{\\"path\\":\\"result.txt\\",\\"content\\":\\"created by the harness\\"}"}
+            }]}),
+            2=>json!({"role":"assistant","content":"Created result.txt containing the requested artifact."}),
+            _=>json!({"role":"assistant","content":"PASS"}),
+        };
+        Json(json!({"choices":[{"message":message}],"usage":{"prompt_tokens":20,"completion_tokens":10}}))
+    }
+    #[tokio::test]
+    async fn completes_real_plan_tool_verify_cycle() {
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let count=Arc::new(AtomicUsize::new(0));
+        let server=tokio::spawn(axum::serve(listener,Router::new().route("/chat/completions",post(fake_model)).with_state(count.clone())).into_future());
+        let dir=std::env::temp_dir().join(format!("dominion-cycle-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=dir.join("data");
+        settings.workspace_dir=dir.join("workspace");
+        settings.main.base_url=format!("http://{addr}");
+        settings.main.name="test-model".into();
+        settings.main.api_key.clear();
+        settings.economy=settings.main.clone();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings.clone(),store.clone(),groups,videos,improvements).unwrap();
+        let run=Run::new(crate::domain::CreateRun{instruction:"Write result.txt".into(),budget_krw:Some(1000.0),max_steps:Some(8)},8).unwrap();
+        let id=run.id;store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut result=None;
+        for _ in 0..80 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let snapshot=store.get(id).await.unwrap();
+            if snapshot.terminal() {result=Some(snapshot);break;}
+        }
+        let result=result.expect("execution timed out");
+        assert_eq!(result.status,RunStatus::Completed,"events: {:?}",result.events);
+        assert_eq!(tokio::fs::read_to_string(settings.workspace_dir.join(id.to_string()).join("result.txt")).await.unwrap(),"created by the harness");
+        assert!(result.events.iter().any(|e|e.kind=="verification"));
+        assert!(count.load(Ordering::SeqCst)>=4);
+        server.abort();
+        tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 }
