@@ -5,7 +5,6 @@
 //! against the *next* observed, separately verified outcome.
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::collections::BTreeSet;
 
 /// Failed design attempts are still useful learning evidence, even when no
 /// candidate was adopted. Keep proposed roles separate from verified credit.
