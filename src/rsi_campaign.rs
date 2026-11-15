@@ -319,6 +319,26 @@ mod restart_state_tests {
   let restored=reopened.get(c.id).await.unwrap();
   assert_eq!(restored.status,"running");
   assert_eq!(restored.phase,"waiting_for_choice");
+  // Editing and measuring a disposable candidate must not be presented as
+  // an adopted source write in the capability dashboard.
+  let mut candidate=Attempt{
+   trial_id:Uuid::new_v4(),parent_trial:None,attempt:1,accepted:true,
+   selected:None,domain:"test".into(),generator_commit:None,
+   accepted_commit:None,candidate_commit:Some("candidate-commit".into()),
+   focus_files:vec!["src/a.rs".into(),"src/b.rs".into()],
+   error:None,baseline_score:Some(0.0),candidate_score:Some(1.0),
+   model_calls:1,tokens:7,
+  };
+  let mut snapshot=restored.clone();
+  snapshot.history.push(candidate.clone());
+  assert_eq!(snapshot.view()["candidateCount"],1);
+  assert_eq!(snapshot.view()["verifiedSourceWrites"],0);
+  assert_eq!(snapshot.view()["systemSourceWrites"],0);
+  candidate.selected=Some("candidate".into());
+  candidate.accepted_commit=Some("actual-adopted-head".into());
+  snapshot.history[0]=candidate;
+  assert_eq!(snapshot.view()["verifiedSourceWrites"],1);
+  assert_eq!(snapshot.view()["systemSourceWrites"],2);
   fs::remove_dir_all(root).await.unwrap();
  }
 }
