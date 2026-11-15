@@ -24,6 +24,18 @@ enum RpcOutcome {
     Settled(Result<Value,String>),
     Uncertain(String),
 }
+fn classify_response(method:&str,response:Result<Value,String>)->RpcOutcome{
+    match response {
+        Ok(value)=>RpcOutcome::Settled(Ok(value)),
+        // A valid JSON-RPC error is an observed server answer, not a
+        // disconnected stream. Other protocol corruption cannot prove the
+        // preceding mutation did not occur.
+        Err(error) if method=="tools/call" &&
+            !error.starts_with("MCP JSON-RPC error:")=>
+            RpcOutcome::Uncertain(format!("MCP final response unconfirmed: {error}")),
+        Err(error)=>RpcOutcome::Settled(Err(error)),
+    }
+}
 async fn cancellation_signal(cancel:&mut Option<watch::Receiver<bool>>){
     if let Some(rx)=cancel {
         loop {
@@ -244,14 +256,22 @@ impl Mcp {
         };
         let status=response.status();
         if !status.is_success(){
-            return Ok(RpcOutcome::Settled(Err(format!("MCP HTTP {status}"))));
+            let error=format!("MCP HTTP {status}");
+            // Authentication/validation rejection is an observed refusal.
+            // A 5xx or request timeout may occur after remote execution.
+            let ambiguous=status.is_server_error()||status.as_u16()==408;
+            return Ok(if method=="tools/call"&&ambiguous{
+                RpcOutcome::Uncertain(error)
+            }else{
+                RpcOutcome::Settled(Err(error))
+            });
         }
         let content_type=response.headers().get(header::CONTENT_TYPE)
             .and_then(|v|v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
         let sse=content_type.contains("text/event-stream");
         let json_body=content_type.contains("application/json");
         if !sse&&!json_body{
-            return Ok(RpcOutcome::Settled(Err("MCP unsupported response Content-Type".into())));
+            return Ok(classify_response(method,Err("MCP unsupported response Content-Type".into())));
         }
         let mut pending=Vec::<u8>::new();
         let mut consumed=0usize;
@@ -288,10 +308,10 @@ impl Mcp {
                     let payload=match sse_payload(&frame[..end]){
                         Ok(Some(payload))=>payload,
                         Ok(None)=>continue,
-                        Err(error)=>return Ok(RpcOutcome::Settled(Err(error))),
+                        Err(error)=>return Ok(classify_response(method,Err(error))),
                     };
                     if payload.get("id").and_then(Value::as_str)==Some(id.as_str()){
-                        return Ok(RpcOutcome::Settled(validate_rpc_payload(payload,&id)));
+                        return Ok(classify_response(method,validate_rpc_payload(payload,&id)));
                     }
                     // Unrelated messages (progress, logs) are advisory only.
                     // Never mistake a notification for a final tool receipt.
@@ -305,7 +325,7 @@ impl Mcp {
             serde_json::from_slice::<Value>(&pending).map_err(|e|format!("MCP JSON: {e}"))
                 .and_then(|payload|validate_rpc_payload(payload,&id))
         };
-        Ok(RpcOutcome::Settled(response))
+        Ok(classify_response(method,response))
     }
     async fn list(&self,name:&str)->Result<Vec<RemoteTool>,String>{
         {
@@ -441,7 +461,12 @@ mod tests {
             fixture.notifications.fetch_add(1,Ordering::SeqCst);
             return (axum::http::StatusCode::BAD_REQUEST,Json(json!({"error":"unsupported"}))).into_response();
         }
-        let hold=body["params"]["arguments"]["mode"]=="hold";
+        let mode=body["params"]["arguments"]["mode"].as_str().unwrap_or("");
+        if mode=="http-500"{
+            return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        let hold=mode=="hold";
+        let incomplete=mode=="incomplete";
         let started=Arc::clone(&fixture.started);
         let response=async_stream::stream!{
             let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
@@ -453,6 +478,7 @@ mod tests {
             if hold {
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
+            if incomplete{return;}
             let completed=json!({"jsonrpc":"2.0","id":id,
                 "result":{"content":[{"type":"text","text":"completed"}]}});
             // Split final event across chunks so parsing cannot rely on
@@ -511,6 +537,22 @@ mod tests {
             "MCP 2026 HTTP must not send a cancelled notification POST");
         server.abort();
     }
+
+    #[tokio::test]
+    async fn incomplete_or_server_failed_remote_mcp_call_never_auto_retries(){
+        let (client,fixture,server)=fixture_server().await;
+        let (_tx,rx)=watch::channel(false);
+        let incomplete=tokio::time::timeout(Duration::from_secs(2),
+            client.call_cooperative(&test_call("incomplete"),rx.clone()))
+            .await.expect("incomplete response should close")
+            .unwrap();
+        assert!(matches!(incomplete,McpCallOutcome::Uncertain(_)));
+        let failed=client.call_cooperative(&test_call("http-500"),rx).await.unwrap();
+        assert!(matches!(failed,McpCallOutcome::Uncertain(_)));
+        assert_eq!(fixture.notifications.load(Ordering::SeqCst),0);
+        server.abort();
+    }
+
     #[tokio::test]
     async fn cancellation_before_remote_dispatch_is_definitively_non_mutating(){
         let (client,_fixture,server)=fixture_server().await;
