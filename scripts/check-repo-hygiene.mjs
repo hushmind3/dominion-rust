@@ -32,6 +32,9 @@ for (const path of paths) {
   if(path === 'src/engine/goals.rs' && size > 12*1024) {
     errors.push(`goal entry module has regrown (${size} bytes); update src/engine/goals/* instead`)
   }
+  if(path === 'src/api/goals.rs' && size > 8*1024) {
+    errors.push(`goal HTTP facade has regrown (${size} bytes); update src/api/goals/* instead`)
+  }
   if(size>1024*1024) errors.push(`tracked file >1MiB: ${path} (${size} bytes)`)
   if(path.startsWith('src/') && path.endsWith('.rs') && size>120*1024) {
     errors.push(`oversized Rust implementation: ${path} (${size} bytes); split module`)
