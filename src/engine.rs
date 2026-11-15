@@ -57,6 +57,18 @@ impl Engine {
                 }).await;
             }
             engine.active.lock().await.remove(&id);
+            // If a child completed while the parent was still unwinding its
+            // suspended execution, the parent must self-wake on detach.
+            if let Some(latest)=engine.store.get(id).await {
+                let ready=latest.status==RunStatus::Paused && !latest.waiting_for_children
+                    && latest.pending_approval.is_none() && latest.in_flight.is_none()
+                    && latest.events.last().is_some_and(|event|event.kind=="subagents_ready");
+                if ready {
+                    if let Err(error)=engine.launch(id).await {
+                        tracing::warn!(%id,"deferred parent wake failed: {error}");
+                    }
+                }
+            }
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
             // parent that explicitly suspended itself waiting for children.
@@ -194,7 +206,10 @@ impl Engine {
                 Ok(())
             }).await?;
             if !accepted || !terminal_candidate { continue; }
-            let active_children=self.store.list().await.into_iter().filter(|r|r.parent_run_id==Some(id) && !r.terminal()).map(|r|r.id).collect::<Vec<_>>();
+            let active_ids=self.active.lock().await.clone();
+            let active_children=self.store.list().await.into_iter()
+                .filter(|r|r.parent_run_id==Some(id) && (!r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id)))
+                .map(|r|r.id).collect::<Vec<_>>();
             if !active_children.is_empty() {
                 self.store.mutate(id,|run|{
                     if run.terminal()||run.status!=RunStatus::Running{return Ok(());}
@@ -357,14 +372,16 @@ impl Engine {
             {
                 let _guard=self.delegate_lock.lock().await;
                 let all=self.store.list().await;
+                let running=self.active.lock().await.clone();
                 let direct=all.iter().filter(|r|r.parent_run_id==Some(id)).collect::<Vec<_>>();
                 let finished=direct.iter().filter(|child|{
-                    if !child.terminal(){return false;}
+                    if !child.terminal()||child.in_flight.is_some()||running.contains(&child.id){return false;}
                     // A cancelled child may still own active grandchildren.
                     // Its unused allocation is returned only after those bills
                     // have also been durably settled into that child's record.
                     let grandchildren=all.iter().filter(|r|r.parent_run_id==Some(child.id)).collect::<Vec<_>>();
-                    grandchildren.iter().all(|r|r.terminal()&&child.settled_child_ids.contains(&r.id))
+                    grandchildren.iter().all(|r|r.terminal()&&r.in_flight.is_none()
+                        &&!running.contains(&r.id)&&child.settled_child_ids.contains(&r.id))
                 }).map(|r|(*r).clone()).collect::<Vec<_>>();
                 if !finished.is_empty(){
                     self.store.mutate(id,|run|{
@@ -386,7 +403,9 @@ impl Engine {
                 }
             }
             let all=self.store.list().await;
-            let pending=all.iter().any(|r|r.parent_run_id==Some(id)&&!r.terminal());
+            let active_ids=self.active.lock().await.clone();
+            let pending=all.iter().any(|r|r.parent_run_id==Some(id)
+                &&(!r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id)));
             let parent=self.store.get(id).await.ok_or("parent run missing")?;
             if parent.waiting_for_children && !pending && !parent.terminal(){
                 self.store.mutate(id,|run|{
@@ -396,13 +415,10 @@ impl Engine {
                     }
                     Ok(())
                 }).await?;
-                // The parent worker may still be releasing its active marker.
-                for _ in 0..50{
-                    if !self.active.lock().await.contains(&id) {
-                        self.launch(id).await?;
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                // No polling race: if the parent is still active, its own
+                // worker callback restarts it *after* dropping its active marker.
+                if !self.active.lock().await.contains(&id) {
+                    self.launch(id).await?;
                 }
             }
             ancestor=parent.parent_run_id;
@@ -507,8 +523,16 @@ impl Engine {
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         self.store.mutate(id,|run| {
             if run.terminal() { return Err("execution already finished".into()); }
-            run.status = RunStatus::Cancelled;
-            run.event("cancelled","Execution cancelled by user",None);
+            if run.in_flight.is_some(){
+                // A side effect can already be executing. Do not pretend a
+                // cancelled run's external effects were stopped atomically.
+                run.status=RunStatus::Paused;
+                run.event("cancel_pending_reconciliation",
+                    "Cancellation requested while a tool was active; inspect and reconcile its outcome before final cancellation",None);
+            }else{
+                run.status = RunStatus::Cancelled;
+                run.event("cancelled","Execution cancelled by user",None);
+            }
             Ok(())
         }).await
     }

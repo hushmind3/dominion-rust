@@ -40,7 +40,10 @@ impl Knowledge{
     }
     pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<MemoryEntry,String>{
         valid(scope,title,content)?;
-        let mut entries=self.entries.lock().await;
+        let mut locked=self.entries.lock().await;
+        // Clone before mutating: a failed filesystem write must never expose a
+        // durable memory that disappears silently after restart.
+        let mut entries=locked.clone();
         let now=now_ms();
         let updated=if let Some(old)=entries.iter_mut().find(|m|m.scope==scope&&m.title.eq_ignore_ascii_case(title)){
             old.content=content.to_owned();old.updated_at_ms=now;old.clone()
@@ -52,6 +55,7 @@ impl Knowledge{
         let temp=self.file.with_extension("json.tmp");
         fs::write(&temp,serde_json::to_vec(&*entries).map_err(|e|e.to_string())?).await.map_err(|e|e.to_string())?;
         fs::rename(temp,&self.file).await.map_err(|e|e.to_string())?;
+        *locked=entries;
         Ok(updated)
     }
     pub async fn search(&self,scope:&str,query:&str,max:usize)->Vec<MemoryEntry>{
