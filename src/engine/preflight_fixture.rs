@@ -50,6 +50,7 @@ pub fn scope(base_url: &str, model: &str, tool_mode: &str) -> String {
     digest(serde_json::json!([base_url.trim_end_matches('/'), model, tool_mode]).to_string().as_bytes())
 }
 
+#[cfg(test)]
 pub fn evaluating() -> bool {
     std::env::var("DOMINION_BENCHMARK").as_deref() == Ok("1")
         && std::env::var("DOMINION_BENCHMARK_PREFLIGHT").as_deref() == Ok("1")
