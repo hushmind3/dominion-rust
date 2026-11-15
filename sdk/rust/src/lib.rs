@@ -34,5 +34,5 @@ pub use mcp::{McpTool, ToolRegistry};
 pub use streaming::{ChatStream, EventStream};
 pub use types::{
     ChatEvent, ChatRequest, Goal, GoalCreate, GoalSteerReceipt, Job, Message, ModelSelection,
-    ServerEvent, Session, SessionCreate, WaitOptions, WatchOptions,
+    ReviewPolicy, ServerEvent, Session, SessionCreate, WaitOptions, WatchOptions,
 };
