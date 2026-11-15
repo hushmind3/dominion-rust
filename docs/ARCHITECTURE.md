@@ -191,3 +191,40 @@ and TypeScript SDK success (GitHub Actions 43687318332). The additional
 SDK catalog-mask regression is included in this revision and must pass
 the new source check before it is claimed verified. Broader model-task
 success rates remain unmeasured.
+
+
+## 2026 Streamable HTTP MCP: cancellation, progress and audit
+
+Specification (2026-07-28):
+- https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/transports/streamable-http.mdx
+- https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/patterns/cancellation.mdx
+- https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2026-07-28/basic/patterns/progress.mdx
+
+The Rust backend implements request-scoped SSE and application/json in src/mcp.rs.
+For SSE, it incrementally parses progress and stops reading after the matching
+JSON-RPC response frame, instead of waiting for the server to close an idle stream.
+On a user cancel it drops the response stream. MCP 2026 Streamable HTTP does
+NOT send a notifications/cancelled POST; that signal is stdio-specific.
+
+Client disconnect is NOT proof the remote mutation was undone. src/mcp.rs
+returns an explicit Uncertain outcome on cancelled requests, lost transport,
+incomplete/malformed replies or remote HTTP server faults. src/engine.rs stores
+mcp_remote_outcome_unknown while keeping the in_flight intent, requires explicit
+human POST /api/v1/runs/{id}/reconcile, and never automatically repeats the call.
+The remote JSON-RPC request ID is deterministic from the persisted run and
+tool-call IDs (dominion-<run UUID>-<model tool-call ID>), and is recorded in
+tool_started and uncertain-result events for external service log correlation.
+
+The request carries _meta.progressToken bound to its JSON-RPC request ID.
+Only matching progress notifications are forwarded; max 16 buffered and
+32 persisted events per call prevent unbounded work and storage. The adopted
+main React UI distinguishes an active MCP call with progress from a paused
+call requiring result reconciliation; native REST and SDK share these events.
+
+Checks: real local Streamable HTTP fixtures exercise a live SSE response that
+stays open after its final frame, user cancellation, mismatched progress tokens,
+incomplete HTTP/SSE responses, 5xx ambiguity, and the entire Rust approval →
+remote side effect → interruption → human reconciliation path. These do not
+pretend to guarantee rollback of remote services or verified exactly-once
+execution. External service-specific idempotency and task-resumption APIs
+are possible next extensions, not assumed by the generic client.
