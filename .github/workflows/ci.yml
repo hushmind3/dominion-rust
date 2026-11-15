@@ -25,7 +25,10 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: node scripts/check-repo-hygiene.mjs
+      - name: Prove hygiene gate rejects junk
+        run: node --test scripts/tests/check-repo-hygiene.test.mjs
+      - name: Reject repository residue (mandatory)
+        run: node scripts/check-repo-hygiene.mjs
       - run: npm ci --prefix web
       - run: npm run typecheck --prefix web
       - run: npm run build --prefix web
