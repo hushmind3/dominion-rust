@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react'
 import {Check,Clapperboard,ExternalLink,LoaderCircle,Play,Power,RefreshCw,Upload} from 'lucide-react'
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {Action,FormField,Headline,Notice,Panel,StateTag,Subheading,useRemote} from '../components/UI'
-import {openOAuth,post} from '../api'
+import {downloadApiVideo,openOAuth,post} from '../api'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
@@ -118,7 +118,11 @@ export function VideoPage({navigate}:{navigate:(page:any)=>void}){
   catch(e){setError((e as Error).message)}
  }
  const reveal=async(id:string)=>{
-  try{await post('/api/video/jobs/'+id+'/reveal',{})}catch(e){setError((e as Error).message)}
+  try{
+   const result=await post<{downloadUrl?:string}>('/api/video/jobs/'+id+'/reveal',{})
+   if(!result.downloadUrl)throw Error('영상 파일 주소를 찾지 못했습니다.')
+   await downloadApiVideo(result.downloadUrl,id)
+  }catch(e){setError((e as Error).message)}
  }
  const generate=async()=>{
   if(!ready||!prompt.trim()||generating)return;
