@@ -8,7 +8,8 @@ use serde::{Deserialize,Serialize};
 use serde_json::{json,Value};
 use std::{collections::HashMap,fs,io::Write,path::{Path,PathBuf},
  sync::{Mutex,OnceLock},time::Duration};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt,AsyncWriteExt};
+use sha2::Digest;
 use uuid::Uuid;
 
 const MAX_GRAPH:usize=1024*1024;
@@ -80,7 +81,7 @@ fn read_json<T:serde::de::DeserializeOwned+Default>(path:&Path)->Result<T,String
   }
  }
  let metadata=fs::metadata(path).map_err(|e|e.to_string())?;
- if metadata.len()>MAX_GRAPH as u64+256*1024{return Err("ComfyUI state too large".into());}
+ if metadata.len()>8*1024*1024{return Err("ComfyUI state too large".into());}
  serde_json::from_slice(&fs::read(path).map_err(|e|e.to_string())?)
   .map_err(|e|format!("ComfyUI state corrupted: {e}"))
 }
@@ -132,7 +133,6 @@ fn valid_graph(value:&Value)->Result<(),String>{
 fn workflow_id(cfg:&Config)->Option<String>{
  cfg.comfy_workflow.as_ref().map(|graph|{
   let hash=sha2::Sha256::digest(serde_json::to_vec(graph).unwrap_or_default());
-  use sha2::Digest;
   format!("workflow-{:x}",hash)[..24].to_string()
  })
 }
@@ -405,7 +405,7 @@ fn find_video(history:&Value)->Option<ResultFile>{
   for key in ["videos","gifs","files"]{
    if let Some(items)=node[key].as_array(){
     for item in items{
-     let filename=item["filename"].as_str()?;
+     let Some(filename)=item["filename"].as_str()else{continue};
      let format=if filename.to_ascii_lowercase().ends_with(".mp4"){"mp4"}
       else if filename.to_ascii_lowercase().ends_with(".webm"){"webm"}else{continue};
      if filename.is_empty()||filename.len()>255||
@@ -457,9 +457,12 @@ async fn download(settings:&Settings,id:Uuid,cfg:&Config,http:&Client,file:&Resu
   }
   out.sync_all().await.map_err(|e|e.to_string())?;
   if total<24{return Err("ComfyUI video output is empty or invalid".into());}
-  let header=tokio::fs::read(&part).await.map_err(|e|e.to_string())?;
+  let mut header=[0u8;16];
+  let mut check=tokio::fs::File::open(&part).await.map_err(|e|e.to_string())?;
+  check.read_exact(&mut header).await.map_err(|e|e.to_string())?;
+  drop(check);
   let valid=if file.format=="mp4"{
-   header.len()>12&&&header[4..8]==b"ftyp"
+   &header[4..8]==b"ftyp"
   }else{header.starts_with(&[0x1a,0x45,0xdf,0xa3])};
   if !valid{return Err("ComfyUI output bytes do not match MP4/WebM signature".into());}
   tokio::fs::rename(&part,&final_file).await.map_err(|e|e.to_string())?;
