@@ -48,6 +48,28 @@ export const get = <T = any>(url: string, signal?: AbortSignal) => request<T>(ur
 export const post = <T = any>(url: string, data: unknown) =>
  request<T>(url, {method: 'POST', body: JSON.stringify(data)})
 export const del = (url: string) => request(url, {method: 'DELETE'})
+/** Download a native video through the same authenticated API transport.
+ * Browsers cannot attach X-Dominion-Token to a plain <a href> or <video src>.
+ * This explicit action caps in-memory downloads rather than silently OOMing.
+ */
+export async function downloadApiVideo(url: string, id: string) {
+ const res = await apiFetch(url)
+ if (!res.ok) throw new ApiError(res.status, translateError((await readJson(res))?.error || 'HTTP ' + res.status))
+ const cap = 256 * 1024 * 1024
+ const length = Number(res.headers.get('Content-Length') || '0')
+ if (length > cap) { await res.body?.cancel(); throw Error('영상이 256MB를 초과합니다. 서버 저장소에서 직접 가져와 주세요.') }
+ const data = await res.blob()
+ if (data.size > cap) throw Error('영상이 256MB를 초과합니다. 서버 저장소에서 직접 가져와 주세요.')
+ const extension = res.headers.get('Content-Type')?.includes('webm') ? 'webm' : 'mp4'
+ const objectUrl = URL.createObjectURL(data)
+ const link = document.createElement('a')
+ link.href = objectUrl
+ link.download = 'dominion-' + id + '.' + extension
+ link.style.display = 'none'
+ document.body.appendChild(link)
+ try { link.click() } finally { link.remove(); window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000) }
+}
+
 
 export type ModelOption = {id: string; name?: string; free?: boolean|null; freeStatus?: 'free'|'paid'|'unknown'; freeSource?: string; reasoningEfforts?: string[]; defaultReasoningEffort?: string|null; catalogStale?: boolean}
 export type Approval = {id: string; tool: string; args: unknown; status: string; sessionId: string}
