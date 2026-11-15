@@ -26,6 +26,10 @@ pub struct Settings {
     pub shell_enabled: bool,
     /// Maximum concurrent side-effect-free inspections per model step.
     pub max_parallel_reads: usize,
+    /// Operator-enforced names that cannot enter a tool dispatcher.
+    pub denied_tools: Vec<String>,
+    /// Maximum tool receipt content (not a limit on tool filesystem access).
+    pub tool_result_max_chars: usize,
     /// Maximum serialized characters sent to a model in one agent turn.
     pub context_max_chars: usize,
 }
@@ -82,6 +86,11 @@ impl Settings {
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
             max_parallel_reads:var("DOMINION_MAX_PARALLEL_READS","4").parse::<usize>().unwrap_or(4).clamp(1,8),
+            denied_tools:var("DOMINION_DENIED_TOOLS","").split(',')
+                .map(str::trim).filter(|name|!name.is_empty())
+                .map(str::to_owned).collect(),
+            tool_result_max_chars:var("DOMINION_TOOL_RESULT_MAX_CHARS","16384")
+                .parse::<usize>().unwrap_or(16384).clamp(256,131072),
             context_max_chars: var("DOMINION_CONTEXT_MAX_CHARS", "80000").parse::<usize>().unwrap_or(80000).clamp(8000,500000),
         })
     }

@@ -208,6 +208,25 @@ pub fn reject_admission(run:&mut Run,call:&ToolCall,code:&str,reason:&str)->Resu
     Ok(())
 }
 
+
+/// Deny a call that was already explicitly approved but is newly forbidden by
+/// a runtime hook. This never dispatches and never consumes a second approval.
+pub fn reject_approved_hook(run:&mut Run,call:&ToolCall,code:&str,reason:&str)->Result<(),String>{
+    if run.status!=RunStatus::Running || run.in_flight.is_some() ||
+        !run.read_batch_in_flight.is_empty() || !pending_exact(run,call) ||
+        run.approval_decision!=Some(true){
+        return Err("hook denial does not match an approved, unstarted call".into());
+    }
+    run.pending_approval=None;
+    run.approval_decision=None;
+    let reason=reason.chars().take(650).collect::<String>();
+    run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+        "content":format!("TOOL ERROR [{code}]: {reason}")}));
+    run.event("tool_hook_denied",format!("Tool hook blocked approved {}",call.name),
+        Some(json!({"call_id":call.id,"code":code,"reason":reason})));
+    Ok(())
+}
+
 /// Applies the durable receipt in the same state-store transaction that
 /// releases the intent. It is legal to finish while cancellation is pending.
 pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observed:bool)->Result<(),String>{

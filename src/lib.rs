@@ -7,6 +7,7 @@ pub mod engine;
 pub mod group;
 pub mod knowledge;
 pub mod journal;
+pub mod hooks;
 pub mod tool_schema;
 pub mod tool_batch;
 pub mod improvement;
