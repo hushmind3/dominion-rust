@@ -168,11 +168,8 @@ impl Engine {
             }
             if parallel.len()>1{
                 self.store.mutate(id,|run|journal::begin_read_batch(run,&parallel)).await?;
-                let mut outcomes=tokio::select!{
-                    biased;
-                    _=cancellation.changed()=>parallel.iter().map(|_|Err("ABORTED: read-only tool cancelled".into())).collect::<Vec<_>>(),
-                    outputs=tool_batch::execute_reads(&self.settings,id,parallel.clone())=>outputs
-                };
+                let mut outcomes=tool_batch::execute_reads_cancellable(
+                    &self.settings,id,parallel.clone(),cancellation.clone()).await;
                 for (call,result) in parallel.iter().zip(outcomes.iter_mut()){
                     chain.after(&run,call,result);
                 }
