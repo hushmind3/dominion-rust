@@ -10,6 +10,9 @@ pub struct Dominion { engine: Arc<Engine> }
 
 impl Dominion {
     pub async fn open(settings: Settings) -> Result<Self,String> {
+        // Apply an explicitly staged, authenticated snapshot while no native
+        // stores have opened yet; a browser reload alone is not a restore.
+        crate::frontend_system::apply_pending(&settings)?;
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
