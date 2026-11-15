@@ -6,7 +6,7 @@ import type {PageId} from '../components/WorkspaceShell'
 
 type Event={seq:number;kind:string;message:string;detail?:unknown;at_ms:number}
 type Call={id:string;name:string;arguments:unknown}
-type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;context_chars_avoided:number;tool_schema_chars_avoided?:number;reserved_budget_krw?:number;delegated_spent_krw?:number;read_only?:boolean;waiting_for_children?:boolean;cost_krw:number;budget_krw:number;created_at_ms:number}
+type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;cache_write_tokens?:number;output_tokens:number;context_chars_avoided:number;tool_schema_chars_avoided?:number;reserved_budget_krw?:number;delegated_spent_krw?:number;read_only?:boolean;waiting_for_children?:boolean;cost_krw:number;budget_krw:number;created_at_ms:number}
 type Room={id:string;topic:string;status:string;participants:{name:string;role:string;economy:boolean}[];messages:{speaker:string;content:string}[];rounds:number;max_rounds:number;cost_krw:number;budget_krw:number}
 type Scene={heading:string;narration:string;seconds:number}
 type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];error?:string|null;cost_krw:number}
@@ -155,7 +155,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
      <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-[14px] font-bold">작업 상세 <span className="text-[#A95636]">{run.status}</span></h2><span className="text-[11px] text-[#8E8376]">모델 {run.steps}턴 · 총사용 {money(run.cost_krw+(run.delegated_spent_krw||0))} · 예약 {money(run.reserved_budget_krw||0)} / {money(run.budget_krw)}</span></div>
      {run.repository&&<p className="mt-2 break-all text-[11px] text-[#806B58]">Git: {run.repository} · {run.base_commit?.slice(0,12)}</p>}
      <p className="mt-3 whitespace-pre-wrap rounded-lg bg-[#F9F6F2] p-3 text-[12px]">{run.instruction}</p>
-     <div className="mt-3 text-[11px] text-[#7F766D]">입력 {run.input_tokens.toLocaleString()} · 캐시 {run.cached_input_tokens.toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰 · 생략한 도구 스키마 약 {(run.tool_schema_chars_avoided||0).toLocaleString()}자</div>
+     <div className="mt-3 text-[11px] text-[#7F766D]">입력 {run.input_tokens.toLocaleString()} · 캐시 읽기 {run.cached_input_tokens.toLocaleString()} · 캐시 쓰기 {(run.cache_write_tokens||0).toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰 · 생략한 도구 스키마 약 {(run.tool_schema_chars_avoided||0).toLocaleString()}자</div>
      {run.plan&&<details className="mt-3 rounded-lg border border-[#ECE5DB] p-3"><summary className="cursor-pointer text-[12px] font-semibold">실행 계획</summary><pre className="mt-2 whitespace-pre-wrap text-[11px]">{run.plan}</pre></details>}
      {run.pending_approval&&<div className="mt-4 rounded-lg border border-[#E5B99F] bg-[#FFF8F1] p-3">
       <h3 className="flex items-center gap-2 text-[12px] font-bold"><ShieldAlert size={16}/> 실행 승인 필요</h3>

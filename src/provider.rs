@@ -15,6 +15,7 @@ pub struct Reply {
     pub calls: Vec<ToolCall>,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    pub cache_write_tokens: u64,
     pub output_tokens: u64,
     pub cost_krw: f64,
     pub model: String,
@@ -52,6 +53,12 @@ impl ModelClient {
     }
     async fn request_once(&self, settings: &ModelSettings, messages: &[Value], tools: &[Value]) -> Result<Reply, String> {
         let mut body = json!({"model": settings.name, "messages": messages, "stream": false});
+        // OpenAI-specific cache controls are explicitly gated to the native
+        // endpoint so OpenAI-compatible third-party servers are not broken.
+        if settings.base_url=="https://api.openai.com/v1"{
+            if let Some(ttl)=&settings.cache_ttl{body["prompt_cache_options"]=json!({"ttl":ttl});}
+            if let Some(key)=&settings.cache_key{body["prompt_cache_key"]=json!(key);}
+        }
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
             body["tool_choice"] = json!("auto");
@@ -87,8 +94,12 @@ impl ModelClient {
         let cached_input_tokens=raw.pointer("/usage/prompt_tokens_details/cached_tokens")
             .or_else(||raw.pointer("/usage/input_tokens_details/cached_tokens"))
             .and_then(Value::as_u64).unwrap_or(0).min(input_tokens);
-        let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,output_tokens);
-        Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, output_tokens, cost_krw, model: settings.name.clone() })
+        let cache_write_tokens=raw.pointer("/usage/prompt_tokens_details/cache_write_tokens")
+            .or_else(||raw.pointer("/usage/input_tokens_details/cache_write_tokens"))
+            .and_then(Value::as_u64).unwrap_or(0)
+            .min(input_tokens.saturating_sub(cached_input_tokens));
+        let cost_krw=estimate_cost(settings,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens);
+        Ok(Reply { message, text, calls, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, cost_krw, model: settings.name.clone() })
     }
 }
 fn retryable(error:&str)->bool{
@@ -96,11 +107,13 @@ fn retryable(error:&str)->bool{
     error.starts_with("provider body:") ||
     ["429","500","502","503","504"].iter().any(|status|error.starts_with(&format!("provider HTTP {status} ")))
 }
-fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,output:u64)->f64{
+fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,written:u64,output:u64)->f64{
     let cached=cached.min(input);
-    let noncached=input-cached;
+    let written=written.min(input-cached);
+    let noncached=input-cached-written;
     ((noncached as f64*settings.input_krw_per_million)
         +(cached as f64*settings.cached_input_krw_per_million)
+        +(written as f64*settings.cache_write_krw_per_million)
         +(output as f64*settings.output_krw_per_million))/1_000_000.0
 }
 #[cfg(test)]
@@ -146,9 +159,12 @@ mod tests {
         settings.input_krw_per_million=1000.0;
         settings.cached_input_krw_per_million=100.0;
         settings.output_krw_per_million=2000.0;
-        let cost=estimate_cost(&settings,1_000_000,400_000,100_000);
+        settings.cache_write_krw_per_million=2500.0;
+        let cost=estimate_cost(&settings,1_000_000,400_000,0,100_000);
         assert!((cost-840.0).abs()<0.00001);
-        assert!((estimate_cost(&settings,100,200,0)-0.01).abs()<0.00001);
+        assert!((estimate_cost(&settings,100,200,0,0)-0.01).abs()<0.00001);
+        let with_writes=estimate_cost(&settings,1_000_000,400_000,100_000,100_000);
+        assert!((with_writes-990.0).abs()<0.00001);
     }
     #[test]
     fn empty_key_may_connect_to_local_server() {
