@@ -64,6 +64,8 @@
       <div class="metric"><span>모델 토큰</span><b>${(run.input_tokens+run.output_tokens).toLocaleString()}</b></div></div>`;
     if(run.context_chars_avoided) content+=`<p class="muted">컨텍스트 재투영으로 전송을 줄인 문자 수: ${Number(run.context_chars_avoided).toLocaleString()}자 (실제 청구 토큰과 다름)</p>`;
     if(run.repository) content+=`<p class="muted">작업 대상: ${safe(run.repository)} · 원본 Git 커밋: ${safe((run.base_commit||'').slice(0,12))}</p>`;
+    const children=state.runs.filter(item=>item.parent_run_id===run.id);
+    if(children.length) content+=`<h2>🧩 서브에이전트 · ${children.length}개</h2><div class="runs">${children.map(child=>`<button class="run" data-child="${safe(child.id)}"><div class="run-title">${safe(child.instruction)}</div><div class="run-meta"><span>${safe(child.status)}</span><span>${krw(child.cost_krw)}원 / ${krw(child.budget_krw)}원</span></div></button>`).join('')}</div>`;
     if(run.plan) content+=`<h2>실행 계획</h2><div class="output">${safe(run.plan)}</div>`;
     if(run.pending_approval && !run.in_flight) content+=`<div class="approval"><b>⚠️ 명령 실행 승인 필요</b><code>${safe(run.pending_approval.name + ': '+ (run.pending_approval.arguments.command || JSON.stringify(run.pending_approval.arguments)))}</code><div class="actions"><button class="primary" id="allow">승인</button><button class="danger" id="deny">거부</button></div></div>`;
     if(run.in_flight) content+=`<div class="approval"><b>⚠️ 중단된 도구 확인 필요</b><p>실제로 도구가 실행됐을 수 있습니다. 파일·출력을 확인해 결과를 기록하면 중복 실행 없이 작업을 재개할 수 있습니다.</p><code>${safe(run.in_flight.name)} · ${safe(JSON.stringify(run.in_flight.arguments))}</code><label for="reconcile-result">확인한 실행 결과 또는 오류</label><textarea id="reconcile-result" placeholder="직접 확인한 결과를 적어주세요."></textarea><div class="actions"><button class="primary" id="reconcile-ok">성공 결과 기록</button><button class="danger" id="reconcile-failed">실패 결과 기록</button></div></div>`;
@@ -74,6 +76,9 @@
     content+=`</div>`;
     if(!['completed','failed','cancelled'].includes(run.status)) content+=`<div style="margin-top:16px"><label for="directive">추가 지시</label><input id="directive" placeholder="진행 중 요구사항을 수정할 수 있습니다."><button class="secondary" id="send-directive" style="margin-top:9px">지시 전달</button></div>`;
     $('run-detail').innerHTML=content;
+    document.querySelectorAll('[data-child]').forEach(button=>button.addEventListener('click',()=>{
+      state.selected=button.dataset.child;renderList();renderRun(state.runs.find(item=>item.id===state.selected));
+    }));
     $('timeline').innerHTML=run.events.length?run.events.slice(-60).reverse().map(e=>`<div class="event"><time>${time(e.at_ms)} · ${safe(e.kind)}</time><strong>${safe(e.message)}</strong></div>`).join(''):'<p>이벤트 없음</p>';
     const command=async(path,body={})=>{try{await request('/runs/'+run.id+'/'+path,{method:'POST',body:JSON.stringify(body)});await load()}catch(err){alert(err.message)}};
     $('allow')?.addEventListener('click',()=>command('approval',{allow:true}));

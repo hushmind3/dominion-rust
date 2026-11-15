@@ -42,6 +42,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/approval",post(approve))
         .route("/runs/{id}/directive",post(directive))
         .route("/runs/{id}/reconcile",post(reconcile))
+        .route("/runs/{id}/subagents",get(list_subagents).post(create_subagent))
         .route("/runs/{id}/events",get(events))
         .route("/runs/{id}/files",get(list_files))
         .route("/runs/{id}/files/{*path}",get(read_file))
@@ -112,6 +113,15 @@ async fn directive(State(engine): State<Arc<Engine>>, Path(id):Path<Uuid>, Json(
 }
 async fn reconcile(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<ReconcileTool>)->Result<Json<Run>,ApiError>{
     engine.reconcile(id,input).await.map(Json).map_err(bad)
+}
+async fn list_subagents(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<Vec<Run>>,ApiError>{
+    if engine.store.get(id).await.is_none(){return Err(not_found());}
+    let children=engine.store.list().await.into_iter().filter(|run|run.parent_run_id==Some(id)).collect();
+    Ok(Json(children))
+}
+async fn create_subagent(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<CreateRun>)->Result<(StatusCode,Json<Run>),ApiError>{
+    let child=crate::sdk::Dominion::from_engine(engine).delegate(id,input).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(child)))
 }
 #[derive(Default,Deserialize)]
 struct EventQuery { since: Option<u64> }

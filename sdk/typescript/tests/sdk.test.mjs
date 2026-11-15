@@ -71,3 +71,17 @@ test('reconcile records observed tool outcome through Rust API',async()=>{
   assert.deepEqual(JSON.parse(seen[0].options.body),{succeeded:true,result:'file verified'});
   assert.equal(seen[0].options.headers.Authorization,'Bearer private');
 });
+
+test('native Rust subagent routes are exposed by thin TypeScript client',async()=>{
+  const urls=[];
+  const sdk=new Dominion({fetch:async(url,options)=>{
+    urls.push({url,options});
+    return new Response(JSON.stringify([]),{status:200});
+  }});
+  await sdk.runs.subagents('parent-id');
+  await sdk.runs.delegate('parent-id',{instruction:'inspect docs',budget_krw:100,max_steps:3});
+  assert.ok(urls[0].url.endsWith('/api/v1/runs/parent-id/subagents'));
+  assert.equal(urls[0].options.method,'GET');
+  assert.equal(urls[1].options.method,'POST');
+  assert.equal(JSON.parse(urls[1].options.body).budget_krw,100);
+});

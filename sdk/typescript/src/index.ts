@@ -92,6 +92,8 @@ export class Dominion {
     approve: (id: string, allow: boolean) => this.request<{ok:boolean}>('POST','/runs/'+encodeURIComponent(id)+'/approval',{allow}),
     instruct: (id: string, instruction: string) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/directive',{instruction}),
     reconcile: (id: string, input: {succeeded: boolean; result: string}) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/reconcile',input),
+    subagents: (id: string) => this.request<Run[]>('GET','/runs/'+encodeURIComponent(id)+'/subagents'),
+    delegate: (id: string, input: CreateRun) => this.request<Run>('POST','/runs/'+encodeURIComponent(id)+'/subagents',input),
     files: (id: string) => this.request<{files:string[]}>('GET','/runs/'+encodeURIComponent(id)+'/files'),
     file: (id: string, path: string) => this.request<{path:string;content:string}>('GET','/runs/'+encodeURIComponent(id)+'/files/'+path.split('/').map(encodeURIComponent).join('/')),
   };
