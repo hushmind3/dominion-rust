@@ -54,7 +54,7 @@ Rust Axum API ── authentication / approvals / safe tool gateway
 | Source | Responsibility |
 | --- | --- |
 | `src/engine/chat/` | Native model/tool event loop, streaming, context and recovery |
-| `src/engine/goals.rs`, `src/engine/goals/` | Goal module entry, independent runner, effect lineage, verification and finalization |
+| `src/engine/goals/mod.rs`, `src/engine/goals/` | Goal module entry, independent runner, effect lineage, verification and finalization |
 | `src/engine/verification.rs` | Evidence-bound acceptance, independent of agent prose |
 | `src/engine/tools.rs`, `src/engine/tools/` | Rust tool dispatch, dynamic discovery, bounded delegated workers |
 | `src/db.rs`, `src/db/usage_tree.rs` | Transactional SQLite, goal ancestry and descendant cost attribution |
