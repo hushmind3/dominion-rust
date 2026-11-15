@@ -1,6 +1,5 @@
 import {createContext,useContext,useEffect,useState,type ReactNode} from 'react'
 import {Check,ImagePlus,LoaderCircle,Pencil,UserRound,X} from 'lucide-react'
-import {get,post} from '../api'
 import {Button,TextInput} from './Primitives'
 
 export type OwnerProfile={id?:string;name:string;avatar:string;updatedAt?:string|null}
@@ -14,13 +13,14 @@ export const useOwnerProfile=()=>useContext(OwnerProfileContext)
 export function OwnerProfileProvider({children}:{children:ReactNode}){
  const [profile,setProfile]=useState<OwnerProfile>(defaultOwnerProfile)
  useEffect(()=>{
-  let live=true
-  const load=()=>{void get<OwnerProfile>('/api/settings/owner-profile')
-   .then(value=>{if(live)setProfile(value)}).catch(()=>{})}
-  load()
-  const onFocus=()=>{if(document.visibilityState==='visible')load()}
-  window.addEventListener('focus',onFocus)
-  return()=>{live=false;window.removeEventListener('focus',onFocus)}
+  try{
+   const stored=localStorage.getItem('dominion.sub4.owner-profile')
+   if(!stored)return
+   const parsed=JSON.parse(stored) as Partial<OwnerProfile>
+   if(typeof parsed.name==='string'&&parsed.name.trim()&&parsed.name.length<=60&&typeof parsed.avatar==='string'&&parsed.avatar.length<=1500000){
+    setProfile({name:parsed.name,avatar:parsed.avatar})
+   }
+  }catch{/* Device-local UI preference is optional. */}
  },[])
  return <OwnerProfileContext.Provider value={{profile,setProfile}}>{children}</OwnerProfileContext.Provider>
 }
@@ -42,7 +42,8 @@ export function OwnerProfileEditor({compact=false}:{compact?:boolean}){
   if(!name.trim()){setError('표시할 이름을 입력하세요.');return}
   setWorking(true);setError('')
   try{
-   const next=await post<OwnerProfile>('/api/settings/owner-profile',{name:name.trim(),avatar})
+   const next={name:name.trim(),avatar}
+   localStorage.setItem('dominion.sub4.owner-profile',JSON.stringify(next))
    setProfile(next);close()
   }catch(e){setError((e as Error).message)}finally{setWorking(false)}
  }
