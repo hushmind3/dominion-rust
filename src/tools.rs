@@ -1,7 +1,7 @@
 use crate::{config::Settings, domain::ToolCall};
 use serde_json::{json, Value};
 use std::{path::{Component, Path, PathBuf}, time::Duration};
-use tokio::{fs, io::{AsyncRead, AsyncReadExt}, process::Command};
+use tokio::{fs, io::{AsyncRead, AsyncReadExt, AsyncWriteExt}, process::Command};
 
 pub fn definitions(shell_enabled: bool) -> Vec<Value> {
     let mut tools = vec![
@@ -54,6 +54,48 @@ fn validated_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
 fn required<'a>(v: &'a Value, name: &str) -> Result<&'a str, String> {
     v.get(name).and_then(Value::as_str).ok_or_else(|| format!("missing {name}"))
 }
+
+/**
+ * Replace a source file without exposing an intermediate truncated version.
+ * The tool journal already records the mutation intent before this function
+ * runs. Staging also keeps prior file contents intact on failed writes.
+ * Preserve executable/read-only permissions on existing source files.
+ */
+async fn replace_atomically(path:&Path, contents:&[u8])->Result<(),String>{
+    let parent=path.parent().ok_or("file path has no parent")?;
+    let name=path.file_name().ok_or("file path has no name")?.to_string_lossy();
+    let temporary=parent.join(format!(".{name}.dominion-{}.tmp",uuid::Uuid::new_v4()));
+    let permissions=match fs::symlink_metadata(path).await{
+        Ok(meta) if meta.file_type().is_file()=>Some(meta.permissions()),
+        Ok(_)=>return Err("write target is not a regular file".into()),
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound=>None,
+        Err(error)=>return Err(error.to_string()),
+    };
+    let result=async {
+        let mut file=fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temporary).await.map_err(|e|format!("staging write failed: {e}"))?;
+        file.write_all(contents).await.map_err(|e|format!("staging content failed: {e}"))?;
+        if let Some(permissions)=permissions {
+            fs::set_permissions(&temporary,permissions).await.map_err(|e|format!("preserving source permissions failed: {e}"))?;
+        }
+        file.sync_all().await.map_err(|e|format!("staging fsync failed: {e}"))?;
+        drop(file);
+        fs::rename(&temporary,path).await.map_err(|e|format!("atomic source replacement failed: {e}"))?;
+        // The file contents are synced before rename. On Unix, sync the
+        // containing directory as well so a successful rename is durable.
+        #[cfg(unix)]
+        std::fs::File::open(parent).and_then(|directory|directory.sync_all())
+            .map_err(|e|format!("directory fsync failed after rename; inspect the destination before retrying: {e}"))?;
+        Ok(())
+    }.await;
+    if result.is_err(){let _=fs::remove_file(&temporary).await;}
+    result
+}
+fn shell_receipt(success:bool,status:&str,stdout:&str,stderr:&str)->Result<String,String>{
+    let report=format!("exit={status}\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    if success {Ok(report)} else {Err(format!("shell command failed:\n{report}"))}
+}
+
 pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -> Result<String, String> {
     let root = settings.workspace_dir.join(run_id.to_string());
     fs::create_dir_all(&root).await.map_err(|e| e.to_string())?;
@@ -92,7 +134,7 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             if let Some(parent) = path.parent() { fs::create_dir_all(parent).await.map_err(|e| e.to_string())?; }
             // Recheck all components after directory creation.
             let path = validated_path(&root, required(&call.arguments,"path")?)?;
-            fs::write(&path, content).await.map_err(|e| e.to_string())?;
+            replace_atomically(&path, content.as_bytes()).await?;
             Ok(format!("wrote {} bytes to {}", content.len(), path.strip_prefix(root.canonicalize().map_err(|e| e.to_string())?).unwrap_or(&path).display()))
         }
         "edit_file" => {
@@ -111,12 +153,7 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             let updated=content.replacen(old,new,1);
             if updated.len()>4_194_304 {return Err("edited file exceeds 4 MB".into());}
             let checked=validated_path(&root,raw_path)?;
-            let tmp=checked.with_extension(format!("dominion-{}.tmp",uuid::Uuid::new_v4()));
-            fs::write(&tmp,updated).await.map_err(|e|e.to_string())?;
-            if let Err(err)=fs::rename(&tmp,&checked).await {
-                let _=fs::remove_file(&tmp).await;
-                return Err(format!("atomic edit failed: {err}"));
-            }
+            replace_atomically(&checked,updated.as_bytes()).await?;
             Ok(format!("edited {}: one exact match replaced",raw_path))
         }
         "git_status" => git_read(&root,&["status","--short"]).await,
@@ -227,7 +264,7 @@ async fn run_shell(root: PathBuf, command: &str) -> Result<String, String> {
         let (stdout, stderr, status) = tokio::try_join!(bounded(out), bounded(err), async {child.wait().await.map_err(|e| e.to_string())})?;
         Ok::<_,String>((stdout,stderr,status))
     }).await.map_err(|_|"shell timed out".to_string())??;
-    Ok(format!("exit={}\nstdout:\n{}\nstderr:\n{}",result.2,result.0,result.1))
+    shell_receipt(result.2.success(),&result.2.to_string(),&result.0,&result.1)
 }
 #[cfg(test)]
 mod tests {
@@ -275,5 +312,42 @@ mod tests {
         assert_eq!(execute(&settings,id,&read).await.unwrap(),"updated");
         assert!(execute(&settings,id,&edit).await.is_err());
         fs::remove_dir_all(settings.workspace_dir).await.unwrap();
+    }
+
+    #[test]
+    fn shell_nonzero_exit_is_a_tool_error_not_a_success_receipt(){
+        assert!(shell_receipt(true,"exit status: 0","ok","").unwrap().contains("stdout:"));
+        let error=shell_receipt(false,"exit status: 7","partial","failure").unwrap_err();
+        assert!(error.contains("exit status: 7"));
+        assert!(error.contains("partial"));
+        assert!(error.contains("failure"));
+    }
+
+    #[tokio::test]
+    async fn atomic_source_updates_preserve_previous_file_and_executable_mode(){
+        let root=std::env::temp_dir().join(format!("dominion-atomic-{}",uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).await.unwrap();
+        let existing=root.join("script.sh");
+        fs::write(&existing,"#!/bin/sh\\necho old\\n").await.unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&existing,std::fs::Permissions::from_mode(0o755)).await.unwrap();
+        }
+        replace_atomically(&existing,b"#!/bin/sh\\necho new\\n").await.unwrap();
+        assert_eq!(fs::read_to_string(&existing).await.unwrap(),"#!/bin/sh\\necho new\\n");
+        #[cfg(unix)]
+        assert_eq!(fs::metadata(&existing).await.unwrap().permissions().mode() & 0o777,0o755);
+        let folder=root.join("folder");
+        fs::create_dir(&folder).await.unwrap();
+        assert!(replace_atomically(&folder,b"should refuse").await.is_err());
+        assert!(fs::metadata(&folder).await.unwrap().is_dir());
+        replace_atomically(&root.join("new.txt"),b"added").await.unwrap();
+        assert_eq!(fs::read_to_string(root.join("new.txt")).await.unwrap(),"added");
+        let mut entries=fs::read_dir(&root).await.unwrap();
+        while let Some(entry)=entries.next_entry().await.unwrap(){
+            assert!(!entry.file_name().to_string_lossy().contains(".dominion-"));
+        }
+        fs::remove_dir_all(root).await.unwrap();
     }
 }

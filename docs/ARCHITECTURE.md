@@ -248,3 +248,21 @@ MCP progress from paused reconciliation.
 No real external MCP account, real-provider task success benchmarks,
 interactive browser E2E, or end-to-end user data migration was performed
 in this focused validation. These are remaining product-wide acceptance gates.
+
+## Durable source edits and command evidence (2026-11-15)
+
+The Rust native tool path `Engine::perform_tool -> journal::begin -> tools::execute -> journal::finish`
+now stages `write_file` and `edit_file` in a new sibling temporary file, preserves an existing
+file's permissions, syncs the new bytes, then atomically renames and syncs the containing
+Unix directory. Failed staging leaves the prior destination intact and removes temporary
+files; replacement of directories is refused. The model never sees a partially truncated
+source file from Dominion's own write implementation. A successful rename followed by an
+I/O error on directory sync can have an uncertain durable result and must be inspected
+before reattempting; this does not imply exactly-once external effects.
+
+Nonzero approved shell exits now return a tool error containing exit status, stdout and
+stderr, instead of a `tool_result` success event. The autonomous plan/verify/replan loop
+receives failure evidence through the ordinary tool journal; unsuccessful commands are not
+silently classified as successful tests. Focused Rust tests cover atomic replacement,
+permission preservation, invalid destination rejection, temporary-file cleanup and
+command error classification. The separate OS sandbox policy still governs shell dispatch.

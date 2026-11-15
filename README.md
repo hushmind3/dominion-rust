@@ -309,3 +309,12 @@ MCP progress from paused reconciliation.
 No real external MCP account, real-provider task success benchmarks,
 interactive browser E2E, or end-to-end user data migration was performed
 in this focused validation. These are remaining product-wide acceptance gates.
+
+### Reliable source edits and test receipts
+
+The native Rust agent now stages both `write_file` and `edit_file` atomically rather than
+truncating existing source files, with fsynced content and preserved executable bits.
+Approved shell commands with a nonzero exit become persisted tool errors that expose
+stdout/stderr for agent repair and independent verification. These protections are shared
+by the Rust SDK, REST API, TypeScript adapter and GUI because they enter the same Rust
+`tools::execute` path. Refer to `docs/ARCHITECTURE.md` for recovery limitations.
