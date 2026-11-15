@@ -49,6 +49,14 @@ impl Store {
             // Risk-aware restart. Never replay mutating tool intents with
             // unknown results; auto-retry only the locally pure inspection set.
             journal::recover(&mut run);
+            if run.model_only && !run.terminal(){
+                // The interrupted provider call may have been billed. It
+                // cannot be safely replayed and MUST NOT become an agent run.
+                run.status=crate::domain::RunStatus::Failed;
+                run.event("model_only_interrupted",
+                    "Provider turn interrupted by restart; no model retry or tool execution performed",
+                    None);
+            }
             state.insert(run.id, run);
         }
         // Backward-compatible recovery: earlier revisions allocated child

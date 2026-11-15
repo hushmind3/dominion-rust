@@ -533,6 +533,7 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
     let mut run=Run::new(CreateRun{instruction:prompt,budget_krw:None,max_steps:None},
         engine.settings.max_steps).map_err(bad)?;
     run.strategy_learning=input.auto_learning;
+    run.model_only=model_only;
     engine.store.put(run.clone()).await.map_err(broken)?;
     engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await.map_err(broken)?;
     if model_only{
@@ -548,7 +549,19 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
             Ok(())
         }).await.map_err(broken)?;
         tokio::spawn(async move {
-            let answer=worker.model.complete(&messages,&[],false).await;
+            // Drop the HTTP future on cancellation rather than continuing
+            // an expensive provider call in the background.
+            let answer=tokio::select!{
+                result=worker.model.complete(&messages,&[],false)=>Some(result),
+                _=async{
+                    loop{
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        if worker.store.get(id).await.is_none_or(|item|
+                            item.status!=RunStatus::Running){break;}
+                    }
+                }=>None,
+            };
+            let Some(answer)=answer else{return;};
             let saved=worker.store.mutate(id,|item|{
                 // Cancellation can win while the provider is responding.
                 // Never resurrect a cancelled run or publish its answer.
@@ -578,7 +591,7 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
                     },
                     Err(ref error)=>{
                         item.status=RunStatus::Failed;
-                        item.event("provider_error",error,None);
+                        item.event("provider_error",error.clone(),None);
                     }
                 }
                 Ok(())

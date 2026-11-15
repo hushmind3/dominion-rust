@@ -81,6 +81,8 @@ pub struct Run {
     pub tool_schema_chars_avoided: u64,
     pub max_steps: usize,
     #[serde(default="default_learning_enabled")] pub strategy_learning: bool,
+    /// A model-only request MUST never be recovered into the tool-agent harness.
+    #[serde(default)] pub model_only:bool,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -128,7 +130,7 @@ impl Run {
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
-            strategy_learning:true,
+            strategy_learning:true,model_only:false,
             created_at_ms: time, updated_at_ms: time,
         };
         run.event("created", "New execution created", None);

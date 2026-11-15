@@ -96,6 +96,7 @@ impl Engine {
             if !guard.insert(id) { return Err("execution is already active".into()); }
         }
         let started = self.store.mutate(id, |run| {
+            if run.model_only {return Err("model-only chat cannot be launched as a tool agent".into());}
             if run.terminal() { return Err("cannot restart finished execution".into()); }
             if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}
