@@ -104,19 +104,24 @@ impl Engine {
 
     /// Resolve the exact persisted provider/model identity for this run.
     /// Provider credentials never enter run journals or frontend responses.
-    pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
-        if run.provider_id.is_empty()||run.provider_id=="dominion-native" {
-            if let Some(local)=crate::frontend_local_models::native_override(&self.settings,&run.model_name) {
+    /// Single model-routing authority for chat, rooms, RSI and automation.
+    /// A selected local model is the same actual Ollama endpoint everywhere.
+    pub fn model_for_selection(&self,provider:&str,model:&str)->Result<ModelClient,String>{
+        if provider.is_empty()||provider=="dominion-native" {
+            if let Some(local)=crate::frontend_local_models::native_override(&self.settings,model){
                 return self.model.with_primary_protocol(local,"openai");
             }
         }
-        let settings=self.providers.resolve(&run.provider_id,&run.model_name,&self.settings.main)?;
-        if run.provider_id.is_empty()||run.provider_id=="dominion-native"{
+        let settings=self.providers.resolve(provider,model,&self.settings.main)?;
+        if provider.is_empty()||provider=="dominion-native"{
             Ok(self.model.clone())
         }else{
-            let record=self.providers.get(&run.provider_id).ok_or("provider registry entry unavailable")?;
+            let record=self.providers.get(provider).ok_or("provider registry entry unavailable")?;
             self.model.with_primary_protocol(settings,&record.kind)
         }
+    }
+    pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
+        self.model_for_selection(&run.provider_id,&run.model_name)
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
