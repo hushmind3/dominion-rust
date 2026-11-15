@@ -94,3 +94,13 @@ const children = await sdk.runs.subagents(coding.id);
 
 Both routes are thin adapters to native Rust. Repository paths are relative
 to DOMINION_WORKSPACE_DIR; the agent receives an isolated Git worktree.
+
+
+## Native RSI multi-file revisions
+
+The TypeScript client shares Rust's POST /api/v1/improvements route. Pass the
+primary target_file and optionally target_files including the primary, with
+1-8 source paths. The server persists attempts and real candidate evaluation
+results, requires a separate approve call, and accepts adopt only after a
+frozen worktree judge reports better evidence. Declared interfaces mirror
+the native Rust experiment record; TypeScript does not execute an agent loop.

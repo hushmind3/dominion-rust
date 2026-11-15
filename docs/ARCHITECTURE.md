@@ -287,3 +287,28 @@ notice, and that recovery marker is persisted before API/SDK observation. No inc
 candidate may be silently adopted or automatically retried. This protects experiment
 metadata; it does not replay interrupted provider calls, clean abandoned Git worktrees,
 or implement a distributed transaction across Git cherry-pick and record adoption.
+
+
+## Real multi-file RSI and frozen judge path (2026-11-15)
+
+The native Improvements service (shared by Rust SDK, REST, TypeScript and Studio)
+now supports 1-8 source files; old single-file trials and plaintext responses
+remain compatible. Every file path is validated and named test fixtures,
+test files and workflows are not available to candidate modification.
+
+The baseline is measured once. Up to three bounded model proposals are applied
+to a disposable candidate Git worktree. Each attempt is committed, then copied
+into a third freshly reset Git judge worktree at the original base SHA. The
+judge executes the original operator-supplied test and scoring commands without
+exposing the frozen judge to the model. Failed test results and scores are fed
+back into the next proposal; actual model costs and attempts persist. An
+accepted detached commit is pinned at refs/dominion/rsi/<trial-id> until explicit
+Git adoption, so worktree cleanup and garbage collection cannot lose it.
+Descendants inherit the target file set and measured reflection.
+
+The full real Git/model/command/evaluation/adoption regression runs as an
+explicitly selected Rust integration test. Its own isolated Git fixture,
+fixed local commands and loopback model use DOMINION_SHELL_SANDBOX=off only
+for that CI test process. Production RSI continues to require a sandbox backend,
+human approval and enabled shell. This is a proven pipeline test, not evidence
+of real-provider coding quality, arbitrary-file RSI, or SWE-bench parity.

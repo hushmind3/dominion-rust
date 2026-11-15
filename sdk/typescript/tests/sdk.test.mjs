@@ -105,3 +105,16 @@ test('read-only delegation, lazy skills and durable memory use native API',async
   assert.ok(calls[4].url.includes('scope=projects%2Fdemo'));
   assert.ok(calls[4].url.includes('query=cargo'));
 });
+
+test('RSI multi-file target contract reaches the same native Rust route', async()=>{
+  const seen=[];
+  const client=new Dominion({fetch:async(url,options)=>{
+    seen.push({url,options});
+    return new Response(JSON.stringify({id:'trial'}),{status:201,headers:{'content-type':'application/json'}});
+  }});
+  await client.improvements.create({repository:'repo',target_file:'src/lib.rs',
+    target_files:['src/lib.rs','src/engine.rs'],instruction:'improve',
+    test_command:'cargo test',score_command:'echo 1'});
+  assert.ok(seen[0].url.endsWith('/api/v1/improvements'));
+  assert.deepEqual(JSON.parse(seen[0].options.body).target_files,['src/lib.rs','src/engine.rs']);
+});

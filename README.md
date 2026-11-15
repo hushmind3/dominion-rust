@@ -14,7 +14,7 @@ The Rust core is a **clean rebuild** on `dominion-sub4`; the React/Vite frontend
 | Events | `GET /runs/{id}/events?since=N` | Replayable, sequence-numbered SSE timeline; snapshots remain authoritative |
 | Group conversations | `/api/v1/groups` | Distinct participants, role-based and @mention speaker selection, shared history, model tiers, round and estimated-cost limits |
 | Video | `/api/v1/videos` | Optional model storyboard, FFmpeg scene rendering, optional local speech, cached-scene partial rerender, merged MP4 download |
-| Non-weight improvement | `/api/v1/improvements` | Model candidate on designated source file; detached Git worktrees; fixed baseline/candidate tests and numeric score; explicit Git adoption; inherited text reflections |
+| Non-weight improvement | `/api/v1/improvements` | 1-8 file model candidates; iterative repair; frozen third-worktree judge; numeric scoring; explicit adoption; inherited lessonss |
 | Model integration | `src/provider.rs` | OpenAI-compatible chat-completions transport, configurable main/economy models, economy-to-main failover, token usage and estimated cost |
 | Files and commands | `src/tools.rs` | Workspace read/write/search, exact-match atomic editing, Git status/diff, MCP; optional approved shell |
 | Existing Git projects | `POST /api/v1/runs/from-repository` | Creates an isolated detached worktree; original checkout is not edited |
@@ -332,3 +332,18 @@ RSI experiment states, scores and adoption evidence are persisted through synced
 atomic snapshots. Interrupted evaluations become durable failed records during
 restart instead of remaining in-memory-only recovery markers. No interrupted
 candidate is adopted without a new independent evaluation.
+
+
+### Source-connected RSI with a separate worktree judge
+
+RSI can now propose changes to 1-8 designated source files, retry up to three
+times using real frozen-test feedback, evaluate on a separate Git worktree,
+and pin accepted candidate commits until explicit adoption. Descendant trials
+inherit the exact file set and persisted measured lessons; the original source
+checkout is untouched before adoption. Rust SDK, REST, TypeScript and the
+non-developer Studio screen all share this native execution path.
+
+General Rust tests do not silently count an unavailable OS sandbox as a passing
+RSI end-to-end test. CI explicitly runs two complete fixed-command, loopback
+mock-model Git flows. Real-model task quality and production confinement remain
+separate operational gates.

@@ -13,6 +13,11 @@ pub struct Measurement { pub tests_passed:bool, pub score:Option<f64>, pub log:S
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Improvement {
     pub id:Uuid, pub parent:Option<Uuid>, pub repository:String, pub target_file:String,
+    /// Explicit bounded set of source files; an empty value loads legacy single-file trials.
+    #[serde(default)]
+    pub target_files:Vec<String>,
+    #[serde(default)]
+    pub attempts:usize,
     pub instruction:String, pub test_command:String, pub score_command:Option<String>,
     pub status:ImprovementStatus, pub base_commit:Option<String>,pub candidate_commit:Option<String>,
     pub baseline:Option<Measurement>,pub candidate:Option<Measurement>,pub proposal:Option<String>,
@@ -21,8 +26,10 @@ pub struct Improvement {
 }
 #[derive(Deserialize)]
 pub struct NewImprovement {
-    pub repository:String, pub target_file:String, pub instruction:String,
-    pub test_command:String, pub score_command:Option<String>, pub parent:Option<Uuid>,
+    pub repository:String, pub target_file:String,
+    #[serde(default)]
+    pub target_files:Option<Vec<String>>,
+    pub instruction:String, pub test_command:String, pub score_command:Option<String>, pub parent:Option<Uuid>,
 }
 pub struct Improvements {
     root:PathBuf, workspace:PathBuf,
@@ -34,6 +41,68 @@ fn relative(raw:&str)->Result<&Path,String>{
     if path.components().any(|c|!matches!(c,Component::Normal(_)|Component::CurDir)){return Err("relative paths only; parent traversal forbidden".into());}
     Ok(path)
 }
+
+fn target_paths(primary:&str,requested:Option<Vec<String>>)->Result<Vec<String>,String>{
+    relative(primary)?;
+    let files=requested.unwrap_or_else(||vec![primary.to_owned()]);
+    if files.is_empty()||files.len()>8||!files.iter().any(|path|path==primary){
+        return Err("RSI requires 1..8 source files including the primary target".into());
+    }
+    let mut unique=HashSet::new();
+    for file in &files {
+        relative(file)?;
+        if !unique.insert(file.clone()){return Err("duplicate RSI target file".into());}
+        let path=Path::new(file);
+        let protected=path.components().any(|part|matches!(part,Component::Normal(s)
+            if matches!(s.to_str(),Some(".github"|"tests"|"__tests__"|"fixtures"))))
+            ||path.file_name().and_then(|s|s.to_str())
+                .is_some_and(|name|name.starts_with("test_")||name.ends_with("_test.rs")
+                    ||name.ends_with(".spec.ts")||name.ends_with(".test.ts"));
+        if protected{return Err(format!("RSI evaluation/test files cannot be candidate targets: {file}"));}
+    }
+    Ok(files)
+}
+fn decode_proposal(text:&str,sources:&[(String,String)])->Result<Vec<(String,String)>,String>{
+    if text.is_empty()||text.len()>400_000{return Err("candidate response is empty or oversized".into());}
+    let stripped=text.trim();
+    let json=if let Some(data)=stripped.strip_prefix("```json"){
+        data.trim().strip_suffix("```").unwrap_or(data).trim()
+    }else{stripped};
+    let structured=serde_json::from_str::<serde_json::Value>(json).ok()
+        .filter(|value|value.get("files").is_some());
+    if let Some(value)=structured {
+        let files=value.get("files").and_then(|v|v.as_array())
+            .ok_or("candidate JSON files must be an array")?;
+        if files.len()!=sources.len(){return Err("candidate must include every designated source file".into());}
+        let mut received=HashMap::new();
+        for entry in files {
+            let path=entry.get("path").and_then(|v|v.as_str()).ok_or("candidate path missing")?;
+            let content=entry.get("content").and_then(|v|v.as_str()).ok_or("candidate content missing")?;
+            if received.insert(path.to_owned(),content.to_owned()).is_some(){
+                return Err("duplicate candidate path".into());
+            }
+        }
+        if received.keys().any(|path|!sources.iter().any(|(expected,_)|expected==path)){
+            return Err("candidate attempted to edit a non-designated file".into());
+        }
+        let mut output=Vec::new();
+        for (path,_) in sources {
+            output.push((path.clone(),received.remove(path).ok_or("candidate source missing")?));
+        }
+        return Ok(output);
+    }
+    if sources.len()!=1{
+        return Err("multi-file RSI candidate must use a JSON files array".into());
+    }
+    // Backward compatibility: single-file adapters may return plain source,
+    // optionally fenced in markdown.
+    let content=if let Some(data)=stripped.strip_prefix("```"){
+        data.split_once('\n').map(|(_,body)|body.trim_end_matches('`').trim_end_matches('\n'))
+            .unwrap_or(stripped)
+    }else{text};
+    Ok(vec![(sources[0].0.clone(),content.to_owned())])
+}
+
 async fn execute(program:&str,args:&[&str],dir:&Path,timeout:u64)->Result<String,String>{
     let mut child=if program=="sh" {
         let script=args.last().ok_or("shell script missing")?;
@@ -136,14 +205,18 @@ impl Improvements {
         values.sort_by_key(|v|std::cmp::Reverse(v.created_at_ms));values
     }
     pub async fn create(&self,input:NewImprovement)->Result<Improvement,String>{
-        relative(&input.repository)?;relative(&input.target_file)?;
+        relative(&input.repository)?;
+        let target_files=target_paths(&input.target_file,input.target_files.clone())?;
         if input.instruction.trim().is_empty()||input.instruction.len()>8000{return Err("invalid improvement instruction".into());}
         if input.test_command.trim().is_empty()||input.test_command.len()>2048{return Err("invalid test command".into());}
         if let Some(command)=&input.score_command{if command.trim().is_empty()||command.len()>2048{return Err("invalid score command".into());}}
         if let Some(parent)=input.parent{
             let parent=self.get(parent).await.ok_or("parent experiment not found")?;
             if parent.status!=ImprovementStatus::Adopted{return Err("parent trial must be adopted before a descendant".into());}
-            if parent.repository!=input.repository || parent.target_file!=input.target_file {return Err("descendant repository and file must match parent".into());}
+            if parent.repository!=input.repository || parent.target_file!=input.target_file
+                || (!parent.target_files.is_empty() && parent.target_files!=target_files) {
+                return Err("descendant repository and file set must match parent".into());
+            }
         }
         let root=self.workspace.canonicalize().map_err(|e|e.to_string())?;
         let repository=root.join(relative(&input.repository)?);
@@ -152,6 +225,7 @@ impl Improvements {
         let status=ImprovementStatus::AwaitingApproval;
         let now=now_ms();
         self.put(Improvement{id:Uuid::new_v4(),parent:input.parent,repository:input.repository,target_file:input.target_file,
+            target_files,attempts:0,
             instruction:input.instruction,test_command:input.test_command,score_command:input.score_command,status,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,proposal:None,reflection:None,
             accepted:false,cost_krw:0.0,error:None,created_at_ms:now,updated_at_ms:now}).await
@@ -188,49 +262,173 @@ impl Improvements {
         let trial_root=trial_root.canonicalize().map_err(|e|e.to_string())?;
         let reference=trial_root.join("baseline");
         let candidate=trial_root.join("candidate");
-        for destination in [&reference,&candidate]{
+        let judge=trial_root.join("judge");
+        let mut attached=Vec::new();
+        for destination in [&reference,&candidate,&judge]{
             let path=destination.to_str().ok_or("invalid worktree path")?;
-            git(&repo,&["worktree","add","--detach",path,&head]).await?;
+            if let Err(error)=git(&repo,&["worktree","add","--detach",path,&head]).await{
+                for path in attached.into_iter().rev() {
+                    let _=git(&repo,&["worktree","remove","--force",path]).await;
+                }
+                let _=fs::remove_dir(&trial_root).await;
+                return Err(error);
+            }
+            attached.push(path);
         }
-        let result=self.evaluate_worktrees(model,&mut item,&reference,&candidate).await;
-        for dir in [&reference,&candidate] {
-            if let Some(path)=dir.to_str(){let _=git(&repo,&["worktree","remove","--force",path]).await;}
+        let result=self.evaluate_worktrees(model,&mut item,&reference,&candidate,&judge).await;
+        for path in attached.into_iter().rev() {
+            if let Err(error)=git(&repo,&["worktree","remove","--force",path]).await {
+                tracing::warn!(%error,path,"RSI temporary worktree cleanup incomplete");
+            }
+        }
+        // Remove the now-empty trial directory, keeping only the durable JSON
+        // experiment snapshot and accepted Git ref. No source checkout is touched.
+        if let Err(error)=fs::remove_dir(&trial_root).await {
+            tracing::warn!(%error,"RSI trial workspace cleanup incomplete");
         }
         result
     }
-    async fn evaluate_worktrees(&self,model:&ModelClient,item:&mut Improvement,reference:&Path,candidate:&Path)->Result<(),String>{
-        let file=relative(&item.target_file)?;
-        let source=candidate.join(file);
-        let actual=source.canonicalize().map_err(|e|format!("candidate target unavailable: {e}"))?;
-        if !actual.starts_with(candidate){return Err("target escapes candidate worktree".into());}
-        if !actual.is_file(){return Err("target must be a regular file".into());}
-        if fs::metadata(&actual).await.map_err(|e|e.to_string())?.len()>100_000{return Err("target file exceeds 100 KB".into());}
-        let original=fs::read_to_string(&actual).await.map_err(|e|e.to_string())?;
-        let inherited=if let Some(parent)=item.parent { self.get(parent).await.and_then(|p|p.reflection).unwrap_or_default() }else{String::new()};
-        let prompts=vec![
-            json!({"role":"system","content":"Propose one concrete, improved version of the supplied source file. Return ONLY the complete new source text, without markdown fences. Do not alter tests or evaluation scripts. Prefer minimal maintainable improvements. You are optimizing a fixed program against independent tests and a frozen scoring command. Do not game the metric or weaken safety checks."}),
-            json!({"role":"user","content":format!("Improvement objective:\n{}\nInherited measured lessons:\n{}\nFile: {}\nCurrent contents:\n{}",item.instruction,inherited,item.target_file,original)})
-        ];
-        let reply=model.complete(&prompts,&[],false).await?;
-        if reply.text.is_empty() || reply.text.len()>150_000 || reply.text==original {return Err("model did not propose a distinct bounded candidate".into());}
-        let text=reply.text.trim().strip_prefix("```").map(|s|s.trim_start_matches(|c:char|c!='\n').trim_start_matches('\n').trim_end_matches("```").trim().to_string()).unwrap_or(reply.text);
-        if text.is_empty(){return Err("candidate is empty".into());}
-        fs::write(&actual,&text).await.map_err(|e|e.to_string())?;
-        git(candidate,&["add","--",&item.target_file]).await?;
-        execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost","commit","-m","dominion: candidate improvement"],candidate,45).await?;
-        item.candidate_commit=Some(git(candidate,&["rev-parse","HEAD"]).await?.trim().to_string());
-        item.proposal=Some(format!("{} bytes -> {} bytes",original.len(),text.len()));
-        item.cost_krw=reply.cost_krw;
+
+    /// Source changes originate from the model; acceptance originates only
+    /// from a separate worktree and operator-frozen test/score commands.
+    async fn evaluate_worktrees(&self,model:&ModelClient,item:&mut Improvement,
+        reference:&Path,candidate:&Path,judge:&Path)->Result<(),String>{
+        let paths=if item.target_files.is_empty(){
+            vec![item.target_file.clone()]
+        }else{item.target_files.clone()};
+        let mut sources=Vec::<(String,String)>::new();
+        let mut total=0usize;
+        let workspace=candidate.canonicalize().map_err(|e|e.to_string())?;
+        for path in paths {
+            let relative=relative(&path)?;
+            let actual=candidate.join(relative).canonicalize()
+                .map_err(|e|format!("candidate target unavailable: {e}"))?;
+            if !actual.starts_with(&workspace) || !actual.is_file(){
+                return Err("candidate target escaped its isolated worktree".into());
+            }
+            let bytes=fs::metadata(&actual).await.map_err(|e|e.to_string())?.len() as usize;
+            if bytes>100_000{return Err("a candidate source exceeds 100 KB".into());}
+            total+=bytes;
+            if total>180_000{return Err("candidate source set exceeds 180 KB".into());}
+            let original=fs::read_to_string(&actual).await.map_err(|e|e.to_string())?;
+            sources.push((path,original));
+        }
+        let inherited=if let Some(parent)=item.parent {
+            self.get(parent).await.and_then(|p|p.reflection).unwrap_or_default()
+        }else{String::new()};
+        let baseline=self.measure(reference,&item.test_command,item.score_command.as_deref()).await?;
+        item.baseline=Some(baseline.clone());
         self.put(item.clone()).await?;
-        let baseline=self.measure(reference,&item.test_command,item.score_command.as_deref()).await;
-        let candidate_measure=self.measure(candidate,&item.test_command,item.score_command.as_deref()).await;
-        let a=baseline?;
-        let b=candidate_measure?;
-        let accepted=is_better(&a,&b);
-        item.reflection=Some(format!("Previous score {:?}; candidate score {:?}; baseline tests: {}; candidate tests: {}; adopted recommendation: {}. Baseline log: {} Candidate log: {}",
-            a.score,b.score,a.tests_passed,b.tests_passed,accepted,a.log.chars().take(1000).collect::<String>(),b.log.chars().take(1000).collect::<String>()));
-        item.baseline=Some(a);item.candidate=Some(b);item.accepted=accepted;
-        item.status=if accepted{ImprovementStatus::Evaluated}else{ImprovementStatus::Rejected};
+        let mut prompts=vec![
+            json!({"role":"system","content":"Improve the designated source files. For multiple files return ONLY JSON of shape {\"files\":[{\"path\":\"exact designated path\",\"content\":\"complete source text\"}]}. Include each specified path exactly once. For one source file, a complete plain-text file is accepted. Never edit tests, evaluation commands, configuration or other paths. Preserve functionality and user goals; a separate fixed judge checks your work."}),
+            json!({"role":"user","content":format!(
+                "Improvement goal:\n{}\nInherited measured lessons:\n{}\nExact authorized files and original source:\n{}\nThe tests and scoring commands are frozen; no changes outside these files are admitted.",
+                item.instruction,inherited,serde_json::to_string(&sources).map_err(|e|e.to_string())?
+            )})
+        ];
+        let base=item.base_commit.as_deref().ok_or("missing frozen base revision")?.to_owned();
+        let mut last_problem=String::new();
+        for attempt in 1..=3 {
+            item.attempts=attempt;
+            let reply=model.complete(&prompts,&[],false).await?;
+            item.cost_krw+=reply.cost_krw;
+            self.put(item.clone()).await?;
+            // Reset and clean only the private disposable worktree created
+            // for this trial, never the user's original source checkout.
+            git(candidate,&["reset","--hard",&base]).await?;
+            git(candidate,&["clean","-fd","--"]).await?;
+            let changes=match decode_proposal(&reply.text,&sources){
+                Ok(changes)=>changes,
+                Err(error)=>{
+                    last_problem=error;
+                    prompts.push(json!({"role":"user","content":format!(
+                        "Candidate format rejected: {}. Return only designated file contents.",last_problem
+                    )}));
+                    continue;
+                }
+            };
+            if changes.iter().all(|(path,content)|sources.iter()
+                .any(|(old_path,old)|old_path==path&&old==content)){
+                last_problem="candidate did not change any source files".into();
+                prompts.push(json!({"role":"user","content":last_problem}));
+                continue;
+            }
+            let mut size=0usize;
+            for (path,text) in &changes {
+                size+=text.len();
+                if text.len()>150_000||size>250_000{
+                    return Err("candidate output source set exceeds limits".into());
+                }
+                let target=candidate.join(relative(path)?);
+                let canonical=target.canonicalize().map_err(|e|e.to_string())?;
+                if !canonical.starts_with(&workspace)||!canonical.is_file(){
+                    return Err("candidate output escaped its isolated worktree".into());
+                }
+                fs::write(&canonical,text).await.map_err(|e|e.to_string())?;
+            }
+            let mut add=vec!["add","--"];
+            for (path,_) in &changes {add.push(path.as_str());}
+            git(candidate,&add).await?;
+            execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost",
+                "commit","-m","dominion: evaluated RSI source candidate"],candidate,45).await?;
+            let commit=git(candidate,&["rev-parse","HEAD"]).await?;
+            item.candidate_commit=Some(commit.clone());
+            item.proposal=Some(format!("attempt {attempt}: {} files, {} source bytes",changes.len(),size));
+            self.put(item.clone()).await?;
+            // Judge has never received the candidate prompt and uses a clean
+            // checkout of the original revision for every attempt.
+            git(judge,&["reset","--hard",&base]).await?;
+            git(judge,&["clean","-fdx","--"]).await?;
+            git(judge,&["cherry-pick","--no-commit",&commit]).await?;
+            // Commit the staged candidate state only as an in-memory Git tree
+            // hash. The frozen judge's test/score commands are not permitted
+            // to change that tracked source, with or without git add.
+            let frozen_tree=git(judge,&["write-tree"]).await?;
+            let measured=self.measure(judge,&item.test_command,item.score_command.as_deref()).await;
+            let mut candidate_result=match measured {
+                Ok(measurement)=>measurement,
+                Err(error)=>Measurement{tests_passed:false,score:None,log:error}
+            };
+            let staged_unchanged=git(judge,&["write-tree"]).await
+                .is_ok_and(|tree|tree==frozen_tree);
+            let working_unchanged=git(judge,&["diff","--exit-code","--no-ext-diff","--"]).await.is_ok();
+            if !staged_unchanged||!working_unchanged{
+                candidate_result.tests_passed=false;
+                candidate_result.score=None;
+                candidate_result.log.push_str("\nREJECTED: evaluator changed frozen tracked source files");
+            }
+            let accepted=is_better(&baseline,&candidate_result);
+            last_problem=format!(
+                "Attempt {attempt}. Frozen tests passed: {}. Score: {:?} (baseline {:?}). Evidence: {}",
+                candidate_result.tests_passed,candidate_result.score,baseline.score,
+                candidate_result.log.chars().take(1000).collect::<String>()
+            );
+            item.candidate=Some(candidate_result);
+            item.reflection=Some(format!(
+                "Baseline tests: {}; candidate accepted: {}; {}",
+                baseline.tests_passed,accepted,last_problem
+            ));
+            item.accepted=accepted;
+            item.updated_at_ms=now_ms();
+            if accepted {
+                // Pin accepted detached commit so Git garbage collection cannot
+                // discard it when the candidate worktree is removed.
+                let pin=format!("refs/dominion/rsi/{}",item.id);
+                git(candidate,&["update-ref",&pin,&commit]).await?;
+                item.status=ImprovementStatus::Evaluated;
+                self.put(item.clone()).await?;
+                return Ok(());
+            }
+            item.status=ImprovementStatus::Running;
+            self.put(item.clone()).await?;
+            prompts.push(json!({"role":"user","content":format!(
+                "Independent evaluator rejected the candidate: {}. Fix the source and retry without editing tests.",
+                last_problem
+            )}));
+        }
+        item.status=ImprovementStatus::Rejected;
+        item.accepted=false;
+        item.error=Some(format!("Three source attempts did not satisfy frozen evaluation: {last_problem}"));
         item.updated_at_ms=now_ms();
         self.put(item.clone()).await?;
         Ok(())
@@ -255,14 +453,23 @@ impl Improvements {
         if Some(head.trim())!=item.base_commit.as_deref(){return Err("repository HEAD changed since evaluation; refusing adoption".into());}
         if !git(&repo,&["status","--porcelain"]).await?.is_empty(){return Err("repository has uncommitted changes".into());}
         let commit=item.candidate_commit.as_deref().ok_or("missing candidate commit")?;
+        let pin=format!("refs/dominion/rsi/{}",item.id);
+        // Existing serialized experiments without a pin remain compatible.
+        if let Ok(actual)=git(&repo,&["rev-parse",&pin]).await{
+            if actual!=commit{return Err("RSI accepted ref differs from frozen candidate".into());}
+        }
         execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost","cherry-pick",commit],&repo,45).await?;
         item.status=ImprovementStatus::Adopted;item.updated_at_ms=now_ms();
-        self.put(item).await
+        let adopted=self.put(item).await?;
+        let _=git(&repo,&["update-ref","-d",&pin]).await;
+        Ok(adopted)
     }
     pub async fn descendant(&self,id:Uuid)->Result<Improvement,String>{
         let parent=self.get(id).await.ok_or("trial not found")?;
         self.create(NewImprovement{
             repository:parent.repository,target_file:parent.target_file,
+            target_files:Some(if parent.target_files.is_empty(){vec![parent.target_file.clone()]}
+                else{parent.target_files.clone()}),
             instruction:parent.instruction,test_command:parent.test_command,
             score_command:parent.score_command,parent:Some(id)
         }).await
@@ -281,6 +488,26 @@ mod tests {
     }
     #[test]
     fn rejects_traversal(){assert!(relative("../outside").is_err());assert!(relative("/root").is_err());}
+    #[test]
+    fn preserves_existing_single_file_rsi_format(){
+        let source=vec![("src/lib.rs".into(),"old".into())];
+        assert_eq!(decode_proposal("new source\\n",&source).unwrap()[0].1,"new source\\n");
+        assert!(target_paths("src/lib.rs",None).unwrap()==vec!["src/lib.rs"]);
+    }
+
+    #[test]
+    fn parses_bounded_multifile_proposals_and_rejects_test_rewrites(){
+        let sources=vec![
+            ("src/a.rs".to_string(),"old a".to_string()),
+            ("src/b.rs".to_string(),"old b".to_string())];
+        let answer=r#"{"files":[{"path":"src/a.rs","content":"new a"},{"path":"src/b.rs","content":"new b"}]}"#;
+        assert_eq!(decode_proposal(answer,&sources).unwrap().len(),2);
+        assert!(decode_proposal("some code",&sources).is_err());
+        assert!(decode_proposal(r#"{"files":[{"path":"src/a.rs","content":"new"},{"path":"tests/accept.rs","content":"cheat"}]}"#,&sources).is_err());
+        assert!(target_paths("src/a.rs",Some(vec!["src/a.rs".into(),"tests/accept.rs".into()])).is_err());
+        assert!(target_paths("src/a.rs",Some(vec!["src/a.rs".into(),"src/a.rs".into()])).is_err());
+    }
+
     #[tokio::test]
     async fn recovered_running_rsi_trial_is_durably_failed_on_restart(){
         let root=std::env::temp_dir().join(format!("dominion-rsi-recover-{}",Uuid::new_v4()));
@@ -291,6 +518,7 @@ mod tests {
         let id=Uuid::new_v4();
         let item=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"src/lib.rs".into(),
+            target_files:vec![],attempts:0,
             instruction:"repair behavior".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::Running,
             base_commit:None,candidate_commit:None,
@@ -317,6 +545,7 @@ mod tests {
         let id=Uuid::new_v4();
         let original=Improvement{
             id,parent:None,repository:"repo".into(),target_file:"file.txt".into(),
+            target_files:vec![],attempts:0,
             instruction:"preserve state".into(),test_command:"true".into(),
             score_command:None,status:ImprovementStatus::AwaitingApproval,
             base_commit:None,candidate_commit:None,baseline:None,candidate:None,
@@ -342,24 +571,148 @@ mod full_cycle_tests {
     use crate::config::Settings;
     use axum::{routing::post,Json,Router};
     use serde_json::Value;
+
+    use std::sync::atomic::{AtomicUsize,Ordering};
+    async fn repair_proposal(State(counter):State<Arc<AtomicUsize>>,Json(_request):Json<Value>)->Json<Value>{
+        let turn=counter.fetch_add(1,Ordering::SeqCst);
+        let files=if turn==0{
+            json!({"files":[{"path":"score.txt","content":"0\n"},{"path":"helper.txt","content":"still-wrong\n"}]})
+        }else{
+            json!({"files":[{"path":"score.txt","content":"1\n"},{"path":"helper.txt","content":"ok\n"}]})
+        };
+        Json(json!({"choices":[{"message":{"role":"assistant","content":files.to_string()}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":20}}))
+    }
+    async fn failing_proposal(Json(_request):Json<Value>)->Json<Value>{
+        let files=json!({"files":[{"path":"score.txt","content":"0\n"},
+            {"path":"helper.txt","content":"still wrong\n"}]});
+        Json(json!({"choices":[{"message":{"role":"assistant",
+            "content":files.to_string()}}],
+            "usage":{"prompt_tokens":5,"completion_tokens":10}}))
+    }
+    #[tokio::test]
+    #[ignore = "explicit fixed-fixture shell test; run isolated with DOMINION_SHELL_SANDBOX=off"]
+    async fn rejects_three_non_improving_candidates_without_adoption(){
+        assert_eq!(std::env::var("DOMINION_SHELL_SANDBOX").unwrap(),"off");
+        let root=std::env::temp_dir().join(format!("dominion-rsi-rejected-{}",Uuid::new_v4()));
+        let repo=root.join("workspace").join("repo");
+        fs::create_dir_all(&repo).await.unwrap();
+        git(&repo,&["init","-q"]).await.unwrap();
+        fs::write(repo.join("score.txt"),"0\n").await.unwrap();
+        fs::write(repo.join("helper.txt"),"wrong\n").await.unwrap();
+        git(&repo,&["add","score.txt","helper.txt"]).await.unwrap();
+        execute("git",&["-c","user.name=Test","-c","user.email=test@example.com",
+            "commit","-m","base"],&repo,30).await.unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/chat/completions",post(failing_proposal))).await.unwrap();
+        });
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{addr}");settings.main.api_key.clear();
+        let service=Arc::new(Improvements::open(root.join("state"),root.join("workspace")).await.unwrap());
+        let item=service.create(NewImprovement{
+            repository:"repo".into(),target_file:"score.txt".into(),
+            target_files:Some(vec!["score.txt".into(),"helper.txt".into()]),
+            instruction:"improve helper".into(),test_command:"test \"$(cat helper.txt)\" = ok".into(),
+            score_command:Some("cat score.txt".into()),parent:None
+        }).await.unwrap();
+        service.start(ModelClient::new(&settings).unwrap(),item.id,true).await.unwrap();
+        let mut terminal=None;
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let snapshot=service.get(item.id).await.unwrap();
+            if snapshot.status!=ImprovementStatus::Running{terminal=Some(snapshot);break;}
+        }
+        let rejected=terminal.expect("negative RSI trial timed out");
+        assert_eq!(rejected.status,ImprovementStatus::Rejected,"{:?}",rejected.error);
+        assert_eq!(rejected.attempts,3);
+        assert!(!rejected.accepted);
+        assert!(service.adopt(item.id).await.is_err());
+        assert_eq!(fs::read_to_string(repo.join("helper.txt")).await.unwrap(),"wrong\n");
+        assert!(git(&repo,&["rev-parse",&format!("refs/dominion/rsi/{}",item.id)]).await.is_err());
+        server.abort();
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit fixed-fixture shell test; run isolated with DOMINION_SHELL_SANDBOX=off"]
+    async fn repairs_multifile_candidate_against_separate_frozen_judge(){
+        assert_eq!(std::env::var("DOMINION_SHELL_SANDBOX").as_deref(),Ok("off"));
+        let root=std::env::temp_dir().join(format!("dominion-rsi-multifile-{}",Uuid::new_v4()));
+        let workspace=root.join("workspace");let repo=workspace.join("repo");
+        fs::create_dir_all(&repo).await.unwrap();
+        git(&repo,&["init","-q"]).await.unwrap();
+        fs::write(repo.join("score.txt"),"0\n").await.unwrap();
+        fs::write(repo.join("helper.txt"),"wrong\n").await.unwrap();
+        git(&repo,&["add","score.txt","helper.txt"]).await.unwrap();
+        execute("git",&["-c","user.name=Test","-c","user.email=test@example.com",
+            "commit","-m","base"],&repo,30).await.unwrap();
+        let counter=Arc::new(AtomicUsize::new(0));
+        let fixture=Arc::clone(&counter);
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/chat/completions",post(repair_proposal))
+                .with_state(fixture)).await.unwrap();
+        });
+        let mut settings=Settings::from_env().unwrap();
+        settings.main.base_url=format!("http://{addr}");settings.main.api_key.clear();
+        let service=Arc::new(Improvements::open(root.join("state"),workspace.clone()).await.unwrap());
+        let input=NewImprovement{
+            repository:"repo".into(),target_file:"score.txt".into(),
+            target_files:Some(vec!["score.txt".into(),"helper.txt".into()]),
+            instruction:"repair helper and improve score".into(),
+            test_command:"test \"$(cat helper.txt)\" = ok".into(),
+            score_command:Some("cat score.txt".into()),parent:None,
+        };
+        let created=service.create(input).await.unwrap();
+        service.start(ModelClient::new(&settings).unwrap(),created.id,true).await.unwrap();
+        let mut completed=None;
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let snapshot=service.get(created.id).await.unwrap();
+            if snapshot.status!=ImprovementStatus::Running {completed=Some(snapshot);break;}
+        }
+        let evaluated=completed.expect("multi-file RSI did not finish");
+        assert_eq!(evaluated.status,ImprovementStatus::Evaluated,"{:?}",evaluated.error);
+        assert_eq!(counter.load(Ordering::SeqCst),2,"independent failed judge must trigger second proposal");
+        assert_eq!(evaluated.attempts,2);
+        assert!(evaluated.accepted);
+        assert_eq!(evaluated.candidate.as_ref().unwrap().score,Some(1.0));
+        assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"0\n");
+        assert_eq!(fs::read_to_string(repo.join("helper.txt")).await.unwrap(),"wrong\n");
+        let pinned=git(&repo,&["rev-parse",&format!("refs/dominion/rsi/{}",created.id)]).await.unwrap();
+        assert_eq!(Some(pinned),evaluated.candidate_commit);
+        for _ in 0..100 {
+            if !service.active.lock().await.contains(&created.id){break;}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let adopted=service.adopt(created.id).await.unwrap();
+        assert_eq!(adopted.status,ImprovementStatus::Adopted);
+        assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"1\n");
+        assert_eq!(fs::read_to_string(repo.join("helper.txt")).await.unwrap(),"ok\n");
+        let descendant=service.descendant(created.id).await.unwrap();
+        assert_eq!(descendant.target_files,vec!["score.txt","helper.txt"]);
+        assert_eq!(descendant.parent,Some(created.id));
+        server.abort();
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     async fn proposal(Json(_request):Json<Value>)->Json<Value>{
         Json(json!({"choices":[{"message":{"role":"assistant","content":"1\n"}}],"usage":{"prompt_tokens":5,"completion_tokens":1}}))
     }
     #[tokio::test]
+    #[ignore = "explicit fixed-fixture shell test; run isolated with DOMINION_SHELL_SANDBOX=off"]
     async fn adopts_only_a_scored_improvement_and_inherits_reflection() {
-        if Command::new("git").arg("--version").output().await.is_err(){return;}
+        let git_status=Command::new("git").arg("--version").output().await.expect("Git is required for RSI");
+        assert!(git_status.status.success(),"Git must be executable");
         let root=std::env::temp_dir().join(format!("dominion-improvement-{}",Uuid::new_v4()));
         let workspace=root.join("workspace");
         let repo=workspace.join("repo");
         fs::create_dir_all(&repo).await.unwrap();
-        // The RSI integration test must exercise the enforced runtime when
-        // supported; do not silently disable it for test convenience.
-        let probe=crate::sandbox::script(&repo,"true");
-        let can_sandbox=match probe {
-            Ok(mut command)=>command.status().await.map(|s|s.success()).unwrap_or(false),
-            Err(_)=>false
-        };
-        if !can_sandbox {let _=fs::remove_dir_all(&root).await;return;}
+        assert_eq!(std::env::var("DOMINION_SHELL_SANDBOX").as_deref(),Ok("off"),
+            "this isolated CI fixture must explicitly opt in to local fixed commands");
         git(&repo,&["init"]).await.unwrap();
         fs::write(repo.join("score.txt"),"0\n").await.unwrap();
         git(&repo,&["add","score.txt"]).await.unwrap();
@@ -375,7 +728,7 @@ mod full_cycle_tests {
         let service=Arc::new(Improvements::open(root.join("data"),workspace).await.unwrap());
         let item=service.create(NewImprovement{
             repository:"repo".into(),target_file:"score.txt".into(),instruction:"increase score".into(),
-            test_command:"test -f score.txt".into(),score_command:Some("cat score.txt".into()),parent:None
+            test_command:"test -f score.txt".into(),score_command:Some("cat score.txt".into()),parent:None,target_files:None
         }).await.unwrap();
         service.start(model,item.id,true).await.unwrap();
         let mut result=None;

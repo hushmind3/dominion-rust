@@ -15,6 +15,12 @@ jobs:
         run: cargo fmt --all
       - name: Compile and test
         run: cargo test --all-targets
+      - name: Real RSI Git worktree repair, detached judge, adoption and descendant E2E
+        # Only fixed local fixture commands and a loopback mock provider.
+        # Not a production sandbox override or proof of real-model quality.
+        env:
+          DOMINION_SHELL_SANDBOX: 'off'
+        run: cargo test --lib improvement::full_cycle_tests:: -- --ignored --nocapture
   typescript:
     runs-on: ubuntu-latest
     defaults:

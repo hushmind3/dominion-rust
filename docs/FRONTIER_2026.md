@@ -261,3 +261,20 @@ MCP progress from paused reconciliation.
 No real external MCP account, real-provider task success benchmarks,
 interactive browser E2E, or end-to-end user data migration was performed
 in this focused validation. These are remaining product-wide acceptance gates.
+
+
+## RSI capability evidence and frontier gap (2026-11-15)
+
+The RSI path now supports bounded multi-file generation with real test-failure
+feedback, a clean third-party judge worktree at the recorded Git revision,
+score-controlled adoption, stable accepted commit pinning, and descendants.
+The explicit integration tests exercise an actual Git repo, local model HTTP,
+frozen commands, retries, distinct worktrees and post-approval adoption.
+See src/improvement.rs::full_cycle_tests and the targeted Rust workflow step.
+
+This improves candidate-generation and evaluation fundamentals but remains
+well short of general autonomous full-repository self-improvement, open-ended
+module creation, strategy search, cross-domain A-to-B-to-A refinement and
+matched real-model SWE-bench Verified evidence. Worktree tests isolate code
+changes, but do not constitute a hostile OS sandbox or prevent all forms of
+environmental benchmark contamination.

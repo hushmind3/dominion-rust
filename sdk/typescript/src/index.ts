@@ -52,6 +52,7 @@ export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 
 export interface Measurement { tests_passed: boolean; score: number | null; log: string }
 export interface Improvement {
   id: string; parent: string | null; repository: string; target_file: string;
+  target_files?: string[]; attempts?: number;
   instruction: string; test_command: string; score_command: string | null;
   status: ImprovementStatus; base_commit: string | null; candidate_commit: string | null;
   baseline: Measurement | null; candidate: Measurement | null; proposal: string | null;
@@ -59,7 +60,7 @@ export interface Improvement {
   error: string | null; created_at_ms: number; updated_at_ms: number;
 }
 export interface NewImprovement {
-  repository: string; target_file: string; instruction: string; test_command: string;
+  repository: string; target_file: string; target_files?: string[]; instruction: string; test_command: string;
   score_command?: string; parent?: string;
 }
 

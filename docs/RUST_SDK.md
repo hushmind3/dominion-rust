@@ -177,3 +177,22 @@ MCP progress from paused reconciliation.
 No real external MCP account, real-provider task success benchmarks,
 interactive browser E2E, or end-to-end user data migration was performed
 in this focused validation. These are remaining product-wide acceptance gates.
+
+
+## Multi-file RSI SDK and evaluation
+
+Dominion::create_improvement accepts NewImprovement with primary target_file
+and optional target_files (a total of 1-8 explicit source paths). The same
+target_files field is supported by POST /api/v1/improvements, the TypeScript
+improvements.create method and Studio. The old target_file-only request is
+still valid and stored experiments without target_files retain single-file
+behavior. An experiment runs under explicit evaluation approval; it tries
+up to three model revisions against a separate immutable-base judge worktree,
+retaining real test outcomes, measured score and billed cost in the record.
+Only a demonstrably improved candidate can be adopted into the original
+checkout; descendant keeps the target set and the predecessor's reflection.
+
+One candidate ref is kept under refs/dominion/rsi/<trial-id> until successful
+explicit adoption. In the fixed-command CI fixture, DOMINION_SHELL_SANDBOX=off
+is passed only to the isolated test process. This is not a supported production
+security shortcut and does not imply measured real-provider accuracy.
