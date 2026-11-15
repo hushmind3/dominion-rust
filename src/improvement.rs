@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 #[derive(Clone,Debug,Serialize,Deserialize,PartialEq,Eq)]
 #[serde(rename_all="snake_case")]
-pub enum ImprovementStatus { AwaitingApproval, Running, Evaluated, Rejected, Adopted, Failed }
+pub enum ImprovementStatus { AwaitingApproval, Running, Evaluated, Adopting, Rejected, Adopted, Failed }
 #[derive(Clone,Debug,Serialize,Deserialize)]
 pub struct Measurement { pub tests_passed:bool, pub score:Option<f64>, pub log:String }
 #[derive(Clone,Debug,Serialize,Deserialize)]
@@ -33,7 +33,7 @@ pub struct NewImprovement {
 }
 pub struct Improvements {
     root:PathBuf, workspace:PathBuf,
-    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>
+    items:Mutex<HashMap<Uuid,Improvement>>,active:Mutex<HashSet<Uuid>>,adoption_lock:Mutex<()>
 }
 fn relative(raw:&str)->Result<&Path,String>{
     if raw.is_empty()||raw.len()>1024||raw.as_bytes().contains(&0){return Err("invalid relative path".into());}
@@ -192,7 +192,7 @@ impl Improvements {
         }
         // Recovery is durable before clients can observe the recovered state.
         for item in &recovered {persist_improvement(&root,item).await?;}
-        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new())})
+        Ok(Self{root,workspace,items:Mutex::new(items),active:Mutex::new(HashSet::new()),adoption_lock:Mutex::new(())})
     }
     async fn put(&self,item:Improvement)->Result<Improvement,String>{
         let mut lock=self.items.lock().await;
@@ -442,24 +442,56 @@ impl Improvements {
         }else{None};
         Ok(Measurement{tests_passed,score:value,log:log.chars().take(2000).collect()})
     }
+    /// Durable two-step adoption. A crash after Git cherry-pick but before
+    /// persisting Adopted can be recognized by exact parent and Git tree IDs.
+    /// No external mutation is retried when the observed history diverges.
     pub async fn adopt(&self,id:Uuid)->Result<Improvement,String>{
+        let _guard=self.adoption_lock.lock().await;
         if self.active.lock().await.contains(&id){return Err("trial still active".into());}
         let mut item=self.get(id).await.ok_or("trial not found")?;
-        if item.status!=ImprovementStatus::Evaluated || !item.accepted{return Err("candidate has not outperformed frozen evaluation".into());}
+        if !item.accepted || !matches!(item.status,ImprovementStatus::Evaluated|ImprovementStatus::Adopting){
+            return Err("candidate is not evaluated and eligible for adoption".into());
+        }
         let root=self.workspace.canonicalize().map_err(|e|e.to_string())?;
         let repo=root.join(relative(&item.repository)?).canonicalize().map_err(|e|e.to_string())?;
         if !repo.starts_with(&root){return Err("repository escapes workspace".into());}
-        let head=git(&repo,&["rev-parse","HEAD"]).await?;
-        if Some(head.trim())!=item.base_commit.as_deref(){return Err("repository HEAD changed since evaluation; refusing adoption".into());}
-        if !git(&repo,&["status","--porcelain"]).await?.is_empty(){return Err("repository has uncommitted changes".into());}
-        let commit=item.candidate_commit.as_deref().ok_or("missing candidate commit")?;
+        let base=item.base_commit.as_deref().ok_or("missing frozen source commit")?.to_owned();
+        let commit=item.candidate_commit.as_deref().ok_or("missing candidate commit")?.to_owned();
         let pin=format!("refs/dominion/rsi/{}",item.id);
-        // Existing serialized experiments without a pin remain compatible.
         if let Ok(actual)=git(&repo,&["rev-parse",&pin]).await{
             if actual!=commit{return Err("RSI accepted ref differs from frozen candidate".into());}
         }
-        execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost","cherry-pick",commit],&repo,45).await?;
-        item.status=ImprovementStatus::Adopted;item.updated_at_ms=now_ms();
+        let head=git(&repo,&["rev-parse","HEAD"]).await?;
+        if item.status==ImprovementStatus::Evaluated {
+            if head!=base{return Err("repository HEAD changed since evaluation; refusing adoption".into());}
+            if !git(&repo,&["status","--porcelain"]).await?.is_empty(){
+                return Err("repository has uncommitted changes".into());
+            }
+            // Persist intent BEFORE cherry-pick, then restore it on restart.
+            // Human approval is the only way to enter this state.
+            item.status=ImprovementStatus::Adopting;
+            item.updated_at_ms=now_ms();
+            self.put(item.clone()).await?;
+        }
+        if head==base {
+            if !git(&repo,&["status","--porcelain"]).await?.is_empty(){
+                return Err("interrupted RSI adoption has a dirty checkout; inspect and reconcile before retry".into());
+            }
+            execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost",
+                "cherry-pick",&commit],&repo,45).await?;
+        } else {
+            // A cherry-pick changes commit metadata but preserves the exact
+            // candidate tree; parent must still be the original base.
+            let parent=git(&repo,&["rev-parse","HEAD^"]).await?;
+            let actual_tree=git(&repo,&["rev-parse","HEAD^{tree}"]).await?;
+            let expected_tree=git(&repo,&["rev-parse",&format!("{commit}^{{tree}}")]).await?;
+            if parent!=base || actual_tree!=expected_tree
+                || !git(&repo,&["status","--porcelain"]).await?.is_empty(){
+                return Err("interrupted RSI adoption diverged from the frozen commit; manual reconciliation required".into());
+            }
+        }
+        item.status=ImprovementStatus::Adopted;
+        item.updated_at_ms=now_ms();
         let adopted=self.put(item).await?;
         let _=git(&repo,&["update-ref","-d",&pin]).await;
         Ok(adopted)
@@ -688,11 +720,22 @@ mod full_cycle_tests {
             if !service.active.lock().await.contains(&created.id){break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let adopted=service.adopt(created.id).await.unwrap();
+        // Simulate the exact crash window: the approved commit landed in
+        // Git, but the durable experiment still says Adopting.
+        let mut interrupted=service.get(created.id).await.unwrap();
+        interrupted.status=ImprovementStatus::Adopting;
+        service.put(interrupted).await.unwrap();
+        let commit=evaluated.candidate_commit.as_deref().unwrap();
+        execute("git",&["-c","user.name=Dominion","-c","user.email=dominion@localhost",
+            "cherry-pick",commit],&repo,45).await.unwrap();
+        drop(service);
+        let restored=Improvements::open(root.join("state"),workspace.clone()).await.unwrap();
+        assert_eq!(restored.get(created.id).await.unwrap().status,ImprovementStatus::Adopting);
+        let adopted=restored.adopt(created.id).await.unwrap();
         assert_eq!(adopted.status,ImprovementStatus::Adopted);
         assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"1\n");
         assert_eq!(fs::read_to_string(repo.join("helper.txt")).await.unwrap(),"ok\n");
-        let descendant=service.descendant(created.id).await.unwrap();
+        let descendant=restored.descendant(created.id).await.unwrap();
         assert_eq!(descendant.target_files,vec!["score.txt","helper.txt"]);
         assert_eq!(descendant.parent,Some(created.id));
         server.abort();

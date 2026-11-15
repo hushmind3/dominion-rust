@@ -347,3 +347,10 @@ General Rust tests do not silently count an unavailable OS sandbox as a passing
 RSI end-to-end test. CI explicitly runs two complete fixed-command, loopback
 mock-model Git flows. Real-model task quality and production confinement remain
 separate operational gates.
+
+
+RSI adoption is now journaled as an explicit adopting state. If a process
+stops between Git cherry-pick and durable completion, a subsequent action
+checks the exact original parent commit and tree hash before finalizing,
+rather than duplicating the Git mutation. A mismatched checkout requires
+human inspection and cannot silently overwrite the repository.

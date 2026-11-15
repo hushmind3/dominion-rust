@@ -266,7 +266,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
      {improvement.error&&<p role="alert" className="mt-3 text-[12px] text-rose-700">{improvement.error}</p>}
      <div className="mt-4 flex flex-wrap gap-2">
       {improvement.status==='awaiting_approval'&&<button type="button" className={primary} disabled={busy} onClick={()=>void perform(()=>post('/api/v1/improvements/'+improvement.id+'/approve',{}))}><Check size={14}/> 평가 명령 승인·실행</button>}
-      {improvement.status==='evaluated'&&<button type="button" className={primary} disabled={busy} onClick={()=>void perform(()=>post('/api/v1/improvements/'+improvement.id+'/adopt',{}))}>개선 결과 채택</button>}
+      {(improvement.status==='evaluated'||improvement.status==='adopting')&&<button type="button" className={primary} disabled={busy} onClick={()=>void perform(()=>post('/api/v1/improvements/'+improvement.id+'/adopt',{}))}>{improvement.status==='adopting'?'중단된 채택 확인·복구':'개선 결과 채택'}</button>}
       {improvement.status==='adopted'&&<button type="button" className={btn} disabled={busy} onClick={()=>void perform(async()=>{const next=await post<Improvement>('/api/v1/improvements/'+improvement.id+'/descendant',{});setSelectedId(next.id)})}>후손 개선 실행</button>}
      </div>
     </>:<p className="text-[12px]">개선 실험을 선택하세요.</p>}</section>

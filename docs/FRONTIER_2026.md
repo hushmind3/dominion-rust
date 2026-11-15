@@ -278,3 +278,9 @@ module creation, strategy search, cross-domain A-to-B-to-A refinement and
 matched real-model SWE-bench Verified evidence. Worktree tests isolate code
 changes, but do not constitute a hostile OS sandbox or prevent all forms of
 environmental benchmark contamination.
+
+
+Crash-recovery delta: RSI explicit adoption now commits a durable adopting
+state, serializes adoption operations, verifies parent/tree identity after
+an interrupted cherry-pick and can finalize the existing Git change after
+restart. The multi-file end-to-end fixture simulates this interruption.

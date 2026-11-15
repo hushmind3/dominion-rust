@@ -312,3 +312,16 @@ fixed local commands and loopback model use DOMINION_SHELL_SANDBOX=off only
 for that CI test process. Production RSI continues to require a sandbox backend,
 human approval and enabled shell. This is a proven pipeline test, not evidence
 of real-provider coding quality, arbitrary-file RSI, or SWE-bench parity.
+
+
+## Crash-idempotent RSI adoption
+
+Explicit user adoption first persists status adopting, then cherry-picks the
+accepted and pinned source commit. If the process crashes, a later adopt call
+compares repository HEAD's parent to the frozen base revision and HEAD's Git tree
+to the accepted candidate tree. Matching state finalizes the existing commit
+without replay; if HEAD is still at the base with a clean working tree, the
+pending authorized cherry-pick runs once. Divergent or dirty checkouts require
+manual reconciliation. An adoption mutex serializes concurrent adoption calls,
+and the UI exposes recovery from adopting. This closes the Git/JSON crash
+window for the single-process path, not distributed side effects.

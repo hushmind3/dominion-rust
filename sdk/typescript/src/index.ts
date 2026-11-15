@@ -48,7 +48,7 @@ export interface CreateVideo {
 }
 
 
-export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'rejected' | 'adopted' | 'failed';
+export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'adopting' | 'rejected' | 'adopted' | 'failed';
 export interface Measurement { tests_passed: boolean; score: number | null; log: string }
 export interface Improvement {
   id: string; parent: string | null; repository: string; target_file: string;
