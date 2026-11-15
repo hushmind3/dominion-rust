@@ -164,8 +164,13 @@ async fn start(State(engine):State<Arc<Engine>>,Json(input):Json<Start>)
         return Err(bad("The frozen judge needs DOMINION_ENABLE_SHELL=true"));
     }
     let (repo,tests,scoring)=configured()?;
-    let selected=engine.providers.resolve(&input.provider_id,&input.model,
-        &engine.settings.main).map_err(bad)?;
+    let selected=if input.provider_id=="dominion-native" {
+        crate::frontend_local_models::native_override(&engine.settings,&input.model)
+            .map(Ok).unwrap_or_else(||engine.providers.resolve(
+                &input.provider_id,&input.model,&engine.settings.main))
+    }else{
+        engine.providers.resolve(&input.provider_id,&input.model,&engine.settings.main)
+    }.map_err(bad)?;
     let local=reqwest::Url::parse(&selected.base_url).ok()
         .and_then(|url|url.host_str().map(str::to_owned))
         .is_some_and(|host|host=="localhost"||
@@ -303,15 +308,7 @@ async fn drive_reserved(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
                 c.phase="diagnosing_and_editing".into();
                 Ok(())
             }).await?;
-            let profile=engine.providers.resolve(&state.provider_id,&state.model,
-                &engine.settings.main)?;
-            let client=if state.provider_id=="dominion-native"{
-                engine.model.clone()
-            }else{
-                let kind=engine.providers.get(&state.provider_id)
-                    .ok_or("RSI provider missing")?.kind;
-                engine.model.with_primary_protocol(profile,&kind)?
-            };
+            let client=engine.model_for_selection(&state.provider_id,&state.model)?;
             engine.providers.throttle(&state.provider_id).await;
             engine.improvements.start(client,trial.id,engine.settings.shell_enabled).await?;
             trial.id
