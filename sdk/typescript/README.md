@@ -46,3 +46,21 @@ const mp4 = await sdk.videos.download(video.id);
 ```
 
 The video subsystem uses installed FFmpeg; `espeak` is optional and narration quality depends on the local voice backend. Individual scenes can be revised and re-rendered.
+
+## Non-weight improvement experiments
+
+```ts
+const trial = await sdk.improvements.create({
+  repository: 'repos/my-project',
+  target_file: 'src/optimizer.rs',
+  instruction: 'Improve throughput without regressing behavior',
+  test_command: 'cargo test',
+  score_command: './scripts/throughput-score.sh'
+});
+await sdk.improvements.approve(trial.id);  // Explicit approval to execute supplied shell commands
+// Wait until the trial has status 'evaluated' and accepted === true.
+await sdk.improvements.adopt(trial.id);    // Explicitly apply the winning Git commit
+const next = await sdk.improvements.descendant(trial.id);
+```
+
+Each trial uses detached, independent Git worktrees and runs fixed evaluation commands on baseline and candidate. Improvements inherit text-based reflections, never train or update model weights.

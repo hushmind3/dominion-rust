@@ -46,3 +46,15 @@ test('group and video endpoints use the same authenticated Rust API',async()=>{
   assert.ok(seen[1].url.endsWith('/api/v1/videos/video-id/scenes/1'));
   assert.equal(seen[1].options.headers.Authorization,'Bearer private');
 });
+
+test('non-weight improvement has a separate explicit approve and adopt path',async()=>{
+ const urls=[];
+ const client=new Dominion({fetch:async url=>{
+   urls.push(url);
+   return new Response(JSON.stringify({id:'experiment'}),{status:200,headers:{'content-type':'application/json'}});
+ }});
+ await client.improvements.approve('test');
+ await client.improvements.adopt('test');
+ assert.ok(urls[0].endsWith('/improvements/test/approve'));
+ assert.ok(urls[1].endsWith('/improvements/test/adopt'));
+});

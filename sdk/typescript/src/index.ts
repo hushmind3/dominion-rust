@@ -37,6 +37,22 @@ export interface CreateVideo {
   prompt: string; scenes?: VideoScene[];
 }
 
+
+export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'rejected' | 'adopted' | 'failed';
+export interface Measurement { tests_passed: boolean; score: number | null; log: string }
+export interface Improvement {
+  id: string; parent: string | null; repository: string; target_file: string;
+  instruction: string; test_command: string; score_command: string | null;
+  status: ImprovementStatus; base_commit: string | null; candidate_commit: string | null;
+  baseline: Measurement | null; candidate: Measurement | null; proposal: string | null;
+  reflection: string | null; accepted: boolean; cost_krw: number;
+  error: string | null; created_at_ms: number; updated_at_ms: number;
+}
+export interface NewImprovement {
+  repository: string; target_file: string; instruction: string; test_command: string;
+  score_command?: string; parent?: string;
+}
+
 export interface ClientOptions {
   baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch;
 }
@@ -97,6 +113,16 @@ export class Dominion {
       if (!response.ok) throw new DominionError(response.status,'video download failed: HTTP '+response.status);
       return response.blob();
     }
+  };
+
+  /** Non-weight improvement: only explicitly approved, frozen-evaluation winners can be adopted. */
+  readonly improvements = {
+    create: (input: NewImprovement) => this.request<Improvement>('POST','/improvements',input),
+    list: () => this.request<Improvement[]>('GET','/improvements'),
+    get: (id: string) => this.request<Improvement>('GET','/improvements/'+encodeURIComponent(id)),
+    approve: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/approve',{}),
+    adopt: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/adopt',{}),
+    descendant: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/descendant',{}),
   };
   /** HTTP SSE streaming: yields replayable sequence-numbered events until the run is terminal. */
   async *events(id: string, options: {since?: number; signal?: AbortSignal} = {}): AsyncGenerator<TimelineEvent, void, unknown> {
