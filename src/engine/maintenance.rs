@@ -1,7 +1,16 @@
-//! Scheduled maintenance: bounded database backups.
+//! Scheduled maintenance: encrypted backup retention and safe artifact sweeping.
 use crate::state::AppState;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[path = "maintenance/artifacts.rs"]
+mod artifacts;
+
+/// Plaintext SQLite snapshots are never allowed to survive an error path.
+struct SnapshotTemp(PathBuf);
+impl Drop for SnapshotTemp {
+    fn drop(&mut self) {let _=std::fs::remove_file(&self.0);}
+}
 
 fn interval_seconds() -> u64 {
     std::env::var("DOMINION_BACKUP_INTERVAL_SECS")
@@ -62,9 +71,9 @@ pub fn create_snapshot(state: &AppState) -> Result<PathBuf, String> {
     let directory = state.config.data_dir.join("backups");
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let temp = directory.join(format!(".backup-{}.tmp", uuid::Uuid::new_v4()));
-    state.store.backup_to(&temp)?;
-    let bytes = std::fs::read(&temp).map_err(|error| error.to_string())?;
+    let temp = SnapshotTemp(directory.join(format!(".backup-{}.tmp", uuid::Uuid::new_v4())));
+    state.store.backup_to(&temp.0)?;
+    let bytes = std::fs::read(&temp.0).map_err(|error| error.to_string())?;
     let ring = crate::engine::backup_keys::KeyRing::load_or_create(&state.config.data_dir)?;
     // The snapshot carries the vault key that its provider secrets were sealed
     // with, so restoring an older snapshot remains decryptable after rotation.
@@ -74,7 +83,7 @@ pub fn create_snapshot(state: &AppState) -> Result<PathBuf, String> {
     let sealed = ring.encrypt(&container)?;
     let path = directory.join(format!("dominion-{stamp}.sqlite.enc"));
     std::fs::write(&path, &sealed).map_err(|error| error.to_string())?;
-    let _ = std::fs::remove_file(&temp);
+    drop(temp);
     if let Some(offsite) = offsite_directory() {
         std::fs::create_dir_all(&offsite).map_err(|error| error.to_string())?;
         std::fs::copy(&path, offsite.join(path.file_name().unwrap_or_default()))
@@ -113,6 +122,29 @@ pub async fn backup_now_with_remote(
 /// Starts the background backup loop. `DOMINION_BACKUP_INTERVAL_SECS=0`
 /// disables it; the default is hourly with five retained snapshots.
 pub fn start(state: AppState) {
+    // Artifact hygiene runs even if automatic backups are disabled. Sweep at
+    // startup and every 6 hours; files are reclaimed only for sealed jobs.
+    let cleaner=state.clone();
+    tokio::spawn(async move {
+        let mut ticker=tokio::time::interval(Duration::from_secs(6*60*60));
+        loop {
+            ticker.tick().await;
+            if cleaner.maintenance_mode(){continue;}
+            let worker=cleaner.clone();
+            match tokio::task::spawn_blocking(move ||artifacts::sweep(&worker)).await {
+                Ok(report) if report.files+report.directories+report.errors>0=> {
+                    cleaner.store.audit("maintenance.artifacts_swept",
+                        serde_json::json!({"files":report.files,
+                            "generatedDirectories":report.directories,
+                            "reclaimedFileBytes":report.file_bytes,
+                            "errors":report.errors}));
+                }
+                Ok(_)=>{}
+                Err(error)=>cleaner.store.audit("maintenance.artifacts_failed",
+                    serde_json::json!({"error":error.to_string()})),
+            }
+        }
+    });
     let seconds = interval_seconds();
     if seconds == 0 {
         return;
