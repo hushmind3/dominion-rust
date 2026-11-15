@@ -42,7 +42,7 @@ fn job_targets(kind: &str) -> Vec<&'static str> {
         "prompt" | "chat" | "chat_turn" => vec!["src/engine/chat/runtime.rs"],
         "rsi_compare" => vec!["src/engine/rsi/evaluation/worktree.rs"],
         "workflow" => vec!["src/engine/workflows.rs"],
-        "goal" => vec!["src/engine/goals.rs"],
+        "goal" => vec!["src/engine/goals/mod.rs","src/engine/goals/execution.rs","src/engine/goals/review.rs"],
         "learning" => vec!["src/engine/learning.rs", "src/engine/memory.rs"],
         _ => vec!["src/engine/jobs.rs"],
     }
