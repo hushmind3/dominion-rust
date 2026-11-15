@@ -20,11 +20,13 @@ pub struct Video {
     pub output:Option<String>, pub created_at_ms:u64, pub updated_at_ms:u64,
     #[serde(default)] pub backend:VideoBackend,
     #[serde(default="default_aspect")] pub aspect_ratio:String,
+    #[serde(default="default_narration")] pub narration:bool,
     #[serde(default)] pub remote_operations:HashMap<usize,String>,
 }
 #[derive(Deserialize)]
 pub struct NewVideo { pub prompt:String, pub scenes:Option<Vec<Scene>>, pub backend:Option<VideoBackend>, pub aspect_ratio:Option<String> }
 fn default_aspect()->String{"16:9".into()}
+fn default_narration()->bool{true}
 #[derive(Deserialize)]
 pub struct ChangeScene { pub heading:String, pub narration:String, pub seconds:u32 }
 pub struct Videos {
@@ -91,7 +93,7 @@ impl Videos {
             return Err("Veo scenes must be 4, 6 or 8 seconds".into());
         }
         let now=now_ms();
-        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),title:None,scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now,backend,aspect_ratio,remote_operations:HashMap::new()};
+        let video=Video{id:Uuid::new_v4(),prompt:prompt.into(),title:None,scenes,status:VideoStatus::Draft,cost_krw:cost,render_seconds:0,error:None,output:None,created_at_ms:now,updated_at_ms:now,backend,aspect_ratio,narration:true,remote_operations:HashMap::new()};
         self.put(video).await
     }
     /// Display name is stored with the actual rendered job, never as a
@@ -103,6 +105,16 @@ impl Videos {
         item.title=Some(title);
         item.updated_at_ms=now_ms();
         self.put(item).await
+    }
+    /// The original Video page's narration toggle is committed to the
+    /// actual render record, so switching UI settings cannot alter a running job.
+    pub async fn set_narration(&self,id:Uuid,enabled:bool)->Result<Video,String>{
+        if self.active.lock().await.contains(&id){return Err("render in progress".into());}
+        let mut video=self.get(id).await.ok_or("video not found")?;
+        if video.status!=VideoStatus::Draft{return Err("narration must be set before rendering".into());}
+        video.narration=enabled;
+        video.updated_at_ms=now_ms();
+        self.put(video).await
     }
     pub async fn change_scene(&self,id:Uuid,index:usize,scene:ChangeScene)->Result<Video,String>{
         if self.active.lock().await.contains(&id){return Err("render in progress".into());}
@@ -160,7 +172,7 @@ impl Videos {
             let text=format!("{}\n\n{}",scene.heading,scene.narration);
             fs::write(&textfile,&text).await.map_err(|e|e.to_string())?;
             let voice=directory.join(format!("scene-{index}.wav"));
-            let speech=make_speech(&directory,&scene.narration,&voice).await;
+            let speech=video.narration && make_speech(&directory,&scene.narration,&voice).await;
             let color=["0x16263f","0x202a48","0x27384b","0x172c3c","0x2d2948","0x24414a"][index%6];
             let filter=format!("drawtext=textfile=scene-{index}.txt:fontcolor=white:fontsize=47:line_spacing=18:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.50:boxborderw=26");
             let (width,height)=match video.aspect_ratio.as_str(){
@@ -275,7 +287,7 @@ mod tests {
     async fn persists_scene_revisions(){
         let dir=std::env::temp_dir().join(format!("dominion-video-test-{}",Uuid::new_v4()));
         let store=Videos::open(dir.clone()).await.unwrap();
-        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),title:None,scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),backend:VideoBackend::Local,aspect_ratio:default_aspect(),remote_operations:HashMap::new()};
+        let video=Video{id:Uuid::new_v4(),prompt:"demo".into(),title:None,scenes:vec![Scene{heading:"old".into(),narration:"old".into(),seconds:4}],status:VideoStatus::Draft,cost_krw:0.0,render_seconds:0,error:None,output:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),backend:VideoBackend::Local,aspect_ratio:default_aspect(),narration:true,remote_operations:HashMap::new()};
         let id=video.id;store.put(video).await.unwrap();
         store.change_scene(id,0,ChangeScene{heading:"new".into(),narration:"text".into(),seconds:4}).await.unwrap();
         assert_eq!(store.get(id).await.unwrap().scenes[0].heading,"new");
