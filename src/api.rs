@@ -140,8 +140,12 @@ async fn list_subagents(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->R
     let children=engine.store.list().await.into_iter().filter(|run|run.parent_run_id==Some(id)).collect();
     Ok(Json(children))
 }
-async fn create_subagent(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<CreateRun>)->Result<(StatusCode,Json<Run>),ApiError>{
-    let child=crate::sdk::Dominion::from_engine(engine).delegate(id,input).await.map_err(bad)?;
+#[derive(Deserialize)]
+struct DelegationRequest {instruction:String,budget_krw:Option<f64>,max_steps:Option<usize>,read_only:Option<bool>}
+async fn create_subagent(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<DelegationRequest>)->Result<(StatusCode,Json<Run>),ApiError>{
+    let read_only=input.read_only.unwrap_or(false);
+    let req=CreateRun{instruction:input.instruction,budget_krw:input.budget_krw,max_steps:input.max_steps};
+    let child=engine.spawn_subagent_with_policy(id,req,read_only).await.map_err(bad)?;
     Ok((StatusCode::CREATED,Json(child)))
 }
 #[derive(Default,Deserialize)]

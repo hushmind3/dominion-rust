@@ -6,7 +6,7 @@ import type {PageId} from '../components/WorkspaceShell'
 
 type Event={seq:number;kind:string;message:string;detail?:unknown;at_ms:number}
 type Call={id:string;name:string;arguments:unknown}
-type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;context_chars_avoided:number;cost_krw:number;budget_krw:number;created_at_ms:number}
+type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;context_chars_avoided:number;tool_schema_chars_avoided?:number;reserved_budget_krw?:number;delegated_spent_krw?:number;read_only?:boolean;waiting_for_children?:boolean;cost_krw:number;budget_krw:number;created_at_ms:number}
 type Room={id:string;topic:string;status:string;participants:{name:string;role:string;economy:boolean}[];messages:{speaker:string;content:string}[];rounds:number;max_rounds:number;cost_krw:number;budget_krw:number}
 type Scene={heading:string;narration:string;seconds:number}
 type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];error?:string|null;cost_krw:number}
@@ -51,6 +51,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
  const [directive,setDirective]=useState('')
  const [reconciliation,setReconciliation]=useState('')
  const [childInstruction,setChildInstruction]=useState('')
+ const [childReadOnly,setChildReadOnly]=useState(true)
  const [artifact,setArtifact]=useState('')
  const [artifactNames,setArtifactNames]=useState<string[]>([])
  const [artifactBody,setArtifactBody]=useState('')
@@ -140,10 +141,10 @@ export function RustWorkspacePage({area}:{area:PageId}){
       <span className="font-bold text-[#A95636]">{item.status}</span><p className="mt-1 line-clamp-2 text-[#4E473E]">{item.instruction}</p><small className="mt-2 block text-[#8F857B]">{date(item.created_at_ms)}</small></button>)}</div>
     </section>
     <section className={panel}>{!run?<p className="text-[12px] text-[#8B8175]">작업을 생성하면 진행 상황과 승인 요청이 표시됩니다.</p>:<>
-     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-[14px] font-bold">작업 상세 <span className="text-[#A95636]">{run.status}</span></h2><span className="text-[11px] text-[#8E8376]">모델 {run.steps}턴 · {money(run.cost_krw)} / {money(run.budget_krw)}</span></div>
+     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-[14px] font-bold">작업 상세 <span className="text-[#A95636]">{run.status}</span></h2><span className="text-[11px] text-[#8E8376]">모델 {run.steps}턴 · 총사용 {money(run.cost_krw+(run.delegated_spent_krw||0))} · 예약 {money(run.reserved_budget_krw||0)} / {money(run.budget_krw)}</span></div>
      {run.repository&&<p className="mt-2 break-all text-[11px] text-[#806B58]">Git: {run.repository} · {run.base_commit?.slice(0,12)}</p>}
      <p className="mt-3 whitespace-pre-wrap rounded-lg bg-[#F9F6F2] p-3 text-[12px]">{run.instruction}</p>
-     <div className="mt-3 text-[11px] text-[#7F766D]">입력 {run.input_tokens.toLocaleString()} · 캐시 {run.cached_input_tokens.toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰</div>
+     <div className="mt-3 text-[11px] text-[#7F766D]">입력 {run.input_tokens.toLocaleString()} · 캐시 {run.cached_input_tokens.toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰 · 생략한 도구 스키마 약 {(run.tool_schema_chars_avoided||0).toLocaleString()}자</div>
      {run.plan&&<details className="mt-3 rounded-lg border border-[#ECE5DB] p-3"><summary className="cursor-pointer text-[12px] font-semibold">실행 계획</summary><pre className="mt-2 whitespace-pre-wrap text-[11px]">{run.plan}</pre></details>}
      {run.pending_approval&&<div className="mt-4 rounded-lg border border-[#E5B99F] bg-[#FFF8F1] p-3">
       <h3 className="flex items-center gap-2 text-[12px] font-bold"><ShieldAlert size={16}/> 실행 승인 필요</h3>
@@ -170,7 +171,8 @@ export function RustWorkspacePage({area}:{area:PageId}){
      {artifact&&<details open className="mt-3"><summary className="break-all text-[12px] font-bold">{artifact}</summary><pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-[#F8F4EF] p-3 text-[11px]">{artifactBody}</pre></details>}
      {!run.parent_run_id&&<div className="mt-4 border-t border-[#EEE7DE] pt-4">
       <h3 className="mb-2 text-[12px] font-bold">독립 서브에이전트 위임</h3>
-      <div className="flex gap-2"><input className={field} value={childInstruction} onChange={e=>setChildInstruction(e.target.value)} placeholder="하위 작업 지시"/><button type="button" className={btn} disabled={busy||!childInstruction.trim()} onClick={()=>void perform(async()=>{await post('/api/v1/runs/'+run.id+'/subagents',{instruction:childInstruction,budget_krw:Math.max(0,run.budget_krw-run.cost_krw)/4});setChildInstruction('')})}>위임</button></div>
+      <label className="mb-2 flex items-center gap-2 text-[11px] text-[#81766B]"><input type="checkbox" checked={childReadOnly} onChange={e=>setChildReadOnly(e.target.checked)}/> 읽기 전용 조사 작업자 (쓰기·셸 차단)</label>
+      <div className="flex gap-2"><input className={field} value={childInstruction} onChange={e=>setChildInstruction(e.target.value)} placeholder="하위 작업 지시"/><button type="button" className={btn} disabled={busy||!childInstruction.trim()} onClick={()=>void perform(async()=>{await post('/api/v1/runs/'+run.id+'/subagents',{instruction:childInstruction,read_only:childReadOnly,budget_krw:Math.max(0,run.budget_krw-run.cost_krw-(run.reserved_budget_krw||0)-(run.delegated_spent_krw||0))/4});setChildInstruction('')})}>위임</button></div>
       <ChildList parent={run.id}/>
      </div>}
     </>}</section>
@@ -243,7 +245,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
 function ChildList({parent}:{parent:string}){
  const [items,setItems]=useState<Run[]>([])
  useEffect(()=>{let live=true;const update=()=>{void get<Run[]>('/api/v1/runs/'+parent+'/subagents').then(data=>{if(live)setItems(data)}).catch(()=>{})};update();const timer=setInterval(update,4000);return()=>{live=false;clearInterval(timer)}},[parent])
- return <div className="mt-2 space-y-2">{items.map(child=><div key={child.id} className="rounded-lg bg-[#F8F5F1] p-3 text-[11px]"><strong>{child.status}</strong> · {child.instruction}<p className="mt-1">사용 {money(child.cost_krw)} / {money(child.budget_krw)}</p>{child.answer&&<p className="mt-2 whitespace-pre-wrap">{child.answer}</p>}</div>)}</div>
+ return <div className="mt-2 space-y-2">{items.map(child=><div key={child.id} className="rounded-lg bg-[#F8F5F1] p-3 text-[11px]"><strong>{child.status}{child.read_only?" · 읽기 전용":""}</strong> · {child.instruction}<p className="mt-1">사용 {money(child.cost_krw)} / {money(child.budget_krw)}</p>{child.answer&&<p className="mt-2 whitespace-pre-wrap">{child.answer}</p>}</div>)}</div>
 }
 
 function AuthenticatedVideo({id}:{id:string}){

@@ -51,6 +51,9 @@ impl Dominion {
     pub async fn delegate(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{
         self.engine.spawn_subagent(parent,input).await
     }
+    pub async fn delegate_read_only(&self,parent:Uuid,input:CreateRun)->Result<Run,String>{
+        self.engine.spawn_subagent_with_policy(parent,input,true).await
+    }
     pub async fn get(&self,id:Uuid)->Result<Run,String>{self.engine.store.get(id).await.ok_or("execution not found".into())}
     pub async fn list(&self)->Vec<Run>{self.engine.store.list().await}
     pub async fn events(&self,id:Uuid,since:u64)->Result<Vec<TimelineEvent>,String>{
