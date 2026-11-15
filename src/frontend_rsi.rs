@@ -338,7 +338,7 @@ async fn drive_reserved(engine:&Arc<Engine>,id:Uuid)->Result<(),String>{
                 if c.base_commit.is_none(){c.base_commit=trial.base_commit.clone();}
                 c.history.push(from_trial(&trial,number));
             }
-            c.current_trial=None;c.phase="review";
+            c.current_trial=None;c.phase="review".into();
             Ok(())
         }).await?;
         match trial.status{
