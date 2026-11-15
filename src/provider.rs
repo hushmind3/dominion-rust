@@ -22,8 +22,16 @@ pub struct Reply {
 }
 impl ModelClient {
     pub fn new(settings: &Settings) -> Result<Self, String> {
-        let http = Client::builder().timeout(Duration::from_secs(90)).build().map_err(|e| e.to_string())?;
+        let http = Client::builder().timeout(Duration::from_secs(90))
+            // Never forward operator-owned credentials to a redirect target.
+            .redirect(reqwest::redirect::Policy::none())
+            .build().map_err(|e| e.to_string())?;
         Ok(Self { http, strong: settings.main.clone(), economy: settings.economy.clone() })
+    }
+    /// Snapshot the selected provider for a single native Run. Requests
+    /// never fall back to a different vendor or model without user choice.
+    pub fn with_primary(&self,selected:ModelSettings)->Self{
+        Self{http:self.http.clone(),strong:selected.clone(),economy:selected}
     }
     pub async fn complete(&self, messages: &[Value], tools: &[Value], economy: bool) -> Result<Reply, String> {
         if economy {

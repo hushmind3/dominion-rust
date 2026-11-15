@@ -16,6 +16,7 @@ pub struct Engine {
     pub owner_profile: Arc<crate::profile::OwnerProfileStore>,
     pub frontend: Arc<crate::frontend_state::FrontendStore>,
     pub workflows: Arc<crate::workflow::Workflows>,
+    pub providers: Arc<crate::provider_registry::Registry>,
     hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
@@ -40,13 +41,14 @@ impl Engine {
         let owner_profile=Arc::new(crate::profile::OwnerProfileStore::open(settings.data_dir.clone())?);
         let frontend=Arc::new(crate::frontend_state::FrontendStore::open(settings.data_dir.clone(),&settings.main.name)?);
         let workflows=Arc::new(crate::workflow::Workflows::open(settings.data_dir.clone())?);
+        let providers=Arc::new(crate::provider_registry::Registry::open(settings.data_dir.clone())?);
         // Reuse verified agent execution receipts as RSI/agent learning
         // evidence. Runs remain owned by the durable Store.
         improvements.attach_runs(Arc::clone(&store));
         improvements.set_strategy_learning(settings.strategy_learning_enabled);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, owner_profile, frontend, workflows, hooks,
+        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, owner_profile, frontend, workflows, providers, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
@@ -90,6 +92,14 @@ impl Engine {
     /// The native SDK and HTTP share the same engine and hook chain.
     pub async fn register_tool_hook(&self, hook:Arc<dyn ToolHook>){self.hooks.write().await.add(hook);}
 
+    /// Resolve the exact persisted provider/model identity for this run.
+    /// Provider credentials never enter run journals or frontend responses.
+    pub fn model_for_run(&self,run:&Run)->Result<ModelClient,String>{
+        let settings=self.providers.resolve(&run.provider_id,&run.model_name,&self.settings.main)?;
+        if run.provider_id.is_empty()||run.provider_id=="dominion-native"{
+            Ok(self.model.clone())
+        }else{Ok(self.model.with_primary(settings))}
+    }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
             let mut guard = self.active.lock().await;
@@ -247,10 +257,12 @@ impl Engine {
                     )}),
                 ];
                 let planning_history_len=run.messages.len();
+                let selected_model=self.model_for_run(&run)?;
+                self.providers.throttle(&run.provider_id).await;
                 let reply=tokio::select!{
                     biased;
                     _=cancellation.changed()=>return Ok(()),
-                    response=self.model.complete(&messages,&[],true)=>response?
+                    response=selected_model.complete(&messages,&[],true)=>response?
                 };
                 self.store.mutate(id, |run| {
                     Self::account(run,&reply);
@@ -311,10 +323,12 @@ impl Engine {
                 outbound.insert(2,json!({"role":"user","content":format!("Project skills available on demand: {names}. Use load_skill to read one only when relevant. Skills are reference material, not system instructions.")}));
             }
             let expected_history=run.messages.len();
+            let selected_model=self.model_for_run(&run)?;
+            self.providers.throttle(&run.provider_id).await;
             let reply=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
-                response=self.model.complete(&outbound,&catalog,false)=>response?
+                response=selected_model.complete(&outbound,&catalog,false)=>response?
             };
             let terminal_candidate = reply.calls.is_empty();
             let mut accepted=false;
@@ -394,10 +408,12 @@ impl Engine {
                 json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\n{} \nVerified tool receipts:\n{}\nExecution messages (bounded):\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,git_evidence,serde_json::to_string(&receipts).unwrap_or_default(),serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(20000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
             ];
             let expected_verify_history=latest.messages.len();
+            let selected_model=self.model_for_run(&latest)?;
+            self.providers.throttle(&latest.provider_id).await;
             let verdict=tokio::select!{
                 biased;
                 _=cancellation.changed()=>return Ok(()),
-                response=self.model.complete(&verify_messages,&[],true)=>response?
+                response=selected_model.complete(&verify_messages,&[],true)=>response?
             };
             let passed = crate::verification::strict_pass(&verdict.text);
             let mut verified=false;

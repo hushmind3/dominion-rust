@@ -83,6 +83,9 @@ pub struct Run {
     #[serde(default="default_learning_enabled")] pub strategy_learning: bool,
     /// A model-only request MUST never be recovered into the tool-agent harness.
     #[serde(default)] pub model_only:bool,
+    /// Frozen model identity; credentials are never written to run journals.
+    #[serde(default)] pub provider_id:String,
+    #[serde(default)] pub model_name:String,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -131,6 +134,7 @@ impl Run {
             reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             strategy_learning:true,model_only:false,
+            provider_id:String::new(),model_name:String::new(),
             created_at_ms: time, updated_at_ms: time,
         };
         run.event("created", "New execution created", None);

@@ -114,10 +114,18 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
   if !input.reasoning_effort.is_empty(){
     return Err(unsupported("Per-room reasoning effort requires native provider controls."));
   }
-  if input.models.iter().any(|model|
-    model.get("providerId").and_then(Value::as_str)!=Some("dominion-native")
-    ||model.get("model").and_then(Value::as_str)!=Some(engine.settings.main.name.as_str())){
-    return Err(unsupported("Per-participant model override is not connected to the native group engine."));
+  if !input.auto_models&&input.models.is_empty(){
+    return Err(bad("manual room model routing requires at least one selected model"));
+  }
+  for model in &input.models{
+    let provider=model.get("providerId").and_then(Value::as_str)
+        .ok_or_else(||bad("room model provider missing"))?;
+    let chosen=model.get("model").and_then(Value::as_str)
+        .ok_or_else(||bad("room model name missing"))?;
+    if model.get("reasoningEffort").and_then(Value::as_str).is_some_and(|s|!s.is_empty()){
+        return Err(unsupported("Room model-specific reasoning effort is not implemented by the selected native provider"));
+    }
+    engine.providers.resolve(provider,chosen,&engine.settings.main).map_err(bad)?;
   }
   let agents=engine.frontend.agents().await;
   let mut members=Vec::new();
@@ -126,9 +134,8 @@ async fn checked(engine:&Engine,input:&RoomDraft)->Result<(FrontendRoom,Vec<Part
     if !seen.insert(id){return Err(bad("duplicate room agent id"));}
     let agent=agents.iter().find(|a|&a.id==id)
       .ok_or_else(||bad(format!("room agent not found: {id}")))?;
-    if agent.provider_id!="dominion-native" || agent.model!=engine.settings.main.name{
-      return Err(bad(format!("room agent {id} is not connected to active Rust model")));
-    }
+    engine.providers.resolve(&agent.provider_id,&agent.model,&engine.settings.main)
+        .map_err(bad)?;
     members.push(Participant{
       name:agent.id.clone(),
       role:if agent.system_prompt.trim().is_empty(){agent.name.clone()}
@@ -264,7 +271,26 @@ async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),Fault>{
         excerpts.chars().take(1250).collect::<String>()
     }else{excerpts};
     engine.groups.set_knowledge_context(id,excerpt).await.map_err(bad)?;
-    room=engine.groups.next(&engine.model,id).await.map_err(bad)?;
+    let index=crate::group::Groups::select(&room);
+    let agent_id=room.participants.get(index)
+        .ok_or_else(||bad("room speaker missing"))?.name.as_str();
+    let (provider,model)=if !config.auto_models && !config.models.is_empty(){
+        let selected=&config.models[room.rounds%config.models.len()];
+        (selected.get("providerId").and_then(Value::as_str).unwrap_or("").to_owned(),
+         selected.get("model").and_then(Value::as_str).unwrap_or("").to_owned())
+    }else{
+        let agent=engine.frontend.agents().await.into_iter()
+            .find(|a|a.id==agent_id)
+            .ok_or_else(||bad("selected room agent was deleted"))?;
+        (agent.provider_id,agent.model)
+    };
+    let settings=engine.providers.resolve(&provider,&model,&engine.settings.main)
+        .map_err(bad)?;
+    engine.providers.throttle(&provider).await;
+    let selected_model=if provider=="dominion-native"{
+        engine.model.clone()
+    }else{engine.model.with_primary(settings)};
+    room=engine.groups.next(&selected_model,id).await.map_err(bad)?;
     turns+=1;
     if config.auto_learning{
       if let Some(last)=room.messages.last().filter(|m|m.speaker!="user"){

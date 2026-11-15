@@ -217,7 +217,7 @@ impl Groups {
         room.updated_at_ms=now_ms();
         self.save(room).await
     }
-    fn select(room:&Room)->usize{
+    pub(crate) fn select(room:&Room)->usize{
         if let Some(first)=room.recipients.first(){
             if let Some(index)=room.participants.iter().position(|p|&p.name==first){return index;}
         }

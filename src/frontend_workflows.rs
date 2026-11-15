@@ -63,15 +63,13 @@ async fn validate(engine:&Engine,input:NewWorkflow)->Result<(Workflow,bool),Faul
             .ok_or_else(||bad(format!("unknown workflow agent {}",step.agent_id)))?;
         // If main's UI selects a model, it must be *the model used by the
         // actual Rust worker*. Reject anything the native engine can't route.
-        if !matches!(step.provider_id.as_str(),""|"dominion-native") ||
-           (!step.model.is_empty()&&step.model!=engine.settings.main.name) ||
-           agent.provider_id!="dominion-native" || agent.model!=engine.settings.main.name {
-            return Err(bad("workflow agent/model is not connected to the native Rust runner"));
-        }
+        let provider=if step.provider_id.is_empty(){agent.provider_id.as_str()}
+            else{step.provider_id.as_str()};
+        let model=if step.model.is_empty(){agent.model.as_str()}else{step.model.as_str()};
+        engine.providers.resolve(provider,model,&engine.settings.main).map_err(bad)?;
         steps.push(WorkflowStep{
             id,name:step.name.trim().into(),prompt:step.prompt,
-            agent_id:step.agent_id,provider_id:"dominion-native".into(),
-            model:engine.settings.main.name.clone()
+            agent_id:step.agent_id,provider_id:provider.into(),model:model.into()
         });
     }
     let update=input.id.as_ref().is_some_and(|id|!id.is_empty());
@@ -151,9 +149,10 @@ async fn drive_reserved(engine:Arc<Engine>,id:Uuid)->Result<(),String>{
             let agent=engine.frontend.agents().await.into_iter()
                 .find(|p|p.id==step.agent_id)
                 .ok_or_else(||format!("workflow agent {} was removed",step.agent_id))?;
-            if agent.provider_id!="dominion-native" || agent.model!=engine.settings.main.name ||
-                step.provider_id!="dominion-native" || step.model!=engine.settings.main.name{
-                return Err("workflow-selected agent or model is no longer active".into());
+            engine.providers.resolve(&step.provider_id,&step.model,
+                &engine.settings.main)?;
+            if engine.frontend.agents().await.iter().all(|p|p.id!=agent.id){
+                return Err("workflow-selected agent disappeared".into());
             }
             let previous=job.outputs.last().map(|o|o.answer.as_str()).unwrap_or("");
             let body=step.prompt.replace("{{input}}",&job.user_input)
@@ -174,9 +173,14 @@ async fn drive_reserved(engine:Arc<Engine>,id:Uuid)->Result<(),String>{
                 }).await?;
                 return Ok(());
             }
-            let run=Run::new(CreateRun{
+            let mut run=Run::new(CreateRun{
                 instruction,budget_krw:Some(remaining),max_steps:None
             },engine.settings.max_steps)?;
+            run.provider_id=step.provider_id.clone();
+            run.model_name=step.model.clone();
+            if run.provider_id!="dominion-native"{
+                run.event("pricing_unknown","External provider tariff is not configured; cost limit cannot be verified from zero-price estimates",None);
+            }
             // Store the real run before checkpointing the workflow. In a crash
             // between these writes the extra queued run is not launched; it
             // remains an inspectable orphan, never a duplicate tool execution.
@@ -283,7 +287,8 @@ async fn commit_transcript(engine:&Arc<Engine>,job:&WorkflowJob)->Result<(),Stri
         id:session_id.clone(),
         title:format!("{} · 실행 결과",job.workflow.name),
         agent_id:job.workflow.steps.first().map(|s|s.agent_id.clone()).unwrap_or("general".into()),
-        provider_id:"dominion-native".into(),model:engine.settings.main.name.clone(),
+        provider_id:job.workflow.steps.first().map(|s|s.provider_id.clone()).unwrap_or("dominion-native".into()),
+        model:job.workflow.steps.first().map(|s|s.model.clone()).unwrap_or_else(||engine.settings.main.name.clone()),
         created_at:job.created_at.clone(),updated_at:now,
         pending_run:None,room_id:None,messages
     };
