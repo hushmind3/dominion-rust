@@ -17,6 +17,7 @@ fn duration(value:&Value)->Option<f64>{
     value.as_str().and_then(|s|s.parse::<f64>().ok())
         .or_else(||value.as_f64()).filter(|x|x.is_finite()&&*x>0.0)
 }
+#[cfg(test)]
 pub(super) fn evaluate(probe:&Value,expected_seconds:u64,aspect:&str,require_audio:bool)->Result<Value,String>{
     evaluate_with_minimum(probe,expected_seconds,aspect,640,require_audio)
 }
