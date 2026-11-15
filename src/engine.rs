@@ -1,7 +1,7 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
+use crate::{hooks::{HookChain,ToolHook},config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::{HashMap,HashSet}, sync::Arc};
-use tokio::sync::{mpsc,Mutex,Notify,watch};
+use tokio::sync::{mpsc,Mutex,Notify,watch,RwLock};
 use uuid::Uuid;
 
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
@@ -13,6 +13,7 @@ pub struct Engine {
     pub improvements: Arc<crate::improvement::Improvements>,
     pub mcp: Arc<crate::mcp::Mcp>,
     pub knowledge: Arc<Knowledge>,
+    hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
     cancellation: Mutex<HashMap<Uuid,watch::Sender<bool>>>,
@@ -26,7 +27,8 @@ impl Engine {
         let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
-        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge,
+        let hooks=RwLock::new(HookChain::from_settings(&settings));
+        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
@@ -66,6 +68,10 @@ impl Engine {
         });
         Ok(engine)
     }
+    /// Attach a synchronous, fail-closed policy/receipt hook to this runtime.
+    /// The native SDK and HTTP share the same engine and hook chain.
+    pub async fn register_tool_hook(&self, hook:Arc<dyn ToolHook>){self.hooks.write().await.add(hook);}
+
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
             let mut guard = self.active.lock().await;
@@ -153,14 +159,23 @@ impl Engine {
             // grouped in a bounded pool. Exclusive mutations are barriers.
             // A single Store transaction logs batch intent before dispatch,
             // then another atomically saves model-ordered tool receipts.
-            let parallel=tool_batch::parallel_prefix(&run,self.settings.max_parallel_reads);
+            let chain=self.hooks.read().await.clone();
+            let mut parallel=tool_batch::parallel_prefix(&run,self.settings.max_parallel_reads);
+            // A denied or invalid hook at index N is a barrier, not a
+            // speculative dispatch of later reads.
+            if let Some(index)=parallel.iter().position(|call|chain.before(&run,call).is_err()){
+                parallel.truncate(index);
+            }
             if parallel.len()>1{
                 self.store.mutate(id,|run|journal::begin_read_batch(run,&parallel)).await?;
-                let outcomes=tokio::select!{
+                let mut outcomes=tokio::select!{
                     biased;
                     _=cancellation.changed()=>parallel.iter().map(|_|Err("ABORTED: read-only tool cancelled".into())).collect::<Vec<_>>(),
                     outputs=tool_batch::execute_reads(&self.settings,id,parallel.clone())=>outputs
                 };
+                for (call,result) in parallel.iter().zip(outcomes.iter_mut()){
+                    chain.after(&run,call,result);
+                }
                 self.store.mutate(id,|run|journal::finish_read_batch(run,&parallel,&outcomes)).await?;
                 continue;
             }
@@ -177,6 +192,11 @@ impl Engine {
                 }
                 if !policy::allowed_tool(&run,&call.name){
                     self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
+                    continue;
+                }
+                if let Err(deny)=chain.before(&run,&call){
+                    self.store.mutate(id,|run|journal::reject_admission(
+                        run,&call,&deny.code,&deny.reason)).await?;
                     continue;
                 }
                 if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
@@ -366,6 +386,20 @@ impl Engine {
         }
     }
     async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall,mut cancellation:watch::Receiver<bool>) -> Result<(), String> {
+        // Re-apply the current hook immediately before dispatch. This also
+        // protects calls approved under an older policy snapshot.
+        let snapshot=self.store.get(id).await.ok_or("execution not found")?;
+        let chain=self.hooks.read().await.clone();
+        if let Err(deny)=chain.before(&snapshot,&call){
+            self.store.mutate(id,|run|{
+                if run.pending_approval.is_some(){
+                    journal::reject_approved_hook(run,&call,&deny.code,&deny.reason)
+                }else{
+                    journal::reject_admission(run,&call,&deny.code,&deny.reason)
+                }
+            }).await?;
+            return Ok(());
+        }
         // In-flight intent MUST be synced to disk before any outside effect.
         self.store.mutate(id,|run|journal::begin(run,&call)).await?;
         let execute = async {
@@ -417,7 +451,7 @@ impl Engine {
         // Only explicitly pure tools can be aborted cooperatively. Unknown
         // external effects must run until their receipt is durable or require
         // manual reconciliation if the runtime crashes.
-        let output=if journal::replay_safe(&call.name){
+        let mut output=if journal::replay_safe(&call.name){
             tokio::select!{
                 biased;
                 _=cancellation.changed()=>Err("ABORTED: read-only tool cancelled".into()),
@@ -426,6 +460,7 @@ impl Engine {
         }else{
             execute.await
         };
+        chain.after(&snapshot,&call,&mut output);
         // Receipt + dequeuing + cancellation are one durable Store mutation.
         self.store.mutate(id,|run|journal::finish(run,&call,&output,false)).await?;
         Ok(())

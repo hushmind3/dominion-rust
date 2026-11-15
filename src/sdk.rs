@@ -1,5 +1,5 @@
 //! Primary native Rust SDK. HTTP/TypeScript/Studio are optional adapters.
-use crate::{api,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::{Groups,NewRoom,Room,Say},improvement::{Improvement,Improvements,NewImprovement},store::Store,tools,video::{Video,Videos,NewVideo}};
+use crate::{hooks::ToolHook,api,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::{Groups,NewRoom,Room,Say},improvement::{Improvement,Improvements,NewImprovement},store::Store,tools,video::{Video,Videos,NewVideo}};
 use axum::Router;
 use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
@@ -36,6 +36,11 @@ impl Dominion {
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
     pub fn engine(&self)->Arc<Engine>{Arc::clone(&self.engine)}
     pub fn http_router(&self)->Router{api::router(Arc::clone(&self.engine))}
+    /// Native extension point: ordered pre-dispatch veto and post-receipt policy.
+    /// HTTP/TypeScript clients use the same engine with operator-owned hooks.
+    pub async fn register_tool_hook(&self,hook:Arc<dyn ToolHook>){
+        self.engine.register_tool_hook(hook).await;
+    }
     pub async fn submit(&self,input:CreateRun)->Result<Run,String>{
         let run=Run::new(input,self.engine.settings.max_steps)?;
         self.engine.store.put(run.clone()).await?;
