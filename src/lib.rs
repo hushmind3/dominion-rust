@@ -6,6 +6,7 @@ pub mod domain;
 pub mod engine;
 pub mod group;
 pub mod knowledge;
+pub mod journal;
 pub mod improvement;
 pub mod mcp;
 pub mod policy;
