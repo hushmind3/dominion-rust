@@ -32,6 +32,7 @@ pub mod developer;
 pub mod frontend_developer;
 pub mod frontend_growth;
 pub mod frontend_personas;
+pub mod frontend_system;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;
