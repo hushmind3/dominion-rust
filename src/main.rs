@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod domain;
 mod engine;
+mod group;
 mod provider;
 mod store;
 mod tools;
@@ -16,7 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::fs::create_dir_all(&settings.workspace_dir).await?;
     let store = Arc::new(store::Store::open(settings.data_dir.join("runs")).await?);
     let bind = settings.bind;
-    let engine = engine::Engine::new(settings,store)?;
+    let groups = Arc::new(group::Groups::open(settings.data_dir.join("groups")).await?);
+    let engine = engine::Engine::new(settings,store,groups)?;
     let app = api::router(engine);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Dominion listening on http://{bind}");

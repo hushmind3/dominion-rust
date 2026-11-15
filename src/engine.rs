@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{now_ms, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
+use crate::{config::Settings, domain::{Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -8,13 +8,14 @@ const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's
 pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
-    model: ModelClient,
+    pub groups: Arc<crate::group::Groups>,
+    pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
 }
 impl Engine {
-    pub fn new(settings: Settings, store: Arc<Store>) -> Result<Arc<Self>, String> {
+    pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
-        Ok(Arc::new(Self { settings, store, model, active: Mutex::new(HashSet::new()) }))
+        Ok(Arc::new(Self { settings, store, groups, model, active: Mutex::new(HashSet::new()) }))
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {

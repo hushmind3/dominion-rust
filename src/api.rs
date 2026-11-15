@@ -1,7 +1,7 @@
 use crate::{domain::{Approval, CreateRun, PublicSettings, Run}, engine::Engine, tools};
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, StatusCode},
     middleware::{self, Next},
     response::{sse::{Event, KeepAlive, Sse}, Html, IntoResponse, Response},
     routing::{get, post}, Json, Router,
@@ -41,6 +41,10 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/runs/{id}/events",get(events))
         .route("/runs/{id}/files",get(list_files))
         .route("/runs/{id}/files/{*path}",get(read_file))
+        .route("/groups",get(list_groups).post(create_group))
+        .route("/groups/{id}",get(get_group))
+        .route("/groups/{id}/messages",post(group_say))
+        .route("/groups/{id}/next",post(group_next))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     Router::new()
         .nest("/api/v1",api)
@@ -91,7 +95,8 @@ async fn events(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Query(param
         loop {
             match engine.store.get(id).await {
                 Some(run) => {
-                    for record in run.events.iter().filter(|event|event.seq > seq) {
+                    for record in &run.events {
+                        if record.seq <= seq { continue; }
                         seq = record.seq;
                         let event = Event::default().id(record.seq.to_string()).event(&record.kind)
                             .json_data(record).unwrap_or_else(|_|Event::default().event("encoding_error").data("{}"));
@@ -120,4 +125,21 @@ async fn read_file(State(engine):State<Arc<Engine>>,Path((id,path)):Path<(Uuid,S
         id:"api-read".into(),name:"read_file".into(),arguments:json!({"path":path})
     }).await.map_err(bad)?;
     Ok(Json(json!({"path":path,"content":content})))
+}
+
+async fn list_groups(State(engine): State<Arc<Engine>>) -> Json<Vec<crate::group::Room>> {
+    Json(engine.groups.list().await)
+}
+async fn create_group(State(engine):State<Arc<Engine>>,Json(req):Json<crate::group::NewRoom>) -> Result<(StatusCode,Json<crate::group::Room>),ApiError> {
+    let room=engine.groups.create(req).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(room)))
+}
+async fn get_group(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
+    engine.groups.get(id).await.map(Json).ok_or_else(not_found)
+}
+async fn group_say(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(input):Json<crate::group::Say>)->Result<Json<crate::group::Room>,ApiError>{
+    engine.groups.say(id,input.content).await.map(Json).map_err(bad)
+}
+async fn group_next(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
+    engine.groups.next(&engine.model,id).await.map(Json).map_err(bad)
 }
