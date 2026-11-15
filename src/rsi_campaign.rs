@@ -103,8 +103,13 @@ impl Campaign {
             "costKrw":self.cost_krw,
             "modelCalls":self.history.iter().map(|a|a.model_calls).sum::<usize>(),
             "candidateCount":self.history.iter().filter(|a|a.candidate_commit.is_some()).count(),
-            "verifiedSourceWrites":self.history.iter().filter(|a|a.candidate_commit.is_some()).count(),
-            "systemSourceWrites":self.history.iter().map(|a|a.focus_files.len()).sum::<usize>(),
+            // Verified source writes count only adopted Git commits; private
+            // candidate worktrees must never inflate installed-source counts.
+            "verifiedSourceWrites":self.history.iter().filter(|a|
+                a.selected.as_deref()==Some("candidate") && a.accepted_commit.is_some()).count(),
+            "systemSourceWrites":self.history.iter().filter(|a|
+                a.selected.as_deref()==Some("candidate") && a.accepted_commit.is_some())
+                .map(|a|a.focus_files.len()).sum::<usize>(),
             "evaluationEpisodes":self.history.len(),
             "baseCommit":self.base_commit,"headCommit":self.head_commit,
             "sourceSnapshot":false,
@@ -116,7 +121,7 @@ impl Campaign {
                 "tokenBudget":self.token_budget,"timeBudgetSeconds":self.time_budget_seconds},
             "comparison":comparison,
             "activeWorker":self.current_trial.map(|id|json!({"id":id,
-                "phase":self.phase,"focusFiles":candidate.map(|c|c.focus_files.clone())})),
+                "phase":self.phase,"focusFiles":[]})),
             "history":self.history.iter().map(|h|json!({
                 "attempt":h.attempt,
                 "accepted":h.accepted && h.selected.as_deref()==Some("candidate"),
