@@ -7,8 +7,8 @@ for an execution mechanism, not a list of marketing feature names.
 
 | Reference | Inspected mechanism | Frontier target | Dominion current path | Remaining gap |
 | --- | --- | --- | --- | --- |
-| OpenAI Codex Rust | codex-rs/core/src/compact_token_budget.rs, apply_patch.rs, session and approval layers | Persistent threads, context-lifecycle events, structured source edits, configured permissions | src/context.rs, src/engine.rs, src/tools.rs | No provider-aware compaction quality metrics, real sandbox or mature thread lifecycle |
-| Claude Code (Anthropic, 2026) | Skills, hooks, CLAUDE.md, context-isolated subagents | Deterministic hooks and selective instruction loading; isolated delegated work | src/engine.rs, src/sdk.rs (isolated child runs, user directives), src/workspace.rs | No complete skills/hooks/procedure catalog |
+| OpenAI Codex Rust | codex-rs/core/src/compact_token_budget.rs, apply_patch.rs, session and approval layers | Persistent threads, context-lifecycle events, structured source edits, configured permissions | src/context.rs, src/engine.rs, src/tools.rs | Sandbox paths exist but need adversarial OS tests; provider-aware compaction quality metrics, quotas and mature thread lifecycle are missing |
+| Claude Code (Anthropic, 2026) | Skills, hooks, CLAUDE.md, context-isolated subagents | Deterministic hooks and selective instruction loading; isolated delegated work | src/engine.rs, src/sdk.rs (isolated child runs, user directives), src/workspace.rs | Lazy SKILL.md exists; comprehensive deterministic hooks and policy-controlled procedural lifecycle are missing |
 | DeepSeek Harness | packages/core/agent-loop and session event store; plugin capability seams | Swappable decision and execution driver, complete replay and session events | src/engine.rs + store.rs + mcp.rs, write-ahead tool intent | Replace fixed loop with strategy/policy traits; richer recovery and event log |
 | Qwen Code Agent Teams | Concurrent read-only investigators, owner-controlled writer worktree, message/task board | Separated investigation/writing and conflict-free integration | src/policy.rs enforced investigator roles; src/engine.rs escrow settlement; src/workspace.rs approved, conflict-checked patch adoption | No shared task board, strategy-level role scheduling or measured conflict repair |
 | OpenClaw | src/agents/agent-command.ts and agent-bundle-mcp-* runtime | Multi-channel integration, resilient MCP registration, session admission | src/mcp.rs HTTP tools with approval; src/store.rs durable run files | Broader channel adapters, stdio MCP, admission/connection lifecycle |
@@ -87,3 +87,13 @@ The sub4 branch now contains the complete main React 19/Vite source tree and mou
 - Linux bubblewrap and macOS Seatbelt fail-closed OS shell isolation for approved agent and RSI scripts: `src/sandbox.rs`.
 
 Current runtime still needs a compatible OS sandbox backend to execute shell/RSI commands; untested sandbox paths do not count as production-ready.
+
+## Source audit: post-hardening runtime
+
+- `src/verification.rs` accepts only a strict PASS verdict; `src/engine.rs` sends real run tool receipts, Git status and actual Git diff into the verifier, rather than treating model-written completion claims as proof.
+- `src/engine.rs` owns an event-driven queued parent wake scheduler with no mutually-recursive async launch path. `src/sdk.rs::wait` now waits through deliberate child-work suspension, while a generic paused error still returns promptly.
+- Cancellation during external tool execution is persisted with `cancel_after_tool`, and only reaches a terminal state after a durable tool receipt or human reconciliation; completed child budget settlement excludes active or uncertain tool operations.
+- `src/knowledge.rs` persists a copy before publishing memory in-process; a failed filesystem rename does not create a phantom memory.
+- `sdk/typescript/src/index.ts` mirrors native read-only delegation, memory, skills and run usage fields; mock HTTP tests added without invoking CI.
+
+None of these static integrations establishes measured frontier task success. Required Rust compilation, OS sandbox/real-provider end-to-end tasks, real app navigation, group/video/RSI quality gates and matched-condition coding benchmarks remain pending.
