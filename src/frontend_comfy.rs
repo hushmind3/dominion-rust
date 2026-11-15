@@ -514,6 +514,7 @@ async fn download(settings:&Settings,id:Uuid,cfg:&Config,http:&Client,file:&Resu
    &header[4..8]==b"ftyp"
   }else{header.starts_with(&[0x1a,0x45,0xdf,0xa3])};
   if !valid{return Err("ComfyUI output bytes do not match MP4/WebM signature".into());}
+  drop(out);
   tokio::fs::rename(&part,&final_file).await.map_err(|e|e.to_string())?;
   Ok((total,file.format.clone()))
  }.await;
@@ -586,7 +587,15 @@ mod tests{
    .route("/system_stats",axum::routing::get(|| async{
      axum::Json(json!({"devices":[]}))
    }))
-   .route("/prompt",axum::routing::post(move||async move{
+   .route("/models/diffusion_models",axum::routing::get(||async{
+     axum::Json(json!(["real-video.safetensors"]))
+   }))
+   .route("/models/checkpoints",axum::routing::get(||async{
+     axum::Json(json!([]))
+   }))
+   .route("/prompt",axum::routing::post(move|axum::Json(body):axum::Json<Value>|async move{
+     assert_eq!(body["prompt"]["2"]["inputs"]["unet_name"],"real-video.safetensors");
+     assert_eq!(body["prompt"]["1"]["inputs"]["text"],"A real video");
      axum::Json(json!({"prompt_id":remote.to_string(),"number":0}))
    }))
    .route("/history/{id}",axum::routing::get(move||async move{
@@ -612,11 +621,14 @@ mod tests{
   let mut cfg=Config::default();
   cfg.engine="comfyui".into();
   cfg.comfy_url=format!("http://{addr}");
+  cfg.video_model="diffusion_models/real-video.safetensors".into();
   cfg.comfy_workflow=Some(json!({
    "1":{"class_type":"CLIPTextEncode","inputs":{"text":"{{PROMPT}}"}},
+   "2":{"class_type":"UNETLoader","inputs":{"unet_name":"old-model.safetensors"}},
    "3":{"class_type":"VHS_VideoCombine","inputs":{"images":["1",0],"frame_rate":16}}
   }));
   atomic(&config_path(&settings),&serde_json::to_vec(&cfg).unwrap()).unwrap();
+  assert_eq!(catalog(&settings).await.len(),1);
   let result=create(settings.clone(),Create{
    title:"Real HTTP job".into(),brief:"A real video".into(),
    negative:String::new(),aspect_ratio:"16:9".into(),
