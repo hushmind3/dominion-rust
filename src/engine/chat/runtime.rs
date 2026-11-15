@@ -58,6 +58,10 @@ use self::finalization::{compliance_detail, compliance_summary, determine_task_o
 mod evidence;
 use self::evidence::{record_selection_snapshot};
 pub(super) use self::evidence::finish_attempt;
+#[cfg(test)]
+pub(super) use self::evidence::finalize_execution;
+#[cfg(test)]
+use self::tool_selection::trim_tool_definitions;
 
 #[path = "runtime/housekeeping.rs"]
 mod housekeeping;
