@@ -9,6 +9,9 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("read_file", "Read a UTF-8 file, up to 128 KB", json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})),
         tool("write_file", "Write a UTF-8 file inside workspace; replaces existing content", json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})),
         tool("search_files", "Find a literal string in workspace text files", json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})),
+        tool("edit_file", "Edit one exact occurrence in a file; fails when the expected text differs or appears more than once", json!({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"]})),
+        tool("git_status", "Inspect changed files in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
+        tool("git_diff", "Inspect uncommitted changes in an attached Git worktree, without modifying anything", json!({"type":"object","properties":{}})),
     ];
     if shell_enabled {
         tools.push(tool("shell", "Execute an approved shell command in the workspace; user approval is always required", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})));
@@ -65,6 +68,32 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
             fs::write(&path, content).await.map_err(|e| e.to_string())?;
             Ok(format!("wrote {} bytes to {}", content.len(), path.strip_prefix(root.canonicalize().map_err(|e| e.to_string())?).unwrap_or(&path).display()))
         }
+        "edit_file" => {
+            let raw_path=required(&call.arguments,"path")?;
+            let old=required(&call.arguments,"old_text")?;
+            let new=required(&call.arguments,"new_text")?;
+            if old.is_empty() || old.len()>65_536 || new.len()>262_144 {
+                return Err("invalid edit sizes; expected a bounded nonempty old_text".into());
+            }
+            let path=validated_path(&root,raw_path)?;
+            let metadata=fs::metadata(&path).await.map_err(|e|e.to_string())?;
+            if !metadata.is_file()||metadata.len()>262_144 {return Err("file exceeds 256 KB or is not regular".into());}
+            let content=fs::read_to_string(&path).await.map_err(|e|e.to_string())?;
+            let matches=content.match_indices(old).count();
+            if matches!=1 {return Err(format!("edit_file requires exactly one exact match, found {matches}")); }
+            let updated=content.replacen(old,new,1);
+            if updated.len()>524_288 {return Err("edited file exceeds 512 KB".into());}
+            let checked=validated_path(&root,raw_path)?;
+            let tmp=checked.with_extension(format!("dominion-{}.tmp",uuid::Uuid::new_v4()));
+            fs::write(&tmp,updated).await.map_err(|e|e.to_string())?;
+            if let Err(err)=fs::rename(&tmp,&checked).await {
+                let _=fs::remove_file(&tmp).await;
+                return Err(format!("atomic edit failed: {err}"));
+            }
+            Ok(format!("edited {}: one exact match replaced",raw_path))
+        }
+        "git_status" => git_read(&root,&["status","--short"]).await,
+        "git_diff" => git_read(&root,&["diff","--no-ext-diff","--"]).await,
         "list_files" => {
             let path = validated_path(&root, required(&call.arguments,"path")?)?;
             let paths = list_relative(&root, &path).await?;
@@ -101,6 +130,18 @@ pub async fn execute(settings: &Settings, run_id: uuid::Uuid, call: &ToolCall) -
         _ => Err(format!("unknown or disabled tool: {}",call.name)),
     }
 }
+async fn git_read(root:&Path,args:&[&str])->Result<String,String>{
+    let output=tokio::time::timeout(Duration::from_secs(15),Command::new("git")
+        .args(args).current_dir(root).kill_on_drop(true).output())
+        .await.map_err(|_|"git inspection timed out".to_string())?
+        .map_err(|e|format!("git unavailable: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("git inspection failed: {}",String::from_utf8_lossy(&output.stderr).chars().take(800).collect::<String>()));
+    }
+    let out=String::from_utf8_lossy(&output.stdout);
+    let clipped=out.chars().take(32_000).collect::<String>();
+    Ok(if out.chars().count()>32_000 {format!("{clipped}\n[diff truncated; inspect specific files]")}else{clipped})
+}
 async fn list_relative(root: &Path, starting: &Path) -> Result<Vec<String>,String> {
     let mut stack = vec![starting.to_path_buf()];
     let mut found = Vec::new();
@@ -115,7 +156,7 @@ async fn list_relative(root: &Path, starting: &Path) -> Result<Vec<String>,Strin
             let meta = entry.file_type().await.map_err(|e| e.to_string())?;
             if meta.is_symlink() { continue; }
             let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') { continue; }
+            if name.to_string_lossy().starts_with('.') || ["node_modules","target","dist","build",".venv","__pycache__"].contains(&name.to_string_lossy().as_ref()) { continue; }
             if meta.is_dir() { stack.push(entry.path()); }
             else if meta.is_file() {
                 found.push(entry.path().strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string());
@@ -166,6 +207,10 @@ mod tests {
         execute(&settings,id,&write).await.unwrap();
         let read=ToolCall{id:"2".into(),name:"read_file".into(),arguments:json!({"path":"src/file.txt"})};
         assert_eq!(execute(&settings,id,&read).await.unwrap(),"hi");
+        let edit=ToolCall{id:"3".into(),name:"edit_file".into(),arguments:json!({"path":"src/file.txt","old_text":"hi","new_text":"updated"})};
+        execute(&settings,id,&edit).await.unwrap();
+        assert_eq!(execute(&settings,id,&read).await.unwrap(),"updated");
+        assert!(execute(&settings,id,&edit).await.is_err());
         fs::remove_dir_all(settings.workspace_dir).await.unwrap();
     }
 }

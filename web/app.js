@@ -63,7 +63,6 @@
       <div class="metric"><span>실행 라운드</span><b>${run.steps}/${run.max_steps}</b></div>
       <div class="metric"><span>모델 토큰</span><b>${(run.input_tokens+run.output_tokens).toLocaleString()}</b></div></div>`;
     if(run.context_chars_avoided) content+=`<p class="muted">컨텍스트 재투영으로 전송을 줄인 문자 수: ${Number(run.context_chars_avoided).toLocaleString()}자 (실제 청구 토큰과 다름)</p>`;
-    content+=``;
     if(run.repository) content+=`<p class="muted">작업 대상: ${safe(run.repository)} · 원본 Git 커밋: ${safe((run.base_commit||'').slice(0,12))}</p>`;
     if(run.plan) content+=`<h2>실행 계획</h2><div class="output">${safe(run.plan)}</div>`;
     if(run.pending_approval && !run.in_flight) content+=`<div class="approval"><b>⚠️ 명령 실행 승인 필요</b><code>${safe(run.pending_approval.name + ': '+ (run.pending_approval.arguments.command || JSON.stringify(run.pending_approval.arguments)))}</code><div class="actions"><button class="primary" id="allow">승인</button><button class="danger" id="deny">거부</button></div></div>`;
