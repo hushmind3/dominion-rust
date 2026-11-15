@@ -528,6 +528,67 @@ mod tests{
    {"filename":"../../private.mp4","subfolder":"","type":"output"}
   ]}}})).is_none());
  }
+ #[tokio::test]
+ async fn queue_history_and_video_download_work_against_a_real_http_server(){
+  // The test server implements ComfyUI's actual HTTP contract. It proves
+  // the queued job reaches a durable video file, not only a fabricated UI row.
+  let remote=Uuid::new_v4();
+  let app=axum::Router::new()
+   .route("/system_stats",axum::routing::get(|| async{
+     axum::Json(json!({"devices":[]}))
+   }))
+   .route("/prompt",axum::routing::post(move||async move{
+     axum::Json(json!({"prompt_id":remote.to_string(),"number":0}))
+   }))
+   .route("/history/{id}",axum::routing::get(move||async move{
+     let mut receipts=serde_json::Map::new();
+     receipts.insert(remote.to_string(),json!({
+      "status":{"completed":true,"status_str":"success"},
+      "outputs":{"3":{"gifs":[{"filename":"proof.mp4",
+        "subfolder":"","type":"output"}]}}
+     }));
+     axum::Json(Value::Object(receipts))
+   }))
+   .route("/view",axum::routing::get(||async{
+     let mut mp4=vec![0,0,0,24];
+     mp4.extend_from_slice(b"ftypisom000000000000");
+     mp4
+   }));
+  let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let addr=listener.local_addr().unwrap();
+  let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap();});
+  let mut settings=Settings::from_env().unwrap();
+  let data=std::env::temp_dir().join(format!("comfy-api-test-{}",Uuid::new_v4()));
+  settings.data_dir=data.clone();
+  let mut cfg=Config::default();
+  cfg.engine="comfyui".into();
+  cfg.comfy_url=format!("http://{addr}");
+  cfg.comfy_workflow=Some(json!({
+   "1":{"class_type":"CLIPTextEncode","inputs":{"text":"{{PROMPT}}"}},
+   "3":{"class_type":"VHS_VideoCombine","inputs":{"images":["1",0],"frame_rate":16}}
+  }));
+  atomic(&config_path(&settings),&serde_json::to_vec(&cfg).unwrap()).unwrap();
+  let result=create(settings.clone(),Create{
+   title:"Real HTTP job".into(),brief:"A real video".into(),
+   negative:String::new(),aspect_ratio:"16:9".into(),
+   duration:3,fps:16,seed:-1
+  }).await.unwrap();
+  let id=Uuid::parse_str(result["id"].as_str().unwrap()).unwrap();
+  let mut finished=false;
+  for _ in 0..30{
+   tokio::time::sleep(Duration::from_millis(200)).await;
+   let item=get(&settings,id).unwrap().unwrap();
+   if item.status=="completed"{finished=true;break;}
+   assert_ne!(item.status,"failed","ComfyUI job failed: {:?}",item.error);
+  }
+  assert!(finished,"HTTP-driven ComfyUI job did not complete");
+  let (file,mime)=output(&settings,id).unwrap().unwrap();
+  assert_eq!(mime,"video/mp4");
+  assert!(fs::metadata(file).unwrap().len()>=24);
+  assert_eq!(get(&settings,id).unwrap().unwrap().prompt_id,Some(remote));
+  server.abort();
+  fs::remove_dir_all(data).unwrap();
+ }
  #[test]
  fn in_progress_jobs_never_auto_replay_after_process_recovery(){
   let mut settings=Settings::from_env().unwrap();
