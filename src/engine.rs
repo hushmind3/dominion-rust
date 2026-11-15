@@ -767,6 +767,119 @@ mod tests {
         Json(json!({"choices":[{"message":{"role":"assistant","content":"should not be accepted"}}],
             "usage":{"prompt_tokens":10,"completion_tokens":2}}))
     }
+
+    async fn mocked_long_running_mcp(
+        State((called,started)):State<(Arc<AtomicUsize>,Arc<tokio::sync::Notify>)>,
+        Json(body):Json<Value>
+    )->axum::response::Response{
+        use axum::{body::{Body,Bytes},response::IntoResponse};
+        use std::convert::Infallible;
+        let id=body["id"].clone();
+        let method=body["method"].as_str().unwrap_or("");
+        if method=="tools/list"{
+            return Json(json!({"jsonrpc":"2.0","id":id,"result":{
+                "tools":[{"name":"longop","inputSchema":{
+                    "type":"object","properties":{"request":{"type":"string"}},
+                    "required":["request"]}}
+                ]
+            }})).into_response();
+        }
+        if method!="tools/call"{return axum::http::StatusCode::BAD_REQUEST.into_response();}
+        called.fetch_add(1,Ordering::SeqCst);
+        let stream=async_stream::stream!{
+            let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
+                "params":{"progressToken":"op","progress":1}});
+            yield Ok::<Bytes,Infallible>(Bytes::from(format!("data: {}\n\n",progress)));
+            started.notify_one();
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            let final_response=json!({"jsonrpc":"2.0","id":id,
+                "result":{"content":[{"type":"text","text":"remote completed"}]}});
+            yield Ok::<Bytes,Infallible>(Bytes::from(format!("data: {}\n\n",final_response)));
+        };
+        ([(axum::http::header::CONTENT_TYPE,"text/event-stream")],
+            Body::from_stream(stream)).into_response()
+    }
+
+    #[tokio::test]
+    async fn cancelled_mcp_stream_preserves_intent_until_human_observation(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/mcp",listener.local_addr().unwrap());
+        let started=Arc::new(tokio::sync::Notify::new());
+        let called=Arc::new(AtomicUsize::new(0));
+        let fixture=tokio::spawn({
+            let state=(Arc::clone(&called),Arc::clone(&started));
+            async move{
+                axum::serve(listener,Router::new().route("/mcp",post(mocked_long_running_mcp))
+                    .with_state(state)).await.unwrap();
+            }
+        });
+        let root=std::env::temp_dir().join(format!("dominion-mcp-reconcile-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let mcp=Arc::new(crate::mcp::Mcp::new(vec![crate::mcp::Server{
+            name:"fixture".into(),url,bearer_token:String::new()
+        }]).unwrap());
+        let engine=Engine::new_with_mcp(settings,Arc::clone(&store),
+            groups,videos,improvements,mcp).unwrap();
+        let mut run=Run::new(CreateRun{
+            instruction:"run a remote operation".into(),budget_krw:Some(100.0),max_steps:Some(1)
+        },1).unwrap();
+        run.plan=Some("Call approved remote MCP operation".into());
+        run.steps=1;
+        let id=run.id;
+        run.queued_calls.push(ToolCall{
+            id:"remote-1".into(),name:"mcp__fixture__longop".into(),
+            arguments:json!({"request":"do work"})
+        });
+        store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut approval=false;
+        for _ in 0..100{
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if store.get(id).await.unwrap().status==RunStatus::AwaitingApproval{
+                approval=true;break;
+            }
+        }
+        assert!(approval,"external operation was not put behind human approval");
+        engine.approve(id,true).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2),started.notified())
+            .await.expect("approved MCP tool never entered remote stream");
+        let cancelled=engine.cancel(id).await.unwrap();
+        assert_eq!(cancelled.status,RunStatus::Paused);
+        assert!(cancelled.cancel_after_tool);
+        let mut uncertain=None;
+        for _ in 0..120{
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let observed=store.get(id).await.unwrap();
+            if observed.events.iter().any(|e|e.kind=="mcp_remote_outcome_unknown")
+                && !engine.active.lock().await.contains(&id){
+                uncertain=Some(observed);break;
+            }
+        }
+        let observed=uncertain.expect("MCP cancellation failed to retain uncertain result");
+        assert_eq!(observed.status,RunStatus::Paused);
+        assert_eq!(observed.in_flight.as_ref().unwrap().id,"remote-1");
+        assert!(observed.cancel_after_tool);
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="tool_result").count(),0);
+        assert_eq!(called.load(Ordering::SeqCst),1);
+        let reconciled=engine.reconcile(id,ReconcileTool{
+            succeeded:true,result:"confirmed from the remote service audit".into()
+        }).await.unwrap();
+        assert_eq!(reconciled.status,RunStatus::Cancelled);
+        assert!(reconciled.in_flight.is_none());
+        assert_eq!(reconciled.events.iter().filter(|e|e.kind=="tool_reconciled").count(),1);
+        assert_eq!(called.load(Ordering::SeqCst),1,
+            "remote operation must never be dispatched twice during reconciliation");
+        fixture.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn cancellation_aborts_active_provider_request_without_accepting_stale_plan(){
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
