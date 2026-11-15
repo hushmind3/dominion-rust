@@ -1,6 +1,6 @@
 # Dominion TypeScript SDK
 
-A thin, typed client to the **same Rust execution engine** used by Dominion Studio.
+A thin, typed convenience client to the native **Rust SDK engine** used by Dominion Studio. It is not a model execution SDK or separate agent harness.
 
 ```ts
 import { Dominion } from '@dominion/sdk';
@@ -76,3 +76,21 @@ await sdk.runs.resume(run.id);
 ```
 
 Reconciliation records an observed receipt; it never repeats an external operation.
+
+## Existing project work and subagents
+
+```ts
+const coding = await sdk.runs.fromRepository({
+  repository: 'repos/my-project',
+  instruction: 'Fix the failing tests, inspect the diff and report actual output',
+  budget_krw: 1000,
+});
+const subagent = await sdk.runs.delegate(coding.id, {
+  instruction: 'Investigate the module boundaries; report useful findings',
+  budget_krw: 200,
+});
+const children = await sdk.runs.subagents(coding.id);
+```
+
+Both routes are thin adapters to native Rust. Repository paths are relative
+to DOMINION_WORKSPACE_DIR; the agent receives an isolated Git worktree.

@@ -1,6 +1,6 @@
 # DOMINION · Autonomous Execution Studio
 
-**Independent Rust execution harness + versioned HTTP API + TypeScript SDK + browser studio.**
+**Native Rust SDK and independent Rust agent engine. HTTP API, TypeScript SDK and GUI are adapters to the same engine.**
 
 This is a **clean rebuild** on `dominion-sub4`. It does not inherit the previous runtime or its old task abstraction. The Rust server controls all model calls, tool execution, decisions, persistence and recovery. The UI and SDK call that same server rather than embedding a separate agent engine.
 
@@ -8,6 +8,7 @@ This is a **clean rebuild** on `dominion-sub4`. It does not inherit the previous
 
 | Surface | Entry point | Current capability |
 |---|---|---|
+| Native Rust SDK | `src/lib.rs`, `src/sdk.rs` | In-process run submission, tool/recovery events, source worktree import, delegated workers, group/video/RSI operations |
 | Autonomous work | `POST /api/v1/runs` | Model-generated plan, native function-tool loop, file artifacts, bounded execution, secondary verifier and corrective turns |
 | Human intervention | `/runs/{id}/approval`, `/directive`, `/resume`, `/cancel` | Persistent decisions, revised user instructions, resume after restart, cancellation between operations |
 | Events | `GET /runs/{id}/events?since=N` | Replayable, sequence-numbered SSE timeline; snapshots remain authoritative |
@@ -15,9 +16,19 @@ This is a **clean rebuild** on `dominion-sub4`. It does not inherit the previous
 | Video | `/api/v1/videos` | Optional model storyboard, FFmpeg scene rendering, optional local speech, cached-scene partial rerender, merged MP4 download |
 | Non-weight improvement | `/api/v1/improvements` | Model candidate on designated source file; detached Git worktrees; fixed baseline/candidate tests and numeric score; explicit Git adoption; inherited text reflections |
 | Model integration | `src/provider.rs` | OpenAI-compatible chat-completions transport, configurable main/economy models, economy-to-main failover, token usage and estimated cost |
-| Files and commands | `src/tools.rs` | Bounded workspace read/write/list/search; optional shell requiring per-call approval |
+| Files and commands | `src/tools.rs` | Workspace read/write/search, exact-match atomic editing, Git status/diff, MCP; optional approved shell |
+| Existing Git projects | `POST /api/v1/runs/from-repository` | Creates an isolated detached worktree; original checkout is not edited |
+| Subagents | `/api/v1/runs/{id}/subagents` | Child native workers with lineage, isolated history/worktrees, sibling budget reservations and parent-visible results |
+| Context optimization | `src/context.rs` | Non-destructive request projection preserving explicit user directives and tool call/result pairing; estimated saved characters tracked |
 | Studio | `http://127.0.0.1:8787` | Korean workspaces for execution, group conversation, video, improvement and model connection |
-| SDK | `sdk/typescript` | Typed methods for the same HTTP endpoints, SSE, waiting and artifact access |
+| TypeScript helper SDK | `sdk/typescript` | Typed HTTP convenience client; has no independent agent policy or runtime |
+
+## Native Rust SDK (primary)
+
+The supported native entrypoint is `Dominion::open(Settings)` in `src/sdk.rs`, exported by `src/lib.rs`.
+The executable in `src/main.rs` now only serves the HTTP adapter backed by that same instance.
+See [Rust SDK](docs/RUST_SDK.md) and [2026 frontier comparison](docs/FRONTIER_2026.md).
+The model adapter cannot replace the Rust planning/tool/recovery loop.
 
 ## Start
 
@@ -59,7 +70,9 @@ console.log(result.status, result.answer);
 - Shell is **disabled by default**, can be enabled by `DOMINION_ENABLE_SHELL=true`, and requests explicit per-operation approval. Shell execution is **not an OS sandbox**; approved programs have the process user's permissions. Run on isolated infrastructure for untrusted work.
 - Estimated model cost uses user-configured KRW-per-million-token input/output rates and reported usage. **Prices default to zero when unspecified**; zero does not establish that paid model usage is free. Video CPU, storage and speech rendering are separately measurable local resource costs, not included in the API-token estimate.
 - Requests for self-improvement execute supplied test/score commands **only after approval**, using detached Git worktrees. Candidates are adopted only if the fixed scoring procedure improves or a failing baseline becomes passing. No model-weight modification, training, LoRA or fine-tuning pathway exists.
-- Mid-operation cancellation is cooperative. A running command is bounded by a timeout; OS container isolation, concurrent subprocess cancellation, remote tool servers, full provider prompt caching and high-end cinematic rendering are **not yet implemented**.
+- Mid-operation cancellation is cooperative; OS sandboxing and process-level resource isolation remain incomplete. Current MCP is Streamable HTTP only. A separate optional Veo backend exists; its real-motion output and cost are not equivalent to the default FFmpeg scene renderer.
+- Cached input tokens are charged at user-configured cached-token rates only when the provider reports an explicit cache count; the engine does not yet control every provider-specific caching feature.
+- Model context is projected under DOMINION_CONTEXT_MAX_CHARS without discarding the persisted transcript; saved characters are not identical to provider-billed tokens.
 
 ## Current data and migration
 
@@ -69,7 +82,7 @@ This branch was rebuilt from an empty source tree. Earlier runtime data is **not
 
 Read [Architecture](docs/ARCHITECTURE.md) for all entrypoints, lifecycles and persistence boundaries, [2026 Research](docs/RESEARCH_2026.md) for the design evidence, and [SDK documentation](sdk/typescript/README.md) for API use.
 
-Validation: GitHub Actions compiles/tests Rust and builds/tests the SDK on pushes to this branch. In-repo tests include a simulated model completing an actual file-producing agent loop, independent Git candidate evaluation/adoption, and an FFmpeg artifact smoke test when FFmpeg is available. A green build does **not** constitute a frontier benchmark score.
+Validation: Existing test suites and CI workflows are present. Current frontier-refactor commits deliberately use [skip ci]; full CI and public benchmarks are deferred until source residue and compatibility gaps have been reviewed. Static source wiring is not a substitute for a compile/test run. In-repo tests include a simulated model completing an actual file-producing agent loop, independent Git candidate evaluation/adoption, and an FFmpeg artifact smoke test when FFmpeg is available. A green build does **not** constitute a frontier benchmark score.
 
 ## Durable tool execution (2026-11-15)
 

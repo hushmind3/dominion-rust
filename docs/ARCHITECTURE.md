@@ -47,3 +47,32 @@ control within Dominion's own Rust runtime, independent of provider.
 ## Optional motion generation backend
 
 `src/veo.rs` implements the current Gemini OpenAI-compatible asynchronous video endpoints. The video service records job IDs, polls completion, bounds the size of MP4 downloads, restricts download destinations, normalizes scene media, and keeps the FFmpeg local path as default. A job can retry from its recorded remote operation. Provider API charge estimation is configured separately from text-token rates. Local video and external video have different rendering fidelity, cost and failure modes.
+
+## New primary entrypoint and coding workflow
+
+`src/lib.rs` exports `Dominion` from `src/sdk.rs`. The application
+`src/main.rs` constructs this native SDK and serves its `http_router()`.
+Both REST and TypeScript call the same Rust engine and persisted records.
+
+`/api/v1/runs/from-repository` resolves a Git checkout inside the configured
+workspace. `src/workspace.rs` attaches a separate detached worktree at the
+recorded revision before the agent executes. `src/tools.rs` provides exact
+atomic file editing and read-only Git status/diff alongside the existing
+file/search and user-approved shell tools.
+
+`src/engine.rs` now checks for user directives added during model planning,
+execution and verification. A stale answer cannot be adopted after those
+interventions. Context projection via `src/context.rs` retains the complete
+durable history and keeps tool call/receipt groups adjacent for the model.
+
+Subagents are Rust workers with separate run IDs, budgets, saved histories and
+workspaces. Sibling allocations reserve part of the parent's remaining budget;
+an attached repository is inherited at the same base Git revision. Final
+responses are visible to their parent through `check_subagent` and files via
+`read_subagent_file`. No automatic merge/adoption is claimed.
+
+Current native provider metering separates uncached and provider-reported
+cached input tokens when configured with accurate KRW rates.
+
+See `docs/FRONTIER_2026.md` for concrete frontier reference gaps and
+`docs/RUST_SDK.md` for the supported host entrypoint.
