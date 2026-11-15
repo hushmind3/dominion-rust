@@ -8,6 +8,23 @@ use std::{path::{Path,PathBuf},process::Stdio,time::Duration};
 use tokio::process::Command;
 
 const LIMIT:usize=100_000;
+const STDERR_LIMIT:usize=16_384;
+
+// A Git diff can include arbitrarily large user files. Never buffer its
+// complete stdout/stderr before applying the response limit.
+async fn read_git_output<R:tokio::io::AsyncRead+Unpin>(
+    reader:R,limit:usize
+)->Result<Vec<u8>,String>{
+    use tokio::io::AsyncReadExt;
+    let mut bytes=Vec::new();
+    reader.take((limit as u64)+1).read_to_end(&mut bytes).await
+        .map_err(|e|format!("Git 출력 읽기 실패: {e}"))?;
+    if bytes.len()>limit {
+        return Err("Git 변경 출력이 검토 한도를 초과했습니다. 변경 범위를 줄이세요.".into());
+    }
+    Ok(bytes)
+}
+
 fn goal_path(state:&AppState,id:&str)->Result<PathBuf,String>{
     if id.len()<12 || id.len()>100 || !id.bytes().all(|x|x.is_ascii_alphanumeric()||x==b'-') {
         return Err("유효하지 않은 목표 식별자입니다.".into());
@@ -17,15 +34,26 @@ fn goal_path(state:&AppState,id:&str)->Result<PathBuf,String>{
 async fn git(root:&Path,args:&[&str])->Result<String,String>{
     let mut cmd=Command::new("git");
     cmd.current_dir(root).args(args).stdin(Stdio::null())
-        .stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output=tokio::time::timeout(Duration::from_secs(30),cmd.output())
-        .await.map_err(|_|"Git 작업이 제한 시간을 초과했습니다.".to_string())?
-        .map_err(|e|format!("git 실행 실패: {e}"))?;
-    if !output.status.success(){
-        return Err(format!("git {}: {}",args.first().unwrap_or(&""),
-            String::from_utf8_lossy(&output.stderr).chars().take(1200).collect::<String>()));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).chars().take(LIMIT).collect())
+        .stdout(Stdio::piped()).stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child=cmd.spawn().map_err(|e|format!("git 실행 실패: {e}"))?;
+    let stdout=child.stdout.take().ok_or("Git stdout을 열 수 없습니다.")?;
+    let stderr=child.stderr.take().ok_or("Git stderr를 열 수 없습니다.")?;
+    // Consume BOTH pipes concurrently. When either bound is exceeded or the
+    // timeout fires, dropping the child kills Git instead of leaving a writer
+    // blocked on a full pipe.
+    tokio::time::timeout(Duration::from_secs(30),async{
+        let (stdout,stderr,status)=tokio::try_join!(
+            read_git_output(stdout,LIMIT),
+            read_git_output(stderr,STDERR_LIMIT),
+            async{child.wait().await.map_err(|e|format!("git 종료 대기 실패: {e}"))}
+        )?;
+        if !status.success(){
+            return Err(format!("git {}: {}",args.first().unwrap_or(&""),
+                String::from_utf8_lossy(&stderr).chars().take(1200).collect::<String>()));
+        }
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
+    }).await.map_err(|_|"Git 작업이 제한 시간을 초과했습니다.".to_string())?
 }
 pub(crate) async fn prepare(state:&AppState,id:&str)->Result<Value,String>{
     let goal=state.store.get("goal",id).ok_or("목표를 찾을 수 없습니다.")?;
@@ -128,19 +156,45 @@ pub(crate) async fn changes(state:&AppState,id:&str)->Result<Value,String>{
     let mut untracked_previews=Vec::<Value>::new();
     let mut review_incomplete=false;
     for name in untracked.lines() {
-        let bytes=std::fs::read(work.join(name)).map_err(|e|e.to_string())?;
-        if bytes.len()>budget || bytes.len()>16_000 || untracked_previews.len()>=32 {
+        let path=work.join(name);
+        let meta=std::fs::symlink_metadata(&path).map_err(|e|e.to_string())?;
+        if !meta.file_type().is_file(){
+            return Err("새 파일 목록에 링크 또는 일반 파일이 아닌 항목이 있습니다.".into());
+        }
+        // Read no content when the file is already too large to preview.
+        // A user-controlled multi-GB file must never be loaded into RAM.
+        let declared=meta.len();
+        if declared>budget as u64 || declared>16_000 || untracked_previews.len()>=32{
             review_incomplete=true;
-            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),
+            untracked_previews.push(json!({"path":name,"bytes":declared,
                 "previewOmitted":true}));
             continue;
         }
-        if let Ok(text)=String::from_utf8(bytes.clone()){
-            budget-=bytes.len();
-            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),"content":text}));
+        let canonical=path.canonicalize().map_err(|e|e.to_string())?;
+        if !canonical.starts_with(&work){
+            return Err("새 파일이 격리 작업공간 외부를 가리킵니다.".into());
+        }
+        let file=std::fs::File::open(&canonical).map_err(|e|e.to_string())?;
+        let opened=file.metadata().map_err(|e|e.to_string())?;
+        if !opened.is_file(){
+            return Err("새 파일 미리보기 대상이 일반 파일이 아닙니다.".into());
+        }
+        // Bound the read itself: the file may grow after metadata inspection.
+        use std::io::Read;
+        let mut bytes=Vec::new();
+        file.take(16_001).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+        if bytes.len()>budget || bytes.len()>16_000 {
+            review_incomplete=true;
+            untracked_previews.push(json!({"path":name,"bytes":opened.len().max(bytes.len() as u64),
+                "previewOmitted":true}));
+            continue;
+        }
+        if let Ok(text)=String::from_utf8(bytes){
+            budget-=text.len();
+            untracked_previews.push(json!({"path":name,"bytes":text.len(),"content":text}));
         }else{
             review_incomplete=true;
-            untracked_previews.push(json!({"path":name,"bytes":bytes.len(),
+            untracked_previews.push(json!({"path":name,"bytes":opened.len(),
                 "previewOmitted":true}));
         }
     }
