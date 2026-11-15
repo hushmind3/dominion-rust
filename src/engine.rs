@@ -78,7 +78,7 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
-                if call.name == "shell" || call.name.starts_with("mcp__") {
+                if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
@@ -86,6 +86,7 @@ impl Engine {
                         run.status = RunStatus::AwaitingApproval;
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
+                            else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
                             else { format!("External MCP tool needs approval: {}",call.name) },
                             Some(call.arguments.clone()));
                         Ok(())
@@ -233,6 +234,10 @@ impl Engine {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
                 self.check_subagent(id,child).await
+            } else if call.name == "merge_subagent" {
+                let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
+                let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
+                self.merge_subagent(id,child).await
             } else if call.name == "read_subagent_file" {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
@@ -355,6 +360,20 @@ impl Engine {
             "repository":run.repository,
             "error":run.events.iter().rev().find(|e|e.kind=="error"||e.kind=="paused_error").map(|e|&e.message)
         }).to_string())
+    }
+
+    /// Integrates only a completed direct child at exactly the parent base revision.
+    /// This method is invoked only by the human-approved, journaled tool path.
+    async fn merge_subagent(&self,parent:Uuid,child:Uuid)->Result<String,String>{
+        let root=self.store.get(parent).await.ok_or("parent not found")?;
+        let worker=self.store.get(child).await.ok_or("child not found")?;
+        if worker.parent_run_id!=Some(parent){return Err("child does not belong to this parent".into());}
+        if worker.status!=RunStatus::Completed{return Err("child must complete before patch integration".into());}
+        if root.repository.is_none()||root.repository!=worker.repository||root.base_commit.is_none()||root.base_commit!=worker.base_commit{
+            return Err("parent and child must share a recorded Git repository and base SHA".into());
+        }
+        if root.read_only{return Err("read-only parent cannot integrate patches".into());}
+        crate::workspace::merge_child(&self.settings,parent,child,root.base_commit.as_deref().unwrap()).await
     }
 
     /// Read-only child artifact access scoped to the owning parent.

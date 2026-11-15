@@ -15,6 +15,7 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("spawn_subagent", "Delegate an independent task to an isolated Rust worker with reserved budget; use check_subagent to read results", json!({"type":"object","properties":{"instruction":{"type":"string"},"budget_krw":{"type":"number"},"max_steps":{"type":"integer"},"read_only":{"type":"boolean","description":"True for read-only investigators: no writes, shell, external MCP mutations or patch adoption."}},"required":["instruction"]})),
         tool("check_subagent", "Read a child agent status, final answer and measured cost", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
         tool("read_subagent_file", "Inspect a file created or changed by one of your isolated subagents", json!({"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"}},"required":["id","path"]})),
+        tool("merge_subagent", "Propose adopting a completed child\u0027s Git patch into the parent worktree. This requires explicit human approval and checks conflicts.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
     ];
     if shell_enabled {
         tools.push(tool("shell", "Execute an approved shell command in the workspace; user approval is always required", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})));
