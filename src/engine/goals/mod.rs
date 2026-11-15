@@ -32,6 +32,10 @@ mod review;
 mod strategy;
 pub use strategy::catalog as strategy_catalog;
 
+pub fn validate_review_policy(value:Option<&Value>)->Result<&'static str,String>{
+    strategy::ReviewPolicy::parse(value).map(|policy|policy.as_str())
+}
+
 pub use execution::run;
 pub use review::parse_review;
 use lifecycle::{finish,role_model,optional,tail,patch_goal};
