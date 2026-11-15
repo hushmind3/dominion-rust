@@ -3,21 +3,8 @@ import {OwnerProfileProvider} from './components/OwnerProfile'
 import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,type ReactNode} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
-const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
-const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({default:module.CapabilitiesPage})))
-const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
-const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
-const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
-const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
-const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
-const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
-const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
-const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({default:module.ExtensionsPage})))
-const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
-const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
-const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
-const SelfImprovementPage=lazy(()=>import('./pages/SelfImprovement').then(module=>({default:module.SelfImprovementPage})))
-
+// The original main UI shell is retained; functional pages use the Rust SDK API.
+const RustWorkspacePage=lazy(()=>import('./pages/RustWorkspace').then(module=>({default:module.RustWorkspacePage})))
 
 // A running tab retains the entry bundle from the moment it was opened.
 // After "npm run build", lazy-loaded page chunks have new hashed URLs, while
@@ -94,7 +81,7 @@ function locationState(){
  const [name,query]=raw.split('?')
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
- return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
+ return {page:(valid?name:'home') as PageId,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
@@ -109,7 +96,7 @@ export default function App(){
  const [engineBuild,setEngineBuild]=useState<{branch:string;commit:string}|null>(null)
  useEffect(()=>{
   let live=true
-  const load=()=>{void get<{branch:string;commit:string}>('/api/health')
+  const load=()=>{void get<{branch?:string;commit?:string}>('/api/v1/health')
    .then(info=>{if(live)setEngineBuild(info)}).catch(()=>{if(live)setEngineBuild(null)})}
   load()
   const focus=()=>{if(document.visibilityState==='visible')load()}
@@ -151,38 +138,22 @@ export default function App(){
   let mounted=true
   const check=async()=>{
    try{
-    const status=await get<{jobs?:number}>('/api/status')
-    if(mounted){setOnline(true);setRunning(Number(status.jobs)||0)}
-   }catch{if(mounted){setOnline(false);setRunning(0)}}
-  }
-  const approvals=async()=>{
-   try{const data=await get<unknown[]>('/api/approvals');if(mounted)setPending(Array.isArray(data)?data.length:0)}
-   catch{if(mounted)setPending(0)}
-  }
-  void check();void approvals()
-  const poll=setInterval(()=>{void check()},12000)
-  const stream=new EventSource('/api/events')
-  let refreshTimer: ReturnType<typeof setTimeout> | undefined
-  stream.onmessage=event=>{
-   try{
-    const item=JSON.parse(event.data)
-    if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
-    if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
-     refreshTimer ??= setTimeout(()=>{
-      refreshTimer=undefined
-      window.dispatchEvent(new Event('dominion-refresh'))
-     },100)
-     if(item.type==='approval')void approvals()
-     if(item.type==='job_event'||item.type==='goal_event'||item.type==='execution_event')void check()
+    const runs=await get<{status:string}[]>('/api/v1/runs')
+    if(mounted){
+     setOnline(true)
+     setRunning(runs.filter(r=>r.status==='queued'||r.status==='running').length)
+     setPending(runs.filter(r=>r.status==='awaiting_approval').length)
     }
-   }catch{}
+   }catch{if(mounted){setOnline(false);setRunning(0);setPending(0)}}
   }
+  void check()
+  const poll=setInterval(()=>{void check()},2500)
   const shortcuts=(e:KeyboardEvent)=>{
    if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();setPalette(open=>!open)}
    if(e.key==='Escape')setPalette(false)
   }
   window.addEventListener('keydown',shortcuts)
-  return()=>{mounted=false;clearInterval(poll);clearTimeout(refreshTimer);stream.close();window.removeEventListener('keydown',shortcuts)}
+  return()=>{mounted=false;clearInterval(poll);window.removeEventListener('keydown',shortcuts)}
  },[])
  return <OwnerProfileProvider><div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
@@ -192,20 +163,7 @@ export default function App(){
    <div className={'min-w-0 page-'+page}>
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
-    {page==='home'&&<HomePage navigate={navigate}/>}
-    {page==='capabilities'&&<CapabilitiesPage navigate={navigate}/>}
-    {page==='memory'&&<MemoryPage/>}
-    {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
-    {page==='video'&&<VideoPage navigate={navigate}/>}
-    {page==='models'&&<ModelHub/>}
-    {page==='agents'&&<AgentsPage/>}
-    {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
-    {page==='extensions'&&<ExtensionsPage/>}
-    {page==='connections'&&<ConnectionsPage/>}
-    {page==='developer'&&<DeveloperPage/>}
-    {page==='rsi'&&<SelfImprovementPage/>}
-    {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
+    <RustWorkspacePage key={page+'-'+(page==='chat'?chatDraft:0)} area={page}/>
     </Suspense>
     </PageLoadBoundary>
    </div>
