@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {auditFiles} from '../check-repo-hygiene.mjs'
+import {auditFiles,inheritedLargeSources} from '../check-repo-hygiene.mjs'
 
 const core=[
   {path:'src/engine/goals/mod.rs',size:38,sha:'01',content:'pub mod execution;\n#[path = "execution.rs"] mod execution;'},
@@ -41,7 +41,7 @@ test('stale deleted goal source paths fail even if referenced by active RSI map'
 test('new monoliths and any further growth of inherited large source fail',()=>{
   assert.match(auditFiles([...core,{path:'src/new_monolith.rs',size:49*1024,sha:'06'}])
     .errors.join(' '),/size budget/)
-  assert.match(auditFiles([...core,{path:'src/engine/models.rs',size:107906,sha:'06'}])
+  assert.match(auditFiles([...core,{path:'src/engine/models.rs',size:inheritedLargeSources['src/engine/models.rs']+1,sha:'06'}])
     .errors.join(' '),/size budget/)
 })
 test('append-only README and more than 25 dated snapshots are rejected',()=>{
