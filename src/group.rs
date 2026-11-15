@@ -192,6 +192,9 @@ impl Groups {
         if self.active.lock().await.contains(&id){return Err("room turn is active".into());}
         let mut room=self.get(id).await.ok_or("room not found")?;
         if let Some(index)=room.client_messages.get(client_id){
+            if room.messages.get(*index).is_none_or(|entry|entry.content!=content){
+                return Err("clientMessageId was reused for a different message".into());
+            }
             return Ok((room.clone(),false,*index));
         }
         if !matches!(room.status,RoomStatus::Open){return Err("room is closed".into());}

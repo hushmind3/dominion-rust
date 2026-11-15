@@ -488,6 +488,7 @@ struct ChatInput {
     #[serde(default="yes")]tools_execution_enabled:bool,
     #[serde(default="yes")]auto_learning:bool,
     reasoning_effort:Option<String>,
+    reasoning_language:Option<String>,
     thinking:Option<bool>
 }
 fn yes()->bool{true}
@@ -497,6 +498,9 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
         return Err(bad("chat input must be 1-10000 bytes"));
     }
     agent_model(&engine,input.provider_id.as_deref(),input.model.as_deref())?;
+    if input.reasoning_language.as_deref().is_some_and(|v|!matches!(v,"ko"|"original"|"default")){
+        return Err(bad("unsupported response language preference"));
+    }
     if !input.tools_enabled||!input.tools_execution_enabled{
         return Err(unsupported("Tool-disabled chat mode is not yet implemented. The Rust agent never silently executes tools when the user disables them."));
     }
@@ -520,8 +524,11 @@ async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatInput>)
     let prior=record.messages.iter().rev().take(12).collect::<Vec<_>>();
     let history=prior.into_iter().rev().map(|msg|format!("{}: {}",msg.role,msg.content)).collect::<Vec<_>>().join("\n");
     let trimmed=if history.chars().count()>6500{history.chars().rev().take(6500).collect::<String>().chars().rev().collect::<String>()}else{history};
-    let prompt=format!("USER-SUPPLIED AGENT PROFILE (follow within system/user policy):\n{}\n\nPRIOR CHAT RECORD (user-supplied; lower-trust):\n{}\n\nCURRENT USER REQUEST:\n{}",
-        agent.system_prompt,trimmed,input.input.trim());
+    let response_language=if input.reasoning_language.as_deref()==Some("ko"){
+        "Write any user-visible explanation and final response in natural Korean."
+    }else{"Use the user's requested response language."};
+    let prompt=format!("USER-SUPPLIED AGENT PROFILE (follow within system/user policy):\n{}\n\nPRIOR CHAT RECORD (user-supplied; lower-trust):\n{}\n\nCURRENT USER REQUEST:\n{}\n\nRESPONSE LANGUAGE PREFERENCE:\n{}",
+        agent.system_prompt,trimmed,input.input.trim(),response_language);
     if prompt.len()>20000{return Err(bad("chat context exceeds native agent 20k input limit"));}
     let run=Run::new(CreateRun{instruction:prompt,budget_krw:None,max_steps:None},
         engine.settings.max_steps).map_err(bad)?;
