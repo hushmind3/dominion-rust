@@ -94,6 +94,8 @@ async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
         economy_model:engine.settings.economy.name.clone(),
         configured:!engine.settings.main.api_key.is_empty() || engine.settings.main.base_url.contains("localhost") || engine.settings.main.base_url.contains("127.0.0.1"),
         shell_enabled:engine.settings.shell_enabled,max_steps:engine.settings.max_steps,mcp_server_count:engine.mcp.server_count(),context_max_chars:engine.settings.context_max_chars,max_parallel_reads:engine.settings.max_parallel_reads,
+        denied_tools:engine.settings.denied_tools.clone(),
+        tool_result_max_chars:engine.settings.tool_result_max_chars,
     })
 }
 async fn list_runs(State(engine): State<Arc<Engine>>) -> Json<Vec<Run>> { Json(engine.store.list().await) }

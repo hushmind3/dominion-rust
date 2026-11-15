@@ -103,6 +103,8 @@ pub struct PublicSettings {
     pub mcp_server_count: usize,
     pub context_max_chars: usize,
     pub max_parallel_reads: usize,
+    pub denied_tools: Vec<String>,
+    pub tool_result_max_chars: usize,
 }
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};

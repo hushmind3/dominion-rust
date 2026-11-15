@@ -11,11 +11,11 @@ export interface Run {
   output_tokens: number; cost_krw: number; context_chars_avoided?: number; tool_schema_chars_avoided?: number;
   repository?: string | null; base_commit?: string | null; parent_run_id?: string | null;
   read_only?: boolean; reserved_budget_krw?: number; delegated_spent_krw?: number;
-  settled_child_ids?: string[]; waiting_for_children?: boolean; cancel_after_tool?: boolean;
+  settled_child_ids?: string[]; waiting_for_children?: boolean; cancel_after_tool?: boolean; read_batch_in_flight?: ToolCall[];
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
-  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; context_max_chars?: number; mcp_server_count: number;
+  model: string; economy_model: string; configured: boolean; shell_enabled: boolean; max_steps: number; context_max_chars?: number; mcp_server_count: number; max_parallel_reads?: number; denied_tools?: string[]; tool_result_max_chars?: number;
 }
 export interface CreateRun {
   instruction: string; budget_krw?: number; max_steps?: number;

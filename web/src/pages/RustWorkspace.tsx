@@ -6,12 +6,12 @@ import type {PageId} from '../components/WorkspaceShell'
 
 type Event={seq:number;kind:string;message:string;detail?:unknown;at_ms:number}
 type Call={id:string;name:string;arguments:unknown}
-type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;cache_write_tokens?:number;output_tokens:number;context_chars_avoided:number;tool_schema_chars_avoided?:number;reserved_budget_krw?:number;delegated_spent_krw?:number;read_only?:boolean;waiting_for_children?:boolean;cost_krw:number;budget_krw:number;created_at_ms:number}
+type Run={id:string;instruction:string;status:string;plan?:string|null;answer?:string|null;events:Event[];pending_approval?:Call|null;in_flight?:Call|null;repository?:string|null;base_commit?:string|null;parent_run_id?:string|null;steps:number;input_tokens:number;cached_input_tokens:number;cache_write_tokens?:number;output_tokens:number;context_chars_avoided:number;tool_schema_chars_avoided?:number;reserved_budget_krw?:number;delegated_spent_krw?:number;read_only?:boolean;waiting_for_children?:boolean;cancel_after_tool?:boolean;read_batch_in_flight?:Call[];cost_krw:number;budget_krw:number;created_at_ms:number}
 type Room={id:string;topic:string;status:string;participants:{name:string;role:string;economy:boolean}[];messages:{speaker:string;content:string}[];rounds:number;max_rounds:number;cost_krw:number;budget_krw:number}
 type Scene={heading:string;narration:string;seconds:number}
 type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];error?:string|null;cost_krw:number}
 type Improvement={id:string;repository:string;target_file:string;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
-type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number}
+type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number;denied_tools:string[];tool_result_max_chars:number}
 type MemoryNote={id:string;scope:string;title:string;content:string;updated_at_ms:number}
 type ProjectSkill={name:string;path:string}
 
@@ -171,7 +171,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
        <button type="button" className={btn} disabled={busy||!reconciliation.trim()} onClick={()=>void action(run.id,'reconcile',{succeeded:false,result:reconciliation})}>실행 실패 기록</button></div>
      </div>}
      <div className="mt-3 flex flex-wrap gap-2">{run.status==='running'&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'cancel')}><Square size={14}/> 중단</button>}
-      {run.status==='paused'&&!run.in_flight&&!run.waiting_for_children&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'resume')}><RefreshCw size={14}/> 재개</button>}
+      {run.status==='paused'&&!run.in_flight&&!run.cancel_after_tool&&!run.read_batch_in_flight?.length&&!run.waiting_for_children&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'resume')}><RefreshCw size={14}/> 재개</button>}
       <button type="button" className={btn} disabled={busy} onClick={()=>void loadFiles(run.id)}><FileText size={14}/> 결과 파일</button>
      </div>
      {!['completed','failed','cancelled'].includes(run.status)&&<div className="mt-3 flex gap-2"><input className={field} value={directive} onChange={e=>setDirective(e.target.value)} placeholder="실행 중 추가 지시"/><button type="button" className={btn} disabled={busy||!directive.trim()} onClick={()=>void perform(async()=>{await post('/api/v1/runs/'+run.id+'/directive',{instruction:directive});setDirective('')})}>지시</button></div>}
@@ -285,7 +285,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
     <p className="mb-3 text-[12px] text-[#796E62]">이 화면은 메인 프런트엔드의 UI를 사용하면서 독립 Rust SDK의 실제 설정을 읽습니다.</p>
     <label className="block text-[11px]">서버 접근 토큰 (설정된 경우)
      <div className="mt-1 flex gap-2"><input type="password" autoComplete="off" className={field} value={token} onChange={e=>setToken(e.target.value)} placeholder="DOMINION_ACCESS_TOKEN"/><button type="button" className={primary} onClick={()=>{setAuthToken(token);void refresh().catch(e=>setError((e as Error).message))}}>연결</button></div></label>
-    {config?<div className="mt-5 grid gap-3 sm:grid-cols-2">{([['메인 모델',config.model],['경제 모델',config.economy_model],['모델 인증',config.configured?'연결됨':'미설정'],['셸 사용',config.shell_enabled?'허용':'비활성'],['최대 실행 턴',String(config.max_steps)],['MCP 서버',String(config.mcp_server_count)],['컨텍스트 상한',config.context_max_chars.toLocaleString()+'자'],['병렬 조회 상한',String(config.max_parallel_reads)+'개']] as [string,string][]).map(([k,v])=><div key={k} className="rounded-lg bg-[#FAF7F2] p-3"><div className="text-[11px] text-[#8B8175]">{k}</div><strong className="mt-1 block text-[13px]">{v}</strong></div>)}</div>:<p className="mt-4 text-[12px] text-[#8B8175]">설정 정보를 읽는 중이거나 서버 인증이 필요합니다.</p>}
+    {config?<div className="mt-5 grid gap-3 sm:grid-cols-2">{([['메인 모델',config.model],['경제 모델',config.economy_model],['모델 인증',config.configured?'연결됨':'미설정'],['셸 사용',config.shell_enabled?'허용':'비활성'],['최대 실행 턴',String(config.max_steps)],['MCP 서버',String(config.mcp_server_count)],['컨텍스트 상한',config.context_max_chars.toLocaleString()+'자'],['병렬 조회 상한',String(config.max_parallel_reads)+'개'],['차단 도구',config.denied_tools.length?config.denied_tools.join(', '):'없음'],['도구 결과 상한',config.tool_result_max_chars.toLocaleString()+'자']] as [string,string][]).map(([k,v])=><div key={k} className="rounded-lg bg-[#FAF7F2] p-3"><div className="text-[11px] text-[#8B8175]">{k}</div><strong className="mt-1 block text-[13px]">{v}</strong></div>)}</div>:<p className="mt-4 text-[12px] text-[#8B8175]">설정 정보를 읽는 중이거나 서버 인증이 필요합니다.</p>}
     <p className="mt-4 text-[11px] text-[#82776B]">서버의 모델·요금·실행 정책은 Rust 환경설정(.env.example)을 기준으로 변경합니다. 이 화면에서 바뀌지 않은 설정을 변경한 것처럼 표시하지 않습니다.</p>
    </section>}
  </PageContainer>

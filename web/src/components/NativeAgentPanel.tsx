@@ -4,7 +4,7 @@ import {get,post,type Provider} from '../api'
 import {useLocale} from '../i18n'
 
 type Call={id:string;name:string;arguments:unknown}
-type Run={id:string;instruction:string;status:string;waiting_for_children?:boolean;answer?:string|null;pending_approval?:Call|null;in_flight?:Call|null;steps:number;cost_krw:number;budget_krw:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;events:{seq:number;kind:string;message:string}[]}
+type Run={id:string;instruction:string;status:string;waiting_for_children?:boolean;cancel_after_tool?:boolean;read_batch_in_flight?:Call[];answer?:string|null;pending_approval?:Call|null;in_flight?:Call|null;steps:number;cost_krw:number;budget_krw:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;events:{seq:number;kind:string;message:string}[]}
 export function NativeAgentPanel({providers}:{providers:Provider[]}){
  const en=useLocale()==='en'
  const [goal,setGoal]=useState('')
@@ -67,7 +67,7 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
     {run.answer&&<p className="mt-3 whitespace-pre-wrap break-words border-t border-[#E7E0D5] pt-3 text-[12px]">{run.answer}</p>}
     <div className="mt-3 flex flex-wrap gap-2">
      {run.status==='running'&&<button type="button" disabled={busy} onClick={()=>action('cancel')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><Square size={13}/> 중단</button>}
-     {run.status==='paused'&&!run.in_flight&&!run.waiting_for_children&&<button type="button" disabled={busy} onClick={()=>action('resume')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><RefreshCw size={13}/> 재개</button>}
+     {run.status==='paused'&&!run.in_flight&&!run.cancel_after_tool&&!run.read_batch_in_flight?.length&&!run.waiting_for_children&&<button type="button" disabled={busy} onClick={()=>action('resume')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><RefreshCw size={13}/> 재개</button>}
      <button type="button" onClick={()=>{window.location.hash='#/chat'}} className="rounded-lg border px-3 py-2 text-[11px]">실행 상세 보기</button>
     </div>
    </div>}
