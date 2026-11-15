@@ -553,12 +553,23 @@ impl Improvements {
         }else{None};
         Ok(Measurement{tests_passed,score:value,log:log.chars().take(2000).collect()})
     }
+    async fn wait_for_detached(&self,id:Uuid)->Result<(),String>{
+        tokio::time::timeout(Duration::from_secs(5),async {
+            loop {
+                if !self.active.lock().await.contains(&id){break;}
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await.map_err(|_|"RSI evaluator did not settle before adoption".to_owned())
+    }
     /// Durable two-step adoption. A crash after Git cherry-pick but before
     /// persisting Adopted can be recognized by exact parent and Git tree IDs.
     /// No external mutation is retried when the observed history diverges.
     pub async fn adopt(&self,id:Uuid)->Result<Improvement,String>{
         let _guard=self.adoption_lock.lock().await;
-        if self.active.lock().await.contains(&id){return Err("trial still active".into());}
+        // Evaluation publishes Evaluated before its worker releases the active
+        // marker. A controller observing that durable result must not lose a
+        // valid adoption to this short teardown race.
+        self.wait_for_detached(id).await?;
         let mut item=self.get(id).await.ok_or("trial not found")?;
         if !item.accepted || !matches!(item.status,ImprovementStatus::Evaluated|ImprovementStatus::Adopting){
             return Err("candidate is not evaluated and eligible for adoption".into());
@@ -960,6 +971,26 @@ mod lineage_tests {
    score_command:None,parent:Some(parent.id),
   }).await;
   assert!(wrong.is_err());
+  fs::remove_dir_all(root).await.unwrap();
+ }
+}
+
+#[cfg(test)]
+mod adoption_detach_tests {
+ use super::*;
+ #[tokio::test]
+ async fn adoption_waits_for_evaluator_terminal_marker_to_detach(){
+  let root=std::env::temp_dir().join(format!("dominion-rsi-detach-{}",Uuid::new_v4()));
+  let service=Arc::new(Improvements::open(root.join("data"),root.join("workspace")).await.unwrap());
+  let id=Uuid::new_v4();
+  service.active.lock().await.insert(id);
+  let worker=Arc::clone(&service);
+  tokio::spawn(async move{
+   tokio::time::sleep(Duration::from_millis(80)).await;
+   worker.active.lock().await.remove(&id);
+  });
+  service.wait_for_detached(id).await.unwrap();
+  assert!(!service.active.lock().await.contains(&id));
   fs::remove_dir_all(root).await.unwrap();
  }
 }
