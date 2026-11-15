@@ -349,7 +349,7 @@ pub(super) fn history_byte_budget_for_model(
 /// inventing a token ceiling for dynamically registered models.
 pub(super) fn history_for_route(
     state:&AppState,session_id:&str,agent_id:Option<&str>,
-    route:&crate::engine::gateway::Route,
+    route:&super::ProviderRef,
     prompt:&PromptContext,initial_tools:&[Value]
 )->Result<Vec<Value>,String>{
     let fixed=prompt.prompt.len().saturating_add(prompt.dynamic_context.len())

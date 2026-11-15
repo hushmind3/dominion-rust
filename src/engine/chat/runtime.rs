@@ -1,7 +1,6 @@
 //! Turn lifecycle, cancellation, limits, tool orchestration and durable evidence.
 use super::{
     approval::{close_pending_approvals, request_approval},
-    context::history,
     provider::{select_provider, stream_completion},
 };
 use super::{
