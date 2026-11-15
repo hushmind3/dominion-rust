@@ -46,6 +46,8 @@ capability is migrated to the current Rust API. In particular, main's desktop/Ta
 host, advanced provider management, channel system and SQLite state are **not**
 present in the sub4 Rust backend. The original frontend source is not a claim of
 feature parity. The Rust-linked workspaces are the currently supported UI path.
+The main owner-profile editor remains available; its display name/avatar are
+saved as a device-local browser UI preference, not as shared Rust session data.
 
 For frontend development, run `cargo run` in the repository root, then
 `cd web && npm run dev` in another terminal. Vite proxies `/api` to
