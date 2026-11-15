@@ -5,11 +5,69 @@ use reqwest::{header, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, net::IpAddr, time::{Duration, Instant}};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex,watch};
 
 const VERSION: &str = "2026-07-28";
 const BODY_MAX: usize = 262_144;
 const CACHE_SECONDS: u64 = 60;
+
+/// HTTP transport stream cancellation never proves that the remote system
+/// rolled back its work. The owner must reconcile a potentially committed
+/// remote side effect before permitting another mutation.
+#[derive(Debug)]
+pub enum McpCallOutcome {
+    Settled(Result<String,String>),
+    Uncertain(String),
+}
+#[derive(Debug)]
+enum RpcOutcome {
+    Settled(Result<Value,String>),
+    Uncertain(String),
+}
+async fn cancellation_signal(cancel:&mut Option<watch::Receiver<bool>>){
+    if let Some(rx)=cancel {
+        loop {
+            if *rx.borrow(){return;}
+            if rx.changed().await.is_err(){
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+    std::future::pending::<()>().await;
+}
+fn sse_frame_end(buffer:&[u8])->Option<(usize,usize)>{
+    let lf=buffer.windows(2).position(|chunk|chunk==b"\n\n").map(|end|(end,2));
+    let crlf=buffer.windows(4).position(|chunk|chunk==b"\r\n\r\n").map(|end|(end,4));
+    match (lf,crlf){
+        (Some(a),Some(b))=>Some(if a.0<=b.0{a}else{b}),
+        (Some(a),None)=>Some(a),(None,Some(b))=>Some(b),(None,None)=>None
+    }
+}
+fn sse_payload(frame:&[u8])->Result<Option<Value>,String>{
+    let text=std::str::from_utf8(frame).map_err(|e|format!("MCP SSE UTF-8: {e}"))?;
+    let mut parts=Vec::new();
+    for line in text.lines(){
+        let line=line.trim_end_matches('\r');
+        if let Some(rest)=line.strip_prefix("data:"){
+            parts.push(rest.trim_start_matches(' '));
+        }
+    }
+    if parts.is_empty(){return Ok(None);}
+    let value=serde_json::from_str(&parts.join("\n"))
+        .map_err(|e|format!("MCP SSE JSON: {e}"))?;
+    Ok(Some(value))
+}
+fn validate_rpc_payload(payload:Value,id:&str)->Result<Value,String>{
+    if payload.get("jsonrpc").and_then(Value::as_str)!=Some("2.0")
+        || payload.get("id").and_then(Value::as_str)!=Some(id){
+        return Err("MCP JSON-RPC response does not match request".into());
+    }
+    if let Some(error)=payload.get("error"){
+        return Err(format!("MCP JSON-RPC error: {}",error.to_string().chars().take(1000).collect::<String>()));
+    }
+    payload.get("result").cloned().ok_or("MCP response has no result".into())
+}
+
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Server {
@@ -134,9 +192,18 @@ impl Mcp {
     }
     pub fn server_count(&self)->usize{self.servers.len()}
 
-    async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,extra_headers:&[(String,String)])->Result<Value,String>{
+    async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,
+        extra_headers:&[(String,String)])->Result<Value,String>{
+        match self.rpc_cancellable(server,method,params,name,extra_headers,None).await?{
+            RpcOutcome::Settled(result)=>result,
+            RpcOutcome::Uncertain(reason)=>Err(reason)
+        }
+    }
+
+    async fn rpc_cancellable(&self,server:&Server,method:&str,mut params:Value,
+        name:Option<&str>,extra_headers:&[(String,String)],
+        mut cancellation:Option<watch::Receiver<bool>>)->Result<RpcOutcome,String>{
         let id=uuid::Uuid::new_v4().to_string();
-        let mut params=params;
         params["_meta"]=json!({
             "io.modelcontextprotocol/protocolVersion":VERSION,
             "io.modelcontextprotocol/clientInfo":{"name":"dominion-rust","version":"0.1.0"},
@@ -148,47 +215,97 @@ impl Mcp {
             .header("MCP-Protocol-Version",VERSION)
             .header("Mcp-Method",method)
             .json(&request);
-        if let Some(name)=name{
-            builder=builder.header("Mcp-Name",encode_header(name));
-        }
-        for (key,value) in extra_headers {
+        if let Some(name)=name{builder=builder.header("Mcp-Name",encode_header(name));}
+        for (key,value) in extra_headers{
             builder=builder.header(key.as_str(),value.as_str());
         }
         if !server.bearer_token.is_empty(){builder=builder.bearer_auth(&server.bearer_token);}
-        let mut response=builder.send().await.map_err(|e|format!("MCP transport: {e}"))?;
-        let status=response.status();
-        let content_type=response.headers().get(header::CONTENT_TYPE).and_then(|v|v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
-        let mut bytes=Vec::new();
-        while let Some(part)=response.chunk().await.map_err(|e|e.to_string())? {
-            if bytes.len().saturating_add(part.len())>BODY_MAX{return Err("MCP response exceeds 256 KB".into());}
-            bytes.extend_from_slice(&part);
+        // Once HTTP dispatch starts, a disconnected or interrupted request
+        // leaves unknown remote effects. A cancelled Streamable HTTP SSE
+        // response is dropped here, sending the protocol's close signal.
+        if cancellation.as_ref().is_some_and(|rx|*rx.borrow()){
+            return Ok(RpcOutcome::Settled(Err("MCP cancelled before remote dispatch".into())));
         }
-        if !status.is_success() {
-            return Err(format!("MCP HTTP {status}: {}",String::from_utf8_lossy(&bytes).chars().take(300).collect::<String>()));
-        }
-        let payload = if content_type.contains("text/event-stream"){
-            // A stream may contain progress notifications before the final JSON-RPC response.
-            let text=String::from_utf8(bytes).map_err(|e|e.to_string())?;
-            let normalized=text.replace("\r\n","\n");
-            let mut response=None;
-            for frame in normalized.split("\n\n") {
-                let data=frame.lines().filter_map(|l|l.strip_prefix("data:").map(str::trim_start)).collect::<Vec<_>>().join("\n");
-                if data.is_empty(){continue;}
-                let value:Value=serde_json::from_str(&data).map_err(|e|format!("MCP SSE data: {e}"))?;
-                if value.get("id").and_then(Value::as_str)==Some(id.as_str()) {response=Some(value);break;}
+        let send=builder.send();
+        tokio::pin!(send);
+        let mut response=tokio::select!{
+            biased;
+            _=cancellation_signal(&mut cancellation)=>{
+                return Ok(RpcOutcome::Uncertain("Remote MCP request cancelled during HTTP dispatch; server completion unknown".into()));
             }
-            response.ok_or("MCP SSE stream did not return a matching response")?
-        } else {
-            serde_json::from_slice::<Value>(&bytes).map_err(|e|format!("MCP JSON: {e}"))?
+            outcome=&mut send=>match outcome{
+                Ok(response)=>response,
+                Err(error)=>{
+                    let detail=format!("MCP transport: {error}");
+                    return Ok(if method=="tools/call"{RpcOutcome::Uncertain(detail)}
+                        else{RpcOutcome::Settled(Err(detail))});
+                }
+            }
         };
-        if payload.get("jsonrpc").and_then(Value::as_str)!=Some("2.0") ||
-            payload.get("id").and_then(Value::as_str)!=Some(id.as_str()){
-            return Err("MCP JSON-RPC response does not match request".into());
+        let status=response.status();
+        if !status.is_success(){
+            return Ok(RpcOutcome::Settled(Err(format!("MCP HTTP {status}"))));
         }
-        if let Some(error)=payload.get("error"){
-            return Err(format!("MCP JSON-RPC error: {}",error.to_string().chars().take(1000).collect::<String>()));
+        let content_type=response.headers().get(header::CONTENT_TYPE)
+            .and_then(|v|v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        let sse=content_type.contains("text/event-stream");
+        let json_body=content_type.contains("application/json");
+        if !sse&&!json_body{
+            return Ok(RpcOutcome::Settled(Err("MCP unsupported response Content-Type".into())));
         }
-        payload.get("result").cloned().ok_or("MCP response has no result".into())
+        let mut pending=Vec::<u8>::new();
+        let mut consumed=0usize;
+        loop{
+            let part=tokio::select!{
+                biased;
+                _=cancellation_signal(&mut cancellation)=>{
+                    // Dropping the HTTP response drops its SSE stream. Per MCP
+                    // 2026-07-28 no notifications/cancelled POST is sent.
+                    return Ok(RpcOutcome::Uncertain(
+                        "MCP response stream closed on cancellation; remote outcome unconfirmed".into()));
+                }
+                outcome=response.chunk()=>outcome
+            };
+            let part=match part{
+                Ok(part)=>part,
+                Err(error)=>{
+                    let detail=format!("MCP stream transport error: {error}");
+                    return Ok(if method=="tools/call"{RpcOutcome::Uncertain(detail)}
+                        else{RpcOutcome::Settled(Err(detail))});
+                }
+            };
+            let Some(part)=part else{break};
+            consumed=consumed.saturating_add(part.len());
+            if consumed>BODY_MAX{
+                let message="MCP response exceeds 256 KB".to_string();
+                return Ok(if method=="tools/call"{RpcOutcome::Uncertain(message)}
+                    else{RpcOutcome::Settled(Err(message))});
+            }
+            pending.extend_from_slice(&part);
+            if sse{
+                while let Some((end,delimiter))=sse_frame_end(&pending){
+                    let frame=pending.drain(..end+delimiter).collect::<Vec<_>>();
+                    let payload=match sse_payload(&frame[..end]){
+                        Ok(Some(payload))=>payload,
+                        Ok(None)=>continue,
+                        Err(error)=>return Ok(RpcOutcome::Settled(Err(error))),
+                    };
+                    if payload.get("id").and_then(Value::as_str)==Some(id.as_str()){
+                        return Ok(RpcOutcome::Settled(validate_rpc_payload(payload,&id)));
+                    }
+                    // Unrelated messages (progress, logs) are advisory only.
+                    // Never mistake a notification for a final tool receipt.
+                }
+            }
+        }
+        let response=if sse{
+            // Strictly require a complete matching response frame.
+            Err("MCP SSE stream ended without a matching final response".into())
+        }else{
+            serde_json::from_slice::<Value>(&pending).map_err(|e|format!("MCP JSON: {e}"))
+                .and_then(|payload|validate_rpc_payload(payload,&id))
+        };
+        Ok(RpcOutcome::Settled(response))
     }
     async fn list(&self,name:&str)->Result<Vec<RemoteTool>,String>{
         {
@@ -235,13 +352,33 @@ impl Mcp {
         combined
     }
     pub async fn call(&self,call:&ToolCall)->Result<String,String>{
+        match self.call_inner(call,None).await?{
+            McpCallOutcome::Settled(result)=>result,
+            McpCallOutcome::Uncertain(reason)=>Err(reason),
+        }
+    }
+    pub async fn call_cooperative(&self,call:&ToolCall,cancellation:watch::Receiver<bool>)
+        ->Result<McpCallOutcome,String>{
+        self.call_inner(call,Some(cancellation)).await
+    }
+    async fn call_inner(&self,call:&ToolCall,mut cancellation:Option<watch::Receiver<bool>>)
+        ->Result<McpCallOutcome,String>{
         if !call.name.starts_with("mcp__"){return Err("not an MCP tool".into());}
         let suffix=&call.name["mcp__".len()..];
         let (server_name,tool_name)=suffix.split_once("__").ok_or("invalid MCP tool alias")?;
         if !safe_name(server_name)||!safe_name(tool_name) {return Err("invalid MCP tool name".into());}
         let server=self.servers.iter().find(|s|s.name==server_name).ok_or("unknown MCP server")?;
         if !call.arguments.is_object(){return Err("MCP arguments must be object".into());}
-        let listed=self.list(&server.name).await?;
+        let listed=tokio::select!{
+            biased;
+            _=cancellation_signal(&mut cancellation)=>{
+                return Ok(McpCallOutcome::Settled(Err("MCP cancelled before tool call".into())));
+            }
+            listed=self.list(&server.name)=>listed?
+        };
+        if cancellation.as_ref().is_some_and(|rx|*rx.borrow()){
+            return Ok(McpCallOutcome::Settled(Err("MCP cancelled before tool call".into())));
+        }
         let tool=listed.iter().find(|t|t.name==tool_name).ok_or("MCP tool is not currently advertised")?;
         let mut headers=vec![];
         for parameter in &tool.headers {
@@ -257,7 +394,13 @@ impl Mcp {
             if text.len()>2048{return Err("MCP header value too long".into());}
             headers.push((format!("Mcp-Param-{}",parameter.name),encode_header(&text)));
         }
-        let result=self.rpc(server,"tools/call",json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),&headers).await?;
+        let result=match self.rpc_cancellable(server,"tools/call",
+            json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),
+            &headers,cancellation).await?{
+            RpcOutcome::Settled(Ok(value))=>value,
+            RpcOutcome::Settled(Err(error))=>return Ok(McpCallOutcome::Settled(Err(error))),
+            RpcOutcome::Uncertain(reason)=>return Ok(McpCallOutcome::Uncertain(reason)),
+        };
         if result.get("resultType").and_then(Value::as_str)==Some("input_required"){
             return Err("MCP tool requires further user input; this capability is not connected".into());
         }
@@ -265,7 +408,7 @@ impl Mcp {
             return Err(format!("MCP tool returned error: {}",result.to_string().chars().take(2500).collect::<String>()));
         }
         let summary=serde_json::to_string(&result).map_err(|e|e.to_string())?;
-        Ok(summary.chars().take(16000).collect())
+        Ok(McpCallOutcome::Settled(Ok(summary.chars().take(16000).collect())))
     }
 }
 #[cfg(test)]
