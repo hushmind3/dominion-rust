@@ -103,6 +103,25 @@ impl Developer{
   let root=self.repository().await.ok();
   let git=root.is_some();
   let node_modules=root.as_ref().is_some_and(|p|p.join("web/node_modules").is_dir());
+  let package_dir=self.root.join("packages");
+  let mut installer=None;
+  if let Ok(mut listing)=fs::read_dir(&package_dir).await{
+   while let Ok(Some(entry))=listing.next_entry().await{
+    if !entry.file_name().to_string_lossy().starts_with("dominion-") ||
+      !entry.file_name().to_string_lossy().ends_with(".tar.gz"){continue;}
+    if let Ok(meta)=entry.metadata().await{
+     let newer=installer.as_ref().and_then(|v:&Value|v["mtimeUnix"].as_u64()).unwrap_or(0);
+     let stamp=meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok())
+       .map(|d|d.as_secs()).unwrap_or(0);
+     if stamp>=newer{
+      installer=Some(json!({"name":entry.file_name().to_string_lossy(),
+       "path":entry.path(),"bytes":meta.len(),
+       "mtime":crate::frontend_state::timestamp(stamp.saturating_mul(1000)),
+       "mtimeUnix":stamp}));
+     }
+    }
+   }
+  }
   let mut branch=String::new();let mut commit=String::new();let mut remote=String::new();let mut dirty=0usize;
   if let Some(path)=&root{
    branch=execute(path,"git",&["branch","--show-current"],8).await.unwrap_or_default();
@@ -133,7 +152,7 @@ impl Developer{
    "preview":{"status":if running{"running"}else{"stopped"},"url":url,"logs":[]},
    "platform":std::env::consts::OS,"arch":std::env::consts::ARCH,
    "installedExe":std::env::current_exe().ok().map(|p|p.to_string_lossy().into_owned()).unwrap_or_default(),
-   "installer":null
+   "installer":installer
   })
  }
  pub async fn diff(&self)->Result<Value,String>{
@@ -205,7 +224,32 @@ impl Developer{
      "setup"=>execute(&root.join("web"),"npm",&["ci","--ignore-scripts"],600).await.map(|log|json!({"log":log})),
      "test"=>execute(&root,"cargo",&["test","--locked"],900).await.map(|log|json!({"log":log})),
      "build"=>execute(&root,"cargo",&["build","--release","--locked"],900).await.map(|log|json!({"log":log})),
-     "package"=>Err("packaging is not supported until an installer toolchain is configured".into()),
+     "package"=>{
+       let frontend=root.join("web");
+       if !frontend.join("node_modules").is_dir(){
+        return Err("install the main web dependencies before packaging".into());
+       }
+       execute(&frontend,"npm",&["run","build"],600).await?;
+       execute(&root,"cargo",&["build","--release","--locked"],900).await?;
+       let binary=if cfg!(windows){"target/release/dominion.exe"}
+         else{"target/release/dominion"};
+       if !root.join(binary).is_file() || !frontend.join("dist/index.html").is_file(){
+        return Err("built Rust binary or main UI dist is missing".into());
+       }
+       let destination=service.root.join("packages");
+       fs::create_dir_all(&destination).await.map_err(|e|e.to_string())?;
+       let archive=destination.join(format!("dominion-{}.tar.gz",Uuid::new_v4()));
+       let result=async{
+        let archive_name=archive.to_str().ok_or("invalid package output path")?;
+        execute(&root,"tar",&["-czf",archive_name,"-C",root.to_str()
+          .ok_or("invalid source root")?,binary,"web/dist"],120).await?;
+        let bytes=fs::metadata(&archive).await.map_err(|e|e.to_string())?.len();
+        if bytes==0{return Err("package is unexpectedly empty".into());}
+        Ok::<Value,String>(json!({"path":archive,"bytes":bytes,"format":"tar.gz"}))
+       }.await;
+       if result.is_err(){let _=fs::remove_file(&archive).await;}
+       result
+     },
      "commit"=>{
        // Explicit original UI commit action. Reject ignored and untracked
        // symlinks that could lead to unexpected binary or credential capture.
