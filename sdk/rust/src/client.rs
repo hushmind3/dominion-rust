@@ -170,10 +170,20 @@ impl DominionClient {
     pub async fn create_room(&self,body:Value)->Result<Value>{
         self.json(Method::POST,&["rooms"],Some(body)).await
     }
-    pub async fn send_room_message(&self,id:&str,content:&str)->Result<Value>{
-        self.json(Method::POST,&["rooms",id,"messages"],Some(json!({"content":content}))).await
+    /// Native room submission: owner input and optional idempotency nonce.
+    pub async fn send_room_message(&self,id:&str,input:&str)->Result<Value>{
+        self.send_room_message_once(id,input,None).await
     }
-    pub async fn run_room(&self,id:&str,options:Value)->Result<Value>{
+    pub async fn send_room_message_once(&self,id:&str,input:&str,client_message_id:Option<&str>)->Result<Value>{
+        self.json(Method::POST,&["rooms",id,"messages"],
+            Some(json!({"input":input,"clientMessageId":client_message_id}))).await
+    }
+    /// A room /run is a new owner turn, not a silent background pulse.
+    pub async fn run_room(&self,id:&str,input:&str,mut options:Value)->Result<Value>{
+        if !options.is_object(){
+            return Err(DominionError::Configuration("room options must be a JSON object".into()));
+        }
+        options["input"]=json!(input);
         self.json(Method::POST,&["rooms",id,"run"],Some(options)).await
     }
     pub async fn stop_room(&self,id:&str)->Result<Value>{
@@ -203,7 +213,8 @@ impl DominionClient {
     pub async fn workflows(&self)->Result<Vec<Value>>{
         self.json(Method::GET,&["workflows"],None).await
     }
-    pub async fn rsi_campaigns(&self)->Result<Vec<Value>>{
+    /// The native endpoint returns {"campaigns":[...]}, not a bare list.
+    pub async fn rsi_campaigns(&self)->Result<Value>{
         self.json(Method::GET,&["rsi","campaigns"],None).await
     }
     pub async fn rsi_campaign(&self,id:&str)->Result<Value>{
