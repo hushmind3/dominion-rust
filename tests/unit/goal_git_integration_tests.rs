@@ -80,3 +80,79 @@ async fn worktree_discard_preserves_original_branch_and_stops_workspace_fallback
     drop(state);
     let _=std::fs::remove_dir_all(root);
 }
+
+
+#[tokio::test]
+async fn large_untracked_previews_are_bounded_and_unreviewed_changes_cannot_apply(){
+    let root=std::env::temp_dir().join(format!("dominion-bounded-review-{}",uuid::Uuid::new_v4()));
+    let source=root.join("source");
+    let data=root.join("data");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    run(&source,&["init","-q"]);
+    run(&source,&["config","user.name","Goal Test"]);
+    run(&source,&["config","user.email","goals@example.invalid"]);
+    std::fs::write(source.join("a.txt"),"base\n").unwrap();
+    run(&source,&["add","."]);
+    run(&source,&["commit","-qm","base"]);
+    let cfg=crate::config::Config{port:0,data_dir:data,web_dir:root.join("web"),workspace:source.clone()};
+    let state=AppState::new(cfg.clone(),crate::db::Store::open(&cfg.db_path()).unwrap(),
+        crate::vault::Vault::open(&cfg.key_path()));
+    let id=uuid::Uuid::new_v4().to_string();
+    state.store.put("goal",&json!({"id":id,"status":"queued","isolateWorktree":true})).unwrap();
+    prepare(&state,&id).await.unwrap();
+    let work=workspace_for_goal(&state,&state.store.get("goal",&id).unwrap()).unwrap();
+
+    // Previously changes() read the entire file before checking its size.
+    std::fs::write(work.join("large.bin"),vec![b'x';2_000_000]).unwrap();
+    let preview=changes(&state,&id).await.unwrap();
+    assert_eq!(preview["reviewIncomplete"],true);
+    assert_eq!(preview["untrackedPreviews"][0]["previewOmitted"],true);
+    assert_eq!(preview["untrackedPreviews"][0]["bytes"],2_000_000);
+    assert!(preview["untrackedPreviews"][0]["content"].is_null());
+    let digest=preview["reviewDigest"].as_str().unwrap().to_string();
+    state.store.patch_if("goal",&id,"status",&json!("queued"),
+        &json!({"status":"completed"})).unwrap();
+    assert!(apply(&state,&id,&digest).await.is_err(),
+        "an omitted preview must never be treated as owner-reviewed");
+
+    std::fs::remove_file(work.join("large.bin")).unwrap();
+    std::fs::write(work.join("a.txt"),"x".repeat(250_000)).unwrap();
+    let error=changes(&state,&id).await.unwrap_err();
+    assert!(error.contains("한도"),"large Git output must fail closed: {error}");
+    assert_eq!(std::fs::read_to_string(source.join("a.txt")).unwrap(),"base\n");
+    drop(state);
+    let _=std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn untracked_symlink_is_rejected_before_reading_its_target(){
+    use std::os::unix::fs::symlink;
+    let root=std::env::temp_dir().join(format!("dominion-symlink-review-{}",uuid::Uuid::new_v4()));
+    let source=root.join("source");
+    let data=root.join("data");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    run(&source,&["init","-q"]);
+    run(&source,&["config","user.name","Goal Test"]);
+    run(&source,&["config","user.email","goals@example.invalid"]);
+    std::fs::write(source.join("a.txt"),"base\n").unwrap();
+    run(&source,&["add","."]);
+    run(&source,&["commit","-qm","base"]);
+    let cfg=crate::config::Config{port:0,data_dir:data,web_dir:root.join("web"),workspace:source.clone()};
+    let state=AppState::new(cfg.clone(),crate::db::Store::open(&cfg.db_path()).unwrap(),
+        crate::vault::Vault::open(&cfg.key_path()));
+    let id=uuid::Uuid::new_v4().to_string();
+    state.store.put("goal",&json!({"id":id,"status":"queued","isolateWorktree":true})).unwrap();
+    prepare(&state,&id).await.unwrap();
+    let work=workspace_for_goal(&state,&state.store.get("goal",&id).unwrap()).unwrap();
+    let outside=root.join("outside-private.txt");
+    std::fs::write(&outside,"must never preview this file").unwrap();
+    symlink(&outside,work.join("untracked-link")).unwrap();
+    let error=changes(&state,&id).await.unwrap_err();
+    assert!(error.contains("링크"),"unexpected rejection: {error}");
+    assert!(!error.contains("must never preview"));
+    drop(state);
+    let _=std::fs::remove_dir_all(root);
+}
