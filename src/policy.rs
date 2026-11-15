@@ -16,11 +16,11 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
 
 /// Select only tools that the agent can actually use in this state.
 /// The durable transcript is not changed; this reduces repeated tool-schema tokens.
-pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool)->(Vec<Value>,usize){
+pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[String])->(Vec<Value>,usize){
     let original=tools.iter().map(|t|t.to_string().len()).sum::<usize>();
     let selected=tools.into_iter().filter(|tool|{
         let Some(name)=tool.pointer("/function/name").and_then(Value::as_str)else{return false;};
-        if !allowed_tool(run,name){return false;}
+        if !allowed_tool(run,name)||denied.iter().any(|blocked|blocked==name){return false;}
         if name.starts_with("git_") && run.repository.is_none(){return false;}
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
@@ -49,11 +49,23 @@ mod tests{
         assert!(run.cost_krw>effective_budget_krw(&run));
     }
     #[test]
+    fn operator_denied_tools_are_absent_from_model_prompt_and_schema_budget(){
+        let run=Run::new(CreateRun{instruction:"test".into(),budget_krw:None,max_steps:None},5).unwrap();
+        let denied=vec!["write_file".to_string(),"shell".to_string()];
+        let (visible,saved)=select_catalog(&run,tools::definitions(true),false,&denied);
+        let names=visible.iter().filter_map(|v|v.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"write_file"));
+        assert!(!names.contains(&"shell"));
+        assert!(names.contains(&"read_file"));
+        assert!(saved>0);
+    }
+    #[test]
     fn readonly_investigator_cannot_write_or_use_mcp_or_merge(){
         let mut run=Run::new(CreateRun{instruction:"audit".into(),budget_krw:None,max_steps:None},5).unwrap();
         run.read_only=true;
         run.repository=Some("demo".into());
-        let (selected,saved)=select_catalog(&run,tools::definitions(true),true);
+        let (selected,saved)=select_catalog(&run,tools::definitions(true),true,&[]);
         let names=selected.iter().filter_map(|v|v.pointer("/function/name").and_then(Value::as_str)).collect::<Vec<_>>();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"git_diff"));

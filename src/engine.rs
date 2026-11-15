@@ -254,7 +254,7 @@ impl Engine {
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
             available_tools.extend(self.mcp.definitions().await);
             let has_children=self.store.list().await.iter().any(|child|child.parent_run_id==Some(id));
-            let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children);
+            let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let projection=crate::context::compact(&run.messages,self.settings.context_max_chars);
             let mut outbound=projection.messages.clone();
             let scope=run.repository.as_deref().unwrap_or("global");
