@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, knowledge::Knowledge};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::{mpsc,Mutex};
@@ -35,8 +35,12 @@ impl Engine {
                 let Some(engine)=weak.upgrade() else {break};
                 for _ in 0..200 {
                     let Some(run)=engine.store.get(id).await else {break};
-                    if run.status!=RunStatus::Paused || run.waiting_for_children ||
-                        run.in_flight.is_some() || run.pending_approval.is_some(){break;}
+                    let ready=(run.status==RunStatus::Paused && !run.waiting_for_children
+                            && run.in_flight.is_none()
+                            && (run.pending_approval.is_none() || run.approval_decision.is_some()))
+                        || (run.status==RunStatus::AwaitingApproval
+                            && run.pending_approval.is_some() && run.approval_decision.is_some());
+                    if !ready {break;}
                     if !engine.active.lock().await.contains(&id){
                         if let Err(error)=engine.launch(id).await{
                             tracing::warn!(%id,"queued parent wake rejected: {error}");
@@ -113,7 +117,11 @@ impl Engine {
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
             if let Some(pending) = run.pending_approval.clone() {
                 let Some(allowed) = run.approval_decision else { return Ok(()); };
-                self.perform_tool(id, pending, allowed).await?;
+                if allowed {
+                    self.perform_tool(id,pending).await?;
+                } else {
+                    self.store.mutate(id,|run|journal::deny(run,&pending)).await?;
+                }
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
@@ -132,7 +140,7 @@ impl Engine {
                     }).await?;
                     return Ok(());
                 }
-                self.perform_tool(id,call,true).await?;
+                self.perform_tool(id,call).await?;
                 continue;
             }
             if run.plan.is_none() {
@@ -205,6 +213,14 @@ impl Engine {
                 if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
                 if run.messages.len()!=expected_history {
                     run.event("stale_response","A newer user directive superseded the model response",None);
+                    return Ok(());
+                }
+                if let Err(error)=journal::validate_new_calls(run,&reply.calls){
+                    run.steps+=1;
+                    run.event("tool_protocol_rejected",format!("Invalid model tool calls: {error}"),None);
+                    run.messages.push(json!({"role":"user","content":format!(
+                        "Your tool call protocol is invalid: {error}. Retry with fresh unique call IDs, valid JSON object arguments, and at most 16 tool calls."
+                    )}));
                     return Ok(());
                 }
                 accepted=true;
@@ -282,23 +298,10 @@ impl Engine {
             if verified && passed { return Ok(()); }
         }
     }
-    async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall, approved: bool) -> Result<(), String> {
-        // Persist intent before an external side effect; receipt is a separate durable write.
-        self.store.mutate(id, |run| {
-            if run.status != RunStatus::Running { return Err("execution no longer running".into()); }
-            if !policy::allowed_tool(run,&call.name) {return Err("read-only agent permission denied this tool".into());}
-            if run.in_flight.is_some() { return Err("another tool is in flight".into()); }
-            if !run.queued_calls.iter().any(|queued| queued.id == call.id)
-                && !run.pending_approval.as_ref().is_some_and(|pending| pending.id == call.id) {
-                return Err("tool is no longer queued".into());
-            }
-            run.in_flight = Some(call.clone());
-            run.event("tool_started", format!("Executing {} ({})",call.name,call.id),
-                Some(json!({"name":call.name,"id":call.id})));
-            Ok(())
-        }).await?;
-        let output = if approved {
-            async {
+    async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall) -> Result<(), String> {
+        // In-flight intent MUST be synced to disk before any outside effect.
+        self.store.mutate(id,|run|journal::begin(run,&call)).await?;
+        let output = async {
             if call.name.starts_with("mcp__") {
                 self.mcp.call(&call).await
             } else if call.name == "spawn_subagent" {
@@ -343,33 +346,9 @@ impl Engine {
             } else {
                 tools::execute(&self.settings,id,&call).await
             }
-            }.await
-        } else {
-            Err("User denied the requested operation".into())
-        };
-        self.store.mutate(id,|run| {
-            if !run.in_flight.as_ref().is_some_and(|pending|pending.id == call.id) {
-                return Err("in-flight tool receipt does not match".into());
-            }
-            run.in_flight = None;
-            if run.pending_approval.as_ref().is_some_and(|p| p.id == call.id) {
-                run.pending_approval = None;
-                run.approval_decision = None;
-            } else if let Some(pos) = run.queued_calls.iter().position(|p|p.id == call.id) {
-                run.queued_calls.remove(pos);
-            }
-            let body=match &output {Ok(v)=>v.clone(),Err(e)=>format!("TOOL ERROR: {e}")};
-            if !run.terminal() {run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));}
-            run.event(if output.is_ok() {"tool_result"}else{"tool_error"},
-                format!("{}: {}",call.name,if output.is_ok() {"ok"}else{"failed"}),
-                Some(json!({"call_id":call.id,"result":body.chars().take(1000).collect::<String>()})));
-            if run.cancel_after_tool{
-                run.cancel_after_tool=false;
-                run.status=RunStatus::Cancelled;
-                run.event("cancelled","Cancellation finalized after active tool receipt",None);
-            }
-            Ok(())
-        }).await?;
+        }.await;
+        // Receipt + dequeuing + cancellation are one durable Store mutation.
+        self.store.mutate(id,|run|journal::finish(run,&call,&output,false)).await?;
         Ok(())
     }
     /// Records observed outcomes; never re-executes an interrupted tool.
@@ -377,24 +356,10 @@ impl Engine {
         if self.active.lock().await.contains(&id) {return Err("execution worker is still active".into());}
         if input.result.len()>16_384 {return Err("reconciliation result exceeds 16 KB".into());}
         self.store.mutate(id,|run|{
-            if run.status!=RunStatus::Paused {return Err("execution must be paused".into());}
-            let call=run.in_flight.take().ok_or("no in-flight tool to reconcile")?;
-            if run.pending_approval.as_ref().is_some_and(|p|p.id==call.id) {
-                run.pending_approval=None;run.approval_decision=None;
-            } else if let Some(index)=run.queued_calls.iter().position(|p|p.id==call.id) {
-                run.queued_calls.remove(index);
-            }
-            let body=if input.succeeded {input.result.clone()}else{format!("TOOL ERROR: {}",input.result)};
-            run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));
-            run.event("tool_reconciled",
-                format!("Observed result for {}: {}",call.name,if input.succeeded{"success"}else{"failure"}),
-                Some(json!({"call_id":call.id,"succeeded":input.succeeded})));
-            if run.cancel_after_tool{
-                run.cancel_after_tool=false;
-                run.status=RunStatus::Cancelled;
-                run.event("cancelled","Cancellation finalized after inspected tool outcome",None);
-            }
-            Ok(())
+            if run.status!=RunStatus::Paused{return Err("execution must be paused".into());}
+            let call=run.in_flight.clone().ok_or("no in-flight tool to reconcile")?;
+            let observed=if input.succeeded{Ok(input.result.clone())}else{Err(input.result.clone())};
+            journal::finish(run,&call,&observed,true)
         }).await
     }
 
@@ -579,13 +544,10 @@ impl Engine {
             run.event("decision",if allow {"User approved tool"} else {"User rejected tool"},None);
             Ok(())
         }).await?;
-        // The worker may still be releasing its active marker after publishing
-        // the approval request. Wait for that exact worker to detach first.
-        for _ in 0..200 {
-            if !self.active.lock().await.contains(&id) { return self.launch(id).await; }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        Err("approval recorded but worker is still active; use resume".into())
+        // Durable decision is committed before the scheduler starts the call.
+        // The channel handles an active worker without timing-dependent failures.
+        self.wake_tx.send(id).map_err(|_|"approval wake scheduler unavailable".to_string())?;
+        Ok(())
     }
     pub async fn directive(&self,id:Uuid,instruction:String) -> Result<Run,String> {
         let content=instruction.trim();
