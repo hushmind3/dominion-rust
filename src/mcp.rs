@@ -5,7 +5,8 @@ use uuid::Uuid;
 use reqwest::{header, Client, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::{HashMap, HashSet}, net::IpAddr, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, net::IpAddr,
+    sync::{RwLock,atomic::{AtomicU64,Ordering}},time::{Duration, Instant}};
 use tokio::sync::{Mutex,watch,mpsc};
 
 const VERSION: &str = "2026-07-28";
@@ -119,7 +120,8 @@ struct RemoteTool {
 
 pub struct Mcp {
     http: Client,
-    servers: Vec<Server>,
+    servers: RwLock<Vec<Server>>,
+    generation:AtomicU64,
     cached: Mutex<HashMap<String, (Instant, Duration, Vec<RemoteTool>)>>,
 }
 
@@ -229,9 +231,34 @@ impl Mcp {
         }
         let http=Client::builder().timeout(Duration::from_secs(35)).redirect(reqwest::redirect::Policy::none())
             .build().map_err(|e|e.to_string())?;
-        Ok(Self{http,servers,cached:Mutex::new(HashMap::new())})
+        Ok(Self{http,servers:RwLock::new(servers),generation:AtomicU64::new(0),
+            cached:Mutex::new(HashMap::new())})
     }
-    pub fn server_count(&self)->usize{self.servers.len()}
+    pub fn server_count(&self)->usize{
+        self.servers.read().unwrap_or_else(|e|e.into_inner()).len()
+    }
+    pub fn servers_snapshot(&self)->Vec<Server>{
+        self.servers.read().unwrap_or_else(|e|e.into_inner()).clone()
+    }
+    /// Save and validate a complete server set before publishing it to new
+    /// agent turns. Existing exact remote calls retain their original target.
+    /// Startup-only replacement before any MCP request is active. Durable
+    /// managed servers override the last environment snapshot on restart.
+    pub fn initialize_servers(&self,servers:Vec<Server>)->Result<(),String>{
+        let _=Self::new(servers.clone())?;
+        *self.servers.write().unwrap_or_else(|e|e.into_inner())=servers;
+        self.generation.fetch_add(1,Ordering::SeqCst);
+        if let Ok(mut cache)=self.cached.try_lock(){cache.clear();}
+        Ok(())
+    }
+    pub async fn replace_servers(&self,servers:Vec<Server>)->Result<(),String>{
+        // Reuse all native URL/name/duplicate validation.
+        let _=Self::new(servers.clone())?;
+        *self.servers.write().unwrap_or_else(|e|e.into_inner())=servers;
+        self.generation.fetch_add(1,Ordering::SeqCst);
+        self.cached.lock().await.clear();
+        Ok(())
+    }
 
     async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,
         extra_headers:&[(String,String)])->Result<Value,String>{
@@ -376,13 +403,17 @@ impl Mcp {
         Ok(classify_response(method,response))
     }
     async fn list(&self,name:&str)->Result<Vec<RemoteTool>,String>{
+        let epoch=self.generation.load(Ordering::SeqCst);
         {
             let cache=self.cached.lock().await;
             if let Some((at,ttl,tools))=cache.get(name){
-                if at.elapsed()<*ttl{return Ok(tools.clone());}
+                if at.elapsed()<*ttl && self.generation.load(Ordering::SeqCst)==epoch{
+                    return Ok(tools.clone());
+                }
             }
         }
-        let server=self.servers.iter().find(|s|s.name==name).ok_or("MCP server not found")?;
+        let server=self.servers_snapshot().into_iter()
+            .find(|s|s.name==name).ok_or("MCP server not found")?;
         let mut seen_tools=HashSet::new();
         let mut seen_cursors=HashSet::new();
         let mut cursor:Option<String>=None;
@@ -397,7 +428,7 @@ impl Mcp {
                 Some(next)=>json!({"cursor":next}),
                 None=>json!({})
             };
-            let result=self.rpc(server,"tools/list",params,None,&[]).await?;
+            let result=self.rpc(&server,"tools/list",params,None,&[]).await?;
             if result.get("resultType").and_then(Value::as_str)==Some("input_required"){
                 return Err("MCP discovery requires interactive input".into());
             }
@@ -432,6 +463,9 @@ impl Mcp {
         }
         if !complete{return Err("MCP tools/list exceeded 16 pagination pages".into());}
         let mut cache=self.cached.lock().await;
+        if self.generation.load(Ordering::SeqCst)!=epoch{
+            return Err("MCP server settings changed during tool discovery; retry with current registry".into());
+        }
         if ttl.is_zero(){
             cache.remove(name);
         }else{
@@ -441,7 +475,7 @@ impl Mcp {
     }
     pub async fn definitions(&self)->Vec<Value>{
         let mut combined=vec![];
-        for server in &self.servers {
+        for server in self.servers_snapshot() {
             match self.list(&server.name).await {
                 Ok(tools)=>for item in tools{
                     let alias=format!("mcp__{}__{}",server.name,item.name);
@@ -478,7 +512,9 @@ impl Mcp {
         let suffix=&call.name["mcp__".len()..];
         let (server_name,tool_name)=suffix.split_once("__").ok_or("invalid MCP tool alias")?;
         if !safe_name(server_name)||!safe_name(tool_name) {return Err("invalid MCP tool name".into());}
-        let server=self.servers.iter().find(|s|s.name==server_name).ok_or("unknown MCP server")?;
+        let epoch=self.generation.load(Ordering::SeqCst);
+        let server=self.servers_snapshot().into_iter()
+            .find(|s|s.name==server_name).ok_or("unknown MCP server")?;
         if !call.arguments.is_object(){return Err("MCP arguments must be object".into());}
         let listed=tokio::select!{
             biased;
@@ -489,6 +525,10 @@ impl Mcp {
         };
         if cancellation.as_ref().is_some_and(|rx|*rx.borrow()){
             return Ok(McpCallOutcome::Settled(Err("MCP cancelled before tool call".into())));
+        }
+        if self.generation.load(Ordering::SeqCst)!=epoch{
+            return Ok(McpCallOutcome::Settled(Err(
+                "MCP configuration changed before tool dispatch; retry requires new approval".into())));
         }
         let tool=listed.iter().find(|t|t.name==tool_name).ok_or("MCP tool is not currently advertised")?;
         let mut headers=vec![];
@@ -505,7 +545,7 @@ impl Mcp {
             if text.len()>2048{return Err("MCP header value too long".into());}
             headers.push((format!("Mcp-Param-{}",parameter.name),encode_header(&text)));
         }
-        let result=match self.rpc_cancellable(server,"tools/call",
+        let result=match self.rpc_cancellable(&server,"tools/call",
             json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),
             &headers,cancellation,progress,run.map(|id|request_identity(id,call))).await?{
             RpcOutcome::Settled(Ok(value))=>value,

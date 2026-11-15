@@ -1,6 +1,7 @@
 //! Lazy discovery of project-local SKILL.md instructions.
 //! Skills are untrusted procedural references; loading never runs code.
 use crate::{config::Settings,domain::ToolCall,tools};
+use serde_json::Value;
 use serde::{Serialize,Deserialize};
 use serde_json::json;
 use tokio::fs;
@@ -40,6 +41,28 @@ pub async fn list(settings:&Settings,run:Uuid)->Result<Vec<SkillInfo>,String>{
         }
         if result.len()>=64{break;}
     }
+    // Global user-managed skills are durable under extensions.json and
+    // intentionally expose stable safe tool aliases, not arbitrary filenames.
+    let root=settings.data_dir.join("extensions.json");
+    if let Ok(bytes)=fs::read(&root).await{
+        if bytes.len()<=4*1024*1024{
+            if let Ok(parsed)=serde_json::from_slice::<Value>(&bytes){
+                if let Some(managed)=parsed.get("skills").and_then(Value::as_object){
+                    for (id,record) in managed{
+                        if result.len()>=64{break;}
+                        if record.get("enabled").and_then(Value::as_bool)!=Some(true){continue;}
+                        if uuid::Uuid::parse_str(id).is_err(){continue;}
+                        if record.get("instructions").and_then(Value::as_str)
+                            .is_none_or(|s|s.is_empty()||s.len()>32768){continue;}
+                        result.push(SkillInfo{
+                            name:format!("managed_{}",id),
+                            path:format!("managed:{id}")
+                        });
+                    }
+                }
+            }
+        }
+    }
     result.sort_by(|a,b|a.name.cmp(&b.name));
     result.dedup_by(|a,b|a.name==b.name);
     Ok(result)
@@ -47,6 +70,19 @@ pub async fn list(settings:&Settings,run:Uuid)->Result<Vec<SkillInfo>,String>{
 pub async fn load(settings:&Settings,run:Uuid,name:&str)->Result<String,String>{
     if !safe_name(name){return Err("invalid skill name".into());}
     let skill=list(settings,run).await?.into_iter().find(|s|s.name==name).ok_or("skill not found")?;
+    if let Some(id)=skill.path.strip_prefix("managed:"){
+        // Contents are procedural references only. They are never executed
+        // as code and are not promoted to harness/system policy.
+        let bytes=fs::read(settings.data_dir.join("extensions.json"))
+            .await.map_err(|e|e.to_string())?;
+        let parsed:Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+        let text=parsed.get("skills").and_then(|v|v.get(id))
+            .filter(|s|s.get("enabled").and_then(Value::as_bool)==Some(true))
+            .and_then(|s|s.get("instructions")).and_then(Value::as_str)
+            .ok_or("managed skill not enabled or found")?;
+        if text.len()>32768{return Err("managed skill exceeds 32 KiB".into());}
+        return Ok(text.to_owned());
+    }
     tools::execute(settings,run,&ToolCall{id:"skill-read".into(),name:"read_file".into(),arguments:json!({"path":skill.path})}).await
 }
 #[cfg(test)]
