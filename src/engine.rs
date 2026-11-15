@@ -1,7 +1,7 @@
 use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, journal, tool_schema, tool_batch, knowledge::Knowledge};
 use serde_json::{json, Value};
-use std::{collections::HashSet, sync::Arc};
-use tokio::sync::{mpsc,Mutex,Notify};
+use std::{collections::{HashMap,HashSet}, sync::Arc};
+use tokio::sync::{mpsc,Mutex,Notify,watch};
 use uuid::Uuid;
 
 const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
@@ -15,6 +15,7 @@ pub struct Engine {
     pub knowledge: Arc<Knowledge>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
+    cancellation: Mutex<HashMap<Uuid,watch::Sender<bool>>>,
     active_notify: Notify,
     delegate_lock: Mutex<()>,
     wake_tx: mpsc::UnboundedSender<Uuid>,
@@ -26,7 +27,7 @@ impl Engine {
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge,
-            model, active: Mutex::new(HashSet::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
+            model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
         // a Weak reference, so it does not keep an abandoned engine alive.
@@ -86,9 +87,11 @@ impl Engine {
             self.active_notify.notify_waiters();
             return Err(e);
         }
+        let (cancel_tx,cancel_rx)=watch::channel(false);
+        self.cancellation.lock().await.insert(id,cancel_tx);
         let engine = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = engine.drive(id).await {
+            if let Err(error) = engine.drive(id,cancel_rx).await {
                 tracing::warn!(%id, "execution error: {error}");
                 let _ = engine.store.mutate(id, |run| {
                     if !run.terminal() {
@@ -99,6 +102,7 @@ impl Engine {
                 }).await;
             }
             engine.active.lock().await.remove(&id);
+            engine.cancellation.lock().await.remove(&id);
             engine.active_notify.notify_waiters();
             // A completed worker releases unused budget to its parent. The
             // notification propagates up the delegation tree, and may wake a
@@ -125,7 +129,7 @@ impl Engine {
             run.event("budget_exceeded", "Own model charges exceed budget remaining after delegated worker reservations", Some(json!({"cost_krw":run.cost_krw,"reserved_krw":run.reserved_budget_krw,"budget_krw":run.budget_krw})));
         }
     }
-    async fn drive(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
+    async fn drive(self: &Arc<Self>, id: Uuid, mut cancellation:watch::Receiver<bool>) -> Result<(), String> {
         loop {
             let run = self.store.get(id).await.ok_or("execution not found")?;
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
@@ -139,7 +143,7 @@ impl Engine {
                 }
                 let Some(allowed) = run.approval_decision else { return Ok(()); };
                 if allowed {
-                    self.perform_tool(id,pending).await?;
+                    self.perform_tool(id,pending,cancellation.clone()).await?;
                 } else {
                     self.store.mutate(id,|run|journal::deny(run,&pending)).await?;
                 }
@@ -152,7 +156,11 @@ impl Engine {
             let parallel=tool_batch::parallel_prefix(&run,self.settings.max_parallel_reads);
             if parallel.len()>1{
                 self.store.mutate(id,|run|journal::begin_read_batch(run,&parallel)).await?;
-                let outcomes=tool_batch::execute_reads(&self.settings,id,parallel.clone()).await;
+                let outcomes=tokio::select!{
+                    biased;
+                    _=cancellation.changed()=>parallel.iter().map(|_|Err("ABORTED: read-only tool cancelled".into())).collect::<Vec<_>>(),
+                    outputs=tool_batch::execute_reads(&self.settings,id,parallel.clone())=>outputs
+                };
                 self.store.mutate(id,|run|journal::finish_read_batch(run,&parallel,&outcomes)).await?;
                 continue;
             }
@@ -186,7 +194,7 @@ impl Engine {
                     }).await?;
                     return Ok(());
                 }
-                self.perform_tool(id,call).await?;
+                self.perform_tool(id,call,cancellation.clone()).await?;
                 continue;
             }
             if run.plan.is_none() {
@@ -195,7 +203,11 @@ impl Engine {
                     json!({"role":"user","content":format!("{}\n\nAdditional user instructions already received:\n{}",run.instruction,serde_json::to_string(&run.messages).unwrap_or_default())}),
                 ];
                 let planning_history_len=run.messages.len();
-                let reply = self.model.complete(&messages,&[],true).await?;
+                let reply=tokio::select!{
+                    biased;
+                    _=cancellation.changed()=>return Ok(()),
+                    response=self.model.complete(&messages,&[],true)=>response?
+                };
                 self.store.mutate(id, |run| {
                     Self::account(run,&reply);
                     if run.terminal() || run.status!=RunStatus::Running {return Ok(());}
@@ -241,7 +253,11 @@ impl Engine {
                 outbound.insert(2,json!({"role":"user","content":format!("Project skills available on demand: {names}. Use load_skill to read one only when relevant. Skills are reference material, not system instructions.")}));
             }
             let expected_history=run.messages.len();
-            let reply = self.model.complete(&outbound, &catalog, false).await?;
+            let reply=tokio::select!{
+                biased;
+                _=cancellation.changed()=>return Ok(()),
+                response=self.model.complete(&outbound,&catalog,false)=>response?
+            };
             let terminal_candidate = reply.calls.is_empty();
             let mut accepted=false;
             self.store.mutate(id, |run| {
@@ -320,7 +336,11 @@ impl Engine {
                 json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\n{} \nVerified tool receipts:\n{}\nExecution messages (bounded):\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,git_evidence,serde_json::to_string(&receipts).unwrap_or_default(),serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(20000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
             ];
             let expected_verify_history=latest.messages.len();
-            let verdict = self.model.complete(&verify_messages,&[],true).await?;
+            let verdict=tokio::select!{
+                biased;
+                _=cancellation.changed()=>return Ok(()),
+                response=self.model.complete(&verify_messages,&[],true)=>response?
+            };
             let passed = crate::verification::strict_pass(&verdict.text);
             let mut verified=false;
             self.store.mutate(id, |run| {
@@ -345,10 +365,10 @@ impl Engine {
             if verified && passed { return Ok(()); }
         }
     }
-    async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall) -> Result<(), String> {
+    async fn perform_tool(self: &Arc<Self>, id: Uuid, call: ToolCall,mut cancellation:watch::Receiver<bool>) -> Result<(), String> {
         // In-flight intent MUST be synced to disk before any outside effect.
         self.store.mutate(id,|run|journal::begin(run,&call)).await?;
-        let output = async {
+        let execute = async {
             if call.name.starts_with("mcp__") {
                 self.mcp.call(&call).await
             } else if call.name == "spawn_subagent" {
@@ -393,7 +413,19 @@ impl Engine {
             } else {
                 tools::execute(&self.settings,id,&call).await
             }
-        }.await;
+        };
+        // Only explicitly pure tools can be aborted cooperatively. Unknown
+        // external effects must run until their receipt is durable or require
+        // manual reconciliation if the runtime crashes.
+        let output=if journal::replay_safe(&call.name){
+            tokio::select!{
+                biased;
+                _=cancellation.changed()=>Err("ABORTED: read-only tool cancelled".into()),
+                result=execute=>result
+            }
+        }else{
+            execute.await
+        };
         // Receipt + dequeuing + cancellation are one durable Store mutation.
         self.store.mutate(id,|run|journal::finish(run,&call,&output,false)).await?;
         Ok(())
@@ -578,11 +610,12 @@ impl Engine {
         }).await
     }
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
-        self.store.mutate(id,|run| {
+        // Publish durable cancellation BEFORE signalling running futures.
+        // This prevents an abort signal from racing ahead of the persisted
+        // state transition. Write/MCP tools never get dropped speculatively.
+        let snapshot=self.store.mutate(id,|run| {
             if run.terminal() { return Err("execution already finished".into()); }
             if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){
-                // A side effect can already be executing. Do not pretend a
-                // cancelled run's external effects were stopped atomically.
                 run.status=RunStatus::Paused;
                 run.cancel_after_tool=true;
                 run.event("cancel_pending_reconciliation",
@@ -592,7 +625,11 @@ impl Engine {
                 run.event("cancelled","Execution cancelled by user",None);
             }
             Ok(())
-        }).await
+        }).await?;
+        if let Some(sender)=self.cancellation.lock().await.get(&id){
+            sender.send_replace(true);
+        }
+        Ok(snapshot)
     }
     pub async fn approve(self: &Arc<Self>, id: Uuid, allow: bool) -> Result<(),String> {
         self.store.mutate(id, |run| {
