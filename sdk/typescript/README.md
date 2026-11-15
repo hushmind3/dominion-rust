@@ -27,7 +27,11 @@ for await (const event of resumed.runStreamed('Continue and report actual eviden
 }
 
 // Real durable goal/job (can survive UI disconnection):
-const goal = await sdk.startGoal({goal:'Fix failing tests', isolateWorktree:true})
+const goal = await sdk.startGoal({
+  goal:'Fix failing tests', isolateWorktree:true,
+  reviewPolicy:'acceptance_ready',
+  successCriteria:[{type:'command_succeeded',command:'cargo test --release'}],
+})
 console.log(await goal.status())
 ```
 
@@ -99,6 +103,24 @@ and signals truncated retention explicitly. It does not replay `POST /api/chat`,
 tool executions or approval decisions. Persist your last observed sequence
 where appropriate and re-fetch the canonical record on `replay_gap`.
 
+## All-menu SDK parity with Rust and React
+
+`sdk.goalStrategies()` reads the server-owned review catalog. An owner may choose
+`reviewPolicy: 'always'` (default) or `'acceptance_ready'` (skip a costly
+model reviewer only **while deterministic acceptance criteria still fail**).
+The latter **never bypasses** final independent model review or actual Rust
+verification. React's Agent launch dialog reads the same catalog.
+
+The SDK also exposes native `agents()`, `startAgentGoal()`, `rooms()`,
+`sendRoomMessage()`, `runRoom()`, `videoQuote()`, `createVideoJob()`,
+`modelCatalog()`, `installedModels()`, `memories()`, `skills()`,
+`workflows()`, `rsiCampaigns()` and `startRsi()` endpoints. Every tool,
+model, group job, video charge, and RSI decision remains executed and
+validated by **DOMINION Rust**; these are typed network entry points, not
+local mock agent capabilities. Unit tests use injected HTTP transports and
+validate method, route, owner token and body compatibility without charging
+models. See `tests/sdk.test.mjs`.
+
 ## Development
 
 ```sh
@@ -107,7 +129,7 @@ npm install
 npm run check
 ```
 
-The existing React UI directly uses this SDK's `streamChat` parser via `web/src/api.ts`, so SDK streaming is exercised in the regular product path.
+The React UI and external TypeScript SDK are **separate clients of the same Rust engine**. React uses `web/src/api.ts` / `web/src/chat-stream.ts`; this SDK does not inject a second agent runtime into the UI. Its protocol suite exercises the same route contracts.
 
 Validation levels: standalone source and tests are committed; full Rust+React integration tests and real-provider completion measurements remain separate.
 
