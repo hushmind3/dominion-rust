@@ -210,6 +210,7 @@ impl Engine {
             Ok(())
         }).await?;
         let output = if approved {
+            async {
             if call.name.starts_with("mcp__") {
                 self.mcp.call(&call).await
             } else if call.name == "spawn_subagent" {
@@ -226,6 +227,7 @@ impl Engine {
             } else {
                 tools::execute(&self.settings,id,&call).await
             }
+            }.await
         } else {
             Err("User denied the requested operation".into())
         };
