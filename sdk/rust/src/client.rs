@@ -138,6 +138,84 @@ impl DominionClient {
         self.json(Method::GET, &["tools"], None).await
     }
 
+    /// Canonical Rust strategy catalog used by React and both SDKs.
+    pub async fn goal_strategies(&self) -> Result<Value> {
+        self.json(Method::GET, &["goals","strategies"], None).await
+    }
+
+    /// Every operation uses the same authenticated server-owned policy.
+    /// A generated client never executes a tool or imports another harness.
+    pub async fn agent_portfolio(&self) -> Result<Value> {
+        self.json(Method::GET, &["agents","portfolio"], None).await
+    }
+    pub async fn start_agent_goal(&self, agent_id:&str, goal:GoalCreate)->Result<Goal> {
+        self.json(Method::POST, &["agents",agent_id,"goal"],
+            Some(serde_json::to_value(goal)?)).await
+    }
+    pub async fn model_catalog(&self)->Result<Value>{
+        self.json(Method::GET, &["model-library","catalog"],None).await
+    }
+    pub async fn installed_models(&self)->Result<Vec<Value>>{
+        self.json(Method::GET, &["model-library","installed"],None).await
+    }
+    pub async fn room_list(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["rooms"],None).await
+    }
+    pub async fn room_state(&self,id:&str)->Result<Value>{
+        self.json(Method::GET,&["rooms",id,"state"],None).await
+    }
+    pub async fn room_messages(&self,id:&str)->Result<Vec<Value>>{
+        self.json(Method::GET,&["rooms",id,"messages"],None).await
+    }
+    pub async fn create_room(&self,body:Value)->Result<Value>{
+        self.json(Method::POST,&["rooms"],Some(body)).await
+    }
+    pub async fn send_room_message(&self,id:&str,content:&str)->Result<Value>{
+        self.json(Method::POST,&["rooms",id,"messages"],Some(json!({"content":content}))).await
+    }
+    pub async fn run_room(&self,id:&str,options:Value)->Result<Value>{
+        self.json(Method::POST,&["rooms",id,"run"],Some(options)).await
+    }
+    pub async fn stop_room(&self,id:&str)->Result<Value>{
+        self.json(Method::POST,&["rooms",id,"stop"],Some(json!({}))).await
+    }
+    pub async fn video_status(&self)->Result<Value>{
+        self.json(Method::GET,&["video","status"],None).await
+    }
+    pub async fn video_quote(&self,body:Value)->Result<Value>{
+        self.json(Method::POST,&["video","quote"],Some(body)).await
+    }
+    pub async fn video_jobs(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["video","jobs"],None).await
+    }
+    pub async fn create_video_job(&self,body:Value)->Result<Value>{
+        self.json(Method::POST,&["video","jobs"],Some(body)).await
+    }
+    pub async fn video_job(&self,id:&str)->Result<Value>{
+        self.json(Method::GET,&["video","jobs",id],None).await
+    }
+    pub async fn skills(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["skills"],None).await
+    }
+    pub async fn memories(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["memories"],None).await
+    }
+    pub async fn workflows(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["workflows"],None).await
+    }
+    pub async fn rsi_campaigns(&self)->Result<Vec<Value>>{
+        self.json(Method::GET,&["rsi","campaigns"],None).await
+    }
+    pub async fn rsi_campaign(&self,id:&str)->Result<Value>{
+        self.json(Method::GET,&["rsi","campaigns",id],None).await
+    }
+    pub async fn rsi_signals(&self)->Result<Value>{
+        self.json(Method::GET,&["rsi","signals"],None).await
+    }
+    pub async fn start_rsi(&self,body:Value)->Result<Value>{
+        self.json(Method::POST,&["rsi","start"],Some(body)).await
+    }
+
     pub async fn create_goal(&self, input: GoalCreate) -> Result<Goal> {
         self.json(Method::POST, &["goals"], Some(serde_json::to_value(input)?)).await
     }
