@@ -84,7 +84,9 @@ is not blindly replayed. Owner-steered goal plans are versioned, and the
 Rust acceptance criteria remain unmet. Independent final review stays mandatory.
 A `command_succeeded` criterion can require a fresh post-edit test receipt.
 Each goal can use an isolated Git worktree with an owner-reviewed diff and
-explicit apply/discard decision.
+explicit apply/discard decision. Git review runs with bounded subprocess output
+and bounded untracked-file previews; oversized changes require splitting before
+approval, and links outside the checkout cannot be previewed as ordinary files.
 
 **Model/provider choice.** One capability- and owner-KRW-price-aware
 native Rust router serves chat and beginner goal selection. Per-provider
