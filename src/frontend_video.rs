@@ -203,6 +203,8 @@ async fn create_job(State(engine):State<Arc<Engine>>,Json(input):Json<Create>)
         aspect_ratio:Some(input.aspect_ratio)
     }).await.map_err(bad)?;
     let prepared=engine.videos.set_title(created.id,title.into()).await.map_err(bad)?;
+    let narration=crate::frontend_comfy::config(&engine.settings).map_err(bad)?.narration;
+    engine.videos.set_narration(prepared.id,narration).await.map_err(bad)?;
     let started=engine.videos.start(prepared.id).await.map_err(bad)?;
     Ok((StatusCode::ACCEPTED,Json(as_job(&engine,&started).await)))
 }
