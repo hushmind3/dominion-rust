@@ -67,10 +67,10 @@ button:disabled{opacity:.5;cursor:not-allowed}.actions{display:flex;gap:10px;ali
 <div class="hero"><div><h1>영상 제작</h1><p>스토리보드 구성부터 음성·장면 렌더·MP4 병합까지 연결합니다. FFmpeg 실행 환경이 필요합니다.</p></div><span class="pill">Local-first · FFmpeg</span></div>
 <div class="workspace">
 <div class="stack">
-<div class="panel"><h2>새 영상</h2><label for="video-prompt">영상 주제와 목적</label><textarea id="video-prompt" placeholder="예: 동네 소상공인을 위한 30초 매장 홍보 영상. 한국어 내레이션."></textarea>
+<div class="panel"><h2>새 영상</h2><label for="video-backend">영상 생성 방식</label><select id="video-backend" style="width:100%;background:#0c1525;color:#f4f6fd;border:1px solid #33445f;padding:12px;border-radius:10px;margin-bottom:15px"><option value="local">로컬 FFmpeg · 장면/내레이션</option><option value="veo">Veo 3.1 · 생성형 영상 (API 비용 발생)</option></select><label for="video-prompt">영상 주제와 목적</label><textarea id="video-prompt" placeholder="예: 동네 소상공인을 위한 30초 매장 홍보 영상. 한국어 내레이션."></textarea>
 <label for="video-scenes" style="margin-top:15px">장면 수동 지정 (선택) · JSON 배열</label>
 <textarea id="video-scenes" style="min-height:100px" placeholder='[{"heading":"첫 장면","narration":"안녕하세요","seconds":5}]'></textarea>
-<p class="muted" style="margin:8px 0 14px">비워두면 연결된 모델이 장면을 기획합니다. 직접 입력하면 모델 호출 없이 렌더합니다.</p>
+<p class="muted" style="margin:8px 0 14px">비워두면 모델이 장면을 기획합니다. Veo 생성은 장면당 4·6·8초가 필요하며 별도 API 요금이 발생합니다.</p>
 <div class="actions"><button id="video-create" class="primary">🎬 제작 시작</button><span id="video-error" class="muted"></span></div>
 </div><div class="panel"><h2>영상 작업 목록</h2><div id="video-list" class="runs"><p>영상 작업이 없습니다.</p></div></div></div>
 <div class="stack"><div class="panel"><div class="detail-head"><h2>영상 상세</h2><span id="video-status" class="tag">미선택</span></div><div id="video-detail"><p>영상 작업을 선택하세요.</p></div></div></div>

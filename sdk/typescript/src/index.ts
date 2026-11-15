@@ -32,9 +32,10 @@ export interface VideoJob {
   id: string; prompt: string; scenes: VideoScene[]; status: 'draft' | 'rendering' | 'completed' | 'failed';
   cost_krw: number; render_seconds: number; error: string | null;
   output: string | null; created_at_ms: number; updated_at_ms: number;
+  backend: 'local' | 'veo'; remote_operations: Record<string,string>;
 }
 export interface CreateVideo {
-  prompt: string; scenes?: VideoScene[];
+  prompt: string; scenes?: VideoScene[]; backend?: 'local' | 'veo';
 }
 
 

@@ -186,7 +186,7 @@
     $('video-create').disabled=true;$('video-error').textContent='스토리보드 생성 · 준비 중';
     try{
       const manual=$('video-scenes').value.trim();
-      const body={prompt:$('video-prompt').value};
+      const body={prompt:$('video-prompt').value,backend:$('video-backend').value};
       if(manual)body.scenes=JSON.parse(manual);
       const v=await request('/videos',{method:'POST',body:JSON.stringify(body)});
       state.selectedVideo=v.id;state.video=null;$('video-error').textContent='렌더 시작';await load();
