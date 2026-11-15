@@ -333,6 +333,7 @@ async fn send(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
     if mode=="mentioned"&&!addressed{(before,0)}
     else{generate(&engine,id).await?}
   }else{(before,0)};
+  if inserted{crate::frontend_channels::dispatch_room(&engine,&room).await;}
   let message=message_rows(&room).get(index).cloned().ok_or_else(||failed("stored message disappeared".into()))?;
   Ok(Json(json!({
     "room":room_view(&room),"message":message,
