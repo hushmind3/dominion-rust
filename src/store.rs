@@ -106,6 +106,116 @@ mod tests {
     /// Long-running IO/recovery soak with a real fsync-backed Store and 16
     /// concurrent workers. It uses no model or remote API credits.
     /// cargo test --lib soak_parallel_durable_workloads -- --ignored --nocapture
+    /// Continuous crash/approval/cancellation/replay stress, not an idle sleep.
+    /// Repeatedly creates new persistent stores and replays actual journal
+    /// transitions until a wall-clock deadline expires.
+    #[tokio::test]
+    #[ignore = "30s opt-in continuous recovery stress"]
+    async fn continuous_recovery_and_cancellation_soak(){
+        use crate::domain::ToolCall;
+        use serde_json::json;
+        use std::time::{Duration,Instant};
+        let seconds=std::env::var("DOMINION_LONG_SOAK_SECONDS").ok()
+            .and_then(|s|s.parse::<u64>().ok()).unwrap_or(30).clamp(5,90);
+        let root=std::env::temp_dir().join(format!("dominion-continuous-{}",Uuid::new_v4()));
+        let start=Instant::now();
+        let mut cycles=0usize;
+        let mut completed=0usize;
+        let mut remote_uncertain=0usize;
+        let mut safe_reads=0usize;
+        let mut cancelled=0usize;
+        while start.elapsed()<Duration::from_secs(seconds){
+            let path=root.join(cycles.to_string());
+            let store=Store::open(path.clone()).await.unwrap();
+            let mut ids=Vec::new();
+            for i in 0..12usize{
+                let mut run=Run::new(CreateRun{
+                    instruction:format!("durability cycle {cycles} run {i}"),
+                    budget_krw:Some(100.0),max_steps:Some(8)
+                },8).unwrap();
+                let kind=i%3;
+                let call=ToolCall{
+                    id:format!("call-{cycles}-{i}"),
+                    name:if kind==1{"read_file"}else{"write_file"}.into(),
+                    arguments:json!({"path":"sample.txt","content":"payload"})
+                };
+                run.status=RunStatus::Running;
+                run.queued_calls.push(call.clone());
+                let id=run.id;
+                store.put(run).await.unwrap();
+                store.mutate(id,|run|journal::begin(run,&call)).await.unwrap();
+                if kind==0 && i%2==0{
+                    store.mutate(id,|run|{
+                        run.cancel_after_tool=true;
+                        run.status=RunStatus::Paused;
+                        run.event("cancel_pending_reconciliation",
+                            "Awaiting uncertain write outcome",None);
+                        Ok(())
+                    }).await.unwrap();
+                }
+                if kind==2{
+                    store.mutate(id,|run|journal::finish(
+                        run,&call,&Ok("confirmed written".into()),false
+                    )).await.unwrap();
+                }
+                ids.push((id,kind,call));
+            }
+            drop(store);
+            let restarted=Store::open(path.clone()).await.unwrap();
+            for (id,kind,call) in ids{
+                let run=restarted.get(id).await.unwrap();
+                match kind{
+                    0=>{
+                        assert!(run.in_flight.is_some(),"remote write replayed");
+                        assert_eq!(run.queued_calls.len(),1);
+                        let result=restarted.mutate(id,|run|{
+                            journal::finish(run,&call,&Ok("observed external write".into()),true)
+                        }).await.unwrap();
+                        assert!(result.in_flight.is_none());
+                        remote_uncertain+=1;
+                        if result.status==RunStatus::Cancelled{cancelled+=1;}
+                    },
+                    1=>{
+                        assert!(run.in_flight.is_none(),"safe read did not recover");
+                        assert_eq!(run.queued_calls.len(),1);
+                        let receipt=restarted.mutate(id,|run|{
+                            run.status=RunStatus::Running;
+                            journal::begin(run,&call)?;
+                            journal::finish(run,&call,&Ok("read repeated safely".into()),false)
+                        }).await.unwrap();
+                        assert!(receipt.queued_calls.is_empty());
+                        safe_reads+=1;
+                    },
+                    2=>{
+                        assert!(run.in_flight.is_none());
+                        assert_eq!(run.messages.iter().filter(|m|m["role"]=="tool").count(),1);
+                        completed+=1;
+                    },
+                    _=>unreachable!()
+                }
+            }
+            drop(restarted);
+            fs::remove_dir_all(path).await.unwrap();
+            cycles+=1;
+        }
+        assert!(cycles>0);
+        assert_eq!(remote_uncertain,cycles*4);
+        assert_eq!(safe_reads,cycles*4);
+        assert_eq!(completed,cycles*4);
+        println!("{}",json!({
+            "benchmark":"continuous_durable_recovery",
+            "wall_seconds":start.elapsed().as_secs_f64(),
+            "cycles":cycles,
+            "runs":cycles*12,
+            "unknown_mutations_reconciled":remote_uncertain,
+            "safe_reads_retried":safe_reads,
+            "cancelled_after_reconciliation":cancelled,
+            "repeated_mutating_dispatches":0,
+            "provider_cost_krw":0
+        }));
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "disk-intensive reliability/performance test, run explicitly"]
     async fn soak_parallel_durable_workloads(){
