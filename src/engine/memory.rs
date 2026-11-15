@@ -629,6 +629,7 @@ fn forget_sweep_kernel(
 /** Non-destructive memory compaction. Only exact, unkeyed facts/lessons from
  * the same scoped source are coalesced. Original evidence remains readable in
  * archived records and can be restored without a model call. */
+#[cfg(test)]
 pub fn compact_sweep(store: &Store) -> usize {
     let algorithm = active_kernel(store, "memory.compaction");
     compact_sweep_kernel(store, &algorithm, None, false).0
@@ -1014,12 +1015,14 @@ pub fn learning_sweep(state: &crate::state::AppState) -> usize {
     evaluated
 }
 
+#[cfg(test)]
 pub fn context_block(store: &Store, scope: &MemoryScope, query: &str) -> Option<String> {
     context_block_with_manifest(store, scope, query).0
 }
 
 /// Same selection as `context_block`, plus the exact records delivered so the
 /// selection snapshot can freeze memory ids and revisions.
+#[cfg(test)]
 pub fn context_block_with_manifest(
     store: &Store,
     scope: &MemoryScope,
@@ -1129,6 +1132,7 @@ pub fn context_block_with_manifest_at(
     context_block_from_records(&state.store, memories)
 }
 
+#[cfg(test)]
 fn context_block_ranked(
     store: &Store, scope: &MemoryScope, query: &str, algorithm: &Value,
 ) -> (Option<String>, Vec<Value>) {
