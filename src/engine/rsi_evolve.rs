@@ -21,13 +21,13 @@ use tokio::process::Command;
 
 #[path = "rsi/execution/start.rs"]
 mod execution_start;
-use self::execution_start::{elapsed, git, lineage_fingerprint, save, select, snapshot_source};
+use self::execution_start::{elapsed, git, save, select};
 pub(crate) use self::execution_start::{command};
 pub use self::execution_start::{choose, lineage_fingerprint_valid, run};
 
 #[path = "rsi/planner/focus.rs"]
 mod planner_focus;
-use self::planner_focus::{choose_focus_files, focus_file_context, generation_context, identical_failed_patch, matching_prior_campaign, paired_behavioral_feedback, research_digest, target_focus_objective, verified_candidate_id};
+use self::planner_focus::{choose_focus_files, focus_file_context, generation_context, identical_failed_patch, matching_prior_campaign, research_digest, target_focus_objective, verified_candidate_id};
 
 #[path = "rsi/learning/methods.rs"]
 mod learning_methods;
@@ -36,7 +36,7 @@ pub(crate) use self::learning_methods::{collect_method_executions, configure_met
 
 #[path = "rsi/learning/trials.rs"]
 mod learning_trials;
-use self::learning_trials::{adaptive_search_expression, comparable_trial_baseline, pending_trial_candidate, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_trial_outcome, recovery_search_expression, trial_verdict};
+use self::learning_trials::{comparable_trial_baseline, pending_trial_candidate, proposed_algorithms, queue_adaptive_search_trial, queue_search_trial, record_trial_outcome};
 
 #[path = "rsi/learning/research.rs"]
 mod learning_research;
@@ -56,7 +56,7 @@ use self::lineage_auto_control::queue_if_needed;
 
 #[path = "rsi/lineage/adoption.rs"]
 mod lineage_adoption;
-use self::lineage_adoption::{compiled_system_target, generation_model_error, generation_target_plan, paired_descendant_target, proof_goal_reached, reconcile_descendant_target, select_generation_strategy};
+use self::lineage_adoption::{compiled_system_target, generation_model_error, paired_descendant_target, proof_goal_reached, reconcile_descendant_target, select_generation_strategy};
 pub(crate) use self::lineage_adoption::{adopt};
 
 #[path = "rsi/meta/experiment_evolution.rs"]
