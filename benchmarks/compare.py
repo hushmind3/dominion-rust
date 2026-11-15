@@ -86,11 +86,36 @@ def compare(manifest, directory, attempts, result_root):
                     "DOMINION_BENCH_TELEMETRY_FILE":str(telemetry)
                 })
                 ran = run_command(expand(argv),workspace,timeout,env)
+                # The agent must not be able to rewrite its own acceptance
+                # tests. Detect tampering before restoring trusted verifier
+                # files from the immutable fixture.
+                protected = task.get("protected_paths", ["tests"])
+                tampered = False
+                for name in protected:
+                    trusted = safe_child(fixture,name)
+                    candidate = safe_child(workspace,name)
+                    if trusted.is_file():
+                        original = trusted.read_bytes()
+                        tampered |= not candidate.is_file() or candidate.read_bytes()!=original
+                        candidate.parent.mkdir(parents=True,exist_ok=True)
+                        shutil.copy2(trusted,candidate)
+                    elif trusted.is_dir():
+                        original_files = {
+                            str(f.relative_to(trusted)):f.read_bytes()
+                            for f in trusted.rglob("*") if f.is_file()
+                        }
+                        workspace_files = {
+                            str(f.relative_to(candidate)):f.read_bytes()
+                            for f in candidate.rglob("*") if f.is_file()
+                        } if candidate.is_dir() else {}
+                        tampered |= original_files != workspace_files
+                        if candidate.exists():shutil.rmtree(candidate)
+                        shutil.copytree(trusted,candidate)
                 verified = run_command(expand(task["verify"]),workspace,
                                        min(timeout,120),env)
                 artifacts = all(safe_child(workspace,p).exists()
                                 for p in task.get("artifacts",[]))
-                passed = ran["returncode"] == 0 and verified["returncode"] == 0 and artifacts
+                passed = ran["returncode"] == 0 and verified["returncode"] == 0 and artifacts and not tampered
                 usage = None
                 if telemetry.exists():
                     try:
@@ -106,6 +131,7 @@ def compare(manifest, directory, attempts, result_root):
                     "repeat":repeat,"passed":passed,"seconds":ran["seconds"],
                     "returncode":ran["returncode"],"verify_code":verified["returncode"],
                     "timed_out":ran["timeout"],"artifacts":artifacts,
+                    "protected_files_modified":tampered,
                     "usage":usage,"run_error":ran["stderr"],
                     "verify_error":verified["stderr"]
                 })

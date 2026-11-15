@@ -22,7 +22,7 @@ test('real Rust API and tool journal complete a browser-submitted task',async({p
  },{timeout:30000}).toBe('completed')
  await expect(page.getByText('최종 결과')).toBeVisible()
  await page.getByRole('button',{name:'결과 파일'}).click()
- await expect(page.getByRole('button',{name:'benchmark.txt'})).toBeVisible()
+ await expect(page.getByRole('button',{name:'benchmark.txt',exact:true})).toBeVisible()
  await page.getByRole('button',{name:'benchmark.txt'}).click()
  await expect(page.getByText('Dominion browser integration verified')).toBeVisible()
  const detail=await (await request.get('http://127.0.0.1:8787/api/v1/runs/'+id)).json()
