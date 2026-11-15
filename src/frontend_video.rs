@@ -34,8 +34,7 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/video/jobs/{id}",get(job))
         .route("/video/jobs/{id}/content",get(content))
         .route("/video/jobs/{id}/reveal",post(reveal))
-        .route("/youtube/status",get(youtube_status))
-        .route("/youtube/uploads",get(youtube_uploads))
+        // Actual OAuth-backed YouTube upload jobs live in frontend_youtube.
         // OAuth provider config and login are owned by frontend_oauth.
 }
 async fn ffmpeg_available()->bool{
