@@ -27,7 +27,6 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/rsi/campaigns/{id}/apply",post(apply))
         .route("/rsi/start",post(start))
         .route("/algorithms",get(algorithms))
-        .route("/dev/jobs/{id}",get(install_job))
 }
 fn configured()->Result<(String,String,String),Fault>{
     let repo=std::env::var("DOMINION_RSI_REPOSITORY")
@@ -416,15 +415,4 @@ async fn apply(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
             "installed":Value::Null},
         "message":"Git source was adopted; build/restart must be performed separately"
     })))
-}
-async fn install_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
-    ->Result<Json<Value>,Fault>{
-    if let Some(job)=engine.developer.job(id).await{
-        return Ok(Json(json!(job)));
-    }
-    let c=engine.campaigns.get(id).await.ok_or_else(missing)?;
-    let applied=c.head_commit.is_some();
-    Ok(Json(json!({"id":id,"status":if applied{"completed"}else{"not_applied"},
-        "result":{"sourceApplied":applied,"requiresRebuild":applied},
-        "error":Value::Null})))
 }
