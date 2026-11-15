@@ -43,3 +43,7 @@ Legacy SQLite user data is not automatically imported into sub4 JSON stores.
 arXiv:2609.00006), and OpenHarness's October 11 agent-client design.
 The architectural lesson is to keep the tool loop and durable session
 control within Dominion's own Rust runtime, independent of provider.
+
+## Optional motion generation backend
+
+`src/veo.rs` implements the current Gemini OpenAI-compatible asynchronous video endpoints. The video service records job IDs, polls completion, bounds the size of MP4 downloads, restricts download destinations, normalizes scene media, and keeps the FFmpeg local path as default. A job can retry from its recorded remote operation. Provider API charge estimation is configured separately from text-token rates. Local video and external video have different rendering fidelity, cost and failure modes.
