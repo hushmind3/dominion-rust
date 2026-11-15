@@ -46,7 +46,7 @@ fn servers(snapshot:&Snapshot)->Vec<Server>{
         name:server_key(&m.id),url:m.url.clone(),bearer_token:m.bearer_token.clone()
     }).collect()
 }
-fn persist(file:&Path,next:&Snapshot)->Result<(),String>{
+fn persist(file:&std::path::Path,next:&Snapshot)->Result<(),String>{
     let data=serde_json::to_vec(next).map_err(|e|e.to_string())?;
     if data.len()>4*1024*1024{return Err("extensions state exceeds 4 MiB".into());}
     let dir=file.parent().ok_or("invalid extensions state directory")?;
