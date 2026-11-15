@@ -444,6 +444,7 @@ pub async fn free_catalog_refresh(State(state): State<AppState>) -> Json<Value> 
     Json(refresh_free_catalog(&state).await)
 }
 
+#[cfg(test)]
 async fn claude_cli_authenticated() -> bool {
     if home_file(".claude/.credentials.json").is_some_and(|path| path.exists()) {
         return true;
@@ -1383,6 +1384,7 @@ fn model_free_status(
     (None, "no-pricing-metadata")
 }
 
+#[cfg(test)]
 fn model_is_free(provider: &Value, kind: &str, base: &str, item: &Value, id: &str) -> bool {
     model_free_status(provider, kind, base, item, id).0 == Some(true)
 }
