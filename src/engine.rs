@@ -351,7 +351,7 @@ impl Engine {
     /// Settle finished child allocations exactly once and wake parents that
     /// paused *specifically* for child completion. Never auto-resume a human
     /// approval, an uncertain side effect, or a generic paused failure.
-    async fn settle_and_wake_ancestors(self:&Arc<Self>,start:Uuid)->Result<(),String>{
+    pub(crate) async fn settle_and_wake_ancestors(self:&Arc<Self>,start:Uuid)->Result<(),String>{
         let mut ancestor=Some(start);
         while let Some(id)=ancestor {
             {
@@ -601,6 +601,39 @@ mod tests {
 mod recovery_tests {
     use super::*;
     use crate::{domain::{CreateRun, ReconcileTool}, group::Groups, improvement::Improvements, video::Videos};
+    #[tokio::test]
+    async fn child_budget_settlement_is_durable_and_idempotent(){
+        let base=std::env::temp_dir().join(format!("dominion-settlement-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=base.join("runtime");
+        settings.workspace_dir=base.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings.clone(),store.clone(),groups,videos,improvements).unwrap();
+        let mut parent=Run::new(CreateRun{instruction:"parent".into(),budget_krw:Some(500.0),max_steps:Some(2)},2).unwrap();
+        parent.reserved_budget_krw=200.0;
+        let mut child=Run::new(CreateRun{instruction:"child".into(),budget_krw:Some(200.0),max_steps:Some(2)},2).unwrap();
+        child.parent_run_id=Some(parent.id);
+        child.status=RunStatus::Completed;
+        child.cost_krw=70.0;
+        store.put(parent.clone()).await.unwrap();
+        store.put(child.clone()).await.unwrap();
+        engine.settle_and_wake_ancestors(parent.id).await.unwrap();
+        let first=store.get(parent.id).await.unwrap();
+        assert_eq!(first.reserved_budget_krw,0.0);
+        assert_eq!(first.delegated_spent_krw,70.0);
+        assert_eq!(first.settled_child_ids,vec![child.id]);
+        engine.settle_and_wake_ancestors(parent.id).await.unwrap();
+        let second=store.get(parent.id).await.unwrap();
+        assert_eq!(second.delegated_spent_krw,70.0);
+        drop(engine);drop(store);
+        let reopened=Store::open(settings.data_dir.join("runs")).await.unwrap();
+        assert_eq!(reopened.get(parent.id).await.unwrap().delegated_spent_krw,70.0);
+        tokio::fs::remove_dir_all(base).await.unwrap();
+    }
+
     #[tokio::test]
     async fn uncertain_tool_is_not_replayed_without_reconciliation() {
         let root=std::env::temp_dir().join(format!("dominion-reconcile-{}",Uuid::new_v4()));

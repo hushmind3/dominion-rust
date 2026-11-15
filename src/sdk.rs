@@ -16,6 +16,10 @@ impl Dominion {
         let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await?);
         let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await?);
         let engine=Engine::new(settings,store,groups,videos,improvements)?;
+        // Reconcile durable parent/child settlement after a previous process
+        // died between a child completion and the parent wake notification.
+        let suspended=engine.store.list().await.into_iter().filter(|r|r.waiting_for_children).map(|r|r.id).collect::<Vec<_>>();
+        for id in suspended {engine.settle_and_wake_ancestors(id).await?;}
         Ok(Self{engine})
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}

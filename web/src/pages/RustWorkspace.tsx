@@ -84,9 +84,9 @@ export function RustWorkspacePage({area}:{area:PageId}){
   if(mode==='videos')setVideos(await get<Video[]>('/api/v1/videos'))
   if(mode==='rsi')setImprovements(await get<Improvement[]>('/api/v1/improvements'))
   if(mode==='settings')setConfig(await get<Config>('/api/v1/config'))
-  if(mode==='memory')setNotes(await get<MemoryNote[]>('/api/v1/memory?scope='+encodeURIComponent(noteScope)))
+  if(mode==='memory')setNotes(await get<MemoryNote[]>('/api/v1/memory?scope='+encodeURIComponent(noteScope)+'&query='+encodeURIComponent(noteQuery)))
   if(mode==='skills')setRuns(await get<Run[]>('/api/v1/runs'))
- },[mode,noteScope])
+ },[mode,noteScope,noteQuery])
  useEffect(()=>{
   let active=true
   const update=()=>{void refresh().catch(e=>{if(active)setError((e as Error).message)})}
