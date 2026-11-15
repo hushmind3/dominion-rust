@@ -3,7 +3,6 @@
 // ordinary ignored build outputs are not part of a reproducible source tree.
 import {execFileSync} from 'node:child_process'
 import {statSync} from 'node:fs'
-import {basename} from 'node:path'
 
 const paths=execFileSync('git',['ls-files','-z'],{maxBuffer:16*1024*1024})
   .toString('utf8').split('\0').filter(Boolean)
@@ -29,11 +28,11 @@ for (const path of paths) {
   if(path === 'README.md' && size > 20*1024) {
     errors.push(`README has turned into an append-only changelog (${size} bytes); keep it below 20KiB`)
   }
-  if(path === 'src/engine/goals.rs' && size > 12*1024) {
-    errors.push(`goal entry module has regrown (${size} bytes); update src/engine/goals/* instead`)
+  if(path === 'src/engine/goals.rs' || path === 'src/api/goals.rs') {
+    errors.push(`obsolete goals.rs file returned: ${path}; use goals/mod.rs`)
   }
-  if(path === 'src/api/goals.rs' && size > 8*1024) {
-    errors.push(`goal HTTP facade has regrown (${size} bytes); update src/api/goals/* instead`)
+  if((path === 'src/engine/goals/mod.rs' || path === 'src/api/goals/mod.rs') && size > 8*1024) {
+    errors.push(`goal module entry grew beyond 8KiB: ${path}; split into responsibility modules`)
   }
   if(size>1024*1024) errors.push(`tracked file >1MiB: ${path} (${size} bytes)`)
   if(path.startsWith('src/') && path.endsWith('.rs') && size>120*1024) {
