@@ -28,6 +28,70 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/rsi/start",post(start))
         .route("/algorithms",get(algorithms))
 }
+/// Restart reconciliation is deliberately conservative: restore judged
+/// candidates to an explicit choice, settle failed trials, and never silently
+/// retry a Git adoption whose durable state is ambiguous.
+pub async fn reconcile_recovered_campaigns(engine:&Arc<Engine>)->Result<(),String>{
+    for snapshot in engine.campaigns.list().await {
+        if snapshot.status!="needs_review"{continue;}
+        let Some(trial_id)=snapshot.current_trial else {
+            engine.campaigns.change(snapshot.id,|c|{
+                c.status="failed".into();c.phase="review".into();
+                c.stop_reason=Some("interrupted_between_trials".into());
+                c.error=Some("Server stopped between RSI generations; previously adopted commits remain intact".into());
+                Ok(())
+            }).await?;
+            continue;
+        };
+        let Some(mut trial)=engine.improvements.get(trial_id).await else{continue;};
+        if trial.status==ImprovementStatus::AwaitingApproval {
+            trial=engine.improvements.request_cancel(trial_id).await?;
+        }
+        let resolved=match trial.status {
+            ImprovementStatus::Evaluated if trial.accepted=>Some(true),
+            ImprovementStatus::Failed|ImprovementStatus::Rejected|ImprovementStatus::Cancelled=>Some(false),
+            _=>None,
+        };
+        let Some(can_choose)=resolved else{continue;};
+        if snapshot.history.iter().any(|row|
+            row.trial_id==trial_id && row.selected.is_some()) {
+            // Another persisted choice may already have mutated the checkout.
+            // Do not make that choice or adoption twice on restart.
+            continue;
+        }
+        engine.campaigns.change(snapshot.id,|c|{
+            if c.current_trial!=Some(trial_id){return Err("RSI recovery trial changed".into());}
+            if c.history.iter().all(|row|row.trial_id!=trial_id){
+                c.tokens=c.tokens.saturating_add(trial.input_tokens.saturating_add(trial.output_tokens));
+                c.cost_krw+=trial.cost_krw;
+                if c.base_commit.is_none(){c.base_commit=trial.base_commit.clone();}
+                c.history.push(from_trial(&trial,c.attempts));
+            }
+            c.current_trial=None;
+            if can_choose {
+                // Never auto-adopt across a process crash. Present the
+                // preserved independent judge receipt for manual selection.
+                c.selection_policy="manual".into();
+                c.status="running".into();c.phase="waiting_for_choice".into();
+                c.stop_reason=None;
+                c.error=Some("RSI candidate recovered after restart; select the version to continue".into());
+            }else{
+                c.status=if trial.status==ImprovementStatus::Cancelled{
+                    "cancelled".into()
+                }else{"failed".into()};
+                c.phase="review".into();
+                c.stop_reason=Some("recovered_terminal_trial".into());
+                c.error=trial.error.clone().or_else(||Some("RSI trial was interrupted; review before continuing".into()));
+                if let Some(row)=c.history.iter_mut().find(|row|row.trial_id==trial_id){
+                    row.selected=Some("baseline".into());
+                }
+            }
+            Ok(())
+        }).await?;
+    }
+    Ok(())
+}
+
 fn configured()->Result<(String,String,String),Fault>{
     let repo=std::env::var("DOMINION_RSI_REPOSITORY")
         .map_err(|_|bad("Configure DOMINION_RSI_REPOSITORY as a checkout relative to the Rust workspace"))?;
