@@ -13,6 +13,7 @@ type PreparedGoal={
   selection?:{agentName?:string;providerName?:string;model?:string}
   recommendedWorktree?:boolean
   estimatedCostKrw?:number|null
+  declaredRateKrwPerMillionTokens?:{input:number;output:number}|null
 }
 type GoalRecord={
   id:string
@@ -134,6 +135,7 @@ export function QuickGoal({navigate}:{navigate:(page:Destination)=>void}){
           <div><strong>사용 모델</strong><p>{prepared.selection?.providerName||prepared.executor?.providerId||'선택된 모델'}</p></div>
         </div>
         <p className="text-[12px] text-[#6F675D]">{prepared.message}</p>
+        {prepared.declaredRateKrwPerMillionTokens&&<p className="text-[12px] text-[#6F675D]">제공자에 등록된 기준 요금 · 입력 100만 토큰당 {prepared.declaredRateKrwPerMillionTokens.input.toLocaleString('ko-KR')}원 / 출력 100만 토큰당 {prepared.declaredRateKrwPerMillionTokens.output.toLocaleString('ko-KR')}원 (실제 청구는 별도)</p>}
         <label className="flex cursor-pointer items-start gap-2 text-[13px]">
           <TextInput type="checkbox" checked={isolate} onChange={e=>setIsolate(e.target.checked)} className="mt-1"/>
           <span>원본을 보호하는 별도 공간에서 수정하기 <small className="block text-[11px] text-[#82766A]">프로젝트 파일 작업에 권장합니다. 완성 후 변경 사항을 직접 검토하고 적용합니다.</small></span>

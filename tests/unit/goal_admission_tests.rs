@@ -60,9 +60,10 @@ fn shared_chat_router_quality_and_declared_prices_are_preserved(){
 #[test]
 fn local_configured_fallback_when_no_agent_never_claims_zero_price(){
     let (state,root)=fixture();
-    state.store.put("provider",&json!({"id":"cloud","kind":"openai","enabled":true,"model":"cloud-model"}));
-    state.store.put("provider",&json!({"id":"local","kind":"ollama","enabled":true,"model":"local-model",
-        "capabilities":{"quality":0.7}}));
+    state.store.put("provider",&json!({"id":"cloud","kind":"openai","enabled":true,"model":"cloud-model",
+        "capabilities":{"quality":0.9}}));
+    state.store.put("provider",&json!({"id":"local","kind":"ollama","local":true,"enabled":true,"model":"local-model",
+        "capabilities":{"quality":0.1}}));
     let selected=admission::prepare(&state,&json!({"goal":"문서를 요약하세요"})).unwrap();
     assert_eq!(selected["executor"]["providerId"],"local");
     assert!(selected["estimatedCostKrw"].is_null());

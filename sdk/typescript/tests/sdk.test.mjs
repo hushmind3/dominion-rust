@@ -435,6 +435,7 @@ test('goal preparation is read-only and automatic goal creation uses the native 
       selection:{source:'registered_agent',agentName:'Rust 개발자',providerName:'Local',model:'m1'},
       executor:{agentId:'coder-1',providerId:'local',model:'m1'},
       createsJob:false,estimatedCostKrw:null,
+      declaredRateKrwPerMillionTokens:{input:1000,output:2000},
     })
     if(url==='/api/goals')return asJson({id:'g1',jobId:'goal-job-g1',status:'queued',goal:'repair Rust'})
     throw Error('Unexpected route '+url)
@@ -442,6 +443,7 @@ test('goal preparation is read-only and automatic goal creation uses the native 
   const preview=await sdk.prepareGoal('repair Rust')
   assert.equal(preview.ready,true)
   assert.equal(preview.estimatedCostKrw,null)
+  assert.equal(preview.declaredRateKrwPerMillionTokens.input,1000)
   assert.equal(preview.recommendedWorktree,true)
   await sdk.startGoal({goal:'repair Rust',autoRoute:true})
   assert.deepEqual(calls.map(({url,method})=>[method,url]),[

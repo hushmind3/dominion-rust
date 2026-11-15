@@ -40,6 +40,7 @@ export type GoalPreparation = JsonObject & {
   selection?: {source: string; agentName: string; providerName: string; model: string}
   recommendedWorktree?: boolean
   estimatedCostKrw?: number | null
+  declaredRateKrwPerMillionTokens?: {input:number;output:number} | null
 }
 export type GoalStrategyCatalog = JsonObject & {
   defaultReviewPolicy: ReviewPolicy
