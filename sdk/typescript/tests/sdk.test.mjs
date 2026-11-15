@@ -348,3 +348,70 @@ test('goal waitForTerminal refetches authoritative state on pruned event history
   assert.equal((await sdk.resumeGoal('g11').waitForTerminal({reconnectDelayMs:0})).status,'failed')
   assert.equal(reads,2)
 })
+
+
+test('SDK and React use the same Rust-governed goal strategy contract', async () => {
+  const requests=[]
+  const sdk=new DominionSDK({token:'owner-token', fetch: async (url,init) => {
+    requests.push({url,method:init.method||'GET',body:init.body&&JSON.parse(init.body),auth:init.headers.get('X-Dominion-Token')})
+    if(url==='/api/goals/strategies')return asJson({
+      defaultReviewPolicy:'always',finalAcceptanceOwner:'dominion_rust',
+      reviewPolicies:[{id:'always',label:'Always'},{id:'acceptance_ready',label:'Gate-first'}],
+    })
+    if(url==='/api/goals')return asJson({id:'g1',jobId:'goal-job-g1',status:'queued',goal:'repair'})
+    throw Error('Unexpected '+url)
+  }})
+  const catalog=await sdk.goalStrategies()
+  assert.equal(catalog.reviewPolicies[1].id,'acceptance_ready')
+  const goal=await sdk.startGoal({goal:'repair',reviewPolicy:'acceptance_ready',isolateWorktree:true})
+  assert.equal(goal.id,'g1')
+  assert.deepEqual(requests.map(x=>[x.method,x.url]),[['GET','/api/goals/strategies'],['POST','/api/goals']])
+  assert.equal(requests[1].body.reviewPolicy,'acceptance_ready')
+  assert.equal(requests[1].body.isolateWorktree,true)
+  assert.ok(requests.every(x=>x.auth==='owner-token'))
+})
+test('native product operations use exact React route semantics without provider SDK policy', async () => {
+  const seen=[]
+  const sdk=new DominionSDK({fetch: async (url,init) => {
+    seen.push([init.method||'GET',url,init.body&&JSON.parse(init.body)])
+    return asJson({id:'room',status:'queued',items:[]})
+  }})
+  const roomId='한글/room'
+  await sdk.agents()
+  await sdk.providers()
+  await sdk.installedModels()
+  await sdk.agentPortfolio()
+  await sdk.rooms()
+  await sdk.roomState(roomId)
+  await sdk.sendRoomMessage(roomId,'owner text')
+  await sdk.runRoom(roomId,{maxTurns:2})
+  await sdk.stopRoom(roomId)
+  await sdk.videoStatus()
+  await sdk.videoQuote({engine:'runway',duration:5})
+  await sdk.createVideoJob({engine:'native',prompt:'proof',duration:5})
+  await sdk.videoJob('job/1')
+  await sdk.memories()
+  await sdk.skills()
+  await sdk.workflows()
+  await sdk.rsiSignals()
+  await sdk.rsiCampaign('rsi/1')
+  await sdk.startRsi({objective:'repair a source strategy'})
+  const expected=[
+    ['GET','/api/agents'],['GET','/api/providers'],['GET','/api/model-library/installed'],
+    ['GET','/api/agents/portfolio'],['GET','/api/rooms'],
+    ['GET','/api/rooms/'+encodeURIComponent(roomId)+'/state'],
+    ['POST','/api/rooms/'+encodeURIComponent(roomId)+'/messages'],
+    ['POST','/api/rooms/'+encodeURIComponent(roomId)+'/run'],
+    ['POST','/api/rooms/'+encodeURIComponent(roomId)+'/stop'],
+    ['GET','/api/video/status'],['POST','/api/video/quote'],
+    ['POST','/api/video/jobs'],['GET','/api/video/jobs/job%2F1'],
+    ['GET','/api/memories'],['GET','/api/skills'],['GET','/api/workflows'],
+    ['GET','/api/rsi/signals'],['GET','/api/rsi/campaigns/rsi%2F1'],
+    ['POST','/api/rsi/start'],
+  ]
+  assert.deepEqual(seen.map(x=>x.slice(0,2)),expected)
+  assert.equal(seen[6][2].content,'owner text')
+  assert.equal(seen[7][2].maxTurns,2)
+  assert.equal(seen[11][2].prompt,'proof')
+  assert.equal(seen[18][2].objective,'repair a source strategy')
+})
