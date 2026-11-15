@@ -134,7 +134,7 @@ impl Mcp {
     }
     pub fn server_count(&self)->usize{self.servers.len()}
 
-    async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>)->Result<Value,String>{
+    async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,extra_headers:&[(String,String)])->Result<Value,String>{
         let id=uuid::Uuid::new_v4().to_string();
         let mut params=params;
         params["_meta"]=json!({
@@ -151,23 +151,8 @@ impl Mcp {
         if let Some(name)=name{
             builder=builder.header("Mcp-Name",encode_header(name));
         }
-        if method=="tools/call" {
-            let listed=self.list(&server.name).await?;
-            let tool=listed.iter().find(|t|Some(t.name.as_str())==name)
-                .ok_or("MCP tool is not currently advertised")?;
-            for parameter in &tool.headers {
-                let mut value=request.pointer("/params/arguments").unwrap_or(&Value::Null);
-                for part in &parameter.path {value=value.get(part).unwrap_or(&Value::Null);}
-                if value.is_null(){continue;}
-                let text=match value {
-                    Value::String(s)=>s.clone(),
-                    Value::Bool(b)=>b.to_string(),
-                    Value::Number(n) if n.is_i64()||n.is_u64()=>n.to_string(),
-                    _=>return Err("MCP header parameter requires string, bool or integer".into()),
-                };
-                if text.len()>2048{return Err("MCP header value too long".into());}
-                builder=builder.header(format!("Mcp-Param-{}",parameter.name),encode_header(&text));
-            }
+        for (key,value) in extra_headers {
+            builder=builder.header(key.as_str(),value.as_str());
         }
         if !server.bearer_token.is_empty(){builder=builder.bearer_auth(&server.bearer_token);}
         let mut response=builder.send().await.map_err(|e|format!("MCP transport: {e}"))?;
@@ -213,7 +198,7 @@ impl Mcp {
             }
         }
         let server=self.servers.iter().find(|s|s.name==name).ok_or("MCP server not found")?;
-        let result=self.rpc(server,"tools/list",json!({}),None).await?;
+        let result=self.rpc(server,"tools/list",json!({}),None,&[]).await?;
         let raw=result.get("tools").and_then(Value::as_array).ok_or("MCP tools/list has no tools array")?;
         if raw.len()>80{return Err("MCP server advertises too many tools".into());}
         let mut seen=HashSet::new();
@@ -256,7 +241,23 @@ impl Mcp {
         if !safe_name(server_name)||!safe_name(tool_name) {return Err("invalid MCP tool name".into());}
         let server=self.servers.iter().find(|s|s.name==server_name).ok_or("unknown MCP server")?;
         if !call.arguments.is_object(){return Err("MCP arguments must be object".into());}
-        let result=self.rpc(server,"tools/call",json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name)).await?;
+        let listed=self.list(&server.name).await?;
+        let tool=listed.iter().find(|t|t.name==tool_name).ok_or("MCP tool is not currently advertised")?;
+        let mut headers=vec![];
+        for parameter in &tool.headers {
+            let mut value=&call.arguments;
+            for part in &parameter.path {value=value.get(part).unwrap_or(&Value::Null);}
+            if value.is_null(){continue;}
+            let text=match value {
+                Value::String(s)=>s.clone(),
+                Value::Bool(b)=>b.to_string(),
+                Value::Number(n) if n.is_i64()||n.is_u64()=>n.to_string(),
+                _=>return Err("MCP header parameter requires string, bool or integer".into()),
+            };
+            if text.len()>2048{return Err("MCP header value too long".into());}
+            headers.push((format!("Mcp-Param-{}",parameter.name),encode_header(&text)));
+        }
+        let result=self.rpc(server,"tools/call",json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),&headers).await?;
         if result.get("resultType").and_then(Value::as_str)==Some("input_required"){
             return Err("MCP tool requires further user input; this capability is not connected".into());
         }
