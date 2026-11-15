@@ -20,6 +20,7 @@ fn err(code:StatusCode,message:impl Into<String>)->Fault{
 struct Channel {
  id:String,name:String,kind:String,room_id:String,enabled:bool,
  chat_id:String,channel_id:String,token:String,
+ #[serde(default)]verified:bool,
  #[serde(default)]sync_room_messages:bool,
  #[serde(default)]cursor:usize,
  #[serde(default)]pending_index:Option<usize>,
@@ -64,7 +65,8 @@ fn public(channel:&Channel)->Value{
   "roomId":channel.room_id,"enabled":channel.enabled,
   "status":if !channel.enabled{"disabled"}
    else if channel.pending_index.is_some(){"needs_review"}
-   else if channel.runtime_error.is_some(){"error"}else{"outbound_ready"},
+   else if channel.runtime_error.is_some(){"error"}
+   else if channel.verified{"outbound_ready"}else{"not_verified"},
   "runtimeError":channel.runtime_error,
   "configured":!channel.token.is_empty(),
   "credentialsPresent":{"token":!channel.token.is_empty()},
@@ -152,6 +154,9 @@ async fn upsert(State(engine):State<Arc<Engine>>,Json(input):Json<Value>)
   id:id.clone(),name:name.into(),kind:kind.into(),room_id:room_id.into(),enabled,
   chat_id:if kind=="telegram"{destination.to_owned()}else{String::new()},
   channel_id:if kind=="discord"{destination.to_owned()}else{String::new()},
+  verified:previous.is_some_and(|row|row.verified && row.token==token &&
+   row.room_id==room_id && (if kind=="telegram"{row.chat_id==destination}
+    else{row.channel_id==destination})),
   token,sync_room_messages:input["syncRoomMessages"].as_bool().unwrap_or(true),
   cursor,pending_index:previous.and_then(|row|row.pending_index),
   runtime_error:None,
@@ -199,7 +204,12 @@ async fn diagnose(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
  ->Result<Json<Value>,Fault>{
  let record=read(&file(&engine)).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?
   .channels.remove(&id).ok_or_else(||err(StatusCode::NOT_FOUND,"channel not found"))?;
- match probe(&record).await{
+ let checked=probe(&record).await;
+ update(&file(&engine),&id,|row|{
+  row.verified=checked.is_ok();
+  row.runtime_error=checked.as_ref().err().cloned();
+ }).map_err(|e|err(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+ match checked{
   Ok(())=>Ok(Json(json!({"verified":true,"message":"Bot and destination verified by live API"}))),
   Err(error)=>Ok(Json(json!({"verified":false,"message":error})))
  }
@@ -231,7 +241,7 @@ pub async fn dispatch_room(engine:&Arc<Engine>,room:&Room){
  let file=file(engine);
  let entries=match read(&file){
   Ok(state)=>state.channels.into_values().filter(|row|
-   row.enabled&&row.sync_room_messages&&row.room_id==room.id.to_string()&&
+   row.enabled&&row.verified&&row.sync_room_messages&&row.room_id==room.id.to_string()&&
    row.pending_index.is_none()).collect::<Vec<_>>(),
   Err(error)=>{tracing::warn!(%error,"cannot read outbound room bridges");return;}
  };
@@ -275,7 +285,7 @@ mod tests{
  fn channel_public_projection_never_contains_bot_secret(){
   let row=Channel{id:"id".into(),name:"Bot".into(),kind:"telegram".into(),
    room_id:"room".into(),enabled:true,chat_id:"123".into(),channel_id:String::new(),
-   token:"sensitive-token".into(),sync_room_messages:true,cursor:0,
+   token:"sensitive-token".into(),verified:false,sync_room_messages:true,cursor:0,
    pending_index:None,runtime_error:None};
   assert!(!public(&row).to_string().contains("sensitive-token"));
   assert!(safe_token("123456:ABC"));
