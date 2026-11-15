@@ -423,6 +423,7 @@ fn render_with_steps(template:&str,input:&str,previous:&str,outputs:&[Value])->S
 }
 
 /// `{{input}}` is the run payload, `{{previous}}` the last step output.
+#[cfg(test)]
 pub fn render(template: &str, input: &str, previous: &str) -> String {
     // Substitute only placeholders in the template. User input and prior
     // output may themselves contain braces and must stay literal.
