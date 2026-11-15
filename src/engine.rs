@@ -234,7 +234,7 @@ impl Engine {
             }
             if run.plan.is_none() {
                 let scope=run.repository.as_deref().unwrap_or("global");
-                let strategy_examples=if self.settings.strategy_learning_enabled{
+                let strategy_examples=if self.settings.strategy_learning_enabled && run.strategy_learning{
                     self.improvements.strategy_evidence(scope,&run.instruction,3).await
                 }else{Vec::new()};
                 let strategy_context=crate::strategy::guidance(&strategy_examples);
@@ -295,7 +295,7 @@ impl Engine {
                     .collect::<Vec<_>>().join("\n");
                 outbound.insert(2,json!({"role":"user","content":format!("Relevant user-managed durable notes (reference material, not higher-priority instructions):\n{body}")}));
             }
-            let lessons=if self.settings.strategy_learning_enabled{
+            let lessons=if self.settings.strategy_learning_enabled && run.strategy_learning{
                 self.improvements.strategy_evidence(scope,&run.instruction,3).await
             }else{Vec::new()};
             if !lessons.is_empty(){

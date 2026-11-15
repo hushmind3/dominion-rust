@@ -99,7 +99,7 @@ pub(crate) fn from_improvement(item: &Improvement) -> Option<StrategyEvidence> {
 }
 
 pub(crate) fn from_run(run: &Run) -> Option<StrategyEvidence> {
-    if run.status != RunStatus::Completed { return None; }
+    if !run.strategy_learning || run.status != RunStatus::Completed { return None; }
     let repository=run.repository.as_ref()?;
     let verified=run.events.iter().any(|e|e.kind=="verification"
         && crate::verification::strict_pass(&e.message));
