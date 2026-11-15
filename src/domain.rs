@@ -36,6 +36,8 @@ pub struct Run {
     pub approval_decision: Option<bool>,
     #[serde(default)]
     pub in_flight: Option<ToolCall>,
+    #[serde(default)]
+    pub parent_run_id: Option<Uuid>,
     pub steps: usize,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -79,7 +81,7 @@ impl Run {
         let mut run = Self {
             id, instruction, status: RunStatus::Queued, plan: None, answer: None,
             messages: Vec::new(), events: Vec::new(), queued_calls: Vec::new(),
-            pending_approval: None, approval_decision: None, in_flight: None, steps: 0,
+            pending_approval: None, approval_decision: None, in_flight: None, parent_run_id: None, steps: 0,
             input_tokens: 0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
             created_at_ms: time, updated_at_ms: time,
