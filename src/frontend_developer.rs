@@ -19,6 +19,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/dev/config",get(config).post(save_config))
   .route("/dev/connect",post(connect))
   .route("/dev/diff",get(diff))
+  .route("/dev/jobs/{id}",get(job))
   .route("/dev/update",get(update_status).post(update_unavailable))
   .route("/dev/preview/start",post(preview_start))
   .route("/dev/preview/stop",post(preview_stop))
@@ -101,4 +102,30 @@ async fn pick_folder(State(engine):State<Arc<Engine>>)->Json<Value>{
  // Backend cannot make a remote browser or headless server show a native
  // folder picker. Return the user-connected workspace instead of a made-up path.
  Json(json!({"path":engine.developer.get_config().await.source_dir}))
+}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ use crate::{config::Settings,sdk::Dominion};
+
+ #[tokio::test]
+ async fn developer_job_lookup_is_json_route_not_frontend_fallback(){
+  let root=std::env::temp_dir().join(format!("dominion-dev-job-{}",Uuid::new_v4()));
+  let mut settings=Settings::from_env().unwrap();
+  settings.data_dir=root.join("state");
+  settings.workspace_dir=root.join("workspace");
+  settings.token=None;
+  let sdk=Dominion::open(settings).await.unwrap();
+  let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let addr=listener.local_addr().unwrap();
+  let serving=tokio::spawn(async move{axum::serve(listener,sdk.http_router()).await.unwrap();});
+  let url=format!("http://{addr}/api/dev/jobs/{}",Uuid::new_v4());
+  let response=reqwest::get(url).await.unwrap();
+  assert_eq!(response.status(),StatusCode::NOT_FOUND);
+  let body=response.json::<Value>().await.unwrap();
+  assert_eq!(body["error"],"developer job not found");
+  serving.abort();
+  let _=tokio::fs::remove_dir_all(root).await;
+ }
 }
