@@ -30,6 +30,16 @@ export type MCPServerConfig = {
   apiKey?: string
 }
 
+export type ReviewPolicy = 'always' | 'acceptance_ready'
+export type GoalStrategyCatalog = JsonObject & {
+  defaultReviewPolicy: ReviewPolicy
+  reviewPolicies: {id: ReviewPolicy; label: string; description: string}[]
+  finalAcceptanceOwner: 'dominion_rust'
+}
+export type Room = JsonObject & {id: string; name: string; agentIds: string[]; sessionId?: string}
+export type RoomMessage = JsonObject & {id: string; role: string; content: string}
+export type VideoJob = Job & {kind: 'video'; input?: JsonObject; result?: JsonObject}
+
 export type TurnInput = {
   input: string
   agentId?: string
@@ -60,6 +70,7 @@ export type GoalOptions = {
   maxReplans?: number
   replanAfter?: number
   isolateWorktree?: boolean
+  reviewPolicy?: ReviewPolicy
 }
 export type RunOptions = {
   signal?: AbortSignal
@@ -251,6 +262,116 @@ export class DominionSDK {
 
   tools(signal?: AbortSignal): Promise<Tool[]> {
     return this.get('/api/tools', signal)
+  }
+
+
+  /** Rust-owned strategy catalog. UI and SDK display the same choices. */
+  goalStrategies(signal?: AbortSignal): Promise<GoalStrategyCatalog> {
+    return this.get('/api/goals/strategies', signal)
+  }
+
+  /** Read-only product inventory; no model or tool process is started here. */
+  agents(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/agents', signal)
+  }
+  providers(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/providers', signal)
+  }
+  modelCatalog(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/model-library/catalog', signal)
+  }
+  installedModels(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/model-library/installed', signal)
+  }
+  modelRuntime(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/model-library/runtime', signal)
+  }
+  agentPortfolio(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/agents/portfolio', signal)
+  }
+  startAgentGoal(agentId: string, options: GoalOptions): Promise<Goal> {
+    return this.post('/api/agents/' + encodeURIComponent(agentId) + '/goal', options)
+  }
+  policy(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/policy', signal)
+  }
+  savePolicy(policy: JsonObject): Promise<JsonObject> {
+    return this.post('/api/policy', policy)
+  }
+
+  /** Room state and speaker execution always remain under the Rust harness. */
+  rooms(signal?: AbortSignal): Promise<Room[]> {
+    return this.get('/api/rooms', signal)
+  }
+  room(id: string, signal?: AbortSignal): Promise<Room> {
+    return this.get('/api/rooms/' + encodeURIComponent(id), signal)
+  }
+  createRoom(options: JsonObject & {name: string; agentIds: string[]}): Promise<Room> {
+    return this.post('/api/rooms', options)
+  }
+  updateRoom(id: string, options: JsonObject): Promise<Room> {
+    return this.post('/api/rooms/' + encodeURIComponent(id), options)
+  }
+  roomMessages(id: string, signal?: AbortSignal): Promise<RoomMessage[]> {
+    return this.get('/api/rooms/' + encodeURIComponent(id) + '/messages', signal)
+  }
+  sendRoomMessage(id: string, content: string): Promise<JsonObject> {
+    return this.post('/api/rooms/' + encodeURIComponent(id) + '/messages', {content})
+  }
+  roomState(id: string, signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/rooms/' + encodeURIComponent(id) + '/state', signal)
+  }
+  runRoom(id: string, options: JsonObject = {}): Promise<JsonObject> {
+    return this.post('/api/rooms/' + encodeURIComponent(id) + '/run', options)
+  }
+  stopRoom(id: string): Promise<JsonObject> {
+    return this.post('/api/rooms/' + encodeURIComponent(id) + '/stop', {})
+  }
+
+  /** The server checks video quote, provider approval and saved render jobs. */
+  videoStatus(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/video/status', signal)
+  }
+  videoQuote(options: JsonObject): Promise<JsonObject> {
+    return this.post('/api/video/quote', options)
+  }
+  videoJobs(signal?: AbortSignal): Promise<VideoJob[]> {
+    return this.get('/api/video/jobs', signal)
+  }
+  videoJob(id: string, signal?: AbortSignal): Promise<VideoJob> {
+    return this.get('/api/video/jobs/' + encodeURIComponent(id), signal)
+  }
+  createVideoJob(options: JsonObject): Promise<VideoJob> {
+    return this.post('/api/video/jobs', options)
+  }
+
+  /** Native memory, skill, workflows and RSI; no second JS agent engine. */
+  memories(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/memories', signal)
+  }
+  skills(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/skills', signal)
+  }
+  workflows(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/workflows', signal)
+  }
+  saveSkill(skill: JsonObject): Promise<JsonObject> {
+    return this.post('/api/skills', skill)
+  }
+  saveWorkflow(workflow: JsonObject): Promise<JsonObject> {
+    return this.post('/api/workflows', workflow)
+  }
+  rsiCampaigns(signal?: AbortSignal): Promise<JsonObject[]> {
+    return this.get('/api/rsi/campaigns', signal)
+  }
+  rsiCampaign(id: string, signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/rsi/campaigns/' + encodeURIComponent(id), signal)
+  }
+  rsiSignals(signal?: AbortSignal): Promise<JsonObject> {
+    return this.get('/api/rsi/signals', signal)
+  }
+  startRsi(options: JsonObject): Promise<JsonObject> {
+    return this.post('/api/rsi/start', options)
   }
 
   approvals(signal?: AbortSignal): Promise<Approval[]> {
