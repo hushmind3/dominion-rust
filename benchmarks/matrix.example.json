@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "model": "SET_IDENTICAL_REAL_MODEL",
+  "budget_krw": 1000,
+  "max_steps": 20,
+  "timeout_seconds": 300,
+  "harnesses": [
+    {
+      "name": "Dominion",
+      "model": "SET_IDENTICAL_REAL_MODEL",
+      "argv": [
+        "python3",
+        "REPLACE_WITH_DOMINION_ADAPTER",
+        "--workspace",
+        "{workspace}",
+        "--prompt-file",
+        "{prompt_file}"
+      ],
+      "limits_enforced": false
+    },
+    {
+      "name": "Codex",
+      "model": "SET_IDENTICAL_REAL_MODEL",
+      "argv": [
+        "codex",
+        "exec",
+        "--model",
+        "{model}",
+        "--cd",
+        "{workspace}",
+        "-"
+      ],
+      "limits_enforced": false
+    }
+  ],
+  "tasks": [
+    {
+      "id": "normalize",
+      "fixture": "fixtures/normalize",
+      "prompt": "Implement slugify in normalize.py using the standard library. All tests must pass.",
+      "verify": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests"
+      ],
+      "artifacts": [
+        "normalize.py"
+      ]
+    }
+  ]
+}
