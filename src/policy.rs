@@ -11,7 +11,7 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
     if !run.read_only{return true}
     // Unknown and MCP tools are denied: a read-only investigator cannot
     // escalate through dynamically registered extensions.
-    matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"check_subagent"|"read_subagent_file"|"spawn_subagent")
+    matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search")
 }
 
 /// Select only tools that the agent can actually use in this state.

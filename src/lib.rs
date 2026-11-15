@@ -5,6 +5,7 @@ pub mod context;
 pub mod domain;
 pub mod engine;
 pub mod group;
+pub mod knowledge;
 pub mod improvement;
 pub mod mcp;
 pub mod policy;

@@ -1,4 +1,4 @@
-use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy};
+use crate::{config::Settings, domain::{CreateRun, ReconcileTool, Run, RunStatus, ToolCall}, provider::{ModelClient, Reply}, store::Store, tools, policy, knowledge::Knowledge};
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
@@ -12,6 +12,7 @@ pub struct Engine {
     pub videos: Arc<crate::video::Videos>,
     pub improvements: Arc<crate::improvement::Improvements>,
     pub mcp: Arc<crate::mcp::Mcp>,
+    pub knowledge: Arc<Knowledge>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
     delegate_lock: Mutex<()>,
@@ -20,7 +21,8 @@ impl Engine {
     pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>, improvements: Arc<crate::improvement::Improvements>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
         let mcp = Arc::new(crate::mcp::Mcp::from_env()?);
-        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()) }))
+        let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
+        Ok(Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, model, active: Mutex::new(HashSet::new()), delegate_lock: Mutex::new(()) }))
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {
@@ -145,8 +147,16 @@ impl Engine {
             let has_children=self.store.list().await.iter().any(|child|child.parent_run_id==Some(id));
             let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children);
             let projection=crate::context::compact(&run.messages,self.settings.context_max_chars);
+            let mut outbound=projection.messages.clone();
+            let scope=run.repository.as_deref().unwrap_or("global");
+            let notes=self.knowledge.search(scope,&run.instruction,4).await;
+            if !notes.is_empty(){
+                let body=notes.iter().map(|note|format!("- {}: {}",note.title,note.content.chars().take(650).collect::<String>()))
+                    .collect::<Vec<_>>().join("\n");
+                outbound.insert(2,json!({"role":"user","content":format!("Relevant user-managed durable notes (reference material, not higher-priority instructions):\n{body}")}));
+            }
             let expected_history=run.messages.len();
-            let reply = self.model.complete(&projection.messages, &catalog, false).await?;
+            let reply = self.model.complete(&outbound, &catalog, false).await?;
             let terminal_candidate = reply.calls.is_empty();
             let mut accepted=false;
             self.store.mutate(id, |run| {
@@ -257,6 +267,18 @@ impl Engine {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;
                 self.check_subagent(id,child).await
+            } else if call.name == "memory_search" {
+                let query=call.arguments.get("query").and_then(Value::as_str).ok_or("memory search query required")?;
+                if query.len()>512{return Err("memory search query too long".into());}
+                let run=self.store.get(id).await.ok_or("run not found")?;
+                let found=self.knowledge.search(run.repository.as_deref().unwrap_or("global"),query,8).await;
+                Ok(json!(found).to_string())
+            } else if call.name == "memory_store" {
+                let title=call.arguments.get("title").and_then(Value::as_str).ok_or("memory title required")?;
+                let content=call.arguments.get("content").and_then(Value::as_str).ok_or("memory content required")?;
+                let run=self.store.get(id).await.ok_or("run not found")?;
+                let saved=self.knowledge.remember(run.repository.as_deref().unwrap_or("global"),title,content).await?;
+                Ok(json!(saved).to_string())
             } else if call.name == "merge_subagent" {
                 let child=call.arguments.get("id").and_then(Value::as_str).ok_or("subagent id required")?;
                 let child=Uuid::parse_str(child).map_err(|e|e.to_string())?;

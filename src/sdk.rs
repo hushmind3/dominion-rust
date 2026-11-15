@@ -94,6 +94,12 @@ impl Dominion {
     }
     pub async fn adopt_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.adopt(id).await}
     pub async fn descendant_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.descendant(id).await}
+    pub async fn remember(&self,scope:&str,title:&str,content:&str)->Result<crate::knowledge::MemoryEntry,String>{
+        self.engine.knowledge.remember(scope,title,content).await
+    }
+    pub async fn search_memory(&self,scope:&str,query:&str)->Vec<crate::knowledge::MemoryEntry>{
+        self.engine.knowledge.search(scope,query,20).await
+    }
     pub async fn tool_catalog(&self)->Vec<Value>{
         let mut tools=tools::definitions(self.engine.settings.shell_enabled);
         tools.extend(self.engine.mcp.definitions().await);

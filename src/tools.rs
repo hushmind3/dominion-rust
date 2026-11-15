@@ -16,6 +16,8 @@ pub fn definitions(shell_enabled: bool) -> Vec<Value> {
         tool("check_subagent", "Read a child agent status, final answer and measured cost", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
         tool("read_subagent_file", "Inspect a file created or changed by one of your isolated subagents", json!({"type":"object","properties":{"id":{"type":"string"},"path":{"type":"string"}},"required":["id","path"]})),
         tool("merge_subagent", "Propose adopting a completed child\u0027s Git patch into the parent worktree. This requires explicit human approval and checks conflicts.", json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
+        tool("memory_search", "Retrieve project-scoped persistent notes and reusable lessons without any model API call",json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})),
+        tool("memory_store", "Store or update one reusable non-weight project note, keyed by title; visible to future runs in the same repository",json!({"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"}},"required":["title","content"]})),
     ];
     if shell_enabled {
         tools.push(tool("shell", "Execute an approved shell command in the workspace; user approval is always required", json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})));

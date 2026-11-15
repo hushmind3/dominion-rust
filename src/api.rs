@@ -35,6 +35,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
     let api = Router::new()
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
         .route("/config",get(config))
+        .route("/memory",get(list_memory).post(save_memory))
         .route("/runs",get(list_runs).post(create_run))
         .route("/runs/from-repository",post(create_repository_run))
         .route("/runs/{id}",get(get_run))
@@ -71,6 +72,20 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .fallback_service(ServeDir::new(dist).append_index_html_on_directories(true))
         .with_state(engine)
 }
+
+#[derive(Deserialize)]
+struct MemoryQuery { scope:Option<String>, query:Option<String> }
+async fn list_memory(State(engine):State<Arc<Engine>>,Query(q):Query<MemoryQuery>)->Json<Vec<crate::knowledge::MemoryEntry>>{
+    Json(engine.knowledge.search(q.scope.as_deref().unwrap_or("global"),q.query.as_deref().unwrap_or(""),20).await)
+}
+#[derive(Deserialize)]
+struct SaveMemory {scope:String,title:String,content:String}
+async fn save_memory(State(engine):State<Arc<Engine>>,Json(req):Json<SaveMemory>)
+    ->Result<(StatusCode,Json<crate::knowledge::MemoryEntry>),ApiError>{
+    let note=engine.knowledge.remember(&req.scope,&req.title,&req.content).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(note)))
+}
+
 async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
     Json(PublicSettings {
         model:engine.settings.main.name.clone(),
