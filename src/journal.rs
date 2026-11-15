@@ -55,6 +55,7 @@ pub fn validate_new_calls(run:&Run,calls:&[ToolCall])->Result<(),String>{
     for call in &run.queued_calls{previous.insert(call.id.clone());}
     if let Some(call)=&run.pending_approval{previous.insert(call.id.clone());}
     if let Some(call)=&run.in_flight{previous.insert(call.id.clone());}
+    for call in &run.read_batch_in_flight{previous.insert(call.id.clone());}
     for call in calls {
         if call.id.is_empty()||call.id.len()>128
             || call.id.bytes().any(|b|b<32||b==127){
@@ -68,11 +69,74 @@ pub fn validate_new_calls(run:&Run,calls:&[ToolCall])->Result<(),String>{
     Ok(())
 }
 
+
+/// Pure reads have no external effects, so the engine can dispatch them in a
+/// bounded pool. Writers, shell, MCP, memory changes and delegates are always
+/// an exclusive barrier, regardless of the model's claims.
+pub fn parallel_safe(name:&str)->bool{
+    matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff")
+}
+
+/// The complete read batch is recorded before dispatch. It is safe to replay
+/// after a crash because these tools never alter user-owned files.
+pub fn begin_read_batch(run:&mut Run,calls:&[ToolCall])->Result<(),String>{
+    if run.status!=RunStatus::Running || run.in_flight.is_some()
+        || !run.read_batch_in_flight.is_empty() || run.pending_approval.is_some(){
+        return Err("read batch cannot start in current run state".into());
+    }
+    if calls.len()<2 || calls.len()>4 || calls.len()>run.queued_calls.len(){
+        return Err("parallel read batch requires 2..4 queued tool calls".into());
+    }
+    for (a,b) in calls.iter().zip(run.queued_calls.iter()){
+        if !same_call(a,b)||!parallel_safe(&a.name)||!policy::allowed_tool(run,&a.name){
+            return Err("read batch contains nonread, unauthorized or reordered tool call".into());
+        }
+    }
+    run.read_batch_in_flight=calls.to_vec();
+    run.event("read_batch_started",format!("Scheduled {} concurrent read-only tools",calls.len()),
+        Some(json!({"ids":calls.iter().map(|call|&call.id).collect::<Vec<_>>()})));
+    Ok(())
+}
+pub fn finish_read_batch(run:&mut Run,calls:&[ToolCall],results:&[Result<String,String>])->Result<(),String>{
+    if calls.len()!=results.len() || run.read_batch_in_flight.len()!=calls.len()
+        || run.in_flight.is_some(){
+        return Err("read batch receipt does not match durable execution batch".into());
+    }
+    for (index,call) in calls.iter().enumerate(){
+        if !same_call(call,&run.read_batch_in_flight[index]) || !same_call(call,&run.queued_calls[index]){
+            return Err("read batch receipts are not in the original model order".into());
+        }
+    }
+    for (call,result) in calls.iter().zip(results.iter()){
+        let body=match result{
+            Ok(v)=>v.clone(),Err(e)=>format!("TOOL ERROR: {e}")
+        };
+        run.messages.push(json!({"role":"tool","tool_call_id":call.id,"content":body}));
+        run.event(if result.is_ok(){"tool_result"}else{"tool_error"},
+            format!("Parallel read {} ({})",call.name,if result.is_ok(){"ok"}else{"failed"}),
+            Some(json!({"call_id":call.id,"name":call.name,"result":body.chars().take(1200).collect::<String>()})));
+    }
+    run.queued_calls.drain(0..calls.len());
+    run.read_batch_in_flight.clear();
+    if run.cancel_after_tool{
+        // Keep transcript pairing valid even for the tail that was never
+        // dispatched after the user requested cancellation.
+        for call in run.queued_calls.drain(..){
+            run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+                "content":"TOOL ERROR [ABORTED_BEFORE_DISPATCH]: cancelled"}));
+        }
+        run.cancel_after_tool=false;
+        run.status=RunStatus::Cancelled;
+        run.event("cancelled","Cancellation completed after all started read tools settled",None);
+    }
+    Ok(())
+}
+
 /// Persist this transition before calling the tool executor.
 pub fn begin(run:&mut Run,call:&ToolCall)->Result<(),String>{
     if run.status!=RunStatus::Running{return Err("execution is not running".into());}
     if !policy::allowed_tool(run,&call.name){return Err("tool denied by execution policy".into());}
-    if run.in_flight.is_some(){return Err("another tool outcome is unresolved".into());}
+    if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){return Err("another tool outcome is unresolved".into());}
     if pending_exact(run,call) {
         if run.approval_decision!=Some(true){
             return Err("explicit tool approval missing".into());
@@ -94,7 +158,7 @@ pub fn deny(run:&mut Run,call:&ToolCall)->Result<(),String>{
         || run.approval_decision!=Some(false){
         return Err("tool denial does not match a rejected approval".into());
     }
-    if run.in_flight.is_some(){return Err("cannot deny tool after it started".into());}
+    if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){return Err("cannot deny tool after it started".into());}
     run.pending_approval=None;
     run.approval_decision=None;
     let message="TOOL ERROR: User denied the requested operation";
@@ -109,7 +173,7 @@ pub fn deny(run:&mut Run,call:&ToolCall)->Result<(),String>{
 /// strand an entire autonomous run in "paused". Reject it with one real tool
 /// receipt and no execution intent so the model can correct itself.
 pub fn reject_policy(run:&mut Run,call:&ToolCall)->Result<(),String>{
-    if run.status!=RunStatus::Running || run.in_flight.is_some()
+    if run.status!=RunStatus::Running || run.in_flight.is_some() || !run.read_batch_in_flight.is_empty()
         || run.pending_approval.is_some() || !queued_exact(run,call){
         return Err("tool policy rejection does not match the durable queue".into());
     }
@@ -190,6 +254,25 @@ pub fn recover(run:&mut Run)->bool{
     let malformed_terminal=run.terminal() && run.in_flight.is_some();
     if !interrupted && !approved_but_not_started && !malformed_terminal{return false;}
     run.status=RunStatus::Paused;
+    if !run.read_batch_in_flight.is_empty(){
+        // Nothing in this batch can cause user-visible mutations.
+        // The entire batch was durably marked before dispatch and no partial
+        // receipts were ever committed, so queued reads can safely restart.
+        let count=run.read_batch_in_flight.len();
+        run.read_batch_in_flight.clear();
+        if run.cancel_after_tool {
+            for call in run.queued_calls.drain(..){
+                run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+                    "content":"TOOL ERROR [ABORTED_BEFORE_DISPATCH]: cancelled on restart"}));
+            }
+            run.cancel_after_tool=false;run.status=RunStatus::Cancelled;
+            run.event("cancelled","Read batch cancellation recovered without side effects",None);
+            return false;
+        }
+        run.event("read_batch_retry_safe",format!("Replaying {count} idempotent reads in original order"),None);
+        run.event("recovered_ready","Parallel read batch can resume",None);
+        return true;
+    }
     if let Some(call)=run.in_flight.clone(){
         if replay_safe(&call.name) && !run.cancel_after_tool {
             // Pure inspections may be retried; the queued call remains intact.
@@ -240,6 +323,60 @@ mod tests{
     fn tool(name:&str,id:&str)->ToolCall{
         ToolCall{id:id.into(),name:name.into(),arguments:json!({"path":"src/main.rs"})}
     }
+
+    #[test]
+    fn parallel_reads_persist_and_settle_in_model_order(){
+        let mut run=running();
+        let a=tool("read_file","r1");let b=tool("list_files","r2");
+        run.queued_calls.extend([a.clone(),b.clone()]);
+        begin_read_batch(&mut run,&[a.clone(),b.clone()]).unwrap();
+        assert_eq!(run.read_batch_in_flight.len(),2);
+        assert!(begin(&mut run,&a).is_err());
+        finish_read_batch(&mut run,&[a.clone(),b.clone()],
+            &[Ok("first".into()),Err("second failed".into())]).unwrap();
+        assert!(run.read_batch_in_flight.is_empty());
+        assert!(run.queued_calls.is_empty());
+        let outputs=run.messages.iter().filter(|m|m["role"]=="tool").collect::<Vec<_>>();
+        assert_eq!(outputs.len(),2);
+        assert_eq!(outputs[0]["tool_call_id"],"r1");
+        assert_eq!(outputs[1]["tool_call_id"],"r2");
+    }
+    #[test]
+    fn exclusive_writes_are_barriers_to_parallel_reads(){
+        let mut run=running();
+        let a=tool("read_file","r1");let b=tool("write_file","w1");
+        run.queued_calls.extend([a.clone(),b.clone()]);
+        assert!(begin_read_batch(&mut run,&[a,b]).is_err());
+        assert!(run.read_batch_in_flight.is_empty());
+        assert!(!parallel_safe("memory_store"));
+        assert!(!parallel_safe("mcp__other__search"));
+    }
+    #[test]
+    fn interrupted_parallel_reads_recover_without_manual_approval(){
+        let mut run=running();
+        let a=tool("read_file","r1");let b=tool("git_diff","r2");
+        run.queued_calls.extend([a.clone(),b.clone()]);
+        begin_read_batch(&mut run,&[a,b]).unwrap();
+        assert!(recover(&mut run));
+        assert!(run.read_batch_in_flight.is_empty());
+        assert_eq!(run.queued_calls.len(),2);
+        assert_eq!(run.events.last().unwrap().kind,"recovered_ready");
+    }
+    #[test]
+    fn cancel_parallel_batch_waits_for_ordered_receipts(){
+        let mut run=running();
+        let a=tool("read_file","r1");let b=tool("read_file","r2");
+        let tail=tool("write_file","w3");
+        run.queued_calls.extend([a.clone(),b.clone(),tail]);
+        begin_read_batch(&mut run,&[a.clone(),b.clone()]).unwrap();
+        run.cancel_after_tool=true;
+        run.status=RunStatus::Paused;
+        finish_read_batch(&mut run,&[a,b],&[Ok("a".into()),Ok("b".into())]).unwrap();
+        assert_eq!(run.status,RunStatus::Cancelled);
+        assert!(run.queued_calls.is_empty());
+        assert_eq!(run.messages.iter().filter(|m|m["role"]=="tool").count(),3);
+    }
+
     #[test]
     fn execution_records_intent_then_exactly_one_receipt(){
         let mut run=running();let call=tool("edit_file","c1");

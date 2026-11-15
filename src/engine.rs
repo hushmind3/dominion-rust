@@ -72,7 +72,7 @@ impl Engine {
         }
         let started = self.store.mutate(id, |run| {
             if run.terminal() { return Err("cannot restart finished execution".into()); }
-            if run.in_flight.is_some() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
+            if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}
             if run.pending_approval.is_some() && run.approval_decision.is_none() {
                 return Err("approval required before resuming".into());
@@ -569,7 +569,7 @@ impl Engine {
     pub async fn cancel(&self,id:Uuid) -> Result<Run,String> {
         self.store.mutate(id,|run| {
             if run.terminal() { return Err("execution already finished".into()); }
-            if run.in_flight.is_some(){
+            if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty(){
                 // A side effect can already be executing. Do not pretend a
                 // cancelled run's external effects were stopped atomically.
                 run.status=RunStatus::Paused;
