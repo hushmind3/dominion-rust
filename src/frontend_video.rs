@@ -36,7 +36,7 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/video/jobs/{id}/reveal",post(reveal))
         .route("/youtube/status",get(youtube_status))
         .route("/youtube/uploads",get(youtube_uploads))
-        .route("/oauth/providers",get(oauth_providers))
+        // OAuth provider config and login are owned by frontend_oauth.
 }
 async fn ffmpeg_available()->bool{
     let probe=tokio::process::Command::new("ffmpeg")
