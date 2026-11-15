@@ -38,6 +38,7 @@ pub async fn run_agent_goal(
             "goal":task,"successCriteria":criteria,
             "executor":{"agentId":id},
             "tokenBudget":budget,"isolateWorktree":isolate,
+            "reviewPolicy":body["reviewPolicy"].as_str().unwrap_or("always"),
             "maxIterations":12,"maxReplans":4,"replanAfter":2
         }))
     ).await
