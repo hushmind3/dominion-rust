@@ -1,5 +1,5 @@
-//! Main frontend's video page, backed by the actual native FFmpeg video store.
-//! No pretend ComfyUI, remote model downloads, or YouTube upload state.
+//! Main Video UI uses native FFmpeg and opt-in local ComfyUI API-format workflows.
+//! Jobs and actual artifacts are backed by their respective Rust stores.
 use crate::{
     domain::now_ms,
     engine::Engine,
@@ -55,31 +55,28 @@ async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
     let jobs=engine.videos.list().await;
     let mut list=Vec::with_capacity(jobs.len());
     for v in &jobs{list.push(as_job(&engine,v).await);}
+    let cfg=crate::frontend_comfy::config(&engine.settings).unwrap_or_default();
+    let reachable=crate::frontend_comfy::reachable(&cfg).await;
+    if let Ok(comfy)=crate::frontend_comfy::list(&engine.settings){list.extend(comfy);}
     let available=ffmpeg_available().await;
     let narration=speech_available().await;
+    let mut config=crate::frontend_comfy::public_config(&cfg);
+    if !narration{config["narration"]=json!(false);}
     Json(json!({
-        "config":{"engine":"native","comfyUrl":"","narration":narration},
+        "config":config,
         "native":{"available":available},
-        "comfy":{"reachable":false,"available":false},
-        "workflows":[],"jobs":list
+        "comfy":{"reachable":reachable,"available":reachable&&cfg.comfy_workflow.is_some()},
+        "workflows":crate::frontend_comfy::workflows(&cfg),"jobs":list
     }))
 }
-async fn config()->Json<Value>{
-    Json(json!({"engine":"native","comfyUrl":"","narration":speech_available().await}))
+async fn config(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
+    crate::frontend_comfy::config(&engine.settings)
+        .map(|cfg|Json(crate::frontend_comfy::public_config(&cfg))).map_err(bad)
 }
-async fn update_config(Json(input):Json<Value>)->Result<Json<Value>,Fault>{
-    let requested=input.as_object().ok_or_else(||bad("video configuration must be an object"))?;
-    // Main UI can request ComfyUI, models, voices, steps, resolution and custom
-    // workflows. Those require real services before any configuration is saved.
-    if requested.iter().all(|(key,value)|
-        match key.as_str(){
-            "engine"=>value.as_str()==Some("native"),
-            "comfyUrl"=>value.as_str().unwrap_or("").is_empty(),
-            _=>false
-        }){
-        return Ok(Json(json!({"engine":"native","comfyUrl":""})));
-    }
-    Err(unsupported("Only local FFmpeg video rendering is supported by this native engine. ComfyUI, voice presets and custom workflows are not connected."))
+async fn update_config(State(engine):State<Arc<Engine>>,Json(input):Json<Value>)
+    ->Result<Json<Value>,Fault>{
+    crate::frontend_comfy::update(&engine.settings,&input)
+        .map(|cfg|Json(crate::frontend_comfy::public_config(&cfg))).map_err(bad)
 }
 async fn catalog()->Json<Value>{
     Json(json!({"videoModels":[]}))
@@ -90,14 +87,21 @@ async fn outputs(State(engine):State<Arc<Engine>>)->Json<Value>{
     for v in &all{
         if v.status==VideoStatus::Completed{rows.push(as_job(&engine,v).await);}
     }
+    if let Ok(comfy)=crate::frontend_comfy::list(&engine.settings){
+        rows.extend(comfy.into_iter().filter(|row|row["status"]=="completed"));
+    }
     Json(json!(rows))
 }
-async fn workflows()->Json<Value>{Json(json!([]))}
+async fn workflows(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
+    let cfg=crate::frontend_comfy::config(&engine.settings).map_err(bad)?;
+    Ok(Json(json!(crate::frontend_comfy::workflows(&cfg))))
+}
 async fn downloads()->Json<Value>{Json(json!({"downloads":[]}))}
 async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
     let all=engine.videos.list().await;
     let mut rows=Vec::new();
     for v in &all{rows.push(as_job(&engine,v).await);}
+    rows.extend(crate::frontend_comfy::list(&engine.settings).unwrap_or_default());
     Json(json!(rows))
 }
 async fn as_job(engine:&Engine,video:&Video)->Value{
@@ -128,8 +132,12 @@ async fn as_job(engine:&Engine,video:&Video)->Value{
 }
 async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
-    let v=engine.videos.get(id).await.ok_or_else(not_found)?;
-    Ok(Json(as_job(&engine,&v).await))
+    if let Some(v)=engine.videos.get(id).await{
+        return Ok(Json(as_job(&engine,&v).await));
+    }
+    let result=crate::frontend_comfy::get(&engine.settings,id).map_err(bad)?
+        .ok_or_else(not_found)?;
+    Ok(Json(crate::frontend_comfy::public(&result)))
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -146,8 +154,20 @@ struct Create{
 }
 async fn create_job(State(engine):State<Arc<Engine>>,Json(input):Json<Create>)
     ->Result<(StatusCode,Json<Value>),Fault>{
+    if input.engine=="comfyui"{
+        let request=crate::frontend_comfy::Create{
+            title:input.title.as_deref().filter(|v|!v.trim().is_empty())
+                .unwrap_or("ComfyUI Video").to_owned(),
+            brief:input.brief.clone(),negative:input.negative_prompt.unwrap_or_default(),
+            aspect_ratio:input.aspect_ratio,duration:input.duration,
+            fps:input.fps.unwrap_or(16),seed:input.seed.unwrap_or(-1)
+        };
+        let record=crate::frontend_comfy::create(engine.settings.clone(),request)
+            .await.map_err(bad)?;
+        return Ok((StatusCode::ACCEPTED,Json(record)));
+    }
     if input.engine!="native"{
-        return Err(unsupported("ComfyUI and other model video generation require a connected real backend."));
+        return Err(unsupported("unknown video engine"));
     }
     if input.negative_prompt.is_some()||input.fps.is_some()||input.seed.is_some(){
         return Err(unsupported("Model-specific generation controls cannot be applied by local FFmpeg."));
@@ -188,16 +208,27 @@ async fn create_job(State(engine):State<Arc<Engine>>,Json(input):Json<Create>)
 }
 async fn content(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Response,Fault>{
-    let path=engine.videos.output_path(id).await.map_err(bad)?;
-    let file=tokio::fs::File::open(path).await.map_err(|e|error(StatusCode::NOT_FOUND,e.to_string()))?;
+    let (path,mime)=if engine.videos.get(id).await.is_some(){
+        (engine.videos.output_path(id).await.map_err(bad)?,"video/mp4")
+    }else{
+        crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?
+            .ok_or_else(not_found)?
+    };
+    let file=tokio::fs::File::open(path).await
+        .map_err(|e|error(StatusCode::NOT_FOUND,e.to_string()))?;
     let body=Body::from_stream(ReaderStream::new(file));
-    Ok(([(header::CONTENT_TYPE,"video/mp4"),
-        (header::CONTENT_DISPOSITION,"inline; filename=dominion.mp4"),
+    Ok(([(header::CONTENT_TYPE,mime),
+        (header::CONTENT_DISPOSITION,"inline; filename=dominion-video"),
         (header::CACHE_CONTROL,"no-store")],body).into_response())
 }
 async fn reveal(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
-    let path=engine.videos.output_path(id).await.map_err(bad)?;
+    let path=if engine.videos.get(id).await.is_some(){
+        engine.videos.output_path(id).await.map_err(bad)?
+    }else{
+        crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?
+            .ok_or_else(not_found)?.0
+    };
     // A request made by a remote/browser client must not spawn an arbitrary
     // local viewer or return a raw server filesystem path.
     Ok(Json(json!({"ok":true,"downloadUrl":format!("/api/video/jobs/{id}/content"),
