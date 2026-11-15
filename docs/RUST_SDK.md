@@ -210,3 +210,7 @@ Strategy reuse is controlled by `Settings::from_env` / `DOMINION_STRATEGY_LEARNI
 ### Project-scoped memory management
 
 The native Dominion SDK exposes list_memory(scope), memory_scopes(), revise_memory(scope,id,title,content) and forget_memory(scope,id) in addition to remember/search_memory. Changes affect the same durable Knowledge dataset used by agent tools; revisions do not move notes across project boundaries. The HTTP and TypeScript SDK equivalents are listed in docs/UI_FEATURE_PARITY_2026.md. Deletion requires an explicit memory ID and matching scope.
+
+## Owner profile for the canonical frontend snapshot
+
+Native Rust `Dominion::owner_profile()` and `Dominion::save_owner_profile(NewOwnerProfile)` use `OwnerProfileStore`, owned by `Engine`. Rust REST provides `GET/POST /api/v1/profile`. Profile edits use the original `879dc23d` OwnerProfile frontend component with the endpoint remapped to Rust. The server enforces 1–60 printable name characters, a data URL with PNG/JPEG/WebP magic bytes, and a 1 MiB decoded avatar limit. Profile is durable under `Settings.data_dir/owner-profile.json` and is not an instruction to the agent.

@@ -104,6 +104,13 @@ impl Dominion {
         self.get(id).await?;
         tools::execute(&self.engine.settings,id,&ToolCall{id:"sdk-read".into(),name:"read_file".into(),arguments:json!({"path":path})}).await
     }
+    pub async fn owner_profile(&self)->crate::profile::OwnerProfile{
+        self.engine.owner_profile.get().await
+    }
+    pub async fn save_owner_profile(&self,req:crate::profile::NewOwnerProfile)
+        ->Result<crate::profile::OwnerProfile,String>{
+        self.engine.owner_profile.save(req).await
+    }
     pub async fn create_group(&self,req:NewRoom)->Result<Room,String>{self.engine.groups.create(req).await}
     pub async fn say_group(&self,id:Uuid,input:Say)->Result<Room,String>{self.engine.groups.say(id,input.content).await}
     pub async fn read_subagent_file(&self,parent:Uuid,child:Uuid,path:&str)->Result<String,String>{

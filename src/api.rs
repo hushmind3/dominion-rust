@@ -35,6 +35,7 @@ pub fn router(engine: Arc<Engine>) -> Router {
     let api = Router::new()
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
         .route("/config",get(config))
+        .route("/profile",get(get_owner_profile).post(save_owner_profile))
         .route("/memory",get(list_memory).post(save_memory))
         .route("/memory/all",get(all_memory))
         .route("/memory/scopes",get(memory_scopes))
@@ -117,6 +118,14 @@ async fn list_strategies(State(engine):State<Arc<Engine>>,Query(q):Query<Strateg
     Json(engine.improvements.strategy_evidence(
         &q.repository,q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)
     ).await)
+}
+async fn get_owner_profile(State(engine):State<Arc<Engine>>)->Json<crate::profile::OwnerProfile>{
+    Json(engine.owner_profile.get().await)
+}
+async fn save_owner_profile(State(engine):State<Arc<Engine>>,
+    Json(input):Json<crate::profile::NewOwnerProfile>)
+    ->Result<Json<crate::profile::OwnerProfile>,ApiError>{
+    engine.owner_profile.save(input).await.map(Json).map_err(bad)
 }
 async fn config(State(engine): State<Arc<Engine>>) -> Json<PublicSettings> {
     Json(PublicSettings {

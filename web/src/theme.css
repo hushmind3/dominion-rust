@@ -33,4 +33,6 @@
 #root main h2{font-size:18px!important;line-height:1.35;letter-spacing:-.02em}
 #root main h3{font-size:15px!important;line-height:1.45}
 #root main p{line-height:1.65}
-.page-chat > div{height:auto;min-height:calc(100dvh - 64px)}
+.page-chat > div{height:calc(100dvh - 64px);min-height:0}
+/* Rust-backed workspace uses the 879dc23d shell with unconstrained page flow. */
+.page-chat > div.dominion-rust-workspace{height:auto;min-height:calc(100dvh - 64px)}

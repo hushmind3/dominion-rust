@@ -24,6 +24,7 @@ export interface DelegateRun extends CreateRun { read_only?: boolean }
 export interface MemoryEntry {
   id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
 }
+export interface OwnerProfile { name: string; avatar: string; updated_at_ms: number }
 export interface SkillInfo { name: string; path: string }
 
 export interface Participant { name: string; role: string; economy: boolean }
@@ -101,6 +102,10 @@ export class Dominion {
     return payload as T;
   }
   get health(): Promise<{ok: boolean; name: string; api: string}> {return this.request('GET','/health');}
+  readonly owner = {
+    get: () => this.request<OwnerProfile>('GET','/profile'),
+    save: (profile:{name:string;avatar:string}) => this.request<OwnerProfile>('POST','/profile',profile),
+  };
   get config(): Promise<ModelConfig> {return this.request('GET','/config');}
   readonly runs = {
     create: (input: CreateRun) => this.request<Run>('POST','/runs',input),

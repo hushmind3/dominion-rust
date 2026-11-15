@@ -3,8 +3,16 @@ import {Check,Play,RefreshCw,ShieldAlert,Square,Sparkles} from 'lucide-react'
 import {get,post,type Provider} from '../api'
 import {useLocale} from '../i18n'
 
+// 879dc23d autonomous-work panel presentation, connected to Rust v1 receipts.
+const statusNames:Record<string,[string,string]>={
+ queued:['대기 중','Queued'],running:['실행 중','Working'],
+ awaiting_approval:['승인 대기','Needs approval'],
+ paused:['일시 중단 · 결과 확인','Paused / review needed'],
+ completed:['완료','Completed'],failed:['실패','Failed'],
+ cancelled:['취소됨','Cancelled'],
+}
 type Call={id:string;name:string;arguments:unknown}
-type Run={id:string;instruction:string;status:string;waiting_for_children?:boolean;cancel_after_tool?:boolean;read_batch_in_flight?:Call[];answer?:string|null;pending_approval?:Call|null;in_flight?:Call|null;steps:number;cost_krw:number;budget_krw:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;events:{seq:number;kind:string;message:string}[]}
+type Run={id:string;instruction:string;status:string;waiting_for_children?:boolean;cancel_after_tool?:boolean;read_batch_in_flight?:Call[];answer?:string|null;pending_approval?:Call|null;in_flight?:Call|null;steps:number;cost_krw:number;budget_krw:number;input_tokens:number;cached_input_tokens:number;output_tokens:number;events:{seq:number;kind:string;message:string;detail?:unknown}[]}
 export function NativeAgentPanel({providers}:{providers:Provider[]}){
  const en=useLocale()==='en'
  const [goal,setGoal]=useState('')
@@ -52,7 +60,7 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
     <button type="button" disabled={busy||!goal.trim()} onClick={()=>void create()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[#AE5337] px-4 text-[12px] font-semibold text-white disabled:opacity-40"><Play size={14}/>{busy?'실행 중…':'작업 시작'}</button></div>
    {error&&<p role="alert" className="rounded-lg bg-[#FFF3EE] p-3 text-[11px] text-[#A54027]">{error}</p>}
    {run&&<div className="rounded-xl border border-[#E7E0D5] bg-[#FCFBF9] p-3">
-    <div className="flex justify-between gap-2"><strong className="text-[12px]">{run.status}</strong><span className="text-[11px] text-[#82796D]">{run.steps}턴 · {run.cost_krw.toLocaleString('ko-KR',{maximumFractionDigits:2})}원 / {run.budget_krw.toLocaleString('ko-KR')}원</span></div>
+    <div className="flex justify-between gap-2"><strong className="text-[12px]">{(statusNames[run.status]||[run.status,run.status])[en?1:0]}</strong><span className="text-[11px] text-[#82796D]">{run.steps}턴 · {run.cost_krw.toLocaleString('ko-KR',{maximumFractionDigits:2})}원 / {run.budget_krw.toLocaleString('ko-KR')}원</span></div>
     <p className="mt-2 line-clamp-2 text-[11px] text-[#766F67]">{run.instruction}</p>
     <p className="mt-2 text-[11px] text-[#82796D]">입력 {run.input_tokens.toLocaleString()} · 캐시 {run.cached_input_tokens.toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰</p>
     {run.pending_approval&&<div className="mt-3 rounded-lg border border-[#E5C4AB] bg-white p-3">
@@ -64,9 +72,16 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
      <textarea className="mt-2 w-full rounded-lg border p-2 text-[12px]" value={observed} onChange={e=>setObserved(e.target.value)} placeholder="확인한 결과"/>
      <div className="mt-2 flex gap-2"><button type="button" disabled={busy||!observed.trim()} onClick={()=>action('reconcile',{succeeded:true,result:observed})} className="rounded-lg border px-2 py-1 text-[11px]">성공 기록</button>
       <button type="button" disabled={busy||!observed.trim()} onClick={()=>action('reconcile',{succeeded:false,result:observed})} className="rounded-lg border px-2 py-1 text-[11px]">실패 기록</button></div></div>}
+    {run.events?.length>0&&<div className="mt-3 space-y-1 rounded-lg border border-[#EEE7DC] bg-white p-3">
+     <p className="text-[11px] font-bold text-[#6F6356]">{en?'Recent execution evidence':'최근 실행 기록'}</p>
+     {run.events.slice(-5).map(event=><div key={event.seq} className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[11px]">
+      <span className="text-[#AB5D40]">{event.seq} · {event.kind}</span>
+      <span className="min-w-0 break-words text-[#7D7065]">{event.message}</span>
+     </div>)}
+    </div>}
     {run.answer&&<p className="mt-3 whitespace-pre-wrap break-words border-t border-[#E7E0D5] pt-3 text-[12px]">{run.answer}</p>}
     <div className="mt-3 flex flex-wrap gap-2">
-     {run.status==='running'&&<button type="button" disabled={busy} onClick={()=>action('cancel')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><Square size={13}/> 중단</button>}
+     {['running','queued'].includes(run.status)&&<button type="button" disabled={busy} onClick={()=>action('cancel')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><Square size={13}/> 중단</button>}
      {run.status==='paused'&&!run.in_flight&&!run.cancel_after_tool&&!run.read_batch_in_flight?.length&&!run.waiting_for_children&&<button type="button" disabled={busy} onClick={()=>action('resume')} className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px]"><RefreshCw size={13}/> 재개</button>}
      <button type="button" onClick={()=>{window.location.hash='#/chat'}} className="rounded-lg border px-3 py-2 text-[11px]">실행 상세 보기</button>
     </div>

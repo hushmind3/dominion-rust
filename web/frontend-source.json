@@ -1,0 +1,27 @@
+{
+  "upstream_commit": "879dc23dce309688691c200b001b180bead95a12",
+  "upstream_repository": "hushmind3/dominion-rust",
+  "upstream_web_tree_sha": "9e2be9b7376c1eefb6195e3ea7f9463b952456c0",
+  "upstream_web_files": 56,
+  "preserved_exact_at_start": 46,
+  "native_adapter_files": [
+    "web/package-lock.json",
+    "web/package.json",
+    "web/src/App.tsx",
+    "web/src/api.ts",
+    "web/src/components/NativeAgentPanel.tsx",
+    "web/src/components/OwnerProfile.tsx",
+    "web/src/pages/Home.tsx",
+    "web/src/pages/Memory.tsx",
+    "web/src/theme.css",
+    "web/vite.config.ts"
+  ],
+  "native_only_files": [
+    "web/src/pages/RustWorkspace.tsx",
+    "web/e2e/mock-provider.mjs",
+    "web/e2e/rust-ui.spec.mjs",
+    "web/playwright.config.mjs"
+  ],
+  "implementation_note": "Canonical UI snapshot with minimal Rust native service adaptations. No legacy API calls are executed by mounted frontend views. Existing build/runtime compatibility uses port 8787, Node >=20.19 and manual CI.",
+  "source_snapshot_is_lockfile_commit": true
+}

@@ -116,3 +116,7 @@ Call `improvements.create({ repository, instruction, test_command, score_command
 ### Memory CRUD against the Rust engine
 
 Dominion.memory.list(scope), .scopes(), .store({scope,title,content}), .revise(id,{scope,title,content}) and .forget(id,scope) call the native Rust memory store. This is a typed transport wrapper, not a separate TypeScript memory engine. The main MemoryPage uses the same REST routes.
+
+## Owner profile API
+
+`dominion.owner.get()` returns the current owner's display profile. `dominion.owner.save({name,avatar})` persists it in Rust. The original frontend owner editor from commit `879dc23d` calls the same service, and no separate frontend-owned profile database is required.

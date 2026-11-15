@@ -3,7 +3,7 @@ import {OwnerProfileProvider} from './components/OwnerProfile'
 import {Component,lazy,Suspense,useCallback,useEffect,useLayoutEffect,useState,type ReactNode} from 'react'
 import {get} from './api'
 import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} from './components/WorkspaceShell'
-// The original main UI shell is retained; functional pages use the Rust SDK API.
+// Frontend source snapshot 879dc23d with Rust-specific route adapters.
 const RustWorkspacePage=lazy(()=>import('./pages/RustWorkspace').then(module=>({default:module.RustWorkspacePage})))
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
@@ -83,7 +83,7 @@ function locationState(){
  const [name,query]=raw.split('?')
  const valid=navigation.some(group=>group.items.some(item=>item.id===name))
  const params=new URLSearchParams(query)
- return {page:(valid?name:'home') as PageId,session:params.get('session')||undefined,
+ return {page:(valid?name:'chat') as PageId,session:params.get('session')||undefined,
   agent:params.get('agent')||undefined,provider:params.get('provider')||undefined,model:params.get('model')||undefined}
 }
 export default function App(){
@@ -157,7 +157,7 @@ export default function App(){
   window.addEventListener('keydown',shortcuts)
   return()=>{mounted=false;clearInterval(poll);window.removeEventListener('keydown',shortcuts)}
  },[])
- return <OwnerProfileProvider><div className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
+ return <OwnerProfileProvider><div data-frontend-baseline="879dc23dce309688691c200b001b180bead95a12" className="min-h-dvh bg-[#F6F3EC] font-sans text-[#24211D]">
    <ContextMenu />
   <WorkspaceSidebar page={page} open={sidebar} collapsed={collapsed} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>{setChatDraft(value=>value+1);navigate('chat')}} onClose={()=>setSidebar(false)}/>
   <main className={'min-h-dvh min-w-0 transition-[margin] duration-200 '+(collapsed?'ml-0':'ml-[216px] max-[519px]:ml-0')}>
@@ -165,6 +165,9 @@ export default function App(){
    <div className={'min-w-0 page-'+page}>
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
+    {/* 879dc23d navigation and components, Rust-native execution adapter.
+          Pages dependent on unimplemented old API routes stay in the source
+          tree until each genuine Rust feature endpoint is implemented. */}
     {page==='home'?<HomePage navigate={navigate}/>:page==='memory'?<MemoryPage/>:<RustWorkspacePage key={page+'-'+(page==='chat'?chatDraft:0)} area={page}/>}
     </Suspense>
     </PageLoadBoundary>

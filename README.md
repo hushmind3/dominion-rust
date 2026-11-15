@@ -2,7 +2,7 @@
 
 **Native Rust SDK and independent Rust agent engine. HTTP API, TypeScript SDK and GUI are adapters to the same engine.**
 
-The Rust core is a **clean rebuild** on `dominion-sub4`; the React/Vite frontend source is adopted from `main`. The Rust core does not inherit the previous runtime or its old task abstraction. The Rust server controls all model calls, tool execution, decisions, persistence and recovery. The UI and SDK call that same server rather than embedding a separate agent engine.
+The Rust core is a **clean rebuild** on `dominion-sub4`; the React/Vite frontend uses the pinned upstream snapshot at **`879dc23d`** (with Rust API adapters). The Rust core does not inherit the previous runtime or its old task abstraction. The Rust server controls all model calls, tool execution, decisions, persistence and recovery. The UI and SDK call that same server rather than embedding a separate agent engine.
 
 ## What currently runs
 
@@ -376,3 +376,11 @@ The operator switch `DOMINION_STRATEGY_LEARNING=false` disables automatic memory
 ### 메인 화면의 세부 기능 복원 진행 (2026-11-15)
 
 메인의 React 레이아웃을 공유하는 것과 세부 기능이 Rust 엔진에 연결되는 것은 구별합니다. 정확한 기능별 연결·미연결 목록은 docs/UI_FEATURE_PARITY_2026.md에 정리했습니다. 첫 복원 대상인 기억 관리는 원래 MemoryPage를 실제 메뉴에 다시 연결하고, Rust Knowledge 저장소 기반으로 범위별 메모 목록, 신규 작성, 제목·내용 편집, 영구 삭제, 검색, 변경 기록을 제공합니다. 기존 통합 패널의 중복 메모 화면을 제거했습니다. 예전 API를 동작하는 척 제공하지 않고 native /api/v1/memory 엔드포인트에 연결합니다. Rust와 TypeScript SDK도 같은 CRUD 계약을 사용합니다. 요청에 따라 이번 변경에는 CI나 테스트를 실행하지 않았습니다.
+
+### Frontend baseline pinned to 879dc23d (2026-11-15)
+
+The canonical visual and interaction reference for sub4 is Git commit `879dc23dce309688691c200b001b180bead95a12` (the commit itself changes Cargo.lock, while its **web directory tree** is the requested frontend snapshot). Upstream web subtree SHA: `9e2be9b7376c1eefb6195e3ea7f9463b952456c0`, containing 56 original files. At the reference comparison 46 were already blob-identical to sub4; the 10 existing adapter differences are listed in `web/frontend-source.json`.
+
+The source UI shell and navigation are retained; the default route now follows upstream's Chat view. The original owner-profile editor has been restored and pointed at new **native Rust owner-profile persistence** through `/api/v1/profile`, including image signature/size validation and atomic saves. The original Home execution-monitor layout has been restored as a fully Rust-backed view of real runs, tool event receipts, approvals, cancellations and reconciliation instead of the dead old `/api/executions` endpoint. Upstream CSS is used with one scoped height override for the Rust workspace. Main's functional detailed Memory UI remains connected to native Rust CRUD, while other legacy frontend pages are kept as source files and NOT mounted against endpoints that do not exist.
+
+Adapted Node/Vite scripts remain for the Rust runtime (port 8787, Node >=20.19), not the legacy source server at port 4317. Full feature parity is still in progress and is tracked in `docs/UI_FEATURE_PARITY_2026.md`. No test, build or CI run was invoked for this frontend import.

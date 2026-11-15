@@ -141,7 +141,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
  const saveScene=(scene:Scene,index:number)=>perform(()=>post('/api/v1/videos/'+video.id+'/scenes/'+index,scene),'장면을 수정했습니다.')
  const date=(ms:number)=>new Date(ms).toLocaleString('ko-KR')
  const title=paneTitle[area]||'Rust 실행 엔진'
- return <PageContainer className="!max-w-[1260px] !py-5">
+ return <PageContainer className="dominion-rust-workspace !max-w-[1260px] !py-5">
   <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
    <div><div className="mb-1 text-[10px] font-bold uppercase tracking-widest text-[#B05D41]">DOMINION · Rust Engine</div>
     <h1 className="text-[21px] font-extrabold tracking-tight">{title}</h1>

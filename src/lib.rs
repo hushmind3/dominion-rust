@@ -16,6 +16,7 @@ pub mod rsi_discovery;
 pub mod mcp;
 pub mod policy;
 pub mod provider;
+pub mod profile;
 pub mod sandbox;
 pub mod sdk;
 pub mod skills;
