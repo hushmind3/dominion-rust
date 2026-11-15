@@ -241,3 +241,23 @@ remote side effect → interruption → human reconciliation path. These do not
 pretend to guarantee rollback of remote services or verified exactly-once
 execution. External service-specific idempotency and task-resumption APIs
 are possible next extensions, not assumed by the generic client.
+
+### MCP focused validation — 2026-11-15
+
+Commit b339afc358dde99dcaba1a8dd56ca94710e1ad27 passed all three independent
+checks in https://github.com/hushmind3/dominion-rust/actions/runs/43689315045:
+- Rust compile plus 79/79 unit/integration tests, 0 failures.
+- TypeScript SDK suite, successful.
+- Adopted main React frontend: npm ci, strict TypeScript typecheck and
+  Vite production build, successful.
+
+The MCP tests exercised a real local Streamable HTTP server, approved
+side-effectful call cancellation, durable request-ID correlation, matched
+progress notifications, transport ambiguity, and human reconciliation
+without a second remote dispatch. The React check also removed the obsolete
+Home dashboard's legacy input.prompt reference and distinguishes ongoing
+MCP progress from paused reconciliation.
+
+No real external MCP account, real-provider task success benchmarks,
+interactive browser E2E, or end-to-end user data migration was performed
+in this focused validation. These are remaining product-wide acceptance gates.
