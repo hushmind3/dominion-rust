@@ -175,7 +175,7 @@ mod tests {
         drop(store);
         let restored = Store::open(dir.clone()).await.unwrap().get(id).await.unwrap();
         assert_eq!(restored.status, RunStatus::Paused);
-        assert!(restored.events.iter().any(|e| e.kind == "recovered"));
+        assert!(restored.events.iter().any(|e| e.kind == "recovered_ready"));
         fs::remove_dir_all(dir).await.unwrap();
     }
 }

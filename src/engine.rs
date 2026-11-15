@@ -683,6 +683,44 @@ mod recovery_tests {
         tokio::fs::remove_dir_all(base).await.unwrap();
     }
 
+
+    #[tokio::test]
+    async fn denied_approval_has_receipt_but_no_execution_intent(){
+        let dir=std::env::temp_dir().join(format!("dominion-denial-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=dir.join("data");
+        settings.workspace_dir=dir.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),
+            settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups,videos,improvements).unwrap();
+        let mut run=Run::new(CreateRun{instruction:"test denied shell".into(),
+            budget_krw:Some(50.0),max_steps:Some(1)},1).unwrap();
+        run.plan=Some("never execute denied command".into());run.steps=1;
+        run.status=RunStatus::AwaitingApproval;
+        let call=ToolCall{id:"deny-1".into(),name:"shell".into(),
+            arguments:json!({"command":"touch should-never-exist"})};
+        run.pending_approval=Some(call.clone());
+        let id=run.id;
+        store.put(run).await.unwrap();
+        engine.approve(id,false).await.unwrap();
+        let mut last=None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let snapshot=store.get(id).await.unwrap();
+            if snapshot.terminal(){last=Some(snapshot);break;}
+        }
+        let snapshot=last.expect("denied approval was not resumed");
+        assert_eq!(snapshot.events.iter().filter(|e|e.kind=="tool_denied").count(),1);
+        assert_eq!(snapshot.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert_eq!(snapshot.messages.last().unwrap()["tool_call_id"],"deny-1");
+        assert!(snapshot.in_flight.is_none());
+        assert!(snapshot.pending_approval.is_none());
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
     #[tokio::test]
     async fn uncertain_tool_is_not_replayed_without_reconciliation() {
         let root=std::env::temp_dir().join(format!("dominion-reconcile-{}",Uuid::new_v4()));

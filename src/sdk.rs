@@ -136,6 +136,51 @@ impl Dominion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn approved_unstarted_write_replays_once_after_sdk_restart(){
+        let dir=std::env::temp_dir().join(format!("dominion-approved-restart-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=dir.join("data");
+        settings.workspace_dir=dir.join("workspace");
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let mut run=Run::new(CreateRun{
+            instruction:"write approved artifact".into(),budget_krw:Some(10.0),max_steps:Some(1)
+        },1).unwrap();
+        let id=run.id;
+        let call=ToolCall{id:"approved-1".into(),name:"write_file".into(),
+            arguments:json!({"path":"recovered.txt","content":"written after restart"})};
+        run.status=RunStatus::AwaitingApproval;
+        run.plan=Some("Approved file creation".into());
+        run.steps=1; // Never invoke an external model after this tool.
+        run.pending_approval=Some(call.clone());
+        run.approval_decision=Some(true);
+        run.messages.push(json!({"role":"assistant","content":null,"tool_calls":[{
+            "id":call.id,"type":"function","function":{
+                "name":call.name,"arguments":call.arguments.to_string()
+            }
+        }]}));
+        sdk.engine.store.put(run).await.unwrap();
+        drop(sdk);
+        // An approved pending call has no execution intent; it can be resumed
+        // automatically without treating it as an already-executed side effect.
+        let reopened=Dominion::open(settings.clone()).await.unwrap();
+        let mut observed=None;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let run=reopened.get(id).await.unwrap();
+            if run.terminal(){observed=Some(run);break;}
+        }
+        let state=observed.expect("approved tool did not complete after restart");
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+        assert_eq!(state.events.iter().filter(|e|e.kind=="tool_result").count(),1);
+        assert!(state.in_flight.is_none());
+        assert_eq!(tokio::fs::read_to_string(settings.workspace_dir.join(id.to_string())
+            .join("recovered.txt")).await.unwrap(),"written after restart");
+        drop(reopened);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
     #[tokio::test]
     async fn sdk_and_http_share_persisted_core(){
         let dir=std::env::temp_dir().join(format!("dominion-sdk-{}",Uuid::new_v4()));
