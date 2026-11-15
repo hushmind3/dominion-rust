@@ -318,3 +318,10 @@ Approved shell commands with a nonzero exit become persisted tool errors that ex
 stdout/stderr for agent repair and independent verification. These protections are shared
 by the Rust SDK, REST API, TypeScript adapter and GUI because they enter the same Rust
 `tools::execute` path. Refer to `docs/ARCHITECTURE.md` for recovery limitations.
+
+### 2026 MCP tool discovery
+
+The Rust MCP client now loads paginated `tools/list` results and follows server
+`ttlMs`/`cacheScope` freshness hints instead of imposing an unconditional 60-second
+cache. Missing or zero TTL means no cached discovery. This reduces stale tool
+selection and respects the server's intended tool-list update behavior.

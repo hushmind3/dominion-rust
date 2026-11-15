@@ -266,3 +266,13 @@ receives failure evidence through the ordinary tool journal; unsuccessful comman
 silently classified as successful tests. Focused Rust tests cover atomic replacement,
 permission preservation, invalid destination rejection, temporary-file cleanup and
 command error classification. The separate OS sandbox policy still governs shell dispatch.
+
+## MCP 2026 tools/list freshness and pagination
+
+`src/mcp.rs` fetches every advertised `tools/list` page using `nextCursor` (16-page and
+80-tool fail-closed bounds) before exposing the final model catalog. Each page's `ttlMs`
+and `cacheScope` controls client-side freshness; the shortest page TTL wins, zero or
+missing/invalid hints prevent caching, and positive TTLs are capped at 5 minutes.
+Cached private results remain inside one operator-configured server/token client.
+Expiry is checked on demand, not polled; real SSE `subscriptions/listen` invalidation
+is still an unimplemented extension. This follows MCP 2026-07-28 and SEP-2549.

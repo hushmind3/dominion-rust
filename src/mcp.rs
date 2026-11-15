@@ -15,7 +15,7 @@ pub fn request_identity(run:Uuid,call:&ToolCall)->String{
     format!("dominion-{run}-{}",call.id)
 }
 const BODY_MAX: usize = 262_144;
-const CACHE_SECONDS: u64 = 60;
+const MAX_CACHE_MS: u64 = 300_000;
 
 /// HTTP transport stream cancellation never proves that the remote system
 /// rolled back its work. The owner must reconcile a potentially committed
@@ -120,7 +120,7 @@ struct RemoteTool {
 pub struct Mcp {
     http: Client,
     servers: Vec<Server>,
-    cached: Mutex<HashMap<String, (Instant, Vec<RemoteTool>)>>,
+    cached: Mutex<HashMap<String, (Instant, Duration, Vec<RemoteTool>)>>,
 }
 
 fn safe_name(value: &str) -> bool {
@@ -196,6 +196,21 @@ fn encode_header(raw:&str)->String{
         use base64::Engine;
         format!("=?base64?{}?=",base64::engine::general_purpose::STANDARD.encode(raw))
     }
+}
+
+
+/**
+ * MCP 2026-07-28 TTL is a server-owned freshness hint, never a fixed
+ * client-side 60-second exemption. The 0/missing/invalid case is not cached.
+ * A configured Mcp instance has exactly one authorization identity per server,
+ * so even private results cannot leak between access tokens.
+ */
+fn announced_ttl(result:&Value)->Duration{
+    if !matches!(result.get("cacheScope").and_then(Value::as_str),Some("public"|"private")){
+        return Duration::ZERO;
+    }
+    let ms=result.get("ttlMs").and_then(Value::as_u64).unwrap_or(0);
+    Duration::from_millis(ms.min(MAX_CACHE_MS))
 }
 
 impl Mcp {
@@ -363,28 +378,65 @@ impl Mcp {
     async fn list(&self,name:&str)->Result<Vec<RemoteTool>,String>{
         {
             let cache=self.cached.lock().await;
-            if let Some((at,tools))=cache.get(name){
-                if at.elapsed()<Duration::from_secs(CACHE_SECONDS){return Ok(tools.clone());}
+            if let Some((at,ttl,tools))=cache.get(name){
+                if at.elapsed()<*ttl{return Ok(tools.clone());}
             }
         }
         let server=self.servers.iter().find(|s|s.name==name).ok_or("MCP server not found")?;
-        let result=self.rpc(server,"tools/list",json!({}),None,&[]).await?;
-        let raw=result.get("tools").and_then(Value::as_array).ok_or("MCP tools/list has no tools array")?;
-        if raw.len()>80{return Err("MCP server advertises too many tools".into());}
-        let mut seen=HashSet::new();
+        let mut seen_tools=HashSet::new();
+        let mut seen_cursors=HashSet::new();
+        let mut cursor:Option<String>=None;
         let mut tools=Vec::new();
-        for item in raw {
-            let Some(name)=item.get("name").and_then(Value::as_str) else {continue;};
-            if !safe_name(name) || !seen.insert(name.to_string()){continue;}
-            let schema=item.get("inputSchema").cloned().unwrap_or(json!({"type":"object","properties":{}}));
-            if schema.get("type").and_then(Value::as_str)!=Some("object"){continue;}
-            let headers=match collect_headers(&schema){
-                Ok(value)=>value,Err(error)=>{tracing::warn!(%error,%name,"ignored invalid MCP tool");continue;}
+        let mut ttl=Duration::from_millis(MAX_CACHE_MS);
+        // A 2026 MCP server can paginate tools/list. Honor all pages before
+        // publishing a catalog: an incomplete list would misroute an agent.
+        // Bound both page count and tool count against hostile endpoints.
+        let mut complete=false;
+        for _ in 0..16 {
+            let params=match &cursor{
+                Some(next)=>json!({"cursor":next}),
+                None=>json!({})
             };
-            let description=item.get("description").and_then(Value::as_str).unwrap_or("").chars().take(1500).collect::<String>();
-            tools.push(RemoteTool{name:name.into(),description,input_schema:schema,headers});
+            let result=self.rpc(server,"tools/list",params,None,&[]).await?;
+            if result.get("resultType").and_then(Value::as_str)==Some("input_required"){
+                return Err("MCP discovery requires interactive input".into());
+            }
+            ttl=ttl.min(announced_ttl(&result));
+            let raw=result.get("tools").and_then(Value::as_array).ok_or("MCP tools/list has no tools array")?;
+            if raw.len()+tools.len()>80{return Err("MCP server advertises too many tools".into());}
+            for item in raw {
+                let Some(tool_name)=item.get("name").and_then(Value::as_str) else {continue;};
+                if !safe_name(tool_name) || !seen_tools.insert(tool_name.to_string()){continue;}
+                let schema=item.get("inputSchema").cloned()
+                    .unwrap_or(json!({"type":"object","properties":{}}));
+                if schema.get("type").and_then(Value::as_str)!=Some("object"){continue;}
+                let headers=match collect_headers(&schema){
+                    Ok(value)=>value,
+                    Err(error)=>{tracing::warn!(%error,tool=%tool_name,"ignored invalid MCP tool");continue;}
+                };
+                let description=item.get("description").and_then(Value::as_str).unwrap_or("")
+                    .chars().take(1500).collect::<String>();
+                tools.push(RemoteTool{name:tool_name.into(),description,input_schema:schema,headers});
+            }
+            let next=result.get("nextCursor").and_then(Value::as_str);
+            match next {
+                Some(next) if !next.is_empty()=>{
+                    if next.len()>1024 || !seen_cursors.insert(next.to_string()){
+                        return Err("MCP tools/list repeated or oversized pagination cursor".into());
+                    }
+                    cursor=Some(next.to_string());
+                },
+                Some(_)=>return Err("MCP tools/list returned empty pagination cursor".into()),
+                None=>{complete=true;break;}
+            }
         }
-        self.cached.lock().await.insert(name.into(),(Instant::now(),tools.clone()));
+        if !complete{return Err("MCP tools/list exceeded 16 pagination pages".into());}
+        let mut cache=self.cached.lock().await;
+        if ttl.is_zero(){
+            cache.remove(name);
+        }else{
+            cache.insert(name.into(),(Instant::now(),ttl,tools.clone()));
+        }
         Ok(tools)
     }
     pub async fn definitions(&self)->Vec<Value>{
@@ -688,6 +740,62 @@ mod tests {
             "cost_note":"Unauthenticated public documentation request; provider billing not measured"
         }));
         drop(sender);
+    }
+
+
+    #[test]
+    fn honors_2026_cache_hints_without_fabricating_freshness(){
+        assert!(announced_ttl(&json!({"ttlMs":0,"cacheScope":"private"})).is_zero());
+        assert!(announced_ttl(&json!({"ttlMs":10000})).is_zero());
+        assert!(announced_ttl(&json!({"cacheScope":"public"})).is_zero());
+        assert!(announced_ttl(&json!({"ttlMs":5000,"cacheScope":"invalid"})).is_zero());
+        assert_eq!(announced_ttl(&json!({"ttlMs":9999999,"cacheScope":"public"})),
+            Duration::from_millis(MAX_CACHE_MS));
+    }
+
+    async fn paginated_tools_fixture(State(calls):State<Arc<AtomicUsize>>,Json(body):Json<Value>)
+        ->Json<Value>{
+        calls.fetch_add(1,Ordering::SeqCst);
+        let cursor=body["params"]["cursor"].as_str();
+        let (name,next,ttl)=match cursor{
+            None=>("first",Some("page-2"),5000),
+            Some("page-2")=>("second",None,1000),
+            _=>("unexpected",Some("page-2"),0)
+        };
+        let mut result=json!({"resultType":"complete","ttlMs":ttl,
+            "cacheScope":"private","tools":[{
+                "name":name,"description":"paged tool",
+                "inputSchema":{"type":"object","properties":{}}
+            }]});
+        if let Some(next)=next{result["nextCursor"]=json!(next);}
+        Json(json!({"jsonrpc":"2.0","id":body["id"],"result":result}))
+    }
+
+    #[tokio::test]
+    async fn discovers_every_page_and_refetches_when_shortest_ttl_expires(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url=format!("http://{}/mcp",listener.local_addr().unwrap());
+        let calls=Arc::new(AtomicUsize::new(0));
+        let state=Arc::clone(&calls);
+        let server=tokio::spawn(async move{
+            axum::serve(listener,Router::new().route("/mcp",post(paginated_tools_fixture))
+                .with_state(state)).await.unwrap();
+        });
+        let client=Mcp::new(vec![Server{name:"paged".into(),url,bearer_token:String::new()}]).unwrap();
+        let definitions=client.definitions().await;
+        assert_eq!(definitions.len(),2);
+        assert_eq!(definitions[0]["function"]["name"],"mcp__paged__first");
+        assert_eq!(definitions[1]["function"]["name"],"mcp__paged__second");
+        assert_eq!(calls.load(Ordering::SeqCst),2);
+        assert_eq!(client.definitions().await.len(),2);
+        assert_eq!(calls.load(Ordering::SeqCst),2,"fresh listing should hit client cache");
+        {
+            let mut cache=client.cached.lock().await;
+            cache.get_mut("paged").unwrap().0=Instant::now()-Duration::from_secs(5);
+        }
+        assert_eq!(client.definitions().await.len(),2);
+        assert_eq!(calls.load(Ordering::SeqCst),4,"expired listing must fetch both pages");
+        server.abort();
     }
 
     #[test]
