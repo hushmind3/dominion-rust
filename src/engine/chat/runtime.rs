@@ -114,6 +114,7 @@ fn rsi_checkpoint_stage_with_method(
         && tool_calls>=threshold {return Some(true);}
     rsi_should_checkpoint(tool_calls,has_write).then_some(false)
 }
+#[cfg(test)]
 fn rsi_checkpoint_stage(
     tool_calls: u64, read_calls: u64, has_write: bool,
     explicit_focus: bool, source_in_prompt: bool,
