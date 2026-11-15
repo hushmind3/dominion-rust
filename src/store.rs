@@ -1,7 +1,35 @@
-use crate::domain::{Run, RunStatus};
-use std::{collections::HashMap, path::PathBuf};
-use tokio::{fs, sync::Mutex};
+use crate::{domain::Run,journal};
+use std::{collections::HashMap, path::{Path,PathBuf}};
+use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
 use uuid::Uuid;
+
+/// Atomic snapshot: unique create-new temp, sync bytes, rename, sync directory.
+async fn persist(root:&Path,run:&Run)->Result<(),String>{
+    let destination=root.join(format!("{}.json",run.id));
+    let temporary=root.join(format!("{}-{}.tmp",run.id,Uuid::new_v4()));
+    let result=async{
+        let mut file=fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temporary).await.map_err(|e|e.to_string())?;
+        let bytes=serde_json::to_vec(run).map_err(|e|e.to_string())?;
+        file.write_all(&bytes).await.map_err(|e|e.to_string())?;
+        file.sync_all().await.map_err(|e|e.to_string())?;
+        drop(file);
+        fs::rename(&temporary,&destination).await.map_err(|e|e.to_string())?;
+        // The file contents alone are not enough after an OS crash:
+        // commit the renamed directory entry as well on Unix filesystems.
+        #[cfg(unix)]
+        {
+            let directory=root.to_owned();
+            tokio::task::spawn_blocking(move||->Result<(),String>{
+                std::fs::File::open(directory).map_err(|e|e.to_string())?
+                    .sync_all().map_err(|e|e.to_string())
+            }).await.map_err(|e|e.to_string())??;
+        }
+        Ok::<(),String>(())
+    }.await;
+    if result.is_err(){let _=fs::remove_file(&temporary).await;}
+    result
+}
 
 pub struct Store {
     root: PathBuf,
@@ -16,13 +44,9 @@ impl Store {
             if entry.path().extension().and_then(|e| e.to_str()) != Some("json") { continue; }
             let data = fs::read(entry.path()).await.map_err(|e| e.to_string())?;
             let mut run: Run = serde_json::from_slice(&data).map_err(|e| format!("corrupt run {}: {e}", entry.path().display()))?;
-            if run.status == RunStatus::Running || run.status == RunStatus::Queued {
-                run.status = RunStatus::Paused;
-                run.event("recovered", "Interrupted execution paused for recovery", None);
-                if let Some(call) = run.in_flight.clone() {
-                    run.event("tool_uncertain", format!("Interrupted {} ({}) needs reconciliation",call.name,call.id), None);
-                }
-            }
+            // Risk-aware restart. Never replay mutating tool intents with
+            // unknown results; auto-retry only the locally pure inspection set.
+            journal::recover(&mut run);
             state.insert(run.id, run);
         }
         // Backward-compatible recovery: earlier revisions allocated child
@@ -51,11 +75,7 @@ impl Store {
     }
     pub async fn put(&self, run: Run) -> Result<(), String> {
         let mut guard = self.state.lock().await;
-        let file = self.root.join(format!("{}.json", run.id));
-        let tmp = self.root.join(format!("{}.tmp", run.id));
-        let bytes = serde_json::to_vec(&run).map_err(|e| e.to_string())?;
-        fs::write(&tmp, bytes).await.map_err(|e| e.to_string())?;
-        fs::rename(tmp, file).await.map_err(|e| e.to_string())?;
+        persist(&self.root,&run).await?;
         guard.insert(run.id, run);
         Ok(())
     }
@@ -70,11 +90,7 @@ impl Store {
         let mut guard = self.state.lock().await;
         let mut run = guard.get(&id).cloned().ok_or("execution not found")?;
         change(&mut run)?;
-        let file = self.root.join(format!("{id}.json"));
-        let tmp = self.root.join(format!("{id}.tmp"));
-        let bytes = serde_json::to_vec(&run).map_err(|e| e.to_string())?;
-        fs::write(&tmp, bytes).await.map_err(|e| e.to_string())?;
-        fs::rename(tmp, file).await.map_err(|e| e.to_string())?;
+        persist(&self.root,&run).await?;
         guard.insert(id, run.clone());
         Ok(run)
     }
@@ -83,6 +99,71 @@ impl Store {
 mod tests {
     use super::*;
     use crate::domain::CreateRun;
+
+    #[tokio::test]
+    async fn mutating_tool_crash_never_replays_or_drops_unknown_intent(){
+        use crate::{domain::ToolCall,journal};
+        use serde_json::json;
+        let root=std::env::temp_dir().join(format!("dominion-crash-write-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut run=Run::new(CreateRun{instruction:"edit".into(),budget_krw:None,max_steps:None},4).unwrap();
+        run.status=crate::domain::RunStatus::Running;
+        let call=ToolCall{id:"write-1".into(),name:"write_file".into(),
+            arguments:json!({"path":"important.txt","content":"payload"})};
+        run.queued_calls.push(call.clone());
+        // Simulated crash after durable intent and before the tool receipt.
+        journal::begin(&mut run,&call).unwrap();
+        let id=run.id;store.put(run).await.unwrap();drop(store);
+        let restarted=Store::open(root.clone()).await.unwrap();
+        let snapshot=restarted.get(id).await.unwrap();
+        assert_eq!(snapshot.status,crate::domain::RunStatus::Paused);
+        assert_eq!(snapshot.in_flight.unwrap().id,call.id);
+        assert_eq!(snapshot.events.last().unwrap().kind,"tool_outcome_unknown");
+        // Explicit observation is the ONLY permissible completion.
+        restarted.mutate(id,|run|{
+            journal::finish(run,&call,&Ok("confirmed on disk".into()),true)
+        }).await.unwrap();
+        drop(restarted);
+        let final_state=Store::open(root.clone()).await.unwrap().get(id).await.unwrap();
+        assert!(final_state.in_flight.is_none());
+        assert!(final_state.queued_calls.is_empty());
+        assert_eq!(final_state.events.iter().filter(|e|e.kind=="tool_reconciled").count(),1);
+        assert!(final_state.messages.last().unwrap()["content"].as_str().unwrap().contains("confirmed"));
+        fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn read_only_tool_retries_queued_call_after_crash(){
+        use crate::{domain::ToolCall,journal};
+        use serde_json::json;
+        let root=std::env::temp_dir().join(format!("dominion-crash-read-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut run=Run::new(CreateRun{instruction:"inspect".into(),budget_krw:None,max_steps:None},4).unwrap();
+        run.status=crate::domain::RunStatus::Running;
+        let call=ToolCall{id:"read-1".into(),name:"read_file".into(),arguments:json!({"path":"hello.txt"})};
+        run.queued_calls.push(call.clone());
+        journal::begin(&mut run,&call).unwrap();
+        let id=run.id;store.put(run).await.unwrap();drop(store);
+        let restored=Store::open(root.clone()).await.unwrap().get(id).await.unwrap();
+        assert_eq!(restored.status,crate::domain::RunStatus::Paused);
+        assert!(restored.in_flight.is_none());
+        assert_eq!(restored.queued_calls.len(),1);
+        assert_eq!(restored.events.last().unwrap().kind,"recovered_ready");
+        fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn failed_snapshot_write_does_not_publish_in_memory_state(){
+        let root=std::env::temp_dir().join(format!("dominion-store-error-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let run=Run::new(CreateRun{instruction:"persist".into(),budget_krw:None,max_steps:None},4).unwrap();
+        let id=run.id;store.put(run).await.unwrap();
+        let target=root.join(format!("{id}.json"));
+        fs::remove_file(&target).await.unwrap();
+        fs::create_dir(&target).await.unwrap(); // Rename to directory must fail.
+        assert!(store.mutate(id,|r|{r.status=crate::domain::RunStatus::Completed;Ok(())}).await.is_err());
+        assert_eq!(store.get(id).await.unwrap().status,crate::domain::RunStatus::Queued);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn recovers_interrupted_execution() {
         let dir = std::env::temp_dir().join(format!("dominion-{}", Uuid::new_v4()));
