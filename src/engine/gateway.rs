@@ -559,6 +559,7 @@ pub fn record_usage_tokens_with_cache(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn record_usage_total(
     state: &AppState,
     provider_id: &str,
