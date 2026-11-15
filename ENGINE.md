@@ -87,7 +87,10 @@ SDK는 **모델/에이전트 판단기를 교체하지 않는 호스트용 라�
 `POST /api/goals/prepare` is a read-only, model-call-free preflight for
 natural-language goal creation. `src/engine/goals/admission.rs` checks
 configured providers, enabled agents, selected model names and simple
-role/task affinity. It returns `ready`, a candidate `executor`, the route
+role/task affinity. For a route without a specialist it **reuses
+`src/engine/router.rs`**, including declared quality, provider
+credentials and comparable KRW prices; short coding goals select
+the existing deep-work routing mode. It does not clone ranking logic. It returns `ready`, a candidate `executor`, the route
 source, and `estimatedCostKrw:null` where provider billing is unknown.
 No tool, job, or permission is created by this route. Owners explicitly
 confirm a preview in Home; a confirmed executor remains pinned rather than

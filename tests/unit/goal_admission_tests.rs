@@ -41,10 +41,28 @@ fn explicit_agent_specialty_beats_unrelated_default_and_disabled_routes(){
     drop(state);std::fs::remove_dir_all(root).unwrap();
 }
 #[test]
+fn shared_chat_router_quality_and_declared_prices_are_preserved(){
+    let (state,root)=fixture();
+    state.store.put("provider",&json!({"id":"weak","kind":"ollama","enabled":true,
+        "model":"3b","capabilities":{"quality":0.1}}));
+    state.store.put("provider",&json!({"id":"strong","kind":"openai","enabled":true,
+        "model":"frontier","capabilities":{"quality":0.95},
+        "costPerMillionInputKrw":2000.0,"costPerMillionOutputKrw":6000.0}));
+    // This is a coding task despite being a short message. The engine uses
+    // its existing quality-first Deep router, not local-only as a default.
+    let selected=admission::prepare(&state,&json!({"goal":"Rust 코드 버그 수정"})).unwrap();
+    assert_eq!(selected["executor"]["providerId"],"strong");
+    assert_eq!(selected["declaredRateKrwPerMillionTokens"]["input"],2000.0);
+    assert_eq!(selected["declaredRateKrwPerMillionTokens"]["output"],6000.0);
+    assert!(selected["estimatedCostKrw"].is_null());
+    drop(state);std::fs::remove_dir_all(root).unwrap();
+}
+#[test]
 fn local_configured_fallback_when_no_agent_never_claims_zero_price(){
     let (state,root)=fixture();
     state.store.put("provider",&json!({"id":"cloud","kind":"openai","enabled":true,"model":"cloud-model"}));
-    state.store.put("provider",&json!({"id":"local","kind":"ollama","enabled":true,"model":"local-model"}));
+    state.store.put("provider",&json!({"id":"local","kind":"ollama","enabled":true,"model":"local-model",
+        "capabilities":{"quality":0.7}}));
     let selected=admission::prepare(&state,&json!({"goal":"문서를 요약하세요"})).unwrap();
     assert_eq!(selected["executor"]["providerId"],"local");
     assert!(selected["estimatedCostKrw"].is_null());

@@ -10,6 +10,7 @@ fn field<'a>(value:&'a Value,key:&str)->&'a str{
 fn active(value:&Value)->bool{value["enabled"]!=false}
 fn configured(provider:&Value,model:&str)->bool{
     !field(provider,"id").is_empty() && active(provider) && !model.is_empty()
+        && crate::engine::gateway::provider_eligible(provider)
 }
 fn category(goal:&str)->&'static str{
     let text=goal.to_lowercase();
@@ -66,7 +67,7 @@ pub fn prepare(state:&AppState,body:&Value)->Result<Value,String>{
     let kind=category(goal);
     let providers=state.store.all("provider");
     let agents=state.store.all("agent");
-    let mut ranked=Vec::<(usize,usize,Value,Value)>::new();
+    let mut ranked=Vec::<(usize,f64,usize,Value,Value)>::new();
     for (index,agent) in agents.iter().enumerate(){
         if !active(agent){continue;}
         let provider_id=field(agent,"providerId");
@@ -74,31 +75,47 @@ pub fn prepare(state:&AppState,body:&Value)->Result<Value,String>{
         let model=if field(agent,"model").is_empty(){field(provider,"model")}
             else{field(agent,"model")};
         if !configured(provider,model){continue;}
-        ranked.push((affinity(agent,kind,goal),index,agent.clone(),provider.clone()));
+        ranked.push((affinity(agent,kind,goal),
+            crate::engine::gateway::capability_score(provider),index,
+            agent.clone(),provider.clone()));
     }
-    ranked.sort_by(|a,b|b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let (executor,source,agent_name,provider_name)=if let Some((_,_,agent,provider))=ranked.first(){
+    ranked.sort_by(|a,b|b.0.cmp(&a.0)
+        .then_with(||b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
+    let (executor,source,agent_name,provider_name,chosen_provider)=
+        if let Some((_,_,_,agent,provider))=ranked.first(){
         let model=if field(agent,"model").is_empty(){field(provider,"model")}else{field(agent,"model")};
         (json!({"agentId":field(agent,"id"),"providerId":field(provider,"id"),"model":model}),
-            "registered_agent",field(agent,"name").to_owned(),field(provider,"name").to_owned())
+            "registered_agent",field(agent,"name").to_owned(),field(provider,"name").to_owned(),provider.clone())
     }else{
-        // If the user has no ready agent, the registered provider itself is
-        // sufficient. Local configured routes are preferred before cloud ones;
-        // neither is assumed to be free or remotely reachable.
-        let mut choices=providers.iter().filter(|p|configured(p,field(p,"model")))
-            .collect::<Vec<_>>();
-        choices.sort_by_key(|p|{
-            let local=matches!(field(p,"kind"),"ollama"|"llamacpp"|"llama"|"mlx"|"local");
-            if local{0}else{1}
-        });
-        if let Some(provider)=choices.first(){
+        // Reuse the single chat router's quality, cache, known-price and
+        // credential signals. Do not invent a second cost-ranking algorithm.
+        // Coding requires a capable route even for a short owner sentence.
+        let complexity=if kind=="coding" {
+            crate::engine::router::Complexity::Deep
+        } else {crate::engine::router::classify(goal,0,0)};
+        let selected=crate::engine::router::select_provider(state,complexity)
+            .filter(|p|configured(p,field(p,"model")))
+            .or_else(||providers.iter()
+                .filter(|p|configured(p,field(p,"model")))
+                .max_by(|a,b|crate::engine::gateway::capability_score(a)
+                    .total_cmp(&crate::engine::gateway::capability_score(b)))
+                .cloned());
+        if let Some(provider)=selected.as_ref(){
             (json!({"providerId":field(provider,"id"),"model":field(provider,"model")}),
-                "configured_provider",String::new(),field(provider,"name").to_owned())
+                "configured_provider",String::new(),field(provider,"name").to_owned(),provider.clone())
         }else{
             return Ok(json!({"ready":false,"taskKind":kind,
                 "message":"사용 가능한 모델이 없습니다. 모델 메뉴에서 로컬 모델이나 제공자를 먼저 연결하세요.",
                 "nextPage":"models","createsJob":false,"estimatedCostKrw":null}));
         }
+    };
+    let input_rate=chosen_provider["costPerMillionInputKrw"].as_f64()
+        .filter(|n|n.is_finite()&&*n>=0.0&&*n<=100_000_000.0);
+    let output_rate=chosen_provider["costPerMillionOutputKrw"].as_f64()
+        .filter(|n|n.is_finite()&&*n>=0.0&&*n<=100_000_000.0);
+    let declared_rates=match (input_rate,output_rate){
+        (Some(input),Some(output))=>json!({"input":input,"output":output}),
+        _=>Value::Null,
     };
     Ok(json!({"ready":true,"taskKind":kind,"executor":executor,
         "selection":{"source":source,"agentName":agent_name,
@@ -106,6 +123,7 @@ pub fn prepare(state:&AppState,body:&Value)->Result<Value,String>{
         "recommendedWorktree":kind=="coding",
         "requiresChargeConfirmation":true,
         "estimatedCostKrw":null,
+        "declaredRateKrwPerMillionTokens":declared_rates,
         "message":"설정된 모델을 선택했습니다. 실제 연결 및 요금은 실행 과정에서 확인됩니다.",
         "createsJob":false}))
 }
