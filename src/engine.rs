@@ -718,6 +718,8 @@ mod recovery_tests {
         assert_eq!(snapshot.messages.last().unwrap()["tool_call_id"],"deny-1");
         assert!(snapshot.in_flight.is_none());
         assert!(snapshot.pending_approval.is_none());
+        assert!(tokio::fs::metadata(dir.join("workspace").join(id.to_string())
+            .join("should-never-exist")).await.is_err());
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
 
