@@ -18,8 +18,19 @@ impl Dominion {
         let engine=Engine::new(settings,store,groups,videos,improvements)?;
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
-        let suspended=engine.store.list().await.into_iter().filter(|r|r.waiting_for_children).map(|r|r.id).collect::<Vec<_>>();
+        let snapshots=engine.store.list().await;
+        let suspended=snapshots.iter().filter(|r|r.waiting_for_children).map(|r|r.id).collect::<Vec<_>>();
         for id in suspended {engine.settle_and_wake_ancestors(id).await?;}
+        // Restart only work for which recovery proved there was no unfinished
+        // mutating side effect. A previously approved call that never reached
+        // the execution-intent checkpoint is also safe to start.
+        for snapshot in snapshots {
+            if snapshot.status==RunStatus::Paused && snapshot.in_flight.is_none()
+                && !snapshot.waiting_for_children
+                && snapshot.events.last().is_some_and(|e|e.kind=="recovered_ready"){
+                engine.launch(snapshot.id).await?;
+            }
+        }
         Ok(Self{engine})
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
