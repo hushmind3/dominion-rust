@@ -315,14 +315,19 @@ export class DominionSDK {
   roomMessages(id: string, signal?: AbortSignal): Promise<RoomMessage[]> {
     return this.get('/api/rooms/' + encodeURIComponent(id) + '/messages', signal)
   }
-  sendRoomMessage(id: string, content: string): Promise<JsonObject> {
-    return this.post('/api/rooms/' + encodeURIComponent(id) + '/messages', {content})
+  /** Submit one owner turn; clientMessageId deduplicates a deliberate retry. */
+  sendRoomMessage(id: string, input: string, options: {
+    clientMessageId?: string
+    agentIds?: string[]
+  } = {}): Promise<JsonObject> {
+    return this.post('/api/rooms/' + encodeURIComponent(id) + '/messages', {...options, input})
   }
   roomState(id: string, signal?: AbortSignal): Promise<JsonObject> {
     return this.get('/api/rooms/' + encodeURIComponent(id) + '/state', signal)
   }
-  runRoom(id: string, options: JsonObject = {}): Promise<JsonObject> {
-    return this.post('/api/rooms/' + encodeURIComponent(id) + '/run', options)
+  /** The server requires an actual owner input even for the historic /run path. */
+  runRoom(id: string, input: string, options: JsonObject = {}): Promise<JsonObject> {
+    return this.post('/api/rooms/' + encodeURIComponent(id) + '/run', {...options, input})
   }
   stopRoom(id: string): Promise<JsonObject> {
     return this.post('/api/rooms/' + encodeURIComponent(id) + '/stop', {})
@@ -361,7 +366,7 @@ export class DominionSDK {
   saveWorkflow(workflow: JsonObject): Promise<JsonObject> {
     return this.post('/api/workflows', workflow)
   }
-  rsiCampaigns(signal?: AbortSignal): Promise<JsonObject[]> {
+  rsiCampaigns(signal?: AbortSignal): Promise<{campaigns: JsonObject[]}> {
     return this.get('/api/rsi/campaigns', signal)
   }
   rsiCampaign(id: string, signal?: AbortSignal): Promise<JsonObject> {
