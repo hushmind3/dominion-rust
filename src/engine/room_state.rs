@@ -310,12 +310,14 @@ pub fn observe_owner_message(
 /// Renders the active owner state as a compact, verbatim block. The caller
 /// appends it to the fixed room prompt so a history-budget rebase cannot drop
 /// it. Newest entries win when the context cap is reached.
+#[cfg(test)]
 pub fn context_block(state: &AppState, room_id: &str) -> Option<String> {
     context_block_for_query(state, room_id, "")
 }
 
 /// Selects the most relevant durable statements for the current question,
 /// rather than evicting an early decision merely because later turns are long.
+#[cfg(test)]
 pub fn context_block_for_query(
     state: &AppState,
     room_id: &str,
