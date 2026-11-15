@@ -46,7 +46,7 @@ fn atomic(file:&Path,bytes:&[u8])->Result<(),String>{
  if result.is_err(){let _=fs::remove_file(stage);}
  result
 }
-#[derive(Serialize,Deserialize)]
+#[derive(Clone,Serialize,Deserialize)]
 struct Keys{active:u32,versions:BTreeMap<u32,String>}
 fn load_keys(settings:&Settings,create:bool)->Result<Keys,String>{
  let path=keyfile(settings);
