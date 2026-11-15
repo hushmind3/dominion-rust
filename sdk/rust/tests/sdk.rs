@@ -330,11 +330,13 @@ async fn rust_sdk_review_policy_is_serialized_for_same_native_goal_and_ui_contra
 async fn rust_sdk_room_video_and_rsi_use_native_product_endpoints(){
     let app=Router::new()
         .route("/api/rooms/:id/messages",post(|Path(id):Path<String>,Json(body):Json<Value>|async move{
-            assert_eq!(id,"r1");assert_eq!(body["content"],"latest owner message");
+            assert_eq!(id,"r1");assert_eq!(body["input"],"latest owner message");
+            assert!(body["clientMessageId"].is_null());
             Json(json!({"id":"message"}))
         }))
         .route("/api/rooms/:id/run",post(|Path(id):Path<String>,Json(body):Json<Value>|async move{
-            assert_eq!(id,"r1");assert_eq!(body["maxTurns"],3);
+            assert_eq!(id,"r1");assert_eq!(body["input"],"next owner directive");
+            assert_eq!(body["agentIds"],json!(["a1"]));
             Json(json!({"id":"room-job","status":"queued"}))
         }))
         .route("/api/video/quote",post(|Json(body):Json<Value>|async move{
@@ -347,9 +349,31 @@ async fn rust_sdk_room_video_and_rsi_use_native_product_endpoints(){
     let (base,server)=serve(app).await;
     let sdk=DominionClient::new(&base).unwrap();
     assert_eq!(sdk.send_room_message("r1","latest owner message").await.unwrap()["id"],"message");
-    assert_eq!(sdk.run_room("r1",json!({"maxTurns":3})).await.unwrap()["status"],"queued");
+    assert_eq!(sdk.run_room("r1","next owner directive",json!({"agentIds":["a1"]})).await.unwrap()["status"],"queued");
     assert_eq!(sdk.video_quote(json!({"duration":5})).await.unwrap()["requiresApproval"],true);
     assert_eq!(sdk.rsi_campaign("campaign-1").await.unwrap()["id"],"campaign-1");
     assert_eq!(sdk.skills().await.unwrap().len(),1);
+    server.abort();
+}
+
+
+#[tokio::test]
+async fn rust_room_idempotency_nonce_and_rsi_envelope_match_persisted_contract(){
+    let app=Router::new()
+        .route("/api/rooms/:id/messages",post(|Json(body):Json<Value>|async move{
+            assert_eq!(body["input"],"owner");
+            assert_eq!(body["clientMessageId"],"owner-turn-1");
+            Json(json!({"id":"deduplicated-job","status":"queued"}))
+        }))
+        .route("/api/rsi/campaigns",get(||async{
+            Json(json!({"campaigns":[{"id":"exp1","status":"completed"}]}))
+        }));
+    let (base,server)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    let message=sdk.send_room_message_once("r1","owner",Some("owner-turn-1")).await.unwrap();
+    assert_eq!(message["id"],"deduplicated-job");
+    let camps=sdk.rsi_campaigns().await.unwrap();
+    assert_eq!(camps["campaigns"][0]["id"],"exp1");
+    assert!(sdk.run_room("r1","owner",Value::Null).await.is_err());
     server.abort();
 }
