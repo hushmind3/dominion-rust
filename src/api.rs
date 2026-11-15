@@ -36,6 +36,9 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/health",get(|| async { Json(json!({"ok":true,"name":"dominion","api":"v1"})) }))
         .route("/config",get(config))
         .route("/memory",get(list_memory).post(save_memory))
+        .route("/memory/all",get(all_memory))
+        .route("/memory/scopes",get(memory_scopes))
+        .route("/memory/{id}",post(revise_memory).delete(forget_memory))
         .route("/strategies",get(list_strategies))
         .route("/runs",get(list_runs).post(create_run))
         .route("/runs/from-repository",post(create_repository_run))
@@ -87,6 +90,24 @@ async fn save_memory(State(engine):State<Arc<Engine>>,Json(req):Json<SaveMemory>
     ->Result<(StatusCode,Json<crate::knowledge::MemoryEntry>),ApiError>{
     let note=engine.knowledge.remember(&req.scope,&req.title,&req.content).await.map_err(bad)?;
     Ok((StatusCode::CREATED,Json(note)))
+}
+async fn memory_scopes(State(engine):State<Arc<Engine>>)->Json<Vec<String>>{
+    Json(engine.knowledge.scopes().await)
+}
+async fn all_memory(State(engine):State<Arc<Engine>>,Query(q):Query<MemoryQuery>)
+    ->Json<Vec<crate::knowledge::MemoryEntry>>{
+    Json(engine.knowledge.list(q.scope.as_deref().unwrap_or("global")).await)
+}
+async fn revise_memory(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
+    Json(req):Json<SaveMemory>)->Result<Json<crate::knowledge::MemoryEntry>,ApiError>{
+    engine.knowledge.revise(&req.scope,id,&req.title,&req.content).await
+        .map(Json).map_err(bad)
+}
+async fn forget_memory(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
+    Query(q):Query<MemoryQuery>)->Result<Json<Value>,ApiError>{
+    engine.knowledge.forget(q.scope.as_deref().unwrap_or("global"),id).await
+        .map_err(bad)?;
+    Ok(Json(json!({"deleted":true,"id":id})))
 }
 
 #[derive(Deserialize)]

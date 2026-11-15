@@ -372,3 +372,7 @@ Rust SDK: `Dominion::search_strategies`. REST: `GET /api/v1/strategies?repositor
 No tests, benchmark or CI have been executed for this iteration, as instructed. GitHub Actions remains manually dispatched on this branch.
 
 The operator switch `DOMINION_STRATEGY_LEARNING=false` disables automatic memory-based strategy injection and extra reflection model calls without deleting recorded evidence. The public configuration response and Studio settings view expose the effective switch.
+
+### 메인 화면의 세부 기능 복원 진행 (2026-11-15)
+
+메인의 React 레이아웃을 공유하는 것과 세부 기능이 Rust 엔진에 연결되는 것은 구별합니다. 정확한 기능별 연결·미연결 목록은 docs/UI_FEATURE_PARITY_2026.md에 정리했습니다. 첫 복원 대상인 기억 관리는 원래 MemoryPage를 실제 메뉴에 다시 연결하고, Rust Knowledge 저장소 기반으로 범위별 메모 목록, 신규 작성, 제목·내용 편집, 영구 삭제, 검색, 변경 기록을 제공합니다. 기존 통합 패널의 중복 메모 화면을 제거했습니다. 예전 API를 동작하는 척 제공하지 않고 native /api/v1/memory 엔드포인트에 연결합니다. Rust와 TypeScript SDK도 같은 CRUD 계약을 사용합니다. 요청에 따라 이번 변경에는 CI나 테스트를 실행하지 않았습니다.

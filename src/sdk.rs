@@ -138,6 +138,19 @@ impl Dominion {
     pub async fn search_memory(&self,scope:&str,query:&str)->Vec<crate::knowledge::MemoryEntry>{
         self.engine.knowledge.search(scope,query,20).await
     }
+    pub async fn list_memory(&self,scope:&str)->Vec<crate::knowledge::MemoryEntry>{
+        self.engine.knowledge.list(scope).await
+    }
+    pub async fn memory_scopes(&self)->Vec<String>{
+        self.engine.knowledge.scopes().await
+    }
+    pub async fn revise_memory(&self,scope:&str,id:Uuid,title:&str,content:&str)
+        ->Result<crate::knowledge::MemoryEntry,String>{
+        self.engine.knowledge.revise(scope,id,title,content).await
+    }
+    pub async fn forget_memory(&self,scope:&str,id:Uuid)->Result<(),String>{
+        self.engine.knowledge.forget(scope,id).await
+    }
     pub async fn tool_catalog(&self)->Vec<Value>{
         let mut tools=tools::definitions(self.engine.settings.shell_enabled);
         tools.extend(self.engine.mcp.definitions().await);

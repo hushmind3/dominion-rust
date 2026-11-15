@@ -6,6 +6,7 @@ import {WorkspaceSidebar,WorkspaceHeader,CommandPalette,navigation,type PageId} 
 // The original main UI shell is retained; functional pages use the Rust SDK API.
 const RustWorkspacePage=lazy(()=>import('./pages/RustWorkspace').then(module=>({default:module.RustWorkspacePage})))
 const HomePage=lazy(()=>import('./pages/Home').then(module=>({default:module.HomePage})))
+const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 
 // A running tab retains the entry bundle from the moment it was opened.
 // After "npm run build", lazy-loaded page chunks have new hashed URLs, while
@@ -164,7 +165,7 @@ export default function App(){
    <div className={'min-w-0 page-'+page}>
     <PageLoadBoundary key={page}>
     <Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
-    {page==='home'?<HomePage navigate={navigate}/>:<RustWorkspacePage key={page+'-'+(page==='chat'?chatDraft:0)} area={page}/>}
+    {page==='home'?<HomePage navigate={navigate}/>:page==='memory'?<MemoryPage/>:<RustWorkspacePage key={page+'-'+(page==='chat'?chatDraft:0)} area={page}/>}
     </Suspense>
     </PageLoadBoundary>
    </div>

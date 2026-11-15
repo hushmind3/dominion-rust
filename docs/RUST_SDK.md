@@ -206,3 +206,7 @@ security shortcut and does not imply measured real-provider accuracy.
 `Dominion::search_strategies(repository, goal, max)` returns bounded, project-specific `StrategyEvidence` with source run/trial UUID, provenance, measured scores where available, attempts, actual provider charges and a conditional method note. Adoption and strict completion, not model opinion, determine whether a candidate counts as positive evidence. The native agent plan and RSI candidate generator query the same evidence internally; the REST adapter exposes `GET /api/v1/strategies`. This non-weight strategy layer is implemented within Rust and is independent of the configured provider.
 
 Strategy reuse is controlled by `Settings::from_env` / `DOMINION_STRATEGY_LEARNING=false`; the getter still allows users to inspect the recorded evidence without executing new model calls. `PublicSettings.strategy_learning_enabled` reports its effective value.
+
+### Project-scoped memory management
+
+The native Dominion SDK exposes list_memory(scope), memory_scopes(), revise_memory(scope,id,title,content) and forget_memory(scope,id) in addition to remember/search_memory. Changes affect the same durable Knowledge dataset used by agent tools; revisions do not move notes across project boundaries. The HTTP and TypeScript SDK equivalents are listed in docs/UI_FEATURE_PARITY_2026.md. Deletion requires an explicit memory ID and matching scope.

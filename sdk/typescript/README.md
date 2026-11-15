@@ -112,3 +112,7 @@ Call `improvements.create({ repository, instruction, test_command, score_command
 ## Shared Rust strategy retrieval (2026-11-15)
 
 `await dominion.strategies.search(repository, goal, 4)` returns repository-scoped case evidence. Entries distinguish adopted RSI experiments, independent-verifier completed agent runs and rejected RSI counterexamples. These are direct Rust HTTP records, not a TypeScript implementation of a self-improvement loop. Use `improvements.get(id).strategy` to inspect any recorded conditional strategy hypothesis for an individual trial.
+
+### Memory CRUD against the Rust engine
+
+Dominion.memory.list(scope), .scopes(), .store({scope,title,content}), .revise(id,{scope,title,content}) and .forget(id,scope) call the native Rust memory store. This is a typed transport wrapper, not a separate TypeScript memory engine. The main MemoryPage uses the same REST routes.

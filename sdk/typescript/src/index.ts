@@ -89,7 +89,7 @@ export class Dominion {
     this.token = options.token;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
-  async request<T>(method: 'GET'|'POST', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  async request<T>(method: 'GET'|'POST'|'DELETE', path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (this.token) headers.Authorization = 'Bearer ' + this.token;
@@ -126,6 +126,13 @@ export class Dominion {
       this.request<MemoryEntry[]>('GET','/memory?scope='+encodeURIComponent(scope)+'&query='+encodeURIComponent(query)),
     store: (input: {scope:string;title:string;content:string}) =>
       this.request<MemoryEntry>('POST','/memory',input),
+    list: (scope='global') =>
+      this.request<MemoryEntry[]>('GET','/memory/all?scope='+encodeURIComponent(scope)),
+    scopes: () => this.request<string[]>('GET','/memory/scopes'),
+    revise: (id:string,input:{scope:string;title:string;content:string}) =>
+      this.request<MemoryEntry>('POST','/memory/'+encodeURIComponent(id),input),
+    forget: (id:string,scope:string) =>
+      this.request<{deleted:boolean;id:string}>('DELETE','/memory/'+encodeURIComponent(id)+'?scope='+encodeURIComponent(scope)),
   };
 
   readonly groups = {

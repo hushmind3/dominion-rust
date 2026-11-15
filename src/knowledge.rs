@@ -3,7 +3,7 @@
 use crate::domain::now_ms;
 use serde::{Serialize,Deserialize};
 use std::{path::PathBuf,collections::HashSet};
-use tokio::{fs,sync::Mutex};
+use tokio::{fs,io::AsyncWriteExt,sync::Mutex};
 use uuid::Uuid;
 
 #[derive(Clone,Debug,Serialize,Deserialize)]
@@ -27,6 +27,29 @@ fn valid(scope:&str,title:&str,content:&str)->Result<(),String>{
         return Err("memory title must be 1..120 bytes and content 1..4000 bytes".into());
     }
     Ok(())
+}
+async fn persist(file:&std::path::Path,entries:&[MemoryEntry])->Result<(),String>{
+    let parent=file.parent().ok_or("memory path has no parent")?;
+    let temp=parent.join(format!(".knowledge-{}.tmp",Uuid::new_v4()));
+    let bytes=serde_json::to_vec(entries).map_err(|e|e.to_string())?;
+    let write=async{
+        let mut out=fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temp).await.map_err(|e|e.to_string())?;
+        out.write_all(&bytes).await.map_err(|e|e.to_string())?;
+        out.sync_all().await.map_err(|e|e.to_string())?;
+        fs::rename(&temp,file).await.map_err(|e|e.to_string())?;
+        #[cfg(unix)]
+        {
+            let parent=parent.to_owned();
+            tokio::task::spawn_blocking(move||{
+                std::fs::File::open(parent).and_then(|dir|dir.sync_all())
+            }).await.map_err(|e|e.to_string())?
+                .map_err(|e|e.to_string())?;
+        }
+        Ok::<_,String>(())
+    }.await;
+    if write.is_err(){let _=fs::remove_file(&temp).await;}
+    write
 }
 impl Knowledge{
     pub fn open(data_dir:PathBuf)->Result<Self,String>{
@@ -52,11 +75,56 @@ impl Knowledge{
             let value=MemoryEntry{id:Uuid::new_v4(),scope:scope.to_owned(),title:title.to_owned(),content:content.to_owned(),created_at_ms:now,updated_at_ms:now};
             entries.push(value.clone());value
         };
-        let temp=self.file.with_extension("json.tmp");
-        fs::write(&temp,serde_json::to_vec(&*entries).map_err(|e|e.to_string())?).await.map_err(|e|e.to_string())?;
-        fs::rename(temp,&self.file).await.map_err(|e|e.to_string())?;
+        persist(&self.file,&entries).await?;
         *locked=entries;
         Ok(updated)
+    }
+    /// Exact-scope inventory: unlike search this never includes inherited
+    /// global notes. A user must explicitly select a project to manage it.
+    pub async fn list(&self,scope:&str)->Vec<MemoryEntry>{
+        let entries=self.entries.lock().await;
+        let mut result=entries.iter().filter(|entry|entry.scope==scope).cloned().collect::<Vec<_>>();
+        result.sort_by_key(|entry|std::cmp::Reverse(entry.updated_at_ms));
+        result
+    }
+    pub async fn scopes(&self)->Vec<String>{
+        let entries=self.entries.lock().await;
+        let mut scopes=entries.iter().map(|e|e.scope.clone()).collect::<HashSet<_>>();
+        scopes.insert("global".into());
+        let mut result=scopes.into_iter().collect::<Vec<_>>();
+        result.sort();
+        result
+    }
+    /// An ID is immutable. Editing never silently changes project scope.
+    pub async fn revise(&self,scope:&str,id:Uuid,title:&str,content:&str)
+        ->Result<MemoryEntry,String>{
+        valid(scope,title,content)?;
+        let mut locked=self.entries.lock().await;
+        let mut next=locked.clone();
+        let target=next.iter().position(|e|e.id==id&&e.scope==scope)
+            .ok_or("memory not found in selected scope")?;
+        if next.iter().any(|e|e.scope==scope&&e.id!=id&&e.title.eq_ignore_ascii_case(title)){
+            return Err("another memory already has that title in this project".into());
+        }
+        let entry=&mut next[target];
+        entry.title=title.to_owned();
+        entry.content=content.to_owned();
+        entry.updated_at_ms=now_ms();
+        let result=entry.clone();
+        persist(&self.file,&next).await?;
+        *locked=next;
+        Ok(result)
+    }
+    pub async fn forget(&self,scope:&str,id:Uuid)->Result<(),String>{
+        if scope.is_empty(){return Err("memory scope required".into());}
+        let mut locked=self.entries.lock().await;
+        let mut next=locked.clone();
+        let before=next.len();
+        next.retain(|e|e.id!=id||e.scope!=scope);
+        if next.len()==before{return Err("memory not found in selected scope".into());}
+        persist(&self.file,&next).await?;
+        *locked=next;
+        Ok(())
     }
     pub async fn search(&self,scope:&str,query:&str,max:usize)->Vec<MemoryEntry>{
         let query=query.to_lowercase();

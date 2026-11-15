@@ -13,7 +13,6 @@ type Video={id:string;prompt:string;status:string;backend:string;scenes:Scene[];
 type StrategyEvidence={source_id:string;source:string;goal:string;principle:string;when_to_use:string;failure_mode:string;outcome:string;baseline_score:number|null;resulting_score:number|null;attempts:number;cost_krw:number}
 type Improvement={id:string;repository:string;target_file:string;target_files?:string[];attempts?:number;selection_reason?:string|null;strategy?:{principle:string;when_to_use:string;failure_mode:string}|null;instruction:string;test_command:string;score_command?:string|null;status:string;baseline?:{tests_passed:boolean;score?:number}|null;candidate?:{tests_passed:boolean;score?:number}|null;reflection?:string|null;error?:string|null;cost_krw:number}
 type Config={model:string;economy_model:string;configured:boolean;shell_enabled:boolean;strategy_learning_enabled?:boolean;max_steps:number;mcp_server_count:number;context_max_chars:number;max_parallel_reads:number;denied_tools:string[];tool_result_max_chars:number}
-type MemoryNote={id:string;scope:string;title:string;content:string;updated_at_ms:number}
 type ProjectSkill={name:string;path:string}
 
 type McpProgressView={progress:number;total?:number;message?:string}
@@ -55,18 +54,13 @@ function SceneEditor({scene,index,onSave,disabled}:{scene:Scene;index:number;onS
  </div>
 }
 export function RustWorkspacePage({area}:{area:PageId}){
- const mode=area==='rooms'?'rooms':area==='video'?'videos':area==='rsi'?'rsi':area==='memory'?'memory':area==='extensions'?'skills':['models','connections','settings'].includes(area)?'settings':'runs'
+ const mode=area==='rooms'?'rooms':area==='video'?'videos':area==='rsi'?'rsi':area==='extensions'?'skills':['models','connections','settings'].includes(area)?'settings':'runs'
  const [runs,setRuns]=useState<Run[]>([])
  const [rooms,setRooms]=useState<Room[]>([])
  const [videos,setVideos]=useState<Video[]>([])
  const [improvements,setImprovements]=useState<Improvement[]>([])
  const [strategyEvidence,setStrategyEvidence]=useState<StrategyEvidence[]>([])
  const [config,setConfig]=useState<Config|null>(null)
- const [notes,setNotes]=useState<MemoryNote[]>([])
- const [noteTitle,setNoteTitle]=useState('')
- const [noteContent,setNoteContent]=useState('')
- const [noteScope,setNoteScope]=useState('global')
- const [noteQuery,setNoteQuery]=useState('')
  const [skills,setSkills]=useState<ProjectSkill[]>([])
  const [skillText,setSkillText]=useState('')
  const [selectedId,setSelectedId]=useState('')
@@ -106,9 +100,8 @@ export function RustWorkspacePage({area}:{area:PageId}){
   if(mode==='videos')setVideos(await get<Video[]>('/api/v1/videos'))
   if(mode==='rsi')setImprovements(await get<Improvement[]>('/api/v1/improvements'))
   if(mode==='settings')setConfig(await get<Config>('/api/v1/config'))
-  if(mode==='memory')setNotes(await get<MemoryNote[]>('/api/v1/memory?scope='+encodeURIComponent(noteScope)+'&query='+encodeURIComponent(noteQuery)))
   if(mode==='skills')setRuns(await get<Run[]>('/api/v1/runs'))
- },[mode,noteScope,noteQuery])
+ },[mode])
  useEffect(()=>{
   let active=true
   const update=()=>{void refresh().catch(e=>{if(active)setError((e as Error).message)})}
@@ -298,30 +291,6 @@ export function RustWorkspacePage({area}:{area:PageId}){
    </div>
   </>}
 
-  {mode==='memory'&&<>
-   <section className={panel}>
-    <h2 className="mb-3 text-[14px] font-bold">장기 기억 · 비가중치 학습</h2>
-    <p className="mb-3 text-[12px] text-[#7A7065]">메모는 실행을 넘어 유지되며, 같은 저장소의 다음 작업에서 검색해 재사용합니다. 모델 가중치는 변경하지 않습니다.</p>
-    <div className="grid gap-3 sm:grid-cols-2"><label className="text-[11px]">범위 (global 또는 작업 저장소 경로)<input className={field} value={noteScope} maxLength={512} onChange={e=>setNoteScope(e.target.value)}/></label>
-     <label className="text-[11px]">기억 제목<input className={field} value={noteTitle} maxLength={120} onChange={e=>setNoteTitle(e.target.value)}/></label></div>
-    <textarea className={field+' mt-3'} rows={3} value={noteContent} maxLength={4000} onChange={e=>setNoteContent(e.target.value)} placeholder="재사용할 사실, 제약, 확인된 교훈 또는 절차"/>
-    <button type="button" className={primary+' mt-3'} disabled={busy||!noteTitle.trim()||!noteContent.trim()||!noteScope.trim()} onClick={()=>void perform(async()=>{
-     await post('/api/v1/memory',{scope:noteScope,title:noteTitle,content:noteContent});
-     setNoteTitle('');setNoteContent('')
-    },'기억을 저장했습니다.')}>기억 저장</button>
-   </section>
-   <section className={panel+' mt-4'}>
-    <h2 className="mb-3 text-[14px] font-bold">저장된 기억 · {notes.length}개</h2>
-    <div className="mb-3 flex gap-2"><input className={field} value={noteQuery} onChange={e=>setNoteQuery(e.target.value)} placeholder="검색어"/><button type="button" className={btn} disabled={busy} onClick={()=>void perform(async()=>{
-     const result=await get<MemoryNote[]>('/api/v1/memory?scope='+encodeURIComponent(noteScope)+'&query='+encodeURIComponent(noteQuery))
-     setNotes(result)
-    })}>검색</button></div>
-    <div className="grid gap-3">{notes.map(note=><article key={note.id} className="rounded-lg border border-[#ECE5DC] bg-[#FCFAF7] p-3"><h3 className="text-[12px] font-bold">{note.title}</h3>
-     <p className="mt-1 text-[11px] text-[#8C8175]">{note.scope} · {new Date(note.updated_at_ms).toLocaleString('ko-KR')}</p>
-     <p className="mt-2 whitespace-pre-wrap text-[12px]">{note.content}</p>
-    </article>)}</div>
-   </section>
-  </>}
   {mode==='skills'&&<section className={panel}>
    <h2 className="mb-3 text-[14px] font-bold">프로젝트 스킬 · 지연 로딩</h2>
    <p className="mb-3 text-[12px] text-[#7A7065]">실행 작업의 Git 작업공간에서 SKILL.md를 검색합니다. 필요한 절차만 모델이 선택적으로 읽습니다.</p>
