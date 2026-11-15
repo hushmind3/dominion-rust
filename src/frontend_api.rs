@@ -72,6 +72,7 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_providers::routes())
         .merge(crate::frontend_rsi::routes())
         .merge(crate::frontend_extensions::routes())
+        .merge(crate::frontend_automations::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
@@ -714,7 +715,12 @@ fn as_job(run:&Run)->Value{
     })
 }
 async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let mut all=engine.store.list().await.iter().map(as_job).collect::<Vec<_>>();
+    let scheduled=engine.automations.jobs().await;
+    let attached=scheduled.iter().filter_map(|item|item.native_run_id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut all=engine.store.list().await.iter()
+        .filter(|run|!attached.contains(&run.id)).map(as_job).collect::<Vec<_>>();
+    all.extend(scheduled.iter().filter_map(|item|serde_json::to_value(item).ok()));
     for job in engine.workflows.jobs().await{
         if let Ok(value)=serde_json::to_value(job){all.push(value);}
     }
@@ -762,6 +768,9 @@ async fn create_job(State(engine):State<Arc<Engine>>,Json(req):Json<NewJob>)
 }
 async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if let Some(scheduled)=engine.automations.job(id).await{
+        return serde_json::to_value(scheduled).map(Json).map_err(|e|broken(e.to_string()));
+    }
     if let Some(campaign)=engine.campaigns.get(id).await{
         return Ok(Json(campaign.view()));
     }
@@ -772,6 +781,10 @@ async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if engine.automations.job(id).await.is_some(){
+        let result=crate::frontend_automations::cancel(&engine,id).await.map_err(bad)?;
+        return serde_json::to_value(result).map(Json).map_err(|e|broken(e.to_string()));
+    }
     if engine.campaigns.get(id).await.is_some(){
         let campaign=crate::frontend_rsi::stop(&engine,id).await.map_err(bad)?;
         return Ok(Json(campaign.view()));
@@ -785,6 +798,10 @@ async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
 }
 async fn resume_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if engine.automations.job(id).await.is_some(){
+        let result=crate::frontend_automations::resume(&engine,id).await.map_err(bad)?;
+        return serde_json::to_value(result).map(Json).map_err(|e|broken(e.to_string()));
+    }
     if engine.workflows.job(id).await.is_none(){
         return Err(missing("workflow job not found"));
     }

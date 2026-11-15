@@ -26,6 +26,8 @@ pub mod frontend_providers;
 pub mod rsi_campaign;
 pub mod frontend_rsi;
 pub mod frontend_extensions;
+pub mod automations;
+pub mod frontend_automations;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;

@@ -31,6 +31,7 @@ impl Dominion {
                 engine.launch(snapshot.id).await?;
             }
         }
+        crate::frontend_automations::spawn_scheduler(&engine);
         Ok(Self{engine})
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}

@@ -16,7 +16,7 @@ use serde_json::{json,Value};
 use std::{collections::HashSet,sync::Arc};
 use uuid::Uuid;
 
-type Fault=(StatusCode,Json<Value>);
+pub(crate) type Fault=(StatusCode,Json<Value>);
 fn bad(message:impl Into<String>)->Fault{
     (StatusCode::BAD_REQUEST,Json(json!({"error":message.into()})))
 }
@@ -255,7 +255,7 @@ struct SayInput{
   client_message_id:String,
   #[serde(default)]reasoning_language:Option<String>,
 }
-async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),Fault>{
+pub(crate) async fn generate(engine:&Arc<Engine>,id:Uuid)->Result<(Room,usize),Fault>{
   let before=engine.groups.get(id).await.ok_or_else(missing)?;
   let config=config_of(&before);
   let mut room=before;
