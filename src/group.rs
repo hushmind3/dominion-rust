@@ -9,7 +9,7 @@ use uuid::Uuid;
 pub struct Participant { pub name: String, pub role: String, #[serde(default)] pub economy: bool }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Utterance { pub speaker: String, pub content: String, pub at_ms: u64, pub model: Option<String> }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all="snake_case")]
 pub enum RoomStatus { Open, Finished }
 #[derive(Clone, Debug, Serialize, Deserialize)]
