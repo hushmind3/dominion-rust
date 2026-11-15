@@ -22,11 +22,25 @@ fn bad(message: impl Into<String>) -> ApiError {
 fn not_found() -> ApiError {
     (StatusCode::NOT_FOUND, Json(json!({"error":"execution not found"})))
 }
+/// OAuth provider redirects are ordinary browser navigations, so the browser
+/// cannot attach DOMINION's API bearer header. Only this fixed GET callback
+/// endpoint is exempt; its one-use 256-bit state is verified in the handler.
+fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
+    if method!=axum::http::Method::GET{return false;}
+    let path=path.strip_prefix("/api").unwrap_or(path);
+    matches!(path,
+        "/oauth/github/callback"|
+        "/oauth/google/callback"|
+        "/oauth/youtube/callback")
+}
 async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Request, next: Next) -> Response {
     if let Some(token) = engine.settings.token.as_ref() {
+        let callback=is_oauth_callback(request.method(),request.uri().path());
+        if !callback {
         let expected = format!("Bearer {token}");
         if request.headers().get(header::AUTHORIZATION).and_then(|h|h.to_str().ok()) != Some(expected.as_str()) && request.headers().get("x-dominion-token").and_then(|h|h.to_str().ok()) != Some(token.as_str()) {
             return (StatusCode::UNAUTHORIZED,Json(json!({"error":"Bearer access token required"}))).into_response();
+        }
         }
     }
     if crate::frontend_system::maintenance(&engine.settings)
@@ -35,6 +49,22 @@ async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Re
         return (StatusCode::LOCKED,Json(json!({"error":"maintenance mode is active; write operations are paused"}))).into_response();
     }
     next.run(request).await
+}
+#[cfg(test)]
+mod oauth_callback_auth_tests {
+    use super::*;
+    #[test]
+    fn only_exact_authorization_code_redirects_bypass_bearer_header() {
+        use axum::http::Method;
+        assert!(is_oauth_callback(&Method::GET,"/api/oauth/github/callback"));
+        assert!(is_oauth_callback(&Method::GET,"/api/oauth/google/callback"));
+        assert!(is_oauth_callback(&Method::GET,"/oauth/youtube/callback"));
+        assert!(!is_oauth_callback(&Method::POST,"/api/oauth/github/callback"));
+        assert!(!is_oauth_callback(&Method::GET,"/api/oauth/connections"));
+        assert!(!is_oauth_callback(&Method::GET,"/api/oauth/github/start"));
+        assert!(!is_oauth_callback(&Method::GET,"/api/oauth/github/callback/extra"));
+        assert!(!is_oauth_callback(&Method::GET,"/api/oauth/attacker/callback"));
+    }
 }
 /// Prefer the installed application's adjacent React bundle when --home is used.
 /// Cargo's compile-time manifest directory refers to the build machine and
