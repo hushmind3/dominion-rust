@@ -15,6 +15,24 @@ type Config={model:string;economy_model:string;configured:boolean;shell_enabled:
 type MemoryNote={id:string;scope:string;title:string;content:string;updated_at_ms:number}
 type ProjectSkill={name:string;path:string}
 
+type McpProgressView={progress:number;total?:number;message?:string}
+const currentMcpProgress=(run:Run):McpProgressView|null=>{
+ if(!run.in_flight?.name.startsWith('mcp__'))return null
+ for(const event of (run.events||[]).slice().reverse()){
+  if(event.kind!=='mcp_progress'||!event.detail||typeof event.detail!=='object')continue
+  const detail=event.detail as Record<string,unknown>
+  if(detail.call_id!==run.in_flight.id||typeof detail.progress!=='number')continue
+  return {progress:detail.progress,total:typeof detail.total==='number'?detail.total:undefined,message:typeof detail.message==='string'?detail.message:undefined}
+ }
+ return null
+}
+const uncertainRemoteId=(run:Run):string|null=>{
+ const event=(run.events||[]).slice().reverse().find(e=>e.kind==='mcp_remote_outcome_unknown')
+ const detail=event?.detail
+ return detail && typeof detail==='object' && typeof (detail as Record<string,unknown>).remote_request_id==='string'
+  ? String((detail as Record<string,unknown>).remote_request_id) : null
+}
+
 const money=(n:number)=>Number(n||0).toLocaleString('ko-KR',{maximumFractionDigits:2})+'원'
 const field='w-full rounded-lg border border-[#E2DAD0] bg-[#FFFDF9] px-3 py-2 text-[12px] outline-none focus:border-[#C96442]'
 const btn='inline-flex min-h-9 items-center justify-center gap-2 rounded-lg border border-[#DAD2C6] bg-white px-3 py-2 text-[12px] font-semibold text-[#51463A] transition hover:bg-[#F8F0E5] disabled:opacity-45'
@@ -164,8 +182,15 @@ export function RustWorkspacePage({area}:{area:PageId}){
       <div className="mt-3 flex gap-2"><button type="button" className={primary} disabled={busy} onClick={()=>void action(run.id,'approval',{allow:true})}><Check size={14}/> 승인</button>
        <button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'approval',{allow:false})}>거부</button></div>
      </div>}
-     {run.in_flight&&<div className="mt-4 rounded-lg border border-[#E5B99F] bg-[#FFF8F1] p-3">
-      <h3 className="text-[12px] font-bold">중단된 도구 실행 확인: {run.in_flight.name}</h3><p className="mt-1 text-[11px]">실제 실행 여부를 확인한 뒤 기록하세요. 기록 동작은 도구를 다시 실행하지 않습니다.</p>
+     {run.status==='running'&&run.in_flight?.name.startsWith('mcp__')&&<div role="status" className="mt-4 rounded-lg border border-[#D6E0DB] bg-[#F5FAF7] p-3">
+      <h3 className="text-[12px] font-bold">원격 MCP 도구 실행 중</h3>
+      <p className="mt-1 text-[11px]">{run.in_flight.name} · {currentMcpProgress(run)?.message||'원격 응답 대기 중'}</p>
+      {currentMcpProgress(run)?.total&&currentMcpProgress(run)!.total!>0&&<progress className="mt-2 w-full" max={currentMcpProgress(run)!.total} value={currentMcpProgress(run)!.progress}/>}
+     </div>}
+     {run.status==='paused'&&run.in_flight&&<div className="mt-4 rounded-lg border border-[#E5B99F] bg-[#FFF8F1] p-3">
+      <h3 className="text-[12px] font-bold">결과 확인이 필요한 도구: {run.in_flight.name}</h3>
+      <p className="mt-1 text-[11px]">연결을 종료해도 원격 작업이 중단됐다고 단정할 수 없습니다. 원격 시스템의 실제 결과를 확인한 뒤 기록하세요. 기록 동작은 도구를 다시 실행하지 않습니다.</p>
+      {uncertainRemoteId(run)&&<p className="mt-2 break-all rounded-md bg-white p-2 font-mono text-[11px]">원격 요청 ID: {uncertainRemoteId(run)}</p>}
       <textarea className={field+' mt-2'} aria-label="실행 결과 설명" value={reconciliation} onChange={e=>setReconciliation(e.target.value)}/>
       <div className="mt-2 flex gap-2"><button type="button" className={btn} disabled={busy||!reconciliation.trim()} onClick={()=>void action(run.id,'reconcile',{succeeded:true,result:reconciliation})}>실행 성공 기록</button>
        <button type="button" className={btn} disabled={busy||!reconciliation.trim()} onClick={()=>void action(run.id,'reconcile',{succeeded:false,result:reconciliation})}>실행 실패 기록</button></div>
