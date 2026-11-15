@@ -65,7 +65,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 
 ### Autonomous goal proof, child delegation and owner-reviewed recovery (2026-11-14)
 
-`pages/Goals.tsx` → `api/goals.rs::{create_goal,edit_plan,cancel_goal,resume_goal}` → `jobs::{enqueue_once,run_job}` → `goals.rs::run` → `goal_control.rs` → `chat::TurnRequest` → `tools.rs`/MCP/browser → `verification.rs` and `goals/report.rs::build` → `goal`/job result `finalReport` → `pages/Goals.tsx`. Completion must pass the final deterministic verifier. Child `delegate_task`/`task_result` only contribute actual successfully completed child tools; no-op source writes and unfinished children are excluded. New job after manually acknowledged external state preserves session, plan, evidence, root task id. The change does not modify independently frozen RSI evaluation; see [full agent integration and limits](SUB4-AUTONOMOUS-AGENT-2026-11-14.md).
+`pages/Goals.tsx` → `api/goals/{create_goal,edit_plan,cancel_goal,resume_goal}` → `jobs::{enqueue_once,run_job}` → `goals/execution.rs::run` → `goal_control.rs` → `chat::TurnRequest` → `tools.rs`/MCP/browser → `verification.rs` and `goals/report.rs::build` → `goal`/job result `finalReport` → `pages/Goals.tsx`. Completion must pass the final deterministic verifier. Child `delegate_task`/`task_result` only contribute actual successfully completed child tools; no-op source writes and unfinished children are excluded. New job after manually acknowledged external state preserves session, plan, evidence, root task id. The change does not modify independently frozen RSI evaluation; see [full agent integration and limits](SUB4-AUTONOMOUS-AGENT-2026-11-14.md).
 
 ### Executable technical QA and coding-agent provenance (2026-11-14)
 
@@ -73,7 +73,7 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 
 ### 2026-11-14 · Goal worktree 실실행 호출 경로
 
-`api/goals.rs::create_goal(isolateWorktree)` → `jobs::enqueue_once` → `goals::run` → `goal_git::prepare` → `chat/runtime/tool_execution::{deterministic_tool,dispatch_tool_call}` → `goal_git::workspace_for_session` → `tools::execute` → `verification::{baseline_checks_in,acceptance_gaps_in}` → `goals/report::build` → `api/goals::{changes,apply_changes,discard_changes}` → `Goals.tsx`. 하위 위임은 `tools::delegate`의 `parentSessionId`로 작업공간을 상속하고 `state::cancel_session`에서 취소가 전파됩니다. `rsi_system.rs::COMPONENTS`의 `harness` 영역이 이 실행 모듈을 실제 소스로 추적합니다. 구현 범위와 미해결 OS 샌드박스·동시쓰기 문제는 `docs/SUB4-ISOLATED-AGENT-2026-11-14.md`에 기재합니다.
+`api/goals/create_goal(isolateWorktree)` → `jobs::enqueue_once` → `goals::run` → `goal_git::prepare` → `chat/runtime/tool_execution::{deterministic_tool,dispatch_tool_call}` → `goal_git::workspace_for_session` → `tools::execute` → `verification::{baseline_checks_in,acceptance_gaps_in}` → `goals/report::build` → `api/goals::{changes,apply_changes,discard_changes}` → `Goals.tsx`. 하위 위임은 `tools::delegate`의 `parentSessionId`로 작업공간을 상속하고 `state::cancel_session`에서 취소가 전파됩니다. `rsi_system.rs::COMPONENTS`의 `harness` 영역이 이 실행 모듈을 실제 소스로 추적합니다. 구현 범위와 미해결 OS 샌드박스·동시쓰기 문제는 `docs/SUB4-ISOLATED-AGENT-2026-11-14.md`에 기재합니다.
 
 ### 2026-11-14 v3 · 신규 실제 연결
 
@@ -82,4 +82,4 @@ normal generation history and independent A→B / A2→B2 replay outcomes.
 - 영상: `api/video.rs::create_job` → `video::enqueue(cinematic)` → `video::run` → `video/cinematic.rs::render` → `video/comfy.rs::render` → `video/quality.rs::inspect_clip` → `FFmpeg` → 최종 `quality::inspect` → `Video.tsx` 장면별 영수증.
 - 셀프 모델 `rsi_system.rs::COMPONENTS`에 신규 실제 소스 모듈을 등록. 구조·원가/시각 품질/동시성의 미확인 경계는 [SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md](SUB4-V3-VIDEO-RSI-AGENT-2026-11-14.md)에 명시.
 
-- 목표 조종: `Goals.tsx::savePlan` → `api/goals.rs::steer_goal` → `goal_steering.rs::submit` (optimistic CAS) → `goals.rs::run`의 안전한 턴 경계 `pending` 적용 → stale-plan 최종 완료 차단. `rsi_system.rs::COMPONENTS`에 소스 등록.
+- 목표 조종: `Goals.tsx::savePlan` → `api/goals/steer_goal` → `goal_steering.rs::submit` (optimistic CAS) → `goals/execution.rs::run`의 안전한 턴 경계 `pending` 적용 → stale-plan 최종 완료 차단. `rsi_system.rs::COMPONENTS`에 소스 등록.
