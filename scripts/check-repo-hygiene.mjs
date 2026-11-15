@@ -100,6 +100,7 @@ export function auditFiles(files){
       &&path!=='ENGINE.md')continue
     // The checker itself quotes the obsolete path in a detection rule.
     if(path!=='scripts/check-repo-hygiene.mjs'
+        &&path!=='scripts/tests/check-repo-hygiene.test.mjs'
         &&bannedSource.test(body)){
       errors.push('stale deleted goals.rs reference in '+path)
     }
