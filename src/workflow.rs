@@ -68,7 +68,7 @@ fn default_budget()->f64{10_000.0}
 fn write_sync(file:&std::path::Path,contents:&[u8])->Result<(),String>{
     let dir=file.parent().ok_or("workflow directory missing")?;
     let tmp=dir.join(format!(".workflows-{}.tmp",Uuid::new_v4()));
-    let result=||->Result<(),String>{
+    let result=(||->Result<(),String>{
         use std::io::Write;
         let mut stage=std::fs::OpenOptions::new().write(true).create_new(true)
             .open(&tmp).map_err(|e|e.to_string())?;
@@ -78,7 +78,7 @@ fn write_sync(file:&std::path::Path,contents:&[u8])->Result<(),String>{
         #[cfg(unix)] std::fs::File::open(dir).and_then(|dir|dir.sync_all())
             .map_err(|e|e.to_string())?;
         Ok(())
-    }();
+    })();
     if result.is_err(){let _=std::fs::remove_file(tmp);}
     result
 }

@@ -103,9 +103,10 @@ async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     if body.input.len()>15_000{return Err(bad("workflow input limit is 15000 bytes"));}
     let job=engine.workflows.start(&id,body.input).await.map_err(bad)?;
     let worker=Arc::clone(&engine);
-    tokio::spawn(async move{if let Err(error)=drive(worker.clone(),job.id).await{
-        tracing::error!(workflow=%job.id,error=%error,"workflow worker failed");
-        let _=worker.workflows.mutate_job(job.id,|state|{
+    let job_id=job.id;
+    tokio::spawn(async move{if let Err(error)=drive(worker.clone(),job_id).await{
+        tracing::error!(workflow=%job_id,error=%error,"workflow worker failed");
+        let _=worker.workflows.mutate_job(job_id,|state|{
             if !matches!(state.status.as_str(),"completed"|"cancelled"|"failed"){
                 state.status="needs_review".into();state.error=Some(error.clone());
             }
