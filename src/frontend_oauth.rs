@@ -202,7 +202,7 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str)->Resul
     .append_pair("code_challenge_method","S256");
   }
  }
- Ok(url.into())
+ Ok(url.to_string())
 }
 async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
  ->Result<Json<Value>,Fault>{
