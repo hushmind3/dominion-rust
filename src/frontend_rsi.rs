@@ -419,6 +419,9 @@ async fn apply(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
 }
 async fn install_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
+    if let Some(job)=engine.developer.job(id).await{
+        return Ok(Json(json!(job)));
+    }
     let c=engine.campaigns.get(id).await.ok_or_else(missing)?;
     let applied=c.head_commit.is_some();
     Ok(Json(json!({"id":id,"status":if applied{"completed"}else{"not_applied"},

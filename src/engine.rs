@@ -20,6 +20,7 @@ pub struct Engine {
     pub campaigns: Arc<crate::rsi_campaign::Campaigns>,
     pub extensions: Arc<crate::frontend_extensions::Extensions>,
     pub automations: Arc<crate::automations::Automations>,
+    pub developer: Arc<crate::developer::Developer>,
     hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
@@ -50,13 +51,14 @@ impl Engine {
             settings.data_dir.clone(),mcp.servers_snapshot())?);
         mcp.initialize_servers(extensions.initial_servers())?;
         let automations=Arc::new(crate::automations::Automations::open(settings.data_dir.clone())?);
+        let developer=crate::developer::Developer::open(settings.data_dir.clone(),settings.workspace_dir.clone())?;
         // Reuse verified agent execution receipts as RSI/agent learning
         // evidence. Runs remain owned by the durable Store.
         improvements.attach_runs(Arc::clone(&store));
         improvements.set_strategy_learning(settings.strategy_learning_enabled);
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, owner_profile, frontend, workflows, providers, campaigns, extensions, automations, hooks,
+        let engine=Arc::new(Self { settings, store, groups, videos, improvements, mcp, knowledge, owner_profile, frontend, workflows, providers, campaigns, extensions, automations, developer, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only
