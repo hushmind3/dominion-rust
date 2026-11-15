@@ -51,6 +51,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Live public no-auth MCP 2026 Streamable HTTP interoperability
         run: cargo test --lib live_public_streamable_http_interop -- --ignored --nocapture
+      - name: Live public DeepWiki MCP cross-server compatibility
+        env:
+          DOMINION_LIVE_MCP_URL: https://mcp.deepwiki.com/mcp
+        run: cargo test --lib live_public_streamable_http_interop -- --ignored --nocapture
 
   durability-soak:
     runs-on: ubuntu-latest
