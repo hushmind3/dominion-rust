@@ -299,3 +299,57 @@ async fn rust_stale_owner_revision_is_rejected_without_replay() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     server.abort();
 }
+
+
+#[tokio::test]
+async fn rust_sdk_review_policy_is_serialized_for_same_native_goal_and_ui_contract(){
+    use dominion_sdk::ReviewPolicy;
+    let app=Router::new()
+        .route("/api/goals/strategies",get(||async{
+            Json(json!({"defaultReviewPolicy":"always","reviewPolicies":[
+                {"id":"always"},{"id":"acceptance_ready"}],"finalAcceptanceOwner":"dominion_rust"}))
+        }))
+        .route("/api/goals",post(|headers:HeaderMap,Json(body):Json<Value>|async move{
+            assert_eq!(headers.get("x-dominion-token").unwrap(),"owner");
+            assert_eq!(body["reviewPolicy"],"acceptance_ready");
+            assert_eq!(body["isolateWorktree"],true);
+            assert_eq!(body["goal"],"Fix with real evidence");
+            Json(goal("g1","queued"))
+        }));
+    let (base,server)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap().with_admin_token("owner").unwrap();
+    assert_eq!(sdk.goal_strategies().await.unwrap()["finalAcceptanceOwner"],"dominion_rust");
+    let outcome=sdk.create_goal(GoalCreate::new("Fix with real evidence")
+        .review_policy(ReviewPolicy::AcceptanceReady).isolate_worktree(true)).await.unwrap();
+    assert_eq!(outcome.id,"g1");
+    assert_eq!(serde_json::to_value(ReviewPolicy::Always).unwrap(),"always");
+    server.abort();
+}
+
+#[tokio::test]
+async fn rust_sdk_room_video_and_rsi_use_native_product_endpoints(){
+    let app=Router::new()
+        .route("/api/rooms/:id/messages",post(|Path(id):Path<String>,Json(body):Json<Value>|async move{
+            assert_eq!(id,"r1");assert_eq!(body["content"],"latest owner message");
+            Json(json!({"id":"message"}))
+        }))
+        .route("/api/rooms/:id/run",post(|Path(id):Path<String>,Json(body):Json<Value>|async move{
+            assert_eq!(id,"r1");assert_eq!(body["maxTurns"],3);
+            Json(json!({"id":"room-job","status":"queued"}))
+        }))
+        .route("/api/video/quote",post(|Json(body):Json<Value>|async move{
+            assert_eq!(body["duration"],5);Json(json!({"requiresApproval":true}))
+        }))
+        .route("/api/rsi/campaigns/:id",get(|Path(id):Path<String>|async move{
+            Json(json!({"id":id,"status":"paused"}))
+        }))
+        .route("/api/skills",get(||async{Json(json!([{"id":"s1"}]))}));
+    let (base,server)=serve(app).await;
+    let sdk=DominionClient::new(&base).unwrap();
+    assert_eq!(sdk.send_room_message("r1","latest owner message").await.unwrap()["id"],"message");
+    assert_eq!(sdk.run_room("r1",json!({"maxTurns":3})).await.unwrap()["status"],"queued");
+    assert_eq!(sdk.video_quote(json!({"duration":5})).await.unwrap()["requiresApproval"],true);
+    assert_eq!(sdk.rsi_campaign("campaign-1").await.unwrap()["id"],"campaign-1");
+    assert_eq!(sdk.skills().await.unwrap().len(),1);
+    server.abort();
+}
