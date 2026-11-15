@@ -104,6 +104,27 @@ pub fn deny(run:&mut Run,call:&ToolCall)->Result<(),String>{
     Ok(())
 }
 
+
+/// A disabled/unavailable tool is a model protocol error, not a reason to
+/// strand an entire autonomous run in "paused". Reject it with one real tool
+/// receipt and no execution intent so the model can correct itself.
+pub fn reject_policy(run:&mut Run,call:&ToolCall)->Result<(),String>{
+    if run.status!=RunStatus::Running || run.in_flight.is_some()
+        || run.pending_approval.is_some() || !queued_exact(run,call){
+        return Err("tool policy rejection does not match the durable queue".into());
+    }
+    if policy::allowed_tool(run,&call.name){
+        return Err("tool is allowed; policy rejection is not applicable".into());
+    }
+    let index=run.queued_calls.iter().position(|c|same_call(c,call)).ok_or("queued tool missing")?;
+    run.queued_calls.remove(index);
+    run.messages.push(json!({"role":"tool","tool_call_id":call.id,
+        "content":"TOOL ERROR: Tool denied by the current run's read-only execution policy"}));
+    run.event("tool_policy_denied",format!("Blocked {} ({}) by execution policy",call.name,call.id),
+        Some(json!({"call_id":call.id,"name":call.name})));
+    Ok(())
+}
+
 /// Applies the durable receipt in the same state-store transaction that
 /// releases the intent. It is legal to finish while cancellation is pending.
 pub fn finish(run:&mut Run,call:&ToolCall,outcome:&Result<String,String>,observed:bool)->Result<(),String>{
@@ -242,6 +263,18 @@ mod tests{
         assert!(run.pending_approval.is_none());
         assert!(run.events.iter().any(|e|e.kind=="tool_denied"));
         assert!(!run.events.iter().any(|e|e.kind=="tool_started"));
+    }
+    #[test]
+    fn policy_denial_is_a_normal_tool_result_without_any_dispatch(){
+        let mut run=running();run.read_only=true;
+        let call=tool("write_file","blocked-1");
+        run.queued_calls.push(call.clone());
+        reject_policy(&mut run,&call).unwrap();
+        assert!(run.queued_calls.is_empty());
+        assert!(run.in_flight.is_none());
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_policy_denied").count(),1);
+        assert_eq!(run.events.iter().filter(|e|e.kind=="tool_started").count(),0);
+        assert_eq!(run.messages.last().unwrap()["tool_call_id"],"blocked-1");
     }
     #[test]
     fn malformed_or_reused_model_call_ids_cannot_dispatch(){

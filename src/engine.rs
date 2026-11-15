@@ -127,6 +127,10 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
+                if !policy::allowed_tool(&run,&call.name){
+                    self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
+                    continue;
+                }
                 if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
