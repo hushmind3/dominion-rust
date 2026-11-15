@@ -952,12 +952,14 @@ impl Store {
             .map_err(|error| error.to_string())
     }
 
-    pub fn append_event(&self, seq: u64, value: &Value) {
+    /// A live SSE message must not be published as durable if the SQLite
+    /// insert fails. Retention cleanup is best-effort AFTER successful commit.
+    pub fn append_event(&self, seq: u64, value: &Value) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO event_log(seq, data) VALUES(?1, ?2)",
             params![seq as i64, value.to_string()],
-        );
+        ).map_err(|e|format!("event_log append failed: {e}"))?;
         if seq % 256 == 0 {
             let cutoff = seq.saturating_sub(2_000) as i64;
             if cutoff > 0 {
@@ -967,6 +969,7 @@ impl Store {
                 );
             }
         }
+        Ok(())
     }
 
     pub fn events_after(&self, after: u64, limit: usize) -> Vec<Value> {
