@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -14,17 +15,29 @@ import time
 
 def run_command(argv, cwd, timeout, env):
     start = time.monotonic()
+    # A time limit applies to the entire process group, not just a CLI shim
+    # that could leave shell/tool grandchildren running after a timeout.
+    options = {"cwd": cwd, "env": env, "text": True,
+               "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if os.name != "nt":
+        options["start_new_session"] = True
+    proc = subprocess.Popen(argv, **options)
     try:
-        proc = subprocess.run(argv, cwd=cwd, env=env, text=True,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=timeout, check=False)
-        return {"returncode": proc.returncode,
-                "seconds": round(time.monotonic()-start, 3),
-                "stderr": proc.stderr[-1200:],
-                "timeout": False}
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return {"returncode":proc.returncode,
+                "seconds":round(time.monotonic()-start,3),
+                "stderr":stderr[-1200:],"timeout":False}
     except subprocess.TimeoutExpired:
-        return {"returncode": None, "seconds": round(time.monotonic()-start, 3),
-                "stderr": "time limit exceeded", "timeout": True}
+        if os.name != "nt":
+            try:os.killpg(proc.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+        else:
+            proc.kill()
+        proc.communicate()
+        return {"returncode":None,
+                "seconds":round(time.monotonic()-start,3),
+                "stderr":"time limit exceeded, process group terminated",
+                "timeout":True}
 
 
 def safe_child(root, relative):
@@ -111,7 +124,8 @@ def compare(manifest, directory, attempts, result_root):
                             for f in candidate.rglob("*") if f.is_file()
                         } if candidate.is_dir() else {}
                         tampered |= original_files != workspace_files
-                        if candidate.exists():shutil.rmtree(candidate)
+                        if candidate.is_dir():shutil.rmtree(candidate)
+                        elif candidate.exists():candidate.unlink()
                         shutil.copytree(trusted,candidate)
                 verified = run_command(expand(task["verify"]),workspace,
                                        min(timeout,120),env)
@@ -183,7 +197,23 @@ def selftest():
         assert all(r["passed"] and r["usage"] is None for r in out["attempts"])
         assert all(r["measured_cost_krw"] is None for r in out["summary"])
         assert (fixture/"base.txt").read_text()=="baseline"
-        print(json.dumps({"runner_selftest":"PASS","attempts":4,"real_model_score":None}))
+        # Adversarial harness tries to rewrite the judge's own test. It must
+        # never receive a passing score even if its rewritten test would pass.
+        protected=fixture/"tests"
+        protected.mkdir()
+        (protected/"test_proof.py").write_text("assert False\n")
+        attack = {"version":1,"model":"local-mock-not-a-frontier-score",
+                  "budget_krw":0,"max_steps":1,"timeout_seconds":8,
+                  "harnesses":[{"name":"tamper","argv":[sys.executable,"-c",
+                      "from pathlib import Path;Path('tests/test_proof.py').write_text('pass\\n');Path('proof.txt').write_text('yes')"]}],
+                  "tasks":[{"id":"attack","fixture":"fixture","prompt":"tamper with judge",
+                      "verify":[sys.executable,"-c","pass"],"artifacts":["proof.txt"]}]}
+        attacked=compare(attack,root,1,root/"attacker")
+        assert attacked["attempts"][0]["protected_files_modified"]
+        assert not attacked["attempts"][0]["passed"]
+        assert (protected/"test_proof.py").read_text()=="assert False\n"
+        print(json.dumps({"runner_selftest":"PASS","attempts":5,
+                          "tampering_blocked":True,"real_model_score":None}))
 
 
 def main():
