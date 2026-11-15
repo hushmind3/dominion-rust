@@ -90,3 +90,34 @@ The original main profile editor is available in the preserved workspace shell. 
 ## Delegated work wake and verification evidence
 
 `Engine::new` creates a Tokio channel-driven parent wake scheduler that holds a Weak reference to the engine; the child completion callback settles durable budgets, releases unused escrow and queues the parent only after every child is fully finished and its tool side effects are settled. The parent worker can detach before relaunch, avoiding recursive async launches or time-window races. `src/verification.rs` extracts bounded real tool receipts. When a Git repository is attached, the verifier receives actual status and diff, and requires an exact `PASS` token to accept the answer. These improve grounding, but they are not independent execution of every user acceptance test.
+
+## Focused acceptance: durable tool lifecycle
+
+The production route is API or native SDK -> Engine::drive -> journal::begin ->
+Store::mutate (fsynced intent) -> tool executor -> journal::finish ->
+Store::mutate (receipt and intent removal atomically) -> API/SSE/SDK.
+Denial uses journal::deny without executing or recording an intent.
+
+Restart behavior:
+- Queued and never started: resume persisted queue.
+- Started pure local inspection: safely retry the queued read.
+- Started mutating write, shell, MCP, delegation: UNKNOWN outcome and
+  no automatic replay. User must observe external state and reconcile.
+- Approved but not yet started: recover prior approval and resume.
+- Undecided human approval: preserve it; never assume consent.
+- Cancellation during a tool: terminate only after durable result or reconciliation.
+
+Model tool-call IDs are checked against the durable transcript for duplicates;
+invalid responses produce a corrective model turn without dispatch.
+Store uses uniquely named create-new temporary snapshots, fsyncs data,
+renames atomically, then syncs the directory on Unix.
+
+Focused automated coverage: src/journal.rs transition and duplicate tests;
+src/store.rs simulated before/after crash and write failure tests;
+src/sdk.rs approved-but-unstarted restart with real file output;
+src/engine.rs denial via real scheduler and no tool-start record.
+
+This is NOT a claim of exactly-once external effects, complete crash recovery
+of billed model calls, or parity with an entire frontier product.
+Rust build and automated tests must be observed passing before claiming
+the milestone is verified.

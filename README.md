@@ -150,3 +150,34 @@ The 2026 frontier-driven work now enforces durable hierarchical child budget esc
 The model interface accepts optional OpenAI-specific prompt-cache TTL/key options, and reports provider-supplied cache read/write token counts separately with configurable KRW rates. Approved shell and RSI test scripts use fail-closed Bubblewrap/Seatbelt confinement by default. User cancellation during an executing tool leaves an auditable outcome and only becomes terminal after the tool receipt or explicit reconciliation.
 
 These changes have source-level tests but have **not** passed a fresh Rust build, a full browser E2E or a real-provider task suite in this revision. Full CI and SWE-bench are deferred until source-residue cleanup and acceptance checks under the project rules; no frontier-performance score is claimed.
+
+## Focused acceptance: durable tool lifecycle
+
+The production route is API or native SDK -> Engine::drive -> journal::begin ->
+Store::mutate (fsynced intent) -> tool executor -> journal::finish ->
+Store::mutate (receipt and intent removal atomically) -> API/SSE/SDK.
+Denial uses journal::deny without executing or recording an intent.
+
+Restart behavior:
+- Queued and never started: resume persisted queue.
+- Started pure local inspection: safely retry the queued read.
+- Started mutating write, shell, MCP, delegation: UNKNOWN outcome and
+  no automatic replay. User must observe external state and reconcile.
+- Approved but not yet started: recover prior approval and resume.
+- Undecided human approval: preserve it; never assume consent.
+- Cancellation during a tool: terminate only after durable result or reconciliation.
+
+Model tool-call IDs are checked against the durable transcript for duplicates;
+invalid responses produce a corrective model turn without dispatch.
+Store uses uniquely named create-new temporary snapshots, fsyncs data,
+renames atomically, then syncs the directory on Unix.
+
+Focused automated coverage: src/journal.rs transition and duplicate tests;
+src/store.rs simulated before/after crash and write failure tests;
+src/sdk.rs approved-but-unstarted restart with real file output;
+src/engine.rs denial via real scheduler and no tool-start record.
+
+This is NOT a claim of exactly-once external effects, complete crash recovery
+of billed model calls, or parity with an entire frontier product.
+Rust build and automated tests must be observed passing before claiming
+the milestone is verified.
