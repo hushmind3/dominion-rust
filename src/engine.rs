@@ -9,13 +9,14 @@ pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
     pub groups: Arc<crate::group::Groups>,
+    pub videos: Arc<crate::video::Videos>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
 }
 impl Engine {
-    pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>) -> Result<Arc<Self>, String> {
+    pub fn new(settings: Settings, store: Arc<Store>, groups: Arc<crate::group::Groups>, videos: Arc<crate::video::Videos>) -> Result<Arc<Self>, String> {
         let model = ModelClient::new(&settings)?;
-        Ok(Arc::new(Self { settings, store, groups, model, active: Mutex::new(HashSet::new()) }))
+        Ok(Arc::new(Self { settings, store, groups, videos, model, active: Mutex::new(HashSet::new()) }))
     }
     pub async fn launch(self: &Arc<Self>, id: Uuid) -> Result<(), String> {
         {

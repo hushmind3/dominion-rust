@@ -2,6 +2,7 @@ use crate::{domain::{Approval, CreateRun, PublicSettings, Run}, engine::Engine, 
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
+    body::Body,
     middleware::{self, Next},
     response::{sse::{Event, KeepAlive, Sse}, Html, IntoResponse, Response},
     routing::{get, post}, Json, Router,
@@ -11,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use uuid::Uuid;
+use tokio_util::io::ReaderStream;
 
 type ApiError = (StatusCode, Json<Value>);
 fn bad(message: impl Into<String>) -> ApiError {
@@ -45,6 +47,11 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/groups/{id}",get(get_group))
         .route("/groups/{id}/messages",post(group_say))
         .route("/groups/{id}/next",post(group_next))
+        .route("/videos",get(list_videos).post(create_video))
+        .route("/videos/{id}",get(get_video))
+        .route("/videos/{id}/render",post(render_video))
+        .route("/videos/{id}/scenes/{index}",post(change_scene))
+        .route("/videos/{id}/download",get(download_video))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     Router::new()
         .nest("/api/v1",api)
@@ -142,4 +149,28 @@ async fn group_say(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(inp
 }
 async fn group_next(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
     engine.groups.next(&engine.model,id).await.map(Json).map_err(bad)
+}
+
+async fn list_videos(State(engine):State<Arc<Engine>>)->Json<Vec<crate::video::Video>>{
+    Json(engine.videos.list().await)
+}
+async fn create_video(State(engine):State<Arc<Engine>>,Json(input):Json<crate::video::NewVideo>)->Result<(StatusCode,Json<crate::video::Video>),ApiError>{
+    let video=engine.videos.create(&engine.model,input).await.map_err(bad)?;
+    let started=engine.videos.start(video.id).await.map_err(bad)?;
+    Ok((StatusCode::CREATED,Json(started)))
+}
+async fn get_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::video::Video>,ApiError>{
+    engine.videos.get(id).await.map(Json).ok_or_else(not_found)
+}
+async fn render_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::video::Video>,ApiError>{
+    engine.videos.start(id).await.map(Json).map_err(bad)
+}
+async fn change_scene(State(engine):State<Arc<Engine>>,Path((id,index)):Path<(Uuid,usize)>,Json(input):Json<crate::video::ChangeScene>)->Result<Json<crate::video::Video>,ApiError>{
+    engine.videos.change_scene(id,index,input).await.map(Json).map_err(bad)
+}
+async fn download_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Response,ApiError>{
+    let path=engine.videos.output_path(id).await.map_err(bad)?;
+    let file=tokio::fs::File::open(path).await.map_err(|e|bad(e.to_string()))?;
+    let body=Body::from_stream(ReaderStream::new(file));
+    Ok(([(header::CONTENT_TYPE,"video/mp4"),(header::CONTENT_DISPOSITION,"attachment; filename=dominion.mp4")],body).into_response())
 }

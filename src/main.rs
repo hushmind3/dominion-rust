@@ -3,6 +3,7 @@ mod config;
 mod domain;
 mod engine;
 mod group;
+mod video;
 mod provider;
 mod store;
 mod tools;
@@ -18,7 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Arc::new(store::Store::open(settings.data_dir.join("runs")).await?);
     let bind = settings.bind;
     let groups = Arc::new(group::Groups::open(settings.data_dir.join("groups")).await?);
-    let engine = engine::Engine::new(settings,store,groups)?;
+    let videos = Arc::new(video::Videos::open(settings.data_dir.join("videos")).await?);
+    let engine = engine::Engine::new(settings,store,groups,videos)?;
     let app = api::router(engine);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!("Dominion listening on http://{bind}");
