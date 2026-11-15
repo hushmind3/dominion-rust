@@ -181,3 +181,33 @@ This is NOT a claim of exactly-once external effects, complete crash recovery
 of billed model calls, or parity with an entire frontier product.
 Rust build and automated tests must be observed passing before claiming
 the milestone is verified.
+
+## Model tool-call orchestration (2026-11-15 implementation)
+
+The production **Rust** code follows explicit source-level lessons from:
+- Codex `codex-rs/core/src/tools/parallel.rs` (read/write exclusivity and dispatch barrier):
+  https://github.com/openai/codex/blob/b016cd18472588606c04af565528c4cd6746a41f/codex-rs/core/src/tools/parallel.rs
+- DeepSeek Harness `packages/core/tools/src/batch.ts` (bounded pool, model-ordered results):
+  https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/core/tools/src/batch.ts
+- DeepSeek Harness `packages/core/tools/src/json-schema.ts` and `pipeline.ts` (argument admission, fail-closed schema):
+  https://github.com/deepseek-ai/deepseek-harness/blob/39163dd30f703a79079e2d2446545cff3c453738/packages/core/tools/src/json-schema.ts
+
+Actual Dominion call path:
+1. `provider.rs` submits `parallel_tool_calls=true` by default (operator can disable).
+2. `engine.rs` freezes the exact advertised catalog on the persisted run each model step.
+3. `tool_schema.rs` validates every requested tool and JSON argument before any side effect.
+   A missing/invalid/unsupported schema gives an ordered TOOL ERROR result, not silent execution.
+4. `tool_batch.rs` groups only contiguous safe workspace reads in a rolling pool
+   (limit 1..8, default 4), preserving the original model call order.
+5. `journal.rs` persists batch intent before dispatch and all ordered receipts together.
+   On crash, unfinished reads are safe to retry. Writes, shell, remote MCP,
+   subagents and memory mutations remain exclusive and unknown effects are never auto-replayed.
+6. `src/api.rs`, the native Rust SDK, TypeScript HTTP adapter and React UI
+   still use exactly the same `Engine` and run state; no imported foreign agent runtime.
+
+Configured by `DOMINION_PARALLEL_TOOL_CALLS` and `DOMINION_MAX_PARALLEL_READS`.
+Backend tests include a real mock-model multi-tool turn reading two files
+concurrently, executing one exclusive write and verifying model-ordered receipts;
+bounded concurrency, schema rejection, rollback and crash restart also have
+regressions. Benchmark parity, broad MCP schema coverage and real-provider cost
+effects remain unproven until separately measured.
