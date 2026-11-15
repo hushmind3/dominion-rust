@@ -73,7 +73,8 @@ impl Dominion {
         let started=Instant::now();
         loop{
             let run=self.get(id).await?;
-            if run.terminal()||matches!(run.status,RunStatus::AwaitingApproval|RunStatus::Paused){return Ok(run);}
+            if run.terminal()||run.status==RunStatus::AwaitingApproval ||
+                (run.status==RunStatus::Paused && !run.waiting_for_children){return Ok(run);}
             if started.elapsed()>=timeout{return Err("execution wait timeout".into());}
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

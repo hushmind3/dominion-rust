@@ -156,6 +156,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
      {run.repository&&<p className="mt-2 break-all text-[11px] text-[#806B58]">Git: {run.repository} · {run.base_commit?.slice(0,12)}</p>}
      <p className="mt-3 whitespace-pre-wrap rounded-lg bg-[#F9F6F2] p-3 text-[12px]">{run.instruction}</p>
      <div className="mt-3 text-[11px] text-[#7F766D]">입력 {run.input_tokens.toLocaleString()} · 캐시 읽기 {run.cached_input_tokens.toLocaleString()} · 캐시 쓰기 {(run.cache_write_tokens||0).toLocaleString()} · 출력 {run.output_tokens.toLocaleString()} 토큰 · 생략한 도구 스키마 약 {(run.tool_schema_chars_avoided||0).toLocaleString()}자</div>
+     {run.waiting_for_children&&<p role="status" className="mt-3 rounded-lg bg-[#F7F2EA] p-3 text-[12px]">하위 에이전트 작업을 기다리는 중입니다. 완료 후 부모 엔진이 자동으로 검증을 이어갑니다.</p>}
      {run.plan&&<details className="mt-3 rounded-lg border border-[#ECE5DB] p-3"><summary className="cursor-pointer text-[12px] font-semibold">실행 계획</summary><pre className="mt-2 whitespace-pre-wrap text-[11px]">{run.plan}</pre></details>}
      {run.pending_approval&&<div className="mt-4 rounded-lg border border-[#E5B99F] bg-[#FFF8F1] p-3">
       <h3 className="flex items-center gap-2 text-[12px] font-bold"><ShieldAlert size={16}/> 실행 승인 필요</h3>
@@ -170,7 +171,7 @@ export function RustWorkspacePage({area}:{area:PageId}){
        <button type="button" className={btn} disabled={busy||!reconciliation.trim()} onClick={()=>void action(run.id,'reconcile',{succeeded:false,result:reconciliation})}>실행 실패 기록</button></div>
      </div>}
      <div className="mt-3 flex flex-wrap gap-2">{run.status==='running'&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'cancel')}><Square size={14}/> 중단</button>}
-      {run.status==='paused'&&!run.in_flight&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'resume')}><RefreshCw size={14}/> 재개</button>}
+      {run.status==='paused'&&!run.in_flight&&!run.waiting_for_children&&<button type="button" className={btn} disabled={busy} onClick={()=>void action(run.id,'resume')}><RefreshCw size={14}/> 재개</button>}
       <button type="button" className={btn} disabled={busy} onClick={()=>void loadFiles(run.id)}><FileText size={14}/> 결과 파일</button>
      </div>
      {!['completed','failed','cancelled'].includes(run.status)&&<div className="mt-3 flex gap-2"><input className={field} value={directive} onChange={e=>setDirective(e.target.value)} placeholder="실행 중 추가 지시"/><button type="button" className={btn} disabled={busy||!directive.trim()} onClick={()=>void perform(async()=>{await post('/api/v1/runs/'+run.id+'/directive',{instruction:directive});setDirective('')})}>지시</button></div>}
