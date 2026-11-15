@@ -26,6 +26,12 @@ for (const path of paths) {
     continue
   }
   trackedBytes+=size
+  if(path === 'README.md' && size > 20*1024) {
+    errors.push(`README has turned into an append-only changelog (${size} bytes); keep it below 20KiB`)
+  }
+  if(path === 'src/engine/goals.rs' && size > 12*1024) {
+    errors.push(`goal entry module has regrown (${size} bytes); update src/engine/goals/* instead`)
+  }
   if(size>1024*1024) errors.push(`tracked file >1MiB: ${path} (${size} bytes)`)
   if(path.startsWith('src/') && path.endsWith('.rs') && size>120*1024) {
     errors.push(`oversized Rust implementation: ${path} (${size} bytes); split module`)
