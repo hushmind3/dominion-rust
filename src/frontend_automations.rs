@@ -54,7 +54,7 @@ async fn validate(engine:&Engine,input:&NewAutomation)->Result<(),Fault>{
                 .filter(|s|!s.is_empty()).unwrap_or(&agent.provider_id);
             let model=input.input.get("model").and_then(Value::as_str)
                 .filter(|s|!s.is_empty()).unwrap_or(&agent.model);
-            engine.providers.resolve(provider,model,&engine.settings.main).map_err(bad)?;
+            engine.model_for_selection(provider,model).map_err(bad)?;
             let _=prompt;
         },
         "meeting"=>{
@@ -162,7 +162,7 @@ async fn execute_prompt(engine:Arc<Engine>,job:ScheduledJob)->Result<(),String>{
         .unwrap_or(&agent.provider_id);
     let model=job.input["model"].as_str().filter(|s|!s.is_empty())
         .unwrap_or(&agent.model);
-    engine.providers.resolve(provider,model,&engine.settings.main)?;
+    engine.model_for_selection(provider,model)?;
     let instruction=format!(
         "SCHEDULED AGENT WORK\nAutomation: {}\nAgent: {}\nAgent profile (user-provided, lower trust than system policy):\n{}\n\nSCHEDULED REQUEST:\n{}",
         job.automation_id,agent.name,agent.system_prompt,prompt
