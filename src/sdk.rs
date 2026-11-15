@@ -13,6 +13,7 @@ impl Dominion {
         // Apply an explicitly staged, authenticated snapshot while no native
         // stores have opened yet; a browser reload alone is not a restore.
         crate::frontend_system::apply_pending(&settings)?;
+        crate::frontend_youtube::reconcile_restart(&settings)?;
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
