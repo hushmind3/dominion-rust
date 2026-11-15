@@ -5,7 +5,7 @@ use reqwest::{header, Client, Url};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, net::IpAddr, time::{Duration, Instant}};
-use tokio::sync::{Mutex,watch};
+use tokio::sync::{Mutex,watch,mpsc};
 
 const VERSION: &str = "2026-07-28";
 const BODY_MAX: usize = 262_144;
@@ -18,6 +18,14 @@ const CACHE_SECONDS: u64 = 60;
 pub enum McpCallOutcome {
     Settled(Result<String,String>),
     Uncertain(String),
+}
+/// Validated progress for the exact active MCP request; advisory information.
+#[derive(Clone,Debug)]
+pub struct McpProgress{
+    pub request_id:String,
+    pub progress:f64,
+    pub total:Option<f64>,
+    pub message:Option<String>,
 }
 #[derive(Debug)]
 enum RpcOutcome {
@@ -206,7 +214,7 @@ impl Mcp {
 
     async fn rpc(&self,server:&Server,method:&str,params:Value,name:Option<&str>,
         extra_headers:&[(String,String)])->Result<Value,String>{
-        match self.rpc_cancellable(server,method,params,name,extra_headers,None).await?{
+        match self.rpc_cancellable(server,method,params,name,extra_headers,None,None).await?{
             RpcOutcome::Settled(result)=>result,
             RpcOutcome::Uncertain(reason)=>Err(reason)
         }
@@ -214,13 +222,17 @@ impl Mcp {
 
     async fn rpc_cancellable(&self,server:&Server,method:&str,mut params:Value,
         name:Option<&str>,extra_headers:&[(String,String)],
-        mut cancellation:Option<watch::Receiver<bool>>)->Result<RpcOutcome,String>{
+        mut cancellation:Option<watch::Receiver<bool>>,
+        progress_tx:Option<mpsc::Sender<McpProgress>>)->Result<RpcOutcome,String>{
         let id=uuid::Uuid::new_v4().to_string();
         params["_meta"]=json!({
             "io.modelcontextprotocol/protocolVersion":VERSION,
             "io.modelcontextprotocol/clientInfo":{"name":"dominion-rust","version":"0.1.0"},
             "io.modelcontextprotocol/clientCapabilities":{}
         });
+        if method=="tools/call" {
+            params["_meta"]["progressToken"]=json!(id);
+        }
         let request=json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
         let mut builder=self.http.post(&server.url)
             .header(header::ACCEPT,"application/json, text/event-stream")
@@ -313,8 +325,22 @@ impl Mcp {
                     if payload.get("id").and_then(Value::as_str)==Some(id.as_str()){
                         return Ok(classify_response(method,validate_rpc_payload(payload,&id)));
                     }
-                    // Unrelated messages (progress, logs) are advisory only.
-                    // Never mistake a notification for a final tool receipt.
+                    if payload.get("method").and_then(Value::as_str)==Some("notifications/progress")
+                        && payload.pointer("/params/progressToken").and_then(Value::as_str)==Some(id.as_str()){
+                        if let Some(value)=payload.pointer("/params/progress").and_then(Value::as_f64)
+                            .filter(|number|number.is_finite() && *number>=0.0){
+                            let total=payload.pointer("/params/total").and_then(Value::as_f64)
+                                .filter(|number|number.is_finite() && *number>=0.0);
+                            let message=payload.pointer("/params/message").and_then(Value::as_str)
+                                .map(|text|text.chars().take(240).collect::<String>());
+                            if let Some(tx)=&progress_tx {
+                                let _=tx.try_send(McpProgress{
+                                    request_id:id.clone(),progress:value,total,message
+                                });
+                            }
+                        }
+                    }
+                    // Other notifications must never impersonate a final result.
                 }
             }
         }
@@ -372,16 +398,21 @@ impl Mcp {
         combined
     }
     pub async fn call(&self,call:&ToolCall)->Result<String,String>{
-        match self.call_inner(call,None).await?{
+        match self.call_inner(call,None,None).await?{
             McpCallOutcome::Settled(result)=>result,
             McpCallOutcome::Uncertain(reason)=>Err(reason),
         }
     }
     pub async fn call_cooperative(&self,call:&ToolCall,cancellation:watch::Receiver<bool>)
         ->Result<McpCallOutcome,String>{
-        self.call_inner(call,Some(cancellation)).await
+        self.call_inner(call,Some(cancellation),None).await
     }
-    async fn call_inner(&self,call:&ToolCall,mut cancellation:Option<watch::Receiver<bool>>)
+    pub async fn call_with_progress(&self,call:&ToolCall,cancellation:watch::Receiver<bool>,
+        progress:mpsc::Sender<McpProgress>)->Result<McpCallOutcome,String>{
+        self.call_inner(call,Some(cancellation),Some(progress)).await
+    }
+    async fn call_inner(&self,call:&ToolCall,mut cancellation:Option<watch::Receiver<bool>>,
+        progress:Option<mpsc::Sender<McpProgress>>)
         ->Result<McpCallOutcome,String>{
         if !call.name.starts_with("mcp__"){return Err("not an MCP tool".into());}
         let suffix=&call.name["mcp__".len()..];
@@ -416,7 +447,7 @@ impl Mcp {
         }
         let result=match self.rpc_cancellable(server,"tools/call",
             json!({"name":tool_name,"arguments":call.arguments}),Some(tool_name),
-            &headers,cancellation).await?{
+            &headers,cancellation,progress).await?{
             RpcOutcome::Settled(Ok(value))=>value,
             RpcOutcome::Settled(Err(error))=>return Ok(McpCallOutcome::Settled(Err(error))),
             RpcOutcome::Uncertain(reason)=>return Ok(McpCallOutcome::Uncertain(reason)),
@@ -468,9 +499,10 @@ mod tests {
         let hold=mode=="hold";
         let incomplete=mode=="incomplete";
         let started=Arc::clone(&fixture.started);
+        let token=body["params"]["_meta"]["progressToken"].clone();
         let response=async_stream::stream!{
             let progress=json!({"jsonrpc":"2.0","method":"notifications/progress",
-                "params":{"progressToken":"opaque","progress":1}});
+                "params":{"progressToken":token,"progress":1,"total":4,"message":"started"}});
             yield Ok::<Bytes,Infallible>(Bytes::from(format!(
                 "event: message\r\ndata: {}\r\n\r\n",progress
             )));
@@ -521,6 +553,22 @@ mod tests {
         assert_eq!(fixture.notifications.load(Ordering::SeqCst),0);
         server.abort();
     }
+
+    #[tokio::test]
+    async fn forwards_only_matching_sse_progress_with_bounded_content(){
+        let (client,_fixture,server)=fixture_server().await;
+        let (_tx,rx)=watch::channel(false);
+        let (progress_tx,mut progress_rx)=mpsc::channel(8);
+        let result=client.call_with_progress(&test_call("fast"),rx,progress_tx).await.unwrap();
+        assert!(matches!(result,McpCallOutcome::Settled(Ok(_))));
+        let progress=progress_rx.recv().await.expect("matching progress not delivered");
+        assert_eq!(progress.progress,1.0);
+        assert_eq!(progress.total,Some(4.0));
+        assert_eq!(progress.message.as_deref(),Some("started"));
+        assert!(!progress.request_id.is_empty());
+        server.abort();
+    }
+
     #[tokio::test]
     async fn http_stream_cancel_is_unconfirmed_not_success_or_user_error(){
         let (client,fixture,server)=fixture_server().await;
