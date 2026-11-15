@@ -11,12 +11,15 @@ pub fn strict_pass(answer:&str)->bool{
 /// Extract actual command/tool outcomes from the durable timeline, preserving
 /// negative receipts. The verifier sees these separately from model narration.
 pub fn tool_receipts(run:&Run)->Vec<Value>{
-    run.events.iter().filter(|event|matches!(event.kind.as_str(),
-        "tool_result"|"tool_error"|"tool_reconciled"|"approval_required"|"cancel_pending_reconciliation"))
-        .rev().take(80).rev()
+    let mut latest=run.events.iter().rev()
+        .filter(|event|matches!(event.kind.as_str(),
+            "tool_result"|"tool_error"|"tool_reconciled"|"approval_required"|"cancel_pending_reconciliation"))
+        .take(80)
         .map(|event|serde_json::json!({
             "kind":event.kind,"message":event.message,"detail":event.detail,"seq":event.seq
-        })).collect()
+        })).collect::<Vec<_>>();
+    latest.reverse();
+    latest
 }
 
 #[cfg(test)]
