@@ -41,6 +41,7 @@ export function useRemote<T>(endpoint: string | null, initial: T, refreshOnEvent
  useEffect(() => {
   void reload()
   const onRefresh = (event: Event) => {
+   if (!endpoint) return
    const types=(event as CustomEvent<{types?:string[]}>).detail?.types
    // The native engine's frequent job_event stream does not modify provider,
    // agent, MCP or system configuration. Explicit refresh() still reloads all.
