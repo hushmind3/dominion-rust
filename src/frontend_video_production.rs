@@ -449,7 +449,11 @@ mod production_e2e_tests {
     String::from_utf8_lossy(&out.stdout).contains("drawtext"));
   let ffprobe=Command::new("ffprobe").arg("-version").output().await.ok()
    .is_some_and(|out|out.status.success());
-  if !available||!ffprobe{return;}
+  if !available||!ffprobe{
+   assert_ne!(std::env::var("DOMINION_REQUIRE_VIDEO_E2E").ok().as_deref(),
+    Some("1"),"CI requires FFmpeg with drawtext and ffprobe for actual video rendering");
+   return;
+  }
   let root=std::env::temp_dir().join(format!("video-production-e2e-{}",Uuid::new_v4()));
   let story=json!({"title":"A city evening","description":"A real rendered city story",
    "tags":["city","cinema"],
