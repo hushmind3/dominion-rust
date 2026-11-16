@@ -36,6 +36,11 @@ pub struct Production{
  pub video_id:Option<Uuid>,pub upload_id:Option<Uuid>,pub upload_url:Option<String>,
  #[serde(default)]pub rendered_shot_ids:Vec<Uuid>,
  #[serde(default)]pub completed_shots:usize,
+ #[serde(default)]pub artifact_revision_id:Option<Uuid>,
+ #[serde(default)]pub revision_count:u32,
+ #[serde(default)]pub regenerating_shot:Option<usize>,
+ #[serde(default)]pub pending_revision_job_id:Option<Uuid>,
+ #[serde(default)]pub revision_error:Option<String>,
  pub artifact_bytes:Option<u64>,pub measured_seconds:Option<f64>,
  pub cost_krw:f64,pub error:Option<String>,
  pub created_at_ms:u64,pub updated_at_ms:u64,
@@ -122,6 +127,11 @@ pub async fn reconcile_restart(settings:&Settings)->Result<(),String>{
  let _guard=guard().lock().await;
  let mut journal=read(settings)?;let mut changed=false;
  for record in journal.jobs.values_mut(){
+  if record.regenerating_shot.take().is_some(){
+   record.pending_revision_job_id=None;
+   record.revision_error=Some("Scene revision interrupted; the previous verified MP4 is preserved. Inspect the previous ComfyUI job before trying again.".into());
+   record.updated_at_ms=now_ms();changed=true;
+  }
   if record.status=="running"{
    record.status="needs_review".into();
    record.error=Some("Interrupted production; inspect the stored render and upload jobs. No external action was replayed.".into());
@@ -147,6 +157,8 @@ pub fn public(item:&Production)->Value{
   "videoId":item.video_id,"uploadId":item.upload_id,"uploadUrl":item.upload_url,
   "artifactBytes":item.artifact_bytes,"measuredSeconds":item.measured_seconds,
   "renderedShotIds":item.rendered_shot_ids,"completedShots":item.completed_shots,
+  "artifactRevisionId":item.artifact_revision_id,"revisionCount":item.revision_count,
+  "regeneratingShot":item.regenerating_shot,"revisionError":item.revision_error,
   "costKrw":item.cost_krw,"error":item.error,"factsVerified":false,
   "outputUrl":item.video_id.map(|id|format!("/api/video/jobs/{id}/content")),
   "createdAt":crate::frontend_state::timestamp(item.created_at_ms),
@@ -156,6 +168,8 @@ pub fn public(item:&Production)->Value{
 pub fn routes()->Router<Arc<Engine>>{
  Router::new().route("/video/productions",get(list).post(create))
   .route("/video/productions/{id}",get(get_production))
+  .route("/video/productions/{id}/shots/{index}/regenerate",
+   axum::routing::post(regenerate_shot))
 }
 async fn list(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let records=read(&engine.settings).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
@@ -210,6 +224,8 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
   title:String::new(),description:String::new(),tags:Vec::new(),script:String::new(),
   shots:Vec::new(),visual_bible:String::new(),script_attempts:0,video_id:None,upload_id:None,upload_url:None,
   rendered_shot_ids:Vec::new(),completed_shots:0,
+  artifact_revision_id:None,revision_count:0,regenerating_shot:None,
+  pending_revision_job_id:None,revision_error:None,
   artifact_bytes:None,measured_seconds:None,cost_krw:0.0,error:None,
   created_at_ms:now,updated_at_ms:now
  };
@@ -456,7 +472,7 @@ pub fn output(settings:&Settings,id:Uuid)->Result<Option<(PathBuf,&'static str)>
   (job.stage=="publishing"&&job.artifact_bytes.is_some()&&
    matches!(job.status.as_str(),"running"|"needs_review"));
  if !ready{return Err("assembled production is not ready for export".into());}
- let path=assembled_path(settings,id);
+ let path=assembled_path(settings,job.artifact_revision_id.unwrap_or(id));
  if !path.is_file(){return Err("assembled production artifact is missing".into());}
  Ok(Some((path,"video/mp4")))
 }
@@ -465,14 +481,15 @@ pub fn finished(settings:&Settings)->Result<Vec<Value>,String>{
  let data=read(settings)?;
  Ok(data.jobs.values().filter(|p|
   p.visual_engine=="comfyui"&&matches!(p.status.as_str(),"ready"|"published")&&
-  assembled_path(settings,p.id).is_file()
+  assembled_path(settings,p.artifact_revision_id.unwrap_or(p.id)).is_file()
  ).map(|p|json!({
   "id":p.id,"kind":"video","status":"completed","title":p.title,
   "brief":p.topic,"createdAt":crate::frontend_state::timestamp(p.created_at_ms),
   "updatedAt":crate::frontend_state::timestamp(p.updated_at_ms),
   "outputUrl":format!("/api/video/jobs/{}/content",p.id),
   "duration":p.duration,"aspectRatio":p.aspect_ratio,"costKrw":p.cost_krw,
-  "result":{"bytes":p.artifact_bytes}
+  "result":{"bytes":p.artifact_bytes},
+  "artifactRevisionId":p.artifact_revision_id
  })).collect())
 }
 
@@ -520,6 +537,105 @@ setsar=1,fps=24,format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{ind
  }.await;
  if result.is_err(){let _=tokio::fs::remove_file(&temporary).await;}
  result
+}
+
+
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
+struct ReviseShot{visual_prompt:String}
+
+/// Re-render exactly one already-approved, completed scene. The previous MP4
+/// stays readable until a new immutable revision is independently validated.
+async fn regenerate_shot(State(engine):State<Arc<Engine>>,
+ Path((id,index)):Path<(Uuid,usize)>,Json(input):Json<ReviseShot>)
+ ->Result<(StatusCode,Json<Value>),Fault>{
+ if input.visual_prompt.trim().is_empty()||input.visual_prompt.len()>1400{
+  return Err(fault(StatusCode::BAD_REQUEST,"visualPrompt must be 1-1400 bytes"));
+ }
+ let snapshot={
+  let _held=guard().lock().await;
+  let mut records=read(&engine.settings).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+  let job=records.jobs.get_mut(&id).ok_or_else(||fault(StatusCode::NOT_FOUND,"production not found"))?;
+  if job.visual_engine!="comfyui"||job.status!="ready"||
+   job.shots.get(index).is_none()||job.rendered_shot_ids.len()!=job.shots.len()||
+   job.regenerating_shot.is_some()||job.completed_shots!=job.shots.len(){
+   return Err(fault(StatusCode::CONFLICT,
+    "scene revision requires a completed, unpublished ComfyUI production with all source clips available"));
+  }
+  if !assembled_path(&engine.settings,job.artifact_revision_id.unwrap_or(id)).is_file(){
+   return Err(fault(StatusCode::CONFLICT,"verified master video is missing"));
+  }
+  job.regenerating_shot=Some(index);
+  job.pending_revision_job_id=None;
+  job.revision_error=None;job.updated_at_ms=now_ms();
+  let snapshot=job.clone();
+  write(&engine.settings,&records).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
+  snapshot
+ };
+ let settings=engine.settings.clone();
+ let worker=Arc::clone(&engine);
+ tokio::spawn(async move{
+  if let Err(problem)=execute_shot_revision(&worker,id,index,input.visual_prompt).await{
+   if let Err(storage)=edit(&settings,id,|job|{
+    job.regenerating_shot=None;job.pending_revision_job_id=None;
+    job.revision_error=Some(problem);
+   }).await{tracing::error!(%storage,production=%id,"failed to persist scene revision error");}
+  }
+ });
+ Ok((StatusCode::ACCEPTED,Json(public(&snapshot))))
+}
+
+async fn execute_shot_revision(engine:&Arc<Engine>,id:Uuid,index:usize,prompt:String)->Result<(),String>{
+ let settings=&engine.settings;
+ let production=read(settings)?.jobs.get(&id).cloned().ok_or("production missing")?;
+ let shot=production.shots.get(index).ok_or("scene missing")?;
+ let created=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
+  title:format!("{} · revision {}",production.title,index+1),
+  brief:continuity_prompt(&production.visual_bible,&prompt),
+  negative:String::new(),aspect_ratio:production.aspect_ratio.clone(),
+  duration:shot.seconds,fps:16,seed:-1
+ }).await?;
+ let clip_id=Uuid::parse_str(created["id"].as_str().ok_or("ComfyUI scene ID missing")?)
+  .map_err(|e|e.to_string())?;
+ edit(settings,id,|job|job.pending_revision_job_id=Some(clip_id)).await?;
+ tokio::time::timeout(Duration::from_secs(2400),async{
+  loop{
+   tokio::time::sleep(Duration::from_secs(2)).await;
+   let clip=crate::frontend_comfy::get(settings,clip_id)?.ok_or("revised clip missing")?;
+   match clip.status.as_str(){
+    "completed"=>return Ok::<(),String>(()),
+    "failed"|"interrupted"|"needs_review"=>
+     return Err(clip.error.unwrap_or("revised ComfyUI scene failed".into())),
+    _=>{}
+   }
+  }
+ }).await.map_err(|_|"revised scene timeout; inspect remote job before retrying".to_owned())??;
+ let new_clip=crate::frontend_comfy::output(settings,clip_id)?
+  .ok_or("revised scene video file is missing")?.0;
+ inspect(&new_clip,shot.seconds).await?;
+ let mut clips=Vec::with_capacity(production.shots.len());
+ for (i,existing) in production.rendered_shot_ids.iter().enumerate(){
+  let path=if i==index{new_clip.clone()}else{
+   crate::frontend_comfy::output(settings,*existing)?
+    .ok_or_else(||format!("source scene {} no longer available",i+1))?.0
+  };
+  clips.push((path,production.shots[i].seconds));
+ }
+ // Each accepted revision gets a fresh immutable artifact. On any failure,
+ // the journal pointer continues to reference the previously verified MP4.
+ let revision=Uuid::new_v4();
+ assemble_clips(settings,revision,&clips,&production.aspect_ratio).await?;
+ let (bytes,seconds)=inspect(&assembled_path(settings,revision),production.duration).await?;
+ edit(settings,id,|job|{
+  job.artifact_revision_id=Some(revision);
+  job.rendered_shot_ids[index]=clip_id;
+  job.shots[index].visual_prompt=prompt;
+  job.artifact_bytes=Some(bytes);job.measured_seconds=Some(seconds);
+  job.revision_count=job.revision_count.saturating_add(1);
+  job.regenerating_shot=None;job.pending_revision_job_id=None;
+  job.revision_error=None;
+ }).await?;
+ Ok(())
 }
 
 async fn inspect(path:&FilePath,expected:u32)->Result<(u64,f64),String>{
@@ -613,7 +729,9 @@ mod tests{
    tags:vec![],script:String::new(),shots:vec![],
    visual_bible:String::new(),script_attempts:0,video_id:Some(Uuid::new_v4()),
    upload_id:Some(Uuid::new_v4()),upload_url:None,
-   rendered_shot_ids:Vec::new(),completed_shots:0,artifact_bytes:None,
+   rendered_shot_ids:Vec::new(),completed_shots:0,artifact_revision_id:None,
+   revision_count:0,regenerating_shot:None,pending_revision_job_id:None,
+   revision_error:None,artifact_bytes:None,
    measured_seconds:None,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
   };
   write(&settings,&Journal{jobs:HashMap::from([(entry.id,entry.clone())])}).unwrap();
