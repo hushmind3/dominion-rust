@@ -40,6 +40,7 @@ pub mod frontend_oauth;
 pub mod frontend_youtube;
 pub mod frontend_comfy;
 pub mod frontend_video_production;
+pub mod frontend_video_models;
 pub mod workflow;
 pub mod frontend_workflows;
 pub mod sandbox;
