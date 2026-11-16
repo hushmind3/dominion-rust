@@ -7,6 +7,7 @@ import {
 import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {FormField,Notice,Panel,useRemote} from './UI'
 import {downloadApiVideo,getApiVideoPreview,post} from '../api'
+import {VideoModelInstaller} from './VideoModelInstaller'
 import {useJob} from '../hooks/useJob'
 
 type Engine='native'|'comfyui'
@@ -42,10 +43,10 @@ function bytes(value?:number|null){
  return value>1024*1024?(value/1024/1024).toFixed(1)+'MB':Math.round(value/1024)+'KB'
 }
 export function VideoAutoStudio({
- youtubeConnected,comfyReady,nativeReady,onSettings,onReview,onPublish
+ youtubeConnected,comfyReady,nativeReady,onSettings,onReview,onPublish,onModelInstalled
 }:{
  youtubeConnected:boolean;comfyReady:boolean;nativeReady:boolean;
- onSettings:()=>void;onReview:(id:string)=>void;onPublish:(id:string)=>void
+ onSettings:()=>void;onReview:(id:string)=>void;onPublish:(id:string)=>void;onModelInstalled:()=>void
 }){
  const jobs=useRemote<Production[]>('/api/video/productions',[],false)
  const [chosen,setChosen]=useState(remembered)
@@ -55,9 +56,9 @@ export function VideoAutoStudio({
  const [topic,setTopic]=useState('')
  const [audience,setAudience]=useState('일반 시청자')
  const [notes,setNotes]=useState('')
- const [engine,setEngine]=useState<Engine>('native')
+ const [engine,setEngine]=useState<Engine>('comfyui')
  const [ratio,setRatio]=useState<Ratio>('9:16')
- const [duration,setDuration]=useState(30)
+ const [duration,setDuration]=useState(6)
  const [narration,setNarration]=useState(true)
  const [autoPublish,setAutoPublish]=useState(false)
  const [privacy,setPrivacy]=useState<'private'|'unlisted'|'public'>('private')
@@ -156,6 +157,7 @@ export function VideoAutoStudio({
        </SelectInput>
       </FormField>
      </div>
+     {engine==='comfyui'&&<VideoModelInstaller onInstalled={onModelInstalled}/>}
      <div className="space-y-3">
       <p className="text-[12px] font-semibold text-[#40372F]">화면 비율</p>
       <div className="grid grid-cols-3 gap-2">
