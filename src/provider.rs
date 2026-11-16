@@ -51,15 +51,18 @@ impl ModelClient {
                 Err(error) if self.economy.base_url == self.strong.base_url &&
                     self.economy.name == self.strong.name &&
                     self.economy_protocol==self.strong_protocol => return Err(error),
-                Err(_) => {} // explicit fallback: main model, with its actual metered cost
+                // A provider timeout, 5xx or truncated body can occur after
+                // billable inference. Never duplicate the uncertain request.
+                Err(error) if !safe_fallback(&error)=>return Err(error),
+                Err(_) => {} // confirmed 429 rejection; main fallback is safe
             }
         }
         self.request(&self.strong,&self.strong_protocol,messages,tools).await
     }
     async fn request(&self,settings:&ModelSettings,protocol:&str,messages:&[Value],tools:&[Value])
         ->Result<Reply,String>{
-        // Retry only transient HTTP/transport failures. A completed model reply
-        // is never replayed through the harness; tool side effects are journaled separately.
+        // Only a definite pre-execution rejection may be replayed. Transport
+        // resets, 5xx and body failures can happen after billable inference.
         for attempt in 0..3u32 {
             match self.request_once(settings,protocol,messages,tools).await {
                 Ok(reply)=>return Ok(reply),
@@ -94,7 +97,7 @@ impl ModelClient {
         if !settings.api_key.is_empty() { req = req.bearer_auth(&settings.api_key); }
         let response = req.send().await.map_err(|e| format!("provider transport: {e}"))?;
         let status = response.status();
-        let bytes = response.bytes().await.map_err(|e| format!("provider body: {e}"))?;
+        let bytes = bounded_body(response).await?;
         if !status.is_success() {
             let body = String::from_utf8_lossy(&bytes);
             return Err(format!("provider HTTP {status}: {}", body.chars().take(500).collect::<String>()));
@@ -160,7 +163,7 @@ impl ModelClient {
         }
         let response=request.send().await.map_err(|e|format!("provider transport: {e}"))?;
         let status=response.status();
-        let bytes=response.bytes().await.map_err(|e|format!("provider body: {e}"))?;
+        let bytes=bounded_body(response).await?;
         if !status.is_success(){
             let text=String::from_utf8_lossy(&bytes);
             return Err(format!("provider HTTP {status}: {}",
@@ -283,11 +286,25 @@ fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
     if messages.is_empty(){return Err("Anthropic request has no conversation messages".into());}
     Ok((system.join("\n\n"),messages))
 }
-fn retryable(error:&str)->bool{
-    error.starts_with("provider transport:") ||
-    error.starts_with("provider body:") ||
-    ["429","500","502","503","504"].iter().any(|status|error.starts_with(&format!("provider HTTP {status} ")))
+const MAX_PROVIDER_RESPONSE_BYTES:usize=8*1024*1024;
+
+/// Bounded even if Content-Length is absent or falsified.
+async fn bounded_body(mut response:reqwest::Response)->Result<Vec<u8>,String>{
+ if response.content_length().is_some_and(|n|n>MAX_PROVIDER_RESPONSE_BYTES as u64){
+  return Err("provider response exceeds 8 MiB cap".into());
+ }
+ let mut body=Vec::new();
+ while let Some(chunk)=response.chunk().await.map_err(|e|format!("provider body: {e}"))?{
+  if body.len().saturating_add(chunk.len())>MAX_PROVIDER_RESPONSE_BYTES{
+   return Err("provider response exceeds 8 MiB cap".into());
+  }
+  body.extend_from_slice(&chunk);
+ }
+ Ok(body)
 }
+/// 429 is a definite rejection; all other failures have uncertain billing.
+fn retryable(error:&str)->bool{error.starts_with("provider HTTP 429 ")}
+fn safe_fallback(error:&str)->bool{retryable(error)}
 fn estimate_cost(settings:&ModelSettings,input:u64,cached:u64,written:u64,output:u64)->f64{
     let cached=cached.min(input);
     let written=written.min(input-cached);
@@ -303,8 +320,10 @@ mod tests {
     #[test]
     fn retry_policy_is_precise(){
         assert!(retryable("provider HTTP 429 Too Many Requests: throttled"));
-        assert!(retryable("provider HTTP 503 Service Unavailable: maintenance"));
-        assert!(retryable("provider transport: connection reset"));
+        assert!(!retryable("provider HTTP 503 Service Unavailable: maintenance"));
+        assert!(!retryable("provider transport: connection reset"));
+        assert!(!safe_fallback("provider body: connection reset"));
+        assert!(safe_fallback("provider HTTP 429 Too Many Requests: throttled"));
         assert!(!retryable("provider HTTP 401 Unauthorized: bad token"));
         assert!(!retryable("invalid provider JSON: bad body"));
     }
@@ -333,6 +352,32 @@ mod tests {
         assert_eq!(reply.text,"ok");
         assert_eq!(count.load(Ordering::SeqCst),2);
         handle.abort();
+    }
+    #[tokio::test]
+    async fn ambiguous_server_failure_is_not_replayed_or_fallback_billed(){
+        use axum::{extract::State,response::IntoResponse,routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        async fn ambiguous(State(count):State<Arc<AtomicUsize>>)->impl IntoResponse{
+            count.fetch_add(1,Ordering::SeqCst);
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+             Json(json!({"error":"upstream may have consumed tokens"})))
+        }
+        let count=Arc::new(AtomicUsize::new(0));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let router=Router::new().route("/chat/completions",post(ambiguous)).with_state(count.clone());
+        let server=tokio::spawn(async move{axum::serve(listener,router).await.unwrap()});
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.economy.base_url=format!("http://{address}");
+        cfg.economy.name="budget-model".into();cfg.economy.api_key.clear();
+        cfg.main.base_url=format!("http://{address}");
+        cfg.main.name="strong-model".into();cfg.main.api_key.clear();
+        let result=ModelClient::new(&cfg).unwrap().complete(
+            &[json!({"role":"user","content":"a priced generation"})],&[],true).await;
+        assert!(result.unwrap_err().contains("provider HTTP 500"));
+        assert_eq!(count.load(Ordering::SeqCst),1,
+            "uncertain billed completion must not be retried on any model");
+        server.abort();
     }
     #[test]
     fn billed_usage_splits_cached_and_uncached_tokens(){
