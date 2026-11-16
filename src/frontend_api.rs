@@ -85,6 +85,29 @@ pub fn router()->Router<Arc<Engine>>{
 async fn unsupported_endpoint()->Fault{
     unsupported("This main frontend action has no native Rust implementation yet; the UI is preserved without fabricated functionality.")
 }
+#[derive(Deserialize)]
+struct LegacySqliteInput { path:String, #[serde(default)] confirm:bool }
+fn legacy_sqlite_path(path:&str)->Result<std::path::PathBuf,Fault>{
+    let path=path.trim();
+    if path.is_empty()||path.len()>4096{return Err(bad("legacy SQLite path required (up to 4096 characters)"));}
+    let path=std::path::PathBuf::from(path);
+    if !path.is_absolute(){return Err(bad("legacy SQLite source path must be absolute"));}
+    Ok(path)
+}
+async fn legacy_sqlite_preview(State(engine):State<Arc<Engine>>,
+    Json(input):Json<LegacySqliteInput>)->Result<Json<crate::legacy_import::LegacyPreview>,Fault>{
+    let path=legacy_sqlite_path(&input.path)?;
+    Dominion::from_engine(engine).preview_legacy_sqlite(path).await
+        .map(Json).map_err(bad)
+}
+async fn legacy_sqlite_import(State(engine):State<Arc<Engine>>,
+    Json(input):Json<LegacySqliteInput>)->Result<Json<crate::legacy_import::LegacyImportResult>,Fault>{
+    if !input.confirm{return Err(bad("explicit confirm:true required before copying legacy records"));}
+    let path=legacy_sqlite_path(&input.path)?;
+    Dominion::from_engine(engine).import_legacy_sqlite(path).await
+        .map(Json).map_err(bad)
+}
+
 async fn health()->Json<Value>{
     Json(json!({
         "ok":true,"service":"dominion","engine":"rust","runtime":"rust",
