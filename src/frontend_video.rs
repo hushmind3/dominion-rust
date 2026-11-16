@@ -97,7 +97,10 @@ async fn workflows(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let cfg=crate::frontend_comfy::config(&engine.settings).map_err(bad)?;
     Ok(Json(json!(crate::frontend_comfy::workflows(&cfg))))
 }
-async fn downloads()->Json<Value>{Json(json!({"downloads":[]}))}
+async fn downloads(State(engine):State<Arc<Engine>>)->Json<Value>{
+ let Json(pack)=crate::frontend_video_models::status(State(engine)).await;
+ Json(json!({"downloads":[pack]}))
+}
 async fn jobs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let all=engine.videos.list().await;
     let mut rows=Vec::new();
