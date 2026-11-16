@@ -129,7 +129,7 @@ async fn start_upload(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   match crate::frontend_comfy::output(&engine.settings,id)
     .map_err(|e|fail(StatusCode::CONFLICT,e))?{
      Some(file)=>file,
-     None=>crate::frontend_video_production::output(&engine.settings,id)
+     None=>crate::frontend_video_production::uploadable_output(&engine.settings,id)
       .map_err(|e|fail(StatusCode::CONFLICT,e))?
       .ok_or_else(||fail(StatusCode::NOT_FOUND,"video artifact missing"))?
     }
