@@ -105,3 +105,49 @@ async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
     server.abort();
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+#[tokio::test]
+async fn connected_github_commit_requires_approval_before_external_dispatch(){
+    let root=std::env::temp_dir().join(format!("dominion-github-approval-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+    let mut run=Run::new(CreateRun{
+        instruction:"Update an existing GitHub file after explicit approval".into(),
+        budget_krw:Some(250.0),max_steps:Some(4)
+    },4).unwrap();
+    run.plan=Some("Only the queued GitHub commit remains".into());
+    let id=run.id;
+    run.queued_calls.push(ToolCall{
+        id:"github-commit-1".into(),name:"github_commit_file".into(),
+        arguments:json!({
+            "owner":"test","repo":"test","branch":"feature/fix",
+            "path":"src/main.rs","content":"new text",
+            "expected_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "message":"update source"
+        })
+    });
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let mut paused=None;
+    for _ in 0..100{
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let state=store.get(id).await.unwrap();
+        if state.status==RunStatus::AwaitingApproval{paused=Some(state);break;}
+    }
+    let state=paused.expect("GitHub write did not stop at approval boundary");
+    assert_eq!(state.pending_approval.as_ref().unwrap().name,"github_commit_file");
+    assert!(state.in_flight.is_none());
+    assert_eq!(state.events.iter().filter(|ev|ev.kind=="tool_started").count(),0);
+    engine.cancel(id).await.unwrap();
+    assert_eq!(store.get(id).await.unwrap().status,RunStatus::Cancelled);
+    for _ in 0..100{
+        if !engine.active.lock().await.contains(&id){break;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    drop(engine);drop(store);
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
