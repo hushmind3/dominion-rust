@@ -31,6 +31,8 @@ pub struct Production{
  pub narration:bool,pub auto_publish:bool,pub privacy_status:String,
  pub status:String,pub stage:String,pub title:String,pub description:String,
  pub tags:Vec<String>,pub script:String,pub shots:Vec<Shot>,
+ #[serde(default)]pub visual_bible:String,
+ #[serde(default)]pub script_attempts:u8,
  pub video_id:Option<Uuid>,pub upload_id:Option<Uuid>,pub upload_url:Option<String>,
  #[serde(default)]pub rendered_shot_ids:Vec<Uuid>,
  #[serde(default)]pub completed_shots:usize,
@@ -141,6 +143,7 @@ pub fn public(item:&Production)->Value{
   "stageTotal":STAGES.len(),"stages":STAGES,
   "title":item.title,"description":item.description,"tags":item.tags,
   "script":item.script,"shots":item.shots,
+  "visualBible":item.visual_bible,"scriptAttempts":item.script_attempts,
   "videoId":item.video_id,"uploadId":item.upload_id,"uploadUrl":item.upload_url,
   "artifactBytes":item.artifact_bytes,"measuredSeconds":item.measured_seconds,
   "renderedShotIds":item.rendered_shot_ids,"completedShots":item.completed_shots,
@@ -205,7 +208,7 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
   duration:input.duration,narration:input.narration,auto_publish:input.auto_publish,
   privacy_status:input.privacy_status.clone(),status:"running".into(),stage:"planning".into(),
   title:String::new(),description:String::new(),tags:Vec::new(),script:String::new(),
-  shots:Vec::new(),video_id:None,upload_id:None,upload_url:None,
+  shots:Vec::new(),visual_bible:String::new(),script_attempts:0,video_id:None,upload_id:None,upload_url:None,
   rendered_shot_ids:Vec::new(),completed_shots:0,
   artifact_bytes:None,measured_seconds:None,cost_krw:0.0,error:None,
   created_at_ms:now,updated_at_ms:now
@@ -236,11 +239,12 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
  Ok((StatusCode::ACCEPTED,Json(public(&job))))
 }
 #[derive(Deserialize)]
-struct Script{title:String,description:String,#[serde(default)]tags:Vec<String>,scenes:Vec<Proposal>}
+struct Script{title:String,description:String,#[serde(default)]tags:Vec<String>,
+ #[serde(default)]visual_bible:String,scenes:Vec<Proposal>}
 #[derive(Deserialize)]
 struct Proposal{heading:String,narration:String,#[serde(default)]visual_prompt:String}
 fn storyboard(text:&str,duration:u32,comfy:bool)
- ->Result<(String,String,Vec<String>,Vec<Shot>),String>{
+ ->Result<(String,String,Vec<String>,Vec<Shot>,String),String>{
  // Some OpenAI-compatible models wrap valid JSON in a markdown fence.
  // Accept only a single complete JSON document, never substring extraction.
  let trimmed=text.trim();
@@ -255,6 +259,7 @@ fn storyboard(text:&str,duration:u32,comfy:bool)
   return Err("storyboard scene count does not match requested duration".into());
  }
  if data.title.trim().is_empty(){return Err("storyboard title missing".into());}
+ if data.visual_bible.len()>900{return Err("visual bible exceeds 900 bytes".into());}
  let base=duration/count as u32;
  let rest=duration%count as u32;
  let mut shots=Vec::with_capacity(count);
@@ -273,7 +278,8 @@ fn storyboard(text:&str,duration:u32,comfy:bool)
  Ok((data.title.chars().take(100).collect(),
   data.description.chars().take(4000).collect(),
   data.tags.into_iter().filter(|tag|!tag.trim().is_empty())
-   .take(12).map(|tag|tag.chars().take(45).collect()).collect(),shots))
+   .take(12).map(|tag|tag.chars().take(45).collect()).collect(),shots,
+  data.visual_bible.trim().to_owned()))
 }
 async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),String>{
  let settings=&engine.settings;
@@ -281,7 +287,7 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
  let count=if options.visual_engine=="comfyui"{options.duration.div_ceil(8)}else{(options.duration/8).clamp(2,6)};
  let prompt=vec![
   json!({"role":"system","content":format!(
-   "You are an autonomous video producer. Output ONLY valid JSON with title, description, tags (array), scenes (array of EXACTLY {count} objects containing heading, narration, visual_prompt). Script must have a hook, structure and ending. Use the user's language. Never fabricate research, sources, quotes, or statistics. When notes are provided ground factual claims only in supplied notes; otherwise use expressive fiction or general explanations. Visual prompts must describe actual shots. No markdown."
+   "You are an autonomous video producer. Output ONLY valid JSON with title, description, tags (array), visual_bible (one stable character, art direction, lighting, wardrobe and color palette; <=900 bytes), scenes (array of EXACTLY {count} objects containing heading, narration, visual_prompt). Every scene must preserve the visual_bible while introducing a distinct shot and motion. Script must have a hook, structure and ending. Use the user's language. Never fabricate research, sources, quotes, or statistics. When notes are provided ground factual claims only in supplied notes; otherwise use expressive fiction or general explanations. Visual prompts must describe actual shots. No markdown."
   )}),
   json!({"role":"user","content":format!(
    "Topic: {}\nAudience: {}\nReference notes (user supplied and not independently verified): {}\nDuration: {} seconds\nAspect: {}\nVisual engine: {}\nScene count: {count}",
@@ -532,9 +538,9 @@ mod tests{
   let raw=json!({"title":"City","description":"A story","tags":["design"],
    "scenes":[{"heading":"Start","narration":"One","visual_prompt":"An avenue"},
     {"heading":"End","narration":"Two","visual_prompt":"A skyline"}]}).to_string();
-  let (_,_,_,shots)=storyboard(&raw,13,false).unwrap();
+  let (_,_,_,shots,_)=storyboard(&raw,13,false).unwrap();
   assert_eq!(shots.iter().map(|s|s.seconds).sum::<u32>(),13);
-  let (_,_,_,comfy)=storyboard(&raw,8,true).unwrap();
+  let (_,_,_,comfy,_)=storyboard(&raw,8,true).unwrap();
    assert_eq!(comfy.iter().map(|s|s.seconds).sum::<u32>(),8);
    assert!(storyboard(&raw,3,true).is_err());
  }
@@ -548,7 +554,7 @@ mod tests{
    (0..12).map(|i|json!({"heading":format!("Scene {i}"),
     "narration":"hello","visual_prompt":"camera shot"})).collect::<Vec<_>>()
   }).to_string();
-  let (_,_,_,shots)=storyboard(&raw,90,true).unwrap();
+  let (_,_,_,shots,_)=storyboard(&raw,90,true).unwrap();
   assert_eq!(shots.len(),12);
   assert_eq!(shots.iter().map(|s|s.seconds).sum::<u32>(),90);
   assert!(shots.iter().all(|s|(3..=9).contains(&s.seconds)));
@@ -563,7 +569,8 @@ mod tests{
    aspect_ratio:"9:16".into(),duration:10,narration:true,
    auto_publish:true,privacy_status:"private".into(),status:"running".into(),
    stage:"publishing".into(),title:"Test".into(),description:String::new(),
-   tags:vec![],script:String::new(),shots:vec![],video_id:Some(Uuid::new_v4()),
+   tags:vec![],script:String::new(),shots:vec![],
+   visual_bible:String::new(),script_attempts:0,video_id:Some(Uuid::new_v4()),
    upload_id:Some(Uuid::new_v4()),upload_url:None,
    rendered_shot_ids:Vec::new(),completed_shots:0,artifact_bytes:None,
    measured_seconds:None,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
