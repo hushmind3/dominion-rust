@@ -413,3 +413,13 @@ The Video > 자율 콘텐츠 surface now accepts ComfyUI durations from 3 to 90 
 Failure boundary: an interrupted remote scene or upload requires review rather than an unobserved retry; finished clips remain in the ComfyUI journal. The script-model KRW cap does not include local GPU, electricity or storage costs. ComfyUI footage currently contains no scene-synced TTS, identity-reference conditioning or targeted shot regeneration. Full browser/video-render checks and real model inference should be independently verified on the target machine.
 
 2026 references: https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_video.py and https://github.com/Comfy-Org/comfy-skills/blob/main/skills/comfy-generate-video.md .
+
+## Sub4: durable scene repair and visual continuity (2026-11-16)
+
+The autonomous video planner now emits an optional shared visual_bible that is included in each ComfyUI scene prompt. Invalid storyboard JSON or scene counts are corrected via up to two bounded model retries. All retries are charged and persisted as scriptAttempts/costKrw before further work; no video rendering starts when the configured script-model spend is exceeded.
+
+After the first multi-shot MP4 is ready, the Video Studio lets users regenerate one selected ComfyUI shot. Successful revisions retain other scene videos, render a replacement clip, create a NEW immutable output file and switch artifactRevisionId in the durable journal only after FFmpeg/ffprobe validation. The previous finished MP4 remains accessible if the new render fails. The existing product video ID remains stable for viewing/downloading; YouTube upload is blocked while a revision is in progress.
+
+Interrupted revisions retain the remote ComfyUI prompt receipt ID, scene index and prompt. The next explicit revision request attempts a GET-only remote-history reconciliation: an already completed clip can be reused, a confirmed terminal failure permits a new submission, and unknown outcomes remain blocked rather than paying for an accidental duplicate. Direct model weights and original scene files are not modified.
+
+2026 frontier context: official Comfy LTX-2.3 FLF2V workflows expose first/last-frame guidance and controlled motion (https://comfy.org/hub/workflows/ltx-2-3-flf2v-bb33cc433026/); MultiShotMaster (CVPR 2026) addresses multi-shot consistency (https://openaccess.thecvf.com/content/CVPR2026/papers/Wang_MultiShotMaster_A_Controllable_Multi-Shot_Video_Generation_Framework_CVPR_2026_paper.pdf). Sub4's visual_bible is text-only and does not claim frame-conditioned character consistency or synchronized generated speech. Shot-level revisions target lower wasted GPU work; actual GPU costs and quality require matched measurement.
