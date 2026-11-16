@@ -427,3 +427,14 @@ Interrupted revisions retain the remote ComfyUI prompt receipt ID, scene index a
 ## Sub4 Rust context-efficiency refinement (2026-11-16)
 
 The Rust engine uses bounded rule-based compaction of historical tool-call arguments before model calls, while retaining function names, call IDs and paired tool receipts. Large old function arguments are replaced with valid JSON markers in the outbound model projection; the durable execution transcript is unchanged. Older preserved user directives are separately bounded and projected-character savings are recorded in the native run telemetry. This targets unnecessary repeated prompt traffic, not a claimed token-billing discount until measured with a real provider. Informed by the 2026 harness ablation study: https://arxiv.org/abs/2609.20804 .
+
+
+### Sub4: durable task contracts, bounded verification, replay-safe billing (2026-11-16)
+
+The native SDK and HTTP API still share the Rust Engine. Planning no longer serializes an unlimited tool/model transcript. Context projection now preserves every direct user change verbatim, retains assistant/tool receipt pairs, and enforces DOMINION_CONTEXT_MAX_CHARS before paid inference. If mandatory user instructions exceed that limit, the agent pauses instead of silently shortening the contract. Historical model-verifier corrections are advisory rather than elevated into user authority.
+
+The independent audit now assembles a bounded prompt from exact user constraints, read-only filesystem/Git inspection and durable tool results, explicitly reporting omitted receipts instead of treating omission as success. Completed changes remain owned by the existing Run journal and same Rust engine.
+
+Provider retry/fallback now distinguishes explicit HTTP 429 rejection from uncertain billed outcomes. Transport loss, body errors and HTTP 5xx do not trigger an automatic duplicate generation or model fallback. Provider responses are capped at 8 MiB even when Content-Length is absent. This prioritizes non-duplication of uncertain paid inference. An affected agent can pause for inspection; no savings percentage is claimed until matched real-model measurement.
+
+Tests cover context limits, preservation of all direct changes, paired receipt integrity, bounded independent audit, a single attempt after ambiguous provider failure, and mock-isolated RSI strategy generation. Compare with October 2026 compaction study https://arxiv.org/abs/2610.31778, LongHorizon-Harness https://arxiv.org/abs/2608.01964, Qwen Code subagent architecture https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sub-agents.md and OpenAI Agents SDK approvals https://developers.openai.com/api/docs/guides/agents/guardrails-approvals.

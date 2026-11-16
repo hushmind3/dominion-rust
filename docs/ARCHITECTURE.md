@@ -390,3 +390,16 @@ Agent harness context comparison: 2026 long-horizon work recommends evidence-ver
 ### Rule-based context projection and trace integrity (2026-11-16)
 
 src/context.rs projects durable messages for outbound model calls, never rewriting the stored history. For historical assistant tool_calls with argument strings exceeding 1,200 characters, the projection substitutes a well-formed JSON history_compacted marker but preserves tool function names, IDs and adjacent tool receipts. The same projection caps long tool text and excerpts of older directives, retaining user corrections. Tests verify that the original transcript is unchanged, the contracted tool-call arguments remain JSON parseable and projected characters fall below the chosen fixture budget. This is character accounting, not model-provider token billing. Reference: https://arxiv.org/abs/2609.20804 (September 2026 controlled harness experiments).
+
+
+## Sub4: bounded task state and independently inspected evidence (2026-11-16)
+
+User → /api/v1/runs or TypeScript runs SDK → Rust Engine → native model/tools → durable journal → independent verification → API/GUI. Engine remains the single owner of execution and state transitions.
+
+The planning phase now passes the root request and exact subsequent direct user instructions through context::planning_directives, excluding raw tool/model histories from the paid planning prompt. context::compact_strict projects later model turns with system/root prefix, pinned direct user changes, and bounded whole assistant/tool exchanges. If the exact requirements cannot fit the configured context budget, execution pauses; requirements are never silently shortened. Optional memory/RSI strategy/skills are admitted only within the cap. Verifier-model feedback stays advisory and does not receive pinned user authority.
+
+verification::verifier_messages owns the independent audit view: current read-only file and Git observations, durable tool result/failure/reconciliation events, root instruction and exact direct user amendments. Receipts are bounded and omission is reported as missing evidence. Strict PASS or REVISE remains the existing engine decision. A verified receipt is not invented from model narrative.
+
+provider.rs bounds HTTP response bodies at 8 MiB and automatically retries or falls back only when the endpoint explicitly returns 429, denoting a rejected request. Transport failure, 5xx or incomplete bytes have uncertain billing and are never auto-replayed. An operator can inspect usage/previous outcomes before resuming. This is a conservative policy, not a provider-enforced exactly-once guarantee.
+
+Sub2 and Sub3 implement scoped RSI read/edit decision checkpoints in src/engine/chat/runtime.rs; Sub4 keeps its own native Engine, durable journal and frozen independent RSI evaluator, while upgrading the shared input, verification and provider boundaries. Compare under identical models, budgets and task sets before asserting a frontier benchmark win. Source research: https://arxiv.org/abs/2610.31778 and https://arxiv.org/abs/2608.01964.

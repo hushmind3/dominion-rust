@@ -218,3 +218,10 @@ Native Rust `Dominion::owner_profile()` and `Dominion::save_owner_profile(NewOwn
 ## Unchanged main frontend adapter
 
 Rust `Dominion::chat_sessions()`, `chat_session(id)`, and `agent_profiles()` access the same durable records used by `/api/sessions` and `/api/agents`. The existing `Dominion::submit`, `approve`, `cancel`, `reconcile`, and `tool_catalog` own execution while `src/frontend_api.rs` projects the original main `/api/sdk/runs`, `/api/chat`, `/api/approvals`, `/api/executions` protocols. The main front-end remains unmodified, and unimplemented main actions return explicit 501. The default bind/TypeScript SDK base URL is now `http://127.0.0.1:4317`.
+
+
+### Sub4 run-context and billing guarantees (2026-11-16)
+
+No SDK endpoint changes. runs.create, runs.resume, runs.cancel, runs.reconcile and event streaming still use the native Rust Run. When the exact task instructions cannot fit DOMINION_CONTEXT_MAX_CHARS, the worker enters paused state with paused_error; there is no additional model call. The operator can raise the limit and resume the same durable Run.
+
+Model retries and economy-to-main fallback are allowed after an explicit HTTP 429 rejection only. HTTP 5xx, dropped connections and incomplete response bodies are uncertain outcomes: the client does not silently initiate another billable generation. Reported KRW model costs still depend on configured token prices and actual provider usage; a zero configured rate is not evidence that the external inference was free.
