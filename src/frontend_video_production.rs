@@ -180,6 +180,23 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
     "Select and connect ComfyUI with an API workflow before autonomous rendering"));
   }
  }
+  // Never spend expensive GPU time if there is no usable final MP4 assembler.
+  if input.visual_engine=="comfyui"{
+   let encoders=tokio::time::timeout(Duration::from_secs(6),
+    Command::new("ffmpeg").args(["-hide_banner","-encoders"])
+     .stdout(Stdio::piped()).stderr(Stdio::null())
+     .kill_on_drop(true).output()).await.ok().and_then(Result::ok);
+   let probe=tokio::time::timeout(Duration::from_secs(6),
+    Command::new("ffprobe").arg("-version")
+     .stdout(Stdio::null()).stderr(Stdio::null())
+     .kill_on_drop(true).output()).await.ok().and_then(Result::ok);
+   if !encoders.is_some_and(|out|out.status.success()&&
+       String::from_utf8_lossy(&out.stdout).contains("libx264"))||
+      !probe.is_some_and(|out|out.status.success()){
+    return Err(fault(StatusCode::PRECONDITION_REQUIRED,
+     "FFmpeg with libx264 and ffprobe are required for autonomous ComfyUI video assembly"));
+   }
+  }
  let now=now_ms();
  let job=Production{
   id:Uuid::new_v4(),topic:input.topic.trim().into(),
@@ -507,7 +524,7 @@ mod tests{
   validate(&input).unwrap();
   let mut bad=input.clone();bad.privacy_status="unsupported".into();
   assert!(validate(&bad).is_err());
-  bad=input;bad.visual_engine="comfyui".into();
+  bad=input;bad.visual_engine="comfyui".into();bad.duration=91;
   assert!(validate(&bad).is_err());
  }
  #[test]
@@ -566,6 +583,43 @@ mod production_e2e_tests {
  use super::*;
  use axum::routing::post;
 
+
+ #[tokio::test]
+ async fn real_ffmpeg_multishot_assembly_produces_verified_mp4(){
+  let available=Command::new("ffmpeg").arg("-encoders").output().await.ok()
+   .is_some_and(|out|out.status.success()&&
+    String::from_utf8_lossy(&out.stdout).contains("libx264"));
+  let probe=Command::new("ffprobe").arg("-version").output().await.ok()
+   .is_some_and(|out|out.status.success());
+  if !available||!probe{
+   assert_ne!(std::env::var("DOMINION_REQUIRE_VIDEO_E2E").ok().as_deref(),
+    Some("1"),"FFmpeg and ffprobe required for multi-shot assembly CI");
+   return;
+  }
+  let root=std::env::temp_dir().join(format!("multi-shot-assembly-{}",Uuid::new_v4()));
+  tokio::fs::create_dir_all(&root).await.unwrap();
+  let mut settings=Settings::from_env().unwrap();settings.data_dir=root.clone();
+  let mut clips=Vec::new();
+  for (index,filter) in [
+   "color=c=blue:s=320x180:r=16","color=c=red:s=240x320:r=18"
+  ].iter().enumerate(){
+   let file=root.join(format!("scene-{index}.mp4"));
+   let output=Command::new("ffmpeg")
+    .args(["-hide_banner","-loglevel","error","-f","lavfi","-i",filter,
+     "-t","3","-c:v","libx264","-pix_fmt","yuv420p","-y"])
+    .arg(&file).output().await.unwrap();
+   assert!(output.status.success(),"source scene generation: {}",
+    String::from_utf8_lossy(&output.stderr));
+   clips.push((file,3));
+  }
+  let id=Uuid::new_v4();
+  assemble_clips(&settings,id,&clips,"9:16").await.unwrap();
+  let path=assembled_path(&settings,id);
+  let (size,seconds)=inspect(&path,6).await.unwrap();
+  assert!(size>1024);
+  assert!((5.7..=6.3).contains(&seconds),"assembled duration: {seconds}");
+  tokio::fs::remove_dir_all(root).await.unwrap();
+ }
  #[tokio::test]
  async fn topic_to_storyboard_to_physical_video_and_ffprobe_qa_without_upload() {
   let available=Command::new("ffmpeg").arg("-filters").output().await.ok()
