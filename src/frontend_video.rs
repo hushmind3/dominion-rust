@@ -60,6 +60,7 @@ async fn status(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let nodes_ready=if reachable{crate::frontend_comfy::video_nodes_ready(&cfg).await}else{false};
     let gguf_ready=if uses_gguf{nodes_ready}else{true};
     list.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?);
+     list.extend(crate::frontend_video_production::finished(&engine.settings).map_err(bad)?);
     list.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     let available=ffmpeg_available().await;
     let narration=speech_available().await;
@@ -93,7 +94,8 @@ async fn outputs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
         if v.status==VideoStatus::Completed{rows.push(as_job(&engine,v).await);}
     }
     rows.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?
-        .into_iter().filter(|row|row["status"]=="completed"));
+         .into_iter().filter(|row|row["status"]=="completed"));
+     rows.extend(crate::frontend_video_production::finished(&engine.settings).map_err(bad)?);
     rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     Ok(Json(json!(rows)))
 }
@@ -110,7 +112,8 @@ async fn jobs(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let mut rows=Vec::new();
     for v in &all{rows.push(as_job(&engine,v).await);}
     rows.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?);
-    rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
+     rows.extend(crate::frontend_video_production::finished(&engine.settings).map_err(bad)?);
+     rows.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     Ok(Json(json!(rows)))
 }
 async fn as_job(engine:&Engine,video:&Video)->Value{
@@ -144,9 +147,12 @@ async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     if let Some(v)=engine.videos.get(id).await{
         return Ok(Json(as_job(&engine,&v).await));
     }
-    let result=crate::frontend_comfy::get(&engine.settings,id).map_err(bad)?
-        .ok_or_else(not_found)?;
-    Ok(Json(crate::frontend_comfy::public(&result)))
+    if let Some(result)=crate::frontend_comfy::get(&engine.settings,id).map_err(bad)?{
+      return Ok(Json(crate::frontend_comfy::public(&result)));
+     }
+     crate::frontend_video_production::finished(&engine.settings).map_err(bad)?
+      .into_iter().find(|v|v["id"]==id.to_string())
+      .map(Json).ok_or_else(not_found)
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
@@ -222,8 +228,11 @@ async fn content(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     let (path,mime)=if engine.videos.get(id).await.is_some(){
         (engine.videos.output_path(id).await.map_err(bad)?,"video/mp4")
     }else{
-        crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?
-            .ok_or_else(not_found)?
+        match crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?{
+       Some(file)=>file,
+       None=>crate::frontend_video_production::output(&engine.settings,id)
+        .map_err(bad)?.ok_or_else(not_found)?
+      }
     };
     let file=tokio::fs::File::open(path).await
         .map_err(|e|error(StatusCode::NOT_FOUND,e.to_string()))?;
@@ -237,8 +246,11 @@ async fn reveal(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     let path=if engine.videos.get(id).await.is_some(){
         engine.videos.output_path(id).await.map_err(bad)?
     }else{
-        crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?
-            .ok_or_else(not_found)?.0
+        match crate::frontend_comfy::output(&engine.settings,id).map_err(bad)?{
+       Some((file,_))=>file,
+       None=>crate::frontend_video_production::output(&engine.settings,id)
+        .map_err(bad)?.ok_or_else(not_found)?.0
+      }
     };
     // A request made by a remote/browser client must not spawn an arbitrary
     // local viewer or return a raw server filesystem path.
