@@ -473,7 +473,6 @@ use super::*;
         server.abort();
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
-}
 
 #[cfg(test)]
 mod recovery_tests {
@@ -646,3 +645,4 @@ mod recovery_tests {
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
+}
