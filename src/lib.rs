@@ -6,6 +6,7 @@ pub mod domain;
 pub mod engine;
 pub mod group;
 pub mod knowledge;
+pub mod legacy_import;
 pub mod journal;
 pub mod loop_guard;
 pub mod hooks;
