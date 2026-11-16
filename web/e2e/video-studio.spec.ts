@@ -11,6 +11,12 @@ test('video studio has an accessible creation to publishing workflow',async({pag
 
  await page.goto('/#/video')
  await expect(page.getByRole('heading',{name:'아이디어에서 영상, 게시까지.'})).toBeVisible()
+ await expect(page.getByRole('heading',{name:'주제 하나로, 완성 영상까지.'})).toBeVisible()
+ const productions=await request.get('/api/video/productions')
+ expect(productions.ok()).toBeTruthy()
+ expect(Array.isArray(await productions.json())).toBeTruthy()
+ await expect(page.getByRole('button',{name:/자율 제작 시작/})).toBeDisabled()
+ await page.getByRole('button',{name:/수동 제작/}).click()
  await expect(page.getByRole('heading',{name:'새 영상 만들기'})).toBeVisible()
  await expect(page.getByRole('heading',{name:'결과 미리보기'})).toBeVisible()
  await expect(page.getByRole('button',{name:/영상 생성 시작|엔진 설정 후 생성 가능/})).toBeDisabled()
