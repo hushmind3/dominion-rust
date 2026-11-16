@@ -3,7 +3,7 @@ import {useRemote} from '../components/UI'
 
 export type JobState = {id: string; status: string; error?: string}
 export const jobFinished = (status?: string) =>
- status !== undefined && ['completed', 'failed', 'cancelled', 'needs_review', 'interrupted'].includes(status)
+ status !== undefined && ['completed', 'ready', 'published', 'failed', 'cancelled', 'needs_review', 'interrupted'].includes(status)
 
 export function useJob<T extends JobState>(endpoint: string | null, initial: T | null = null) {
  const remote = useRemote<T | null>(endpoint, null, false)
