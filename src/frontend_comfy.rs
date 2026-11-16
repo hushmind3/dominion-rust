@@ -592,6 +592,49 @@ pub fn output(settings:&Settings,id:Uuid)->Result<Option<(PathBuf,&'static str)>
  if !file.is_file(){return Err("ComfyUI result artifact is missing".into());}
  Ok(Some((file,mime)))
 }
+/// Recover a previously submitted ComfyUI job by inspecting the original
+/// prompt_id. This never POSTs /prompt and therefore cannot create a second
+/// expensive remote render after a crash. A missing receipt stays unresolved.
+pub async fn reconcile_remote(settings:&Settings,id:Uuid)->Result<Job,String>{
+ let job=get(settings,id)?.ok_or("ComfyUI recovery job not found")?;
+ if job.status=="completed"{
+  output(settings,id)?.ok_or("completed video output is missing")?;
+  return Ok(job);
+ }
+ if !matches!(job.status.as_str(),"needs_review"|"failed"){
+  return Err("ComfyUI job is not eligible for remote reconciliation".into());
+ }
+ let remote=job.prompt_id.ok_or(
+  "The remote ComfyUI prompt_id was never durably acknowledged; inspect the remote queue before any retry")?;
+ let cfg=config(settings)?;
+ let base=valid_url(&cfg.comfy_url)?;
+ let http=client()?;
+ let response=http.get(format!("{base}/history/{remote}"))
+  .timeout(Duration::from_secs(15)).send().await
+  .map_err(|e|format!("ComfyUI recovery history request: {e}"))?;
+ let history=json_response(response,MAX_HISTORY).await?;
+ let key=remote.to_string();
+ let entry=&history[&key];
+ if entry.is_null(){return Err(
+  "ComfyUI has not returned a terminal receipt for the previous prompt; no new render submitted".into());}
+ if let Some(file)=find_video(entry){
+  let (bytes,format)=download(settings,id,&cfg,&http,&file).await?;
+  change(settings,id,|row|{
+   row.status="completed".into();row.bytes=bytes;row.format=Some(format);
+   row.error=None;
+  })?;
+  return get(settings,id)?.ok_or("recovered ComfyUI job missing");
+ }
+ if entry["status"]["status_str"]=="error"{
+  change(settings,id,|row|{
+   row.status="failed".into();
+   row.error=Some("ComfyUI returned a terminal error for the prior remote prompt".into());
+  })?;
+  return get(settings,id)?.ok_or("failed ComfyUI job missing");
+ }
+ Err("Previous remote ComfyUI render is incomplete or has no video receipt; it was not replayed".into())
+}
+
 pub fn reconcile_restart(settings:&Settings)->Result<(),String>{
  let _held=guard();
  let mut state=read_jobs(settings)?;
