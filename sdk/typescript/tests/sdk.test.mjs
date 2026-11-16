@@ -123,3 +123,22 @@ test('main SQLite preview and explicit import use one authenticated frontend ada
   assert.deepEqual(JSON.parse(requests[0].options.body),{path});
   assert.deepEqual(JSON.parse(requests[1].options.body),{path,confirm:true});
 });
+
+test('archived jobs and memories remain inert until the owner explicitly promotes one',async()=>{
+  const seen=[];
+  const sdk=new Dominion({token:'operator',fetch:async(url,options)=>{
+    seen.push({url,options});
+    return new Response(JSON.stringify({rows:[],total:0,limit:20,offset:0}),{status:200});
+  }});
+  await sdk.frontend.legacySqlite.archive('/runtime/dominion.sqlite');
+  await sdk.frontend.legacyHistory.list('job',0,20);
+  await sdk.frontend.legacyHistory.item('memory','old/record');
+  await sdk.frontend.legacyHistory.promoteMemory('old/record','projects/demo');
+  assert.equal(JSON.parse(seen[0].options.body).confirm,true);
+  assert.ok(seen[1].url.includes('/api/system/legacy-archive?kind=job'));
+  assert.ok(seen[2].url.includes('id=old%2Frecord'));
+  assert.deepEqual(JSON.parse(seen[3].options.body),{
+    id:'old/record',scope:'projects/demo',confirm:true
+  });
+  assert.ok(seen.every(request=>request.options.headers.Authorization==='Bearer operator'));
+});
