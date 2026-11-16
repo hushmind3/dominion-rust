@@ -1,0 +1,265 @@
+//! Explicit, read-only import of the 2026 main application's SQLite chat data.
+//! The source remains owned by the main app. Never execute old jobs or move
+//! encrypted credentials across incompatible vaults.
+use crate::frontend_state::{FrontendStore,UiAgent,UiMessage,UiSession};
+use rusqlite::{Connection,OpenFlags};
+use serde::Serialize;
+use serde_json::{json,Value};
+use std::{collections::HashMap,path::{Path,PathBuf},time::Duration};
+
+struct Source {
+    agents:HashMap<String,UiAgent>,
+    sessions:HashMap<String,UiSession>,
+    skipped_bound:usize,
+    skipped_archived:usize,
+    messages:usize,
+}
+
+#[derive(Debug,Clone,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct LegacyPreview {
+    pub source_agents:usize,
+    pub source_sessions:usize,
+    pub source_messages:usize,
+    pub importable_agents:usize,
+    pub importable_sessions:usize,
+    pub already_present_agents:usize,
+    pub already_present_sessions:usize,
+    pub skipped_bound_sessions:usize,
+    pub skipped_archived_sessions:usize,
+    pub note:&'static str,
+}
+#[derive(Debug,Clone,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct LegacyImportResult {
+    pub imported_agents:usize,
+    pub imported_sessions:usize,
+    pub imported_messages:usize,
+    pub existing_agents:usize,
+    pub existing_sessions:usize,
+    pub skipped_bound_sessions:usize,
+    pub skipped_archived_sessions:usize,
+}
+
+fn field<'a>(value:&'a Value,name:&str)->&'a str{
+    value.get(name).and_then(Value::as_str).unwrap_or("")
+}
+fn date(value:&str)->String {
+    if value.is_empty(){return "1970-01-01T00:00:00Z".into();}
+    if value.contains('T'){return value.into();}
+    if value.len()==19 && value.as_bytes()[10]==b' '{
+        return format!("{}T{}Z",&value[..10],&value[11..]);
+    }
+    value.into()
+}
+fn open_legacy(path:&Path)->Result<Connection,String>{
+    if path.file_name().and_then(|s|s.to_str())!=Some("dominion.sqlite"){
+        return Err("select the main application's dominion.sqlite file".into());
+    }
+    let canonical=path.canonicalize().map_err(|e|format!("legacy SQLite path: {e}"))?;
+    if !canonical.is_file(){return Err("legacy SQLite source must be a regular file".into());}
+    // No CREATE, journal mode change, schema migration, or credentials read.
+    // Normal read-only WAL access sees a transactionally consistent main DB.
+    let db=Connection::open_with_flags(&canonical,OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e|format!("open read-only legacy DB: {e}"))?;
+    db.busy_timeout(Duration::from_secs(5)).map_err(|e|e.to_string())?;
+    db.execute_batch("PRAGMA query_only=ON; BEGIN DEFERRED TRANSACTION;")
+        .map_err(|e|format!("begin legacy read snapshot: {e}"))?;
+    Ok(db)
+}
+fn source(path:&Path)->Result<Source,String>{
+    let db=open_legacy(path)?;
+    let mut agents=HashMap::new();
+    let mut agent_query=db.prepare("SELECT id,data FROM records WHERE kind='agent' ORDER BY id")
+        .map_err(|e|format!("legacy records schema: {e}"))?;
+    let agent_rows=agent_query.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+        .map_err(|e|e.to_string())?;
+    for item in agent_rows {
+        let (id,raw)=item.map_err(|e|e.to_string())?;
+        if id.trim().is_empty(){return Err("legacy agent has an empty ID".into());}
+        let value:Value=serde_json::from_str(&raw)
+            .map_err(|e|format!("legacy agent {id} JSON: {e}"))?;
+        let agent=UiAgent{
+            id:id.clone(),name:field(&value,"name").to_string(),
+            description:field(&value,"description").to_string(),
+            system_prompt:field(&value,"systemPrompt").to_string(),
+            provider_id:field(&value,"providerId").to_string(),
+            model:field(&value,"model").to_string(),
+            color:field(&value,"color").to_string(),
+            role:field(&value,"role").to_string(),
+            reasoning_effort:value.get("reasoningEffort").and_then(Value::as_str).map(str::to_string),
+            thinking:value.get("thinking").and_then(Value::as_bool),
+            aliases:value.get("aliases").and_then(Value::as_array).map(|a|
+                a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+            avatar_url:field(&value,"avatarUrl").to_string(),
+            avatar:field(&value,"avatar").to_string(),
+        };
+        if agent.name.trim().is_empty(){return Err(format!("legacy agent {id} missing name"));}
+        agents.insert(id,agent);
+    }
+    drop(agent_query);
+
+    let mut sessions=HashMap::new();
+    let mut skipped_bound=0;
+    let mut skipped_archived=0;
+    let mut query=db.prepare(
+        "SELECT id,data,created_at,updated_at FROM records WHERE kind='session' ORDER BY id")
+        .map_err(|e|format!("legacy session schema: {e}"))?;
+    let rows=query.query_map([],|r|Ok((
+        r.get::<_,String>(0)?,r.get::<_,String>(1)?,
+        r.get::<_,String>(2)?,r.get::<_,String>(3)?
+    ))).map_err(|e|e.to_string())?;
+    for item in rows {
+        let (id,raw,created,updated)=item.map_err(|e|e.to_string())?;
+        if id.trim().is_empty(){return Err("legacy session has an empty ID".into());}
+        let value:Value=serde_json::from_str(&raw)
+            .map_err(|e|format!("legacy session {id} JSON: {e}"))?;
+        if value["archived"]==true{skipped_archived+=1;continue;}
+        // Main's room and channel sessions require their own participant and
+        // routing state. Never misrepresent them as ordinary private chats.
+        if value["roomId"].as_str().is_some_and(|v|!v.is_empty())
+            || value["channelContext"].is_object(){
+            skipped_bound+=1;continue;
+        }
+        sessions.insert(id.clone(),UiSession{
+            id,title:field(&value,"title").to_string(),
+            agent_id:field(&value,"agentId").to_string(),
+            provider_id:field(&value,"providerId").to_string(),
+            model:field(&value,"model").to_string(),
+            created_at:date(value["createdAt"].as_str().unwrap_or(&created)),
+            updated_at:date(value["updatedAt"].as_str().unwrap_or(&updated)),
+            room_id:None,pending_run:None,messages:Vec::new(),
+        });
+    }
+    drop(query);
+
+    let mut message_query=db.prepare(
+        "SELECT id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,created_at,metadata \
+         FROM messages ORDER BY created_at ASC,rowid ASC")
+        .map_err(|e|format!("legacy messages schema: {e}"))?;
+    let rows=message_query.query_map([],|r|Ok((
+        r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
+        r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?,
+        r.get::<_,Option<String>>(6)?,r.get::<_,Option<String>>(7)?,
+        r.get::<_,String>(8)?,r.get::<_,String>(9)?
+    ))).map_err(|e|e.to_string())?;
+    let mut messages=0usize;
+    for item in rows {
+        let (id,session_id,role,content,reasoning,agent_id,calls,call_id,created_at,raw_metadata)
+            =item.map_err(|e|e.to_string())?;
+        let Some(session)=sessions.get_mut(&session_id)else{continue};
+        let mut metadata=serde_json::from_str::<Value>(&raw_metadata)
+            .map_err(|e|format!("legacy message {id} metadata: {e}"))?;
+        if !metadata.is_object(){metadata=json!({"originalMetadata":metadata});}
+        // Keep the original model/tool diagnostics without promoting old
+        // tool calls into live, executable Run intents.
+        metadata["legacyImport"]=json!({
+            "reasoning":reasoning,"toolCalls":calls.as_deref()
+                .map(|s|serde_json::from_str::<Value>(s))
+                .transpose().map_err(|e|format!("legacy tool calls {id}: {e}"))?,
+            "toolCallId":call_id,
+        });
+        session.messages.push(UiMessage{
+            id,session_id,role,content,created_at:date(&created_at),
+            agent_id,metadata:Some(metadata),
+        });
+        messages+=1;
+    }
+    db.execute_batch("COMMIT").map_err(|e|format!("finish legacy read snapshot: {e}"))?;
+    Ok(Source{agents,sessions,skipped_bound,skipped_archived,messages})
+}
+fn counts(source:&Source,current:&crate::frontend_state::Snapshot)->LegacyPreview{
+    let existing_agents=source.agents.keys().filter(|k|current.agents.contains_key(*k)).count();
+    let existing_sessions=source.sessions.keys().filter(|k|current.sessions.contains_key(*k)).count();
+    LegacyPreview{
+        source_agents:source.agents.len(),
+        source_sessions:source.sessions.len()+source.skipped_bound+source.skipped_archived,
+        source_messages:source.messages,
+        importable_agents:source.agents.len()-existing_agents,
+        importable_sessions:source.sessions.len()-existing_sessions,
+        already_present_agents:existing_agents,already_present_sessions:existing_sessions,
+        skipped_bound_sessions:source.skipped_bound,
+        skipped_archived_sessions:source.skipped_archived,
+        note:"Only ordinary active chats and agents are imported. Bound rooms, archived chats, encrypted provider secrets, jobs and execution history remain unchanged in the original SQLite database.",
+    }
+}
+pub async fn preview(frontend:&FrontendStore,path:PathBuf)->Result<LegacyPreview,String>{
+    let loaded=tokio::task::spawn_blocking(move||source(&path))
+        .await.map_err(|e|format!("legacy import worker: {e}"))??;
+    Ok(counts(&loaded,&frontend.snapshot().await))
+}
+pub async fn apply(frontend:&FrontendStore,path:PathBuf)->Result<LegacyImportResult,String>{
+    let loaded=tokio::task::spawn_blocking(move||source(&path))
+        .await.map_err(|e|format!("legacy import worker: {e}"))??;
+    frontend.mutate(move |current|{
+        let mut result=LegacyImportResult{
+            imported_agents:0,imported_sessions:0,imported_messages:0,
+            existing_agents:0,existing_sessions:0,
+            skipped_bound_sessions:loaded.skipped_bound,
+            skipped_archived_sessions:loaded.skipped_archived,
+        };
+        for (id,agent) in loaded.agents{
+            if current.agents.contains_key(&id){result.existing_agents+=1;}
+            else{current.agents.insert(id,agent);result.imported_agents+=1;}
+        }
+        for (id,session) in loaded.sessions{
+            if current.sessions.contains_key(&id){result.existing_sessions+=1;}
+            else{
+                result.imported_messages+=session.messages.len();
+                current.sessions.insert(id,session);
+                result.imported_sessions+=1;
+            }
+        }
+        Ok(result)
+    }).await
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use rusqlite::params;
+    #[tokio::test]
+    async fn main_sqlite_import_is_read_only_idempotent_and_preserves_legacy_receipts(){
+        let dir=std::env::temp_dir().join(format!("dominion-legacy-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file=dir.join("dominion.sqlite");
+        let db=Connection::open(&file).unwrap();
+        db.execute_batch("CREATE TABLE records(kind TEXT,id TEXT,data TEXT,created_at TEXT,updated_at TEXT);
+            CREATE TABLE messages(id TEXT,session_id TEXT,role TEXT,content TEXT,reasoning TEXT,
+            agent_id TEXT,tool_calls TEXT,tool_call_id TEXT,created_at TEXT,metadata TEXT);").unwrap();
+        db.execute("INSERT INTO records VALUES('agent','a',?1,'2026-11-17 09:00:00','2026-11-17 09:00:00')",
+            params![json!({"name":"Researcher","systemPrompt":"Search carefully","providerId":"p","model":"m"}).to_string()]).unwrap();
+        db.execute("INSERT INTO records VALUES('session','s',?1,'2026-11-17 09:00:00','2026-11-17 09:10:00')",
+            params![json!({"title":"Original","agentId":"a","providerId":"p","model":"m"}).to_string()]).unwrap();
+        db.execute("INSERT INTO records VALUES('session','room',?1,'2026-11-17 09:00:00','2026-11-17 09:10:00')",
+            params![json!({"title":"Shared room","roomId":"room-1"}).to_string()]).unwrap();
+        db.execute("INSERT INTO messages VALUES('m1','s','assistant','Test failed','inspect error','a',?1,'call-1','2026-11-17 09:01:00',?2)",
+            params![r#"[{"name":"read_file"}]"#,r#"{"usage":{"totalTokens":32}}"#]).unwrap();
+        drop(db);
+
+        let frontend=FrontendStore::open(dir.join("native"),"configured-model").unwrap();
+        let preview=preview(&frontend,file.clone()).await.unwrap();
+        assert_eq!((preview.source_agents,preview.source_sessions,preview.source_messages),(1,2,1));
+        assert_eq!(preview.skipped_bound_sessions,1);
+        let first=apply(&frontend,file.clone()).await.unwrap();
+        assert_eq!((first.imported_agents,first.imported_sessions,first.imported_messages),(1,1,1));
+        let session=frontend.session("s").await.unwrap();
+        assert_eq!(session.messages[0].metadata.as_ref().unwrap()["legacyImport"]["toolCallId"],"call-1");
+        assert_eq!(session.messages[0].created_at,"2026-11-17T09:01:00Z");
+        assert!(frontend.session("room").await.is_none());
+        let repeated=apply(&frontend,file.clone()).await.unwrap();
+        assert_eq!((repeated.imported_agents,repeated.imported_sessions,repeated.imported_messages),(0,0,0));
+        let check=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let unchanged:i64=check.query_row("SELECT COUNT(*) FROM messages",[],|r|r.get(0)).unwrap();
+        assert_eq!(unchanged,1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn invalid_source_cannot_mutate_native_state(){
+        let dir=std::env::temp_dir().join(format!("dominion-legacy-bad-{}",uuid::Uuid::new_v4()));
+        let frontend=FrontendStore::open(dir.join("native"),"m").unwrap();
+        assert!(apply(&frontend,dir.join("missing.sqlite")).await.is_err());
+        assert!(frontend.sessions().await.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
