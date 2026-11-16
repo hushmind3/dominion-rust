@@ -301,7 +301,7 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
  let settings=&engine.settings;
  edit(settings,id,|p|p.stage="storyboard".into()).await?;
  let count=if options.visual_engine=="comfyui"{options.duration.div_ceil(8)}else{(options.duration/8).clamp(2,6)};
- let prompt=vec![
+ let mut prompt=vec![
   json!({"role":"system","content":format!(
    "You are an autonomous video producer. Output ONLY valid JSON with title, description, tags (array), visual_bible (one stable character, art direction, lighting, wardrobe and color palette; <=900 bytes), scenes (array of EXACTLY {count} objects containing heading, narration, visual_prompt). Every scene must preserve the visual_bible while introducing a distinct shot and motion. Script must have a hook, structure and ending. Use the user's language. Never fabricate research, sources, quotes, or statistics. When notes are provided ground factual claims only in supplied notes; otherwise use expressive fiction or general explanations. Visual prompts must describe actual shots. No markdown."
   )}),
