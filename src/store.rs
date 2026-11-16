@@ -1,5 +1,5 @@
 use crate::{domain::{Run,RunStatus},journal};
-use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf}};
+use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf},sync::Arc};
 use tokio::{fs, io::AsyncWriteExt, sync::{Mutex,broadcast}};
 use uuid::Uuid;
 
@@ -46,6 +46,9 @@ impl RunUpdate{
 pub struct Store {
     root: PathBuf,
     state: Mutex<HashMap<Uuid, Run>>,
+    // A run's write-ahead snapshot must commit in order; unrelated run
+    // transactions must not hold the global metadata lock during fsync.
+    gates: Mutex<HashMap<Uuid,Arc<Mutex<()>>>>,
     updates: broadcast::Sender<RunUpdate>,
 }
 impl Store {
@@ -107,14 +110,21 @@ impl Store {
             persist(&root,run).await?;
         }
         let (updates,_) = broadcast::channel(2048);
-        Ok(Self { root, state: Mutex::new(state), updates })
+        Ok(Self { root, state: Mutex::new(state), gates:Mutex::new(HashMap::new()), updates })
+    }
+    async fn gate(&self,id:Uuid)->Arc<Mutex<()>>{
+        let mut locks=self.gates.lock().await;
+        Arc::clone(locks.entry(id).or_insert_with(||Arc::new(Mutex::new(()))))
     }
     pub async fn put(&self, run: Run) -> Result<(), String> {
-        let mut guard = self.state.lock().await;
+        // Serialize same-run writes, including put vs mutate, but release the
+        // global Run index before any disk I/O. No dirty value is published
+        // until rename + fsync completes.
+        let gate=self.gate(run.id).await;
+        let _run_write=gate.lock().await;
         persist(&self.root,&run).await?;
         let update=RunUpdate::from_run(&run);
-        guard.insert(run.id, run);
-        drop(guard);
+        self.state.lock().await.insert(run.id,run);
         let _=self.updates.send(update);
         Ok(())
     }
@@ -172,12 +182,15 @@ impl Store {
     }
     pub async fn mutate<F>(&self, id: Uuid, change: F) -> Result<Run, String>
     where F: FnOnce(&mut Run) -> Result<(), String> {
-        let mut guard = self.state.lock().await;
-        let mut run = guard.get(&id).cloned().ok_or("execution not found")?;
+        // A single run owns its serializable mutation order. Other workers
+        // may read or update different Runs while this Run is in fsync.
+        let gate=self.gate(id).await;
+        let _run_write=gate.lock().await;
+        let mut run=self.state.lock().await.get(&id).cloned()
+            .ok_or("execution not found")?;
         change(&mut run)?;
         persist(&self.root,&run).await?;
-        guard.insert(id, run.clone());
-        drop(guard);
+        self.state.lock().await.insert(id,run.clone());
         let _=self.updates.send(RunUpdate::from_run(&run));
         Ok(run)
     }
@@ -209,6 +222,69 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(60),changes.recv()).await.is_err(),
             "failed mutation must not publish a phantom event");
         drop(changes);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unrelated_run_updates_proceed_while_another_run_is_locked(){
+        use tokio::time::{timeout,Duration};
+        let root=std::env::temp_dir().join(format!("dominion-per-run-{}",Uuid::new_v4()));
+        let store=Arc::new(Store::open(root.clone()).await.unwrap());
+        let a=Run::new(CreateRun{instruction:"a".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        let b=Run::new(CreateRun{instruction:"b".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        let a_id=a.id;
+        let b_id=b.id;
+        store.put(a).await.unwrap();
+        store.put(b).await.unwrap();
+        let locked=store.gate(a_id).await;
+        let hold=locked.lock().await;
+        let pending=Arc::clone(&store);
+        let mut a_task=tokio::spawn(async move{
+            pending.mutate(a_id,|run|{run.event("a","one",None);Ok(())}).await.unwrap()
+        });
+        tokio::task::yield_now().await;
+        let b_committed=timeout(Duration::from_secs(3),store.mutate(b_id,|run|{
+            run.event("b","independent progress",None);Ok(())
+        })).await.expect("unrelated Run blocked by another Run's write gate").unwrap();
+        assert_eq!(b_committed.events.last().unwrap().kind,"b");
+        assert!(!a_task.is_finished(),"same-run gate did not order the blocked mutation");
+        drop(hold);
+        let a_committed=timeout(Duration::from_secs(3),&mut a_task).await.unwrap().unwrap();
+        assert_eq!(a_committed.events.last().unwrap().kind,"a");
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_run_mutations_preserve_fsync_order_and_no_phantom_updates(){
+        let root=std::env::temp_dir().join(format!("dominion-serial-{}",Uuid::new_v4()));
+        let store=Arc::new(Store::open(root.clone()).await.unwrap());
+        let run=Run::new(CreateRun{instruction:"serial".into(),
+            budget_krw:None,max_steps:None},3).unwrap();
+        let id=run.id;
+        store.put(run).await.unwrap();
+        let gate=store.gate(id).await;
+        let held=gate.lock().await;
+        let one=Arc::clone(&store);
+        let first=tokio::spawn(async move{
+            one.mutate(id,|r|{r.event("first","persist first",None);Ok(())}).await.unwrap()
+        });
+        tokio::task::yield_now().await;
+        drop(held);
+        first.await.unwrap();
+        let two=Arc::clone(&store);
+        two.mutate(id,|r|{r.event("second","persist second",None);Ok(())}).await.unwrap();
+        assert_eq!(store.get(id).await.unwrap().events.iter().rev()
+            .take(2).map(|v|v.kind.as_str()).collect::<Vec<_>>(),
+            vec!["second","first"]);
+        let reopened=Store::open(root.clone()).await.unwrap();
+        assert_eq!(reopened.get(id).await.unwrap().events.iter().rev()
+            .take(2).map(|v|v.kind.as_str()).collect::<Vec<_>>(),
+            vec!["second","first"]);
+        drop(reopened);
         drop(store);
         fs::remove_dir_all(root).await.unwrap();
     }
