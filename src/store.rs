@@ -1,5 +1,5 @@
 use crate::{domain::{Run,RunStatus},journal};
-use std::{collections::HashMap, path::{Path,PathBuf}};
+use std::{collections::{HashMap,HashSet}, path::{Path,PathBuf}};
 use tokio::{fs, io::AsyncWriteExt, sync::{Mutex,broadcast}};
 use uuid::Uuid;
 
@@ -52,11 +52,17 @@ impl Store {
     pub async fn open(root: PathBuf) -> Result<Self, String> {
         fs::create_dir_all(&root).await.map_err(|e| e.to_string())?;
         let mut state = HashMap::new();
+        // Only recovery or migration changes require a new fsync-backed
+        // snapshot. Stable historical runs must not be rewritten on startup.
+        let mut dirty = HashSet::<Uuid>::new();
         let mut entries = fs::read_dir(&root).await.map_err(|e| e.to_string())?;
         while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             if entry.path().extension().and_then(|e| e.to_str()) != Some("json") { continue; }
             let data = fs::read(entry.path()).await.map_err(|e| e.to_string())?;
             let mut run: Run = serde_json::from_slice(&data).map_err(|e| format!("corrupt run {}: {e}", entry.path().display()))?;
+            // Compare semantic Run snapshots, not raw file bytes: legacy
+            // JSON whitespace/key ordering must not trigger disk writes.
+            let before = serde_json::to_vec(&run).map_err(|e| e.to_string())?;
             // Risk-aware restart. Never replay mutating tool intents with
             // unknown results; auto-retry only the locally pure inspection set.
             journal::recover(&mut run);
@@ -67,6 +73,9 @@ impl Store {
                 run.event("model_only_interrupted",
                     "Provider turn interrupted by restart; no model retry or tool execution performed",
                     None);
+            }
+            if serde_json::to_vec(&run).map_err(|e| e.to_string())? != before {
+                dirty.insert(run.id);
             }
             state.insert(run.id, run);
         }
@@ -86,14 +95,19 @@ impl Store {
                 if run.reserved_budget_krw==0.0 && amount>0.0 {
                     run.reserved_budget_krw=amount;
                     run.event("reservation_migrated","Recovered pre-escrow child budget reservations",None);
+                    dirty.insert(parent);
                 }
             }
         }
+        // Commit only modified records before exposing the Store to callers.
+        // This preserves uncertain-effect markers while avoiding one rename
+        // and multiple fsyncs per unchanged historical Run on every boot.
+        for id in dirty {
+            let run=state.get(&id).ok_or("recovery record missing")?;
+            persist(&root,run).await?;
+        }
         let (updates,_) = broadcast::channel(2048);
-        let store = Self { root, state: Mutex::new(state), updates };
-        // Persist recovery markers to make restart behavior stable across crashes.
-        for run in store.list().await { store.put(run).await?; }
-        Ok(store)
+        Ok(Self { root, state: Mutex::new(state), updates })
     }
     pub async fn put(&self, run: Run) -> Result<(), String> {
         let mut guard = self.state.lock().await;
@@ -155,6 +169,33 @@ mod tests {
             "failed mutation must not publish a phantom event");
         drop(changes);
         drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_does_not_rewrite_unchanged_historical_runs(){
+        let root=std::env::temp_dir().join(format!("dominion-stable-history-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut run=Run::new(CreateRun{
+            instruction:"preserve completed history".into(),
+            budget_krw:Some(20.0),max_steps:Some(2)
+        },2).unwrap();
+        run.status=RunStatus::Completed;
+        let id=run.id;
+        store.put(run).await.unwrap();
+        drop(store);
+
+        // A valid historical JSON snapshot may contain insignificant
+        // whitespace. Reopening it must not replace the disk file.
+        let path=root.join(format!("{id}.json"));
+        let mut bytes=fs::read(&path).await.unwrap();
+        bytes.extend_from_slice(b"\n  \n");
+        fs::write(&path,&bytes).await.unwrap();
+        let reopened=Store::open(root.clone()).await.unwrap();
+        assert_eq!(reopened.get(id).await.unwrap().status,RunStatus::Completed);
+        assert_eq!(fs::read(&path).await.unwrap(),bytes,
+            "startup rewrote an unchanged historical Run");
+        drop(reopened);
         fs::remove_dir_all(root).await.unwrap();
     }
 
