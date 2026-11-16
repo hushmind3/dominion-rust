@@ -482,6 +482,17 @@ pub fn output(settings:&Settings,id:Uuid)->Result<Option<(PathBuf,&'static str)>
  Ok(Some((path,"video/mp4")))
 }
 
+/// The master remains previewable during revisions, but publishing an old
+/// version while a revision is still rendering is prohibited.
+pub fn uploadable_output(settings:&Settings,id:Uuid)->Result<Option<(PathBuf,&'static str)>,String>{
+ if let Some(job)=read(settings)?.jobs.get(&id){
+  if job.regenerating_shot.is_some(){
+   return Err("scene revision is still running; review the verified master before publishing".into());
+  }
+ }
+ output(settings,id)
+}
+
 pub fn finished(settings:&Settings)->Result<Vec<Value>,String>{
  let data=read(settings)?;
  Ok(data.jobs.values().filter(|p|
