@@ -202,6 +202,23 @@ async fn send(engine:&Engine,path:&FilePath,len:u64,mime:&str,request:&UploadReq
  }
  Ok(id.to_owned())
 }
+/// The autonomous producer queues through the SAME user-account upload
+/// implementation as the manual Video UI. Never duplicate network logic.
+pub async fn queue_upload(engine:Arc<Engine>,video_id:Uuid,title:&str,
+ description:&str,privacy:&str,tags:&str)->Result<Value,String>{
+ let input=UploadRequest{
+  title:title.to_owned(),description:description.to_owned(),
+  privacy_status:privacy.to_owned(),tags:tags.to_owned()
+ };
+ let (_,Json(job))=start_upload(State(engine),Path(video_id),Json(input)).await
+  .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("YouTube upload rejected").to_owned())?;
+ Ok(job)
+}
+/// Read durable upload outcomes without changing or replaying a remote upload.
+pub fn lookup_upload(settings:&crate::config::Settings,id:Uuid)->Result<Option<Value>,String>{
+ Ok(read(&settings.data_dir.join("youtube-uploads.json"))?.jobs.get(&id).map(public))
+}
+
 /// Uploads that were in-flight before restart are uncertain and must not be
 /// automatically replayed, because the remote video might already exist.
 pub fn reconcile_restart(settings:&crate::config::Settings)->Result<(),String>{
