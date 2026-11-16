@@ -15,6 +15,7 @@ Dominion is a user-directed autonomous work platform, not a recursive self-modif
 | Reasoning constraints | `src/context.rs`, `src/policy.rs`, `src/verification.rs`, `src/loop_guard.rs` | Pinned user requirements, budgets, evidence checks, stuck-loop protection |
 | Memory and collaboration | `src/knowledge.rs`, `src/group.rs`, `src/strategy.rs` | User-controlled project notes, explicit groups, retrieval of opted-in verified runs |
 | Product adapters | `src/sdk.rs`, `src/api.rs`, `src/frontend_api.rs`, `sdk/typescript/`, `web/` | Single Rust engine reached through SDK, HTTP, web UI |
+| Main legacy compatibility | `src/legacy_import.rs`, `src/provider_registry.rs` | Explicit, read-only SQLite preview; idempotent copy of active private chats, agents and disabled provider configurations |
 
 **Deliberately retired:** built-in FFmpeg/ComfyUI/third-party video generation, audio narration and YouTube publishing pipelines; recursive RSI campaigns, multi-generation source experiments, independent self-scoring, source auto-adoption and automatic core changes. External video/audio/3D/CAD workflows may be connected by the operator over **MCP**. Their tool calls use the same approval, receipts, budget and recovery mechanisms.
 
@@ -78,6 +79,16 @@ Public API families: `/api/v1/runs`, `/api/v1/groups`, `/api/v1/memory`, `/api/v
 - The native execution engine keeps one scheduler; delegated work and its tests are isolated in `src/engine/delegation.rs` and `src/engine/tests.rs`.
 - Regression coverage was added for unchanged historical JSON bytes and direct/grandchild lookup isolation. Passing CI and measured latency improvement are **not** claimed until their results are inspected.
 - See [sub4 2026 implementation comparison](docs/SUB4_IMPLEMENTATION_REVIEW_2026.md) for real source-level comparisons and remaining gaps.
+
+## Import existing main-product chats (explicit opt-in)
+
+In **Operations → Settings → 기존 메인 데이터 가져오기**, enter the absolute path to the original main app's `runtime/dominion.sqlite`, inspect the preview, and explicitly confirm a copy. The source opens **read-only**, including when the old app is using WAL. Nothing is imported on ordinary startup.
+
+The importer copies non-archived private chat sessions, messages (including original tool/reasoning data as inert metadata), and agent definitions. Compatible OpenAI/Ollama/Anthropic provider configurations are copied **disabled, without API keys, OAuth tokens, or vault secrets**. Existing native IDs always win; repeated imports do not duplicate conversations. A failed native snapshot write does not replace the current state.
+
+**Not migrated yet:** archived and room/channel-bound sessions, private credentials, original job/execution history, memories, unrelated SQLite record kinds, or legacy vault contents. These remain in the original SQLite file. Native frontend data is still limited to 8 MiB per atomic JSON snapshot, so an oversized import fails instead of partially overwriting the active snapshot. A provider-registry save is separately retryable if the session copy succeeded first.
+
+The same operation is available through `Dominion::preview_legacy_sqlite` / `import_legacy_sqlite`, the authenticated `/api/system/legacy-sqlite/{preview,import}` transport, and `sdk.frontend.legacySqlite`. Import requires `confirm:true`, and the source path must be absolute and end in `dominion.sqlite`.
 
 ## Verification
 
