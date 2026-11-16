@@ -212,6 +212,9 @@ impl Dominion {
     pub async fn tool_catalog(&self)->Vec<Value>{
         let mut tools=tools::definitions(self.engine.settings.shell_enabled);
         tools.extend(self.engine.mcp.definitions().await);
+        if crate::frontend_oauth::github_repository_connected(&self.engine.settings){
+            tools.extend(crate::github_work::definitions());
+        }
         // The SDK and model must see the same operator-owned tool mask.
         tools.retain(|tool|{
             let name=tool.pointer("/function/name").and_then(Value::as_str).unwrap_or("");
