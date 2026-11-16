@@ -374,7 +374,7 @@ mod tests {
         cfg.main.name="strong-model".into();cfg.main.api_key.clear();
         let result=ModelClient::new(&cfg).unwrap().complete(
             &[json!({"role":"user","content":"a priced generation"})],&[],true).await;
-        assert!(result.unwrap_err().contains("provider HTTP 500"));
+        assert!(result.err().unwrap().contains("provider HTTP 500"));
         assert_eq!(count.load(Ordering::SeqCst),1,
             "uncertain billed completion must not be retried on any model");
         server.abort();
