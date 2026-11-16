@@ -126,9 +126,13 @@ async fn start_upload(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
   (engine.videos.output_path(id).await.map_err(|e|fail(StatusCode::NOT_FOUND,e))?,
    "video/mp4")
  }else{
-  crate::frontend_comfy::output(&engine.settings,id)
-   .map_err(|e|fail(StatusCode::CONFLICT,e))?
-   .ok_or_else(||fail(StatusCode::NOT_FOUND,"video artifact missing"))?
+  match crate::frontend_comfy::output(&engine.settings,id)
+    .map_err(|e|fail(StatusCode::CONFLICT,e))?{
+     Some(file)=>file,
+     None=>crate::frontend_video_production::output(&engine.settings,id)
+      .map_err(|e|fail(StatusCode::CONFLICT,e))?
+      .ok_or_else(||fail(StatusCode::NOT_FOUND,"video artifact missing"))?
+    }
  };
  let len=tokio::fs::metadata(&path).await.map_err(|e|fail(StatusCode::NOT_FOUND,e.to_string()))?.len();
  if len==0||len>LIMIT{return Err(fail(StatusCode::BAD_REQUEST,"video must be 1 byte to 2 GiB"));}
