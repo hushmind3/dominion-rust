@@ -16,7 +16,15 @@ jobs:
           components: rustfmt
       - name: Normalize formatting for compile check
         run: cargo fmt --all
+      - name: Install FFmpeg and ffprobe for physical-video E2E
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          ffmpeg -hide_banner -filters | grep drawtext
+          ffprobe -version
       - name: Compile and test
+        env:
+          DOMINION_REQUIRE_VIDEO_E2E: '1'
         run: cargo test --all-targets
       - name: Real RSI Git worktree repair, detached judge, adoption and descendant E2E
         # Only fixed local fixture commands and a loopback mock provider.
