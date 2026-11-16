@@ -225,7 +225,7 @@ pub async fn catalog(settings:&Settings)->Vec<Value>{
  let Ok(base)=valid_url(&cfg.comfy_url)else{return Vec::new()};
  let Ok(http)=client()else{return Vec::new()};
  let mut items=Vec::new();
- for folder in ["diffusion_models","checkpoints"]{
+ for folder in ["diffusion_models","checkpoints","unet"]{
   let result=http.get(format!("{base}/models/{folder}"))
    .timeout(Duration::from_secs(4)).send().await;
   let Ok(response)=result else{continue};
@@ -241,6 +241,19 @@ pub async fn catalog(settings:&Settings)->Vec<Value>{
   }
  }
  items
+}
+/// Check optional video GGUF loader availability in the connected ComfyUI.
+pub async fn gguf_ready(cfg:&Config)->bool{
+ let Ok(url)=valid_url(&cfg.comfy_url)else{return false;};
+ let Ok(http)=client()else{return false;};
+ match http.get(format!("{url}/object_info/UnetLoaderGGUF"))
+  .timeout(Duration::from_secs(3)).send().await{
+  Ok(response) if response.status().is_success()=>{
+   json_response(response,512*1024).await.ok()
+    .is_some_and(|data|data.get("UnetLoaderGGUF").is_some())
+  },
+  _=>false
+ }
 }
 pub async fn reachable(cfg:&Config)->bool{
  let Ok(url)=valid_url(&cfg.comfy_url)else{return false;};
@@ -313,6 +326,7 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
      "checkpoints"=>name=="ckpt_name"&&class.contains("CheckpointLoader"),
      "diffusion_models"=>name=="unet_name"&&
       (class.contains("UNETLoader")||class.contains("DiffusionModelLoader")),
+     "unet"=>name=="unet_name"&&class=="UnetLoaderGGUF",
      _=>false
     };
     if bind{
