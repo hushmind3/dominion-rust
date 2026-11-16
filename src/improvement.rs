@@ -740,7 +740,21 @@ mod full_cycle_tests {
     use serde_json::Value;
 
     use std::sync::atomic::{AtomicUsize,Ordering};
-    async fn repair_proposal(State(counter):State<Arc<AtomicUsize>>,Json(_request):Json<Value>)->Json<Value>{
+    async fn repair_proposal(State(counter):State<Arc<AtomicUsize>>,Json(request):Json<Value>)->Json<Value>{
+        // A successful independent judgement intentionally triggers a third,
+        // *different* model call to synthesize a transferable strategy lesson.
+        // Count only source proposals; otherwise the test conflates RSI
+        // proposal retries with its post-evaluation reflection feature.
+        let reflection=request["messages"].as_array().is_some_and(|messages|
+            messages.iter().any(|message|message["content"].as_str()
+                .is_some_and(|text|text.contains("Extract a transferable, conditional coding strategy"))));
+        if reflection{
+            return Json(json!({"choices":[{"message":{"role":"assistant","content":
+                json!({"principle":"Repair the failing helper and score together",
+                    "when_to_use":"Apply when independent tests identify a coupled change",
+                    "failure_mode":"A score-only edit can leave the helper test failing"}).to_string()
+            }}],"usage":{"prompt_tokens":10,"completion_tokens":20}}));
+        }
         let turn=counter.fetch_add(1,Ordering::SeqCst);
         let files=if turn==0{
             json!({"files":[{"path":"score.txt","content":"0\n"},{"path":"helper.txt","content":"still-wrong\n"}]})
@@ -843,8 +857,11 @@ mod full_cycle_tests {
         }
         let evaluated=completed.expect("multi-file RSI did not finish");
         assert_eq!(evaluated.status,ImprovementStatus::Evaluated,"{:?}",evaluated.error);
-        assert_eq!(counter.load(Ordering::SeqCst),2,"independent failed judge must trigger second proposal");
+        assert_eq!(counter.load(Ordering::SeqCst),2,
+            "failed frozen judge must trigger exactly one source repair");
         assert_eq!(evaluated.attempts,2);
+        assert!(evaluated.strategy.is_some(),
+            "an accepted candidate should retain its separately generated strategy reflection");
         assert!(evaluated.accepted);
         assert_eq!(evaluated.candidate.as_ref().unwrap().score,Some(1.0));
         assert_eq!(fs::read_to_string(repo.join("score.txt")).await.unwrap(),"0\n");
