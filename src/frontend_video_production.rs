@@ -557,7 +557,16 @@ async fn regenerate_shot(State(engine):State<Arc<Engine>>,
  if input.visual_prompt.trim().is_empty()||input.visual_prompt.len()>1400{
   return Err(fault(StatusCode::BAD_REQUEST,"visualPrompt must be 1-1400 bytes"));
  }
- let snapshot={
+ // A prior interrupted remote job is inspected, never blindly resubmitted.
+ // Only a terminal provider receipt allows either reusing or replacing it.
+ let previous=read(&engine.settings)
+  .map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?
+  .jobs.get(&id).and_then(|row|row.pending_revision_job_id);
+ let recovered=if let Some(old)=previous{
+  Some(crate::frontend_comfy::reconcile_remote(&engine.settings,old).await
+   .map_err(|e|fault(StatusCode::CONFLICT,e))?)
+ }else{None};
+ let (snapshot,reuse)={
   let _held=guard().lock().await;
   let mut records=read(&engine.settings).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
   let job=records.jobs.get_mut(&id).ok_or_else(||fault(StatusCode::NOT_FOUND,"production not found"))?;
@@ -570,19 +579,38 @@ async fn regenerate_shot(State(engine):State<Arc<Engine>>,
   if !assembled_path(&engine.settings,job.artifact_revision_id.unwrap_or(id)).is_file(){
    return Err(fault(StatusCode::CONFLICT,"verified master video is missing"));
   }
+  let reuse=if let Some(old)=job.pending_revision_job_id{
+   let terminal=recovered.as_ref().filter(|row|row.id==old)
+    .ok_or_else(||fault(StatusCode::CONFLICT,"remote revision has not been reconciled"))?;
+   match terminal.status.as_str(){
+    "completed"=>{
+     if job.pending_revision_shot!=Some(index)||
+      job.pending_revision_prompt!=input.visual_prompt.trim(){
+      return Err(fault(StatusCode::CONFLICT,
+       "recover the existing completed revision with its original scene index and prompt"));
+     }
+     Some(old)
+    },
+    "failed"=>None,
+    _=>return Err(fault(StatusCode::CONFLICT,
+     "previous remote scene is not terminal; no duplicate GPU job was submitted")),
+   }
+  }else{None};
   job.regenerating_shot=Some(index);
-  job.pending_revision_job_id=None;
+  job.pending_revision_job_id=reuse;
+  job.pending_revision_shot=Some(index);
+  job.pending_revision_prompt=input.visual_prompt.trim().to_owned();
   job.revision_error=None;job.updated_at_ms=now_ms();
   let snapshot=job.clone();
   write(&engine.settings,&records).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
-  snapshot
+  (snapshot,reuse)
  };
  let settings=engine.settings.clone();
  let worker=Arc::clone(&engine);
  tokio::spawn(async move{
-  if let Err(problem)=execute_shot_revision(&worker,id,index,input.visual_prompt).await{
+  if let Err(problem)=execute_shot_revision(&worker,id,index,input.visual_prompt,reuse).await{
    if let Err(storage)=edit(&settings,id,|job|{
-    job.regenerating_shot=None;job.pending_revision_job_id=None;
+    job.regenerating_shot=None;
     job.revision_error=Some(problem);
    }).await{tracing::error!(%storage,production=%id,"failed to persist scene revision error");}
   }
@@ -590,19 +618,24 @@ async fn regenerate_shot(State(engine):State<Arc<Engine>>,
  Ok((StatusCode::ACCEPTED,Json(public(&snapshot))))
 }
 
-async fn execute_shot_revision(engine:&Arc<Engine>,id:Uuid,index:usize,prompt:String)->Result<(),String>{
+async fn execute_shot_revision(engine:&Arc<Engine>,id:Uuid,index:usize,prompt:String,reuse:Option<Uuid>)->Result<(),String>{
  let settings=&engine.settings;
  let production=read(settings)?.jobs.get(&id).cloned().ok_or("production missing")?;
  let shot=production.shots.get(index).ok_or("scene missing")?;
- let created=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
-  title:format!("{} · revision {}",production.title,index+1),
-  brief:continuity_prompt(&production.visual_bible,&prompt),
-  negative:String::new(),aspect_ratio:production.aspect_ratio.clone(),
-  duration:shot.seconds,fps:16,seed:-1
- }).await?;
- let clip_id=Uuid::parse_str(created["id"].as_str().ok_or("ComfyUI scene ID missing")?)
-  .map_err(|e|e.to_string())?;
- edit(settings,id,|job|job.pending_revision_job_id=Some(clip_id)).await?;
+ let clip_id=if let Some(previous)=reuse{
+  previous // A recovered completed render; do not call POST /prompt again.
+ }else{
+  let created=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
+   title:format!("{} · revision {}",production.title,index+1),
+   brief:continuity_prompt(&production.visual_bible,&prompt),
+   negative:String::new(),aspect_ratio:production.aspect_ratio.clone(),
+   duration:shot.seconds,fps:16,seed:-1
+  }).await?;
+  let fresh=Uuid::parse_str(created["id"].as_str().ok_or("ComfyUI scene ID missing")?)
+   .map_err(|e|e.to_string())?;
+  edit(settings,id,|job|job.pending_revision_job_id=Some(fresh)).await?;
+  fresh
+ };
  tokio::time::timeout(Duration::from_secs(2400),async{
   loop{
    tokio::time::sleep(Duration::from_secs(2)).await;
@@ -638,6 +671,7 @@ async fn execute_shot_revision(engine:&Arc<Engine>,id:Uuid,index:usize,prompt:St
   job.artifact_bytes=Some(bytes);job.measured_seconds=Some(seconds);
   job.revision_count=job.revision_count.saturating_add(1);
   job.regenerating_shot=None;job.pending_revision_job_id=None;
+  job.pending_revision_shot=None;job.pending_revision_prompt.clear();
   job.revision_error=None;
  }).await?;
  Ok(())
