@@ -42,6 +42,45 @@ impl Dominion {
         ->Result<crate::legacy_import::LegacyImportResult,String>{
         crate::legacy_import::apply(&self.engine.frontend,&self.engine.providers,path).await
     }
+    /// Preserve main-product history without scheduling its old jobs or tools.
+    /// This is a separate indexed archive, never the native Run store.
+    pub async fn archive_legacy_sqlite(&self,path:std::path::PathBuf)
+        ->Result<crate::legacy_archive::ArchiveStats,String>{
+        crate::legacy_archive::import(path,self.engine.settings.data_dir.clone()).await
+    }
+    pub async fn list_legacy_history(&self,kind:String,offset:usize,limit:usize)
+        ->Result<crate::legacy_archive::ArchivePage,String>{
+        crate::legacy_archive::list(self.engine.settings.data_dir.clone(),kind,offset,limit).await
+    }
+    pub async fn legacy_history_item(&self,kind:String,id:String)
+        ->Result<Option<Value>,String>{
+        crate::legacy_archive::get(self.engine.settings.data_dir.clone(),kind,id).await
+    }
+    /// Memory from a previous main app is evidence to inspect, not an
+    /// automatic global instruction. The owner must explicitly promote it.
+    pub async fn promote_legacy_memory(&self,id:String,scope:String)
+        ->Result<crate::knowledge::MemoryEntry,String>{
+        if scope.trim().is_empty()||scope.len()>512{
+            return Err("memory promotion requires a valid, explicitly selected scope".into());
+        }
+        let old=self.legacy_history_item("memory".into(),id.clone()).await?
+            .ok_or("legacy memory not found")?;
+        if matches!(old.get("status").and_then(Value::as_str),
+            Some("deleted"|"archived"|"superseded"|"draft")){
+            return Err("inactive legacy memory cannot be promoted".into());
+        }
+        let text=["text","content","summary"].iter()
+            .find_map(|key|old.get(*key).and_then(Value::as_str))
+            .ok_or("legacy memory has no supported textual content")?;
+        if text.trim().is_empty()||text.len()>4000{
+            return Err("legacy memory text must be 1..4000 bytes; review and shorten it manually".into());
+        }
+        use sha2::Digest;
+        let bytes=sha2::Sha256::digest(id.as_bytes());
+        let tag=bytes[..12].iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        let title=format!("Legacy memory {tag}");
+        self.engine.knowledge.remember(&scope,&title,text).await
+    }
     /// Native extension point: ordered pre-dispatch veto and post-receipt policy.
     /// HTTP/TypeScript clients use the same engine with operator-owned hooks.
     pub async fn register_tool_hook(&self,hook:Arc<dyn ToolHook>){
