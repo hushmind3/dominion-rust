@@ -136,6 +136,19 @@ impl Store {
             .filter(|run|run.parent_run_id==Some(parent))
             .cloned().collect()
     }
+    /// Capture a consistent 2-level family snapshot for budget settlement.
+    /// Only direct children and grandchildren are cloned, never unrelated
+    /// runs or their full transcripts. Grandchild settlement is required
+    /// before a child's unused budget can be returned to its parent.
+    pub async fn family_of(&self, parent: Uuid) -> Vec<Run> {
+        let guard=self.state.lock().await;
+        let child_ids=guard.values().filter(|run|run.parent_run_id==Some(parent))
+            .map(|run|run.id).collect::<HashSet<_>>();
+        guard.values().filter(|run|
+            run.parent_run_id==Some(parent)
+                || run.parent_run_id.is_some_and(|id|child_ids.contains(&id))
+        ).cloned().collect()
+    }
     pub async fn list(&self) -> Vec<Run> {
         let mut runs: Vec<_> = self.state.lock().await.values().cloned().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
@@ -210,6 +223,17 @@ mod tests {
         assert_eq!(children.len(),1);
         assert_eq!(children[0].id,child_id);
         assert!(store.children_of(unrelated.id).await.is_empty());
+        let mut grandchild=Run::new(CreateRun{
+            instruction:"grandchild".into(),budget_krw:Some(5.0),max_steps:Some(2)
+        },2).unwrap();
+        grandchild.parent_run_id=Some(child_id);
+        let grandchild_id=grandchild.id;
+        store.put(grandchild).await.unwrap();
+        let family=store.family_of(id).await;
+        assert_eq!(family.len(),2);
+        assert!(family.iter().any(|run|run.id==child_id));
+        assert!(family.iter().any(|run|run.id==grandchild_id));
+        assert!(store.family_of(unrelated.id).await.is_empty());
         drop(store);
         fs::remove_dir_all(root).await.unwrap();
     }
