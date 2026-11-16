@@ -766,6 +766,67 @@ mod tests{
    "visual_bible":"A".repeat(901),"scenes":[{"heading":"A","narration":"a"}]}).to_string();
   assert!(storyboard(&invalid,6,true).is_err());
  }
+
+ #[tokio::test]
+ async fn immutable_master_survives_interrupted_scene_revision(){
+  let mut settings=Settings::from_env().unwrap();
+  let data=std::env::temp_dir().join(format!("immutable-video-test-{}",Uuid::new_v4()));
+  settings.data_dir=data.clone();
+  let id=Uuid::new_v4();let clip=Uuid::new_v4();
+  let entry=Production{
+   id,topic:"test".into(),audience:String::new(),source_notes:String::new(),
+   visual_engine:"comfyui".into(),aspect_ratio:"9:16".into(),duration:6,
+   narration:false,auto_publish:false,privacy_status:"private".into(),
+   status:"ready".into(),stage:"quality_check".into(),title:"Original".into(),
+   description:String::new(),tags:Vec::new(),script:String::new(),
+   shots:vec![Shot{heading:"1".into(),narration:String::new(),
+    visual_prompt:"the original frame".into(),seconds:6}],
+   visual_bible:"stable character".into(),script_attempts:1,
+   video_id:Some(id),upload_id:None,upload_url:None,
+   rendered_shot_ids:vec![clip],completed_shots:1,
+   artifact_revision_id:None,revision_count:0,regenerating_shot:Some(0),
+   pending_revision_job_id:Some(Uuid::new_v4()),pending_revision_shot:Some(0),
+   pending_revision_prompt:"new frame".into(),revision_error:None,
+   artifact_bytes:Some(2000),measured_seconds:Some(6.0),
+   cost_krw:1.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
+  };
+  let original=assembled_path(&settings,id);
+  fs::create_dir_all(original.parent().unwrap()).unwrap();
+  fs::write(&original,vec![1;2000]).unwrap();
+  write(&settings,&Journal{jobs:HashMap::from([(id,entry.clone())])}).unwrap();
+  assert!(uploadable_output(&settings,id).is_err(),
+   "the previous master must not be uploaded during a revision");
+  reconcile_restart(&settings).await.unwrap();
+  let interrupted=read(&settings).unwrap().jobs.remove(&id).unwrap();
+  assert_eq!(interrupted.status,"ready");
+  assert_eq!(interrupted.pending_revision_job_id,entry.pending_revision_job_id);
+  assert!(interrupted.revision_error.is_some());
+  assert_eq!(output(&settings,id).unwrap().unwrap().0,original);
+  let next_revision=Uuid::new_v4();
+  let revised=assembled_path(&settings,next_revision);
+  fs::write(&revised,vec![2;2300]).unwrap();
+  edit(&settings,id,|item|{
+   item.artifact_revision_id=Some(next_revision);
+   item.regenerating_shot=None;
+   item.pending_revision_job_id=None;
+   item.pending_revision_prompt.clear();
+   item.pending_revision_shot=None;
+   item.revision_error=None;
+  }).await.unwrap();
+  assert_eq!(output(&settings,id).unwrap().unwrap().0,revised);
+  assert!(original.exists(),"old verified MP4 remains until cleanup is explicit");
+  // Omitted additive fields in historic journals must deserialize.
+  let mut legacy=serde_json::to_value(&entry).unwrap();
+  let fields=legacy.as_object_mut().unwrap();
+  for key in ["visualBible","scriptAttempts","artifactRevisionId","revisionCount",
+   "regeneratingShot","pendingRevisionJobId","pendingRevisionShot",
+   "pendingRevisionPrompt","revisionError"]{fields.remove(key);}
+  let decoded:Production=serde_json::from_value(legacy).unwrap();
+  assert!(decoded.artifact_revision_id.is_none());
+  assert!(decoded.pending_revision_job_id.is_none());
+  assert_eq!(decoded.revision_count,0);
+  fs::remove_dir_all(data).unwrap();
+ }
  #[tokio::test]
  async fn crash_does_not_replay_upload(){
   let dir=std::env::temp_dir().join(format!("video-production-{}",Uuid::new_v4()));
