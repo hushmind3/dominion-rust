@@ -55,10 +55,12 @@ pub fn verifier_messages(run:&Run,workspace:&str,files:&str,git:&str,
   selected.push(line);
  }
  selected.reverse();
- let omitted=receipts.len().saturating_sub(selected.len());
+ let total_receipts=run.events.iter().filter(|event|matches!(event.kind.as_str(),
+  "tool_result"|"tool_error"|"tool_reconciled"|"approval_required"|"cancel_pending_reconciliation")).count();
+ let omitted=total_receipts.saturating_sub(selected.len());
  let receipts_view=format!(
   "Actual durable tool receipts, selected latest {} / {} (oldest first):\n{}\nOmitted receipts: {}. Omitted records are NOT proof of success.",
-  selected.len(),receipts.len(),selected.join("\n"),omitted);
+  selected.len(),total_receipts,selected.join("\n"),omitted);
  let files_view=clip(files,allowance*22/100);
  let git_view=clip(git,allowance*22/100);
  let evidence=serde_json::json!({"role":"user","content":format!(
