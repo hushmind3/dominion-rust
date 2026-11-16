@@ -2,7 +2,6 @@ use crate::{domain::{Approval, CreateRun, PublicSettings, ReconcileTool, Run}, e
 use axum::{
     extract::{Path, Query, State},
     http::{header, StatusCode},
-    body::Body,
     middleware::{self, Next},
     response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
     routing::{get, post}, Json, Router,
@@ -12,7 +11,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use uuid::Uuid;
-use tokio_util::io::ReaderStream;
 use tower_http::services::ServeDir;
 
 type ApiError = (StatusCode, Json<Value>);
@@ -103,6 +101,10 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/groups/{id}",get(get_group))
         .route("/groups/{id}/messages",post(group_say))
         .route("/groups/{id}/next",post(group_next))
+        // Retired native API paths must return JSON, never the React SPA HTML.
+        .fallback(|| async {
+            (StatusCode::NOT_FOUND,Json(json!({"error":"unknown native API endpoint"})))
+        })
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     // Main's React/Vite build is the canonical UI; Rust serves the built files.
     // The development Vite server proxies API calls to this same router.
