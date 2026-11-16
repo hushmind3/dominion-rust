@@ -149,7 +149,7 @@ pub fn public(item:&Production)->Value{
 }
 pub fn routes()->Router<Arc<Engine>>{
  Router::new().route("/video/productions",get(list).post(create))
-  .route("/video/productions/{id}",get(get))
+  .route("/video/productions/{id}",get(get_production))
 }
 async fn list(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let records=read(&engine.settings).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?;
@@ -157,7 +157,7 @@ async fn list(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  sorted.sort_by_key(|job|std::cmp::Reverse(job.created_at_ms));
  Ok(Json(json!(sorted.iter().map(public).collect::<Vec<_>>())))
 }
-async fn get(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<Value>,Fault>{
+async fn get_production(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<Value>,Fault>{
  let record=read(&engine.settings).map_err(|e|fault(StatusCode::INTERNAL_SERVER_ERROR,e))?
   .jobs.remove(&id).ok_or_else(||fault(StatusCode::NOT_FOUND,"production not found"))?;
  Ok(Json(public(&record)))
