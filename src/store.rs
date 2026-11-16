@@ -124,6 +124,18 @@ impl Store {
         self.updates.subscribe()
     }
     pub async fn get(&self, id: Uuid) -> Option<Run> { self.state.lock().await.get(&id).cloned() }
+    /// Inspect child existence under the store lock without cloning every
+    /// transcript; the planner calls this once per model step.
+    pub async fn has_children(&self, parent: Uuid) -> bool {
+        self.state.lock().await.values().any(|run|run.parent_run_id==Some(parent))
+    }
+    /// Only clone direct children when checking delegation and settlement.
+    /// Full history snapshots are reserved for explicit list operations.
+    pub async fn children_of(&self, parent: Uuid) -> Vec<Run> {
+        self.state.lock().await.values()
+            .filter(|run|run.parent_run_id==Some(parent))
+            .cloned().collect()
+    }
     pub async fn list(&self) -> Vec<Run> {
         let mut runs: Vec<_> = self.state.lock().await.values().cloned().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
@@ -168,6 +180,36 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(60),changes.recv()).await.is_err(),
             "failed mutation must not publish a phantom event");
         drop(changes);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn child_lookup_does_not_include_unrelated_runs(){
+        let root=std::env::temp_dir().join(format!("dominion-child-lookup-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let parent=Run::new(CreateRun{
+            instruction:"parent".into(),budget_krw:Some(100.0),max_steps:Some(2)
+        },2).unwrap();
+        let id=parent.id;
+        let mut child=Run::new(CreateRun{
+            instruction:"child".into(),budget_krw:Some(10.0),max_steps:Some(2)
+        },2).unwrap();
+        child.parent_run_id=Some(id);
+        let child_id=child.id;
+        let unrelated=Run::new(CreateRun{
+            instruction:"unrelated".into(),budget_krw:None,max_steps:None
+        },2).unwrap();
+        store.put(parent).await.unwrap();
+        store.put(child).await.unwrap();
+        store.put(unrelated.clone()).await.unwrap();
+        assert!(store.has_children(id).await);
+        assert!(!store.has_children(child_id).await);
+        assert!(!store.has_children(unrelated.id).await);
+        let children=store.children_of(id).await;
+        assert_eq!(children.len(),1);
+        assert_eq!(children[0].id,child_id);
+        assert!(store.children_of(unrelated.id).await.is_empty());
         drop(store);
         fs::remove_dir_all(root).await.unwrap();
     }
