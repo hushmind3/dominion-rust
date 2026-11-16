@@ -115,6 +115,9 @@ impl ModelClient {
                 calls.push(ToolCall { id, name, arguments });
             }
         }
+        validate_completion("openai",
+            raw.pointer("/choices/0/finish_reason").and_then(Value::as_str),
+            !text.trim().is_empty(), !calls.is_empty())?;
         // Keep only stable, provider-accepted fields in subsequent history.
         if !message.is_object() { return Err("provider message is not an object".into()); }
         message.as_object_mut().unwrap().retain(|key, _| ["role", "content", "tool_calls"].contains(&key.as_str()));
@@ -206,6 +209,8 @@ impl ModelClient {
             }
         }
         let joined=text.join("\n");
+        validate_completion("anthropic",raw.get("stop_reason").and_then(Value::as_str),
+            !joined.trim().is_empty(),!calls.is_empty())?;
         let mut message=json!({"role":"assistant","content":joined});
         if !tool_calls.is_empty(){message["tool_calls"]=json!(tool_calls);}
         let usage=raw.get("usage").ok_or("Anthropic usage missing")?;
@@ -286,6 +291,28 @@ fn anthropic_messages(original:&[Value])->Result<(String,Vec<Value>),String>{
     if messages.is_empty(){return Err("Anthropic request has no conversation messages".into());}
     Ok((system.join("\n\n"),messages))
 }
+/// Provider finish status is part of the execution contract. A model that
+/// exhausted its output budget or returned filtered/paused content has not
+/// delivered a complete plan, tool request or final answer. Never feed it to
+/// the harness verifier as a successful completion. This error is not
+/// retryable: model usage may already have been charged upstream.
+fn validate_completion(protocol:&str,reason:Option<&str>,
+    has_text:bool,has_calls:bool)->Result<(),String>{
+ let valid=match (protocol,reason){
+  ("openai",Some("stop"))|("anthropic",Some("end_turn"|"stop_sequence"))=>
+   has_text||has_calls,
+  ("openai",Some("tool_calls"))|("anthropic",Some("tool_use"))=>
+   has_calls,
+  ("openai"|"anthropic",None)=>has_text||has_calls, // local mock/compat
+  _=>false
+ };
+ if valid{return Ok(());}
+ let label=reason.unwrap_or("unspecified");
+ Err(format!(
+  "model provider response incomplete or unusable ({protocol} stop_reason={label}); \
+the reply was not executed or verified. Upstream model tokens may already be billed; inspect usage before retrying"))
+}
+
 const MAX_PROVIDER_RESPONSE_BYTES:usize=8*1024*1024;
 
 /// Bounded even if Content-Length is absent or falsified.
@@ -377,6 +404,47 @@ mod tests {
         assert!(result.err().unwrap().contains("provider HTTP 500"));
         assert_eq!(count.load(Ordering::SeqCst),1,
             "uncertain billed completion must not be retried on any model");
+        server.abort();
+    }
+    #[test]
+    fn incomplete_or_filtered_provider_output_never_looks_like_completion(){
+        assert!(validate_completion("openai",Some("stop"),true,false).is_ok());
+        assert!(validate_completion("openai",Some("tool_calls"),false,true).is_ok());
+        assert!(validate_completion("openai",None,true,false).is_ok());
+        assert!(validate_completion("openai",Some("length"),true,false).is_err());
+        assert!(validate_completion("openai",Some("tool_calls"),false,false).is_err());
+        assert!(validate_completion("openai",Some("content_filter"),true,false).is_err());
+        assert!(validate_completion("anthropic",Some("max_tokens"),true,false).is_err());
+        assert!(validate_completion("anthropic",Some("pause_turn"),true,false).is_err());
+        assert!(validate_completion("anthropic",Some("tool_use"),false,true).is_ok());
+        assert!(validate_completion("anthropic",Some("tool_use"),false,false).is_err());
+        assert!(validate_completion("anthropic",Some("end_turn"),false,false).is_err());
+    }
+    #[tokio::test]
+    async fn truncated_billable_reply_is_not_retried_or_accepted(){
+        use axum::{extract::State,routing::post,Json,Router};
+        use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+        async fn cut_off(State(count):State<Arc<AtomicUsize>>)->Json<Value>{
+            count.fetch_add(1,Ordering::SeqCst);
+            Json(json!({"choices":[{"finish_reason":"length","message":{
+                "role":"assistant","content":"I finished the task"
+            }}],"usage":{"prompt_tokens":100,"completion_tokens":1000}}))
+        }
+        let count=Arc::new(AtomicUsize::new(0));
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let app=Router::new().route("/chat/completions",post(cut_off))
+            .with_state(Arc::clone(&count));
+        let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap()});
+        let mut cfg=Settings::from_env().unwrap();
+        cfg.main.base_url=format!("http://{address}");
+        cfg.main.api_key.clear();
+        let error=ModelClient::new(&cfg).unwrap().complete(
+            &[json!({"role":"user","content":"return a file"})],&[],false).await
+            .err().expect("truncated response must be rejected");
+        assert!(error.contains("incomplete"));
+        assert!(error.contains("already be billed"));
+        assert_eq!(count.load(Ordering::SeqCst),1);
         server.abort();
     }
     #[test]
