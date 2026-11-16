@@ -273,7 +273,7 @@ impl Engine {
                         run,&call,&deny.code,&deny.reason)).await?;
                     continue;
                 }
-                if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
+                if call.name == "shell" || call.name == "merge_subagent" || call.name == "github_commit_file" || call.name.starts_with("mcp__") {
                     self.store.mutate(id, |run| {
                         run.queued_calls.remove(0);
                         run.pending_approval = Some(call.clone());
@@ -282,6 +282,13 @@ impl Engine {
                         run.event("approval_required",
                             if call.name == "shell" { format!("Shell command needs approval: {}",call.arguments.get("command").and_then(Value::as_str).unwrap_or("?")) }
                             else if call.name == "merge_subagent" {format!("Integrating a child Git patch needs approval: {}",call.arguments.get("id").and_then(Value::as_str).unwrap_or("?"))}
+                            else if call.name == "github_commit_file" {format!(
+                                "GitHub remote commit needs approval: {}/{} branch={} path={}",
+                                call.arguments["owner"].as_str().unwrap_or("?"),
+                                call.arguments["repo"].as_str().unwrap_or("?"),
+                                call.arguments["branch"].as_str().unwrap_or("?"),
+                                call.arguments["path"].as_str().unwrap_or("?")
+                            )}
                             else { format!("External MCP tool needs approval: {}",call.name) },
                             Some(call.arguments.clone()));
                         Ok(())
@@ -343,6 +350,9 @@ impl Engine {
             if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
             available_tools.extend(self.mcp.definitions().await);
+            if crate::frontend_oauth::github_repository_connected(&self.settings){
+                available_tools.extend(crate::github_work::definitions());
+            }
             let has_children=self.store.has_children(id).await;
             let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
@@ -565,6 +575,15 @@ impl Engine {
                         Err(reason)
                     }
                     Err(error)=>Err(error),
+                }
+            } else if matches!(call.name.as_str(),
+                "github_list_repositories"|"github_read_file"|"github_commit_file") {
+                match crate::github_work::execute(&self.settings,&call).await {
+                    McpCallOutcome::Settled(result)=>result,
+                    McpCallOutcome::Uncertain(reason)=>{
+                        remote_uncertain=Some(reason.clone());
+                        Err(reason)
+                    }
                 }
             } else if call.name == "spawn_subagent" {
                 let instruction=call.arguments.get("instruction").and_then(Value::as_str)
