@@ -15,6 +15,7 @@ impl Dominion {
         crate::frontend_system::apply_pending(&settings)?;
         crate::frontend_youtube::reconcile_restart(&settings)?;
         crate::frontend_comfy::reconcile_restart(&settings)?;
+        crate::frontend_video_production::reconcile_restart(&settings).await?;
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
