@@ -337,7 +337,7 @@ impl Engine {
             if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
             available_tools.extend(self.mcp.definitions().await);
-            let has_children=self.store.list().await.iter().any(|child|child.parent_run_id==Some(id));
+            let has_children=self.store.has_children(id).await;
             let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
@@ -408,8 +408,8 @@ impl Engine {
             }).await?;
             if !accepted || !terminal_candidate { continue; }
             let active_ids=self.active.lock().await.clone();
-            let active_children=self.store.list().await.into_iter()
-                .filter(|r|r.parent_run_id==Some(id) && (!r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id)))
+            let active_children=self.store.children_of(id).await.into_iter()
+                .filter(|r|!r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id))
                 .map(|r|r.id).collect::<Vec<_>>();
             if !active_children.is_empty() {
                 self.store.mutate(id,|run|{
@@ -646,15 +646,15 @@ impl Engine {
         while let Some(id)=ancestor {
             {
                 let _guard=self.delegate_lock.lock().await;
-                let all=self.store.list().await;
+                let family=self.store.family_of(id).await;
                 let running=self.active.lock().await.clone();
-                let direct=all.iter().filter(|r|r.parent_run_id==Some(id)).collect::<Vec<_>>();
+                let direct=family.iter().filter(|r|r.parent_run_id==Some(id)).collect::<Vec<_>>();
                 let finished=direct.iter().filter(|child|{
                     if !child.terminal()||child.in_flight.is_some()||running.contains(&child.id){return false;}
                     // A cancelled child may still own active grandchildren.
                     // Its unused allocation is returned only after those bills
                     // have also been durably settled into that child's record.
-                    let grandchildren=all.iter().filter(|r|r.parent_run_id==Some(child.id)).collect::<Vec<_>>();
+                    let grandchildren=family.iter().filter(|r|r.parent_run_id==Some(child.id)).collect::<Vec<_>>();
                     grandchildren.iter().all(|r|r.terminal()&&r.in_flight.is_none()
                         &&!running.contains(&r.id)&&child.settled_child_ids.contains(&r.id))
                 }).map(|r|(*r).clone()).collect::<Vec<_>>();
@@ -677,10 +677,10 @@ impl Engine {
                     }).await?;
                 }
             }
-            let all=self.store.list().await;
+            let children=self.store.children_of(id).await;
             let active_ids=self.active.lock().await.clone();
-            let pending=all.iter().any(|r|r.parent_run_id==Some(id)
-                &&(!r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id)));
+            let pending=children.iter().any(|r|
+                !r.terminal()||r.in_flight.is_some()||active_ids.contains(&r.id));
             let parent=self.store.get(id).await.ok_or("parent run missing")?;
             if parent.waiting_for_children && !pending && !parent.terminal(){
                 self.store.mutate(id,|run|{
@@ -708,8 +708,7 @@ impl Engine {
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
         if root.terminal(){return Err("parent already terminated".into());}
-        let all=self.store.list().await;
-        let children=all.iter().filter(|r|r.parent_run_id==Some(parent)).collect::<Vec<_>>();
+        let children=self.store.children_of(parent).await;
         if children.len()>=4{return Err("maximum of four direct subagents per run".into());}
         let remaining=(policy::effective_budget_krw(&root)-root.cost_krw).max(0.0);
         let budget=input.budget_krw.unwrap_or(remaining.min(2000.0));
