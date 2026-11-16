@@ -1,5 +1,5 @@
 //! Primary native Rust SDK. HTTP/TypeScript/Studio are optional adapters.
-use crate::{hooks::ToolHook,api,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::{Groups,NewRoom,Room,Say},improvement::{Improvement,Improvements,NewImprovement},store::Store,tools,video::{Video,Videos,NewVideo}};
+use crate::{hooks::ToolHook,api,config::Settings,domain::{CreateRun,ReconcileTool,Run,RunStatus,TimelineEvent,ToolCall},engine::Engine,group::{Groups,NewRoom,Room,Say},store::Store,tools};
 use axum::Router;
 use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
@@ -13,18 +13,11 @@ impl Dominion {
         // Apply an explicitly staged, authenticated snapshot while no native
         // stores have opened yet; a browser reload alone is not a restore.
         crate::frontend_system::apply_pending(&settings)?;
-        crate::frontend_youtube::reconcile_restart(&settings)?;
-        crate::frontend_comfy::reconcile_restart(&settings)?;
-        crate::frontend_video_production::reconcile_restart(&settings).await?;
         tokio::fs::create_dir_all(&settings.workspace_dir).await.map_err(|e|e.to_string())?;
         let store=Arc::new(Store::open(settings.data_dir.join("runs")).await?);
         let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await?);
-        let videos=Arc::new(Videos::open(settings.data_dir.join("videos")).await?);
-        let improvements=Arc::new(Improvements::open(settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await?);
-        let engine=Engine::new(settings,store,groups,videos,improvements)?;
-        // Recover orphaned RSI controller states from the independent durable
-        // evaluator before any new campaign may start. Never silently adopt.
-        crate::frontend_rsi::reconcile_recovered_campaigns(&engine).await?;
+        // Legacy media/RSI archive files are left untouched on disk.
+        let engine=Engine::new(settings,store,groups)?;
         // Reconcile durable parent/child settlement after a previous process
         // died between a child completion and the parent wake notification.
         let snapshots=engine.store.list().await;
@@ -139,20 +132,14 @@ impl Dominion {
         self.engine.read_subagent_file(parent,child,path).await
     }
     pub async fn group_turn(&self,id:Uuid)->Result<Room,String>{self.engine.groups.next(&self.engine.model,id).await}
-    pub async fn create_video(&self,req:NewVideo)->Result<Video,String>{self.engine.videos.create(&self.engine.model,req).await}
-    pub async fn render_video(&self,id:Uuid)->Result<Video,String>{self.engine.videos.start(id).await}
-    /// Evidence-ranked lessons from adopted RSI work and verified agent runs.
-    /// Never combines private repositories or treats unadopted experiments as successes.
+    /// Explicitly retrieve verified procedures from successful user-driven runs.
+    /// No recursive self-modification, trial scheduler or background learning.
     pub async fn search_strategies(&self,repository:&str,goal:&str,max:usize)
         ->Vec<crate::strategy::StrategyEvidence>{
-        self.engine.improvements.strategy_evidence(repository,goal,max).await
+        let records=self.engine.store.list().await.into_iter()
+            .filter_map(|r|crate::strategy::from_run(&r)).collect();
+        crate::strategy::rank(records,repository,goal,max)
     }
-    pub async fn create_improvement(&self,req:NewImprovement)->Result<Improvement,String>{self.engine.improvements.create(req).await}
-    pub async fn evaluate_improvement(&self,id:Uuid)->Result<Improvement,String>{
-        self.engine.improvements.start(self.engine.model.clone(),id,self.engine.settings.shell_enabled).await
-    }
-    pub async fn adopt_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.adopt(id).await}
-    pub async fn descendant_improvement(&self,id:Uuid)->Result<Improvement,String>{self.engine.improvements.descendant(id).await}
     pub async fn list_skills(&self,run:Uuid)->Result<Vec<crate::skills::SkillInfo>,String>{
         self.get(run).await?;
         crate::skills::list(&self.engine.settings,run).await

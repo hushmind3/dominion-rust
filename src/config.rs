@@ -87,7 +87,7 @@ impl Settings {
             workspace_dir: PathBuf::from(var("DOMINION_WORKSPACE_DIR", "./workspace")),
             main, economy, max_steps,
             shell_enabled: var("DOMINION_ENABLE_SHELL", "false") == "true",
-            strategy_learning_enabled: var("DOMINION_STRATEGY_LEARNING","true")!="false",
+            strategy_learning_enabled: var("DOMINION_STRATEGY_LEARNING","false")=="true",
             max_parallel_reads:var("DOMINION_MAX_PARALLEL_READS","4").parse::<usize>().unwrap_or(4).clamp(1,8),
             denied_tools:var("DOMINION_DENIED_TOOLS","").split(',')
                 .map(str::trim).filter(|name|!name.is_empty())

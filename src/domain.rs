@@ -113,7 +113,7 @@ pub struct PublicSettings {
     pub denied_tools: Vec<String>,
     pub tool_result_max_chars: usize,
 }
-fn default_learning_enabled()->bool{true}
+fn default_learning_enabled()->bool{false}
 pub fn now_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
@@ -133,7 +133,7 @@ impl Run {
             input_tokens: 0, cached_input_tokens: 0, cache_write_tokens:0, output_tokens: 0, cost_krw: 0.0, budget_krw: budget,
             reserved_budget_krw:0.0, delegated_spent_krw:0.0, settled_child_ids:Vec::new(), waiting_for_children:false, read_only:false, tool_schema_chars_avoided:0,
             max_steps: req.max_steps.unwrap_or(default_steps).clamp(1,100),
-            strategy_learning:true,model_only:false,
+            strategy_learning:false,model_only:false,
             provider_id:String::new(),model_name:String::new(),
             created_at_ms: time, updated_at_ms: time,
         };
