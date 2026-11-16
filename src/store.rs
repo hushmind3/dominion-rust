@@ -154,6 +154,22 @@ impl Store {
         runs.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
         runs
     }
+    /// Startup needs only IDs to recover delegated parents and resume safe
+    /// interrupted runs. Do not clone every durable transcript, tool receipt,
+    /// and event merely to inspect two status predicates.
+    pub async fn recovery_candidates(&self) -> (Vec<Uuid>,Vec<Uuid>) {
+        let guard=self.state.lock().await;
+        let mut runs=guard.values().collect::<Vec<_>>();
+        runs.sort_by_key(|run|std::cmp::Reverse(run.created_at_ms));
+        let suspended=runs.iter().filter(|run|run.waiting_for_children)
+            .map(|run|run.id).collect();
+        let safe=runs.iter().filter(|run|
+            run.status==RunStatus::Paused && run.in_flight.is_none()
+            && !run.waiting_for_children
+            && run.events.last().is_some_and(|event|event.kind=="recovered_ready")
+        ).map(|run|run.id).collect();
+        (suspended,safe)
+    }
     pub async fn mutate<F>(&self, id: Uuid, change: F) -> Result<Run, String>
     where F: FnOnce(&mut Run) -> Result<(), String> {
         let mut guard = self.state.lock().await;
@@ -193,6 +209,40 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(60),changes.recv()).await.is_err(),
             "failed mutation must not publish a phantom event");
         drop(changes);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_candidates_ignore_unrelated_full_transcripts(){
+        let root=std::env::temp_dir().join(format!("dominion-recovery-ids-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut waiting=Run::new(CreateRun{
+            instruction:"parent waiting for children".into(),
+            budget_krw:None,max_steps:None
+        },3).unwrap();
+        waiting.status=RunStatus::Paused;
+        waiting.waiting_for_children=true;
+        let waiting_id=waiting.id;
+        let mut recovered=Run::new(CreateRun{
+            instruction:"safe interrupted read".into(),
+            budget_krw:None,max_steps:None
+        },3).unwrap();
+        recovered.status=RunStatus::Paused;
+        recovered.event("recovered_ready","Pure read may safely resume",None);
+        let safe_id=recovered.id;
+        let mut unresolved=Run::new(CreateRun{
+            instruction:"unreconciled write".into(),
+            budget_krw:None,max_steps:None
+        },3).unwrap();
+        unresolved.status=RunStatus::Paused;
+        unresolved.event("tool_outcome_unknown","Do not replay external effect",None);
+        store.put(waiting).await.unwrap();
+        store.put(recovered).await.unwrap();
+        store.put(unresolved).await.unwrap();
+        let (suspended,safe)=store.recovery_candidates().await;
+        assert_eq!(suspended,vec![waiting_id]);
+        assert_eq!(safe,vec![safe_id]);
         drop(store);
         fs::remove_dir_all(root).await.unwrap();
     }
