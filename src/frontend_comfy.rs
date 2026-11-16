@@ -770,6 +770,56 @@ mod tests{
   server.abort();
   fs::remove_dir_all(data).unwrap();
  }
+ #[tokio::test]
+ async fn recovery_reads_existing_comfy_receipt_without_requeue(){
+  let remote=Uuid::new_v4();
+  let app=axum::Router::new()
+   .route("/history/{id}",axum::routing::get(move||async move{
+    let mut jobs=serde_json::Map::new();
+    jobs.insert(remote.to_string(),json!({
+     "status":{"completed":true,"status_str":"success"},
+     "outputs":{"3":{"videos":[{"filename":"recovered.mp4",
+      "subfolder":"","type":"output"}]}}
+    }));
+    axum::Json(Value::Object(jobs))
+   }))
+   .route("/view",axum::routing::get(||async{
+    let mut mp4=vec![0,0,0,24];mp4.extend_from_slice(b"ftypisom000000000000");mp4
+   }));
+  // No /prompt endpoint exists: any accidental regeneration will fail.
+  let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address=listener.local_addr().unwrap();
+  let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap();});
+  let mut settings=Settings::from_env().unwrap();
+  let data=std::env::temp_dir().join(format!("comfy-reconcile-{}",Uuid::new_v4()));
+  settings.data_dir=data.clone();
+  let mut cfg=Config::default();cfg.engine="comfyui".into();cfg.comfy_url=format!("http://{address}");
+  atomic(&config_path(&settings),&serde_json::to_vec(&cfg).unwrap()).unwrap();
+  let id=Uuid::new_v4();
+  let job=Job{
+   id,prompt_id:Some(remote),title:"previous request".into(),
+   brief:"same story".into(),aspect_ratio:"9:16".into(),duration:4,
+   status:"needs_review".into(),error:Some("crash".into()),
+   format:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),bytes:0
+  };
+  write_jobs(&settings,&Journal{jobs:HashMap::from([(id,job)])}).unwrap();
+  let resolved=reconcile_remote(&settings,id).await.unwrap();
+  assert_eq!(resolved.status,"completed");
+  assert_eq!(resolved.prompt_id,Some(remote));
+  assert_eq!(output(&settings,id).unwrap().unwrap().1,"video/mp4");
+  assert_eq!(reconcile_remote(&settings,id).await.unwrap().status,"completed");
+  let unknown=Uuid::new_v4();
+  let item=Job{
+   id:unknown,prompt_id:None,title:"unknown".into(),brief:"".into(),
+   aspect_ratio:"9:16".into(),duration:4,status:"needs_review".into(),
+   error:None,format:None,created_at_ms:now_ms(),updated_at_ms:now_ms(),bytes:0
+  };
+  let mut state=read_jobs(&settings).unwrap();state.jobs.insert(unknown,item);
+  write_jobs(&settings,&state).unwrap();
+  assert!(reconcile_remote(&settings,unknown).await.is_err());
+  assert_eq!(get(&settings,unknown).unwrap().unwrap().status,"needs_review");
+  server.abort();fs::remove_dir_all(data).unwrap();
+ }
  #[test]
  fn in_progress_jobs_never_auto_replay_after_process_recovery(){
   let mut settings=Settings::from_env().unwrap();
