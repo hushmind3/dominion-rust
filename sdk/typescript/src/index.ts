@@ -71,6 +71,28 @@ export interface CreateVideo {
   prompt: string; scenes?: VideoScene[]; backend?: 'local' | 'veo';
 }
 
+export interface CreateVideoProduction {
+  topic:string;audience?:string;sourceNotes?:string;visualEngine?:'native'|'comfyui';
+  aspectRatio?:'9:16'|'16:9'|'1:1';duration?:number;narration?:boolean;
+  autoPublish?:boolean;privacyStatus?:'private'|'unlisted'|'public';maxCostKrw?:number;
+}
+export interface VideoProductionShot {
+  heading:string;narration:string;visualPrompt:string;seconds:number;
+}
+export interface VideoProduction {
+  id:string;topic:string;title:string;status:string;stage:string;
+  duration:number;aspectRatio:string;visualEngine:'native'|'comfyui';
+  autoPublish:boolean;privacyStatus:string;shots:VideoProductionShot[];
+  completedShots:number;renderedShotIds:string[];
+  videoId:string|null;uploadId:string|null;uploadUrl:string|null;
+  outputUrl:string|null;costKrw:number;error:string|null;
+  artifactBytes:number|null;measuredSeconds:number|null;
+}
+export interface PublishVideoInput {
+  title:string;description?:string;privacyStatus?:'private'|'unlisted'|'public';tags?:string;
+}
+
+
 
 export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'adopting' | 'rejected' | 'adopted' | 'failed';
 export interface Measurement { tests_passed: boolean; score: number | null; log: string }
@@ -227,6 +249,35 @@ export class Dominion {
       if (!response.ok) throw new DominionError(response.status,'video download failed: HTTP '+response.status);
       return response.blob();
     }
+  };
+
+
+  /** The same journaled, multi-scene production flow used by Video Studio.
+   * Older /api/v1/videos endpoints remain unchanged for existing clients. */
+  readonly productions = {
+    create: (input: CreateVideoProduction) =>
+      this.frontendRequest<VideoProduction>('POST','/video/productions',input),
+    list: () => this.frontendRequest<VideoProduction[]>('GET','/video/productions'),
+    get: (id:string) => this.frontendRequest<VideoProduction>(
+      'GET','/video/productions/'+encodeURIComponent(id)),
+    /** Fetch the completed final artifact, not a raw ComfyUI child clip. */
+    download: async (id:string):Promise<Blob> => {
+      const p=await this.productions.get(id);
+      if (!['ready','published'].includes(p.status)||!p.videoId)
+        throw new DominionError(409,'production is not ready for download');
+      const headers:Record<string,string> = this.token ? {Authorization:'Bearer '+this.token} : {};
+      const response=await this.fetcher(this.baseUrl+'/api/video/jobs/'+encodeURIComponent(p.videoId)+'/content',{headers});
+      if (!response.ok)throw new DominionError(response.status,'production download failed: HTTP '+response.status);
+      return response.blob();
+    },
+    /** User-requested upload through the existing YouTube OAuth journal. */
+    publish: async (id:string,input:PublishVideoInput):Promise<{id:string;status:string}> => {
+      const p=await this.productions.get(id);
+      if (!['ready','published'].includes(p.status)||!p.videoId)
+        throw new DominionError(409,'production is not ready for YouTube upload');
+      return this.frontendRequest<{id:string;status:string}>(
+        'POST','/video/jobs/'+encodeURIComponent(p.videoId)+'/upload',input);
+    },
   };
 
   /** Durable, evidence-ranked cross-task strategy retrieval owned by Rust. */
