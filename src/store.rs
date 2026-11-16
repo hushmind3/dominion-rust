@@ -281,8 +281,11 @@ mod tests {
             .take(2).map(|v|v.kind.as_str()).collect::<Vec<_>>(),
             vec!["second","first"]);
         let reopened=Store::open(root.clone()).await.unwrap();
+        // Recovery may append "recovered_ready" after the durable writes;
+        // compare the persisted mutation receipts, not the last two events.
         assert_eq!(reopened.get(id).await.unwrap().events.iter().rev()
-            .take(2).map(|v|v.kind.as_str()).collect::<Vec<_>>(),
+            .filter(|v|v.kind=="first"||v.kind=="second")
+            .map(|v|v.kind.as_str()).collect::<Vec<_>>(),
             vec!["second","first"]);
         drop(reopened);
         drop(store);
