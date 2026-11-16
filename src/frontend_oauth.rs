@@ -29,6 +29,28 @@ fn random()->String{
  let mut bytes=[0u8;32];OsRng.fill_bytes(&mut bytes);URL_SAFE_NO_PAD.encode(bytes)
 }
 fn valid_provider(id:&str)->bool{matches!(id,"github"|"google")}
+fn granted_repository(scopes:&str)->bool{
+ scopes.split(|c:char|c==','||c.is_ascii_whitespace())
+    .any(|s|matches!(s,"repo"|"public_repo"))
+}
+/// Vault-owned token access; credentials never enter model messages or tool
+/// receipts. This gate is checked again at dispatch, not just discovery time.
+pub(crate) fn github_access_token(settings:&Settings)->Result<String,String>{
+ let state=read(settings)?;
+ let account=state.accounts.get("github")
+    .ok_or("Connect GitHub in Accounts before using repository tools")?;
+ if !granted_repository(&account.scopes){
+    return Err("GitHub repository permission missing: reconnect with Repository access in Accounts".into());
+ }
+ if account.expires_at_ms>0&&now_ms().saturating_add(10_000)>account.expires_at_ms{
+    return Err("GitHub repository access expired: reconnect GitHub in Accounts".into());
+ }
+ if account.access_token.is_empty(){return Err("GitHub access token missing: reconnect in Accounts".into());}
+ Ok(account.access_token.clone())
+}
+pub(crate) fn github_repository_connected(settings:&Settings)->bool{
+ github_access_token(settings).is_ok()
+}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 struct App{client_id:String,client_secret:String}
@@ -158,7 +180,7 @@ async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault
  Ok(Json(json!(store.accounts.iter().filter(|(provider,_)|valid_provider(provider)).map(|(provider,account)|json!({
   "id":provider,"provider":provider,"displayName":account.display_name,
   "hasToken":!account.access_token.is_empty()||!account.refresh_token.is_empty(),
-  "scopes":account.scopes
+  "scopes":account.scopes,"repositoryAccess":provider=="github"&&granted_repository(&account.scopes)
  })).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -179,7 +201,7 @@ async fn save_app(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
  write(&engine.settings,&state).map_err(bad)?;
  Ok(Json(json!({"id":id,"configured":true,"callback":callback_url(&engine.settings,&id).ok()})))
 }
-fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str)->Result<String,String>{
+fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,repository:bool)->Result<String,String>{
  let target=if id=="github"{"https://github.com/login/oauth/authorize"}
   else{"https://accounts.google.com/o/oauth2/v2/auth"};
  let mut url=reqwest::Url::parse(target).map_err(|e|e.to_string())?;
@@ -190,7 +212,7 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str)->Resul
    .append_pair("response_type","code")
    .append_pair("state",state);
   if id=="github"{
-   p.append_pair("scope","read:user user:email");
+   p.append_pair("scope",if repository{"read:user user:email repo"}else{"read:user user:email"});
   }else{
    p.append_pair("scope","openid email profile")
     .append_pair("access_type","offline")
@@ -201,14 +223,17 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str)->Resul
  }
  Ok(url.to_string())
 }
-async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
+#[derive(Default,Deserialize)]
+struct StartQuery{#[serde(default)]repository:bool}
+async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,Query(q):Query<StartQuery>)
  ->Result<Json<Value>,Fault>{
  if !valid_provider(&id){return Err(bad("unsupported OAuth provider"));}
  let app=read(&engine.settings).map_err(bad)?.apps.remove(&id)
   .ok_or_else(||bad("configure OAuth Client ID and Client Secret first"))?;
  let callback=callback_url(&engine.settings,&id).map_err(bad)?;
  let state=random();let verifier=random();
- let url=authorize_url(&id,&app,&state,&verifier,&callback).map_err(bad)?;
+ if q.repository&&id!="github"{return Err(bad("repository permission only applies to GitHub"));}
+ let url=authorize_url(&id,&app,&state,&verifier,&callback,q.repository).map_err(bad)?;
  {
   let mut guard=pending().lock().unwrap_or_else(|e|e.into_inner());
   guard.retain(|_,entry|now_ms().saturating_sub(entry.at_ms)<600_000);
@@ -272,7 +297,9 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
   display_name:display,access_token:access.to_owned(),
   refresh_token:token["refresh_token"].as_str().unwrap_or("").to_owned(),
   scopes:token["scope"].as_str().unwrap_or("").to_owned(),
-  expires_at_ms:now_ms().saturating_add(token["expires_in"].as_u64().unwrap_or(3600).saturating_mul(1000))
+  expires_at_ms:token["expires_in"].as_u64()
+     .map(|seconds|now_ms().saturating_add(seconds.saturating_mul(1000)))
+     .unwrap_or(if id=="github"{0}else{now_ms().saturating_add(3_600_000)})
  };
  {
   let _held=lock();
@@ -300,7 +327,7 @@ mod tests{
   let dir=std::env::temp_dir().join(format!("dominion-oauth-{}",Uuid::new_v4()));
   settings.data_dir=dir.clone();
   let app=App{client_id:"public".into(),client_secret:"very-secret".into()};
-  let url=authorize_url("google",&app,"one-time-state","private-verifier","http://localhost/api/oauth/google/callback").unwrap();
+  let url=authorize_url("google",&app,"one-time-state","private-verifier","http://localhost/api/oauth/google/callback",false).unwrap();
   assert!(url.contains("code_challenge="));
   assert!(!url.contains("private-verifier"));
   let mut state=Snapshot::default();state.apps.insert("google".into(),app);
@@ -309,5 +336,16 @@ mod tests{
   assert!(!String::from_utf8_lossy(&bytes).contains("very-secret"));
   assert_eq!(read(&settings).unwrap().apps["google"].client_secret,"very-secret");
   fs::remove_dir_all(dir).unwrap();
+ }
+ #[test]
+ fn github_repository_scopes_are_explicit_and_not_in_identity_login(){
+  let app=App{client_id:"public".into(),client_secret:"secret".into()};
+  let identity=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",false).unwrap();
+  let repository=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",true).unwrap();
+  assert!(!identity.contains("repo"));
+  assert!(repository.contains("repo"));
+  assert!(granted_repository("read:user, repo"));
+  assert!(granted_repository("public_repo"));
+  assert!(!granted_repository("read:user user:email repo:status"));
  }
 }
