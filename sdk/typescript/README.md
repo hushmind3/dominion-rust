@@ -124,3 +124,17 @@ Dominion.memory.list(scope), .scopes(), .store({scope,title,content}), .revise(i
 ## Main frontend compatibility
 
 The TypeScript SDK now supports `sdk.frontend.agents.list/save/remove`, `sdk.frontend.sessions.list/create/messages/rename/clear/fork/cancel`, `sdk.frontend.providers.list/models`, `sdk.frontend.executions.list/create/get/cancel/resume` and `sdk.frontend.status()`. These call the real Rust-owned `/api/*` compatibility endpoints used by the unchanged latest-main frontend; the original `sdk.runs` still uses `/api/v1/*`. Unsupported native features intentionally reject with status 501.
+
+
+### Autonomous multi-shot video production (sub4, November 2026)
+
+The TypeScript SDK's productions object calls the same native Rust /api/video/productions journal used by Video Studio. It does not embed a second renderer.
+
+- create({topic,visualEngine:'comfyui',duration:30,maxCostKrw:3000,autoPublish:false}) creates one journaled production.
+- get(id) and list() retrieve durable status, scene IDs, completed shot count and artifactRevisionId.
+- regenerateShot(id, index, visualPrompt) regenerates only one selected scene, reuses other clips and atomically switches to a newly verified immutable MP4.
+- download(id) retrieves the assembled product. publish(id,{title,privacyStatus:'private'}) uses the existing OAuth-backed upload path.
+
+During interruption, pendingRevisionJobId, pendingRevisionShot and pendingRevisionPrompt preserve the identity of the previous remote request. The same shot/prompt can be reconciled and reused if the original ComfyUI receipt is terminal and successful. An uncertain remote result is never automatically reposted.
+
+maxCostKrw covers script model API calls; GPU time, electricity and storage are measured separately and not capped by this value. Visual continuity currently uses a stable text brief, not reference-frame conditioning.
