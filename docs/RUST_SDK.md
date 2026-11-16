@@ -55,8 +55,24 @@ The model-facing tool set is selected in `src/policy.rs`, validated against its 
 
 After fsync, `Store::subscribe` publishes `RunUpdate` records to the React SSE adapter. A slow listener can resynchronize without requiring every idle browser connection to repeatedly request the entire Run store.
 
-## Legacy data
+## Legacy data and main SQLite copy
 
-The pre-refactor stores under the configured data directory are preserved in place but no longer loaded by retired video/RSI modules. Native chat, saved user notes and workspace artifacts continue using their existing journals. Do not delete runtime folders during upgrades. Historical source code remains available through Git history, not through live execution endpoints.
+The main app stores chat and agent records in `runtime/dominion.sqlite`; this branch's native runtime uses separate JSON journals. Migration is **explicit**: no old data is silently overwritten or submitted as a new executable job.
+
+```rust
+# async fn migration(sdk:&dominion::Dominion)->Result<(),String>{
+let old_db = std::path::PathBuf::from("/absolute/main/runtime/dominion.sqlite");
+let summary = sdk.preview_legacy_sqlite(old_db.clone()).await?;
+println!("{} personal chats ready",summary.importable_sessions);
+// Operator reviews the summary and consents before calling import.
+let copied = sdk.import_legacy_sqlite(old_db).await?;
+println!("{} chats, {} disabled providers copied",copied.imported_sessions,copied.imported_providers);
+# Ok(())
+# }
+```
+
+Supported: active private chats, agents and compatible provider configurations. Imported provider records are disabled and carry no secret. Existing IDs remain untouched, including on retries; source SQLite stays read-only. Old rooms, archived chats, memories, encrypted tokens, job history and other legacy record kinds remain solely in the original SQLite database. The native frontend snapshot has an 8 MiB atomic size limit. See `src/legacy_import.rs` tests for source preservation and duplicate import handling.
+
+The pre-refactor video/RSI archives are not executed. Historical code remains in Git history, not in live runtime endpoints.
 
 See [Architecture](ARCHITECTURE.md), [project README](../README.md) and [TypeScript SDK](../sdk/typescript/README.md).
