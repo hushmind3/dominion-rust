@@ -842,20 +842,27 @@ async fn tools_catalog(State(engine):State<Arc<Engine>>)->Json<Value>{
 }
 async fn global_events(State(engine):State<Arc<Engine>>)
     ->Sse<impl Stream<Item=Result<Event,Infallible>>>{
+    // Subscribe to the native Store's post-fsync change feed. No 1.5-second
+    // per-client full-history snapshots or idle CPU scans.
+    let mut updates=engine.store.subscribe();
     let stream=async_stream::stream!{
-        let mut known=std::collections::HashMap::<Uuid,u64>::new();
         loop{
-            let observed=engine.store.list().await;
-            for run in &observed{
-                let prev=known.insert(run.id,run.updated_at_ms);
-                if prev.is_some() && prev!=Some(run.updated_at_ms){
-                    let event=json!({"type":"job_event","id":run.id.to_string(),
-                        "status":run.status,"updatedAt":timestamp(run.updated_at_ms)});
-                    yield Ok::<_,Infallible>(Event::default().json_data(event)
+            match updates.recv().await{
+                Ok(change)=>{
+                    let payload=json!({"type":"job_event","id":change.id.to_string(),
+                        "status":change.status,"updatedAt":timestamp(change.updated_at_ms)});
+                    yield Ok::<_,Infallible>(Event::default().json_data(payload)
                         .unwrap_or_else(|_|Event::default().data("{}")));
-                }
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{
+                    // A slow tab must refresh its snapshot rather than treat
+                    // dropped status updates as a durable sequence.
+                    let payload=json!({"type":"job_event","status":"resync"});
+                    yield Ok::<_,Infallible>(Event::default().json_data(payload)
+                        .unwrap_or_else(|_|Event::default().data("{}")));
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Closed)=>break
             }
-            tokio::time::sleep(Duration::from_millis(1500)).await;
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)).text("alive"))

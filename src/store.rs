@@ -1,8 +1,6 @@
-use crate::{domain::Run,journal};
-#[cfg(test)]
-use crate::domain::RunStatus;
+use crate::{domain::{Run,RunStatus},journal};
 use std::{collections::HashMap, path::{Path,PathBuf}};
-use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
+use tokio::{fs, io::AsyncWriteExt, sync::{Mutex,broadcast}};
 use uuid::Uuid;
 
 /// Atomic snapshot: unique create-new temp, sync bytes, rename, sync directory.
@@ -33,9 +31,22 @@ async fn persist(root:&Path,run:&Run)->Result<(),String>{
     result
 }
 
+/// A single persisted Run update; no full snapshot or model transcript is copied.
+#[derive(Clone,Debug)]
+pub struct RunUpdate{
+    pub id:Uuid,
+    pub status:RunStatus,
+    pub updated_at_ms:u64,
+}
+impl RunUpdate{
+    fn from_run(run:&Run)->Self{
+        Self{id:run.id,status:run.status.clone(),updated_at_ms:run.updated_at_ms}
+    }
+}
 pub struct Store {
     root: PathBuf,
     state: Mutex<HashMap<Uuid, Run>>,
+    updates: broadcast::Sender<RunUpdate>,
 }
 impl Store {
     pub async fn open(root: PathBuf) -> Result<Self, String> {
@@ -78,7 +89,8 @@ impl Store {
                 }
             }
         }
-        let store = Self { root, state: Mutex::new(state) };
+        let (updates,_) = broadcast::channel(2048);
+        let store = Self { root, state: Mutex::new(state), updates };
         // Persist recovery markers to make restart behavior stable across crashes.
         for run in store.list().await { store.put(run).await?; }
         Ok(store)
@@ -86,8 +98,16 @@ impl Store {
     pub async fn put(&self, run: Run) -> Result<(), String> {
         let mut guard = self.state.lock().await;
         persist(&self.root,&run).await?;
+        let update=RunUpdate::from_run(&run);
         guard.insert(run.id, run);
+        drop(guard);
+        let _=self.updates.send(update);
         Ok(())
+    }
+    /// Event-driven updates: idle browser connections never rescan all Runs.
+    /// Durable state is committed before a notification is published.
+    pub fn subscribe(&self)->broadcast::Receiver<RunUpdate>{
+        self.updates.subscribe()
     }
     /// Produce compact proven lessons without copying unbounded transcripts
     /// from the durable run store on each LLM request.
@@ -112,6 +132,8 @@ impl Store {
         change(&mut run)?;
         persist(&self.root,&run).await?;
         guard.insert(id, run.clone());
+        drop(guard);
+        let _=self.updates.send(RunUpdate::from_run(&run));
         Ok(run)
     }
 }
@@ -120,6 +142,31 @@ mod tests {
     use super::*;
     use crate::domain::CreateRun;
 
+
+    #[tokio::test]
+    async fn durable_mutations_emit_exactly_one_event_without_polling_history(){
+        use std::time::Duration;
+        let root=std::env::temp_dir().join(format!("dominion-broadcast-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut changes=store.subscribe();
+        let new=Run::new(CreateRun{instruction:"inspect source".into(),budget_krw:Some(50.0),max_steps:Some(2)},2).unwrap();
+        let id=new.id;
+        store.put(new).await.unwrap();
+        let first=tokio::time::timeout(Duration::from_secs(1),changes.recv()).await.unwrap().unwrap();
+        assert_eq!(first.id,id);
+        assert_eq!(first.status,RunStatus::Queued);
+        store.mutate(id,|run|{run.status=RunStatus::Paused;run.event("paused","operator pause",None);Ok(())}).await.unwrap();
+        let second=tokio::time::timeout(Duration::from_secs(1),changes.recv()).await.unwrap().unwrap();
+        assert_eq!(second.id,id);
+        assert_eq!(second.status,RunStatus::Paused);
+        assert!(second.updated_at_ms>=first.updated_at_ms);
+        assert!(store.mutate(id,|_run|Err("reject".into())).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(60),changes.recv()).await.is_err(),
+            "failed mutation must not publish a phantom event");
+        drop(changes);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
 
     /// Long-running IO/recovery soak with a real fsync-backed Store and 16
     /// concurrent workers. It uses no model or remote API credits.
