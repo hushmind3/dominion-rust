@@ -116,6 +116,25 @@ fn detect_root(settings:&Settings)->Option<PathBuf>{
  }
  None
 }
+/// Managed model library: first-run install needs no folder picker or
+/// pre-existing ComfyUI directory. Prefer an existing ComfyUI library when
+/// auto-discovered so the live renderer can load files immediately.
+fn default_root(settings:&Settings)->PathBuf{
+ let requested=settings.data_dir.join("video-models").join("models");
+ if requested.is_absolute(){return requested;}
+ std::env::current_dir().unwrap_or_else(|_|PathBuf::from(".")).join(requested)
+}
+fn choose_root(settings:&Settings)->Result<PathBuf,String>{
+ if let Some(existing)=detect_root(settings){return Ok(existing);}
+ let managed=default_root(settings);
+ // Keep the managed library outside frontend public static directories.
+ // Create subdirectories before accepting it as an installed library.
+ for folder in ["diffusion_models","text_encoders","vae"]{
+  fs::create_dir_all(managed.join(folder)).map_err(|e|
+   format!("Could not prepare the Dominion video model library: {e}"))?;
+ }
+ validated_root(&managed)
+}
 fn size(path:&Path)->u64{fs::metadata(path).map(|meta|meta.len()).unwrap_or(0)}
 fn target(root:&Path,file:Asset)->PathBuf{root.join(file.folder).join(file.name)}
 fn progress(root:&Path)->(u64,bool,Vec<Value>){
@@ -141,16 +160,17 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/video/model-packs/cancel",post(cancel))
 }
 pub(crate) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
- let root=detect_root(&engine.settings);
- let (bytes,installed,files)=root.as_deref()
-  .map(progress).unwrap_or((0,false,Vec::new()));
+ let discovered=detect_root(&engine.settings);
+ let root=discovered.clone().unwrap_or_else(||default_root(&engine.settings));
+ let (bytes,installed,files)=progress(&root);
  let state=active().lock().await;
  Json(json!({
   "id":PACK_ID,"name":"Wan 2.2 TI2V 5B",
   "label":"8GB VRAM 오프로딩 영상 생성 모델",
   "origin":"Comfy-Org 공식 ComfyUI 워크플로",
   "estimatedBytes":WAN22.iter().map(|m|m.estimate).sum::<u64>(),
-  "modelsDir":root.as_ref().map(|p|p.to_string_lossy().to_string()),
+  "modelsDir":root.to_string_lossy().to_string(),
+  "managedLibrary":discovered.is_none()&&root==default_root(&engine.settings),
   "installed":installed,"configured":crate::frontend_comfy::config(&engine.settings)
    .ok().is_some_and(|cfg|cfg.workflow_name=="Dominion · Wan 2.2 TI2V 5B"),
   "state":if state.state.is_empty(){if installed{"installed"}else{"idle"}}else{&state.state},
@@ -169,9 +189,7 @@ async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequ
  let root=if let Some(raw)=request.models_dir.as_deref().filter(|s|!s.trim().is_empty()){
   validated_root(Path::new(raw)).map_err(bad)?
  }else{
-  detect_root(&engine.settings).ok_or_else(||bad(
-   "ComfyUI/models 폴더를 찾지 못했습니다. 영상 메뉴에서 해당 폴더의 절대 경로를 지정해 주세요."
-  ))?
+  choose_root(&engine.settings).map_err(bad)?
  };
  let cancelled=Arc::new(AtomicBool::new(false));
  {
@@ -397,6 +415,19 @@ mod tests{
   assert_eq!(cfg.engine,"comfyui");
   assert!(cfg.comfy_workflow.is_some());
   fs::remove_dir_all(dir).unwrap();
+ }
+ #[test]
+ fn creates_own_model_library_without_manual_paths_or_comfyui(){
+  let mut settings=Settings::from_env().unwrap();
+  let data=std::env::temp_dir().join(format!("dominion-video-{}",Uuid::new_v4()));
+  settings.data_dir=data.clone();
+  let managed=choose_root(&settings).unwrap();
+  assert_eq!(managed,fs::canonicalize(data.join("video-models/models")).unwrap());
+  assert!(managed.join("vae").is_dir());
+  assert!(managed.join("text_encoders").is_dir());
+  assert!(managed.join("diffusion_models").is_dir());
+  assert_eq!(progress(&managed).1,false);
+  fs::remove_dir_all(data).unwrap();
  }
  #[test]
  fn rejects_paths_without_existing_comfyui_model_directory(){
