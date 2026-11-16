@@ -147,3 +147,19 @@ test('multi-shot production uses native product API and publishes the final asse
   assert.ok(calls.some(c=>c.url.endsWith('/api/video/jobs/assembled-1/upload')));
   assert.ok(calls.every(c=>c.options.headers.Authorization==='Bearer sub4-token'));
 });
+
+
+test('selective video-shot revision uses the same Rust product job and bounded shot index',async()=>{
+ const calls=[];
+ const sdk=new Dominion({token:'private',fetch:async(url,options)=>{
+  calls.push({url,options});
+  return new Response(JSON.stringify({id:'production-1',status:'ready',regeneratingShot:1}),{status:202});
+ }});
+ const result=await sdk.productions.regenerateShot('production-1',1,'stable wardrobe, forward dolly');
+ assert.equal(result.regeneratingShot,1);
+ assert.ok(calls[0].url.endsWith('/api/video/productions/production-1/shots/1/regenerate'));
+ assert.equal(JSON.parse(calls[0].options.body).visualPrompt,'stable wardrobe, forward dolly');
+ assert.equal(calls[0].options.headers.Authorization,'Bearer private');
+ await assert.rejects(()=>sdk.productions.regenerateShot('x',12,'invalid'),RangeError);
+ assert.equal(calls.length,1,'rejecting an invalid shot must not make an API call');
+});
