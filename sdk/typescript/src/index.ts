@@ -87,6 +87,7 @@ export interface VideoProduction {
   visualBible?:string;scriptAttempts?:number;
   artifactRevisionId?:string|null;revisionCount?:number;
   regeneratingShot?:number|null;pendingRevisionJobId?:string|null;
+  pendingRevisionShot?:number|null;pendingRevisionPrompt?:string;
   revisionError?:string|null;
   videoId:string|null;uploadId:string|null;uploadUrl:string|null;
   outputUrl:string|null;costKrw:number;error:string|null;
