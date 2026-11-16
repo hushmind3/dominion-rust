@@ -21,10 +21,11 @@ export function LegacyImportPanel(){
   const [path,setPath]=useState('')
   const [preview,setPreview]=useState<Preview|null>(null)
   const [applied,setApplied]=useState<Applied|null>(null)
+  const [archive,setArchive]=useState<{inspected:number;storedOrUpdated:number;unchanged:number;byKind:Record<string,number>}|null>(null)
   const [busy,setBusy]=useState(false)
   const [error,setError]=useState('')
   const inspect=async()=>{
-    setBusy(true);setError('');setPreview(null);setApplied(null)
+    setBusy(true);setError('');setPreview(null);setApplied(null);setArchive(null)
     try {setPreview(await post<Preview>('/api/system/legacy-sqlite/preview',{path:path.trim()}))}
     catch(e){setError((e as Error).message)}
     finally{setBusy(false)}
@@ -35,7 +36,19 @@ export function LegacyImportPanel(){
     try {
       setApplied(await post<Applied>('/api/system/legacy-sqlite/import',{path:path.trim(),confirm:true}))
       setPreview(null)
+      try{
+        const result=await post<{inspected:number;storedOrUpdated:number;unchanged:number;byKind:Record<string,number>}>(
+          '/api/system/legacy-sqlite/archive',{path:path.trim(),confirm:true})
+        setArchive(result)
+      }catch(e){setError('대화·에이전트 복사는 완료됐습니다. 과거 기록 보관은 다시 실행해야 합니다: '+(e as Error).message)}
     }catch(e){setError((e as Error).message)}
+    finally{setBusy(false)}
+  }
+  const archiveOnly=async()=>{
+    if(!path.trim())return
+    setBusy(true);setError('')
+    try{setArchive(await post('/api/system/legacy-sqlite/archive',{path:path.trim(),confirm:true}))}
+    catch(e){setError((e as Error).message)}
     finally{setBusy(false)}
   }
   return <Panel className="min-w-0 p-5 xl:col-span-2">
@@ -52,6 +65,9 @@ export function LegacyImportPanel(){
       <Action variant="secondary" disabled={busy||!path.trim()} onClick={inspect}>
         <Database size={15}/> {busy?'확인 중…':'가져올 항목 미리보기'}
       </Action>
+      <Action variant="secondary" disabled={busy||!path.trim()} onClick={archiveOnly}>
+        <ArchiveRestore size={15}/> 이전 작업·그룹·기억 이력 보관
+      </Action>
       {preview&&<Action disabled={busy} onClick={importSelected}>
         <ArchiveRestore size={15}/> 선택한 기록 가져오기
       </Action>}
@@ -67,6 +83,10 @@ export function LegacyImportPanel(){
       <ShieldCheck size={18}/>
       <span>복사 완료: 에이전트 {applied.importedAgents}개 · 대화 {applied.importedSessions}개 · 메시지 {applied.importedMessages}개 · 비활성 연결 {applied.importedProviders}개.
         화면을 새로고침하면 가져온 기록이 보입니다. 원본은 그대로 유지됩니다.</span>
+    </div>}
+    {archive&&<div className="mt-3 rounded-lg border border-[#E7E0D5] p-3 text-xs text-[#554D43]" role="status">
+      <strong>이전 이력 {archive.inspected}개 보관 확인 · 신규/갱신 {archive.storedOrUpdated}개</strong>
+      <p>대화 메시지·기억·그룹·작업·실행·검증 기록이 현재 에이전트에서 자동 실행되지 않는 읽기 전용 이력으로 등록됐습니다.</p>
     </div>}
     {error&&<div className="mt-3"><Notice message={error}/></div>}
   </Panel>
