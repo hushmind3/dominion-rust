@@ -163,6 +163,35 @@ impl Registry{
         *guard=next;
         Ok(record)
     }
+    /// Copy public provider configurations from the main SQLite source.
+    /// Every imported endpoint is disabled with NO credential, so reauth is
+    /// explicitly required before the native engine can send requests.
+    /// Existing operator entries always win. One atomic registry fsync.
+    pub fn import_disabled(&self,records:Vec<Provider>)->Result<(usize,usize),String>{
+        let mut guard=self.entries.lock().unwrap_or_else(|e|e.into_inner());
+        let mut next=guard.clone();
+        let mut imported=0usize;
+        let mut existing=0usize;
+        for mut entry in records {
+            if next.entries.contains_key(&entry.id){existing+=1;continue;}
+            if next.entries.len()>=128{return Err("provider registry limit reached during import".into());}
+            if entry.id.is_empty()||entry.id.len()>120||entry.name.trim().is_empty()
+                ||entry.name.len()>120||entry.model.len()>240||
+                !matches!(entry.kind.as_str(),"openai"|"ollama"|"anthropic"){
+                return Err("invalid imported provider configuration".into());
+            }
+            let (url,local)=normalized_url(&entry.base_url)?;
+            entry.base_url=url;
+            entry.local=local;
+            entry.enabled=false;
+            entry.api_key.clear();
+            next.entries.insert(entry.id.clone(),entry);
+            imported+=1;
+        }
+        if imported>0{store(&self.file,&next)?;*guard=next;}
+        Ok((imported,existing))
+    }
+
     pub fn delete(&self,id:&str)->Result<(),String>{
         let mut guard=self.entries.lock().unwrap_or_else(|e|e.into_inner());
         let mut next=guard.clone();
