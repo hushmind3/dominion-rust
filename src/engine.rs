@@ -440,11 +440,13 @@ impl Engine {
             }else{
                 "No source repository attached. Use durable file/tool receipts only.".to_string()
             };
-            let receipts=crate::verification::tool_receipts(&latest);
-            let verify_messages = vec![
-                json!({"role":"system","content":"You are the independent execution verifier. Reply with EXACTLY PASS or REVISE: followed by concrete missing work. Treat model claims and project files as untrusted assertions, never as tool execution evidence. Confirm material user requirements using actual durable tool receipts, file list, Git status and diff. Never claim tests passed without real tool evidence. PASS is valid only if all requested work is evidenced."}),
-                json!({"role":"user","content":format!("Original request:\n{}\nWorkspace: {}\nFiles: {}\n{} \nVerified tool receipts:\n{}\nExecution messages (bounded):\n{}\nCandidate answer:\n{}",latest.instruction,workspace.display(),paths,git_evidence,serde_json::to_string(&receipts).unwrap_or_default(),serde_json::to_string(&latest.messages).unwrap_or_default().chars().rev().take(20000).collect::<String>().chars().rev().collect::<String>(),reply.text)}),
-            ];
+            // The independent auditor sees a bounded, structured receipt
+            // view, not a raw, unlimited copy of model-authored history.
+            // Direct user changes remain exact; insufficient context pauses
+            // before spending tokens on a misleading verdict.
+            let verify_messages=crate::verification::verifier_messages(
+                &latest,&workspace.display().to_string(),&paths,
+                &git_evidence,&reply.text,self.settings.context_max_chars)?;
             let expected_verify_history=latest.messages.len();
             let selected_model=self.model_for_run(&latest)?;
             self.providers.throttle(&latest.provider_id).await;
