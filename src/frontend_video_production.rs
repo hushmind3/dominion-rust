@@ -40,6 +40,8 @@ pub struct Production{
  #[serde(default)]pub revision_count:u32,
  #[serde(default)]pub regenerating_shot:Option<usize>,
  #[serde(default)]pub pending_revision_job_id:Option<Uuid>,
+ #[serde(default)]pub pending_revision_shot:Option<usize>,
+ #[serde(default)]pub pending_revision_prompt:String,
  #[serde(default)]pub revision_error:Option<String>,
  pub artifact_bytes:Option<u64>,pub measured_seconds:Option<f64>,
  pub cost_krw:f64,pub error:Option<String>,
@@ -128,7 +130,6 @@ pub async fn reconcile_restart(settings:&Settings)->Result<(),String>{
  let mut journal=read(settings)?;let mut changed=false;
  for record in journal.jobs.values_mut(){
   if record.regenerating_shot.take().is_some(){
-   record.pending_revision_job_id=None;
    record.revision_error=Some("Scene revision interrupted; the previous verified MP4 is preserved. Inspect the previous ComfyUI job before trying again.".into());
    record.updated_at_ms=now_ms();changed=true;
   }
@@ -159,6 +160,9 @@ pub fn public(item:&Production)->Value{
   "renderedShotIds":item.rendered_shot_ids,"completedShots":item.completed_shots,
   "artifactRevisionId":item.artifact_revision_id,"revisionCount":item.revision_count,
   "regeneratingShot":item.regenerating_shot,"revisionError":item.revision_error,
+  "pendingRevisionJobId":item.pending_revision_job_id,
+  "pendingRevisionShot":item.pending_revision_shot,
+  "pendingRevisionPrompt":item.pending_revision_prompt,
   "costKrw":item.cost_krw,"error":item.error,"factsVerified":false,
   "outputUrl":item.video_id.map(|id|format!("/api/video/jobs/{id}/content")),
   "createdAt":crate::frontend_state::timestamp(item.created_at_ms),
@@ -225,7 +229,8 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
   shots:Vec::new(),visual_bible:String::new(),script_attempts:0,video_id:None,upload_id:None,upload_url:None,
   rendered_shot_ids:Vec::new(),completed_shots:0,
   artifact_revision_id:None,revision_count:0,regenerating_shot:None,
-  pending_revision_job_id:None,revision_error:None,
+  pending_revision_job_id:None,pending_revision_shot:None,
+  pending_revision_prompt:String::new(),revision_error:None,
   artifact_bytes:None,measured_seconds:None,cost_krw:0.0,error:None,
   created_at_ms:now,updated_at_ms:now
  };
@@ -731,6 +736,7 @@ mod tests{
    upload_id:Some(Uuid::new_v4()),upload_url:None,
    rendered_shot_ids:Vec::new(),completed_shots:0,artifact_revision_id:None,
    revision_count:0,regenerating_shot:None,pending_revision_job_id:None,
+   pending_revision_shot:None,pending_revision_prompt:String::new(),
    revision_error:None,artifact_bytes:None,
    measured_seconds:None,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
   };
