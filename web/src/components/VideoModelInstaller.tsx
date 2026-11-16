@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react'
+import {useEffect,useRef,useState} from 'react'
 import {CheckCircle2,Download,FolderOpen,HardDrive,LoaderCircle,PauseCircle,RefreshCw,ShieldCheck,TriangleAlert,Video} from 'lucide-react'
 import {Button,TextInput} from './Primitives'
 import {Notice,Panel,useRemote} from './UI'
@@ -27,6 +27,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
   installed:false,configured:false,state:'idle',currentFile:'',error:'',
   downloadedBytes:0,totalBytes:16_890_000_000,files:[],needsComfyRestart:false
  },false)
+ const notified=useRef(false)
  const [folder,setFolder]=useState('')
  const [showPath,setShowPath]=useState(false)
  const [busy,setBusy]=useState(false)
@@ -44,7 +45,10 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
   return()=>window.clearInterval(interval)
  },[downloading,remote.reload])
  useEffect(()=>{
-  if(remote.value.state==='installed'&&remote.value.configured)onInstalled()
+  if(remote.value.state==='installed'&&remote.value.configured&&!notified.current){
+   notified.current=true
+   onInstalled()
+  }
  },[remote.value.state,remote.value.configured,onInstalled])
  const install=async()=>{
   if(busy)return
