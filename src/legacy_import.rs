@@ -6,7 +6,7 @@ use crate::provider_registry::{Provider,Registry,normalized_url};
 use rusqlite::{Connection,OpenFlags};
 use serde::Serialize;
 use serde_json::{json,Value};
-use std::{collections::HashMap,path::{Path,PathBuf},time::Duration};
+use std::{collections::{HashMap,HashSet},path::{Path,PathBuf},time::Duration};
 
 struct Source {
     agents:HashMap<String,UiAgent>,
@@ -176,9 +176,29 @@ fn source(path:&Path)->Result<Source,String>{
     }
     drop(query);
 
-    let mut message_query=db.prepare(
-        "SELECT id,session_id,role,content,reasoning,agent_id,tool_calls,tool_call_id,created_at,metadata \
-         FROM messages ORDER BY created_at ASC,rowid ASC")
+    // Earlier main databases may not have the later reasoning/tool columns.
+    // Detect optional fields without altering the source schema.
+    let mut schema=db.prepare("PRAGMA table_info(messages)")
+        .map_err(|e|format!("legacy message table schema: {e}"))?;
+    let cols=schema.query_map([],|row|row.get::<_,String>(1))
+        .map_err(|e|e.to_string())?
+        .collect::<Result<HashSet<_>,_>>().map_err(|e|e.to_string())?;
+    drop(schema);
+    if ["id","session_id","role","content","created_at"]
+        .iter().any(|name|!cols.contains(*name)){
+        return Err("legacy messages missing required core columns".into());
+    }
+    let optional=|name:&'static str,fallback:&'static str|{
+        if cols.contains(name){name}else{fallback}
+    };
+    let sql=format!(
+        "SELECT id,session_id,role,content,{},{},{},{},created_at,{} \
+         FROM messages ORDER BY created_at ASC,rowid ASC",
+        optional("reasoning","''"),optional("agent_id","NULL"),
+        optional("tool_calls","NULL"),optional("tool_call_id","NULL"),
+        optional("metadata","'{}'")
+    );
+    let mut message_query=db.prepare(&sql)
         .map_err(|e|format!("legacy messages schema: {e}"))?;
     let rows=message_query.query_map([],|r|Ok((
         r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
@@ -192,14 +212,14 @@ fn source(path:&Path)->Result<Source,String>{
             =item.map_err(|e|e.to_string())?;
         let Some(session)=sessions.get_mut(&session_id)else{continue};
         let mut metadata=serde_json::from_str::<Value>(&raw_metadata)
-            .map_err(|e|format!("legacy message {id} metadata: {e}"))?;
+            .unwrap_or_else(|_|json!({"legacyRawMetadata":raw_metadata}));
         if !metadata.is_object(){metadata=json!({"originalMetadata":metadata});}
         // Keep the original model/tool diagnostics without promoting old
         // tool calls into live, executable Run intents.
         metadata["legacyImport"]=json!({
-            "reasoning":reasoning,"toolCalls":calls.as_deref()
-                .map(|s|serde_json::from_str::<Value>(s))
-                .transpose().map_err(|e|format!("legacy tool calls {id}: {e}"))?,
+            "reasoning":reasoning,"toolCalls":calls.as_deref().map(|s|
+                serde_json::from_str::<Value>(s)
+                    .unwrap_or_else(|_|json!({"legacyRawToolCalls":s}))),
             "toolCallId":call_id,
         });
         session.messages.push(UiMessage{
@@ -321,6 +341,28 @@ mod tests{
         drop(check);
         std::fs::remove_dir_all(dir).unwrap();
     }
+    #[tokio::test]
+    async fn older_message_schema_and_bad_json_preserve_raw_history(){
+        let root=std::env::temp_dir().join(format!("dominion-legacy-old-{}",uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file=root.join("dominion.sqlite");
+        let db=Connection::open(&file).unwrap();
+        db.execute_batch("CREATE TABLE records(kind TEXT,id TEXT,data TEXT,created_at TEXT,updated_at TEXT);
+            CREATE TABLE messages(id TEXT,session_id TEXT,role TEXT,content TEXT,created_at TEXT);").unwrap();
+        db.execute("INSERT INTO records VALUES('session','old',?1,'2026-11-17 01:00:00','2026-11-17 01:00:00')",
+            params![json!({"title":"old history"}).to_string()]).unwrap();
+        db.execute("INSERT INTO messages VALUES('m','old','user','preserve this text','2026-11-17 01:00:00')",[]).unwrap();
+        drop(db);
+        let frontend=FrontendStore::open(root.join("native"),"test").unwrap();
+        let registry=Registry::open(root.join("native")).unwrap();
+        let copied=apply(&frontend,&registry,file.clone()).await.unwrap();
+        assert_eq!(copied.imported_messages,1);
+        let message=frontend.session("old").await.unwrap().messages.remove(0);
+        assert_eq!(message.content,"preserve this text");
+        assert_eq!(message.metadata.unwrap()["legacyImport"]["reasoning"],"");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn invalid_source_cannot_mutate_native_state(){
         let dir=std::env::temp_dir().join(format!("dominion-legacy-bad-{}",uuid::Uuid::new_v4()));
