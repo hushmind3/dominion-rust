@@ -118,3 +118,32 @@ test('RSI multi-file target contract reaches the same native Rust route', async(
   assert.ok(seen[0].url.endsWith('/api/v1/improvements'));
   assert.deepEqual(JSON.parse(seen[0].options.body).target_files,['src/lib.rs','src/engine.rs']);
 });
+
+
+test('multi-shot production uses native product API and publishes the final assembled ID',async()=>{
+  const calls=[];
+  const client=new Dominion({token:'sub4-token',fetch:async(url,options)=>{
+    calls.push({url,options});
+    if(url.endsWith('/video/productions/job-1'))return new Response(JSON.stringify({
+      id:'job-1',status:'ready',videoId:'assembled-1'
+    }),{status:200});
+    if(url.endsWith('/video/jobs/assembled-1/content'))return new Response(
+      new Blob(['real bytes'],{type:'video/mp4'}),{status:200,headers:{'content-type':'video/mp4'}});
+    if(url.endsWith('/video/productions')&&options.method==='GET')
+      return new Response(JSON.stringify([]),{status:200});
+    return new Response(JSON.stringify({id:'upload-1',status:'running'}),{status:200});
+  }});
+  assert.deepEqual(await client.productions.list(),[]);
+  await client.productions.create({topic:'cinematic city',visualEngine:'comfyui',duration:30,
+    maxCostKrw:2500,autoPublish:false});
+  const result=await client.productions.download('job-1');
+  assert.equal(await result.text(),'real bytes');
+  const upload=await client.productions.publish('job-1',{title:'Final video',privacyStatus:'private'});
+  assert.equal(upload.id,'upload-1');
+  assert.ok(calls[0].url.endsWith('/api/video/productions'));
+  assert.ok(calls[1].url.endsWith('/api/video/productions'));
+  assert.equal(JSON.parse(calls[1].options.body).duration,30);
+  assert.ok(calls.some(c=>c.url.endsWith('/api/video/jobs/assembled-1/content')));
+  assert.ok(calls.some(c=>c.url.endsWith('/api/video/jobs/assembled-1/upload')));
+  assert.ok(calls.every(c=>c.options.headers.Authorization==='Bearer sub4-token'));
+});
