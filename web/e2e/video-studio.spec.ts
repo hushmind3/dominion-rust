@@ -13,11 +13,18 @@ test('video studio has an accessible creation to publishing workflow',async({pag
  await expect(page.getByRole('heading',{name:'아이디어에서 영상, 게시까지.'})).toBeVisible()
  await expect(page.getByRole('heading',{name:'주제 하나로, 완성 영상까지.'})).toBeVisible()
  await expect(page.getByText('영상 모델 라이브러리')).toBeVisible()
+ await expect(page.getByRole('group',{name:'영상 모델 계열 선택'})).toBeVisible()
  await expect(page.getByRole('group',{name:'영상 모델 양자화 선택'})).toBeVisible()
  await expect(page.getByRole('button',{name:/Q4_K_M/})).toBeVisible()
  await page.getByRole('button',{name:/Q5_K_M/}).click()
  await expect(page.getByRole('button',{name:/Q5_K_M/})).toHaveAttribute('aria-pressed','true')
  await expect(page.getByText(/모델 본체 3.81GB/)).toBeVisible()
+ await page.getByRole('button',{name:/LTX-Video 2B/}).click()
+ await expect(page.getByRole('button',{name:/LTX-Video 2B/})).toHaveAttribute('aria-pressed','true')
+ await expect(page.getByRole('button',{name:/FP16/})).toBeVisible()
+ await page.getByRole('button',{name:/HunyuanVideo 1.5/}).click()
+ await expect(page.getByRole('button',{name:/HunyuanVideo 1.5/})).toHaveAttribute('aria-pressed','true')
+ await page.getByRole('button',{name:/Wan 2.2 TI2V 5B/}).click()
  const modelPack=await request.get('/api/video/model-packs')
  expect(modelPack.ok()).toBeTruthy()
  const pack=await modelPack.json()
@@ -25,6 +32,11 @@ test('video studio has an accessible creation to publishing workflow',async({pag
  expect(pack.kind).toBe('video')
  expect(pack.variants.map((v:{id:string})=>v.id)).toContain('q4_k_m')
  expect(pack.variants.map((v:{id:string})=>v.id)).toContain('fp16')
+ expect(pack.families.map((f:{id:string})=>f.id)).toEqual([
+  'wan22-ti2v-5b','ltx-video-2b','hunyuan-video-15'
+ ])
+ expect(pack.variants.map((v:{id:string})=>v.id)).toContain('ltx2b-fp16')
+ expect(pack.variants.map((v:{id:string})=>v.id)).toContain('hunyuan15-fp16')
  expect(pack.variants.every((v:{modelBytes:number})=>v.modelBytes>1_000_000_000)).toBeTruthy()
  const invalidVariant=await request.post('/api/video/model-packs/install',{data:{variant:'text-llm'}})
  expect(invalidVariant.status()).toBe(400)
@@ -84,4 +96,15 @@ test('video settings submit to Rust and invalid workflows are rejected visibly',
   const native=await request.get('/api/video/config')
   return (await native.json()).engine
  }).toBe('native')
+})
+
+test('video creation and model selector fit mobile, tablet and desktop widths',async({page})=>{
+ for(const width of [375,768,1440]){
+  await page.setViewportSize({width,height:850})
+  await page.goto('/#/video')
+  await expect(page.getByRole('heading',{name:'주제 하나로, 완성 영상까지.'})).toBeVisible()
+  await expect(page.getByRole('group',{name:'영상 모델 계열 선택'})).toBeVisible()
+  const overflowing=await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth+2)
+  expect(overflowing,'Unexpected horizontal overflow at '+width+'px').toBeFalsy()
+ }
 })
