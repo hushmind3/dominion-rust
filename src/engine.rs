@@ -888,6 +888,85 @@ mod tests {
     use axum::{extract::State, routing::post, Json, Router};
     use std::sync::atomic::{AtomicUsize,Ordering};
 
+    async fn endless_bad_read(State(counter):State<Arc<AtomicUsize>>,
+        Json(_request):Json<Value>)->Json<Value>{
+        let turn=counter.fetch_add(1,Ordering::SeqCst);
+        if turn==0 {
+            return Json(json!({"choices":[{"finish_reason":"stop",
+                "message":{"role":"assistant","content":"Inspect one missing file"}}],
+                "usage":{"prompt_tokens":7,"completion_tokens":6}}));
+        }
+        Json(json!({"choices":[{"finish_reason":"tool_calls",
+            "message":{"role":"assistant","content":null,"tool_calls":[{
+                "id":format!("missing-{turn}"),"type":"function",
+                "function":{"name":"read_file",
+                    "arguments":json!({"path":"never-exists.txt"}).to_string()}
+            }]}}],"usage":{"prompt_tokens":7,"completion_tokens":6}}))
+    }
+
+    #[tokio::test]
+    async fn repetitive_failed_tool_is_rejected_then_paused_without_new_io(){
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let count=Arc::new(AtomicUsize::new(0));
+        let server=tokio::spawn({
+            let count=Arc::clone(&count);
+            async move {
+                axum::serve(listener,
+                    Router::new().route("/chat/completions",post(endless_bad_read))
+                        .with_state(count)).await.unwrap();
+            }
+        });
+        let root=std::env::temp_dir().join(format!("dominion-loop-guard-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        settings.main.base_url=format!("http://{address}");
+        settings.main.api_key.clear();
+        settings.economy=settings.main.clone();
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let videos=Arc::new(crate::video::Videos::open(settings.data_dir.join("videos")).await.unwrap());
+        let improvements=Arc::new(crate::improvement::Improvements::open(
+            settings.data_dir.join("improvements"),settings.workspace_dir.clone()).await.unwrap());
+        let engine=Engine::new(settings,Arc::clone(&store),groups,videos,improvements).unwrap();
+        let run=Run::new(CreateRun{
+            instruction:"Inspect one file and explain the finding".into(),
+            budget_krw:Some(500.0),max_steps:Some(15)
+        },15).unwrap();
+        let id=run.id;store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut observed=None;
+        for _ in 0..200{
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let snapshot=store.get(id).await.unwrap();
+            if snapshot.events.iter().any(|e|e.kind=="loop_guard_paused"){
+                observed=Some(snapshot);break;
+            }
+        }
+        let observed=observed.expect("stuck agent loop was not stopped");
+        assert_eq!(observed.status,RunStatus::Paused);
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="tool_started").count(),2,
+            "third identical failing read must not start");
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="tool_error").count(),2);
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="loop_guard").count(),2);
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="loop_guard_paused").count(),1);
+        assert_eq!(observed.events.iter().filter(|e|e.kind=="tool_admission_rejected").count(),3);
+        assert_eq!(observed.messages.iter().filter(|m|m["role"]=="tool").count(),5);
+        assert_eq!(count.load(Ordering::SeqCst),6,
+            "model planning + five bounded tool turns; no runaway polling");
+        for _ in 0..100{
+            if !engine.active.lock().await.contains(&id){break;}
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!engine.active.lock().await.contains(&id));
+        let persisted=Store::open(root.join("data/runs")).await.unwrap().get(id).await.unwrap();
+        assert_eq!(persisted.status,RunStatus::Paused);
+        assert!(persisted.events.iter().any(|e|e.kind=="loop_guard_paused"));
+        server.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
     #[tokio::test]
     async fn denied_pre_hook_never_dispatches_write_tool(){
         let root=std::env::temp_dir().join(format!("dominion-hook-denied-{}",Uuid::new_v4()));
