@@ -16,8 +16,9 @@ async fn repair_model(State(turn):State<Arc<AtomicUsize>>,Json(request):Json<Val
         }]}),
         2=>{
             let saw_failure=request["messages"].as_array().is_some_and(|messages|
-                messages.iter().any(|m|m["role"]=="tool"&&
-                    m.to_string().contains("absent.rs")));
+                messages.iter().any(|m|m["role"]=="tool"
+                    &&m["tool_call_id"]=="wrong-path"
+                    &&m["content"].as_str().is_some_and(|text|text.starts_with("TOOL ERROR:"))));
             if !saw_failure{
                 json!({"role":"assistant","content":"FAIL: tool failure not in model context"})
             }else{
