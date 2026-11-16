@@ -37,6 +37,14 @@ fn text<'a>(v:&'a Value,key:&str)->Result<&'a str,String>{
  v.get(key).and_then(Value::as_str)
   .ok_or_else(||format!("GitHub {key} required"))
 }
+fn branch_ref(value:&str)->Result<&str,String>{
+ if value.is_empty()||value.len()>180||value.starts_with('/')||value.ends_with('/')
+     ||value.contains("..")||value.contains("//")||
+     !value.bytes().all(|b|b.is_ascii_alphanumeric()||b"-_./".contains(&b)){
+    return Err("GitHub branch must be an explicit safe ref name".into());
+ }
+ Ok(value)
+}
 fn component(value:&str)->Result<&str,String>{
  if value.is_empty()||value.len()>120||value.starts_with('.')||
     !value.bytes().all(|b|b.is_ascii_alphanumeric()||b"-_.".contains(&b)){
@@ -84,7 +92,7 @@ fn reconnect(status:StatusCode)->String{
 }
 fn repo_parts<'a>(a:&'a Value)->Result<(&'a str,&'a str,&'a str),String>{
  Ok((component(text(a,"owner")?)?,component(text(a,"repo")?)?,
-     component(text(a,"branch")?)?))
+     branch_ref(text(a,"branch")?)?))
 }
 async fn list_repositories(http:&Client,token:&str,base:&str,args:&Value)->Result<String,String>{
  let page=args.get("page").and_then(Value::as_u64).unwrap_or(1);
@@ -250,6 +258,8 @@ mod tests{
     assert!(file_path("src//main.rs").is_err());
     assert!(component("main").is_ok());
     assert!(component("release/v1").is_err());
+    assert!(branch_ref("feature/fix-ui").is_ok());
+    assert!(branch_ref("../main").is_err());
     assert!(repo_parts(&json!({"owner":"alice","repo":"code"})).is_err());
  }
  #[derive(Clone)]struct Fixture {writes:Arc<AtomicUsize>}
