@@ -67,6 +67,17 @@ export interface StrategyEvidence {
   baseline_score: number | null; resulting_score: number | null;
   attempts: number; cost_krw: number; updated_at_ms: number;
 }
+export interface LegacySqlitePreview {
+  sourceAgents:number;sourceSessions:number;sourceMessages:number;
+  importableAgents:number;importableSessions:number;
+  alreadyPresentAgents:number;alreadyPresentSessions:number;
+  skippedBoundSessions:number;skippedArchivedSessions:number;note:string;
+}
+export interface LegacySqliteImport {
+  importedAgents:number;importedSessions:number;importedMessages:number;
+  existingAgents:number;existingSessions:number;
+  skippedBoundSessions:number;skippedArchivedSessions:number;
+}
 export interface ClientOptions {
   baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch;
 }
@@ -134,6 +145,10 @@ export class Dominion {
       get:(id:string)=>this.frontendRequest<MainExecution>('GET','/sdk/runs/'+encodeURIComponent(id)),
       cancel:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/cancel',{}),
       resume:(id:string)=>this.frontendRequest<MainExecution>('POST','/sdk/runs/'+encodeURIComponent(id)+'/resume',{}),
+    },
+    legacySqlite:{
+      preview:(path:string)=>this.frontendRequest<LegacySqlitePreview>('POST','/system/legacy-sqlite/preview',{path}),
+      import:(path:string)=>this.frontendRequest<LegacySqliteImport>('POST','/system/legacy-sqlite/import',{path,confirm:true}),
     },
     status:()=>this.frontendRequest<{agents:number;providers:number;jobs:number;executions:number}>('GET','/status'),
   };
