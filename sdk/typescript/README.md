@@ -47,6 +47,20 @@ console.log(copied.importedSessions, copied.importedProviders);
 
 These calls use the **existing native Rust API**, not a JS-based migration engine. The original main SQLite database opens read-only and remains unchanged. Already-present native IDs are skipped. Only active private chats, agents and compatible provider settings are copied; providers are disabled with empty credentials until reconnected. Archived/bound chats, memories, prior jobs and encrypted credentials remain in the original database.
 
+## Review prior job history without replay
+
+```ts
+const stats = await sdk.frontend.legacySqlite.archive(path);
+const jobs = await sdk.frontend.legacyHistory.list('job',0,20);
+const previousJob = await sdk.frontend.legacyHistory.item('job',jobs.rows[0].id);
+// Archived model tool calls are inert; nothing here executes.
+const oldMemories = await sdk.frontend.legacyHistory.list('memory',0,20);
+// Only after review: explicitly copy a chosen memory to native notes.
+const note = await sdk.frontend.legacyHistory.promoteMemory('legacy-memory-id','global');
+```
+
+The indexed archive remains separate from current Run execution. Its categories include historical jobs, rooms, memories, execution receipts, tools, workflows and original messages. The source SQLite remains read-only. Memory promotion is explicitly authorized and never happens on an ordinary boot.
+
 ## Recovering uncertain side effects
 
 The Rust journal records execution intent before mutating tools run. If a result cannot be established after an interruption, it **never** replays that mutation speculatively. Observe its actual effect and supply a receipt:
