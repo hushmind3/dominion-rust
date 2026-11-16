@@ -32,6 +32,16 @@ impl Dominion {
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}
     pub fn engine(&self)->Arc<Engine>{Arc::clone(&self.engine)}
     pub fn http_router(&self)->Router{api::router(Arc::clone(&self.engine))}
+    /// Inspect the main product's SQLite state without opening it for writes.
+    pub async fn preview_legacy_sqlite(&self,path:std::path::PathBuf)
+        ->Result<crate::legacy_import::LegacyPreview,String>{
+        crate::legacy_import::preview(&self.engine.frontend,path).await
+    }
+    /// Explicit copy-on-import: existing native IDs win and the source is untouched.
+    pub async fn import_legacy_sqlite(&self,path:std::path::PathBuf)
+        ->Result<crate::legacy_import::LegacyImportResult,String>{
+        crate::legacy_import::apply(&self.engine.frontend,path).await
+    }
     /// Native extension point: ordered pre-dispatch veto and post-receipt policy.
     /// HTTP/TypeScript clients use the same engine with operator-owned hooks.
     pub async fn register_tool_hook(&self,hook:Arc<dyn ToolHook>){
