@@ -28,6 +28,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
  const [selected,setSelected]=useState('q4_k_m')
  const [advanced,setAdvanced]=useState(false)
  const [folder,setFolder]=useState('')
+ const [changedFolder,setChangedFolder]=useState(false)
  const [busy,setBusy]=useState(false)
  const [message,setMessage]=useState('')
  const [error,setError]=useState('')
@@ -56,7 +57,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
   setBusy(true);setError('');setMessage('')
   try{
    await post('/api/video/model-packs/install',{
-    variant:selected,...(advanced&&folder.trim()?{modelsDir:folder.trim()}: {})
+    variant:selected,...(changedFolder&&folder.trim()?{modelsDir:folder.trim()}: {})
    })
    setMessage('선택한 영상 모델을 받고 있습니다. 공통 VAE·인코더는 다시 받지 않습니다.')
    await remote.reload()
@@ -155,7 +156,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
      </label>
      <div className="flex items-center gap-2"><FolderOpen size={16}/>
       <TextInput id="video-model-dir" value={folder}
-       onChange={e=>setFolder(e.target.value)}
+       onChange={e=>{setFolder(e.target.value);setChangedFolder(true)}}
        placeholder="예: C:\\ComfyUI\\models"/>
      </div>
      <p className="text-[10px] text-[#9A8B7F]">경로를 지정하지 않으면 도미니언이 모델 저장공간을 자동으로 만듭니다.</p>
