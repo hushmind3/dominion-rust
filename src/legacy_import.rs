@@ -2,6 +2,7 @@
 //! The source remains owned by the main app. Never execute old jobs or move
 //! encrypted credentials across incompatible vaults.
 use crate::frontend_state::{FrontendStore,UiAgent,UiMessage,UiSession};
+use crate::provider_registry::{Provider,Registry,normalized_url};
 use rusqlite::{Connection,OpenFlags};
 use serde::Serialize;
 use serde_json::{json,Value};
@@ -10,6 +11,8 @@ use std::{collections::HashMap,path::{Path,PathBuf},time::Duration};
 struct Source {
     agents:HashMap<String,UiAgent>,
     sessions:HashMap<String,UiSession>,
+    providers:Vec<Provider>,
+    skipped_providers:usize,
     skipped_bound:usize,
     skipped_archived:usize,
     messages:usize,
@@ -19,6 +22,10 @@ struct Source {
 #[serde(rename_all="camelCase")]
 pub struct LegacyPreview {
     pub source_agents:usize,
+    pub source_providers:usize,
+    pub importable_providers:usize,
+    pub already_present_providers:usize,
+    pub skipped_provider_records:usize,
     pub source_sessions:usize,
     pub source_messages:usize,
     pub importable_agents:usize,
@@ -33,6 +40,9 @@ pub struct LegacyPreview {
 #[serde(rename_all="camelCase")]
 pub struct LegacyImportResult {
     pub imported_agents:usize,
+    pub imported_providers:usize,
+    pub existing_providers:usize,
+    pub skipped_provider_records:usize,
     pub imported_sessions:usize,
     pub imported_messages:usize,
     pub existing_agents:usize,
@@ -98,6 +108,39 @@ fn source(path:&Path)->Result<Source,String>{
         agents.insert(id,agent);
     }
     drop(agent_query);
+
+    // Configurations only: no API key, credential metadata or OAuth tokens
+    // are copied. A disabled native provider can be reviewed and reconnected.
+    let mut providers=Vec::new();
+    let mut skipped_providers=0;
+    let mut provider_query=db.prepare("SELECT id,data FROM records WHERE kind='provider' ORDER BY id")
+        .map_err(|e|format!("legacy provider schema: {e}"))?;
+    let rows=provider_query.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))
+        .map_err(|e|e.to_string())?;
+    for row in rows{
+        let (id,raw)=row.map_err(|e|e.to_string())?;
+        let value:Value=serde_json::from_str(&raw)
+            .map_err(|e|format!("legacy provider {id} JSON: {e}"))?;
+        let kind=field(&value,"kind");
+        if id.is_empty()||id.len()>120||
+           !matches!(kind,"openai"|"ollama"|"anthropic"){
+            skipped_providers+=1;continue;
+        }
+        let Ok((url,local))=normalized_url(field(&value,"baseUrl")) else {
+            skipped_providers+=1;continue;
+        };
+        let name=field(&value,"name");
+        let model=field(&value,"model");
+        if name.trim().is_empty()||name.len()>120||model.len()>240{
+            skipped_providers+=1;continue;
+        }
+        providers.push(Provider{
+            id,name:name.to_owned(),base_url:url,kind:kind.to_owned(),model:model.to_owned(),
+            enabled:false,local,api_key:String::new(),
+            reflection:false,reflection_model:String::new(),requests_per_minute:0
+        });
+    }
+    drop(provider_query);
 
     let mut sessions=HashMap::new();
     let mut skipped_bound=0;
@@ -166,13 +209,18 @@ fn source(path:&Path)->Result<Source,String>{
         messages+=1;
     }
     db.execute_batch("COMMIT").map_err(|e|format!("finish legacy read snapshot: {e}"))?;
-    Ok(Source{agents,sessions,skipped_bound,skipped_archived,messages})
+    Ok(Source{agents,sessions,providers,skipped_providers,skipped_bound,skipped_archived,messages})
 }
-fn counts(source:&Source,current:&crate::frontend_state::Snapshot)->LegacyPreview{
+fn counts(source:&Source,current:&crate::frontend_state::Snapshot,registry:&Registry)->LegacyPreview{
     let existing_agents=source.agents.keys().filter(|k|current.agents.contains_key(*k)).count();
     let existing_sessions=source.sessions.keys().filter(|k|current.sessions.contains_key(*k)).count();
+    let present_providers=source.providers.iter().filter(|entry|registry.get(&entry.id).is_some()).count();
     LegacyPreview{
         source_agents:source.agents.len(),
+        source_providers:source.providers.len()+source.skipped_providers,
+        importable_providers:source.providers.len()-present_providers,
+        already_present_providers:present_providers,
+        skipped_provider_records:source.skipped_providers,
         source_sessions:source.sessions.len()+source.skipped_bound+source.skipped_archived,
         source_messages:source.messages,
         importable_agents:source.agents.len()-existing_agents,
@@ -180,20 +228,23 @@ fn counts(source:&Source,current:&crate::frontend_state::Snapshot)->LegacyPrevie
         already_present_agents:existing_agents,already_present_sessions:existing_sessions,
         skipped_bound_sessions:source.skipped_bound,
         skipped_archived_sessions:source.skipped_archived,
-        note:"Only ordinary active chats and agents are imported. Bound rooms, archived chats, encrypted provider secrets, jobs and execution history remain unchanged in the original SQLite database.",
+        note:"Only active private chats, agents and compatible disabled provider configurations are imported. Bound rooms, archived chats, encrypted secrets, jobs and execution history remain unchanged in the source SQLite database.",
     }
 }
-pub async fn preview(frontend:&FrontendStore,path:PathBuf)->Result<LegacyPreview,String>{
+pub async fn preview(frontend:&FrontendStore,registry:&Registry,path:PathBuf)->Result<LegacyPreview,String>{
     let loaded=tokio::task::spawn_blocking(move||source(&path))
         .await.map_err(|e|format!("legacy import worker: {e}"))??;
-    Ok(counts(&loaded,&frontend.snapshot().await))
+    Ok(counts(&loaded,&frontend.snapshot().await,registry))
 }
-pub async fn apply(frontend:&FrontendStore,path:PathBuf)->Result<LegacyImportResult,String>{
-    let loaded=tokio::task::spawn_blocking(move||source(&path))
+pub async fn apply(frontend:&FrontendStore,registry:&Registry,path:PathBuf)->Result<LegacyImportResult,String>{
+    let mut loaded=tokio::task::spawn_blocking(move||source(&path))
         .await.map_err(|e|format!("legacy import worker: {e}"))??;
-    frontend.mutate(move |current|{
+    let providers=std::mem::take(&mut loaded.providers);
+    let mut result=frontend.mutate(move |current|{
         let mut result=LegacyImportResult{
             imported_agents:0,imported_sessions:0,imported_messages:0,
+            imported_providers:0,existing_providers:0,
+            skipped_provider_records:loaded.skipped_providers,
             existing_agents:0,existing_sessions:0,
             skipped_bound_sessions:loaded.skipped_bound,
             skipped_archived_sessions:loaded.skipped_archived,
@@ -211,7 +262,13 @@ pub async fn apply(frontend:&FrontendStore,path:PathBuf)->Result<LegacyImportRes
             }
         }
         Ok(result)
-    }).await
+    }).await?;
+    // Separate stores are intentionally retriable: on a provider write error,
+    // a repeated import skips already-copied sessions without overwriting them.
+    let (added,existing)=registry.import_disabled(providers)?;
+    result.imported_providers=added;
+    result.existing_providers=existing;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -235,30 +292,41 @@ mod tests{
             params![json!({"title":"Shared room","roomId":"room-1"}).to_string()]).unwrap();
         db.execute("INSERT INTO messages VALUES('m1','s','assistant','Test failed','inspect error','a',?1,'call-1','2026-11-17 09:01:00',?2)",
             params![r#"[{"name":"read_file"}]"#,r#"{"usage":{"totalTokens":32}}"#]).unwrap();
+        db.execute("INSERT INTO records VALUES('provider','p',?1,'2026-11-17 09:00:00','2026-11-17 09:00:00')",
+            params![json!({"name":"Legacy OpenAI","kind":"openai","baseUrl":"https://api.openai.com/v1","model":"m","apiKey":"DO-NOT-COPY"}).to_string()]).unwrap();
         drop(db);
 
         let frontend=FrontendStore::open(dir.join("native"),"configured-model").unwrap();
-        let preview=preview(&frontend,file.clone()).await.unwrap();
+        let registry=Registry::open(dir.join("native")).unwrap();
+        let preview=preview(&frontend,&registry,file.clone()).await.unwrap();
         assert_eq!((preview.source_agents,preview.source_sessions,preview.source_messages),(1,2,1));
         assert_eq!(preview.skipped_bound_sessions,1);
-        let first=apply(&frontend,file.clone()).await.unwrap();
+        assert_eq!(preview.importable_providers,1);
+        let first=apply(&frontend,&registry,file.clone()).await.unwrap();
         assert_eq!((first.imported_agents,first.imported_sessions,first.imported_messages),(1,1,1));
+        assert_eq!(first.imported_providers,1);
+        let provider=registry.get("p").unwrap();
+        assert!(!provider.enabled);
+        assert!(provider.api_key.is_empty());
         let session=frontend.session("s").await.unwrap();
         assert_eq!(session.messages[0].metadata.as_ref().unwrap()["legacyImport"]["toolCallId"],"call-1");
         assert_eq!(session.messages[0].created_at,"2026-11-17T09:01:00Z");
         assert!(frontend.session("room").await.is_none());
-        let repeated=apply(&frontend,file.clone()).await.unwrap();
+        let repeated=apply(&frontend,&registry,file.clone()).await.unwrap();
         assert_eq!((repeated.imported_agents,repeated.imported_sessions,repeated.imported_messages),(0,0,0));
+        assert_eq!(repeated.imported_providers,0);
         let check=Connection::open_with_flags(&file,OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let unchanged:i64=check.query_row("SELECT COUNT(*) FROM messages",[],|r|r.get(0)).unwrap();
         assert_eq!(unchanged,1);
+        drop(check);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]
     async fn invalid_source_cannot_mutate_native_state(){
         let dir=std::env::temp_dir().join(format!("dominion-legacy-bad-{}",uuid::Uuid::new_v4()));
         let frontend=FrontendStore::open(dir.join("native"),"m").unwrap();
-        assert!(apply(&frontend,dir.join("missing.sqlite")).await.is_err());
+        let registry=Registry::open(dir.join("native")).unwrap();
+        assert!(apply(&frontend,&registry,dir.join("missing.sqlite")).await.is_err());
         assert!(frontend.sessions().await.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
