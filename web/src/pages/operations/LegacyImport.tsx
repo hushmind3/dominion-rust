@@ -5,13 +5,13 @@ import {Action, Notice, Panel, Subheading} from '../../components/UI'
 import {TextInput} from '../../components/Primitives'
 
 type Preview = {
-  sourceAgents:number;sourceSessions:number;sourceMessages:number;
+  sourceAgents:number;sourceProviders:number;importableProviders:number;alreadyPresentProviders:number;skippedProviderRecords:number;sourceSessions:number;sourceMessages:number;
   importableAgents:number;importableSessions:number;
   alreadyPresentAgents:number;alreadyPresentSessions:number;
   skippedBoundSessions:number;skippedArchivedSessions:number;note:string;
 }
 type Applied = {
-  importedAgents:number;importedSessions:number;importedMessages:number;
+  importedAgents:number;importedProviders:number;existingProviders:number;skippedProviderRecords:number;importedSessions:number;importedMessages:number;
   existingAgents:number;existingSessions:number;
   skippedBoundSessions:number;skippedArchivedSessions:number;
 }
@@ -57,15 +57,15 @@ export function LegacyImportPanel(){
       </Action>}
     </div>
     {preview&&<div className="mt-4 rounded-lg border border-[#E7E0D5] bg-[#FAF7F1] p-3 text-xs text-[#554D43]" role="status">
-      <strong>이관 대상: 에이전트 {preview.importableAgents}개 · 대화 {preview.importableSessions}개</strong>
+      <strong>이관 대상: 에이전트 {preview.importableAgents}개 · 대화 {preview.importableSessions}개 · 연결 설정 {preview.importableProviders}개</strong>
       <p className="mt-1">원본에서 읽은 기록: 에이전트 {preview.sourceAgents}개, 대화 {preview.sourceSessions}개, 메시지 {preview.sourceMessages}개</p>
-      <p className="mt-1">기존 ID 보존: 에이전트 {preview.alreadyPresentAgents}개, 대화 {preview.alreadyPresentSessions}개</p>
+      <p className="mt-1">기존 ID 보존: 에이전트 {preview.alreadyPresentAgents}개, 대화 {preview.alreadyPresentSessions}개, 연결 설정 {preview.alreadyPresentProviders}개</p>
       <p className="mt-1">별도 이관 대상: 룸/채널 {preview.skippedBoundSessions}개, 보관 대화 {preview.skippedArchivedSessions}개</p>
-      <p className="mt-2">API 키·암호화 비밀·기존 실행 기록은 복사하지 않습니다. 기존 연결은 다시 설정해야 합니다.</p>
+      <p className="mt-2">지원하지 않는 제공자 {preview.skippedProviderRecords}개. API 키·암호화 비밀·기존 실행 기록은 복사하지 않습니다. 가져온 연결은 비활성화 상태이므로 다시 인증해야 합니다.</p>
     </div>}
     {applied&&<div className="mt-4 flex items-start gap-2 rounded-lg border border-[#DCE8DC] bg-[#F3FAF2] p-3 text-xs text-[#366344]" role="status">
       <ShieldCheck size={18}/>
-      <span>복사 완료: 에이전트 {applied.importedAgents}개 · 대화 {applied.importedSessions}개 · 메시지 {applied.importedMessages}개.
+      <span>복사 완료: 에이전트 {applied.importedAgents}개 · 대화 {applied.importedSessions}개 · 메시지 {applied.importedMessages}개 · 비활성 연결 {applied.importedProviders}개.
         화면을 새로고침하면 가져온 기록이 보입니다. 원본은 그대로 유지됩니다.</span>
     </div>}
     {error&&<div className="mt-3"><Notice message={error}/></div>}
