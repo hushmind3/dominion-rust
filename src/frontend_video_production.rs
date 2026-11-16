@@ -143,7 +143,7 @@ pub async fn reconcile_restart(settings:&Settings)->Result<(),String>{
  Ok(())
 }
 pub fn public(item:&Production)->Value{
- json!({
+ let mut data=json!({
   "id":item.id,"topic":item.topic,"audience":item.audience,
   "sourceNotesProvided":!item.source_notes.is_empty(),
   "visualEngine":item.visual_engine,"aspectRatio":item.aspect_ratio,
@@ -154,7 +154,9 @@ pub fn public(item:&Production)->Value{
   "stageTotal":STAGES.len(),"stages":STAGES,
   "title":item.title,"description":item.description,"tags":item.tags,
   "script":item.script,"shots":item.shots,
-  "visualBible":item.visual_bible,"scriptAttempts":item.script_attempts,
+  "visualBible":item.visual_bible,"scriptAttempts":item.script_attempts
+ });
+ let details=json!({
   "videoId":item.video_id,"uploadId":item.upload_id,"uploadUrl":item.upload_url,
   "artifactBytes":item.artifact_bytes,"measuredSeconds":item.measured_seconds,
   "renderedShotIds":item.rendered_shot_ids,"completedShots":item.completed_shots,
@@ -167,7 +169,11 @@ pub fn public(item:&Production)->Value{
   "outputUrl":item.video_id.map(|id|format!("/api/video/jobs/{id}/content")),
   "createdAt":crate::frontend_state::timestamp(item.created_at_ms),
   "updatedAt":crate::frontend_state::timestamp(item.updated_at_ms)
- })
+ });
+ if let (Some(main),Some(extra))=(data.as_object_mut(),details.as_object()){
+  for (key,value) in extra{main.insert(key.clone(),value.clone());}
+ }
+ data
 }
 pub fn routes()->Router<Arc<Engine>>{
  Router::new().route("/video/productions",get(list).post(create))
