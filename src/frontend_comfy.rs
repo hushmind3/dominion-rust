@@ -614,7 +614,7 @@ pub async fn reconcile_remote(settings:&Settings,id:Uuid)->Result<Job,String>{
   .map_err(|e|format!("ComfyUI recovery history request: {e}"))?;
  let history=json_response(response,MAX_HISTORY).await?;
  let key=remote.to_string();
- let entry=&history[&key];
+ let entry=&history[key.as_str()];
  if entry.is_null(){return Err(
   "ComfyUI has not returned a terminal receipt for the previous prompt; no new render submitted".into());}
  if let Some(file)=find_video(entry){
