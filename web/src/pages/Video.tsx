@@ -42,10 +42,10 @@ const NAV=[
  {id:'settings' as const,label:'엔진·연결',sub:'모델과 계정',icon:Settings2},
 ]
 const activeStatus=(status?:string)=>status==='running'||status==='queued'||status==='downloading'
-const statusLabel=(status?:string)=>({
+const statusLabel=(status?:string)=>( {
  completed:'완료',running:'생성 중',queued:'대기 중',downloading:'저장 중',
  failed:'실패',cancelled:'취소',needs_review:'확인 필요',interrupted:'중단'
-}[status||'']||status||'대기')
+} as Record<string,string>)[status||'']||status||'대기')
 const statusClasses=(status?:string)=>{
  if(status==='completed')return 'border-emerald-200 bg-emerald-50 text-emerald-800'
  if(activeStatus(status))return 'border-sky-200 bg-sky-50 text-sky-800'
