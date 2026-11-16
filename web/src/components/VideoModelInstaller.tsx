@@ -5,12 +5,14 @@ import {Notice,Panel,useRemote} from './UI'
 import {post} from '../api'
 
 type Variant={
- id:string;label:string;name:string;format:'gguf'|'safetensors';
+ id:string;family:string;familyName:string;label:string;name:string;format:'gguf'|'safetensors';
  modelBytes:number;downloadBytes:number;installed:boolean;
  requiresExtension:boolean;source:string
 }
+type Family={id:string;name:string;task:string;details:string;recommended?:boolean}
 type Pack={
- id:string;name:string;kind:string;variants:Variant[];selectedVariant:string;
+ id:string;name:string;kind:string;families:Family[];variants:Variant[];
+ selectedFamily:string;selectedVariant:string;
  modelsDir?:string|null;installed:boolean;configured:boolean;
  state:string;currentFile:string;error:string;
  downloadedBytes:number;totalBytes:number;files:{
@@ -20,11 +22,12 @@ type Pack={
 }
 function gb(n:number){return (n/1_000_000_000).toFixed(2)+'GB'}
 const initial:Pack={id:'wan22-ti2v-5b',name:'Wan 2.2 TI2V 5B',kind:'video',
- variants:[],selectedVariant:'q4_k_m',installed:false,configured:false,state:'idle',
+ families:[],variants:[],selectedFamily:'wan22-ti2v-5b',selectedVariant:'q4_k_m',installed:false,configured:false,state:'idle',
  currentFile:'',error:'',downloadedBytes:0,totalBytes:0,files:[],
  requiresExtension:true,estimatedBytes:0}
 export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
  const remote=useRemote<Pack>('/api/video/model-packs',initial,false)
+ const [family,setFamily]=useState('wan22-ti2v-5b')
  const [selected,setSelected]=useState('q4_k_m')
  const [advanced,setAdvanced]=useState(false)
  const [folder,setFolder]=useState('')
@@ -35,7 +38,9 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
  const notified=useRef('')
  const pack=remote.value
  const downloading=pack.state==='downloading'
- const chosen=pack.variants.find(v=>v.id===selected)
+ const familyVariants=pack.variants.filter(v=>v.family===family)
+ const chosen=familyVariants.find(v=>v.id===selected)
+ const installedCount=pack.variants.filter(v=>v.installed).length
  const ready=Boolean(chosen?.installed&&pack.configured&&pack.selectedVariant===selected)
  const pct=Math.max(0,Math.min(100,Math.round(100*(pack.downloadedBytes||0)/(pack.totalBytes||1))))
  useEffect(()=>{
@@ -59,7 +64,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
    await post('/api/video/model-packs/install',{
     variant:selected,...(changedFolder&&folder.trim()?{modelsDir:folder.trim()}: {})
    })
-   setMessage('선택한 영상 모델을 받고 있습니다. 공통 VAE·인코더는 다시 받지 않습니다.')
+   setMessage('선택한 영상 모델의 필수 파일을 받습니다. 이미 받은 공통 파일은 재사용합니다.')
    await remote.reload()
   }catch(e){setError((e as Error).message)}
   finally{setBusy(false)}
@@ -72,6 +77,11 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
   }catch(e){setError((e as Error).message)}
   finally{setBusy(false);await remote.reload()}
  }
+ const switchFamily=(id:string)=>{
+  setFamily(id)
+  setSelected(id==='wan22-ti2v-5b'?'q4_k_m':pack.variants.find(v=>v.family===id)?.id||'')
+  setError('');setMessage('')
+ }
  const packTotal=chosen?.downloadBytes||0
  const extra=chosen?.modelBytes||0
  return <Panel className="overflow-hidden">
@@ -79,18 +89,34 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
    <div className="flex items-center gap-2.5">
     <span className="flex size-9 items-center justify-center rounded-xl bg-[#F4E5D5] text-[#B67355]"><Video size={19}/></span>
     <div><h3 className="text-[13px] font-bold text-[#3F342C]">영상 모델 라이브러리</h3>
-     <p className="mt-0.5 text-[10px] text-[#9A8979]">영상 생성 전용 · 용량별 양자화 선택</p>
+     <p className="mt-0.5 text-[10px] text-[#9A8979]">텍스트·이미지 영상 모델 · 모델 계열과 정밀도 선택</p>
     </div>
    </div>
    <span className="rounded-full border border-[#E4D8C8] bg-white px-2.5 py-1 text-[10px] font-semibold text-[#926D52]">
-    {downloading?'다운로드 중':ready?'선택 모델 준비됨':'영상 모델 선택'}</span>
+    {downloading?'다운로드 중':ready?'모델 준비됨':installedCount?installedCount+'개 설치됨':'모델 선택'}</span>
   </div>
   <div className="space-y-4 p-4 sm:p-5">
-   <p className="text-[11px] leading-5 text-[#85776B]">
-    <strong className="text-[#514238]">Wan 2.2 TI2V 5B</strong> · 텍스트로 영상 생성. 원하는 용량만 선택하면 필요한 파일을 함께 내려받습니다.
-   </p>
-   <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="group" aria-label="영상 모델 양자화 선택">
-    {pack.variants.map(v=><button key={v.id} type="button" disabled={downloading}
+   <div className="space-y-2">
+    <p className="text-[11px] font-bold text-[#54463A]">1. 영상 모델 선택</p>
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3" role="group" aria-label="영상 모델 계열 선택">
+     {pack.families.map(item=><button key={item.id} type="button"
+      disabled={downloading} aria-pressed={family===item.id} onClick={()=>switchFamily(item.id)}
+      className={'min-w-0 rounded-xl border-2 p-3 text-left transition-colors '+(
+       family===item.id?'border-[#C7805E] bg-[#FFF5ED]':'border-[#EEE7DF] bg-white hover:border-[#D9BCA7]'
+      )}>
+      <strong className="block break-words text-[12px] leading-5 text-[#41362D]">{item.name}</strong>
+      <span className="mt-1 block text-[10px] text-[#9B7862]">{item.id==='wan22-ti2v-5b'?'경량 / 양자화':
+       item.id==='ltx-video-2b'?'경량 영상':'고품질 720p'}</span>
+     </button>)}
+    </div>
+    <p className="text-[10px] leading-5 text-[#978779]">
+     {pack.families.find(item=>item.id===family)?.details||'영상 생성 전용 모델만 표시합니다.'}
+    </p>
+   </div>
+   <div className="space-y-2">
+    <p className="text-[11px] font-bold text-[#54463A]">2. 정밀도와 다운로드 용량</p>
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="group" aria-label="영상 모델 양자화 선택">
+    {familyVariants.map(v=><button key={v.id} type="button" disabled={downloading}
      aria-pressed={selected===v.id} onClick={()=>{setSelected(v.id);setMessage('');setError('')}}
      className={'min-w-0 rounded-xl border-2 p-3 text-left transition-colors '+(
       selected===v.id?'border-[#C7805E] bg-[#FFF5ED]':'border-[#EEE7DF] bg-white hover:border-[#D9BCA7]'
@@ -102,15 +128,16 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
      <p className="mt-1 text-[16px] font-bold tabular-nums text-[#B36F4F]">{gb(v.modelBytes)}</p>
      <p className="mt-0.5 text-[10px] text-[#958679]">{v.format==='gguf'?'GGUF 양자화':'FP16 원본'}</p>
     </button>)}
+    </div>
    </div>
    {chosen&&<div className="flex flex-wrap items-start justify-between gap-2 rounded-xl bg-[#F8F5F0] px-3 py-3 text-[11px]">
     <div className="flex items-start gap-2">
      <HardDrive size={16} className="mt-0.5 shrink-0 text-[#987F68]"/>
-     <span><strong>{chosen.label} 선택</strong>
+     <span><strong>{chosen.familyName} · {chosen.label}</strong>
       <small className="mt-1 block text-[10px] leading-5 text-[#928272]">모델 본체 {gb(extra)} · 최초 전체 파일 약 {gb(packTotal)}</small>
      </span>
     </div>
-    <span className="text-[10px] text-[#A18973]">{chosen.installed?'다운로드됨':'다운로드 가능'}</span>
+    <span className="text-[10px] text-[#A18973]">{chosen.installed?'설치됨':'다운로드 가능'}</span>
    </div>}
    {downloading&&<div role="status" className="space-y-2">
     <div className="flex justify-between gap-2 text-[11px] text-[#796959]">
@@ -143,7 +170,7 @@ export function VideoModelInstaller({onInstalled}:{onInstalled:()=>void}){
    </div>
    {chosen?.requiresExtension&&<p className="flex items-start gap-2 text-[10px] leading-5 text-[#987354]">
     <ShieldCheck size={14} className="mt-0.5 shrink-0"/> GGUF 양자화 영상은 ComfyUI-GGUF 로더가 필요합니다.
-    모델은 다운로드 가능하며, 생성 준비 상태는 로더 설치 여부까지 검사합니다.
+    GGUF 로더가 없으면 영상 생성 준비 상태로 표시하지 않습니다.
    </p>}
    {(pack.error||error)&&<Notice message={error||pack.error}/>}
    {message&&<p role="status" className="text-[11px] text-emerald-700">{message}</p>}
