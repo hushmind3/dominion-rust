@@ -56,6 +56,10 @@ async fn status(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     for v in &jobs{list.push(as_job(&engine,v).await);}
     let cfg=crate::frontend_comfy::config(&engine.settings).map_err(bad)?;
     let reachable=crate::frontend_comfy::reachable(&cfg).await;
+    let uses_gguf=cfg.video_model.starts_with("unet/");
+    let gguf_ready=if uses_gguf&&reachable{
+        crate::frontend_comfy::gguf_ready(&cfg).await
+    }else{!uses_gguf};
     list.extend(crate::frontend_comfy::list(&engine.settings).map_err(bad)?);
     list.sort_by(|a,b|b["createdAt"].as_str().cmp(&a["createdAt"].as_str()));
     let available=ffmpeg_available().await;
@@ -65,7 +69,8 @@ async fn status(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     Ok(Json(json!({
         "config":config,
         "native":{"available":available},
-        "comfy":{"reachable":reachable,"available":reachable&&cfg.comfy_workflow.is_some()},
+        "comfy":{"reachable":reachable,"available":reachable&&cfg.comfy_workflow.is_some()&&gguf_ready,
+            "ggufReady":gguf_ready,"requiresGguf":uses_gguf},
         "workflows":crate::frontend_comfy::workflows(&cfg),"jobs":list
     })))
 }
