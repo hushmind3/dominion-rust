@@ -8,11 +8,12 @@ import {
 import {Button,TextInput,TextArea,SelectInput} from '../components/Primitives'
 import {FormField,Notice,Panel,StateTag,useRemote} from '../components/UI'
 import {downloadApiVideo,getApiVideoPreview,openOAuth,post} from '../api'
+import {VideoAutoStudio} from '../components/VideoAutoStudio'
 import {jobFinished,useJob,type JobState} from '../hooks/useJob'
 import {t,useLocale} from '../i18n'
 
 type VideoEngine='native'|'comfyui'
-type StudioTab='create'|'library'|'publish'|'settings'
+type StudioTab='auto'|'create'|'library'|'publish'|'settings'
 type Ratio='9:16'|'16:9'|'1:1'
 type Workflow={id:string;name:string;bytes?:number}
 type VideoJob=JobState&{
@@ -36,7 +37,8 @@ const RATIOS:{
  '1:1':{width:480,height:480,label:'정사각형',subtitle:'피드 · 카드'}
 }
 const NAV=[
- {id:'create' as const,label:'제작 스튜디오',sub:'영상 만들기',icon:Sparkles},
+ {id:'auto' as const,label:'자율 콘텐츠',sub:'기획부터 배포까지',icon:Sparkles},
+ {id:'create' as const,label:'수동 제작',sub:'직접 영상 생성',icon:Clapperboard},
  {id:'library' as const,label:'작업 보관함',sub:'이력과 결과',icon:Layers3},
  {id:'publish' as const,label:'YouTube 게시',sub:'검토 후 업로드',icon:Youtube},
  {id:'settings' as const,label:'엔진·연결',sub:'모델과 계정',icon:Settings2},
@@ -100,7 +102,7 @@ export function VideoPage({navigate:_navigate}:{navigate:(page:any)=>void}){
  const oauth=useRemote<{id:string;configured:boolean;callback?:string}[]>('/api/oauth/providers',[])
  const outputs=useRemote<VideoJob[]>('/api/video/outputs',[])
  const catalog=useRemote<{videoModels:VideoModel[]}>('/api/video/catalog',{videoModels:[]})
- const [tab,setTab]=useState<StudioTab>('create')
+ const [tab,setTab]=useState<StudioTab>('auto')
  const [selectedId,setSelectedId]=useState(()=>safeSession('dominion.video.selected'))
  const [libraryFilter,setLibraryFilter]=useState<'all'|'completed'|'active'|'issues'>('all')
  const [librarySearch,setLibrarySearch]=useState('')
@@ -375,6 +377,20 @@ export function VideoPage({navigate:_navigate}:{navigate:(page:any)=>void}){
    <Notice message={error||video.error||outputs.error||activeVideo.error||activeUpload.error||youtube.error}/>}
   {success&&<div role="status" className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[12px] text-emerald-800"><CheckCircle2 size={16} className="mt-0.5 shrink-0"/>{success}</div>}
 
+  {tab==='auto'&&<VideoAutoStudio
+   youtubeConnected={youtube.value.uploadAllowed}
+   comfyReady={Boolean(video.value.comfy.available&&video.value.config.engine==='comfyui')}
+   nativeReady={Boolean(video.value.native?.available)}
+   onSettings={()=>setTab('settings')}
+   onReview={id=>{setSelectedId(id);setTab('create')}}
+   onPublish={id=>{
+    setUploadFile(id)
+    const existing=outputs.value.find(item=>item.id===id)
+    if(existing){setUploadTitle((existing.title||existing.brief||'').slice(0,100));setUploadDescription(existing.brief||'')}
+    void outputs.reload()
+    setTab('publish')
+   }}
+  />}
   {tab==='create'&&<div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,.92fr)]">
    <div className="space-y-5">
     <Panel className="overflow-hidden">
