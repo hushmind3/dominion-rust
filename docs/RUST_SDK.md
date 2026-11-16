@@ -225,3 +225,10 @@ Rust `Dominion::chat_sessions()`, `chat_session(id)`, and `agent_profiles()` acc
 No SDK endpoint changes. runs.create, runs.resume, runs.cancel, runs.reconcile and event streaming still use the native Rust Run. When the exact task instructions cannot fit DOMINION_CONTEXT_MAX_CHARS, the worker enters paused state with paused_error; there is no additional model call. The operator can raise the limit and resume the same durable Run.
 
 Model retries and economy-to-main fallback are allowed after an explicit HTTP 429 rejection only. HTTP 5xx, dropped connections and incomplete response bodies are uncertain outcomes: the client does not silently initiate another billable generation. Reported KRW model costs still depend on configured token prices and actual provider usage; a zero configured rate is not evidence that the external inference was free.
+
+
+### Sub4 stuck-loop and incomplete-generation signals (2026-11-16)
+
+No new SDK methods: existing create/get/events/instruct/resume/cancel endpoints use the native Rust Engine and journal. If a model repeatedly issues an identical failed tool call, run events include loop_guard (the execution was blocked and the model may correct it) or loop_guard_paused (the Run is Paused without dispatching the latest tool). The original correlated provider call ID remains in the tool receipt. Resuming can be accompanied by a new direct user instruction through the existing instruct action; this resets the guard's consecutive-failure streak. A successful tool response or changed tool arguments also resets it.
+
+Explicit provider finish reasons indicating truncated or filtered output produce paused_error before the response is considered a completed plan, tool invocation or final answer. This avoids false completion; actual provider cost for an incomplete billed response may require separate operator inspection and is not represented as a successful Run charge.
