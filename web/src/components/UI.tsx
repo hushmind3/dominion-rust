@@ -40,7 +40,15 @@ export function useRemote<T>(endpoint: string | null, initial: T, refreshOnEvent
  }, [endpoint])
  useEffect(() => {
   void reload()
-  const onRefresh = () => {
+  const onRefresh = (event: Event) => {
+   const types=(event as CustomEvent<{types?:string[]}>).detail?.types
+   // The native engine's frequent job_event stream does not modify provider,
+   // agent, MCP or system configuration. Explicit refresh() still reloads all.
+   // Unknown events fall back to broad compatibility invalidation.
+   if (types?.length && types.every(type=>type==='job_event'||type==='execution_event')
+       && !/^\/api\/(?:status|jobs|executions|sdk\/runs|sessions|approvals|rooms|workflows|activity)(?:[/?]|$)/.test(endpoint)) {
+    return
+   }
    if (active.current) refreshPending.current = true
    else void reload()
   }
