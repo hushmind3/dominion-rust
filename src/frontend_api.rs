@@ -31,6 +31,10 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/status",get(status))
         .route("/system/legacy-sqlite/preview",post(legacy_sqlite_preview))
         .route("/system/legacy-sqlite/import",post(legacy_sqlite_import))
+        .route("/system/legacy-sqlite/archive",post(legacy_sqlite_archive))
+        .route("/system/legacy-archive",get(legacy_archive_list))
+        .route("/system/legacy-archive/item",get(legacy_archive_item))
+        .route("/system/legacy-archive/promote-memory",post(legacy_archive_promote_memory))
         .route("/events",get(global_events))
         .route("/settings/owner-profile",get(owner_profile).post(save_owner_profile))
         .route("/agents",get(agents).post(save_agent))
@@ -105,6 +109,43 @@ async fn legacy_sqlite_import(State(engine):State<Arc<Engine>>,
     if !input.confirm{return Err(bad("explicit confirm:true required before copying legacy records"));}
     let path=legacy_sqlite_path(&input.path)?;
     Dominion::from_engine(engine).import_legacy_sqlite(path).await
+        .map(Json).map_err(bad)
+}
+
+async fn legacy_sqlite_archive(State(engine):State<Arc<Engine>>,
+    Json(input):Json<LegacySqliteInput>)->Result<Json<crate::legacy_archive::ArchiveStats>,Fault>{
+    if !input.confirm{return Err(bad("explicit confirm:true required before archiving historical records"));}
+    let path=legacy_sqlite_path(&input.path)?;
+    Dominion::from_engine(engine).archive_legacy_sqlite(path).await.map(Json).map_err(bad)
+}
+#[derive(Deserialize)]
+struct LegacyHistoryQuery {
+    kind:String,
+    #[serde(default)] offset:usize,
+    limit:Option<usize>,
+}
+async fn legacy_archive_list(State(engine):State<Arc<Engine>>,
+    Query(input):Query<LegacyHistoryQuery>)->Result<Json<crate::legacy_archive::ArchivePage>,Fault>{
+    Dominion::from_engine(engine).list_legacy_history(
+        input.kind,input.offset,input.limit.unwrap_or(30)
+    ).await.map(Json).map_err(bad)
+}
+#[derive(Deserialize)]
+struct LegacyHistoryItemQuery {kind:String,id:String}
+async fn legacy_archive_item(State(engine):State<Arc<Engine>>,
+    Query(input):Query<LegacyHistoryItemQuery>)->Result<Json<Value>,Fault>{
+    Dominion::from_engine(engine).legacy_history_item(input.kind,input.id).await
+        .map_err(bad)?.map(Json).ok_or_else(||missing("legacy archive record not found"))
+}
+#[derive(Deserialize)]
+struct LegacyPromoteInput{
+    id:String,scope:String,
+    #[serde(default)]confirm:bool
+}
+async fn legacy_archive_promote_memory(State(engine):State<Arc<Engine>>,
+    Json(input):Json<LegacyPromoteInput>)->Result<Json<crate::knowledge::MemoryEntry>,Fault>{
+    if !input.confirm{return Err(bad("explicit confirm:true required to promote archived memory"));}
+    Dominion::from_engine(engine).promote_legacy_memory(input.id,input.scope).await
         .map(Json).map_err(bad)
 }
 
