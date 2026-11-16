@@ -17,7 +17,7 @@ use std::collections::HashSet;
 pub fn replay_safe(name:&str)->bool {
     matches!(name,
         "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"
-        |"check_subagent"|"read_subagent_file"|"memory_search"
+        |"github_list_repositories"|"github_read_file"|"check_subagent"|"read_subagent_file"|"memory_search"
         |"list_skills"|"load_skill"
     )
 }
