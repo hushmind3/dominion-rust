@@ -16,6 +16,10 @@ fn important(m:&Value)->bool {
         s.starts_with("New user instruction:") || s.starts_with("Verifier requested corrections.")
     })
 }
+fn is_user_change(message:&Value)->bool{
+    role(message)=="user" && message.get("content").and_then(Value::as_str)
+        .is_some_and(|text|text.starts_with("New user instruction:"))
+}
 fn clipped(message:&Value)->Value {
     let mut result=message.clone();
     // Preserve call IDs, function names and their paired tool receipts.
@@ -111,8 +115,8 @@ pub fn compact(messages:&[Value],max_chars:usize)->Projection {
 
 
 
-/// User changes and verifier corrections are part of the durable task
-/// contract, not ordinary dialogue to summarize. Keep every one verbatim in
+/// Direct user changes are part of the durable task contract, never ordinary
+/// dialogue to summarize. Keep every direct user change verbatim in
 /// the model projection, or pause before calling a paid provider if the
 /// configured window is too small. Tool receipts are taken as atomic groups
 /// so the provider never sees an orphaned tool result.
@@ -128,11 +132,11 @@ pub fn compact_strict(messages:&[Value],max_chars:usize)->Result<Projection,Stri
  let prefix=messages[..2].to_vec();
  let mut result=prefix;
  let changes=messages[2..].iter()
-  .filter(|message|important(message))
+  .filter(|message|is_user_change(message))
   .filter_map(|message|message.get("content").and_then(Value::as_str))
   .collect::<Vec<_>>();
  if !changes.is_empty(){
-  let content=format!("PERSISTENT TASK CONTRACT — current user changes and verifier corrections. \
+  let content=format!("PERSISTENT TASK CONTRACT — direct user changes only. \
 These requirements survive context compaction and must not be silently discarded:\n{}",
    changes.join("\n\n--- Next requirement ---\n\n"));
   result.push(json!({"role":"user","content":content}));
@@ -148,7 +152,7 @@ These requirements survive context compaction and must not be silently discarded
  }
  // Group function calls with corresponding results before removing any
  // history. The durable transcript remains completely unmodified.
- let history=messages[2..].iter().filter(|message|!important(message))
+ let history=messages[2..].iter().filter(|message|!is_user_change(message))
   .cloned().collect::<Vec<_>>();
  let groups=exchanges(&history);
  let mut selected=Vec::<(usize,Vec<Value>)>::new();
@@ -192,7 +196,7 @@ pub fn insert_optional(messages:&mut Vec<Value>,value:Value,max_chars:usize)->bo
 /// model request. Only explicit, authoritative user changes are injected;
 /// tool/model text is excluded. The root instruction is passed separately.
 pub fn planning_directives(messages:&[Value],max_chars:usize)->Result<String,String>{
- let directives=messages.iter().filter(|message|important(message))
+ let directives=messages.iter().filter(|message|is_user_change(message))
   .filter_map(|message|message.get("content").and_then(Value::as_str))
   .collect::<Vec<_>>();
  let joined=directives.join("\n\n--- Next requirement ---\n\n");
@@ -256,7 +260,7 @@ mod tests {
         ];
         let plan=planning_directives(&messages,1000).unwrap();
         assert!(plan.contains("check recovery"));
-        assert!(plan.contains("inspect tests"));
+        assert!(!plan.contains("inspect tests"),"verifier feedback is advisory and not a user directive");
         assert!(!plan.contains("injected model phrase"));
         assert!(!plan.contains("secret tool output"));
         assert!(planning_directives(&messages,20).is_err());
