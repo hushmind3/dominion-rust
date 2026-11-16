@@ -258,8 +258,7 @@ async fn maintenance_set(State(engine):State<Arc<Engine>>,Json(input):Json<Maint
  if input.enabled{
   let live=engine.store.list().await.iter().any(|run|!run.terminal()&&
    matches!(run.status,RunStatus::Queued|RunStatus::Running|RunStatus::AwaitingApproval));
-  let active=engine.campaigns.list().await.iter().any(|c|matches!(c.status.as_str(),"queued"|"running"));
-  if live||active{return Err(fault(StatusCode::CONFLICT,"finish active jobs and RSI campaigns before maintenance"));}
+  if live{return Err(fault(StatusCode::CONFLICT,"finish active jobs before maintenance"));}
  }
  tokio::task::spawn_blocking(move||{
   let _held=guard();

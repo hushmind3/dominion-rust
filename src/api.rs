@@ -103,16 +103,6 @@ pub fn router(engine: Arc<Engine>) -> Router {
         .route("/groups/{id}",get(get_group))
         .route("/groups/{id}/messages",post(group_say))
         .route("/groups/{id}/next",post(group_next))
-        .route("/videos",get(list_videos).post(create_video))
-        .route("/videos/{id}",get(get_video))
-        .route("/videos/{id}/render",post(render_video))
-        .route("/videos/{id}/scenes/{index}",post(change_scene))
-        .route("/videos/{id}/download",get(download_video))
-        .route("/improvements",get(list_improvements).post(create_improvement))
-        .route("/improvements/{id}",get(get_improvement))
-        .route("/improvements/{id}/approve",post(approve_improvement))
-        .route("/improvements/{id}/adopt",post(adopt_improvement))
-        .route("/improvements/{id}/descendant",post(descendant_improvement))
         .route_layer(middleware::from_fn_with_state(Arc::clone(&engine), authorize));
     // Main's React/Vite build is the canonical UI; Rust serves the built files.
     // The development Vite server proxies API calls to this same router.
@@ -167,9 +157,10 @@ async fn forget_memory(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
 struct StrategyQuery { repository:String, query:Option<String>, limit:Option<usize> }
 async fn list_strategies(State(engine):State<Arc<Engine>>,Query(q):Query<StrategyQuery>)
     ->Json<Vec<crate::strategy::StrategyEvidence>>{
-    Json(engine.improvements.strategy_evidence(
-        &q.repository,q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)
-    ).await)
+    let records=engine.store.list().await.into_iter()
+        .filter_map(|run|crate::strategy::from_run(&run)).collect();
+    Json(crate::strategy::rank(records,&q.repository,
+        q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)))
 }
 async fn get_owner_profile(State(engine):State<Arc<Engine>>)->Json<crate::profile::OwnerProfile>{
     Json(engine.owner_profile.get().await)
@@ -308,51 +299,6 @@ async fn group_say(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Json(inp
 }
 async fn group_next(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>) -> Result<Json<crate::group::Room>,ApiError> {
     engine.groups.next(&engine.model,id).await.map(Json).map_err(bad)
-}
-
-async fn list_videos(State(engine):State<Arc<Engine>>)->Json<Vec<crate::video::Video>>{
-    Json(engine.videos.list().await)
-}
-async fn create_video(State(engine):State<Arc<Engine>>,Json(input):Json<crate::video::NewVideo>)->Result<(StatusCode,Json<crate::video::Video>),ApiError>{
-    let video=engine.videos.create(&engine.model,input).await.map_err(bad)?;
-    let started=engine.videos.start(video.id).await.map_err(bad)?;
-    Ok((StatusCode::CREATED,Json(started)))
-}
-async fn get_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::video::Video>,ApiError>{
-    engine.videos.get(id).await.map(Json).ok_or_else(not_found)
-}
-async fn render_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::video::Video>,ApiError>{
-    engine.videos.start(id).await.map(Json).map_err(bad)
-}
-async fn change_scene(State(engine):State<Arc<Engine>>,Path((id,index)):Path<(Uuid,usize)>,Json(input):Json<crate::video::ChangeScene>)->Result<Json<crate::video::Video>,ApiError>{
-    engine.videos.change_scene(id,index,input).await.map(Json).map_err(bad)
-}
-async fn download_video(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Response,ApiError>{
-    let path=engine.videos.output_path(id).await.map_err(bad)?;
-    let file=tokio::fs::File::open(path).await.map_err(|e|bad(e.to_string()))?;
-    let body=Body::from_stream(ReaderStream::new(file));
-    Ok(([(header::CONTENT_TYPE,"video/mp4"),(header::CONTENT_DISPOSITION,"attachment; filename=dominion.mp4")],body).into_response())
-}
-
-async fn list_improvements(State(engine):State<Arc<Engine>>)->Json<Vec<crate::improvement::Improvement>>{
-    Json(engine.improvements.list().await)
-}
-async fn create_improvement(State(engine):State<Arc<Engine>>,Json(input):Json<crate::improvement::NewImprovement>)->Result<(StatusCode,Json<crate::improvement::Improvement>),ApiError>{
-    let item=engine.improvements.create(input).await.map_err(bad)?;
-    Ok((StatusCode::CREATED,Json(item)))
-}
-async fn get_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
-    engine.improvements.get(id).await.map(Json).ok_or_else(not_found)
-}
-async fn approve_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
-    engine.improvements.start(engine.model.clone(),id,engine.settings.shell_enabled).await.map(Json).map_err(bad)
-}
-async fn adopt_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<Json<crate::improvement::Improvement>,ApiError>{
-    engine.improvements.adopt(id).await.map(Json).map_err(bad)
-}
-async fn descendant_improvement(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)->Result<(StatusCode,Json<crate::improvement::Improvement>),ApiError>{
-    let result=engine.improvements.descendant(id).await.map_err(bad)?;
-    Ok((StatusCode::CREATED,Json(result)))
 }
 
 #[cfg(test)]

@@ -65,13 +65,9 @@ pub fn router()->Router<Arc<Engine>>{
         .route("/sdk/runs/{id}/reconcile",post(sdk_reconcile))
         // Unimplemented main features return a precise JSON error instead of
         // silently serving index.html (which the UI could mistake for success).
-        .merge(crate::frontend_video::routes())
-        .merge(crate::frontend_video_production::routes())
-        .merge(crate::frontend_video_models::routes())
         .merge(crate::frontend_rooms::routes())
         .merge(crate::frontend_workflows::routes())
         .merge(crate::frontend_providers::routes())
-        .merge(crate::frontend_rsi::routes())
         .merge(crate::frontend_extensions::routes())
         .merge(crate::frontend_automations::routes())
         .merge(crate::frontend_developer::routes())
@@ -82,7 +78,6 @@ pub fn router()->Router<Arc<Engine>>{
         .merge(crate::frontend_channels::routes())
         .merge(crate::frontend_skill_import::routes())
         .merge(crate::frontend_oauth::routes())
-        .merge(crate::frontend_youtube::routes())
         .fallback(unsupported_endpoint)
 }
 async fn unsupported_endpoint()->Fault{
@@ -457,7 +452,7 @@ struct ChatInput {
     provider_id:Option<String>,model:Option<String>,
     #[serde(default="yes")]tools_enabled:bool,
     #[serde(default="yes")]tools_execution_enabled:bool,
-    #[serde(default="yes")]auto_learning:bool,
+    #[serde(default)]auto_learning:bool,
     reasoning_effort:Option<String>,
     reasoning_language:Option<String>,
     thinking:Option<bool>
@@ -738,14 +733,6 @@ async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
     for job in engine.workflows.jobs().await{
         if let Ok(value)=serde_json::to_value(job){all.push(value);}
     }
-    for campaign in engine.campaigns.list().await{
-        all.push(json!({"id":campaign.id,"kind":"rsi_evolve",
-            "status":campaign.status,"input":{"rsiCampaignId":campaign.id,
-                "goal":campaign.objective},
-            "createdAt":timestamp(campaign.started_ms),
-            "stepIndex":campaign.attempts,"stepTotal":campaign.max_attempts,
-            "result":if campaign.status=="completed"{Some(campaign.view())}else{None}}));
-    }
     all.sort_by(|a,b|b.get("createdAt").and_then(Value::as_str).cmp(&a.get("createdAt").and_then(Value::as_str)));
     Json(Value::Array(all))
 }
@@ -785,9 +772,6 @@ async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     if let Some(scheduled)=engine.automations.job(id).await{
         return serde_json::to_value(scheduled).map(Json).map_err(|e|broken(e.to_string()));
     }
-    if let Some(campaign)=engine.campaigns.get(id).await{
-        return Ok(Json(campaign.view()));
-    }
     if let Some(job)=engine.workflows.job(id).await{
         return serde_json::to_value(job).map(Json).map_err(|e|broken(e.to_string()));
     }
@@ -798,10 +782,6 @@ async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     if engine.automations.job(id).await.is_some(){
         let result=crate::frontend_automations::cancel(&engine,id).await.map_err(bad)?;
         return serde_json::to_value(result).map(Json).map_err(|e|broken(e.to_string()));
-    }
-    if engine.campaigns.get(id).await.is_some(){
-        let campaign=crate::frontend_rsi::stop(&engine,id).await.map_err(bad)?;
-        return Ok(Json(campaign.view()));
     }
     if engine.workflows.job(id).await.is_some(){
         let job=crate::frontend_workflows::cancel(&engine,id).await.map_err(bad)?;

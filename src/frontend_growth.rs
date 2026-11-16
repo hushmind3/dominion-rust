@@ -10,15 +10,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/capabilities",get(capabilities))
   .route("/model-usage",get(model_usage))
   .route("/synergy",get(synergy))
-  .route("/transfer",get(transfer))
-  .route("/policies",get(policies))
-  .route("/policy-searches",get(policy_searches))
-  .route("/experiment-requests",get(experiments))
   .route("/experience",get(experience))
-  .route("/improvements",get(improvements))
-  .route("/optimizers",get(optimizers))
-  .route("/algorithms/evaluations",get(evaluations))
-  .route("/algorithms/evaluate",get(evaluations))
 }
 async fn capabilities(State(engine):State<Arc<Engine>>)->Json<Value>{
  let native=crate::sdk::Dominion::from_engine(Arc::clone(&engine))
@@ -117,70 +109,14 @@ async fn synergy(State(engine):State<Arc<Engine>>)->Json<Value>{
  }
  Json(json!({"agents":rows,"sharedMethods":[],"algorithmStats":[]}))
 }
-async fn evidence(engine:&Engine)->Vec<strategy::StrategyEvidence>{
- let mut output=Vec::new();
- for trial in engine.improvements.list().await{
-  if let Some(row)=strategy::from_improvement(&trial){output.push(row);}
- }
- for run in engine.store.list().await{
-  if let Some(row)=strategy::from_run(&run){output.push(row);}
- }
- output.sort_by_key(|v|std::cmp::Reverse(v.updated_at_ms));
- output
-}
-async fn transfer(State(engine):State<Arc<Engine>>)->Json<Value>{
- let verified=evidence(&engine).await;
- let principles=verified.iter().filter(|e|e.outcome=="adopted").map(|e|json!({
-   "id":e.source_id,"kind":"verified_rsi","status":"active",
-   "principle":e.principle,"confidence":Value::Null,
-   "supportingCases":[e.source_id],"supportingModels":[],
-   "supportingAgents":[],"counterexamples":[],
-   "provenance":{"source":e.source,"repository":e.repository,
-      "baselineScore":e.baseline_score,"candidateScore":e.resulting_score}
- })).collect::<Vec<_>>();
- let usages=verified.iter().filter(|e|e.outcome=="adopted")
-  .map(|e|json!({"id":e.source_id,"principle":e.principle,
-    "outcome":"verified","model":Value::Null,
-    "createdAt":crate::frontend_state::timestamp(e.updated_at_ms)}))
-  .collect::<Vec<_>>();
- Json(json!({"principles":principles,"rules":[],"usages":usages,"learningCases":[]}))
-}
-async fn policies(State(engine):State<Arc<Engine>>)->Json<Value>{
- Json(json!(evidence(&engine).await.into_iter().filter(|e|e.outcome=="adopted").map(|e|json!({
-  "id":e.source_id,"slot":"rsi","name":e.principle,
-  "status":"active","evidenceGrade":"measured",
-  "lastExperiment":{"baseline":e.baseline_score,"candidate":e.resulting_score}
- })).collect::<Vec<_>>()))
-}
-async fn policy_searches()->Json<Value>{Json(json!([]))}
-async fn experiments(State(engine):State<Arc<Engine>>)->Json<Value>{
- Json(json!(engine.improvements.list().await.iter().map(|trial|json!({
-  "id":trial.id,"status":trial.status,
-  "fixture":trial.repository,"strategyId":trial.parent,
-  "prompt":trial.instruction,"error":trial.error,
-  "baseline":trial.baseline,"candidate":trial.candidate
- })).collect::<Vec<_>>()))
-}
 async fn experience(State(engine):State<Arc<Engine>>)->Json<Value>{
- Json(json!(evidence(&engine).await.iter().map(|e|json!({
+ let mut recorded=engine.store.list().await.into_iter()
+  .filter_map(|run|strategy::from_run(&run)).collect::<Vec<_>>();
+ recorded.sort_by_key(|entry|std::cmp::Reverse(entry.updated_at_ms));
+ Json(json!(recorded.into_iter().take(100).map(|e|json!({
   "id":e.source_id,"lesson":e.principle,"request":e.goal,
   "status":e.outcome,"scope":e.repository,
   "lastSeenAt":crate::frontend_state::timestamp(e.updated_at_ms),
   "occurrences":e.attempts,"evidenceMessageIds":[]
  })).collect::<Vec<_>>()))
-}
-async fn improvements(State(engine):State<Arc<Engine>>)->Json<Value>{
- Json(json!(engine.improvements.list().await))
-}
-async fn optimizers(State(engine):State<Arc<Engine>>)->Json<Value>{
- Json(json!(evidence(&engine).await))
-}
-async fn evaluations(State(engine):State<Arc<Engine>>)->Json<Value>{
- let measured=engine.improvements.list().await.into_iter().filter(|trial|
-  trial.baseline.is_some() && trial.candidate.is_some()).map(|trial|json!({
-   "id":trial.id,"status":trial.status,"generatedAt":crate::frontend_state::timestamp(trial.updated_at_ms),
-   "baseline":trial.baseline,"candidate":trial.candidate,
-   "dimensions":[],"evidenceSource":"frozen_native_judge"
- })).collect::<Vec<_>>();
- Json(json!({"items":measured}))
 }
