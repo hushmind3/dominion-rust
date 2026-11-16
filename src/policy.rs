@@ -11,7 +11,7 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
     if !run.read_only{return true}
     // Unknown and MCP tools are denied: a read-only investigator cannot
     // escalate through dynamically registered extensions.
-    matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search"|"list_skills"|"load_skill")
+    matches!(name,"list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"github_list_repositories"|"github_read_file"|"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search"|"list_skills"|"load_skill")
 }
 
 /// Select only tools that the agent can actually use in this state.
@@ -74,6 +74,8 @@ mod tests{
         assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"merge_subagent"));
         assert!(!allowed_tool(&run,"mcp__host__danger"));
+        assert!(allowed_tool(&run,"github_read_file"));
+        assert!(!allowed_tool(&run,"github_commit_file"));
         assert!(saved>0);
         let _=ToolCall{id:"test".into(),name:"read_file".into(),arguments:json!({})};
     }
