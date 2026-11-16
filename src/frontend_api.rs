@@ -66,6 +66,7 @@ pub fn router()->Router<Arc<Engine>>{
         // Unimplemented main features return a precise JSON error instead of
         // silently serving index.html (which the UI could mistake for success).
         .merge(crate::frontend_video::routes())
+        .merge(crate::frontend_video_production::routes())
         .merge(crate::frontend_rooms::routes())
         .merge(crate::frontend_workflows::routes())
         .merge(crate::frontend_providers::routes())
