@@ -34,6 +34,19 @@ const reviewer = await sdk.runs.delegate(coding.id,{
 await sdk.runs.instruct(coding.id,'Preserve the existing public API');
 ```
 
+## Main application data compatibility
+
+```ts
+const path = '/absolute/main/runtime/dominion.sqlite';
+const preview = await sdk.frontend.legacySqlite.preview(path);
+console.log(preview.importableSessions, preview.importableProviders);
+// After the owner reviews the counts:
+const copied = await sdk.frontend.legacySqlite.import(path);
+console.log(copied.importedSessions, copied.importedProviders);
+```
+
+These calls use the **existing native Rust API**, not a JS-based migration engine. The original main SQLite database opens read-only and remains unchanged. Already-present native IDs are skipped. Only active private chats, agents and compatible provider settings are copied; providers are disabled with empty credentials until reconnected. Archived/bound chats, memories, prior jobs and encrypted credentials remain in the original database.
+
 ## Recovering uncertain side effects
 
 The Rust journal records execution intent before mutating tools run. If a result cannot be established after an interruption, it **never** replays that mutation speculatively. Observe its actual effect and supply a receipt:
