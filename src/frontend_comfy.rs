@@ -509,7 +509,9 @@ struct ResultFile{filename:String,subfolder:String,format:String}
 fn find_video(history:&Value)->Option<ResultFile>{
  let outputs=history["outputs"].as_object()?;
  for node in outputs.values(){
-  for key in ["videos","gifs","files"]{
+  // Some 2026 SaveVideo / partner nodes expose video artifacts through
+   // the generic images UI key; extension and origin checks below remain strict.
+   for key in ["videos","gifs","files","images"]{
    if let Some(items)=node[key].as_array(){
     for item in items{
      let Some(filename)=item["filename"].as_str()else{continue};
