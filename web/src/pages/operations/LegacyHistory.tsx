@@ -78,7 +78,7 @@ export function LegacyHistoryPanel(){
     {selected&&<div className="mt-4 rounded-lg border border-[#E7E0D5] p-3 text-xs">
       <strong>이전 기록 상세: {selected.id}</strong>
       <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all bg-[#FAF7F1] p-2 text-[11px]">{detail?JSON.stringify(detail,null,2):'불러오는 중…'}</pre>
-      {selected.kind==='memory'&&detail&&<div className="mt-3">
+      {selected.kind==='memory'&&detail!==null&&<div className="mt-3">
         <label className="block text-xs font-medium">현재 기억에 저장할 범위 (global 또는 프로젝트 식별자)</label>
         <TextInput className="mt-2 w-full" value={scope} onChange={e=>setScope(e.target.value)}/>
         <div className="mt-2"><Action disabled={busy||!scope.trim()} onClick={promote}><BookOpen size={15}/> 선택한 기억 저장</Action></div>
