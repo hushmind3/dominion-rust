@@ -84,6 +84,10 @@ export interface VideoProduction {
   duration:number;aspectRatio:string;visualEngine:'native'|'comfyui';
   autoPublish:boolean;privacyStatus:string;shots:VideoProductionShot[];
   completedShots:number;renderedShotIds:string[];
+  visualBible?:string;scriptAttempts?:number;
+  artifactRevisionId?:string|null;revisionCount?:number;
+  regeneratingShot?:number|null;pendingRevisionJobId?:string|null;
+  revisionError?:string|null;
   videoId:string|null;uploadId:string|null;uploadUrl:string|null;
   outputUrl:string|null;costKrw:number;error:string|null;
   artifactBytes:number|null;measuredSeconds:number|null;
@@ -258,6 +262,13 @@ export class Dominion {
     create: (input: CreateVideoProduction) =>
       this.frontendRequest<VideoProduction>('POST','/video/productions',input),
     list: () => this.frontendRequest<VideoProduction[]>('GET','/video/productions'),
+    regenerateShot: (id:string,index:number,visualPrompt:string) => {
+      if (!Number.isInteger(index)||index<0||index>11)
+        throw new RangeError('shot index must be between 0 and 11');
+      return this.frontendRequest<VideoProduction>('POST',
+        '/video/productions/'+encodeURIComponent(id)+'/shots/'+index+'/regenerate',
+        {visualPrompt});
+    },
     get: (id:string) => this.frontendRequest<VideoProduction>(
       'GET','/video/productions/'+encodeURIComponent(id)),
     /** Fetch the completed final artifact, not a raw ComfyUI child clip. */
