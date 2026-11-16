@@ -9,6 +9,7 @@ export type RevisionProject={
  id:string;status:string;visualEngine:string;shots:Shot[];
  visualBible?:string;revisionCount?:number;revisionError?:string|null;
  regeneratingShot?:number|null;pendingRevisionJobId?:string|null;
+ pendingRevisionShot?:number|null;pendingRevisionPrompt?:string;
  artifactRevisionId?:string|null;
 }
 
@@ -47,7 +48,7 @@ export function VideoShotRevision({job,onRefresh}:{
    <div className="flex flex-wrap gap-2">
     {job.shots.map((shot,index)=><button key={index} type="button"
      disabled={!canEdit||sending} aria-pressed={selected===index}
-     onClick={()=>{setSelected(index);setDraft(shot.visualPrompt);setError('')}}
+     onClick={()=>{setSelected(index);setDraft(job.pendingRevisionShot===index&&job.pendingRevisionPrompt?job.pendingRevisionPrompt:shot.visualPrompt);setError('')}}
      className={'inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[11px] font-semibold disabled:opacity-40 '+
       (selected===index?'border-[#C78362] bg-[#FFF1E8] text-[#9D5539]':'border-[#DDCBBB] bg-white text-[#86674F]')}>
      <RotateCcw size={12}/>{index+1}번 장면
