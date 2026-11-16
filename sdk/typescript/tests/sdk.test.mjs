@@ -105,3 +105,21 @@ test('verified procedure lookup and explicit memory remain SDK operations',async
  assert.ok(seen[1].url.endsWith('/api/v1/memory/all?scope=repo'));
  assert.ok(seen.every(c=>c.options.headers.Authorization==='Bearer secret'));
 });
+
+test('main SQLite preview and explicit import use one authenticated frontend adapter',async()=>{
+  const requests=[];
+  const client=new Dominion({token:'secret',fetch:async(url,options)=>{
+    requests.push({url,options});
+    return new Response(JSON.stringify({importableSessions:2,importedSessions:2}),{status:200});
+  }});
+  const path='/opt/dominion/runtime/dominion.sqlite';
+  const preview=await client.frontend.legacySqlite.preview(path);
+  assert.equal(preview.importableSessions,2);
+  const result=await client.frontend.legacySqlite.import(path);
+  assert.equal(result.importedSessions,2);
+  assert.ok(requests[0].url.endsWith('/api/system/legacy-sqlite/preview'));
+  assert.ok(requests[1].url.endsWith('/api/system/legacy-sqlite/import'));
+  assert.equal(requests[0].options.headers.Authorization,'Bearer secret');
+  assert.deepEqual(JSON.parse(requests[0].options.body),{path});
+  assert.deepEqual(JSON.parse(requests[1].options.body),{path,confirm:true});
+});
