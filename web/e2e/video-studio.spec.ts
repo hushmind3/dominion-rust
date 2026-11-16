@@ -32,7 +32,7 @@ test('video studio has an accessible creation to publishing workflow',async({pag
  await page.getByRole('button',{name:/엔진·연결/}).click()
  await expect(page.getByRole('heading',{name:'영상 생성 엔진'})).toBeVisible()
  await expect(page.getByRole('heading',{name:'YouTube 계정 연결'})).toBeVisible()
- await expect(page.getByRole('textbox',{name:'Google OAuth Client Secret'})).toHaveCount(0)
+ await expect(page.getByRole('textbox',{name:'Google OAuth Client Secret'})).toBeVisible()
 })
 
 test('video settings submit to Rust and invalid workflows are rejected visibly',async({page,request})=>{
@@ -41,19 +41,22 @@ test('video settings submit to Rust and invalid workflows are rejected visibly',
  const comfy=page.getByRole('button',{name:/ComfyUI · AI 생성/})
  await comfy.click()
  await expect(comfy).toHaveAttribute('aria-pressed','true')
- const after=await request.get('/api/video/config')
- expect(after.ok()).toBeTruthy()
- expect((await after.json()).engine).toBe('comfyui')
+ await expect.poll(async()=>{
+  const after=await request.get('/api/video/config')
+  return (await after.json()).engine
+ }).toBe('comfyui')
 
  const workflow=page.locator('input[type=file][accept*="json"]')
  await workflow.setInputFiles({
   name:'not-api-format.json',mimeType:'application/json',
   buffer:Buffer.from(JSON.stringify({nodes:[],links:[]}))
  })
- await expect(page.getByRole('alert')).toContainText('workflow', {ignoreCase:true})
+ await expect(page.getByRole('alert')).toContainText('ComfyUI API graph contains invalid node IDs')
 
  // Restore the native engine so other tests start with a working fallback.
  await page.getByRole('button',{name:/로컬 FFmpeg/}).click()
- const native=await request.get('/api/video/config')
- expect((await native.json()).engine).toBe('native')
+ await expect.poll(async()=>{
+  const native=await request.get('/api/video/config')
+  return (await native.json()).engine
+ }).toBe('native')
 })
