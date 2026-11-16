@@ -18,6 +18,21 @@ fn important(m:&Value)->bool {
 }
 fn clipped(message:&Value)->Value {
     let mut result=message.clone();
+    // Preserve call IDs, function names and their paired tool receipts.
+    // Historical input arguments do not need to be paid for repeatedly.
+    // Use valid JSON so OpenAI-compatible tool-call parsers still accept it.
+    if role(message)=="assistant" {
+        if let Some(calls)=result.get_mut("tool_calls").and_then(Value::as_array_mut) {
+            for call in calls {
+                let raw=call.get("function").and_then(|f|f.get("arguments"))
+                    .and_then(Value::as_str);
+                if raw.is_some_and(|v|v.chars().count()>1200) {
+                    call["function"]["arguments"]=json!(
+                        json!({"historical_arguments_compacted":true}).to_string());
+                }
+            }
+        }
+    }
     if matches!(role(message),"assistant"|"tool") {
         if let Some(content)=message.get("content").and_then(Value::as_str) {
             let len=content.chars().count();
@@ -54,7 +69,10 @@ pub fn compact(messages:&[Value],max_chars:usize)->Projection {
     for (idx,group) in groups.iter().enumerate().rev() {
         let trimmed=group.iter().map(clipped).collect::<Vec<_>>();
         let delta=trimmed.iter().map(size).sum::<usize>();
-        if !selected.is_empty() && current+delta>max_chars.saturating_sub(2500) {break;}
+        // Keep a proportional budget for brief recovered directives instead
+        // of a fixed 2,500-char reservation on very small context models.
+        let reserve=(max_chars/8).clamp(200,2500);
+        if !selected.is_empty() && current.saturating_add(delta)>max_chars.saturating_sub(reserve) {break;}
         current+=delta;
         first_selected=idx;
         selected.push(trimmed);
@@ -70,7 +88,7 @@ pub fn compact(messages:&[Value],max_chars:usize)->Projection {
     let mut summary=format!("{} earlier messages retained in durable history. Re-read files and receipts before asserting facts.",hidden.iter().map(Vec::len).sum::<usize>());
     for directive in directives {
         summary.push_str("\nPRESERVED INSTRUCTION:\n");
-        summary.push_str(directive);
+        summary.push_str(&directive.chars().take(1100).collect::<String>());
     }
     let recent_errors=hidden.iter().flat_map(|g|g.iter())
         .filter(|m|role(m)=="tool")
@@ -99,6 +117,32 @@ mod tests {
         let msgs=vec![json!({"role":"system","content":"s"}),json!({"role":"user","content":"u"})];
         let p=compact(&msgs,8000);
         assert_eq!(p.messages,msgs);
+    }
+
+    #[test]
+    fn historical_large_tool_arguments_are_elided_without_breaking_call_ids(){
+        let mut msgs=vec![json!({"role":"system","content":"A system"}),
+            json!({"role":"user","content":"Repair the code"})];
+        for index in 0..20 {
+            let id=format!("call-{index}");
+            msgs.push(json!({"role":"assistant","tool_calls":[{
+                "id":id,"type":"function","function":{"name":"read_file",
+                "arguments":format!("{{\"path\":\"{}\"}}","a".repeat(6000))}}]}));
+            msgs.push(json!({"role":"tool","tool_call_id":id,"content":"ok ".repeat(500)}));
+        }
+        let original=msgs.clone();
+        let projection=compact(&msgs,14000);
+        assert_eq!(msgs,original,"durable history was modified");
+        assert!(projection.projected_chars<14000);
+        assert!(projection.projected_chars*2<projection.original_chars);
+        for message in &projection.messages {
+            if let Some(calls)=message["tool_calls"].as_array(){
+                for call in calls {
+                    let args=call["function"]["arguments"].as_str().unwrap();
+                    let _:Value=serde_json::from_str(args).unwrap();
+                }
+            }
+        }
     }
     #[test]
     fn compresses_history_but_keeps_directives_and_tool_receipts_adjacent(){
