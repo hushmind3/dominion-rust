@@ -179,6 +179,15 @@ Re-read exact files and tool receipts before relying on old observations.")});
  })
 }
 
+/// Optional reference context must never evict the pinned task contract.
+/// Returns false when a reminder/skill would exceed the actual prompt cap.
+pub fn insert_optional(messages:&mut Vec<Value>,value:Value,max_chars:usize)->bool{
+ let used=messages.iter().map(size).sum::<usize>();
+ if used.saturating_add(size(&value))>max_chars{return false}
+ messages.insert(2.min(messages.len()),value);
+ true
+}
+
 /// Planning must not stringify an entire execution transcript into a paid
 /// model request. Only explicit, authoritative user changes are injected;
 /// tool/model text is excluded. The root instruction is passed separately.
