@@ -839,6 +839,10 @@ mod full_cycle_tests {
         });
         let mut settings=Settings::from_env().unwrap();
         settings.main.base_url=format!("http://{addr}");settings.main.api_key.clear();
+        // The deterministic reflection test must use the SAME local mocked
+        // model for cheap planning/reflection. Do not rely on a hidden
+        // fallback from a failed external economy endpoint.
+        settings.economy=settings.main.clone();
         let service=Arc::new(Improvements::open(root.join("state"),workspace.clone()).await.unwrap());
         let input=NewImprovement{
             repository:"repo".into(),target_file:"score.txt".into(),
