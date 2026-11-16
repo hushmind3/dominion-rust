@@ -109,7 +109,7 @@ The engine can discover external MCP Streamable HTTP tools and expose them to th
 
 ## Video-only model library and precision-aware downloads (sub4, November 2026)
 
-The **Video → 자율 콘텐츠** screen now owns its **video-specific model library**. It does not send users to the general LLM downloads page and never shows chat-language models in the video picker. For the supported Wan 2.2 TI2V 5B family, users can choose the **model weight/quantization** directly within Video and see the model-only size and initial **total download**, including the common text encoder and VAE.
+The **Video → 자율 콘텐츠** screen now owns its **video-only model library**. It provides family selection (Wan 2.2 TI2V 5B, LTX-Video 2B, HunyuanVideo 1.5), then model-family-specific precision choices, file sizes and installation. Chat-language models never appear in this picker. These are independently executable ComfyUI graph families, not merely quantization aliases of Wan.
 
 | Model selection | Estimated video weight | Runtime loader |
 | --- | ---: | --- |
@@ -120,6 +120,14 @@ The **Video → 자율 콘텐츠** screen now owns its **video-specific model li
 | GGUF Q6_K | ~4.21 GB | ComfyUI-GGUF |
 | GGUF Q8_0 | ~5.4 GB | ComfyUI-GGUF |
 | Official FP16 | ~9.31 GB | ComfyUI built-in `UNETLoader` |
+
+### Supported model families and actual graph routes
+
+- **Wan 2.2 TI2V 5B**: 7 GGUF/FP16 precision choices; bundled API graph `src/wan22_5b_api.json`; UMT5 and Wan VAE shared between precisions.
+- **LTX-Video 2B**: one FP16 checkpoint plus T5-XXL text encoder; separate video graph `src/ltxv_2b_api.json` using the LTXV scheduler, latent, and conditioning nodes. Legacy lower-compute choice, not a claim of 2026 state-of-the-art fidelity.
+- **HunyuanVideo 1.5 T2V**: FP16 720p diffusion model, Qwen VL and ByT5 dual encoders, and Hunyuan VAE; separate video graph `src/hunyuan15_720p_api.json` with custom sampler and Hunyuan 1.5 video latent. This class is substantially heavier than Wan 5B.
+
+The `frontend_video_models.rs` family-aware asset manifests share one **restartable SHA-256 verified downloader**, while `frontend_comfy.rs` binds the selected checkpoint/diffusion/quantized loader, applies the requested prompt and duration, and checks the required ComfyUI node family. New families require an explicit model manifest and compatible renderer graph; the current catalogue is a vetted starting set, **not a complete model search engine**. The GUI now separately selects video model **family** and **precision**, and the browser checks horizontal overflow at 375px, 768px and 1440px. The remote GPU and local ComfyUI live-rendering paths still require machine-level validation.
 
 The **shared** UMT5 text encoder (~6.27 GB) and Wan 2.2 VAE (~1.31 GB) are downloaded only when missing (thus a new Q4_K_M user needs ~11 GB total, while switching precision only adds the new weight). These are *download/storage estimates*, not guaranteed GPU inference footprints. GGUF variants originate from [QuantStack/Wan2.2-TI2V-5B-GGUF](https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF); the FP16 weight, UMT5, and VAE originate from official Comfy-Org repacks linked in [ComfyUI Wan 2.2 documentation](https://docs.comfy.org/tutorials/video/wan/wan2_2).
 
