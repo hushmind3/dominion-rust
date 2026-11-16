@@ -189,8 +189,9 @@ async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequ
   return Err(bad(error));
  }
  let settings=engine.settings.clone();
+ let worker_root=root.clone();
  tokio::spawn(async move{
-  let outcome=install_assets(&settings,&root,Arc::clone(&cancelled)).await;
+  let outcome=install_assets(&settings,&worker_root,Arc::clone(&cancelled)).await;
   let mut state=active().lock().await;
   match outcome{
    Ok(())=>{state.state="installed".into();state.file="설치 완료".into();state.error.clear();},
@@ -216,7 +217,7 @@ fn client()->Result<Client,String>{
    let host=attempt.url().host_str().unwrap_or("");
    if attempt.previous().len()<6&&attempt.url().scheme()=="https"&&(
     host=="huggingface.co"||host.ends_with(".hf.co")||host.ends_with(".xethub.hf.co")
-   ){reqwest::redirect::Action::follow()}else{reqwest::redirect::Action::stop()}
+   ){attempt.follow()}else{attempt.stop()}
   }))
   .build().map_err(|e|e.to_string())
 }
