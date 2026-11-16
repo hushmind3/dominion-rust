@@ -90,6 +90,18 @@ The importer copies non-archived private chat sessions, messages (including orig
 
 The same operation is available through `Dominion::preview_legacy_sqlite` / `import_legacy_sqlite`, the authenticated `/api/system/legacy-sqlite/{preview,import}` transport, and `sdk.frontend.legacySqlite`. Import requires `confirm:true`, and the source path must be absolute and end in `dominion.sqlite`.
 
+## Historical main-product archive and selective memory transfer
+
+The existing **Operations → Settings** page now provides a separate **이전 데이터 열람** panel. After explicitly selecting the original `dominion.sqlite`, operators may:
+
+- Copy current private sessions/agents and disabled provider configurations as before.
+- Copy historical memory, group, job, execution, operation, workflow, experience, strategy, session and message records into **`legacy-history.sqlite`**. The source stays read-only; the archive has indexed, paginated browsing. Repeated archival only updates changes and does not execute or resume the original jobs.
+- Open archived records and **explicitly promote a selected active memory** to the named current note scope. Memory is not automatically injected into the model context on import.
+
+The legacy archive is a separate SQLite store with an indexed `(kind,updated_at,id)` lookup. Records are kept inert, including old tool call arguments. It is not a migration of the old job execution engine, encrypted secrets or live room participant state. Source snapshots and native Run journals remain independent. This minimizes duplication of event loops and isolates old records from current approval/verification contracts.
+
+**Concurrency and failure:** SQLite transactions protect each archival batch. Frontend copy, provider import and historical archiving remain separate, explicitly retryable operations. No cross-database atomicity is claimed; failures show which operation did not complete. Users retain the original database.
+
 ## Verification
 
 ```bash
