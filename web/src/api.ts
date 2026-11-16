@@ -48,6 +48,41 @@ export const get = <T = any>(url: string, signal?: AbortSignal) => request<T>(ur
 export const post = <T = any>(url: string, data: unknown) =>
  request<T>(url, {method: 'POST', body: JSON.stringify(data)})
 export const del = (url: string) => request(url, {method: 'DELETE'})
+
+/** Bounded, authenticated video preview. Native <video src> requests cannot
+ * attach a configured X-Dominion-Token, so the studio uses a short-lived blob
+ * URL and explicitly revokes it whenever the selected job changes. */
+export async function getApiVideoPreview(url: string, signal?: AbortSignal): Promise<string> {
+ const response = await apiFetch(url, {signal})
+ if (!response.ok) throw new ApiError(response.status, translateError((await readJson(response))?.error || 'HTTP ' + response.status))
+ const mime = (response.headers.get('content-type') || '').split(';')[0].trim()
+ if (mime !== 'video/mp4' && mime !== 'video/webm') throw Error('미리보기를 지원하지 않는 영상 형식입니다.')
+ const limit = 96 * 1024 * 1024
+ const known = Number(response.headers.get('content-length') || '0')
+ if (known > limit) {
+  await response.body?.cancel()
+  throw Error('96MB가 넘는 영상은 다운로드해서 확인해 주세요.')
+ }
+ if (!response.body) throw Error('영상 스트림을 열 수 없습니다.')
+ const reader = response.body.getReader()
+ const chunks: BlobPart[] = []
+ let size = 0
+ try {
+  while (true) {
+   const {done,value} = await reader.read()
+   if (done) break
+   size += value.byteLength
+   if (size > limit) throw Error('96MB가 넘는 영상은 다운로드해서 확인해 주세요.')
+   chunks.push(new Uint8Array(value))
+  }
+ } finally {
+  reader.releaseLock()
+  if (size > limit || signal?.aborted) await response.body.cancel().catch(() => {})
+ }
+ if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+ return URL.createObjectURL(new Blob(chunks, {type:mime}))
+}
+
 /** Download a native video through the same authenticated API transport.
  * Browsers cannot attach X-Dominion-Token to a plain <a href> or <video src>.
  * This explicit action caps in-memory downloads rather than silently OOMing.
