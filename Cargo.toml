@@ -20,4 +20,6 @@ tokio-util = { version = "0.7", features = ["io"] }
 base64 = "0.22"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 sha2 = "0.10"
+# Read-only source compatibility with the main product's SQLite WAL database.
+rusqlite = { version = "0.32", features = ["bundled"] }
 tower-http = { version = "0.6", features = ["fs"] }
