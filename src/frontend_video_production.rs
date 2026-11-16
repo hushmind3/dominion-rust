@@ -296,18 +296,40 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
    options.duration,options.aspect_ratio,options.visual_engine
   )})
  ];
- let response=engine.model.complete(&prompt,&[],false).await?;
- let (title,description,tags,shots)=storyboard(
-  &response.text,options.duration,options.visual_engine=="comfyui")?;
- let cost=response.cost_krw;
+ // Schema violations receive bounded corrective turns on the same model,
+ // while each additional attempt is charged to the persisted script budget.
+ let mut total_cost=0.0;
+ let mut attempts=0u8;
+ let (title,description,tags,shots,visual_bible)=loop{
+  attempts+=1;
+  let response=engine.model.complete(&prompt,&[],false).await?;
+  total_cost+=response.cost_krw.max(0.0);
+  edit(settings,id,|p|{p.cost_krw=total_cost;p.script_attempts=attempts;}).await?;
+  if total_cost>options.max_cost_krw{return Err(format!(
+   "AI storyboard cost {total_cost:.2} KRW exceeded the {:.2} KRW limit; rendering was not started",
+   options.max_cost_krw));}
+  match storyboard(&response.text,options.duration,options.visual_engine=="comfyui"){
+   Ok(valid)=>break valid,
+   Err(problem) if attempts<3&&total_cost<options.max_cost_krw=>{
+    // Preserve the original system constraint, never execute model text.
+    // Cap the bad response included in the repair context.
+    let excerpt=response.text.chars().take(1800).collect::<String>();
+    prompt.push(json!({"role":"assistant","content":excerpt}));
+    prompt.push(json!({"role":"user","content":format!(
+     "The prior output did not satisfy the JSON storyboard contract: {problem}. \
+Return a corrected COMPLETE JSON document with exactly {count} scenes \
+whose combined duration is {} seconds. No markdown.",
+     options.duration)}));
+   },
+   Err(problem)=>return Err(format!(
+    "storyboard failed validation after {attempts} attempt(s): {problem}")),
+  }
+ };
  edit(settings,id,|p|{
   p.title=title.clone();p.description=description.clone();p.tags=tags.clone();
   p.script=shots.iter().map(|s|s.narration.as_str()).collect::<Vec<_>>().join("\n\n");
-  p.shots=shots.clone();p.cost_krw=cost;
+  p.shots=shots.clone();p.visual_bible=visual_bible.clone();
  }).await?;
- if cost>options.max_cost_krw{return Err(format!(
-  "AI script cost {cost:.2} KRW exceeded the {:.2} KRW production limit; no video rendering started",
-  options.max_cost_krw));}
  edit(settings,id,|p|p.stage="rendering".into()).await?;
  let video_id=if options.visual_engine=="native"{
    let scenes=shots.iter().map(|s|Scene{
@@ -341,7 +363,7 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
    for (index,shot) in shots.iter().enumerate(){
     let record=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
      title:format!("{} · {}/{}",title,index+1,shots.len()),
-     brief:shot.visual_prompt.clone(),negative:String::new(),
+     brief:continuity_prompt(&visual_bible,&shot.visual_prompt),negative:String::new(),
      aspect_ratio:options.aspect_ratio.clone(),duration:shot.seconds,fps:16,seed:-1
     }).await?;
     let clip_id=Uuid::parse_str(record["id"].as_str().ok_or("ComfyUI job ID missing")?)
@@ -412,6 +434,13 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
    }
   }
  }).await.map_err(|_|"YouTube status timeout; inspect upload journal before retrying".to_owned())?
+}
+
+/// Reuse a shared visual identity and art direction for all scene prompts.
+/// This is textual continuity, not keyframe/image identity conditioning.
+fn continuity_prompt(visual_bible:&str,shot:&str)->String{
+ if visual_bible.is_empty(){return shot.to_owned();}
+ format!("Maintain these visual identities and art direction in every shot: {visual_bible}\nScene: {shot}")
 }
 
 fn assembled_path(settings:&Settings,id:Uuid)->PathBuf{
@@ -558,6 +587,18 @@ mod tests{
   assert_eq!(shots.len(),12);
   assert_eq!(shots.iter().map(|s|s.seconds).sum::<u32>(),90);
   assert!(shots.iter().all(|s|(3..=9).contains(&s.seconds)));
+ }
+ #[test]
+ fn visual_bible_is_structured_and_bounded(){
+  let raw=json!({"title":"Test","description":"ok","visual_bible":"same red jacket, dusk lighting",
+   "scenes":[{"heading":"A","narration":"a","visual_prompt":"walking"}]}).to_string();
+  let (_,_,_,_,bible)=storyboard(&raw,6,true).unwrap();
+  let prompt=continuity_prompt(&bible,"walking");
+  assert!(prompt.contains("same red jacket"));
+  assert!(prompt.contains("Scene: walking"));
+  let invalid=json!({"title":"Test","description":"ok",
+   "visual_bible":"A".repeat(901),"scenes":[{"heading":"A","narration":"a"}]}).to_string();
+  assert!(storyboard(&invalid,6,true).is_err());
  }
  #[tokio::test]
  async fn crash_does_not_replay_upload(){
