@@ -270,6 +270,13 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
  let mut graph=workflow.clone();
  let (width,height)=dimensions(cfg,&params.aspect_ratio);
  let frames=params.duration.checked_mul(params.fps).ok_or("frame count overflow")?;
+ // Wan2.2 needs 4n+1 latent frames; 16 FPS produces that by adding 1.
+ let wan_frames=frames.checked_add(1).ok_or("frame count overflow")?;
+ // The UI uses -1 for a random seed, but the ComfyUI KSampler requires
+ // a nonnegative integer. Generate the seed once for this concrete run.
+ let chosen_seed=if params.seed<0{
+  (Uuid::new_v4().as_u128() as u64 & i64::MAX as u64) as i64
+ }else{params.seed};
  let mut replaced_prompt=false;
  // Identify positive/negative text encoders by actual KSampler links, rather
  // than assuming node-ID order or a particular language in node labels.
@@ -323,7 +330,7 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
     }else if (name=="text"||name=="prompt")&&
       (class.contains("TextEncode")||class.contains("TextEncoder")) {
       if is_negative{
-       *value=json!(params.negative);
+       if !params.negative.is_empty(){*value=json!(params.negative);}
       }else if !replaced_prompt&&(explicitly_positive||positive.is_empty()){
        *value=json!(params.brief);
        replaced_prompt=true;
@@ -331,9 +338,10 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
     }
    }else if value.is_number(){
     let mapped=match name.as_str(){
-     "seed"|"noise_seed"=>Some(json!(params.seed)),
+     "seed"|"noise_seed"=>Some(json!(chosen_seed)),
      "steps"=>Some(json!(cfg.steps)),
      "frame_rate"|"fps"=>Some(json!(params.fps)),
+     "length" if class=="Wan22ImageToVideoLatent"=>Some(json!(wan_frames)),
      "num_frames"|"frames"|"length"=>Some(json!(frames)),
      "width"=>Some(json!(width)),
      "height"=>Some(json!(height)),
