@@ -21,6 +21,7 @@ type Production={
  sourceNotesProvided:boolean;factsVerified:boolean;
  script:string;shots:Shot[];tags:string[];
  videoId?:string|null;uploadId?:string|null;uploadUrl?:string|null;
+  completedShots?:number;renderedShotIds?:string[];
  artifactBytes?:number|null;measuredSeconds?:number|null;
  error?:string;outputUrl?:string|null;createdAt?:string
 }
@@ -80,7 +81,7 @@ export function VideoAutoStudio({
   try{if(chosen)sessionStorage.setItem('dominion.video.production',chosen)}catch{/* disabled */}
  },[chosen])
  useEffect(()=>{
-  if(engine==='comfyui'&&duration>9)setDuration(6)
+  if(engine==='comfyui'&&duration>90)setDuration(6)
   if(engine==='native'&&duration<6)setDuration(30)
  },[engine,duration])
  useEffect(()=>{
@@ -176,7 +177,7 @@ export function VideoAutoStudio({
      <div className="grid gap-4 sm:grid-cols-2">
       <FormField label="영상 길이">
        <SelectInput value={duration} onChange={e=>setDuration(Number(e.target.value))}>
-        {(engine==='native'?[15,30,45,60,90,120,180]:[3,6,9]).map(sec=>
+        {(engine==='native'?[15,30,45,60,90,120,180]:[3,6,9,15,30,45,60,90]).map(sec=>
          <option key={sec} value={sec}>{sec}초</option>)}
        </SelectInput>
       </FormField>
@@ -198,7 +199,7 @@ export function VideoAutoStudio({
      </label>}
      {engine==='comfyui'&&<div className="flex items-start gap-2 rounded-xl border border-[#E8DAC7] bg-[#FFF8ED] p-3 text-[11px] leading-5 text-[#8D6E4B]">
       <TriangleAlert size={16} className="mt-0.5 shrink-0"/>
-      <p>ComfyUI는 연결된 GPU 모델로 3~9초의 실제 영상 클립을 생성합니다. 이 모드에 자동 내레이션 합성은 아직 연결되지 않았습니다. 긴 영상은 FFmpeg 카드 방식으로 제작합니다.</p>
+      <p>ComfyUI는 3~9초 AI 장면을 순차 생성하고 90초까지 하나의 MP4로 조립합니다. 장면 생성에는 GPU 시간이 소요되며, 장면별 음성 합성은 아직 지원하지 않습니다.</p>
      </div>}
      <div className="rounded-2xl border border-[#E9E1D6] bg-[#FCFAF7] p-4">
       <label className="flex cursor-pointer items-center justify-between gap-3">
@@ -229,7 +230,7 @@ export function VideoAutoStudio({
       {sending?<LoaderCircle className="animate-spin" size={19}/>:<WandSparkles size={19}/>}
       {sending?'제작 실행 중...':'기획부터 완성까지 자율 제작 시작'}<ArrowRight size={17} className="ml-auto"/>
      </Button>
-     <p className="text-center text-[10px] leading-5 text-[#9A8E82]">새 작업은 별도 기록으로 저장되며, 재시작 후 불확실한 업로드를 중복 실행하지 않습니다.</p>
+     <p className="text-center text-[10px] leading-5 text-[#9A8E82]">비용 상한은 대본 모델 API에 적용됩니다. 로컬 GPU 연산·전력 비용은 별도입니다. 중단된 원격 실행은 중복 재제출하지 않습니다.</p>
     </div>
    </Panel>
   </div>
@@ -257,7 +258,11 @@ export function VideoAutoStudio({
         'border-sky-200 bg-sky-50 text-sky-700'
        )}>{label(current.status)}</span>
       </div>
-      <ol className="space-y-2" aria-label="자율 제작 단계">
+      {current.visualEngine==='comfyui'&&current.shots.length>0&&
+        <p role="status" className="rounded-xl border border-[#E6E1D9] bg-[#FAF8F4] px-3 py-2 text-[11px] font-semibold text-[#756658]">
+         AI 영상 장면 {current.completedShots||0}/{current.shots.length}개 생성 · 완료 후 자동 조립
+        </p>}
+       <ol className="space-y-2" aria-label="자율 제작 단계">
        {STAGES.map((stage,index)=>{
         const complete=done||index<stageIndex
         const active=current.status==='running'&&current.stage===stage.id
@@ -288,7 +293,7 @@ export function VideoAutoStudio({
          <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-white text-[11px] font-bold text-[#C06F50]">{index+1}</span>
          <span className="min-w-0 flex-1"><strong className="block text-[11px]">{shot.heading}</strong>
           <small className="mt-1 block text-[10px] leading-5 text-[#86796D]">{shot.narration}</small></span>
-         <span className="shrink-0 text-[10px] text-[#A18F81]">{shot.seconds}초</span>
+         <span className="shrink-0 text-[10px] text-[#A18F81]">{shot.seconds}초{current.visualEngine==='comfyui'&&index<(current.completedShots||0)?' · 완성':''}</span>
         </div>)}
        </div>
        <button type="button" onClick={()=>setShowScript(!showScript)} className="mt-4 text-[11px] font-semibold text-[#B56C4E] hover:underline">
