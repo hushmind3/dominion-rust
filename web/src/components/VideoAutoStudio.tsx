@@ -21,7 +21,7 @@ type Production={
  script:string;shots:Shot[];tags:string[];
  videoId?:string|null;uploadId?:string|null;uploadUrl?:string|null;
  artifactBytes?:number|null;measuredSeconds?:number|null;
- error?:string|null;outputUrl?:string|null;createdAt?:string
+ error?:string;outputUrl?:string|null;createdAt?:string
 }
 const STAGES=[
  {id:'planning',name:'기획',detail:'주제와 제작 방향 정리',icon:Sparkles},
