@@ -215,7 +215,9 @@ impl Engine {
             let mut parallel=tool_batch::parallel_prefix(&run,self.settings.max_parallel_reads);
             // A denied or invalid hook at index N is a barrier, not a
             // speculative dispatch of later reads.
-            if let Some(index)=parallel.iter().position(|call|chain.before(&run,call).is_err()){
+            if let Some(index)=parallel.iter().position(|call|
+                chain.before(&run,call).is_err()||
+                crate::loop_guard::action(&run,call).is_some()){
                 parallel.truncate(index);
             }
             if parallel.len()>1{
@@ -246,6 +248,32 @@ impl Engine {
                 if let Err(deny)=chain.before(&run,&call){
                     self.store.mutate(id,|run|journal::reject_admission(
                         run,&call,&deny.code,&deny.reason)).await?;
+                    continue;
+                }
+                if let Some(action)=crate::loop_guard::action(&run,&call){
+                    // No external action starts: journal a correlated tool
+                    // error and give the model a chance to change strategy.
+                    // Four identical prior failures pause to cap wasted spend.
+                    self.store.mutate(id,|run|{
+                        journal::reject_admission(run,&call,"REPEATED_TOOL_FAILURE",
+                            "The exact same tool and arguments have failed repeatedly. Inspect the prior error and change path, arguments or approach; do not call the unchanged tool again.")?;
+                        match action{
+                            crate::loop_guard::Action::Reject=>{
+                                run.event("loop_guard","Blocked repeated identical failed tool call",Some(json!({
+                                    "name":call.name,"call_id":call.id,"dispatched":false
+                                })));
+                            },
+                            crate::loop_guard::Action::Pause=>{
+                                run.status=RunStatus::Paused;
+                                run.event("loop_guard_paused",
+                                    "Repeated identical failed tool calls paused; amend the task or choose a different approach",Some(json!({
+                                        "name":call.name,"call_id":call.id,"dispatched":false
+                                    })));
+                            }
+                        }
+                        Ok(())
+                    }).await?;
+                    if action==crate::loop_guard::Action::Pause{return Ok(());}
                     continue;
                 }
                 if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
