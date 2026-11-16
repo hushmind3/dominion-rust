@@ -160,6 +160,6 @@ test('selective video-shot revision uses the same Rust product job and bounded s
  assert.ok(calls[0].url.endsWith('/api/video/productions/production-1/shots/1/regenerate'));
  assert.equal(JSON.parse(calls[0].options.body).visualPrompt,'stable wardrobe, forward dolly');
  assert.equal(calls[0].options.headers.Authorization,'Bearer private');
- await assert.rejects(()=>sdk.productions.regenerateShot('x',12,'invalid'),RangeError);
+ assert.throws(()=>sdk.productions.regenerateShot('x',12,'invalid'),RangeError);
  assert.equal(calls.length,1,'rejecting an invalid shot must not make an API call');
 });
