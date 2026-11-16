@@ -231,25 +231,6 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
-                // The catalog is frozen when the model turn is accepted and
-                // survives crash recovery. Legacy sessions without a snapshot
-                // retain the previous policy-based execution semantics.
-                if !run.advertised_tools.is_empty(){
-                    if let Err(error)=tool_schema::admit(&call,&run.advertised_tools){
-                        self.store.mutate(id,|run|journal::reject_admission(
-                            run,&call,error.code.as_str(),&error.reason)).await?;
-                        continue;
-                    }
-                }
-                if !policy::allowed_tool(&run,&call.name){
-                    self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
-                    continue;
-                }
-                if let Err(deny)=chain.before(&run,&call){
-                    self.store.mutate(id,|run|journal::reject_admission(
-                        run,&call,&deny.code,&deny.reason)).await?;
-                    continue;
-                }
                 if let Some(action)=crate::loop_guard::action(&run,&call){
                     // No external action starts: journal a correlated tool
                     // error and give the model a chance to change strategy.
@@ -274,6 +255,25 @@ impl Engine {
                         Ok(())
                     }).await?;
                     if action==crate::loop_guard::Action::Pause{return Ok(());}
+                    continue;
+                }
+                // The catalog is frozen when the model turn is accepted and
+                // survives crash recovery. Legacy sessions without a snapshot
+                // retain the previous policy-based execution semantics.
+                if !run.advertised_tools.is_empty(){
+                    if let Err(error)=tool_schema::admit(&call,&run.advertised_tools){
+                        self.store.mutate(id,|run|journal::reject_admission(
+                            run,&call,error.code.as_str(),&error.reason)).await?;
+                        continue;
+                    }
+                }
+                if !policy::allowed_tool(&run,&call.name){
+                    self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
+                    continue;
+                }
+                if let Err(deny)=chain.before(&run,&call){
+                    self.store.mutate(id,|run|journal::reject_admission(
+                        run,&call,&deny.code,&deny.reason)).await?;
                     continue;
                 }
                 if call.name == "shell" || call.name == "merge_subagent" || call.name.starts_with("mcp__") {
