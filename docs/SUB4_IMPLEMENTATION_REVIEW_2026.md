@@ -14,7 +14,7 @@
 ## Implemented in this pass
 
 1. **Startup write reduction:** `Store::open` records a semantic before/after diff for recovery and migration, fsyncing only changed runs. Unmodified historical JSON is not rewritten merely because the process started.
-2. **Scoped descendant reads:** `Store::has_children`, `children_of`, `family_of` avoid cloning every historical transcript during plan/catalog selection, direct-child admission, and descendant settlement. `family_of` captures two levels under one store lock to avoid mixed-generation family snapshots.
+2. **Scoped descendant reads and startup selection:** `Store::has_children`, `children_of`, `family_of` avoid cloning every historical transcript during plan/catalog selection, direct-child admission, and descendant settlement. `family_of` captures two levels under one store lock to avoid mixed-generation family snapshots. `Store::recovery_candidates` likewise returns small ID lists for SDK startup instead of full Run snapshots.
 3. **Execution responsibility split:** `src/engine.rs` owns the scheduling, model/tool drive and status transitions. `src/engine/delegation.rs` owns child spawning, patch integration, authorization and durable descendant budget settlement. `src/engine/tests.rs` keeps the same native regression tests in a separate test-only module.
 4. **Added regression coverage:** unchanged completed-run disk content must survive a restart untouched, and direct/grandchild family queries must exclude unrelated runs. Existing crash, approval, cancellation, and child-budget tests remain in the crate.
 
