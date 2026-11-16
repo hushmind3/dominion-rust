@@ -59,7 +59,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npm run check
+      # Rust all-target tests already execute in the dedicated Rust job.
+      # Avoid rebuilding the same release Rust dependency graph in web CI.
+      - name: Frontend typecheck and production bundle
+        run: npm run typecheck && npm run build
 
   external-mcp:
     runs-on: ubuntu-latest
