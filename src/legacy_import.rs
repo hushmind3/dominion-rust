@@ -62,7 +62,7 @@ fn date(value:&str)->String {
     }
     value.into()
 }
-fn open_legacy(path:&Path)->Result<Connection,String>{
+pub(crate) fn open_legacy(path:&Path)->Result<Connection,String>{
     if path.file_name().and_then(|s|s.to_str())!=Some("dominion.sqlite"){
         return Err("select the main application's dominion.sqlite file".into());
     }
