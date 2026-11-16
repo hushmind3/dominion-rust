@@ -140,7 +140,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/video/model-packs/install",post(install))
   .route("/video/model-packs/cancel",post(cancel))
 }
-async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
+pub(crate) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
  let root=detect_root(&engine.settings);
  let (bytes,installed,files)=root.as_deref()
   .map(progress).unwrap_or((0,false,Vec::new()));
@@ -276,6 +276,13 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
   let folder=verified_directory(root,asset.folder)?;
   let destination=folder.join(asset.name);
   let part=folder.join(format!("{}.part",asset.name));
+  // Refuse symlinked output files: no attacker-controlled redirection of
+  // multi-gigabyte writes outside the selected ComfyUI models root.
+  for path in [&destination,&part]{
+   if fs::symlink_metadata(path).is_ok_and(|m|m.file_type().is_symlink()){
+    return Err(format!("Refusing symlinked model path: {}",path.display()));
+   }
+  }
   let (length,expected_hash)=metadata(&client,asset).await?;
   {
    let mut state=active().lock().await;
@@ -369,6 +376,17 @@ mod tests{
   assert_eq!(graph["39"]["inputs"]["vae_name"],WAN22[2].name);
   assert!(graph.as_object().unwrap().values().all(|v|
    v["class_type"]!="LoadImage"&&v["class_type"]!="ExecutePython"));
+  let dir=std::env::temp_dir().join(format!("wan22-pack-{}",Uuid::new_v4()));
+  let mut settings=Settings::from_env().unwrap();
+  settings.data_dir=dir.clone();
+  let cfg=crate::frontend_comfy::update(&settings,&json!({
+   "engine":"comfyui","comfyWorkflow":graph,
+   "comfyWorkflowName":"Dominion · Wan 2.2 TI2V 5B",
+   "videoModel":"diffusion_models/wan2.2_ti2v_5B_fp16.safetensors"
+  })).unwrap();
+  assert_eq!(cfg.engine,"comfyui");
+  assert!(cfg.comfy_workflow.is_some());
+  fs::remove_dir_all(dir).unwrap();
  }
  #[test]
  fn rejects_paths_without_existing_comfyui_model_directory(){
