@@ -212,7 +212,10 @@ async fn cancel()->Json<Value>{
 }
 fn client()->Result<Client,String>{
  Client::builder()
-  .timeout(Duration::from_secs(180))
+  // Weight files can take hours. A request-wide timeout would abort a 9GB
+  // transfer even while bytes keep flowing. Limit CONNECT and per-chunk idle,
+  // not the entire response lifetime.
+  .connect_timeout(Duration::from_secs(25))
   .redirect(reqwest::redirect::Policy::custom(|attempt|{
    let host=attempt.url().host_str().unwrap_or("");
    if attempt.previous().len()<6&&attempt.url().scheme()=="https"&&(
@@ -224,12 +227,15 @@ fn client()->Result<Client,String>{
 async fn metadata(client:&Client,asset:Asset)->Result<(u64,String),String>{
  let url=format!("https://huggingface.co/api/models/{}/tree/main/split_files/{}",
   asset.repo,asset.folder);
- let response=client.get(url).send().await.map_err(|e|format!("Hugging Face metadata: {e}"))?;
+ let response=client.get(url).timeout(Duration::from_secs(35)).send().await
+  .map_err(|e|format!("Hugging Face metadata: {e}"))?;
  if !response.status().is_success(){return Err(format!("Hugging Face metadata HTTP {}",response.status()));}
  if response.content_length().is_some_and(|n|n>512*1024){
   return Err("Hugging Face metadata too large".into());
  }
- let payload=response.bytes().await.map_err(|e|e.to_string())?;
+ let payload=tokio::time::timeout(Duration::from_secs(35),response.bytes())
+  .await.map_err(|_|"Hugging Face metadata response timeout")?
+  .map_err(|e|e.to_string())?;
  if payload.len()>512*1024{return Err("Hugging Face metadata too large".into());}
  let records:Value=serde_json::from_slice(&payload).map_err(|e|e.to_string())?;
  let path=format!("split_files/{}/{}",asset.folder,asset.name);
@@ -309,7 +315,9 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
     asset.repo,asset.folder,asset.name);
    let mut request=client.get(url);
    if offset>0{request=request.header(reqwest::header::RANGE,format!("bytes={offset}-"));}
-   let mut response=request.send().await.map_err(|e|format!("Official model download: {e}"))?;
+   let mut response=tokio::time::timeout(Duration::from_secs(60),request.send())
+    .await.map_err(|_|"Official model connection timed out")?
+    .map_err(|e|format!("Official model download: {e}"))?;
    let append=if offset>0&&response.status()==HttpStatus::PARTIAL_CONTENT{
     let expected=format!("bytes {offset}-");
     let range=response.headers().get(reqwest::header::CONTENT_RANGE)
@@ -323,7 +331,9 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
    options.write(true).create(true);
    if append{options.append(true);}else{options.truncate(true);}
    let mut output=options.open(&part).await.map_err(|e|e.to_string())?;
-   while let Some(chunk)=response.chunk().await.map_err(|e|e.to_string())?{
+   while let Some(chunk)=tokio::time::timeout(Duration::from_secs(120),response.chunk())
+    .await.map_err(|_|"Model transfer stalled; select install again to resume")?
+    .map_err(|e|e.to_string())?{
     if cancelled.load(Ordering::SeqCst){
      output.sync_all().await.map_err(|e|e.to_string())?;
      return Err("cancelled".into());
