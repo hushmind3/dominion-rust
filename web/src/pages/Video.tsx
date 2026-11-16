@@ -382,6 +382,7 @@ export function VideoPage({navigate:_navigate}:{navigate:(page:any)=>void}){
    comfyReady={Boolean(video.value.comfy.available&&video.value.config.engine==='comfyui')}
    nativeReady={Boolean(video.value.native?.available)}
    onSettings={()=>setTab('settings')}
+   onModelInstalled={()=>void Promise.all([video.reload(),catalog.reload()])}
    onReview={id=>{setSelectedId(id);setTab('create')}}
    onPublish={id=>{
     setUploadFile(id)
