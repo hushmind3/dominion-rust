@@ -32,6 +32,8 @@ pub struct Production{
  pub status:String,pub stage:String,pub title:String,pub description:String,
  pub tags:Vec<String>,pub script:String,pub shots:Vec<Shot>,
  pub video_id:Option<Uuid>,pub upload_id:Option<Uuid>,pub upload_url:Option<String>,
+ #[serde(default)]pub rendered_shot_ids:Vec<Uuid>,
+ #[serde(default)]pub completed_shots:usize,
  pub artifact_bytes:Option<u64>,pub measured_seconds:Option<f64>,
  pub cost_krw:f64,pub error:Option<String>,
  pub created_at_ms:u64,pub updated_at_ms:u64,
@@ -64,8 +66,8 @@ fn validate(request:&NewProduction)->Result<(),String>{
  if !matches!(request.visual_engine.as_str(),"native"|"comfyui"){return Err("visualEngine must be native or comfyui".into());}
  if !matches!(request.aspect_ratio.as_str(),"9:16"|"16:9"|"1:1"){return Err("invalid aspectRatio".into());}
  if (request.visual_engine=="native"&&!(6..=180).contains(&request.duration))||
-  (request.visual_engine=="comfyui"&&!(3..=9).contains(&request.duration)){
-  return Err("duration must be 6-180 seconds for native or 3-9 for ComfyUI".into());
+  (request.visual_engine=="comfyui"&&!(3..=90).contains(&request.duration)){
+  return Err("duration must be 6-180 seconds for native or 3-90 for ComfyUI".into());
  }
  if !matches!(request.privacy_status.as_str(),"private"|"unlisted"|"public"){return Err("invalid privacyStatus".into());}
  if !request.max_cost_krw.is_finite()||!(0.0..=1_000_000.0).contains(&request.max_cost_krw){
@@ -141,6 +143,7 @@ pub fn public(item:&Production)->Value{
   "script":item.script,"shots":item.shots,
   "videoId":item.video_id,"uploadId":item.upload_id,"uploadUrl":item.upload_url,
   "artifactBytes":item.artifact_bytes,"measuredSeconds":item.measured_seconds,
+  "renderedShotIds":item.rendered_shot_ids,"completedShots":item.completed_shots,
   "costKrw":item.cost_krw,"error":item.error,"factsVerified":false,
   "outputUrl":item.video_id.map(|id|format!("/api/video/jobs/{id}/content")),
   "createdAt":crate::frontend_state::timestamp(item.created_at_ms),
@@ -186,6 +189,7 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
   privacy_status:input.privacy_status.clone(),status:"running".into(),stage:"planning".into(),
   title:String::new(),description:String::new(),tags:Vec::new(),script:String::new(),
   shots:Vec::new(),video_id:None,upload_id:None,upload_url:None,
+  rendered_shot_ids:Vec::new(),completed_shots:0,
   artifact_bytes:None,measured_seconds:None,cost_krw:0.0,error:None,
   created_at_ms:now,updated_at_ms:now
  };
@@ -203,7 +207,11 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
    if let Err(error)=edit(&worker.settings,id,|record|{
     // Once publication starts, an HTTP timeout or crash does not prove
     // whether YouTube accepted the upload. Never label that safe to retry.
-    record.status=if record.stage=="publishing"{"needs_review"}else{"failed"}.into();
+    record.status=if record.stage=="publishing"||
+     (record.stage=="rendering"&&record.visual_engine=="comfyui"&&
+      record.rendered_shot_ids.len()>record.completed_shots){
+     "needs_review"
+    }else{"failed"}.into();
     record.error=Some(reason);
    }).await {tracing::error!(%error,production=%id,"unable to persist failed production");}
   }
@@ -226,7 +234,7 @@ fn storyboard(text:&str,duration:u32,comfy:bool)
  let data:Script=serde_json::from_str(normalized.trim())
   .map_err(|e|format!("storyboard must be valid JSON: {e}"))?;
  let count=data.scenes.len();
- if count==0||count>12||(comfy&&count!=1)||duration<(count as u32)*2{
+ if count==0||count>12||duration<(count as u32)*2{
   return Err("storyboard scene count does not match requested duration".into());
  }
  if data.title.trim().is_empty(){return Err("storyboard title missing".into());}
@@ -235,7 +243,7 @@ fn storyboard(text:&str,duration:u32,comfy:bool)
  let mut shots=Vec::with_capacity(count);
  for (index,shot) in data.scenes.into_iter().enumerate(){
   let sec=base+u32::from((index as u32)<rest);
-  if !(2..=30).contains(&sec)||shot.heading.trim().is_empty()||
+  if !(if comfy{3..=9}else{2..=30}).contains(&sec)||shot.heading.trim().is_empty()||
    shot.heading.len()>180||shot.narration.len()>1000||shot.visual_prompt.len()>1400{
    return Err("invalid storyboard scene, text length or clip duration".into());
   }
@@ -253,7 +261,7 @@ fn storyboard(text:&str,duration:u32,comfy:bool)
 async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),String>{
  let settings=&engine.settings;
  edit(settings,id,|p|p.stage="storyboard".into()).await?;
- let count=if options.visual_engine=="comfyui"{1}else{(options.duration/8).clamp(2,6)};
+ let count=if options.visual_engine=="comfyui"{options.duration.div_ceil(8)}else{(options.duration/8).clamp(2,6)};
  let prompt=vec![
   json!({"role":"system","content":format!(
    "You are an autonomous video producer. Output ONLY valid JSON with title, description, tags (array), scenes (array of EXACTLY {count} objects containing heading, narration, visual_prompt). Script must have a hook, structure and ending. Use the user's language. Never fabricate research, sources, quotes, or statistics. When notes are provided ground factual claims only in supplied notes; otherwise use expressive fiction or general explanations. Visual prompts must describe actual shots. No markdown."
@@ -279,56 +287,74 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
   options.max_cost_krw));}
  edit(settings,id,|p|p.stage="rendering".into()).await?;
  let video_id=if options.visual_engine=="native"{
-  let scenes=shots.iter().map(|s|Scene{
-   heading:s.heading.clone(),narration:s.narration.clone(),seconds:s.seconds
-  }).collect();
-  let record=engine.videos.create(&engine.model,NewVideo{
-   prompt:options.topic.clone(),scenes:Some(scenes),
-   backend:Some(VideoBackend::Local),aspect_ratio:Some(options.aspect_ratio.clone())
-  }).await?;
-  engine.videos.set_title(record.id,title.clone()).await?;
-  engine.videos.set_narration(record.id,options.narration).await?;
-  edit(settings,id,|p|p.video_id=Some(record.id)).await?;
-  engine.videos.start(record.id).await?;
-  record.id
- }else{
-  let record=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
-   title:title.clone(),brief:shots[0].visual_prompt.clone(),negative:String::new(),
-   aspect_ratio:options.aspect_ratio.clone(),duration:options.duration,fps:16,seed:-1
-  }).await?;
-  let video_id=Uuid::parse_str(record["id"].as_str().ok_or("ComfyUI job ID missing")?)
-   .map_err(|e|e.to_string())?;
-  edit(settings,id,|p|p.video_id=Some(video_id)).await?;
-  video_id
- };
- tokio::time::timeout(Duration::from_secs(2400),async{
-  loop{
-   tokio::time::sleep(Duration::from_secs(2)).await;
-   let (status,reason)=if options.visual_engine=="native"{
-    let v=engine.videos.get(video_id).await.ok_or("native render not found")?;
-    (match v.status{
-     VideoStatus::Completed=>"completed",VideoStatus::Failed=>"failed",_=>"running"
-    }.to_owned(),v.error)
-   }else{
-    let v=crate::frontend_comfy::get(settings,video_id)?
-     .ok_or("ComfyUI render not found")?;
-    (v.status,v.error)
-   };
-   match status.as_str(){
-    "completed"=>return Ok::<(),String>(()),
-    "failed"|"needs_review"|"interrupted"=>return Err(
-     reason.unwrap_or_else(||"renderer failed".into())),
-    _=>{}
+   let scenes=shots.iter().map(|s|Scene{
+    heading:s.heading.clone(),narration:s.narration.clone(),seconds:s.seconds
+   }).collect();
+   let record=engine.videos.create(&engine.model,NewVideo{
+    prompt:options.topic.clone(),scenes:Some(scenes),
+    backend:Some(VideoBackend::Local),aspect_ratio:Some(options.aspect_ratio.clone())
+   }).await?;
+   engine.videos.set_title(record.id,title.clone()).await?;
+   engine.videos.set_narration(record.id,options.narration).await?;
+   edit(settings,id,|p|p.video_id=Some(record.id)).await?;
+   engine.videos.start(record.id).await?;
+   let native_id=record.id;
+   tokio::time::timeout(Duration::from_secs(2400),async{
+    loop{
+     tokio::time::sleep(Duration::from_secs(2)).await;
+     let v=engine.videos.get(native_id).await.ok_or("native render not found")?;
+     match v.status{
+      VideoStatus::Completed=>return Ok::<(),String>(()),
+      VideoStatus::Failed=>return Err(v.error.unwrap_or_else(||"native renderer failed".into())),
+      _=>{}
+     }
+    }
+   }).await.map_err(|_|"native renderer deadline reached; inspect original render".to_owned())??;
+   native_id
+  }else{
+   // Every remote scene ID is journaled before polling. An interrupted
+   // generation must not be submitted again without user reconciliation.
+   let mut clips=Vec::with_capacity(shots.len());
+   for (index,shot) in shots.iter().enumerate(){
+    let record=crate::frontend_comfy::create(settings.clone(),crate::frontend_comfy::Create{
+     title:format!("{} · {}/{}",title,index+1,shots.len()),
+     brief:shot.visual_prompt.clone(),negative:String::new(),
+     aspect_ratio:options.aspect_ratio.clone(),duration:shot.seconds,fps:16,seed:-1
+    }).await?;
+    let clip_id=Uuid::parse_str(record["id"].as_str().ok_or("ComfyUI job ID missing")?)
+     .map_err(|e|e.to_string())?;
+    edit(settings,id,|p|p.rendered_shot_ids.push(clip_id)).await?;
+    tokio::time::timeout(Duration::from_secs(2400),async{
+     loop{
+      tokio::time::sleep(Duration::from_secs(2)).await;
+      let job=crate::frontend_comfy::get(settings,clip_id)?
+       .ok_or("ComfyUI scene render not found")?;
+      match job.status.as_str(){
+       "completed"=>return Ok::<(),String>(()),
+       "failed"|"needs_review"|"interrupted"=>
+        return Err(job.error.unwrap_or_else(||"ComfyUI scene failed".into())),
+       _=>{}
+      }
+     }
+    }).await.map_err(|_|format!("ComfyUI scene {} timed out; inspect remote job before retrying",index+1))??;
+    let clip=crate::frontend_comfy::output(settings,clip_id)?
+     .ok_or("Completed ComfyUI scene is missing its video artifact")?.0;
+    inspect(&clip,shot.seconds).await?;
+    clips.push((clip,shot.seconds));
+    edit(settings,id,|p|p.completed_shots=index+1).await?;
    }
-  }
- }).await.map_err(|_|"renderer exceeded production deadline; check original render before retrying".to_owned())??;
+   assemble_clips(settings,id,&clips,&options.aspect_ratio).await?;
+   // The finished production ID identifies the assembled output, never
+   // just the last raw generated scene.
+   edit(settings,id,|p|p.video_id=Some(id)).await?;
+   id
+  };
  edit(settings,id,|p|p.stage="quality_check".into()).await?;
  let output=if options.visual_engine=="native"{
-  engine.videos.output_path(video_id).await?
- }else{
-  crate::frontend_comfy::output(settings,video_id)?
-   .ok_or("ComfyUI output artifact missing")?.0
- };
+   engine.videos.output_path(video_id).await?
+  }else{
+   assembled_path(settings,id)
+  };
  let (bytes,duration)=inspect(&output,options.duration).await?;
  edit(settings,id,|p|{
   p.artifact_bytes=Some(bytes);p.measured_seconds=Some(duration);
@@ -364,6 +390,86 @@ async fn execute(engine:&Arc<Engine>,id:Uuid,options:NewProduction)->Result<(),S
   }
  }).await.map_err(|_|"YouTube status timeout; inspect upload journal before retrying".to_owned())?
 }
+
+fn assembled_path(settings:&Settings,id:Uuid)->PathBuf{
+ settings.data_dir.join("video-productions/outputs").join(format!("{id}.mp4"))
+}
+
+/// Resolve only completed, verified productions. Historic single-scene
+/// ComfyUI outputs continue resolving through their own clip identifiers.
+pub fn output(settings:&Settings,id:Uuid)->Result<Option<(PathBuf,&'static str)>,String>{
+ let Some(job)=read(settings)?.jobs.get(&id).cloned()else{return Ok(None)};
+ if job.visual_engine!="comfyui"{return Ok(None);}
+ let ready=matches!(job.status.as_str(),"ready"|"published")||
+  (job.stage=="publishing"&&job.artifact_bytes.is_some()&&
+   matches!(job.status.as_str(),"running"|"needs_review"));
+ if !ready{return Err("assembled production is not ready for export".into());}
+ let path=assembled_path(settings,id);
+ if !path.is_file(){return Err("assembled production artifact is missing".into());}
+ Ok(Some((path,"video/mp4")))
+}
+
+pub fn finished(settings:&Settings)->Result<Vec<Value>,String>{
+ let data=read(settings)?;
+ Ok(data.jobs.values().filter(|p|
+  p.visual_engine=="comfyui"&&matches!(p.status.as_str(),"ready"|"published")&&
+  assembled_path(settings,p.id).is_file()
+ ).map(|p|json!({
+  "id":p.id,"kind":"video","status":"completed","title":p.title,
+  "brief":p.topic,"createdAt":crate::frontend_state::timestamp(p.created_at_ms),
+  "updatedAt":crate::frontend_state::timestamp(p.updated_at_ms),
+  "outputUrl":format!("/api/video/jobs/{}/content",p.id),
+  "duration":p.duration,"aspectRatio":p.aspect_ratio,"costKrw":p.cost_krw,
+  "result":{"bytes":p.artifact_bytes}
+ })).collect())
+}
+
+/// Normalize mixed source formats before stitching, then atomically expose
+/// only an ffprobe-verified MP4. FFmpeg is invoked without a shell.
+async fn assemble_clips(settings:&Settings,id:Uuid,clips:&[(PathBuf,u32)],ratio:&str)->Result<(),String>{
+ if clips.is_empty()||clips.len()>12{return Err("invalid ComfyUI scene count".into());}
+ let (width,height)=match ratio{
+  "9:16"=>(720,1280),"16:9"=>(1280,720),"1:1"=>(720,720),
+  _=>return Err("invalid production aspect ratio".into())
+ };
+ let destination=assembled_path(settings,id);
+ let directory=destination.parent().ok_or("missing assembly directory")?;
+ tokio::fs::create_dir_all(directory).await.map_err(|e|e.to_string())?;
+ let temporary=directory.join(format!("{id}.part.mp4"));
+ let mut command=Command::new("ffmpeg");
+ command.args(["-hide_banner","-nostdin","-loglevel","error","-y"]);
+ for (source,_) in clips{command.arg("-i").arg(source);}
+ let mut filters=Vec::with_capacity(clips.len()+1);
+ for (index,(_,seconds)) in clips.iter().enumerate(){
+  filters.push(format!(
+   "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,\
+pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,\
+setsar=1,fps=24,format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]"
+  ));
+ }
+ let inputs=(0..clips.len()).map(|i|format!("[v{i}]")).collect::<String>();
+ filters.push(format!("{inputs}concat=n={}:v=1:a=0[vout]",clips.len()));
+ command.arg("-filter_complex").arg(filters.join(";"))
+  .args(["-map","[vout]","-c:v","libx264","-preset","veryfast",
+   "-crf","23","-pix_fmt","yuv420p","-movflags","+faststart","-an"])
+  .arg(&temporary)
+  .stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
+ let outcome=tokio::time::timeout(Duration::from_secs(900),command.output())
+  .await.map_err(|_|"FFmpeg scene assembly exceeded 15 minutes".to_owned())?
+  .map_err(|e|format!("FFmpeg assembly unavailable: {e}"))?;
+ let result=async{
+  if !outcome.status.success(){
+   return Err(format!("FFmpeg scene assembly failed: {}",
+    String::from_utf8_lossy(&outcome.stderr).chars().take(500).collect::<String>()));
+  }
+  inspect(&temporary,clips.iter().map(|(_,seconds)|seconds).sum()).await?;
+  tokio::fs::rename(&temporary,&destination).await.map_err(|e|e.to_string())?;
+  Ok::<(),String>(())
+ }.await;
+ if result.is_err(){let _=tokio::fs::remove_file(&temporary).await;}
+ result
+}
+
 async fn inspect(path:&FilePath,expected:u32)->Result<(u64,f64),String>{
  let bytes=tokio::fs::metadata(path).await.map_err(|e|e.to_string())?.len();
  if bytes<1024||bytes>2*1024*1024*1024{return Err("invalid video artifact size".into());}
@@ -411,7 +517,24 @@ mod tests{
     {"heading":"End","narration":"Two","visual_prompt":"A skyline"}]}).to_string();
   let (_,_,_,shots)=storyboard(&raw,13,false).unwrap();
   assert_eq!(shots.iter().map(|s|s.seconds).sum::<u32>(),13);
-  assert!(storyboard(&raw,8,true).is_err());
+  let (_,_,_,comfy)=storyboard(&raw,8,true).unwrap();
+   assert_eq!(comfy.iter().map(|s|s.seconds).sum::<u32>(),8);
+   assert!(storyboard(&raw,3,true).is_err());
+ }
+  #[test]
+ fn multi_shot_comfy_has_exact_duration_and_bounded_scenes(){
+  let mut request:NewProduction=serde_json::from_value(json!({
+   "topic":"cinematic video","visualEngine":"comfyui","duration":90
+  })).unwrap();
+  validate(&request).unwrap();request.duration=91;assert!(validate(&request).is_err());
+  let raw=json!({"title":"Multi-shot","description":"cinema","scenes":
+   (0..12).map(|i|json!({"heading":format!("Scene {i}"),
+    "narration":"hello","visual_prompt":"camera shot"})).collect::<Vec<_>>()
+  }).to_string();
+  let (_,_,_,shots)=storyboard(&raw,90,true).unwrap();
+  assert_eq!(shots.len(),12);
+  assert_eq!(shots.iter().map(|s|s.seconds).sum::<u32>(),90);
+  assert!(shots.iter().all(|s|(3..=9).contains(&s.seconds)));
  }
  #[tokio::test]
  async fn crash_does_not_replay_upload(){
@@ -424,7 +547,8 @@ mod tests{
    auto_publish:true,privacy_status:"private".into(),status:"running".into(),
    stage:"publishing".into(),title:"Test".into(),description:String::new(),
    tags:vec![],script:String::new(),shots:vec![],video_id:Some(Uuid::new_v4()),
-   upload_id:Some(Uuid::new_v4()),upload_url:None,artifact_bytes:None,
+   upload_id:Some(Uuid::new_v4()),upload_url:None,
+   rendered_shot_ids:Vec::new(),completed_shots:0,artifact_bytes:None,
    measured_seconds:None,cost_krw:0.0,error:None,created_at_ms:now_ms(),updated_at_ms:now_ms()
   };
   write(&settings,&Journal{jobs:HashMap::from([(entry.id,entry.clone())])}).unwrap();
