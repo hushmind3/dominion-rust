@@ -28,8 +28,7 @@ fn is_oauth_callback(method:&axum::http::Method,path:&str)->bool{
     let path=path.strip_prefix("/api").unwrap_or(path);
     matches!(path,
         "/oauth/github/callback"|
-        "/oauth/google/callback"|
-        "/oauth/youtube/callback")
+        "/oauth/google/callback")
 }
 async fn authorize(State(engine): State<Arc<Engine>>, request: axum::extract::Request, next: Next) -> Response {
     if let Some(token) = engine.settings.token.as_ref() {
@@ -56,7 +55,7 @@ mod oauth_callback_auth_tests {
         use axum::http::Method;
         assert!(is_oauth_callback(&Method::GET,"/api/oauth/github/callback"));
         assert!(is_oauth_callback(&Method::GET,"/api/oauth/google/callback"));
-        assert!(is_oauth_callback(&Method::GET,"/oauth/youtube/callback"));
+        assert!(!is_oauth_callback(&Method::GET,"/oauth/youtube/callback"));
         assert!(!is_oauth_callback(&Method::POST,"/api/oauth/github/callback"));
         assert!(!is_oauth_callback(&Method::GET,"/api/oauth/connections"));
         assert!(!is_oauth_callback(&Method::GET,"/api/oauth/github/start"));

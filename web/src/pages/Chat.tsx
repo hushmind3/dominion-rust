@@ -12,12 +12,9 @@ import {ReasoningSelect,reasoningOptions} from '../components/ReasoningSelect'
 import {useProviderModels} from '../hooks/useProviderModels'
 import {useTranscriptScroll} from '../hooks/useTranscriptScroll'
 import {useAnchoredPanel} from '../hooks/useAnchoredPanel'
-import {useJob,jobFinished,type JobState} from '../hooks/useJob'
 import {t,useLocale,type LocaleKey} from '../i18n'
 import {translateError} from '../i18n/errors'
 
-type LearningResult={memories:number;skill:boolean}
-type LearningJob=JobState & {result?:LearningResult}
 type ModelOverride={scope?:string;providerId:string;model:string}
 type InstalledModel={id:string;repo:string;label:string;format:string;bytes:number;source?:string}
 type Runtime={status:string;id?:string;name?:string;model?:string;error?:string}
@@ -67,14 +64,12 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
  const [savedMessageId,setSavedMessageId]=useState<string>();
  const [approvalBusy,setApprovalBusy]=useState(false);
  const [liveApproval,setLiveApproval]=useState<Approval|null>(null);
- const [learningJob,setLearningJob]=useState<{id:string;scope:string}>();
- const job=useJob<LearningJob>(learningJob?'/api/jobs/'+encodeURIComponent(learningJob.id):null);
  const approval=(liveApproval?.sessionId===current?liveApproval:null)||
   approvals.value.find(item=>item.sessionId===current&&item.status==='pending');
- const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(koreanReasoningEnabled),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[autoLearn,setAutoLearn]=useState(false),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
+ const [error,setError]=useState(''),[busy,setBusy]=useState(false),[live,setLive]=useState(''),[thought,setThought]=useState(''),[thinking,setThinking]=useState(false),[reasoningKo,setReasoningKo]=useState(koreanReasoningEnabled),[showReasoning,setShowReasoning]=useState(true),[showSettings,setShowSettings]=useState(false),[toolsEnabled,setToolsEnabled]=useState(true),[thinkingEnabled,setThinkingEnabled]=useState(true),[reasoningEffort,setReasoningEffort]=useState(''),[showHistory,setShowHistory]=useState(()=>{try{if(window.innerWidth<768)return false;return localStorage.getItem('dominion.chat.sidebar')!=='0'}catch{return true}}),[toolStatus,setToolStatus]=useState('');
  useEffect(()=>{setReasoningEffort('');setThinkingEnabled(true)},[providerId,model,agentId,current]);
  const [permissionMode,setPermissionMode]=useState<PermissionMode>('request'),[permissionOpen,setPermissionOpen]=useState(false),[permissionBusy,setPermissionBusy]=useState(false);
- const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[learning,setLearning]=useState(false),[menuError,setMenuError]=useState('');
+ const [modelMenu,setModelMenu]=useState(false),[installed,setInstalled]=useState<InstalledModel[]>([]),[modelsLoading,setModelsLoading]=useState(false),[runtime,setRuntime]=useState<Runtime>({status:'idle'}),[modelBusy,setModelBusy]=useState(''),[unloading,setUnloading]=useState(false),[menuError,setMenuError]=useState('');
  const [slashOpen,setSlashOpen]=useState(false),[slashActive,setSlashActive]=useState(0),[commandInfo,setCommandInfo]=useState('');
  const inputRef=useRef<HTMLTextAreaElement>(null);
  const stream=useRef<AbortController|null>(null);
@@ -154,31 +149,6 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    await providers.reload();setCommandInfo(t('chat.model.unloaded'))
   }catch(e){setError((e as Error).message)}finally{setUnloading(false)}
  }
- const reportLearning=(result:LearningResult)=>setCommandInfo(
-  t('chat.learn.done',{memories:result.memories,skills:result.skill?t('chat.learn.skillSuggested'):t('chat.learn.none')})+
-  '\n'+t('chat.learn.hint'));
- useEffect(()=>{
-  if(!learningJob||!jobFinished(job.value?.status))return;
-  if(learningJob.scope===current){
-   if(job.value?.status==='completed'&&job.value.result)reportLearning(job.value.result);
-   else setError(job.value?.error||t('chat.learn.incomplete'));
-  }
-  setLearningJob(undefined);setLearning(false);refresh();
- },[job.value,learningJob,current]);
- const learnSession=async()=>{
-  if(!current||learning||selectedSession?.roomId)return;
-  setLearning(true);setError('');setCommandInfo('');
-  let queued=false;
-  try{
-   const response=await post<{jobId?:string;result?:LearningResult;message?:string}>('/api/sessions/'+current+'/learn',{});
-   if(response.jobId){queued=true;setLearningJob({id:response.jobId,scope:current});return;}
-   if(view.current===current){
-    if(response.message)setCommandInfo(response.message);
-    else if(response.result)reportLearning(response.result);
-   }
-  }catch(e){if(view.current===current)setError((e as Error).message)}
-  finally{if(!queued)setLearning(false)}
- };
  const chooseAgent=(id:string)=>{setAgentChoice({scope:current,id});setOverride(undefined)};
  const pickSession=(s:ChatSession)=>{
   onSession(s.id);setAgentChoice(undefined);setOverride(undefined);
@@ -302,7 +272,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
    if(inputRef.current)inputRef.current.style.height='';
    await streamChat({
     sessionId:id,agentId,providerId:manual?.providerId,model:manual?.model,input:text,
-    toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:autoLearn,
+    toolsEnabled,toolsExecutionEnabled:toolsEnabled,autoLearning:false,
     reasoningLanguage:reasoningKo?'ko':'original',reasoningEffort:reasoningEffort||undefined,thinking:selectedProvider?.kind==='codex'?(reasoningEffort==='none'?false:canDisableThinking?thinkingEnabled:undefined):thinkingEnabled,
    },event=>{
     if(event.type==='assistant_saved'){saved=true;setSavedMessageId(event.messageId);refresh();}
@@ -420,7 +390,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
        <SelectInput aria-label={t('chat.agentAria')} value={agentId} onChange={e=>chooseAgent(e.target.value)} className="!h-7 !w-auto !max-w-[140px] !border-0 !bg-transparent !py-1 !pl-1.5 !pr-6 !text-[11px] !font-semibold !text-[#5C544A]">{agents.value.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</SelectInput>
        <div className="relative">
         <Button type="button" variant="ghost" ref={settingsPanel.trigger} onClick={()=>{setShowSettings(x=>!x);setPermissionOpen(false);setModelMenu(false)}} className="inline-flex !h-7 items-center gap-1.5 !rounded-md !border-0 !px-2 !py-0 text-[11px] font-medium text-[#7C7469] hover:bg-[#F3EEE5]" title={t('chat.settings')} aria-expanded={showSettings}><SlidersHorizontal size={13}/><span className="hidden sm:inline">{t('chat.settings')}</span></Button>
-        {showSettings&&settingsPanel.position&&createPortal(<div ref={settingsPanel.panel} style={settingsPanel.position} className="z-[80] max-w-full overflow-y-auto overscroll-contain rounded-xl border border-[#E7E0D5] bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span className="inline-flex items-center gap-1.5"><BrainCircuit size={13}/> {t('chat.showReasoning')}</span><TextInput type="checkbox" checked={showReasoning} onChange={e=>setShowReasoning(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.koreanReasoning')}</span><TextInput type="checkbox" checked={reasoningKo} onChange={e=>{const enabled=e.target.checked;setReasoningKo(enabled);try{localStorage.setItem(koreanReasoningKey,enabled?'1':'0')}catch{}}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.useThinking')}</span><TextInput type="checkbox" checked={canDisableThinking?thinkingEnabled:true} disabled={!canDisableThinking} title={!canDisableThinking?'이 모델은 추론 끄기를 지원하지 않습니다. 낮은 강도를 선택하세요.':undefined} onChange={e=>{setThinkingEnabled(e.target.checked);if(e.target.checked&&reasoningEffort==='none')setReasoningEffort('')}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.useTools')}</span><TextInput type="checkbox" checked={toolsEnabled} onChange={e=>setToolsEnabled(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.autoLearn')} <small className="text-[10px] text-[#9C9388]">{t('chat.autoLearnDesc')}</small></span><TextInput type="checkbox" checked={autoLearn} onChange={e=>setAutoLearn(e.target.checked)}/></label><Button type="button" variant="ghost" disabled={!current||Boolean(selectedSession?.roomId)||learning||busy} onClick={()=>void learnSession()} className="mt-1 flex w-full !justify-start gap-2 !border-0 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1] disabled:opacity-40"><BrainCircuit size={13}/>{learning?t('chat.learning'):t('chat.learnNow')}</Button></div>,document.body)}
+        {showSettings&&settingsPanel.position&&createPortal(<div ref={settingsPanel.panel} style={settingsPanel.position} className="z-[80] max-w-full overflow-y-auto overscroll-contain rounded-xl border border-[#E7E0D5] bg-white p-2 shadow-xl"><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span className="inline-flex items-center gap-1.5"><BrainCircuit size={13}/> {t('chat.showReasoning')}</span><TextInput type="checkbox" checked={showReasoning} onChange={e=>setShowReasoning(e.target.checked)}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.koreanReasoning')}</span><TextInput type="checkbox" checked={reasoningKo} onChange={e=>{const enabled=e.target.checked;setReasoningKo(enabled);try{localStorage.setItem(koreanReasoningKey,enabled?'1':'0')}catch{}}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.useThinking')}</span><TextInput type="checkbox" checked={canDisableThinking?thinkingEnabled:true} disabled={!canDisableThinking} title={!canDisableThinking?'이 모델은 추론 끄기를 지원하지 않습니다. 낮은 강도를 선택하세요.':undefined} onChange={e=>{setThinkingEnabled(e.target.checked);if(e.target.checked&&reasoningEffort==='none')setReasoningEffort('')}}/></label><label className="flex cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-2 text-[11px] text-[#5C544A] hover:bg-[#FAF7F1]"><span>{t('chat.useTools')}</span><TextInput type="checkbox" checked={toolsEnabled} onChange={e=>setToolsEnabled(e.target.checked)}/></label></div>,document.body)}
        </div>
       </div>
       <div className="ml-auto flex items-center gap-2">

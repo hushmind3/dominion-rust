@@ -1,4 +1,4 @@
-//! GitHub / Google / YouTube OAuth authorization-code flow for the unchanged UI.
+//! GitHub / Google OAuth authorization-code flow for the native harness UI.
 //! Access and refresh tokens are encrypted at rest; never returned through API.
 //! Fixed provider endpoints, random single-use state and Google PKCE are required.
 use crate::{config::Settings,domain::now_ms,engine::Engine};
@@ -28,7 +28,7 @@ fn pending()->&'static Mutex<HashMap<String,Pending>>{
 fn random()->String{
  let mut bytes=[0u8;32];OsRng.fill_bytes(&mut bytes);URL_SAFE_NO_PAD.encode(bytes)
 }
-fn valid_provider(id:&str)->bool{matches!(id,"github"|"google"|"youtube")}
+fn valid_provider(id:&str)->bool{matches!(id,"github"|"google")}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 struct App{client_id:String,client_secret:String}
@@ -147,7 +147,7 @@ pub fn routes()->Router<Arc<Engine>>{
 }
 async fn providers(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let store=read(&engine.settings).map_err(bad)?;
- let rows=["github","google","youtube"].iter().map(|id|{
+ let rows=["github","google"].iter().map(|id|{
   json!({"id":id,"configured":store.apps.contains_key(*id),
    "callback":callback_url(&engine.settings,id).ok()})
  }).collect::<Vec<_>>();
@@ -155,7 +155,7 @@ async fn providers(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
 }
 async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let store=read(&engine.settings).map_err(bad)?;
- Ok(Json(json!(store.accounts.iter().map(|(provider,account)|json!({
+ Ok(Json(json!(store.accounts.iter().filter(|(provider,_)|valid_provider(provider)).map(|(provider,account)|json!({
   "id":provider,"provider":provider,"displayName":account.display_name,
   "hasToken":!account.access_token.is_empty()||!account.refresh_token.is_empty(),
   "scopes":account.scopes
@@ -192,10 +192,7 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str)->Resul
   if id=="github"{
    p.append_pair("scope","read:user user:email");
   }else{
-   let scopes=if id=="youtube"{
-    "openid email profile https://www.googleapis.com/auth/youtube.upload"
-   }else{"openid email profile"};
-   p.append_pair("scope",scopes)
+   p.append_pair("scope","openid email profile")
     .append_pair("access_type","offline")
     .append_pair("prompt","consent")
     .append_pair("code_challenge",&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
@@ -293,40 +290,6 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
 }
 async fn open_unavailable()->Result<Json<Value>,Fault>{
  Err((StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"Native desktop popup requires an installed desktop bridge. Use browser OAuth login."}))))
-}
-/// For authenticated native video integrations. A Google refresh is persisted
-/// before returning; an expired access token is never silently reused.
-pub async fn youtube_token(settings:&Settings)->Result<String,String>{
- let record=read(settings)?.accounts.remove("youtube").ok_or("YouTube account is not connected")?;
- if !record.access_token.is_empty()&&record.expires_at_ms>now_ms().saturating_add(60_000){
-  return Ok(record.access_token);
- }
- if record.refresh_token.is_empty(){return Err("YouTube access expired; reconnect account".into());}
- let app=read(settings)?.apps.remove("youtube").ok_or("YouTube OAuth app not configured")?;
- let http=client()?;
- let response=http.post("https://oauth2.googleapis.com/token")
-  .form(&[("client_id",app.client_id.as_str()),("client_secret",app.client_secret.as_str()),
-   ("refresh_token",record.refresh_token.as_str()),("grant_type","refresh_token")])
-  .send().await.map_err(|e|e.to_string())?;
- if !response.status().is_success(){return Err(format!("YouTube refresh HTTP {}",response.status()));}
- let data:Value=response.json().await.map_err(|e|e.to_string())?;
- let access=data["access_token"].as_str().ok_or("Google refresh token response missing access_token")?;
- let _held=lock();
- let mut state=read(settings)?;
- let row=state.accounts.get_mut("youtube").ok_or("YouTube connection was removed")?;
- row.access_token=access.to_owned();
- row.expires_at_ms=now_ms().saturating_add(data["expires_in"].as_u64().unwrap_or(3600)*1000);
- write(settings,&state)?;
- Ok(access.to_owned())
-}
-pub fn youtube_public(settings:&Settings)->Option<Value>{
- let state=read(settings).ok()?;
- let user=state.accounts.get("youtube")?;
- Some(json!({"displayName":user.display_name,"scopes":user.scopes}))
-}
-pub fn youtube_connection(settings:&Settings)->bool{
- read(settings).ok().is_some_and(|s|s.accounts.get("youtube")
-  .is_some_and(|row|!row.access_token.is_empty()||!row.refresh_token.is_empty()))
 }
 #[cfg(test)]
 mod tests{
