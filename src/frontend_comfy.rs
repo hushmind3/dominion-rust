@@ -243,6 +243,26 @@ pub async fn catalog(settings:&Settings)->Vec<Value>{
  items
 }
 /// Check optional video GGUF loader availability in the connected ComfyUI.
+/// Check that the active video generation workflow has its required node family.
+pub async fn video_nodes_ready(cfg:&Config)->bool{
+ let nodes:&[&str]=if cfg.video_model.starts_with("unet/"){
+  &["UnetLoaderGGUF"]
+ }else if cfg.video_model.contains("ltx-video-2b"){
+  &["EmptyLTXVLatentVideo","LTXVConditioning","LTXVScheduler"]
+ }else if cfg.video_model.contains("hunyuanvideo1.5"){
+  &["EmptyHunyuanVideo15Latent","DualCLIPLoader"]
+ }else{return true;};
+ let Ok(base)=valid_url(&cfg.comfy_url)else{return false;};
+ let Ok(http)=client()else{return false;};
+ for name in nodes{
+  let response=http.get(format!("{base}/object_info/{name}"))
+   .timeout(Duration::from_secs(3)).send().await;
+  let Ok(response)=response else{return false;};
+  let Ok(data)=json_response(response,512*1024).await else{return false;};
+  if data.get(name).is_none(){return false;}
+ }
+ true
+}
 pub async fn gguf_ready(cfg:&Config)->bool{
  let Ok(url)=valid_url(&cfg.comfy_url)else{return false;};
  let Ok(http)=client()else{return false;};
@@ -355,7 +375,7 @@ fn fill_template(workflow:&Value,params:&Create,cfg:&Config)->Result<Value,Strin
      "seed"|"noise_seed"=>Some(json!(chosen_seed)),
      "steps"=>Some(json!(cfg.steps)),
      "frame_rate"|"fps"=>Some(json!(params.fps)),
-     "length" if class=="Wan22ImageToVideoLatent"=>Some(json!(wan_frames)),
+     "length" if matches!(class.as_str(),"Wan22ImageToVideoLatent"|"EmptyLTXVLatentVideo"|"EmptyHunyuanVideo15Latent")=>Some(json!(wan_frames)),
      "num_frames"|"frames"|"length"=>Some(json!(frames)),
      "width"=>Some(json!(width)),
      "height"=>Some(json!(height)),
