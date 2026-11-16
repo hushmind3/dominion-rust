@@ -215,6 +215,17 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/system/pick-folder",post(pick_folder))
   .route("/audit",get(audit))
   .route("/browser/status",get(browser_status))
+  .route("/dev/update",get(update_unavailable).post(update_unavailable))
+  .route("/dev/jobs/{id}",get(dev_job_missing))
+}
+// The settings screen still asks for update status. Packaged builds use the
+// signed release channel, so this install reports "unsupported" instead of
+// failing the request.
+async fn update_unavailable()->(StatusCode,Json<Value>){
+ (StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"Self-update requires a verified installer and restart supervisor; execution is not configured."})))
+}
+async fn dev_job_missing()->(StatusCode,Json<Value>){
+ (StatusCode::NOT_FOUND,Json(json!({"error":"developer job not found"})))
 }
 async fn pick_folder(State(engine):State<Arc<Engine>>)->Json<Value>{
  // A headless server cannot open a native picker. Report the connected
