@@ -8,6 +8,7 @@ import {Button,SelectInput,TextArea,TextInput} from './Primitives'
 import {FormField,Notice,Panel,useRemote} from './UI'
 import {downloadApiVideo,getApiVideoPreview,post} from '../api'
 import {VideoModelInstaller} from './VideoModelInstaller'
+import {VideoShotRevision} from './VideoShotRevision'
 import {useJob} from '../hooks/useJob'
 
 type Engine='native'|'comfyui'
@@ -22,6 +23,9 @@ type Production={
  script:string;shots:Shot[];tags:string[];
  videoId?:string|null;uploadId?:string|null;uploadUrl?:string|null;
   completedShots?:number;renderedShotIds?:string[];
+ visualBible?:string;scriptAttempts?:number;
+ artifactRevisionId?:string|null;revisionCount?:number;
+ regeneratingShot?:number|null;revisionError?:string|null;
  artifactBytes?:number|null;measuredSeconds?:number|null;
  error?:string;outputUrl?:string|null;createdAt?:string
 }
@@ -71,7 +75,8 @@ export function VideoAutoStudio({
  const [previewError,setPreviewError]=useState('')
  const [previewBusy,setPreviewBusy]=useState(false)
  const [showScript,setShowScript]=useState(false)
- const producing=jobs.value.some(item=>item.status==='running')||current?.status==='running'
+ const producing=jobs.value.some(item=>item.status==='running'||item.regeneratingShot!=null)||
+  current?.status==='running'||current?.regeneratingShot!=null
  const canRun=topic.trim().length>0&&!sending&&
   (engine==='native'?nativeReady:comfyReady)&&(!autoPublish||youtubeConnected)
  useEffect(()=>{
@@ -86,9 +91,12 @@ export function VideoAutoStudio({
  },[engine,duration])
  useEffect(()=>{
   if(!producing)return
-  const timer=window.setInterval(()=>void jobs.reload(),4000)
+  const timer=window.setInterval(()=>{
+   void jobs.reload()
+   if(chosen)void active.reload()
+  },4000)
   return()=>window.clearInterval(timer)
- },[producing,jobs.reload])
+ },[producing,jobs.reload,chosen,active.reload])
  useEffect(()=>{
   if(!current?.outputUrl||!['ready','published'].includes(current.status)){
    setPreview('');setPreviewError('');setPreviewBusy(false);return
@@ -103,7 +111,7 @@ export function VideoAutoStudio({
    if(!controller.signal.aborted)setPreviewError((e as Error).message)
   }).finally(()=>{if(!controller.signal.aborted)setPreviewBusy(false)})
   return()=>{controller.abort();if(url)URL.revokeObjectURL(url)}
- },[current?.videoId,current?.status,current?.outputUrl])
+ },[current?.videoId,current?.status,current?.outputUrl,current?.artifactRevisionId])
  const start=async()=>{
   if(!canRun)return
   setSending(true);setError('');setMessage('')
@@ -296,6 +304,8 @@ export function VideoAutoStudio({
          <span className="shrink-0 text-[10px] text-[#A18F81]">{shot.seconds}초{current.visualEngine==='comfyui'&&index<(current.completedShots||0)?' · 완성':''}</span>
         </div>)}
        </div>
+       {current.visualEngine==='comfyui'&&<VideoShotRevision job={current}
+        onRefresh={async()=>{await Promise.all([jobs.reload(),active.reload()])}}/>}
        <button type="button" onClick={()=>setShowScript(!showScript)} className="mt-4 text-[11px] font-semibold text-[#B56C4E] hover:underline">
         {showScript?'대본 접기':'전체 내레이션 대본 보기'}
        </button>
@@ -317,7 +327,7 @@ export function VideoAutoStudio({
        </div>
        <div className="grid grid-cols-2 gap-2">
         <Button variant="secondary" onClick={()=>void download()} disabled={!current.videoId}><Download size={14}/> 영상 저장</Button>
-        <Button variant="primary" onClick={()=>current.videoId&&onPublish(current.videoId)} disabled={!current.videoId||current.status==='published'}><CloudUpload size={14}/> 수동 게시</Button>
+        <Button variant="primary" onClick={()=>current.videoId&&onPublish(current.videoId)} disabled={!current.videoId||current.status==='published'||current.regeneratingShot!=null}><CloudUpload size={14}/> 수동 게시</Button>
        </div>
        {!!current.uploadUrl&&<a href={current.uploadUrl} target="_blank" rel="noopener noreferrer"
         className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#B96B4B] hover:underline">
