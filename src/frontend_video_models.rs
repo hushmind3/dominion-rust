@@ -32,16 +32,52 @@ const WAN22:[Asset;3]=[
 const PACK_ID:&str="wan22-ti2v-5b";
 const QUANT_REPO:&str="QuantStack/Wan2.2-TI2V-5B-GGUF";
 #[derive(Clone,Copy)]
-struct Variant{ id:&'static str,label:&'static str,format:&'static str,filename:&'static str,estimate:u64 }
-const VARIANTS:[Variant;7]=[
- Variant{id:"q3_k_m",label:"Q3_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q3_K_M.gguf",estimate:2_550_000_000},
- Variant{id:"q4_k_s",label:"Q4_K_S",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_S.gguf",estimate:3_120_000_000},
- Variant{id:"q4_k_m",label:"Q4_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_M.gguf",estimate:3_430_000_000},
- Variant{id:"q5_k_m",label:"Q5_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q5_K_M.gguf",estimate:3_810_000_000},
- Variant{id:"q6_k",label:"Q6_K",format:"gguf",filename:"Wan2.2-TI2V-5B-Q6_K.gguf",estimate:4_210_000_000},
- Variant{id:"q8_0",label:"Q8_0",format:"gguf",filename:"Wan2.2-TI2V-5B-Q8_0.gguf",estimate:5_400_000_000},
- Variant{id:"fp16",label:"FP16",format:"safetensors",filename:"wan2.2_ti2v_5B_fp16.safetensors",estimate:9_310_000_000}
+struct Variant{family:&'static str,id:&'static str,label:&'static str,format:&'static str,filename:&'static str,estimate:u64}
+const VARIANTS:[Variant;9]=[
+ Variant{family:PACK_ID,id:"q3_k_m",label:"Q3_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q3_K_M.gguf",estimate:2_550_000_000},
+ Variant{family:PACK_ID,id:"q4_k_s",label:"Q4_K_S",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_S.gguf",estimate:3_120_000_000},
+ Variant{family:PACK_ID,id:"q4_k_m",label:"Q4_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_M.gguf",estimate:3_430_000_000},
+ Variant{family:PACK_ID,id:"q5_k_m",label:"Q5_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q5_K_M.gguf",estimate:3_810_000_000},
+ Variant{family:PACK_ID,id:"q6_k",label:"Q6_K",format:"gguf",filename:"Wan2.2-TI2V-5B-Q6_K.gguf",estimate:4_210_000_000},
+ Variant{family:PACK_ID,id:"q8_0",label:"Q8_0",format:"gguf",filename:"Wan2.2-TI2V-5B-Q8_0.gguf",estimate:5_400_000_000},
+ Variant{family:PACK_ID,id:"fp16",label:"FP16",format:"safetensors",filename:"wan2.2_ti2v_5B_fp16.safetensors",estimate:9_310_000_000},
+ Variant{family:"ltx-video-2b",id:"ltx2b-fp16",label:"FP16",format:"safetensors",filename:"ltx-video-2b-v0.9.safetensors",estimate:4_180_000_000},
+ Variant{family:"hunyuan-video-15",id:"hunyuan15-fp16",label:"FP16",format:"safetensors",filename:"hunyuanvideo1.5_720p_t2v_fp16.safetensors",estimate:15_510_000_000}
 ];
+const LTX_ASSETS:[Asset;2]=[
+ Asset{folder:"checkpoints",name:"ltx-video-2b-v0.9.safetensors",
+  repo:"Lightricks/LTX-Video",estimate:4_180_000_000},
+ Asset{folder:"text_encoders",name:"t5xxl_fp16.safetensors",
+  repo:"comfyanonymous/flux_text_encoders",estimate:9_800_000_000}
+];
+const HUNYUAN_ASSETS:[Asset;4]=[
+ Asset{folder:"diffusion_models",name:"hunyuanvideo1.5_720p_t2v_fp16.safetensors",
+  repo:"Comfy-Org/HunyuanVideo_1.5_repackaged",estimate:15_510_000_000},
+ Asset{folder:"text_encoders",name:"qwen_2.5_vl_7b_fp8_scaled.safetensors",
+  repo:"Comfy-Org/HunyuanVideo_1.5_repackaged",estimate:8_740_000_000},
+ Asset{folder:"text_encoders",name:"byt5_small_glyphxl_fp16.safetensors",
+  repo:"Comfy-Org/HunyuanVideo_1.5_repackaged",estimate:418_000_000},
+ Asset{folder:"vae",name:"hunyuanvideo15_vae_fp16.safetensors",
+  repo:"Comfy-Org/HunyuanVideo_1.5_repackaged",estimate:2_350_000_000}
+];
+fn family_label(id:&str)->&'static str{
+ match id{
+  PACK_ID=>"Wan 2.2 TI2V 5B",
+  "ltx-video-2b"=>"LTX-Video 2B",
+  "hunyuan-video-15"=>"HunyuanVideo 1.5",
+  _=>"Unknown"
+ }
+}
+fn family_note(id:&str)->&'static str{
+ match id{
+  PACK_ID=>"8GB GPU offloading supported in ComfyUI; Q* requires ComfyUI-GGUF",
+  "ltx-video-2b"=>"Lower-compute LTX motion video; compatible LTXV core nodes required",
+  "hunyuan-video-15"=>"High-quality 720p text-to-video; 14GB+ GPU memory class recommended",
+  _=>""
+ }
+}
+fn workflow_name(v:Variant)->String{format!("Dominion · {}",family_label(v.family))}
+
 fn variant(id:&str)->Option<Variant>{VARIANTS.iter().find(|v|v.id==id).copied()}
 fn selected_variant(settings:&Settings)->Variant{
  let name=crate::frontend_comfy::config(settings).map(|cfg|cfg.video_model).unwrap_or_default();
@@ -49,13 +85,22 @@ fn selected_variant(settings:&Settings)->Variant{
   .unwrap_or_else(||variant("q4_k_m").unwrap())
 }
 fn model_asset(v:Variant)->Asset{
+ if v.family=="ltx-video-2b"{return LTX_ASSETS[0];}
+ if v.family=="hunyuan-video-15"{return HUNYUAN_ASSETS[0];}
  if v.format=="gguf"{Asset{folder:"unet",name:v.filename,repo:QUANT_REPO,estimate:v.estimate}}
  else{WAN22[0]}
 }
-fn assets_for(v:Variant)->[Asset;3]{[model_asset(v),WAN22[1],WAN22[2]]}
+fn assets_for(v:Variant)->Vec<Asset>{
+ match v.family{
+  "ltx-video-2b"=>LTX_ASSETS.to_vec(),
+  "hunyuan-video-15"=>HUNYUAN_ASSETS.to_vec(),
+  _=>vec![model_asset(v),WAN22[1],WAN22[2]]
+ }
+}
 fn estimated_total(v:Variant)->u64{assets_for(v).iter().map(|a|a.estimate).sum()}
 fn remote_path(asset:Asset)->String{
- if asset.repo==QUANT_REPO{asset.name.to_string()}
+ if asset.repo==QUANT_REPO||asset.repo=="Lightricks/LTX-Video"||
+    asset.repo=="comfyanonymous/flux_text_encoders"{asset.name.to_string()}
  else{format!("split_files/{}/{}",asset.folder,asset.name)}
 }
 const MAX_BYTES:u64=24*1024*1024*1024;
@@ -198,22 +243,32 @@ pub(crate) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
  let (bytes,installed,files)=progress(&root,selected);
  let variants=VARIANTS.iter().map(|v|{
   let (_,ready,_)=progress(&root,*v);
-  json!({"id":v.id,"label":v.label,"format":v.format,"name":format!("Wan 2.2 TI2V 5B · {}",v.label),
+  json!({"id":v.id,"family":v.family,"familyName":family_label(v.family),
+   "label":v.label,"format":v.format,"name":format!("{} · {}",family_label(v.family),v.label),
    "modelBytes":v.estimate,"downloadBytes":estimated_total(*v),
    "installed":ready,"requiresExtension":v.format=="gguf",
-   "source":if v.format=="gguf"{QUANT_REPO}else{"Comfy-Org/Wan_2.2_ComfyUI_Repackaged"}})
+   "source":model_asset(*v).repo})
  }).collect::<Vec<_>>();
  Json(json!({
-  "id":PACK_ID,"name":"Wan 2.2 TI2V 5B",
+  "id":PACK_ID,"name":family_label(selected.family),
+  "families":[
+   {"id":PACK_ID,"name":family_label(PACK_ID),"task":"text-to-video / image-to-video",
+    "details":family_note(PACK_ID),"recommended":true},
+   {"id":"ltx-video-2b","name":family_label("ltx-video-2b"),
+    "task":"text-to-video","details":family_note("ltx-video-2b")},
+   {"id":"hunyuan-video-15","name":family_label("hunyuan-video-15"),
+    "task":"text-to-video","details":family_note("hunyuan-video-15")}
+  ],
+  "selectedFamily":selected.family,
   "kind":"video","variants":variants,"selectedVariant":selected.id,
   "format":selected.format,"requiresExtension":selected.format=="gguf",
-  "label":"8GB VRAM 오프로딩 영상 생성 모델",
-  "origin":"Comfy-Org 공식 ComfyUI 워크플로",
+  "label":family_note(selected.family),
+  "origin":model_asset(selected).repo,
   "estimatedBytes":estimated_total(selected),
   "modelsDir":root.to_string_lossy().to_string(),
   "managedLibrary":discovered.is_none()&&root==default_root(&engine.settings),
   "installed":installed,"configured":crate::frontend_comfy::config(&engine.settings)
-   .ok().is_some_and(|cfg|cfg.workflow_name=="Dominion · Wan 2.2 TI2V 5B"&&cfg.video_model.ends_with(selected.filename)),
+   .ok().is_some_and(|cfg|cfg.workflow_name==workflow_name(selected)&&cfg.video_model.ends_with(selected.filename)),
   "state":if state.state.is_empty(){if installed{"installed"}else{"idle"}}else{&state.state},
   "currentFile":state.file,"error":state.error,
   "downloadedBytes":if state.state=="downloading"{state.bytes.max(bytes)}else{bytes},
@@ -286,7 +341,8 @@ fn client()->Result<Client,String>{
   .build().map_err(|e|e.to_string())
 }
 async fn metadata(client:&Client,asset:Asset)->Result<(u64,String),String>{
- let folder=if asset.repo==QUANT_REPO{String::new()}else{
+ let folder=if asset.repo==QUANT_REPO||asset.repo=="Lightricks/LTX-Video"||
+  asset.repo=="comfyanonymous/flux_text_encoders"{String::new()}else{
   format!("/split_files/{}",asset.folder)
  };
  let url=format!("https://huggingface.co/api/models/{}/tree/main{}",asset.repo,folder);
@@ -422,18 +478,22 @@ async fn install_assets(settings:&Settings,root:&Path,selected:Variant,cancelled
  }
  // Official template is checked into Dominion and contains only ComfyUI's
  // built-in nodes. No arbitrary code or download-time workflow is executed.
- let mut workflow:Value=serde_json::from_str(include_str!("wan22_5b_api.json"))
-  .map_err(|e|e.to_string())?;
- if selected.format=="gguf"{
+ let workflow_json=match selected.family{
+  "ltx-video-2b"=>include_str!("ltxv_2b_api.json"),
+  "hunyuan-video-15"=>include_str!("hunyuan15_720p_api.json"),
+  _=>include_str!("wan22_5b_api.json")
+ };
+ let mut workflow:Value=serde_json::from_str(workflow_json).map_err(|e|e.to_string())?;
+ if selected.family==PACK_ID&&selected.format=="gguf"{
   workflow["37"]["class_type"]=json!("UnetLoaderGGUF");
   workflow["37"]["inputs"]=json!({"unet_name":selected.filename});
  }
  crate::frontend_comfy::update(settings,&json!({
   "engine":"comfyui",
   "comfyWorkflow":workflow,
-  "comfyWorkflowName":"Dominion · Wan 2.2 TI2V 5B",
+  "comfyWorkflowName":workflow_name(selected),
   "videoModel":format!("{}/{}",model_asset(selected).folder,selected.filename),
-  "resolution":"480x832",
+  "resolution":if selected.family=="hunyuan-video-15"{"832x480"}else{"480x832"},
   "steps":20
  }))?;
  Ok(())
@@ -479,7 +539,7 @@ mod tests{
  }
  #[test]
  fn curated_video_only_precision_catalog_uses_real_quantized_files(){
-  assert_eq!(VARIANTS.len(),7);
+  assert_eq!(VARIANTS.len(),9);
   assert!(estimated_total(variant("q4_k_m").unwrap())<estimated_total(variant("q8_0").unwrap()));
   assert!(estimated_total(variant("q8_0").unwrap())<estimated_total(variant("fp16").unwrap()));
   assert_eq!(assets_for(variant("q4_k_m").unwrap())[0].folder,"unet");
@@ -487,6 +547,16 @@ mod tests{
   assert_eq!(assets_for(variant("q4_k_m").unwrap())[1].name,assets_for(variant("fp16").unwrap())[1].name);
   assert_eq!(remote_path(model_asset(variant("q4_k_m").unwrap())),"Wan2.2-TI2V-5B-Q4_K_M.gguf");
   assert!(variant("text-llm").is_none());
+  assert_eq!(assets_for(variant("ltx2b-fp16").unwrap()).len(),2);
+  assert_eq!(assets_for(variant("hunyuan15-fp16").unwrap()).len(),4);
+  for raw in [include_str!("wan22_5b_api.json"),include_str!("ltxv_2b_api.json"),
+              include_str!("hunyuan15_720p_api.json")]{
+   let graph:Value=serde_json::from_str(raw).unwrap();
+   assert!(graph.as_object().unwrap().values().any(|n|n["class_type"]=="SaveVideo"));
+   assert!(graph.as_object().unwrap().values().any(|n|
+    n["inputs"].as_object().is_some_and(|m|m.values().any(|x|
+      x.as_str().is_some_and(|s|s.contains("{{PROMPT}}"))))));
+  }
  }
  #[test]
  fn rejects_paths_without_existing_comfyui_model_directory(){
