@@ -8,7 +8,6 @@ const CapabilitiesPage=lazy(()=>import('./pages/Capabilities').then(module=>({de
 const MemoryPage=lazy(()=>import('./pages/Memory').then(module=>({default:module.MemoryPage})))
 const WorkflowsPage=lazy(()=>import('./pages/Workflows').then(module=>({default:module.WorkflowsPage})))
 const ChatPage=lazy(()=>import('./pages/Chat').then(module=>({default:module.ChatPage})))
-const VideoPage=lazy(()=>import('./pages/Video').then(module=>({default:module.VideoPage})))
 const ModelHub=lazy(()=>import('./pages/Models').then(module=>({default:module.ModelHub})))
 const AgentsPage=lazy(()=>import('./pages/Agents').then(module=>({default:module.AgentsPage})))
 const RoomsPage=lazy(()=>import('./pages/Rooms').then(module=>({default:module.RoomsPage})))
@@ -16,7 +15,6 @@ const ExtensionsPage=lazy(()=>import('./pages/Extensions').then(module=>({defaul
 const ConnectionsPage=lazy(()=>import('./pages/Connections').then(module=>({default:module.ConnectionsPage})))
 const OperationsPage=lazy(()=>import('./pages/Operations').then(module=>({default:module.OperationsPage})))
 const DeveloperPage=lazy(()=>import('./pages/Developer').then(module=>({default:module.DeveloperPage})))
-const SelfImprovementPage=lazy(()=>import('./pages/SelfImprovement').then(module=>({default:module.SelfImprovementPage})))
 
 
 // A running tab retains the entry bundle from the moment it was opened.
@@ -197,14 +195,12 @@ export default function App(){
     {page==='memory'&&<MemoryPage/>}
     {page==='workflows'&&<WorkflowsPage openSession={id=>navigate('chat',id)}/>}
     {page==='chat'&&<ChatPage key={chatDraft} sessionId={session} initialAgent={agent} initialProvider={provider} initialModel={model} onSession={id=>{if(locationState().page==='chat')navigate('chat',id)}} openModels={()=>navigate('models')}/>}
-    {page==='video'&&<VideoPage navigate={navigate}/>}
     {page==='models'&&<ModelHub/>}
     {page==='agents'&&<AgentsPage/>}
     {page==='rooms'&&<RoomsPage openSession={id=>navigate('chat',id)}/>}
     {page==='extensions'&&<ExtensionsPage/>}
     {page==='connections'&&<ConnectionsPage/>}
     {page==='developer'&&<DeveloperPage/>}
-    {page==='rsi'&&<SelfImprovementPage/>}
     {(page==='automations'||page==='activity'||page==='settings')&&<OperationsPage section={page}/>}
     </Suspense>
     </PageLoadBoundary>
