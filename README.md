@@ -102,6 +102,14 @@ The legacy archive is a separate SQLite store with an indexed `(kind,updated_at,
 
 **Concurrency and failure:** SQLite transactions protect each archival batch. Frontend copy, provider import and historical archiving remain separate, explicitly retryable operations. No cross-database atomicity is claimed; failures show which operation did not complete. Users retain the original database.
 
+## November 17 — audit-driven runtime and GitHub connection improvements
+
+- **Run persistence:** per-Run write gates keep fsync-backed atomic persistence, with no global Run-map mutex held during file writes. Durability and uncertain-effect safeguards remain.
+- **GitHub workflow:** connected repository permission is requested separately from identity login. An authenticated native tool can list repositories, read an exact file+branch SHA, request approval for a file commit and verify the remote result with a fresh GitHub GET. Unknown remote write outcomes stop for reconciliation, not blind replay.
+- **Google/MCP boundary:** Google identity OAuth is not Drive/Docs access; MCP retains independent per-resource tokens. OAuth app Client ID/Secret configuration is still required.
+- **Regression:** same-Run serialization, independent-Run updates, permission separation, mock GitHub commit+readback and missing-approval protection.
+- **Scope:** the source and tests, with limitations and unmeasured claims, are described in [Sub4 five-branch audit response](docs/SUB4_AUDIT_RESPONSE_2026-11-17.md).
+
 ## Verification
 
 ```bash
