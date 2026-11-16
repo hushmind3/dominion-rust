@@ -623,14 +623,14 @@ pub async fn reconcile_remote(settings:&Settings,id:Uuid)->Result<Job,String>{
    row.status="completed".into();row.bytes=bytes;row.format=Some(format);
    row.error=None;
   })?;
-  return get(settings,id)?.ok_or("recovered ComfyUI job missing");
+  return get(settings,id)?.ok_or_else(||"recovered ComfyUI job missing".to_owned());
  }
  if entry["status"]["status_str"]=="error"{
   change(settings,id,|row|{
    row.status="failed".into();
    row.error=Some("ComfyUI returned a terminal error for the prior remote prompt".into());
   })?;
-  return get(settings,id)?.ok_or("failed ComfyUI job missing");
+  return get(settings,id)?.ok_or_else(||"failed ComfyUI job missing".to_owned());
  }
  Err("Previous remote ComfyUI render is incomplete or has no video receipt; it was not replayed".into())
 }
