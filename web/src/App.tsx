@@ -161,14 +161,18 @@ export default function App(){
   const poll=setInterval(()=>{void check()},12000)
   const stream=new EventSource('/api/events')
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  const pendingEventTypes=new Set<string>()
   stream.onmessage=event=>{
    try{
     const item=JSON.parse(event.data)
     if(item.type==='room_event'){window.dispatchEvent(new CustomEvent('dominion-room-event',{detail:item}));return}
     if(['record','message','job_event','audit','approval','channel_status','goal_event','execution_event'].includes(item.type)){
+     pendingEventTypes.add(item.type)
      refreshTimer ??= setTimeout(()=>{
       refreshTimer=undefined
-      window.dispatchEvent(new Event('dominion-refresh'))
+      const types=Array.from(pendingEventTypes)
+      pendingEventTypes.clear()
+      window.dispatchEvent(new CustomEvent('dominion-refresh',{detail:{types}}))
      },100)
      if(item.type==='approval')void approvals()
      if(item.type==='job_event'||item.type==='goal_event'||item.type==='execution_event')void check()
