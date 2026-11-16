@@ -1,4 +1,4 @@
-# Dominion sub4 — current harness architecture (November 16, 2026)
+# Dominion sub4 — current harness architecture (November 17, 2026)
 
 ## Scope
 
@@ -45,6 +45,14 @@ User / Chat / TypeScript SDK / HTTP
 - `src/frontend_system.rs`: encrypted backup/restore and maintenance.
 
 The removed video/RSI execution modules are no longer compiled or initialized. Existing files in `DOMINION_DATA_DIR` are **not** deleted or rewritten as a side effect of module removal. A separate, reviewed migration would be required to export historical retired-format records for new UI viewing. Native chat, Run and memory stores retain their ordinary on-disk formats.
+
+## Main SQLite read-only compatibility boundary
+
+Main's `records(kind,id,data)` and `messages` tables are read through a **query-only SQLite snapshot**, never opened for schema updates or writes. `src/legacy_import.rs` converts supported agents, active private sessions and messages into `FrontendStore`'s copy-on-write/fsync snapshot, preserving original message IDs and inert tool metadata. The same loader also previews supported provider records, which `Registry::import_disabled` persists with **no credentials and enabled=false**. Existing IDs are never replaced.
+
+The copy is operator-triggered from the existing Operations/Settings page, the native Rust SDK, or the thin TypeScript adapter. There is no automatic boot migration, secret substitution or replay of old jobs. Incomplete migrations remain retriable because each target store skips existing IDs. The main DB and WAL remain independent and unchanged.
+
+Archived/room/channel sessions, the old vault, memory and execution artifacts are **not imported by this path**. The 8 MiB frontend JSON cap remains and prevents a too-large copy from committing. A full migration needs explicit compatibility semantics and separate tests for those historical formats.
 
 ## Provider and pricing boundary
 
