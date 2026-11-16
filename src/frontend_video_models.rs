@@ -30,10 +30,38 @@ const WAN22:[Asset;3]=[
   repo:"Comfy-Org/Wan_2.2_ComfyUI_Repackaged",estimate:1_310_000_000},
 ];
 const PACK_ID:&str="wan22-ti2v-5b";
+const QUANT_REPO:&str="QuantStack/Wan2.2-TI2V-5B-GGUF";
+#[derive(Clone,Copy)]
+struct Variant{ id:&'static str,label:&'static str,format:&'static str,filename:&'static str,estimate:u64 }
+const VARIANTS:[Variant;7]=[
+ Variant{id:"q3_k_m",label:"Q3_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q3_K_M.gguf",estimate:2_550_000_000},
+ Variant{id:"q4_k_s",label:"Q4_K_S",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_S.gguf",estimate:3_120_000_000},
+ Variant{id:"q4_k_m",label:"Q4_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q4_K_M.gguf",estimate:3_430_000_000},
+ Variant{id:"q5_k_m",label:"Q5_K_M",format:"gguf",filename:"Wan2.2-TI2V-5B-Q5_K_M.gguf",estimate:3_810_000_000},
+ Variant{id:"q6_k",label:"Q6_K",format:"gguf",filename:"Wan2.2-TI2V-5B-Q6_K.gguf",estimate:4_210_000_000},
+ Variant{id:"q8_0",label:"Q8_0",format:"gguf",filename:"Wan2.2-TI2V-5B-Q8_0.gguf",estimate:5_400_000_000},
+ Variant{id:"fp16",label:"FP16",format:"safetensors",filename:"wan2.2_ti2v_5B_fp16.safetensors",estimate:9_310_000_000}
+];
+fn variant(id:&str)->Option<Variant>{VARIANTS.iter().find(|v|v.id==id).copied()}
+fn selected_variant(settings:&Settings)->Variant{
+ let name=crate::frontend_comfy::config(settings).map(|cfg|cfg.video_model).unwrap_or_default();
+ VARIANTS.iter().find(|v|name.ends_with(v.filename)).copied()
+  .unwrap_or_else(||variant("q4_k_m").unwrap())
+}
+fn model_asset(v:Variant)->Asset{
+ if v.format=="gguf"{Asset{folder:"unet",name:v.filename,repo:QUANT_REPO,estimate:v.estimate}}
+ else{WAN22[0]}
+}
+fn assets_for(v:Variant)->[Asset;3]{[model_asset(v),WAN22[1],WAN22[2]]}
+fn estimated_total(v:Variant)->u64{assets_for(v).iter().map(|a|a.estimate).sum()}
+fn remote_path(asset:Asset)->String{
+ if asset.repo==QUANT_REPO{asset.name.to_string()}
+ else{format!("split_files/{}/{}",asset.folder,asset.name)}
+}
 const MAX_BYTES:u64=24*1024*1024*1024;
 #[derive(Default)]
 struct Active{
- state:String,file:String,bytes:u64,total:u64,error:String,
+ state:String,file:String,variant:String,bytes:u64,total:u64,error:String,
  cancel:Option<Arc<AtomicBool>>
 }
 static ACTIVE:OnceLock<Mutex<Active>>=OnceLock::new();
@@ -137,9 +165,10 @@ fn choose_root(settings:&Settings)->Result<PathBuf,String>{
 }
 fn size(path:&Path)->u64{fs::metadata(path).map(|meta|meta.len()).unwrap_or(0)}
 fn target(root:&Path,file:Asset)->PathBuf{root.join(file.folder).join(file.name)}
-fn progress(root:&Path)->(u64,bool,Vec<Value>){
+fn progress(root:&Path,v:Variant)->(u64,bool,Vec<Value>){
  let mut bytes=0;let mut installed=true;
- let files=WAN22.iter().map(|file|{
+ let assets=assets_for(v);
+ let files=assets.iter().map(|file|{
   let path=target(root,*file);
   let present=size(&path);
   let partial=size(&path.with_file_name(format!("{}.part",file.name)));
@@ -162,30 +191,44 @@ pub fn routes()->Router<Arc<Engine>>{
 pub(crate) async fn status(State(engine):State<Arc<Engine>>)->Json<Value>{
  let discovered=detect_root(&engine.settings);
  let root=discovered.clone().unwrap_or_else(||default_root(&engine.settings));
- let (bytes,installed,files)=progress(&root);
  let state=active().lock().await;
+ let selected=if state.state=="downloading"||state.state=="paused"{
+  variant(&state.variant).unwrap_or_else(||selected_variant(&engine.settings))
+ }else{selected_variant(&engine.settings)};
+ let (bytes,installed,files)=progress(&root,selected);
+ let variants=VARIANTS.iter().map(|v|{
+  let (_,ready,_)=progress(&root,*v);
+  json!({"id":v.id,"label":v.label,"format":v.format,"name":format!("Wan 2.2 TI2V 5B · {}",v.label),
+   "modelBytes":v.estimate,"downloadBytes":estimated_total(*v),
+   "installed":ready,"requiresExtension":v.format=="gguf",
+   "source":if v.format=="gguf"{QUANT_REPO}else{"Comfy-Org/Wan_2.2_ComfyUI_Repackaged"}})
+ }).collect::<Vec<_>>();
  Json(json!({
   "id":PACK_ID,"name":"Wan 2.2 TI2V 5B",
+  "kind":"video","variants":variants,"selectedVariant":selected.id,
+  "format":selected.format,"requiresExtension":selected.format=="gguf",
   "label":"8GB VRAM 오프로딩 영상 생성 모델",
   "origin":"Comfy-Org 공식 ComfyUI 워크플로",
-  "estimatedBytes":WAN22.iter().map(|m|m.estimate).sum::<u64>(),
+  "estimatedBytes":estimated_total(selected),
   "modelsDir":root.to_string_lossy().to_string(),
   "managedLibrary":discovered.is_none()&&root==default_root(&engine.settings),
   "installed":installed,"configured":crate::frontend_comfy::config(&engine.settings)
-   .ok().is_some_and(|cfg|cfg.workflow_name=="Dominion · Wan 2.2 TI2V 5B"),
+   .ok().is_some_and(|cfg|cfg.workflow_name=="Dominion · Wan 2.2 TI2V 5B"&&cfg.video_model.ends_with(selected.filename)),
   "state":if state.state.is_empty(){if installed{"installed"}else{"idle"}}else{&state.state},
   "currentFile":state.file,"error":state.error,
   "downloadedBytes":if state.state=="downloading"{state.bytes.max(bytes)}else{bytes},
-  "totalBytes":if state.total>0{state.total}else{WAN22.iter().map(|m|m.estimate).sum::<u64>()},
+  "totalBytes":if state.state=="downloading"&&state.total>0{state.total}else{estimated_total(selected)},
   "files":files,
   "needsComfyRestart":installed
  }))
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
-struct InstallRequest{#[serde(default)]models_dir:Option<String>}
+struct InstallRequest{#[serde(default)]models_dir:Option<String>,#[serde(default)]variant:Option<String>}
 async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequest>)
  ->Result<(StatusCode,Json<Value>),Fault>{
+ let selected=variant(request.variant.as_deref().unwrap_or("q4_k_m"))
+  .ok_or_else(||bad("Please choose an available video model quantization."))?;
  let root=if let Some(raw)=request.models_dir.as_deref().filter(|s|!s.trim().is_empty()){
   validated_root(Path::new(raw)).map_err(bad)?
  }else{
@@ -197,7 +240,7 @@ async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequ
   if active.state=="downloading"{return Err((
    StatusCode::CONFLICT,Json(json!({"error":"영상 모델 다운로드가 진행 중입니다."}))));
   }
-  active.state="downloading".into();active.file="설치 준비".into();
+  active.state="downloading".into();active.file="설치 준비".into();active.variant=selected.id.into();
   active.error.clear();active.bytes=0;active.total=0;
   active.cancel=Some(Arc::clone(&cancelled));
  }
@@ -209,7 +252,7 @@ async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequ
  let settings=engine.settings.clone();
  let worker_root=root.clone();
  tokio::spawn(async move{
-  let outcome=install_assets(&settings,&worker_root,Arc::clone(&cancelled)).await;
+  let outcome=install_assets(&settings,&worker_root,selected,Arc::clone(&cancelled)).await;
   let mut state=active().lock().await;
   match outcome{
    Ok(())=>{state.state="installed".into();state.file="설치 완료".into();state.error.clear();},
@@ -221,7 +264,7 @@ async fn install(State(engine):State<Arc<Engine>>,Json(request):Json<InstallRequ
   state.cancel=None;
  });
  Ok((StatusCode::ACCEPTED,Json(json!({"ok":true,"model":PACK_ID,
-  "modelsDir":root.to_string_lossy(),"state":"downloading"}))))
+  "modelsDir":root.to_string_lossy(),"variant":selected.id,"state":"downloading"}))))
 }
 async fn cancel()->Json<Value>{
  let active=active().lock().await;
@@ -243,8 +286,10 @@ fn client()->Result<Client,String>{
   .build().map_err(|e|e.to_string())
 }
 async fn metadata(client:&Client,asset:Asset)->Result<(u64,String),String>{
- let url=format!("https://huggingface.co/api/models/{}/tree/main/split_files/{}",
-  asset.repo,asset.folder);
+ let folder=if asset.repo==QUANT_REPO{String::new()}else{
+  format!("/split_files/{}",asset.folder)
+ };
+ let url=format!("https://huggingface.co/api/models/{}/tree/main{}",asset.repo,folder);
  let response=client.get(url).timeout(Duration::from_secs(35)).send().await
   .map_err(|e|format!("Hugging Face metadata: {e}"))?;
  if !response.status().is_success(){return Err(format!("Hugging Face metadata HTTP {}",response.status()));}
@@ -256,7 +301,7 @@ async fn metadata(client:&Client,asset:Asset)->Result<(u64,String),String>{
   .map_err(|e|e.to_string())?;
  if payload.len()>512*1024{return Err("Hugging Face metadata too large".into());}
  let records:Value=serde_json::from_slice(&payload).map_err(|e|e.to_string())?;
- let path=format!("split_files/{}/{}",asset.folder,asset.name);
+ let path=remote_path(asset);
  let record=records.as_array().and_then(|list|list.iter().find(|row|
   row["path"].as_str()==Some(&path))).ok_or("Official model file not listed by Hugging Face")?;
  let size=record["size"].as_u64().or_else(||record["lfs"]["size"].as_u64())
@@ -291,11 +336,11 @@ fn verified_directory(root:&Path,folder:&str)->Result<PathBuf,String>{
  }
  Ok(canonical)
 }
-async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
+async fn install_assets(settings:&Settings,root:&Path,selected:Variant,cancelled:Arc<AtomicBool>)
  ->Result<(),String>{
  let client=client()?;
  let mut completed=0u64;
- for asset in WAN22{
+ for asset in assets_for(selected){
   if cancelled.load(Ordering::SeqCst){return Err("cancelled".into());}
   let folder=verified_directory(root,asset.folder)?;
   let destination=folder.join(asset.name);
@@ -311,7 +356,7 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
   {
    let mut state=active().lock().await;
    state.file=format!("{}/{}",asset.folder,asset.name);
-   state.total=WAN22.iter().map(|v|v.estimate).sum();
+   state.total=estimated_total(selected);
    state.bytes=completed;
   }
   if size(&destination)==length{
@@ -329,8 +374,7 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
    offset=0;
   }
   if offset<length{
-   let url=format!("https://huggingface.co/{}/resolve/main/split_files/{}/{}",
-    asset.repo,asset.folder,asset.name);
+   let url=format!("https://huggingface.co/{}/resolve/main/{}",asset.repo,remote_path(asset));
    let mut request=client.get(url);
    if offset>0{request=request.header(reqwest::header::RANGE,format!("bytes={offset}-"));}
    let mut response=tokio::time::timeout(Duration::from_secs(60),request.send())
@@ -378,13 +422,17 @@ async fn install_assets(settings:&Settings,root:&Path,cancelled:Arc<AtomicBool>)
  }
  // Official template is checked into Dominion and contains only ComfyUI's
  // built-in nodes. No arbitrary code or download-time workflow is executed.
- let workflow:Value=serde_json::from_str(include_str!("wan22_5b_api.json"))
+ let mut workflow:Value=serde_json::from_str(include_str!("wan22_5b_api.json"))
   .map_err(|e|e.to_string())?;
+ if selected.format=="gguf"{
+  workflow["37"]["class_type"]=json!("UnetLoaderGGUF");
+  workflow["37"]["inputs"]=json!({"unet_name":selected.filename});
+ }
  crate::frontend_comfy::update(settings,&json!({
   "engine":"comfyui",
   "comfyWorkflow":workflow,
   "comfyWorkflowName":"Dominion · Wan 2.2 TI2V 5B",
-  "videoModel":"diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+  "videoModel":format!("{}/{}",model_asset(selected).folder,selected.filename),
   "resolution":"480x832",
   "steps":20
  }))?;
@@ -426,8 +474,19 @@ mod tests{
   assert!(managed.join("vae").is_dir());
   assert!(managed.join("text_encoders").is_dir());
   assert!(managed.join("diffusion_models").is_dir());
-  assert_eq!(progress(&managed).1,false);
+  assert_eq!(progress(&managed,variant("q4_k_m").unwrap()).1,false);
   fs::remove_dir_all(data).unwrap();
+ }
+ #[test]
+ fn curated_video_only_precision_catalog_uses_real_quantized_files(){
+  assert_eq!(VARIANTS.len(),7);
+  assert!(estimated_total(variant("q4_k_m").unwrap())<estimated_total(variant("q8_0").unwrap()));
+  assert!(estimated_total(variant("q8_0").unwrap())<estimated_total(variant("fp16").unwrap()));
+  assert_eq!(assets_for(variant("q4_k_m").unwrap())[0].folder,"unet");
+  assert_eq!(assets_for(variant("fp16").unwrap())[0].folder,"diffusion_models");
+  assert_eq!(assets_for(variant("q4_k_m").unwrap())[1].name,assets_for(variant("fp16").unwrap())[1].name);
+  assert_eq!(remote_path(model_asset(variant("q4_k_m").unwrap())),"Wan2.2-TI2V-5B-Q4_K_M.gguf");
+  assert!(variant("text-llm").is_none());
  }
  #[test]
  fn rejects_paths_without_existing_comfyui_model_directory(){
