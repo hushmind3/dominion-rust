@@ -68,13 +68,13 @@ export interface StrategyEvidence {
   attempts: number; cost_krw: number; updated_at_ms: number;
 }
 export interface LegacySqlitePreview {
-  sourceAgents:number;sourceSessions:number;sourceMessages:number;
+  sourceAgents:number;sourceProviders:number;importableProviders:number;alreadyPresentProviders:number;skippedProviderRecords:number;sourceSessions:number;sourceMessages:number;
   importableAgents:number;importableSessions:number;
   alreadyPresentAgents:number;alreadyPresentSessions:number;
   skippedBoundSessions:number;skippedArchivedSessions:number;note:string;
 }
 export interface LegacySqliteImport {
-  importedAgents:number;importedSessions:number;importedMessages:number;
+  importedAgents:number;importedProviders:number;existingProviders:number;skippedProviderRecords:number;importedSessions:number;importedMessages:number;
   existingAgents:number;existingSessions:number;
   skippedBoundSessions:number;skippedArchivedSessions:number;
 }
