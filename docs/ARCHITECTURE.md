@@ -368,3 +368,11 @@ The unmodified main WorkflowsPage now calls the actual `src/frontend_workflows.r
 ### Model-only chat restart and cancellation fence (2026-11-15)
 
 Native `Run` now durably records `model_only`. The native tool runner refuses to launch such runs. On process recovery, an unfinished model-only request is durably failed with an interruption receipt instead of being replayed as an autonomous tools execution. The model-only provider HTTP future is dropped when the user cancels or its Run otherwise ceases to be running, and late responses cannot overwrite cancelled results. The existing conversation transcript reconciler sees only a confirmed completed answer. This fixes a mode-confusion risk in the previous Main Chat compatibility adapter. Changes are source-only; tests and CI were not run by user direction.
+
+## Sub4 video production and artifact lifecycle (2026-11-16)
+
+Entry: POST /api/video/productions accepts the existing NewProduction request and drives the same native Rust engine/model. ComfyUI duration 3-90 seconds is split into no more than 12 independently submitted jobs, each 3-9 seconds, and every returned child ID is durably recorded in data_dir/video-productions/jobs.json. The serde-defaulted rendered_shot_ids and completed_shots fields preserve compatibility with earlier journals. Each scene is inspected before advancing.
+
+Completed scenes are normalized and concatenated using a process-bound FFmpeg filter graph, with ffprobe validation and a temporary output renamed into data_dir/video-productions/outputs/{production-id}.mp4. The final production ID resolves via GET /api/video/jobs/{id}/content and POST /api/video/jobs/{id}/reveal. The existing YouTube uploader accepts that same ID through POST /api/video/jobs/{id}/upload, reusing OAuth and upload journal logic; no alternative YouTube transport has been added.
+
+On startup, in-flight productions are marked needs_review; no remote scene generation or upload is blindly replayed. Video model GPU charges and scene-synced narration are still outside this implementation. Generated ComfyUI child jobs are preserved rather than silently deleted. The product UI reports completed scene count and distinguishes script-model API cost from GPU compute cost.
