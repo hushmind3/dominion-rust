@@ -29,6 +29,8 @@ pub fn router()->Router<Arc<Engine>>{
     Router::new()
         .route("/health",get(health))
         .route("/status",get(status))
+        .route("/system/legacy-sqlite/preview",post(legacy_sqlite_preview))
+        .route("/system/legacy-sqlite/import",post(legacy_sqlite_import))
         .route("/events",get(global_events))
         .route("/settings/owner-profile",get(owner_profile).post(save_owner_profile))
         .route("/agents",get(agents).post(save_agent))
