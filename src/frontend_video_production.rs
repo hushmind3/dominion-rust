@@ -201,7 +201,10 @@ async fn create(State(engine):State<Arc<Engine>>,Json(input):Json<NewProduction>
  tokio::spawn(async move{
   if let Err(reason)=execute(&worker,id,input).await{
    if let Err(error)=edit(&worker.settings,id,|record|{
-    record.status="failed".into();record.error=Some(reason);
+    // Once publication starts, an HTTP timeout or crash does not prove
+    // whether YouTube accepted the upload. Never label that safe to retry.
+    record.status=if record.stage=="publishing"{"needs_review"}else{"failed"}.into();
+    record.error=Some(reason);
    }).await {tracing::error!(%error,production=%id,"unable to persist failed production");}
   }
  });
@@ -213,8 +216,15 @@ struct Script{title:String,description:String,#[serde(default)]tags:Vec<String>,
 struct Proposal{heading:String,narration:String,#[serde(default)]visual_prompt:String}
 fn storyboard(text:&str,duration:u32,comfy:bool)
  ->Result<(String,String,Vec<String>,Vec<Shot>),String>{
- let data:Script=serde_json::from_str(text.trim())
-  .map_err(|e|format!("storyboard must be strict JSON: {e}"))?;
+ // Some OpenAI-compatible models wrap valid JSON in a markdown fence.
+ // Accept only a single complete JSON document, never substring extraction.
+ let trimmed=text.trim();
+ let normalized=if trimmed.starts_with(char::from(96)){
+  trimmed.lines().skip(1).take_while(|line|!line.starts_with(char::from(96)))
+   .collect::<Vec<_>>().join("\n")
+ }else{trimmed.to_owned()};
+ let data:Script=serde_json::from_str(normalized.trim())
+  .map_err(|e|format!("storyboard must be valid JSON: {e}"))?;
  let count=data.scenes.len();
  if count==0||count>12||(comfy&&count!=1)||duration<(count as u32)*2{
   return Err("storyboard scene count does not match requested duration".into());
