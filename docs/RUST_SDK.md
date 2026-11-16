@@ -55,6 +55,12 @@ The model-facing tool set is selected in `src/policy.rs`, validated against its 
 
 After fsync, `Store::subscribe` publishes `RunUpdate` records to the React SSE adapter. A slow listener can resynchronize without requiring every idle browser connection to repeatedly request the entire Run store.
 
+## Historical archive and owner-selected memory
+
+`Dominion::archive_legacy_sqlite(path)` copies only historical records from the main SQLite file into the standalone `legacy-history.sqlite`. It does **not** schedule old jobs, load old room workers or execute saved tool calls. Records remain accessible using `list_legacy_history(kind,offset,limit)` and `legacy_history_item(kind,id)` (maximum page size 50). The archive covers old memories, room/group settings, jobs, execution/operation records, workflows, experience, strategies, sessions and messages. The source stays read-only.
+
+Old learned facts do not automatically become instructions. A user can inspect an archive entry then call `promote_legacy_memory(id,scope)` for a specific active record, which creates a separate `Knowledge` note under the chosen scope. Inactive memories and oversized/missing content are rejected; there is no implicit global promotion.
+
 ## Legacy data and main SQLite copy
 
 The main app stores chat and agent records in `runtime/dominion.sqlite`; this branch's native runtime uses separate JSON journals. Migration is **explicit**: no old data is silently overwritten or submitted as a new executable job.
