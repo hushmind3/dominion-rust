@@ -19,11 +19,8 @@ pub struct Engine {
     pub knowledge: Arc<Knowledge>,
     pub owner_profile: Arc<crate::profile::OwnerProfileStore>,
     pub frontend: Arc<crate::frontend_state::FrontendStore>,
-    pub workflows: Arc<crate::workflow::Workflows>,
     pub providers: Arc<crate::provider_registry::Registry>,
     pub extensions: Arc<crate::frontend_extensions::Extensions>,
-    pub automations: Arc<crate::automations::Automations>,
-    pub developer: Arc<crate::developer::Developer>,
     hooks: RwLock<HookChain>,
     pub(crate) model: ModelClient,
     active: Mutex<HashSet<Uuid>>,
@@ -46,16 +43,13 @@ impl Engine {
         let knowledge=Arc::new(Knowledge::open(settings.data_dir.clone())?);
         let owner_profile=Arc::new(crate::profile::OwnerProfileStore::open(settings.data_dir.clone())?);
         let frontend=Arc::new(crate::frontend_state::FrontendStore::open(settings.data_dir.clone(),&settings.main.name)?);
-        let workflows=Arc::new(crate::workflow::Workflows::open(settings.data_dir.clone())?);
         let providers=Arc::new(crate::provider_registry::Registry::open(settings.data_dir.clone())?);
         let extensions=Arc::new(crate::frontend_extensions::Extensions::open(
             settings.data_dir.clone(),mcp.servers_snapshot())?);
         mcp.initialize_servers(extensions.initial_servers())?;
-        let automations=Arc::new(crate::automations::Automations::open(settings.data_dir.clone())?);
-        let developer=crate::developer::Developer::open(settings.data_dir.clone(),settings.workspace_dir.clone())?;
         let (wake_tx,mut wake_rx)=mpsc::unbounded_channel::<Uuid>();
         let hooks=RwLock::new(HookChain::from_settings(&settings));
-        let engine=Arc::new(Self { settings, store, groups, mcp, knowledge, owner_profile, frontend, workflows, providers, extensions, automations, developer, hooks,
+        let engine=Arc::new(Self { settings, store, groups, mcp, knowledge, owner_profile, frontend, providers, extensions, hooks,
             model, active: Mutex::new(HashSet::new()), cancellation: Mutex::new(HashMap::new()), active_notify: Notify::new(), delegate_lock: Mutex::new(()), wake_tx });
         // Wakeups never recursively call launch() inside the run task. The
         // queued scheduler waits for active markers to detach and keeps only

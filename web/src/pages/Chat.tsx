@@ -199,7 +199,7 @@ export function ChatPage({sessionId,initialAgent,initialProvider,initialModel,on
     const found=await get<{name:string}[]>('/api/tools');
     setCommandInfo(t('chat.cmd.tools',{count:found.filter(x=>x.name).length,list:found.filter(x=>x.name).map(x=>x.name).join(' · ')}));return;
    }
-   if(['mcp','skills','memory','workflows','agents','settings'].includes(name)){
+   if(['mcp','skills','memory','agents','settings'].includes(name)){
     const route=name==='mcp'||name==='skills'?'extensions':name;
     window.location.hash='#/'+route;return;
    }

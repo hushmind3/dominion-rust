@@ -1,7 +1,7 @@
 //! Backup and maintenance adapter for the original Operations > Backup panel.
 //! Snapshots are authenticated-encrypted with locally stored versioned keys.
 //! Restore is staged and applied before native stores open on the next restart.
-use crate::{config::Settings,domain::{now_ms,RunStatus},engine::Engine};
+use crate::{config::Settings,domain::{now_ms,RunStatus},engine::Engine,frontend_state::timestamp};
 use axum::{extract::State,http::StatusCode,routing::{get,post},Json,Router};
 use base64::{engine::general_purpose::STANDARD,Engine as _};
 use chacha20poly1305::{XChaCha20Poly1305,XNonce,Key,aead::{Aead,KeyInit,OsRng,rand_core::RngCore}};
@@ -212,6 +212,33 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/system/backup-keys/rotate",post(rotate_backup_keys))
   .route("/system/secret-key",get(secret_status))
   .route("/system/secret-key/rotate",post(rotate_secret_unavailable))
+  .route("/system/pick-folder",post(pick_folder))
+  .route("/audit",get(audit))
+  .route("/browser/status",get(browser_status))
+}
+async fn pick_folder(State(engine):State<Arc<Engine>>)->Json<Value>{
+ // A headless server cannot open a native picker. Report the connected
+ // workspace instead of inventing a path.
+ Json(json!({"path":engine.settings.workspace_dir}))
+}
+async fn browser_status()->Json<Value>{
+ Json(json!({"status":{"available":false,"running":false},
+  "screenshot":null,"engine":"not_connected"}))
+}
+async fn audit(State(engine):State<Arc<Engine>>)->Json<Value>{
+ let mut events=engine.store.list().await.into_iter().flat_map(|run|{
+  run.events.into_iter().map(move|event|json!({
+   "id":format!("{}:{}",run.id,event.seq),
+   "event":event.kind,"detail":{
+    "runId":run.id,"message":event.message,
+    "data":event.detail
+   },"created_at":timestamp(event.at_ms),
+   "at_ms":event.at_ms
+  }))
+ }).collect::<Vec<_>>();
+ events.sort_by(|a,b|b["at_ms"].as_u64().cmp(&a["at_ms"].as_u64()));
+ events.truncate(200);
+ Json(Value::Array(events))
 }
 async fn backups(State(engine):State<Arc<Engine>>)->Json<Value>{
  let dir=root(&engine.settings);

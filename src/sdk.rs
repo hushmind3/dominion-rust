@@ -26,7 +26,6 @@ impl Dominion {
         // mutating side effect. A previously approved call that never reached
         // the execution-intent checkpoint is also safe to start.
         for id in safe_to_resume {engine.launch(id).await?;}
-        crate::frontend_automations::spawn_scheduler(&engine);
         Ok(Self{engine})
     }
     pub(crate) fn from_engine(engine:Arc<Engine>)->Self{Self{engine}}

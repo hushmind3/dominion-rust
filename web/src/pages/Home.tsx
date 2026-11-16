@@ -6,7 +6,7 @@ import {useRemote} from '../components/UI'
 import {StatusPill} from '../components/StatusPill'
 import {t,useLocale,formatDateTime,jobKindLabel} from '../i18n'
 import type {Agent,ChatSession,Provider} from '../api'
-type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'workflows'|'memory'|'activity'
+type Destination='chat'|'models'|'agents'|'rooms'|'connections'|'memory'|'activity'
 export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  useLocale()
  const sessions=useRemote<ChatSession[]>('/api/sessions',[])
@@ -28,7 +28,6 @@ export function HomePage({navigate}:{navigate:(page:Destination)=>void}){
  const shortcuts=[
   {title:'dashboard.shortcut.chat',desc:'dashboard.shortcut.chat.desc',icon:MessageSquare,page:'chat' as const},
   {title:'dashboard.shortcut.models',desc:'dashboard.shortcut.models.desc',icon:Cpu,page:'models' as const},
-  {title:'dashboard.shortcut.workflows',desc:'dashboard.shortcut.workflows.desc',icon:Play,page:'workflows' as const},
   {title:'dashboard.shortcut.agents',desc:'dashboard.shortcut.agents.desc',icon:Bot,page:'agents' as const}
  ]
  return <PageContainer className="!max-w-[1200px] !py-5">

@@ -1,16 +1,15 @@
 import {useEffect,useMemo,useState} from 'react'
 import {OwnerProfileEditor} from './OwnerProfile'
-import {Activity,Blocks,BookOpenText,Bot,ChevronDown,ChevronRight,Code2,Command,CommandIcon,Cpu,House,Layers3,Menu,MessageSquare,PanelLeftClose,RadioTower,Search,Settings2,UsersRound,Workflow,Plus} from 'lucide-react'
+import {Activity,Blocks,BookOpenText,Bot,ChevronDown,ChevronRight,Command,CommandIcon,Cpu,House,Layers3,Menu,MessageSquare,PanelLeftClose,RadioTower,Search,Settings2,UsersRound,Plus} from 'lucide-react'
 import {Button,TextInput} from './Primitives'
 import {t,type LocaleKey,useLocale} from '../i18n'
 
-export type PageId='home'|'chat'|'models'|'agents'|'rooms'|'workflows'|'memory'|'capabilities'|'extensions'|'connections'|'automations'|'activity'|'settings'|'developer'
+export type PageId='home'|'chat'|'models'|'agents'|'rooms'|'memory'|'capabilities'|'extensions'|'connections'|'activity'|'settings'
 type NavItem={id:PageId;label:LocaleKey;icon:typeof House}
 export const navigation:{title:LocaleKey;items:NavItem[];collapsible?:boolean}[]=[
  {title:'nav.group.workspace',items:[{id:'home',label:'nav.home',icon:House},{id:'chat',label:'nav.chat',icon:MessageSquare},{id:'rooms',label:'nav.rooms',icon:UsersRound},{id:'models',label:'nav.models',icon:Cpu},{id:'agents',label:'nav.agents',icon:Bot}]},
  {title:'nav.group.extensions',items:[{id:'connections',label:'nav.connections',icon:RadioTower},{id:'memory',label:'nav.memory',icon:BookOpenText}]},
- {title:'nav.group.operations',items:[{id:'automations',label:'nav.automations',icon:Workflow},{id:'activity',label:'nav.activity',icon:Activity},{id:'settings',label:'nav.settings',icon:Settings2}]},
- {title:'nav.group.advanced',collapsible:true,items:[{id:'workflows',label:'nav.workflows',icon:Workflow},{id:'developer',label:'nav.developer',icon:Code2}]}
+ {title:'nav.group.operations',items:[{id:'activity',label:'nav.activity',icon:Activity},{id:'settings',label:'nav.settings',icon:Settings2}]}
 ]
 const items=navigation.flatMap(g=>g.items)
 export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onNavigate,onNewChat,onClose}:{page:PageId;open:boolean;collapsed:boolean;online:boolean;running:number;pending:number;onNavigate:(id:PageId)=>void;onNewChat:()=>void;onClose:()=>void}){

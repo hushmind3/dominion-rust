@@ -29,7 +29,6 @@ const englishCommands:Record<string,EnglishCommand>={
  mcp:{name:'MCP settings',description:'Open MCP connections and servers',group:'Tools · extensions'},
  skills:{name:'Manage skills',description:'Manage installed skills and extensions',group:'Tools · extensions'},
  memory:{name:'Manage memory',description:'Open saved long-term memories',group:'Tools · extensions'},
- workflows:{name:'Workflows',description:'Open the execution engine and workflows',group:'Screens'},
  agents:{name:'Manage agents',description:'Open agent settings',group:'Screens'},
  settings:{name:'Settings',description:'Open platform settings',group:'Screens'},
  help:{name:'Command help',description:'List available commands and usage',group:'Screens'},
@@ -60,7 +59,7 @@ const icons:Record<string,typeof Command>={
  new:MessageSquare,history:History,name:MessageSquare,clear:Square,fork:Layers3,export:FileDown,
  compact:ListTree,goal:Play,stop:Square,status:Search,think:BrainCircuit,model:BrainCircuit,
  agent:Bot,tools:Terminal,mcp:Terminal,skills:Layers3,memory:History,
- workflows:Workflow,agents:Bot,settings:Settings2,help:Shield
+agents:Bot,settings:Settings2,help:Shield
 }
 export function SlashMenu({items,active,onChoose}:{items:SlashChoice[];active:number;onChoose:(item:SlashChoice)=>void}){
  const loc=useLocale()
