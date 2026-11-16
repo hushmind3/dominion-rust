@@ -2,7 +2,7 @@
 
 **Native Rust SDK and independent Rust agent engine. HTTP API, TypeScript SDK and GUI are adapters to the same engine.**
 
-The Rust core is a **clean rebuild** on `dominion-sub4`. The **entire `web/` frontend is copied without modifications from the latest verified `main` commit `879dc23dce309688691c200b001b180bead95a12`**. The Rust server now exposes both its native `/api/v1/*` API and a growing `/api/*` adapter matching the main frontend's actual requests. Home, native SDK runs, basic Chat/agent/session and memory flows are wired to real Rust state; advanced providers, video, group, RSI campaign UI and many operations remain to be ported. Unsupported actions explicitly return JSON 501 instead of synthetic success. Full parity is NOT yet claimed.
+The Rust core was independently rebuilt on **`dominion-sub4`**, using main's React frontend as a starting baseline. The sub4 frontend **has since diverged**: its Video page, model installer, and autonomous production workspace now call dedicated Rust endpoints. The server exposes both `/api/v1/*` and the compatible `/api/*` product API. This branch is independently developed and tested; changes are **not merged into `main`**. Unsupported actions fail with explicit JSON rather than synthetic success. Entire-product feature parity is not claimed.
 
 Read [exact Git tree evidence and the real API incompatibilities](docs/FRONTEND_ALIGNMENT.md) and [feature migration status](docs/UI_FEATURE_PARITY_2026.md).
 
@@ -14,17 +14,15 @@ Read [exact Git tree evidence and the real API incompatibilities](docs/FRONTEND_
 | Native API | `/api/v1/runs` | Planning, tools, bounded run budgets, verifier and corrective turns |
 | Approval and resumption | `/api/v1/runs/{id}` actions | Durable human approvals, reconcile/continue/cancel |
 | RSI | `/api/v1/improvements` | Candidate edits, frozen independent judge, adoption and strategy evidence |
-| Video and multi-agent | `/api/v1/videos`, `/api/v1/groups` | Existing Rust functionality; not yet exposed through main's original frontend routes |
+| Video and multi-agent | `/api/v1/videos`, `/api/v1/groups`, `/api/video/productions`, `/api/video/model-packs` | Video jobs, autonomous production, native/ComfyUI rendering, model installation and optional YouTube uploads |
 | SDK helper | `sdk/typescript` | Native Rust HTTP client |
-| Main frontend | `web/` | **Unchanged main source**. Basic chat, agents, sessions, Home and native SDK execution now use Rust-owned `/api/*` handlers; other screens remain incomplete |
+| Product frontend | `web/` | Derived from the main UI baseline, now with independently developed sub4 video creation, in-page model installation and production monitoring |
 
 ## Frontend source identity
 
-- Main reference commit: `879dc23dce309688691c200b001b180bead95a12`
-- Main `web` subtree and sub4 `web` subtree: `9e2be9b7376c1eefb6195e3ea7f9463b952456c0` (same Git object)
-- 56 upstream files. All custom `web/src/pages/RustWorkspace.tsx`, home replacements and extra testing/marker files inside `web/` removed in favor of main.
-- Native `src/` code is preserved; the frontend has **not** been adapted to unimplemented APIs or given fake buttons to imply support.
-- The upstream Vite proxy defaults to `127.0.0.1:4317`. Sub4 Rust currently binds `127.0.0.1:4317`; development requires an explicit API target such as `DOMINION_API_URL=http://127.0.0.1:4317` plus full Rust implementation of the requested main routes. Do not assume the original main package's `--home` / `--open` commands are supported by the sub4 executable.
+- The initial integration imported main frontend from commit `879dc23dce309688691c200b001b180bead95a12`. That was a **historical baseline**, not the current tree identity.
+- Sub4 modifies `web/src/pages/Video.tsx`, `web/src/components/VideoAutoStudio.tsx` and `VideoModelInstaller.tsx`. These changes exist **only on `dominion-sub4`** until separately reviewed and merged.
+- Rust serves the production `web/dist` selected by `DOMINION_WEB_DIR` or the installed build; Vite serves the development page on `127.0.0.1:5173` with the Rust API proxy on `127.0.0.1:4317`. Seeing a changed page requires running this branch's frontend/server on those ports, not committing changes to `main`.
 
 ## Native Rust SDK (primary)
 
@@ -108,6 +106,21 @@ See `docs/ARCHITECTURE.md` for current scope and migration gaps.
 ## MCP external tools (2026-07-28)
 
 The engine can discover external MCP Streamable HTTP tools and expose them to the model through its own native function-call API. Configure `DOMINION_MCP_SERVERS` with a JSON array of up to 8 servers containing `name`, `url` and optional `bearer_token`. Plain HTTP is allowed only for loopback; HTTPS is required elsewhere. External calls always pause the run for explicit user approval, and their intent is journaled before execution to avoid accidentally replaying side effects after a crash. No MCP secret is exposed to the model or Studio. The 2026 stateless HTTP transport supports JSON and per-request SSE responses, including annotated MCP headers; MRTR user elicitation, subscription streams and legacy transport fallback are not connected yet.
+
+## Turnkey video creation and in-page model installation (sub4, November 2026)
+
+The **Video → 자율 콘텐츠** landing screen is a single task entrypoint for topic, audience, duration, budget, video engine, review and publication. It connects to the durable Rust `/api/video/productions` execution job. The concrete pipeline plans a structured storyboard through the configured model, invokes native FFmpeg or a local ComfyUI API graph, verifies the generated MP4/WebM with `ffprobe`, and queues the existing OAuth-backed YouTube uploader **only if auto-publish was selected**. A restart marks uncertain actions for review instead of replaying possible double uploads. The low-cost local FFmpeg mode renders title/story cards; the ComfyUI mode generates real AI motion clips from a local workflow. ComfyUI audio synthesis, cross-scene visual continuity and factual external research remain distinct next-generation quality improvements, not silently completed steps.
+
+**AI model install stays in the Video creation form** when ComfyUI is selected. `src/frontend_video_models.rs` owns this workflow:
+
+1. Detect or select an **existing** `ComfyUI/models` directory from the Video screen; no CLI model download or separate Models page is required. Optionally preconfigure `DOMINION_COMFY_MODELS_DIR`.
+2. Click **영상 모델 묶음 설치** for the official Comfy-Org **Wan 2.2 TI2V 5B** bundle (approximately **17GB**): diffusion model (`wan2.2_ti2v_5B_fp16.safetensors`), Wan-compatible UMT5 encoder (`umt5_xxl_fp8_e4m3fn_scaled.safetensors`) and VAE (`wan2.2_vae.safetensors`).
+3. The Rust downloader takes only allowlisted official Hugging Face repository URLs, obtains expected file sizes and SHA-256 via the Hugging Face LFS metadata, resumes partial downloads using HTTP Range, verifies each finished download, and atomically installs the files in the matching ComfyUI model directories. The screen shows active file/bytes, **pause** and **resume**.
+4. On verified completion, Dominion installs the source-tracked **API-format** Wan workflow (`src/wan22_5b_api.json`), selects the real model and ComfyUI engine. Restart the ComfyUI process if it was already running so its model registry refreshes; the workflow and installed files remain available to the automatic production job.
+
+This expects a separately installed/running local ComfyUI service, not a bundled ComfyUI executable. Official video workflow/model attribution: [Wan 2.2 ComfyUI guide](https://docs.comfy.org/tutorials/video/wan/wan2_2) and [Comfy-Org workflow template](https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_wan2_2_5B_ti2v.json). The ComfyUI guide describes native 8GB VRAM offloading; actual render time and free disk requirements depend on the user's hardware. No cloud generation API is required for local inference; total operating costs still include electricity, storage, configured language-model tokens and bandwidth.
+
+Native endpoints: `GET /api/video/model-packs`, `POST /api/video/model-packs/install` (optional `modelsDir`), `POST /api/video/model-packs/cancel`; `/api/video/models/downloads` is a compatible status view. All write endpoints use the same app authentication/middleware as the rest of the Studio. `GET/POST /api/video/productions` and `GET /api/video/productions/{id}` expose the actual durable pipeline.
 
 ## Generative motion video via Veo 3.1
 
