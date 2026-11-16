@@ -425,3 +425,73 @@ mod tests{
   fs::remove_dir_all(dir).unwrap();
  }
 }
+
+
+#[cfg(test)]
+mod production_e2e_tests {
+ use super::*;
+ use axum::routing::post;
+
+ #[tokio::test]
+ async fn topic_to_storyboard_to_physical_video_and_ffprobe_qa_without_upload() {
+  let available=Command::new("ffmpeg").arg("-filters").output().await.ok()
+   .is_some_and(|out|out.status.success()&&
+    String::from_utf8_lossy(&out.stdout).contains("drawtext"));
+  let ffprobe=Command::new("ffprobe").arg("-version").output().await.ok()
+   .is_some_and(|out|out.status.success());
+  if !available||!ffprobe{return;}
+  let root=std::env::temp_dir().join(format!("video-production-e2e-{}",Uuid::new_v4()));
+  let story=json!({"title":"A city evening","description":"A real rendered city story",
+   "tags":["city","cinema"],
+   "scenes":[
+    {"heading":"First light","narration":"The city wakes.","visual_prompt":"A sunlit street"},
+    {"heading":"The skyline","narration":"The skyline glows.","visual_prompt":"A city skyline"}
+   ]}).to_string();
+  let app=axum::Router::new().route("/chat/completions",post(move||{
+   let response=story.clone();
+   async move{
+    Json(json!({"choices":[{"message":{"role":"assistant","content":response}}],
+     "usage":{"prompt_tokens":20,"completion_tokens":80}}))
+   }
+  }));
+  let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let addr=listener.local_addr().unwrap();
+  let server=tokio::spawn(async move{axum::serve(listener,app).await.unwrap();});
+  let mut settings=Settings::from_env().unwrap();
+  settings.data_dir=root.join("data");
+  settings.workspace_dir=root.join("workspace");
+  settings.main.base_url=format!("http://{addr}");
+  settings.main.api_key.clear();
+  settings.economy=settings.main.clone();
+  let sdk=crate::sdk::Dominion::open(settings.clone()).await.unwrap();
+  let request=NewProduction{
+   topic:"A city at sunset".into(),audience:"architecture lovers".into(),
+   source_notes:"A fictional cinematic montage".into(),
+   visual_engine:"native".into(),aspect_ratio:"1:1".into(),
+   duration:6,narration:false,auto_publish:false,
+   privacy_status:"private".into(),max_cost_krw:3000.0,
+  };
+  let (code,Json(created))=create(State(sdk.engine()),Json(request)).await.unwrap();
+  assert_eq!(code,StatusCode::ACCEPTED);
+  let id=Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+  let done=tokio::time::timeout(Duration::from_secs(90),async{
+   loop{
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let current=read(&settings).unwrap().jobs.remove(&id).unwrap();
+    if current.status!="running"{return current;}
+   }
+  }).await.expect("video production did not settle in 90 seconds");
+  assert_eq!(done.status,"ready","production failed: {:?}",done.error);
+  assert_eq!(done.shots.len(),2);
+  assert_eq!(done.shots.iter().map(|s|s.seconds).sum::<u32>(),6);
+  assert!(done.artifact_bytes.unwrap_or_default()>1024);
+  assert!(done.measured_seconds.unwrap_or_default()>4.0);
+  assert!(done.video_id.is_some());
+  assert!(done.upload_id.is_none(),"upload must stay opt-in");
+  let video=sdk.engine().videos.output_path(done.video_id.unwrap()).await.unwrap();
+  assert!(tokio::fs::metadata(video).await.unwrap().len()>1024);
+  server.abort();
+  drop(sdk);
+  tokio::fs::remove_dir_all(root).await.unwrap();
+ }
+}
