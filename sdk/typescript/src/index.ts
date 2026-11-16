@@ -60,71 +60,13 @@ export interface GroupRoom {
 export interface CreateGroup {
   topic: string; participants: Participant[]; max_rounds?: number; budget_krw?: number;
 }
-export interface VideoScene { heading: string; narration: string; seconds: number }
-export interface VideoJob {
-  id: string; prompt: string; scenes: VideoScene[]; status: 'draft' | 'rendering' | 'completed' | 'failed';
-  cost_krw: number; render_seconds: number; error: string | null;
-  output: string | null; created_at_ms: number; updated_at_ms: number;
-  backend: 'local' | 'veo'; remote_operations: Record<string,string>;
-}
-export interface CreateVideo {
-  prompt: string; scenes?: VideoScene[]; backend?: 'local' | 'veo';
-}
-
-export interface CreateVideoProduction {
-  topic:string;audience?:string;sourceNotes?:string;visualEngine?:'native'|'comfyui';
-  aspectRatio?:'9:16'|'16:9'|'1:1';duration?:number;narration?:boolean;
-  autoPublish?:boolean;privacyStatus?:'private'|'unlisted'|'public';maxCostKrw?:number;
-}
-export interface VideoProductionShot {
-  heading:string;narration:string;visualPrompt:string;seconds:number;
-}
-export interface VideoProduction {
-  id:string;topic:string;title:string;status:string;stage:string;
-  duration:number;aspectRatio:string;visualEngine:'native'|'comfyui';
-  autoPublish:boolean;privacyStatus:string;shots:VideoProductionShot[];
-  completedShots:number;renderedShotIds:string[];
-  visualBible?:string;scriptAttempts?:number;
-  artifactRevisionId?:string|null;revisionCount?:number;
-  regeneratingShot?:number|null;pendingRevisionJobId?:string|null;
-  pendingRevisionShot?:number|null;pendingRevisionPrompt?:string;
-  revisionError?:string|null;
-  videoId:string|null;uploadId:string|null;uploadUrl:string|null;
-  outputUrl:string|null;costKrw:number;error:string|null;
-  artifactBytes:number|null;measuredSeconds:number|null;
-}
-export interface PublishVideoInput {
-  title:string;description?:string;privacyStatus?:'private'|'unlisted'|'public';tags?:string;
-}
-
-
-
-export type ImprovementStatus = 'awaiting_approval' | 'running' | 'evaluated' | 'adopting' | 'rejected' | 'adopted' | 'failed';
-export interface Measurement { tests_passed: boolean; score: number | null; log: string }
-export interface StrategyHypothesis {
-  principle: string; when_to_use: string; failure_mode: string;
-}
 export interface StrategyEvidence {
-  source_id: string; source: 'rsi' | 'agent'; repository: string;
+  source_id: string; source: 'agent'; repository: string;
   goal: string; principle: string; when_to_use: string; failure_mode: string;
-  files: string[]; outcome: 'adopted' | 'rejected' | 'verified';
+  files: string[]; outcome: 'verified';
   baseline_score: number | null; resulting_score: number | null;
   attempts: number; cost_krw: number; updated_at_ms: number;
 }
-export interface Improvement {
-  id: string; parent: string | null; repository: string; target_file: string;
-  target_files?: string[]; attempts?: number; selection_reason?: string | null; strategy?: StrategyHypothesis | null;
-  instruction: string; test_command: string; score_command: string | null;
-  status: ImprovementStatus; base_commit: string | null; candidate_commit: string | null;
-  baseline: Measurement | null; candidate: Measurement | null; proposal: string | null;
-  reflection: string | null; accepted: boolean; cost_krw: number;
-  error: string | null; created_at_ms: number; updated_at_ms: number;
-}
-export interface NewImprovement {
-  repository: string; target_file?: string; target_files?: string[]; instruction: string; test_command: string;
-  score_command?: string; parent?: string;
-}
-
 export interface ClientOptions {
   baseUrl?: string; token?: string; fetch?: typeof globalThis.fetch;
 }
@@ -241,72 +183,12 @@ export class Dominion {
     say: (id: string, content: string) => this.request<GroupRoom>('POST','/groups/'+encodeURIComponent(id)+'/messages',{content}),
     next: (id: string) => this.request<GroupRoom>('POST','/groups/'+encodeURIComponent(id)+'/next',{}),
   };
-  readonly videos = {
-    create: (input: CreateVideo) => this.request<VideoJob>('POST','/videos',input),
-    list: () => this.request<VideoJob[]>('GET','/videos'),
-    get: (id: string) => this.request<VideoJob>('GET','/videos/'+encodeURIComponent(id)),
-    render: (id: string) => this.request<VideoJob>('POST','/videos/'+encodeURIComponent(id)+'/render',{}),
-    changeScene: (id: string, index: number, scene: VideoScene) =>
-      this.request<VideoJob>('POST','/videos/'+encodeURIComponent(id)+'/scenes/'+index,scene),
-    download: async (id: string): Promise<Blob> => {
-      const headers: Record<string,string> = this.token ? { Authorization: 'Bearer '+this.token } : {};
-      const response = await this.fetcher(this.baseUrl+'/api/v1/videos/'+encodeURIComponent(id)+'/download',{headers});
-      if (!response.ok) throw new DominionError(response.status,'video download failed: HTTP '+response.status);
-      return response.blob();
-    }
-  };
-
-
-  /** The same journaled, multi-scene production flow used by Video Studio.
-   * Older /api/v1/videos endpoints remain unchanged for existing clients. */
-  readonly productions = {
-    create: (input: CreateVideoProduction) =>
-      this.frontendRequest<VideoProduction>('POST','/video/productions',input),
-    list: () => this.frontendRequest<VideoProduction[]>('GET','/video/productions'),
-    regenerateShot: (id:string,index:number,visualPrompt:string) => {
-      if (!Number.isInteger(index)||index<0||index>11)
-        throw new RangeError('shot index must be between 0 and 11');
-      return this.frontendRequest<VideoProduction>('POST',
-        '/video/productions/'+encodeURIComponent(id)+'/shots/'+index+'/regenerate',
-        {visualPrompt});
-    },
-    get: (id:string) => this.frontendRequest<VideoProduction>(
-      'GET','/video/productions/'+encodeURIComponent(id)),
-    /** Fetch the completed final artifact, not a raw ComfyUI child clip. */
-    download: async (id:string):Promise<Blob> => {
-      const p=await this.productions.get(id);
-      if (!['ready','published'].includes(p.status)||!p.videoId)
-        throw new DominionError(409,'production is not ready for download');
-      const headers:Record<string,string> = this.token ? {Authorization:'Bearer '+this.token} : {};
-      const response=await this.fetcher(this.baseUrl+'/api/video/jobs/'+encodeURIComponent(p.videoId)+'/content',{headers});
-      if (!response.ok)throw new DominionError(response.status,'production download failed: HTTP '+response.status);
-      return response.blob();
-    },
-    /** User-requested upload through the existing YouTube OAuth journal. */
-    publish: async (id:string,input:PublishVideoInput):Promise<{id:string;status:string}> => {
-      const p=await this.productions.get(id);
-      if (!['ready','published'].includes(p.status)||!p.videoId)
-        throw new DominionError(409,'production is not ready for YouTube upload');
-      return this.frontendRequest<{id:string;status:string}>(
-        'POST','/video/jobs/'+encodeURIComponent(p.videoId)+'/upload',input);
-    },
-  };
-
   /** Durable, evidence-ranked cross-task strategy retrieval owned by Rust. */
   readonly strategies = {
     search: (repository:string, query:string, limit=6) => this.request<StrategyEvidence[]>(
       'GET','/strategies?repository='+encodeURIComponent(repository)+
       '&query='+encodeURIComponent(query)+'&limit='+Math.min(6,Math.max(1,limit))
     ),
-  };
-  /** Non-weight improvement: only explicitly approved, frozen-evaluation winners can be adopted. */
-  readonly improvements = {
-    create: (input: NewImprovement) => this.request<Improvement>('POST','/improvements',input),
-    list: () => this.request<Improvement[]>('GET','/improvements'),
-    get: (id: string) => this.request<Improvement>('GET','/improvements/'+encodeURIComponent(id)),
-    approve: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/approve',{}),
-    adopt: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/adopt',{}),
-    descendant: (id: string) => this.request<Improvement>('POST','/improvements/'+encodeURIComponent(id)+'/descendant',{}),
   };
   /** HTTP SSE streaming: yields replayable sequence-numbered events until the run is terminal. */
   async *events(id: string, options: {since?: number; signal?: AbortSignal} = {}): AsyncGenerator<TimelineEvent, void, unknown> {

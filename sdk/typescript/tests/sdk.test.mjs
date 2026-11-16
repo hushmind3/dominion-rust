@@ -34,29 +34,15 @@ test('SSE stream parses split frames and does not replay duplicate sequence',asy
   assert.deepEqual(events,[1,2]);
 });
 
-test('group and video endpoints use the same authenticated Rust API',async()=>{
-  const seen=[];
-  const client=new Dominion({token:'private',fetch:async(url,options)=>{
-    seen.push({url,options});
-    return new Response(JSON.stringify({id:'a',status:'open'}),{status:200,headers:{'content-type':'application/json'}});
-  }});
-  await client.groups.next('group-id');
-  await client.videos.changeScene('video-id',1,{heading:'intro',narration:'text',seconds:4});
-  assert.ok(seen[0].url.endsWith('/api/v1/groups/group-id/next'));
-  assert.ok(seen[1].url.endsWith('/api/v1/videos/video-id/scenes/1'));
-  assert.equal(seen[1].options.headers.Authorization,'Bearer private');
-});
-
-test('non-weight improvement has a separate explicit approve and adopt path',async()=>{
- const urls=[];
- const client=new Dominion({fetch:async url=>{
-   urls.push(url);
-   return new Response(JSON.stringify({id:'experiment'}),{status:200,headers:{'content-type':'application/json'}});
+test('group operations stay on the authenticated native Rust API',async()=>{
+ const seen=[];
+ const sdk=new Dominion({token:'private',fetch:async(url,options)=>{
+  seen.push({url,options});
+  return new Response(JSON.stringify({id:'room-1',status:'open'}),{status:200});
  }});
- await client.improvements.approve('test');
- await client.improvements.adopt('test');
- assert.ok(urls[0].endsWith('/improvements/test/approve'));
- assert.ok(urls[1].endsWith('/improvements/test/adopt'));
+ await sdk.groups.next('room-1');
+ assert.ok(seen[0].url.endsWith('/api/v1/groups/room-1/next'));
+ assert.equal(seen[0].options.headers.Authorization,'Bearer private');
 });
 
 test('reconcile records observed tool outcome through Rust API',async()=>{
@@ -106,60 +92,16 @@ test('read-only delegation, lazy skills and durable memory use native API',async
   assert.ok(calls[4].url.includes('query=cargo'));
 });
 
-test('RSI multi-file target contract reaches the same native Rust route', async()=>{
-  const seen=[];
-  const client=new Dominion({fetch:async(url,options)=>{
-    seen.push({url,options});
-    return new Response(JSON.stringify({id:'trial'}),{status:201,headers:{'content-type':'application/json'}});
-  }});
-  await client.improvements.create({repository:'repo',target_file:'src/lib.rs',
-    target_files:['src/lib.rs','src/engine.rs'],instruction:'improve',
-    test_command:'cargo test',score_command:'echo 1'});
-  assert.ok(seen[0].url.endsWith('/api/v1/improvements'));
-  assert.deepEqual(JSON.parse(seen[0].options.body).target_files,['src/lib.rs','src/engine.rs']);
-});
-
-
-test('multi-shot production uses native product API and publishes the final assembled ID',async()=>{
-  const calls=[];
-  const client=new Dominion({token:'sub4-token',fetch:async(url,options)=>{
-    calls.push({url,options});
-    if(url.endsWith('/video/productions/job-1'))return new Response(JSON.stringify({
-      id:'job-1',status:'ready',videoId:'assembled-1'
-    }),{status:200});
-    if(url.endsWith('/video/jobs/assembled-1/content'))return new Response(
-      new Blob(['real bytes'],{type:'video/mp4'}),{status:200,headers:{'content-type':'video/mp4'}});
-    if(url.endsWith('/video/productions')&&options.method==='GET')
-      return new Response(JSON.stringify([]),{status:200});
-    return new Response(JSON.stringify({id:'upload-1',status:'running'}),{status:200});
-  }});
-  assert.deepEqual(await client.productions.list(),[]);
-  await client.productions.create({topic:'cinematic city',visualEngine:'comfyui',duration:30,
-    maxCostKrw:2500,autoPublish:false});
-  const result=await client.productions.download('job-1');
-  assert.equal(await result.text(),'real bytes');
-  const upload=await client.productions.publish('job-1',{title:'Final video',privacyStatus:'private'});
-  assert.equal(upload.id,'upload-1');
-  assert.ok(calls[0].url.endsWith('/api/video/productions'));
-  assert.ok(calls[1].url.endsWith('/api/video/productions'));
-  assert.equal(JSON.parse(calls[1].options.body).duration,30);
-  assert.ok(calls.some(c=>c.url.endsWith('/api/video/jobs/assembled-1/content')));
-  assert.ok(calls.some(c=>c.url.endsWith('/api/video/jobs/assembled-1/upload')));
-  assert.ok(calls.every(c=>c.options.headers.Authorization==='Bearer sub4-token'));
-});
-
-
-test('selective video-shot revision uses the same Rust product job and bounded shot index',async()=>{
- const calls=[];
- const sdk=new Dominion({token:'private',fetch:async(url,options)=>{
-  calls.push({url,options});
-  return new Response(JSON.stringify({id:'production-1',status:'ready',regeneratingShot:1}),{status:202});
+test('verified procedure lookup and explicit memory remain SDK operations',async()=>{
+ const seen=[];
+ const sdk=new Dominion({token:'secret',fetch:async(url,options)=>{
+  seen.push({url,options});
+  return new Response(JSON.stringify([]),{status:200});
  }});
- const result=await sdk.productions.regenerateShot('production-1',1,'stable wardrobe, forward dolly');
- assert.equal(result.regeneratingShot,1);
- assert.ok(calls[0].url.endsWith('/api/video/productions/production-1/shots/1/regenerate'));
- assert.equal(JSON.parse(calls[0].options.body).visualPrompt,'stable wardrobe, forward dolly');
- assert.equal(calls[0].options.headers.Authorization,'Bearer private');
- assert.throws(()=>sdk.productions.regenerateShot('x',12,'invalid'),RangeError);
- assert.equal(calls.length,1,'rejecting an invalid shot must not make an API call');
+ assert.deepEqual(await sdk.strategies.search('repo','compile fix',3),[]);
+ assert.deepEqual(await sdk.memory.list('repo'),[]);
+ assert.ok(seen[0].url.includes('/api/v1/strategies?repository=repo'));
+ assert.ok(seen[0].url.includes('query=compile%20fix'));
+ assert.ok(seen[1].url.endsWith('/api/v1/memory/all?scope=repo'));
+ assert.ok(seen.every(c=>c.options.headers.Authorization==='Bearer secret'));
 });
