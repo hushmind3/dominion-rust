@@ -36,7 +36,7 @@ User / Chat / TypeScript SDK / HTTP
 
 ## Data ownership and migration
 
-- `src/store.rs`: durable native Run metadata, messages, planned tool calls, receipts, token/cost measurements and status. Startup diffs the semantic recovered Run against the loaded record and fsyncs only changed snapshots; unrelated historical records are not rewritten.
+- `src/store.rs`: durable native Run metadata, messages, planned tool calls, receipts, token/cost measurements and status. Startup diffs the semantic recovered Run against the loaded record and fsyncs only changed snapshots; unrelated historical records are not rewritten. `recovery_candidates` returns only paused/safe Run IDs instead of cloning every stored transcript into the SDK on restart.
 - `src/knowledge.rs`: user-managed notes, corrections and reusable procedures.
 - `src/frontend_state.rs`: chat sessions, agents and user-visible messages.
 - `src/group.rs`: group requests.
