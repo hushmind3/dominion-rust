@@ -180,7 +180,7 @@ async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault
  Ok(Json(json!(store.accounts.iter().filter(|(provider,_)|valid_provider(provider)).map(|(provider,account)|json!({
   "id":provider,"provider":provider,"displayName":account.display_name,
   "hasToken":!account.access_token.is_empty()||!account.refresh_token.is_empty(),
-  "scopes":account.scopes,"repositoryAccess":provider=="github"&&granted_repository(&account.scopes)
+  "scopes":account.scopes,"repositoryAccess":provider.as_str()=="github"&&granted_repository(&account.scopes)
  })).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
