@@ -318,6 +318,32 @@ mod runtime_path_tests{
         assert_eq!(compare_current(&r).unwrap().selected,"verify");
     }
     #[test]
+    fn reactive_failure_probe_is_bounded_and_receipt_scoped(){
+        let mut r=run();
+        r.repository=Some("attached".into());
+        r.status=crate::domain::RunStatus::Running;
+        r.event("model","previous turn",None);
+        r.event("tool_error","failed file read",
+            Some(json!({"name":"read_file","result":"No such file or directory"})));
+        let (probe,seq)=failure_probe(&r,&[]).unwrap();
+        assert_eq!(probe.name,"list_files");
+        assert!(probe.id.contains(&seq.to_string()));
+        r.event("strategy_probe_scheduled","diagnosis",
+            Some(json!({"kind":"failure","failure_seq":seq})));
+        assert!(failure_probe(&r,&[]).is_none());
+        r.event("model","next turn",None);
+        r.event("tool_error","second missing source",
+            Some(json!({"name":"read_file","result":"No such file or directory"})));
+        let (_,second)=failure_probe(&r,&[]).unwrap();
+        r.event("strategy_probe_scheduled","diagnosis",
+            Some(json!({"kind":"failure","failure_seq":second})));
+        r.event("model","next turn",None);
+        r.event("tool_error","third missing source",
+            Some(json!({"name":"read_file","result":"No such file or directory"})));
+        assert!(failure_probe(&r,&[]).is_none());
+        assert!(failure_probe(&r,&["list_files".into()]).is_none());
+    }
+    #[test]
     fn untrusted_model_text_cannot_manufacture_competing_evidence(){
         let mut r=run();
         r.messages.push(json!({"role":"assistant","content":
