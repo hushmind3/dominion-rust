@@ -337,11 +337,17 @@ async fn fused_read_program_model(
                 "id":"program-inspection-1","type":"function","function":{
                     "name":"read_program",
                     "arguments":json!({"steps":[
-                        {"id":"files","tool":"list_files","arguments":{"path":""}},
-                        {"id":"scan","tool":"read_listed_files","from":"files",
-                            "suffix":".txt","max_files":2,"contains":"signal"},
-                        {"id":"target","tool":"read_file","arguments":{"path":"target.txt"},
-                            "when":{"step":"files","contains":"target.txt"}}
+                        {"id":"scan","tool":"search_files",
+                            "arguments":{"query":"signal=present"}},
+                        {"id":"target","tool":"read_file",
+                            "arguments":{"path":{"from":"scan","path":"/value/0/file"}},
+                            "when":{"step":"scan","status":"ok",
+                                "predicate":{"type":"all","predicates":[
+                                    {"type":"equals","from":"scan","path":"/status",
+                                        "value":"ok"},
+                                    {"type":"compare","from":"scan","path":"/value/0/line",
+                                        "op":"gte","value":1}
+                                ]}}}
                     ]}).to_string()
                 }
             }]})
