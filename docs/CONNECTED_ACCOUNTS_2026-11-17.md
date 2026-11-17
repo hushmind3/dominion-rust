@@ -4,12 +4,21 @@
 
 User → Connections / Accounts → OAuth grant → capability broker → model schema → explicit approval (writes) → durable execution intent → fixed official REST provider → remote read-back → durable receipt. Tokens, OAuth secrets and refresh tokens remain encrypted server-side; never pass them through MCP servers or model prompts.
 
-## Register an OAuth app once
+## Product-managed one-click login (no end-user API key or Client ID)
 
-- GitHub: https://github.com/settings/developers — create OAuth App, copy Client ID/Secret, register the exact callback URL shown in Connections. Identity uses read:user/user:email. Repository work separately opts in to classic repo scope, which also permits private repository access.
-- Google: https://console.cloud.google.com/apis/credentials — create a Web OAuth app, register the exact callback URL, enable Drive, Docs and Sheets APIs. Identity uses openid/email/profile. Workspace work separately requests drive/documents/spreadsheets. Google may require app publishing/verification for broad Drive scopes.
+The person using Dominion clicks **GitHub로 로그인** or **Google로 로그인** and approves provider permissions. The OAuth app registration is **a one-time responsibility of the product/service operator**, never the end user.
 
-No fixed developer OAuth app credentials are bundled. Self-hosted apps must be registered with providers; the Connect button triggers the genuine browser consent flow.
+Set the following deployment secrets in the server process (e.g., a secret manager). Never put the secrets in React or public source code:
+
+- `DOMINION_GITHUB_OAUTH_CLIENT_ID`, `DOMINION_GITHUB_OAUTH_CLIENT_SECRET`
+- `DOMINION_GOOGLE_OAUTH_CLIENT_ID`, `DOMINION_GOOGLE_OAUTH_CLIENT_SECRET`
+- `DOMINION_PUBLIC_URL` — the exact externally accessible HTTPS product origin or the local loopback origin
+
+GitHub: register the application at https://github.com/settings/developers, with callback `/api/oauth/github/callback`. Google: register a Web OAuth app at https://console.cloud.google.com/apis/credentials, callback `/api/oauth/google/callback`, and enable Drive/Docs/Sheets APIs. The product requests the normal browser consent flow, then stores tokens in its encrypted server-side vault. Google may require OAuth brand/app verification for the requested Workspace scopes.
+
+Legacy encrypted local OAuth app configuration remains readable for existing installations, but ordinary users have no Client ID or secret entry screen. The server-provided credentials always take precedence. OAuth login requests freeze the application identity at authorization start so a configuration rotation cannot silently switch the callback's client.
+
+For a **local** installation with the official GitHub CLI already logged in (`gh auth login --web`), **기존 GitHub CLI 계정 연결** imports the authenticated CLI token into the encrypted vault with permission checks. This fallback does not require a separately registered Dominion GitHub app, and is disabled when the product is exposed as a non-loopback server. Google Workspace still requires a registered OAuth application: provider authorization cannot be generated from nothing.
 
 ## GitHub tools (12)
 

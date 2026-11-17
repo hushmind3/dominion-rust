@@ -14,7 +14,18 @@ export default defineConfig({
    url:'http://127.0.0.1:4317/api/health',
    timeout:360_000,
    reuseExistingServer:!process.env.CI,
-   env:{DOMINION_BIND:'127.0.0.1:4317',DOMINION_DATA_DIR:'./runtime/e2e',DOMINION_WORKSPACE_DIR:'./workspace/e2e',DOMINION_ACCESS_TOKEN:''},
+   env:{
+    DOMINION_BIND:'127.0.0.1:4317',
+    DOMINION_DATA_DIR:'./runtime/e2e',
+    DOMINION_WORKSPACE_DIR:'./workspace/e2e',
+    DOMINION_ACCESS_TOKEN:'',
+    // CI proves that a pre-registered product OAuth application enables
+    // account login with no end-user credential-entry screen.
+    DOMINION_GOOGLE_OAUTH_CLIENT_ID:'dominion-e2e-google-app',
+    DOMINION_GOOGLE_OAUTH_CLIENT_SECRET:'e2e-server-secret-never-expose',
+    DOMINION_GITHUB_OAUTH_CLIENT_ID:'dominion-e2e-github-app',
+    DOMINION_GITHUB_OAUTH_CLIENT_SECRET:'e2e-server-secret-never-expose'
+   },
   },
   {
    command:'npm run dev -- --port 5173 --strictPort',

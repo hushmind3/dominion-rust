@@ -122,11 +122,11 @@ The follow-up main UI merge adds scoped SSE event routing, inactive-view request
 
 ## Connected GitHub and Google account work
 
-The main UI **Connections → Accounts** configures OAuth clients and connects real account permissions. GitHub repository access supplies files, branches, issues, comments and pull requests. Google Workspace access supplies Drive search/text/folder tools, Docs reading/creation/revision-checked append and Sheets creation/range read/update/append.
+The main UI **Connections → Accounts** offers one-click GitHub and Google browser consent using centrally registered product OAuth apps (not user-entered client credentials). GitHub repository access supplies files, branches, issues, comments and pull requests. Google Workspace access supplies Drive search/text/folder tools, Docs reading/creation/revision-checked append and Sheets creation/range read/update/append.
 
 The native `src/connected_tools.rs` broker advertises tools only when the encrypted vault has the grant. React and TypeScript SDK share the Rust engine. **Every remote mutation requires user approval**, persisted intent and verified remote read-back. Unknown write outcomes enter reconciliation, never blind retry.
 
-Self-hosted instances must register an OAuth app once and enter its client credentials; Google Drive-wide access may need OAuth app verification. No provider-issued identity tokens or client secrets are bundled. See [Connected Accounts](docs/CONNECTED_ACCOUNTS_2026-11-17.md).
+A product operator registers OAuth apps once and installs their ID/secret as server deployment variables; end users enter neither. A local GitHub CLI import is also supported for people already signed in to `gh`. Google Drive-wide access may require OAuth app verification. No provider-issued identity tokens or client secrets are bundled. See [Connected Accounts](docs/CONNECTED_ACCOUNTS_2026-11-17.md).
 
 ## Reproducible coding-task evaluation
 

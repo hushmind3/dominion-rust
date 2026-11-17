@@ -32,7 +32,7 @@ Use `submit_from_repository` to work inside a separate Git worktree. For file re
 
 The Rust SDK dynamically includes OAuth-backed tools through `connected_tools::definitions`, using the same native approval/recovery kernel as chat. Connected GitHub tools include branch, PR, issue, comment and file actions. Google tools cover Drive, Docs and Sheets.
 
-The TypeScript SDK's `frontend.accounts.list()`, `frontend.accounts.providers()`, and `frontend.accounts.toolNames('google'|'github')` report account grants and tools without exposing credentials. The authorization flow starts at `/api/oauth/{provider}/start?repository=true` or `?workspace=true` and returns through the one-use callback.
+The TypeScript SDK's `frontend.accounts.list()`, `frontend.accounts.providers()`, and `frontend.accounts.toolNames('google'|'github')` report account grants and tools without exposing credentials. The authorization flow starts at `/api/oauth/{provider}/start?repository=true` or `?workspace=true` and returns through the one-use callback. OAuth app credentials come from the product's server environment, never an end-user form.
 
 Read-only calls are replay-safe. Mutating remote operations are not implicitly replayed after an uncertain receipt. See [Connected Accounts](CONNECTED_ACCOUNTS_2026-11-17.md).
 

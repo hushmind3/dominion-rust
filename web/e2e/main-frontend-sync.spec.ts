@@ -25,29 +25,37 @@ test('main chat/group switch preserves a mounted conversation and opens native s
  await expect(chat).toBeVisible();
 });
 
-test('new connection hub retains sub4 GitHub repository-grant control',async({page})=>{
+test('account connection uses server-owned GitHub and Google OAuth apps, never user keys',async({page})=>{
  await page.goto('/#/connections');
- const dialog=page.getByRole('dialog',{name:'설정'});
- await expect(dialog).toBeVisible();
  await page.locator('.connection-tabs button').nth(1).click();
- await expect(page.getByRole('button',{name:'GitHub 작업 권한 연결'})).toBeVisible();
- await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeVisible();
-});
+ const github=page.getByRole('button',{name:'GitHub로 로그인'});
+ const google=page.getByRole('button',{name:'Google로 로그인'});
+ await expect(github).toBeVisible();
+ await expect(google).toBeVisible();
+ await expect(github).toBeEnabled();
+ await expect(google).toBeEnabled();
+ await expect(page.getByText('Client ID')).toHaveCount(0);
+ await expect(page.getByText('Client Secret')).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'OAuth 앱 설정'})).toHaveCount(0);
 
-test('Google OAuth app can be registered in the account UI without exposing its secret',async({page})=>{
- await page.goto('/#/connections');
- await page.locator('.connection-tabs button').nth(1).click();
- await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeVisible();
- await page.getByRole('button',{name:'OAuth 앱 설정'}).last().click();
- const modal=page.getByRole('dialog',{name:'OAuth 앱 설정'});
- await expect(modal).toBeVisible();
- await modal.locator('input').first().fill('e2e-google-client');
- await modal.locator('input').nth(1).fill('e2e-secret');
- await modal.getByRole('button',{name:'앱 설정 저장'}).click();
- await expect(modal).toHaveCount(0);
- await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeEnabled();
  const apps=await (await page.request.get('/api/oauth/providers')).json();
- expect(apps.find((p:{id:string;configured:boolean})=>p.id==='google')?.configured).toBe(true);
- const accounts=await (await page.request.get('/api/oauth/connections')).json();
- expect(JSON.stringify(accounts)).not.toContain('e2e-secret');
+ const googleApp=apps.find((p:{id:string})=>p.id==='google');
+ const githubApp=apps.find((p:{id:string})=>p.id==='github');
+ expect(googleApp.configured).toBe(true);
+ expect(googleApp.managed).toBe(true);
+ expect(githubApp.configured).toBe(true);
+ expect(githubApp.managed).toBe(true);
+ expect(JSON.stringify(apps)).not.toContain('e2e-server-secret-never-expose');
+
+ const googleUrl=new URL((await (await page.request.get('/api/oauth/google/start?workspace=true')).json()).url);
+ expect(googleUrl.hostname).toBe('accounts.google.com');
+ expect(googleUrl.searchParams.get('client_id')).toBe('dominion-e2e-google-app');
+ expect(googleUrl.searchParams.get('scope')).toContain('https://www.googleapis.com/auth/drive');
+ expect(googleUrl.searchParams.get('code_challenge')).toBeTruthy();
+ expect(googleUrl.toString()).not.toContain('e2e-server-secret');
+
+ const githubUrl=new URL((await (await page.request.get('/api/oauth/github/start?repository=true')).json()).url);
+ expect(githubUrl.hostname).toBe('github.com');
+ expect(githubUrl.searchParams.get('client_id')).toBe('dominion-e2e-github-app');
+ expect(githubUrl.searchParams.get('scope')).toContain('repo');
 });
