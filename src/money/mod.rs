@@ -1,6 +1,7 @@
 //! Persistent Money evidence corpus. Independent of the native Run journal:
  //! market observations are not task/tool receipts or verified transactions.
 pub mod intelligence;
+pub mod retrieval;
 pub mod mechanism;
 pub mod operators;
 pub mod sources;
@@ -39,6 +40,7 @@ fn open(root:&Path)->Result<Connection,String>{
         );
         CREATE INDEX IF NOT EXISTS money_metrics_recent ON money_metrics(observed_ms DESC);
     ").map_err(err)?;
+    retrieval::schema(&conn)?;
     Ok(conn)
 }
 fn stored(conn:&Connection,key:&str)->Result<Option<Value>,String>{
@@ -74,9 +76,11 @@ pub fn save_signals(root:&Path,items:&[Value])->Result<usize,String>{
         for row in items.iter().take(150){
             let Some(id)=row["id"].as_str().filter(|s|!s.is_empty())else{continue};
             let Some(url)=row["url"].as_str().filter(|s|s.starts_with("https://"))else{continue};
-            added+=stmt.execute(params![id,crate::domain::now_ms() as i64,
+            let inserted=stmt.execute(params![id,crate::domain::now_ms() as i64,
                 row["sourceName"].as_str().unwrap_or("unknown"),
                 row["title"].as_str().unwrap_or(""),url,row.to_string()]).map_err(err)?;
+            if inserted>0{retrieval::index_signal(&tx,row)?;}
+            added+=inserted;
         }
     }
     tx.commit().map_err(err)?;
