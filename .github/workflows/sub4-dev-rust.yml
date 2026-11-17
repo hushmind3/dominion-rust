@@ -21,6 +21,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Bounded native execution program and read-only policy (dev profile)
         run: cargo test --lib read_program::tests
+      - name: Conditional read-program through native model and journal (dev profile)
+        run: cargo test --lib read_program_fuses_planning_and_skips_duplicate_model_audit
       - name: Money domain and implementation approval regressions (dev profile)
         run: 'cargo test --lib money::'
       - name: Evidence-only isolated strategy comparison invariants (dev profile)
