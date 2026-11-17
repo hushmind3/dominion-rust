@@ -214,7 +214,13 @@ async fn git_read(root:&Path,args:&[&str])->Result<String,String>{
 async fn list_relative(root: &Path, starting: &Path,max_files:usize) -> Result<Vec<String>,String> {
     // Stable lexical pagination is essential: truncating during traversal
     // silently hides half of medium-to-large codebases from the agent.
-    let mut stack = vec![starting.to_path_buf()];
+    // macOS can expose the same temp root as /var and /private/var.
+    // Resolve both sides once; never fall back to returning absolute paths
+    // when strip_prefix sees different spellings of the same directory.
+    let root=root.canonicalize().map_err(|e|e.to_string())?;
+    let starting=starting.canonicalize().map_err(|e|e.to_string())?;
+    if !starting.starts_with(&root){return Err("list root escapes workspace".into());}
+    let mut stack = vec![starting];
     let mut found = Vec::new();
     let mut directories=0usize;
     while let Some(path) = stack.pop() {
@@ -224,7 +230,8 @@ async fn list_relative(root: &Path, starting: &Path,max_files:usize) -> Result<V
         let meta=fs::symlink_metadata(&path).await.map_err(|e|e.to_string())?;
         if meta.file_type().is_symlink(){continue;}
         if meta.is_file(){
-            found.push(path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string());
+            found.push(path.strip_prefix(&root).map_err(|_|"list path escapes workspace")?
+                .to_string_lossy().into_owned());
             continue;
         }
         let mut dir = fs::read_dir(&path).await.map_err(|e| e.to_string())?;
@@ -236,7 +243,8 @@ async fn list_relative(root: &Path, starting: &Path,max_files:usize) -> Result<V
             if name.to_string_lossy().starts_with('.') || ["node_modules","target","dist","build",".venv","__pycache__"].contains(&name.to_string_lossy().as_ref()) {continue;}
             if meta.is_dir(){children.push(entry.path());}
             else if meta.is_file(){
-                found.push(entry.path().strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string());
+                found.push(entry.path().strip_prefix(&root).map_err(|_|"list entry escapes workspace")?
+                    .to_string_lossy().into_owned());
             }
         }
         children.sort();
@@ -291,6 +299,7 @@ mod tests {
         let list=ToolCall{id:"list".into(),name:"list_files".into(),arguments:json!({"path":"","offset":200,"limit":100})};
         let page:Vec<String>=serde_json::from_str(&execute(&settings,id,&list).await.unwrap()).unwrap();
         assert_eq!(page.len(),55);
+        assert!(page.iter().all(|item|!Path::new(item).is_absolute()));
         assert_eq!(page[50],"file-250.txt");
         let search=ToolCall{id:"search".into(),name:"search_files".into(),arguments:json!({"query":"needle-in-late-file"})};
         let result=execute(&settings,id,&search).await.unwrap();
