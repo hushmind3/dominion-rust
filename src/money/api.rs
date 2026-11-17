@@ -806,6 +806,14 @@ mod tests{
     assert!(!saved.model_only);
     assert!(saved.instruction.contains("UNTRUSTED research data"));
     assert_eq!(saved.budget_krw,100.0);
+    assert_eq!(saved.events.iter().filter(|event|
+        event.kind=="domain_receipt_committed").count(),1,
+        "Money approval must link the Run before model or tool dispatch");
+    assert!(saved.events.iter().any(|event|
+        event.kind=="domain_receipt_committed"
+            && event.detail.as_ref().is_some_and(|detail|
+                detail["domain"]=="money_candidate"
+                && detail["receipt"]=="money-approval-1")));
     let lead=super::super::candidate(&settings.data_dir,"money-approval-1")
         .unwrap().unwrap();
     assert_eq!(lead["implementationRunId"],first["id"]);
