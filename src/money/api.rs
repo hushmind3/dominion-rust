@@ -104,7 +104,7 @@ fn from_signal(item:&Value)->Option<Value>{
         "sourceIds":[item["id"]],"moneyMechanism":kind
     }))
 }
-fn shortlist(rows:&[Value],previous:&Value,rejected:&HashSet<String>)->(Vec<Value>,Vec<String>){
+fn shortlist(rows:&[Value],previous:&Value,rejected:&HashSet<String>)->(Vec<Value>,Vec<String>,Vec<Value>){
     let by_id=rows.iter().filter_map(|r|r["id"].as_str().map(|id|(id.to_string(),r.clone())))
         .collect::<HashMap<_,_>>();
     let mut pool=super::mechanism::discover(rows,24).iter()
@@ -139,7 +139,19 @@ fn shortlist(rows:&[Value],previous:&Value,rejected:&HashSet<String>)->(Vec<Valu
         }
     }
     if history.len()>128{history.drain(..history.len()-128);}
-    (selected,history)
+    // Keep lower-ranked and unselected ideas as searchable, zero-token
+    // records. Preserve the visible three even when their pool rank differs.
+    let mut archive=selected.clone();
+    let mut archived=archive.iter().filter_map(|v|v["id"].as_str())
+        .map(str::to_owned).collect::<HashSet<_>>();
+    for draft in pool.iter().filter(|v|v["origin"]=="source_pair_draft").take(18)
+        .chain(pool.iter().filter(|v|v["origin"]=="single_source_research_draft").take(12)){
+        let Some(id)=draft["id"].as_str()else{continue;};
+        if rejected.contains(id)||!archived.insert(id.to_owned()){continue;}
+        archive.push(draft.clone());
+        if archive.len()>=24{break;}
+    }
+    (selected,history,archive)
 }
 async fn snapshot(engine:&Arc<Engine>)->Result<Value,Fault>{
     let root=engine.settings.data_dir.clone();
@@ -236,6 +248,8 @@ pub fn routes()->Router<Arc<Engine>>{
         .route("/money/collect",post(collect))
         .route("/money/automation",post(automation))
         .route("/money/inference/cancel",post(cancel))
+        .route("/money/candidates",get(list_candidates))
+        .route("/money/candidates/{id}/decision",post(candidate_decision))
         .route("/money/candidates/{id}/reject",post(reject))
         .route("/money/candidates/{id}/implement",post(implement))
 }
@@ -325,17 +339,35 @@ pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     }
     Ok(Json(record))
 }
+pub async fn list_candidates(State(engine):State<Arc<Engine>>,
+    Query(input):Query<HashMap<String,String>>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
+    let status=input.get("status").map(String::as_str).unwrap_or("all");
+    let query=input.get("q").map(String::as_str).unwrap_or("");
+    let offset=input.get("offset").and_then(|value|value.parse::<usize>().ok()).unwrap_or(0);
+    let root=engine.settings.data_dir.clone();
+    let (status,query)=(status.to_owned(),query.to_owned());
+    blocking(move||super::candidate_archive(&root,&status,&query,offset,24)).await.map(Json)
+}
+pub async fn candidate_decision(State(engine):State<Arc<Engine>>,
+    Path(id):Path<String>,Json(body):Json<Value>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
+    let action=body["action"].as_str().unwrap_or("");
+    let reason=body["reason"].as_str().unwrap_or("");
+    if !matches!(action,"hold"|"restore"|"reject")||reason.chars().count()>500{
+        return Err(err("invalid candidate decision"));
+    }
+    let _lock=FIND_LOCK.lock().await;
+    let root=engine.settings.data_dir.clone();
+    let (action,reason)=(action.to_owned(),reason.to_owned());
+    blocking(move||super::decide_candidate(&root,&id,&action,&reason)).await.map(Json)
+}
 pub async fn reject(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
     require_enabled(&engine).await?;
     let _lock=FIND_LOCK.lock().await;
     let root=engine.settings.data_dir.clone();
-    blocking(move||{
-        let Some(mut candidate)=super::candidate(&root,&id)? else{return Err("candidate not found".into())};
-        candidate["status"]=json!("rejected");
-        super::replace_candidate(&root,&candidate)?;
-        Ok(candidate)
-    }).await.map(Json)
+    blocking(move||super::decide_candidate(&root,&id,"reject","")).await.map(Json)
 }
 
 /// Tool-only handoff: the Money candidate is untrusted research material.
@@ -392,8 +424,8 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     let saved_id=id.clone();
     let Some(mut candidate)=blocking(move||super::candidate(&root,&saved_id)).await?
         else{return Err((StatusCode::NOT_FOUND,Json(json!({"error":"candidate not found"}))))};
-    if candidate["status"]=="rejected"{
-        return Err(err("rejected candidate cannot be implemented"));
+    if candidate["status"]=="rejected"||candidate["status"]=="held"{
+        return Err(err("held or rejected candidate must be restored before implementation"));
     }
     if candidate["implementationRunId"].as_str().is_some_and(|value|
         Uuid::parse_str(value).is_err()){
@@ -505,9 +537,10 @@ pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     let past=blocking({
         let root=root.clone();move||super::candidates(&root,100)
     }).await?;
-    let rejected=past.iter().filter(|v|v["status"]=="rejected")
+    let rejected=past.iter().filter(|v|
+        v["status"]=="rejected"||v["status"]=="held")
         .filter_map(|v|v["id"].as_str().map(str::to_owned)).collect::<HashSet<_>>();
-    let (drafts,history)=shortlist(&records,&prior,&rejected);
+    let (drafts,history,archive)=shortlist(&records,&prior,&rejected);
     let ids=drafts.iter().filter_map(|d|d["id"].as_str()).collect::<Vec<_>>();
     let mut report=json!({"candidateIds":ids,"shownCandidateIds":history,
         "sourceCount":records.len(),"retrievalMethod":"sqlite_fts5_bigrams_roles",
@@ -554,7 +587,7 @@ Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",
         report["modelCalls"]=json!(1);
         let chosen=report.clone();
         let root_clone=root.clone();
-        blocking(move||super::save_report(&root_clone,&drafts,&chosen)).await?;
+        blocking(move||super::save_report(&root_clone,&archive,&chosen)).await?;
         if let Err(e)=engine.launch(run.id).await{
             let _=engine.store.mutate(run.id,|item|{
                 item.status=RunStatus::Failed;
@@ -564,7 +597,7 @@ Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",
             return Err(err(e));
         }
     }else{
-        blocking(move||super::save_report(&root,&drafts,&report)).await?;
+        blocking(move||super::save_report(&root,&archive,&report)).await?;
     }
     drop(_lock); // Finalizer may need the same lock if the provider already completed.
     snapshot(&engine).await.map(Json)
@@ -689,7 +722,8 @@ mod tests{
     let b=super::super::intelligence::enrich_signal(json!({
         "id":"b","title":"Factory procurement request for software automation","description":"Request for proposal factory",
         "url":"https://buyer.example/rfp","sourceName":"buyer","contentStatus":"headline_observed"}));
-    let (items,_)=shortlist(&[a,b],&Value::Null,&HashSet::new());
+    let (items,_,archive)=shortlist(&[a,b],&Value::Null,&HashSet::new());
+    assert!(archive.len()>=items.len());
     assert!(!items.is_empty());
     assert!(items.iter().all(|r|r["evidenceStatus"]!="paid_customer_verified"));
  }

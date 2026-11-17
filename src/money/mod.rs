@@ -34,6 +34,8 @@ fn open(root:&Path)->Result<Connection,String>{
             record TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS money_candidates_recent ON money_candidates(updated_ms DESC);
+        CREATE INDEX IF NOT EXISTS money_candidates_status
+            ON money_candidates(json_extract(record,'$.status'),updated_ms DESC);
         CREATE TABLE IF NOT EXISTS money_state(key TEXT PRIMARY KEY, record TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS money_metrics(
             id TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, record TEXT NOT NULL
@@ -133,6 +135,68 @@ pub fn candidates(root:&Path,limit:usize)->Result<Vec<Value>,String>{
     let rows=stmt.query_map(params![limit.min(100) as i64],|row|row.get::<_,String>(0)).map_err(err)?;
     rows.map(|x|x.map_err(err).and_then(|raw|serde_json::from_str(&raw).map_err(err))).collect()
 }
+/// Search all retained hypotheses, including those omitted from the
+/// three-card shortlist, held for later, or explicitly rejected.
+pub fn candidate_archive(root:&Path,status:&str,query:&str,offset:usize,
+    limit:usize)->Result<Value,String>{
+    if !matches!(status,"all"|"draft"|"held"|"rejected"|"implementation_requested"){
+        return Err("invalid candidate status filter".into());
+    }
+    if query.chars().count()>160||offset>5000{return Err("invalid candidate search bounds".into());}
+    if !root.join("money.sqlite").is_file(){
+        return Ok(json!({"items":[],"hasMore":false,"nextOffset":offset}));
+    }
+    let conn=open(root)?;
+    let page=limit.clamp(1,24);
+    let mut stmt=conn.prepare("SELECT record FROM money_candidates
+        WHERE (?1='all' OR coalesce(json_extract(record,'$.status'),'draft')=?1)
+          AND (?2='' OR instr(lower(
+            coalesce(json_extract(record,'$.title'),'')||' '||
+            coalesce(json_extract(record,'$.offer'),'')||' '||
+            coalesce(json_extract(record,'$.customer'),'')),lower(?2))>0)
+        ORDER BY updated_ms DESC,id LIMIT ?3 OFFSET ?4").map_err(err)?;
+    let rows=stmt.query_map(params![status,query,page as i64+1,offset as i64],
+        |row|row.get::<_,String>(0)).map_err(err)?;
+    let mut items=rows.map(|row|row.map_err(err).and_then(|value|
+        serde_json::from_str::<Value>(&value).map_err(err)))
+        .collect::<Result<Vec<_>,_>>()?;
+    let has_more=items.len()>page;
+    items.truncate(page);
+    Ok(json!({"items":items,"hasMore":has_more,
+        "nextOffset":offset+items.len(),"modelCalls":0}))
+}
+/// Keep user decisions and reasons in the same Money candidate row. One
+/// transactional mutation protects the native implementation receipt.
+pub fn decide_candidate(root:&Path,id:&str,action:&str,reason:&str)->Result<Value,String>{
+    if !matches!(action,"hold"|"restore"|"reject"){
+        return Err("candidate decision must be hold, restore or reject".into());
+    }
+    if reason.chars().count()>500{return Err("candidate decision reason too long".into());}
+    let mut conn=open(root)?;
+    let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
+    let raw:Option<String>=tx.query_row(
+        "SELECT record FROM money_candidates WHERE id=?1",params![id],|r|r.get(0))
+        .optional().map_err(err)?;
+    let Some(raw)=raw else{return Err("candidate not found".into());};
+    let mut record:Value=serde_json::from_str(&raw).map_err(err)?;
+    if record["implementationRunId"].as_str().is_some(){
+        return Err("candidate already linked to a native implementation Run".into());
+    }
+    let prior=record["status"].as_str().unwrap_or("draft").to_owned();
+    let next=match action{"hold"=>"held","reject"=>"rejected",_=>"draft"};
+    if prior!=next{
+        let mut decisions=record["decisionHistory"].as_array().cloned().unwrap_or_default();
+        decisions.push(json!({"action":action,"from":prior,"to":next,
+            "reason":reason,"at":crate::frontend_state::timestamp(crate::domain::now_ms())}));
+        if decisions.len()>32{decisions.drain(..decisions.len()-32);}
+        record["decisionHistory"]=json!(decisions);
+        record["status"]=json!(next);
+        tx.execute("UPDATE money_candidates SET record=?1,updated_ms=?2 WHERE id=?3",
+            params![record.to_string(),crate::domain::now_ms() as i64,id]).map_err(err)?;
+    }
+    tx.commit().map_err(err)?;
+    Ok(record)
+}
 pub fn candidate(root:&Path,id:&str)->Result<Option<Value>,String>{
     let conn=open(root)?;
     let raw:Option<String>=conn.query_row("SELECT record FROM money_candidates WHERE id=?1",
@@ -216,7 +280,7 @@ pub fn latest(root:&Path)->Result<Value,String>{
             .optional().map_err(err)?;
         if let Some(raw)=raw{
             let item:Value=serde_json::from_str(&raw).map_err(err)?;
-            if item["status"]!="rejected"{drafts.push(item);}
+            if item["status"]!="rejected"&&item["status"]!="held"{drafts.push(item);}
         }
     }
     report["drafts"]=json!(drafts);
@@ -245,6 +309,26 @@ pub fn stats(root:&Path)->Result<Value,String>{
 mod tests{
  use super::*;
  use uuid::Uuid;
+ #[test] fn non_shortlisted_candidates_can_be_held_searched_restored_and_rejected(){
+    let root=std::env::temp_dir().join(format!("dominion-money-archive-{}",Uuid::new_v4()));
+    let drafts=(0..18).map(|i|json!({"id":format!("lead-{i}"),
+        "title":format!("Business opportunity {i}"),
+        "offer":"Industrial service","status":"draft"})).collect::<Vec<_>>();
+    save_report(&root,&drafts,&json!({"candidateIds":["lead-1","lead-2","lead-3"]})).unwrap();
+    let list=candidate_archive(&root,"draft","Industrial",0,24).unwrap();
+    assert_eq!(list["items"].as_array().unwrap().len(),18);
+    let held=decide_candidate(&root,"lead-12","hold","Compare suppliers later").unwrap();
+    assert_eq!(held["status"],"held");
+    assert_eq!(held["decisionHistory"][0]["reason"],"Compare suppliers later");
+    assert_eq!(candidate_archive(&root,"held","",0,24).unwrap()["items"][0]["id"],"lead-12");
+    let restored=decide_candidate(&root,"lead-12","restore","New source").unwrap();
+    assert_eq!(restored["status"],"draft");
+    assert_eq!(restored["decisionHistory"].as_array().unwrap().len(),2);
+    decide_candidate(&root,"lead-12","reject","Owner decision").unwrap();
+    assert_eq!(candidate_archive(&root,"rejected","",0,24).unwrap()["items"][0]["id"],"lead-12");
+    assert!(latest(&root).unwrap()["drafts"].as_array().unwrap().len()==3);
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn optional_module_defaults_off_without_db_and_preserves_legacy_data(){
     let root=std::env::temp_dir().join(format!("dominion-money-module-{}",Uuid::new_v4()));
     assert!(!module_enabled(&root).unwrap());
