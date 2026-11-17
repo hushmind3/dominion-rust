@@ -231,6 +231,16 @@ export class Dominion {
   readonly money = {
     latest:()=>this.request<MoneyReport>('GET','/money/find'),
     stats:()=>this.request<MoneyStats>('GET','/money/stats'),
+    candidates:(options:{status?:'all'|'draft'|'held'|'rejected'|'implementation_requested';q?:string;offset?:number}={})=>{
+      const params=new URLSearchParams();
+      if(options.status)params.set('status',options.status);
+      if(options.q)params.set('q',options.q);
+      if(options.offset)params.set('offset',String(options.offset));
+      return this.request<{items:MoneyDraft[];hasMore:boolean;nextOffset:number}>(
+        'GET','/money/candidates'+(params.size?'?'+params.toString():''));
+    },
+    decide:(id:string,action:'hold'|'restore'|'reject',reason='')=>
+      this.request<MoneyDraft>('POST','/money/candidates/'+encodeURIComponent(id)+'/decision',{action,reason}),
     settings:()=>this.request<{enabled:boolean}>('GET','/money/settings'),
     setEnabled:(enabled:boolean)=>this.request<{enabled:boolean}>('POST','/money/settings',{enabled}),
     search:(query:string)=>this.request<{results:MoneySignal[];count:number;query:string;modelCalls:0}>(

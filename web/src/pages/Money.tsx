@@ -14,6 +14,7 @@ type Lead={
  counterfactual?:string;firstTest?:string;evidenceStatus?:string;
  causalChain?:string;existingAlternatives?:string;firstBuyerAccess?:string;
  evidence?:Evidence[];origin?:string;status?:string;implementationRunId?:string
+ decisionHistory?:Array<{action:string;reason?:string;from:string;to:string;at:string}>
 }
 type Report={
  drafts:Lead[];candidateIds?:string[];sourceCount?:number;modelCalls?:number;
@@ -27,6 +28,7 @@ type Stats={
  }|null;
  automation?:{enabled?:boolean;periodMinutes?:number}
 }
+type CandidatePage={items:Lead[];hasMore:boolean;nextOffset:number}
 const initial:Report={drafts:[],modelCalls:0}
 const won=(n:number)=>Math.max(0,n).toLocaleString('ko-KR')+'원'
 
@@ -43,6 +45,14 @@ export function MoneyPage(){
  const [error,setError]=useState('')
  const [moduleEnabled,setModuleEnabled]=useState(false)
  const [moduleLoading,setModuleLoading]=useState(true)
+ const [showAllCandidates,setShowAllCandidates]=useState(false)
+ const [candidatesFilter,setCandidatesFilter]=useState<'all'|'draft'|'held'|'rejected'|'implementation_requested'>('all')
+ const [candidateQuery,setCandidateQuery]=useState('')
+ const [candidateReason,setCandidateReason]=useState('')
+ const [candidatePage,setCandidatePage]=useState<Lead[]>([])
+ const [candidatesMore,setCandidatesMore]=useState(false)
+ const [candidatesOffset,setCandidatesOffset]=useState(0)
+ const [loadingCandidates,setLoadingCandidates]=useState(false)
  const [archiveQuery,setArchiveQuery]=useState('')
  const [archiveResults,setArchiveResults]=useState<ArchivedSource[]>([])
  const [archiveSearched,setArchiveSearched]=useState(false)
@@ -165,11 +175,46 @@ export function MoneyPage(){
   }catch(e){setError((e as Error).message)}
   finally{setBusy('')}
  }
+ async function loadCandidates(offset=0,append=false){
+  if(!moduleEnabled)return
+  setLoadingCandidates(true)
+  try{
+   const params=new URLSearchParams({
+    status:candidatesFilter,q:candidateQuery.trim(),offset:String(offset)
+   })
+   const page=await get<CandidatePage>('/api/money/candidates?'+params.toString())
+   setCandidatePage(prev=>append?[...prev,...page.items]:page.items)
+   setCandidatesOffset(page.nextOffset);setCandidatesMore(page.hasMore)
+  }catch(e){setError((e as Error).message)}
+  finally{setLoadingCandidates(false)}
+ }
+ useEffect(()=>{
+  if(!showAllCandidates||!moduleEnabled)return
+  let live=true
+  const params=new URLSearchParams({status:candidatesFilter,q:candidateQuery.trim(),offset:'0'})
+  void get<CandidatePage>('/api/money/candidates?'+params.toString())
+   .then(page=>{if(live){setCandidatePage(page.items);setCandidatesOffset(page.nextOffset);setCandidatesMore(page.hasMore)}})
+   .catch(e=>{if(live)setError((e as Error).message)})
+  return()=>{live=false}
+ },[showAllCandidates,moduleEnabled,candidatesFilter])
+ async function decide(id:string,action:'hold'|'restore'|'reject'){
+  if(busy)return
+  setError('');setBusy('find')
+  try{
+   await post('/api/money/candidates/'+encodeURIComponent(id)+'/decision',{
+    action,reason:candidateReason.trim().slice(0,500)
+   })
+   setCandidateReason('')
+   await refresh()
+   if(showAllCandidates)await loadCandidates()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy('')}
+ }
  async function reject(id:string){
   if(busy)return
   setError('')
   try{
-   await post('/api/money/candidates/'+encodeURIComponent(id)+'/reject',{})
+   await post('/api/money/candidates/'+encodeURIComponent(id)+'/decision',{action:'reject',reason:''})
    await refresh()
   }catch(e){setError((e as Error).message)}
  }
@@ -355,6 +400,9 @@ export function MoneyPage(){
      <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-[#948678]">
       <CheckCircle2 size={13}/>자료와 수익 검증 상태 분리
      </span>
+     <button type="button" disabled={!moduleEnabled||!!busy||!!lead.implementationRunId}
+      onClick={()=>void decide(lead.id,'hold')}
+      className="text-[11px] text-[#9B8F86] hover:text-[#A75835]">나중에 검토</button>
      <button type="button" disabled={!moduleEnabled||!!busy||!!lead.implementationRunId} onClick={()=>void reject(lead.id)}
       className="text-[11px] text-[#9B8F86] hover:text-rose-600">후보 제외</button>
     </div>
@@ -365,5 +413,63 @@ export function MoneyPage(){
     <p className="mt-2 text-[12px]">돈벌이 찾기를 누르면 공개 시장 자료부터 수집합니다.</p>
    </section>}
   </div>
+  <section className="mt-6 rounded-2xl border border-[#E4D7C8] bg-[#FFFCF6] p-4">
+   <button type="button" disabled={!moduleEnabled} aria-expanded={showAllCandidates}
+    onClick={()=>setShowAllCandidates(value=>!value)}
+    className="text-[13px] font-bold text-[#624E3F] disabled:opacity-50">
+    {showAllCandidates?'보관한 후보 접기':'보류·제외·하위 후보 다시 보기'}
+   </button>
+   {showAllCandidates&&<div className="mt-3 space-y-3">
+    <form className="flex flex-wrap gap-2" onSubmit={event=>{event.preventDefault();void loadCandidates()}}>
+     <select aria-label="보관 후보 상태" value={candidatesFilter}
+      onChange={event=>setCandidatesFilter(event.target.value as typeof candidatesFilter)}
+      className="rounded-lg border border-[#DCCFC1] bg-white px-2 py-2 text-[12px]">
+      <option value="all">전체 후보</option><option value="draft">미선택 후보</option>
+      <option value="held">보류</option><option value="rejected">제외</option>
+      <option value="implementation_requested">구현 승인</option>
+     </select>
+     <input aria-label="보관 후보 검색" value={candidateQuery} maxLength={160}
+      onChange={event=>setCandidateQuery(event.target.value)}
+      placeholder="후보 제목·제안·구매자 검색"
+      className="min-w-[180px] flex-1 rounded-lg border border-[#DCCFC1] bg-white px-3 py-2 text-[12px]"/>
+     <button type="submit" disabled={loadingCandidates}
+      className="rounded-lg bg-[#6C5B4B] px-4 py-2 text-[12px] font-bold text-white disabled:opacity-50">
+      {loadingCandidates?'조회 중…':'DB에서 검색'}
+     </button>
+    </form>
+    <input aria-label="보류·제외 판단 이유" maxLength={500} value={candidateReason}
+     onChange={event=>setCandidateReason(event.target.value)}
+     placeholder="선택 사항: 보류·제외 판단 이유 (기록에 보존)"
+     className="w-full rounded-lg border border-[#DCCFC1] bg-white px-3 py-2 text-[12px]"/>
+    {candidatePage.map(item=><details key={item.id}
+     className="rounded-lg border border-[#E8DFD3] bg-white p-3">
+     <summary className="cursor-pointer text-[12px] font-semibold">
+      {item.title} · {item.status||'draft'}
+     </summary>
+     <p className="mt-2 text-[12px] leading-5">{item.offer||'사업 제안 내용 없음'}</p>
+     <p className="mt-1 text-[11px] text-[#84766A]">구매자: {item.customer||'추가 조사 필요'}</p>
+     <div className="mt-2 flex flex-wrap gap-2">
+      {(item.evidence||[]).filter(e=>e.url?.startsWith('https://')).map((e,i)=>
+       <a key={e.sourceId||i} href={e.url} target="_blank" rel="noreferrer"
+        className="text-[11px] text-[#A75835] underline">{e.sourceName||'출처 '+(i+1)}</a>)}
+     </div>
+     {!!item.decisionHistory?.length&&<p className="mt-2 text-[11px] text-[#8B7D70]">
+      판단 이력: {item.decisionHistory.map(d=>d.action+(d.reason?' ('+d.reason+')':'')).join(' · ')}
+     </p>}
+     {!item.implementationRunId&&<div className="mt-3 flex flex-wrap gap-3 text-[11px]">
+      {item.status!=='draft'&&<button type="button" disabled={!!busy}
+       onClick={()=>void decide(item.id,'restore')} className="font-semibold text-[#A75835]">다시 검토</button>}
+      {item.status!=='held'&&<button type="button" disabled={!!busy}
+       onClick={()=>void decide(item.id,'hold')} className="text-[#8B7D70]">보류</button>}
+      {item.status!=='rejected'&&<button type="button" disabled={!!busy}
+       onClick={()=>void decide(item.id,'reject')} className="text-rose-700">제외</button>}
+     </div>}
+    </details>)}
+    {!loadingCandidates&&!candidatePage.length&&<p className="text-[12px] text-[#84766A]">조건에 맞는 저장 후보가 없습니다.</p>}
+    {candidatesMore&&<button type="button" disabled={loadingCandidates}
+     onClick={()=>void loadCandidates(candidatesOffset,true)}
+     className="rounded-lg border border-[#DCCFC1] px-3 py-2 text-[12px] disabled:opacity-50">이전 후보 더 보기</button>}
+   </div>}
+  </section>
  </main>
 }
