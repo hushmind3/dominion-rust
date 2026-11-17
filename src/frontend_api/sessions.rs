@@ -202,3 +202,47 @@ pub(super) async fn cancel_session(State(engine):State<Arc<Engine>>,Path(id):Pat
     Ok(Json(json!({"cancelled":true})))
 }
 
+
+#[cfg(test)]
+mod selected_model_receipt_tests{
+ use super::*;
+ use crate::{group::Groups,store::Store};
+ #[tokio::test]
+ async fn chat_receipt_preserves_the_actual_selected_provider_model_and_cost(){
+  let root=std::env::temp_dir().join(format!("dominion-chat-model-receipt-{}",Uuid::new_v4()));
+  let mut settings=crate::config::Settings::from_env().unwrap();
+  settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
+  let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+  let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+  let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+  let mut run=Run::new(CreateRun{instruction:"answer".into(),budget_krw:Some(20.0),max_steps:Some(2)},2).unwrap();
+  run.status=RunStatus::Completed;run.answer=Some("selected model answer".into());
+  run.provider_id="provider-custom".into();run.model_name="mock-2026-model".into();
+  run.input_tokens=42;run.output_tokens=9;run.cost_krw=12.5;
+  let run_id=run.id;
+  store.put(run).await.unwrap();
+  let session="receipt-session".to_string();
+  engine.frontend.mutate(|state|{
+   state.sessions.insert(session.clone(),UiSession{
+    id:session.clone(),title:"receipt".into(),agent_id:"general".into(),
+    provider_id:"provider-custom".into(),model:"mock-2026-model".into(),
+    created_at:timestamp(now_ms()),updated_at:timestamp(now_ms()),
+    room_id:None,pending_run:Some(run_id),messages:Vec::new()
+   });
+   Ok(())
+  }).await.unwrap();
+  sync_session(&engine,&session).await.unwrap();
+  let actual=engine.frontend.session(&session).await.unwrap();
+  assert!(actual.pending_run.is_none());
+  assert_eq!(actual.messages.len(),1);
+  let receipt=actual.messages[0].metadata.as_ref().unwrap();
+  assert_eq!(receipt["model"],"mock-2026-model");
+  assert_eq!(receipt["providerId"],"provider-custom");
+  assert_eq!(receipt["usage"]["model"],"mock-2026-model");
+  assert_eq!(receipt["usage"]["providerId"],"provider-custom");
+  assert_eq!(receipt["usage"]["totalTokens"],51);
+  assert_eq!(receipt["costKrw"],12.5);
+  drop(engine);drop(store);
+  tokio::fs::remove_dir_all(root).await.unwrap();
+ }
+}

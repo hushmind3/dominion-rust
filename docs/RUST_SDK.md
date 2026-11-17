@@ -38,7 +38,7 @@ Read-only calls are replay-safe. Mutating remote operations are not implicitly r
 
 ## Event-driven execution and resume
 
-The SDK's wait contract and browser chat transports share the Store's post-fsync Run change feed. Read-only status listeners do not repeatedly clone full transcripts while a provider model or an approval is pending. Lagged listeners re-check a durable snapshot. The main-product Jobs resume path now calls Engine::launch under its existing guard: terminal runs, unknown remote side effects, unresolved approvals, and active delegated children remain blocked.
+The SDK's wait contract and browser chat transports share the Store's post-fsync Run change feed. Read-only status listeners do not repeatedly clone full transcripts while a provider model or approval is pending. Native Engine::launch now handles both autonomous agents and model-only chat runs with the same cancellation watch and cost accounting; the TypeScript adapter does not own a separate model worker. Lagged listeners re-check a durable snapshot. The main-product Jobs resume path now calls Engine::launch under its existing guard: terminal runs, unknown remote side effects, unresolved approvals, and active delegated children remain blocked.
 
 ## Recovery and ownership
 

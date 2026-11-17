@@ -130,7 +130,7 @@ A product operator registers OAuth apps once and installs their ID/secret as ser
 
 ## Native run change feed and job resume
 
-Native Store fsync receipts emit per-Run update notifications. The chat SSE transport, browser-independent session finalizer, and model-only cancellation monitor subscribe once before inspecting current state. Idle tasks no longer read complete Run/model transcripts every 250–350 ms. Lagged broadcasts trigger authoritative snapshot re-reads. The legacy jobs resume endpoint now invokes the native engine's guarded resume instead of returning HTTP 501.
+Native Store fsync receipts emit per-Run update notifications. The chat SSE transport and browser-independent session finalizer subscribe once before inspecting current state. Tool-free chat now uses the native Engine worker/cancellation and budget ledger rather than a second frontend model executor. Idle tasks no longer read complete Run/model transcripts every 250–350 ms. Lagged broadcasts trigger authoritative snapshot re-reads. The legacy jobs resume endpoint now invokes the native engine's guarded resume instead of returning HTTP 501.
 
 See [Sub4 Runtime Review](docs/SUB4_RUNTIME_REVIEW_2026-11-17.md).
 
