@@ -114,11 +114,13 @@ pub fn observations(run:&Run)->serde_json::Value{
     // candidate-score history without adding a second telemetry database.
     // Every entry retains its durable source event sequence IDs.
     let comparisons=run.events.iter().rev()
-        .filter(|event|event.kind=="strategy_compared")
+        .filter(|event|matches!(event.kind.as_str(),
+            "strategy_trials_launched"|"strategy_trials_partial"|"strategy_trials_evaluated"))
         .take(32).map(|event|json!({
             "eventSeq":event.seq,
+            "eventType":event.kind,
             "atMs":event.at_ms,
-            "selection":event.detail,
+            "evidence":event.detail,
         })).collect::<Vec<_>>();
     json!({"runId":run.id,"status":run.status,"observations":entries,
         "pathComparisons":comparisons,
