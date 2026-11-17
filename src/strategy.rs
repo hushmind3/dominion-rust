@@ -250,6 +250,38 @@ mod runtime_trials_tests{
             ["provisionalWinner"].is_null());
     }
     #[test]
+    fn trial_comparison_waits_for_settlement_and_declines_cost_speed_tradeoff(){
+        let mut parent=sample();
+        parent.repository=Some("repo".into());parent.base_commit=Some("commit".into());
+        parent.provider_id="p".into();parent.model_name="m".into();
+        let mut children=Vec::new();
+        for (cost,steps) in [(20.0,8),(75.0,4)]{
+            let mut c=sample();
+            c.parent_run_id=Some(parent.id);c.strategy_candidate=true;
+            c.repository=parent.repository.clone();c.base_commit=parent.base_commit.clone();
+            c.provider_id=parent.provider_id.clone();c.model_name=parent.model_name.clone();
+            c.status=RunStatus::Completed;c.cost_krw=cost;c.steps=steps;
+            c.event("tool_result","real edit",Some(json!({"name":"edit_file"})));
+            c.event("verification","PASS",None);
+            children.push(c);
+        }
+        parent.event("strategy_trials_launched","started",Some(json!({"candidates":[
+            {"run_id":children[0].id,"label":"fast cheap"},
+            {"run_id":children[1].id,"label":"fast costly"}]})));
+        assert!(trial_report(&parent,&children).is_none(),
+            "comparison before child budget settlement is a race");
+        parent.settled_child_ids=children.iter().map(|c|c.id).collect();
+        let report=trial_report(&parent,&children).unwrap();
+        assert!(report["provisionalWinner"].is_null(),
+            "budget vs speed is a tradeoff, not proof of superiority");
+        assert_eq!(report["candidates"][0]["eligibleForComparison"],true);
+        children[0].strategy_candidate=false;
+        let report=trial_report(&parent,&children).unwrap();
+        assert_eq!(report["provisionalWinner"],json!(children[1].id),
+            "a non-isolated candidate cannot win");
+    }
+
+    #[test]
     fn incomplete_or_unrelated_children_cannot_fabricate_a_comparison(){
         let mut parent=sample();let mut child=sample();
         child.parent_run_id=Some(parent.id);
