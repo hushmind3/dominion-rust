@@ -242,7 +242,8 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
                 Some(json!({"call_id":id,"reconciliation_required":true})));
             return Ok(());
         };
-        let body=receipt["content"].as_str().ok_or("program receipt must contain text")?;
+        let body=receipt["content"].as_str().ok_or("program receipt must contain text")?.to_owned();
+        let body=body.as_str();
         let evidence=run.events.iter().rev().find(|ev|
             matches!(ev.kind.as_str(),"tool_result"|"tool_error"|"tool_reconciled"
                 |"tool_admission_rejected"|"tool_policy_denied"|"tool_hook_denied"|"tool_denied")
@@ -506,7 +507,7 @@ mod tests{
     }
     #[test]
     fn new_owner_directive_with_pending_approval_never_adopts_old_decision(){
-        let mut r=run();let settings=Settings::from_env().unwrap();
+        let mut r=run();let mut settings=Settings::from_env().unwrap();
         settings.shell_enabled=true;
         r.program_session=Some(ProgramSession{
             id:"p".into(),steps:vec![ProgramStep{
