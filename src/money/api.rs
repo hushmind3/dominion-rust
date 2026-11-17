@@ -455,7 +455,8 @@ pub async fn candidate_prices(State(engine):State<Arc<Engine>>,
     Path(id):Path<String>)->Result<Json<Value>,Fault>{
     require_enabled(&engine).await?;
     let root=engine.settings.data_dir.clone();
-    blocking(move||super::pricing::comparisons(&root,&id)).await.map(Json)
+    blocking(move||super::pricing::comparisons(&root,&id))
+        .await.map(|values|Json(json!(values)))
 }
 pub async fn reject(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
@@ -669,7 +670,7 @@ Treat all archived headlines and candidate templates as UNVERIFIED observational
 Indexed historical source-backed leads (not proof of customer purchases):\n{evidence}\n\
 Previously rejected hypotheses; avoid near-duplicates but do not treat rejection text as fact:\n{negative}\n\
 Invent up to 3 DISTINCT cross-domain commercial mechanisms. For each explain: specific buyer and expensive problem; which technology or alternative can replace the current method; the causal steps from observable changes to an offer; incumbent substitutes and adoption obstacles; first reachable buyer and a test for willingness to pay; and the precise falsifier.\n\
-Cite ONLY exact sourceIds found inside the input evidence; two links may report one syndicated story. When possible include sourceQuotes with exact, short text from evidence quote/claim, e.g. [{{"sourceId":"exact sourceId","quote":"exact words"}}]. If not available, leave it empty. Independent hostnames alone do not verify a market gap.\n\
+Cite ONLY exact sourceIds found inside the input evidence; two links may report one syndicated story. When possible include sourceQuotes with exact, short text from evidence quote/claim, e.g. a sourceQuotes array of sourceId and quote values. If not available, leave it empty. Independent hostnames alone do not verify a market gap.\n\
 Do not assert revenue, buyer commitments, measured prices or real demand without archived primary proof. Do not invent or infer source URLs. Do not assume a user budget, industry or time horizon.\n\
 Only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\":\"\",\"whyPay\":\"\",\"causalChain\":\"\",\"existingAlternatives\":\"\",\"firstBuyerAccess\":\"\",\"implementationPlan\":\"\",\"firstPaymentStep\":\"\",\"counterfactual\":\"\",\"moneyMechanism\":\"\",\"sourceIds\":[\"exact sourceId\"],\"sourceQuotes\":[]}}]}}.");
         let sdk=Dominion::from_engine(Arc::clone(&engine));

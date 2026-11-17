@@ -632,7 +632,7 @@ export function MoneyPage(){
        <div key={review.id} className="mt-2 rounded-lg bg-[#F8F5EE] p-3 text-[11px]">
         <p className="font-semibold">{review.status==='comparable_user_input_not_validated_trade'
          ?'비교 가능한 가정 기준':'미확인 조건으로 계산 보류'}
-         · {review.spreadKrw==null?'차액 미확인':won(review.spreadKrw)}
+         · {review.spreadKrw==null?'차액 미확인':review.spreadKrw.toLocaleString('ko-KR')+'원'}
         </p>
         {review.issues.map((issue,index)=><p key={index} className="mt-1">미확인: {issue}</p>)}
         <p className="mt-1">실제 계약·결제 검증: 없음 · 추정 환율은 입력값 기준</p>
