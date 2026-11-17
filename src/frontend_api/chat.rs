@@ -90,15 +90,20 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
             if let Some(current)=current{
                 worker.providers.throttle(&current.provider_id).await;
             }
+            // Subscribe first, then inspect state, then await signals.
+            // Never issue a full-Run read 4 times per second while the
+            // provider is thinking. Cancellation wins simultaneous completion.
+            let mut changes=worker.store.subscribe();
             let answer=tokio::select!{
-                result=selected_model.complete(&messages,&[],false)=>Some(result),
+                biased;
                 _=async{
                     loop{
-                        tokio::time::sleep(Duration::from_millis(250)).await;
                         if worker.store.get(id).await.is_none_or(|item|
                             item.status!=RunStatus::Running){break;}
+                        if !worker.store.changed(id,&mut changes).await{break;}
                     }
                 }=>None,
+                result=selected_model.complete(&messages,&[],false)=>Some(result),
             };
             let Some(answer)=answer else{return;};
             let saved=worker.store.mutate(id,|item|{
@@ -150,7 +155,9 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let session_id=record.id.clone();
     let run_id=run.id;
     tokio::spawn(async move{
-        // Persist the answer even if a browser disconnects while the task runs.
+        // A single event-driven finalizer persists the result even if the
+        // browser disconnects. No per-chat periodic Run history scans.
+        let mut changes=worker.store.subscribe();
         loop{
             match worker.store.get(run_id).await{
                 Some(state) if state.terminal()=>{
@@ -160,7 +167,7 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                     break;
                 },
                 None=>break,
-                _=>tokio::time::sleep(Duration::from_millis(350)).await,
+                _=>if !worker.store.changed(run_id,&mut changes).await{break;},
             }
         }
     });
@@ -169,6 +176,9 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
     let id=run.id;
     let id_text=id.to_string();
     let stream=async_stream::stream!{
+        // Subscription is established before the first snapshot, closing the
+        // start/read/listen lost-update gap.
+        let mut updates=stream_engine.store.subscribe();
         let mut sequence=0u64;
         let mut last_approval:Option<String>=None;
         loop{
@@ -219,7 +229,7 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 yield Ok(Event::default().json_data(json!({"type":"done"})).unwrap_or_else(|_|Event::default().data("{}")));
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(350)).await;
+            if !stream_engine.store.changed(id,&mut updates).await{break;}
         }
     };
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(8)).text("alive")))

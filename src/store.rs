@@ -179,6 +179,19 @@ impl Store {
     pub fn subscribe(&self)->broadcast::Receiver<RunUpdate>{
         self.updates.subscribe()
     }
+    /// Wait for a durable update to ONE Run without timer polling or copying
+    /// unrelated model transcripts. A lagged receiver returns immediately:
+    /// the caller must re-read the authoritative persisted snapshot.
+    pub async fn changed(&self,id:Uuid,rx:&mut broadcast::Receiver<RunUpdate>)->bool{
+        loop{
+            match rx.recv().await{
+                Ok(update) if update.id==id=>return true,
+                Ok(_)=>continue,
+                Err(broadcast::error::RecvError::Lagged(_))=>return true,
+                Err(broadcast::error::RecvError::Closed)=>return false,
+            }
+        }
+    }
     pub async fn get(&self, id: Uuid) -> Option<Run> { self.state.lock().await.get(&id).cloned() }
     /// Inspect child existence under the store lock without cloning every
     /// transcript; the planner calls this once per model step.

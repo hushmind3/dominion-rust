@@ -97,8 +97,15 @@ pub(super) async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uu
 }
 pub(super) async fn resume_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
     ->Result<Json<Value>,Fault>{
-    let _=engine.store.get(id).await.ok_or_else(||missing("job not found"))?;
-    Err(unsupported("Resume is only available for interrupted native runs."))
+    let current=engine.store.get(id).await.ok_or_else(||missing("job not found"))?;
+    if current.status!=RunStatus::Paused{
+        return Err(busy("only a paused native job may be resumed"));
+    }
+    // The Rust kernel owns all restrictions: approval, unresolved side
+    // effects, delegated children, model-only and already-active workers.
+    engine.launch(id).await.map_err(busy)?;
+    let resumed=engine.store.get(id).await.ok_or_else(||missing("job not found"))?;
+    Ok(Json(as_job(&resumed)))
 }
 pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
     let list=engine.store.headers().await.into_iter().map(|run|{

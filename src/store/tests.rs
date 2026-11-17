@@ -29,6 +29,32 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn run_scoped_wait_ignores_unrelated_updates_and_wakes_on_fsync(){
+        use tokio::time::{Duration,timeout};
+        let root=std::env::temp_dir().join(format!("dominion-run-wait-{}",Uuid::new_v4()));
+        let store=Arc::new(Store::open(root.clone()).await.unwrap());
+        let watched=Run::new(CreateRun{instruction:"watch".into(),budget_krw:None,max_steps:None},2).unwrap();
+        let other=Run::new(CreateRun{instruction:"other".into(),budget_krw:None,max_steps:None},2).unwrap();
+        let id=watched.id;let other_id=other.id;
+        store.put(watched).await.unwrap();store.put(other).await.unwrap();
+        // Subscribe BEFORE reading the run; a transition on that boundary
+        // must never disappear into an interval-poll race.
+        let mut rx=store.subscribe();
+        assert_eq!(store.get(id).await.unwrap().status,RunStatus::Queued);
+        let follower=Arc::clone(&store);
+        let mut pending=tokio::spawn(async move{follower.changed(id,&mut rx).await});
+        store.mutate(other_id,|run|{run.event("other","irrelevant",None);Ok(())}).await.unwrap();
+        assert!(timeout(Duration::from_millis(70),&mut pending).await.is_err(),
+            "an unrelated Run must not wake the subscriber");
+        store.mutate(id,|run|{run.status=RunStatus::Paused;
+            run.event("paused","durably committed",None);Ok(())}).await.unwrap();
+        assert!(timeout(Duration::from_secs(2),pending).await.unwrap().unwrap());
+        assert_eq!(store.get(id).await.unwrap().status,RunStatus::Paused);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn unrelated_run_updates_proceed_while_another_run_is_locked(){
         use tokio::time::{timeout,Duration};
         let root=std::env::temp_dir().join(format!("dominion-per-run-{}",Uuid::new_v4()));
