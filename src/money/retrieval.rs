@@ -62,6 +62,27 @@ pub(super) fn schema(conn:&Connection)->Result<(),String>{
         CREATE INDEX IF NOT EXISTS money_facets_role ON money_signal_facets(facet,signal_id);
     ").map_err(err)
 }
+/// Re-index an updated URL in the same transaction as its new revision.
+pub(super) fn reindex_signal(conn:&Connection,row:&Value)->Result<(),String>{
+    let id=row["id"].as_str().ok_or("source ID missing")?;
+    let rowid:Option<i64>=conn.query_row(
+        "SELECT rowid FROM money_index_ids WHERE id=?1",
+        params![id],|r|r.get(0)).optional().map_err(err)?;
+    let Some(rowid)=rowid else{return index_signal(conn,row);};
+    let (title,body,ngrams)=searchable(row);
+    conn.execute("UPDATE money_signal_fts SET title=?1,body=?2,ngrams=?3
+        WHERE rowid=?4",params![title,body,ngrams,rowid]).map_err(err)?;
+    conn.execute("DELETE FROM money_signal_facets WHERE signal_id=?1",
+        params![id]).map_err(err)?;
+    for (key,prefix) in [("topics","topic:"),("changeTags","role:")]{
+        for facet in row[key].as_array().into_iter().flatten()
+            .filter_map(Value::as_str).take(12){
+            conn.execute("INSERT OR IGNORE INTO money_signal_facets(signal_id,facet)
+                VALUES(?1,?2)",params![id,format!("{prefix}{facet}")]).map_err(err)?;
+        }
+    }
+    Ok(())
+}
 pub(super) fn index_signal(conn:&Connection,row:&Value)->Result<(),String>{
     let id=row["id"].as_str().filter(|v|!v.is_empty()).ok_or("signal ID missing")?;
     let created=conn.execute("INSERT OR IGNORE INTO money_index_ids(id) VALUES(?1)",params![id])

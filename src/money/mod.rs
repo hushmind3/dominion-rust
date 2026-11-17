@@ -1,6 +1,7 @@
 //! Persistent Money evidence corpus. Independent of the native Run journal:
  //! market observations are not task/tool receipts or verified transactions.
 pub mod intelligence;
+pub mod provenance;
 pub mod retrieval;
 pub mod mechanism;
 pub mod operators;
@@ -43,6 +44,7 @@ fn open(root:&Path)->Result<Connection,String>{
         CREATE INDEX IF NOT EXISTS money_metrics_recent ON money_metrics(observed_ms DESC);
     ").map_err(err)?;
     retrieval::schema(&conn)?;
+    provenance::schema(&conn)?;
     Ok(conn)
 }
 fn stored(conn:&Connection,key:&str)->Result<Option<Value>,String>{
@@ -94,22 +96,41 @@ pub fn signals(root:&Path,limit:usize)->Result<Vec<Value>,String>{
     let rows=stmt.query_map(params![limit.min(240) as i64],|row|row.get::<_,String>(0)).map_err(err)?;
     rows.map(|x|x.map_err(err).and_then(|raw|serde_json::from_str(&raw).map_err(err))).collect()
 }
+/// Store new source observations and changed versions atomically with FTS.
+/// Identical re-fetches write nothing. The public count remains new URLs,
+/// not revised URLs, for compatibility with existing dashboard counters.
 pub fn save_signals(root:&Path,items:&[Value])->Result<usize,String>{
     let mut conn=open(root)?;
     let tx=conn.transaction().map_err(err)?;
     let mut added=0;
-    {
-        let mut stmt=tx.prepare("INSERT OR IGNORE INTO money_signals(id,captured_ms,publisher,title,url,record)
-             VALUES (?1,?2,?3,?4,?5,?6)").map_err(err)?;
-        for row in items.iter().take(150){
-            let Some(id)=row["id"].as_str().filter(|s|!s.is_empty())else{continue};
-            let Some(url)=row["url"].as_str().filter(|s|s.starts_with("https://"))else{continue};
-            let inserted=stmt.execute(params![id,crate::domain::now_ms() as i64,
-                row["sourceName"].as_str().unwrap_or("unknown"),
-                row["title"].as_str().unwrap_or(""),url,row.to_string()]).map_err(err)?;
-            if inserted>0{retrieval::index_signal(&tx,row)?;}
-            added+=inserted;
+    for input in items.iter().take(150){
+        let Some(id)=input["id"].as_str().filter(|s|!s.is_empty())else{continue;};
+        let Some(url)=input["url"].as_str().filter(|s|s.starts_with("https://"))else{continue;};
+        let row=provenance::prepare(input);
+        let existing:Option<String>=tx.query_row(
+            "SELECT record FROM money_signals WHERE id=?1",params![id],
+            |r|r.get(0)).optional().map_err(err)?;
+        let now=crate::domain::now_ms();
+        if let Some(previous)=existing{
+            let prior:Value=serde_json::from_str(&previous).map_err(err)?;
+            let old=provenance::prepare(&prior);
+            // Migrate the last available legacy snapshot on first re-fetch.
+            provenance::record(&tx,&old,now)?;
+            if old["revisionId"]==row["revisionId"]{continue;}
+            tx.execute("UPDATE money_signals
+                SET captured_ms=?1,publisher=?2,title=?3,url=?4,record=?5 WHERE id=?6",
+                params![now as i64,row["sourceName"].as_str().unwrap_or("unknown"),
+                    row["title"].as_str().unwrap_or(""),url,row.to_string(),id]).map_err(err)?;
+            retrieval::reindex_signal(&tx,&row)?;
+        }else{
+            tx.execute("INSERT INTO money_signals(id,captured_ms,publisher,title,url,record)
+                VALUES(?1,?2,?3,?4,?5,?6)",
+                params![id,now as i64,row["sourceName"].as_str().unwrap_or("unknown"),
+                    row["title"].as_str().unwrap_or(""),url,row.to_string()]).map_err(err)?;
+            retrieval::index_signal(&tx,&row)?;
+            added+=1;
         }
+        provenance::record(&tx,&row,now)?;
     }
     tx.commit().map_err(err)?;
     Ok(added)

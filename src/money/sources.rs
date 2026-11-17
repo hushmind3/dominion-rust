@@ -110,8 +110,11 @@ fn parse(feed:&str,source:&str)->Vec<Value>{
         Some(super::intelligence::enrich_signal(json!({"id":digest(&url),"title":title,"url":url,"sourceName":source,
             "description":desc,"publishedAt":published,
             "capturedAt":timestamp,"contentStatus":"headline_observed",
-            "articleExcerpt":"","feedOriginal":item.chars().take(2400).collect::<String>(),
-            "verification":"unverified_market_observation"})))
+            "articleExcerpt":"","feedOriginal":item.chars().take(8192).collect::<String>(),
+            "feedOriginalSha256":digest(item),
+            "feedOriginalLengthChars":item.chars().count(),
+            "feedOriginalTruncated":item.chars().count()>8192,
+            "originalFormat":"rss_item","verification":"unverified_market_observation"})))
     }).collect()
 }
 
@@ -119,22 +122,13 @@ fn normalized_title(title:&str)->String{
     title.to_lowercase().chars().filter(|c|c.is_alphanumeric()).collect()
 }
 
-/// The same story arrives from several feeds with different URLs. Drop the
-/// repeats before they reach the corpus so tokens are never spent on them.
-fn dedupe_titles(signals:Vec<Value>,history:&[Value])->Vec<Value>{
-    let mut seen=history.iter().filter_map(|s|s["title"].as_str())
-        .map(normalized_title).collect::<std::collections::HashSet<_>>();
-    signals.into_iter().filter(|s|s["title"].as_str()
-        .map(|title|seen.insert(normalized_title(title))).unwrap_or(false)).collect()
-}
-
-fn needs_article_fetch(item:&Value,stored:Option<&Value>)->bool{
-    if item["url"].as_str().is_none_or(|url|!url.starts_with("https://")&&!url.starts_with("http://")){
-        return false;
-    }
-    // Headline-only records still need a real source page.
-    !stored.is_some_and(|row|row["articleExcerpt"].as_str()
-        .is_some_and(|text|text.chars().count()>100))
+/// Keep distinct URLs even when they repeat a syndicated headline: they
+/// have separate publishers/revisions. SQL source-story links record the
+/// overlap instead of irreversibly throwing away origin observations.
+fn dedupe_urls(signals:Vec<Value>)->Vec<Value>{
+    let mut seen=std::collections::HashSet::<String>::new();
+    signals.into_iter().filter(|row|row["id"].as_str()
+        .is_some_and(|id|seen.insert(id.to_string()))).collect()
 }
 
 /// Scan three market feeds per cycle without model calls or expanding the
@@ -182,8 +176,7 @@ pub async fn collect(root:&Path,force:bool)->Result<Value,String>{
             Err(err)=>reports.push(json!({"name":name,"error":err.to_string().chars().take(150).collect::<String>()}))
         }
     }
-    let old=super::signals(root,180)?;
-    let deduplicated=dedupe_titles(all,&old);
+    let deduplicated=dedupe_urls(all);
     let found=deduplicated.len();
     let added=super::save_signals(root,&deduplicated)?;
     let report=json!({"bucket":bucket,"found":found,"new":added,
@@ -208,6 +201,18 @@ mod tests{
     assert!(found[0]["feedOriginal"].as_str().unwrap().contains("<description>Request for proposal</description>"));
     assert_eq!(found[0]["contentStatus"],"headline_observed");
     assert_eq!(found[0]["changeTags"][0],"buyer_request");
+ }
+ #[test]fn same_title_across_distinct_sources_is_not_silently_lost(){
+    let feed=r#"<rss><item><title>Buyer seeks factory automation</title>
+    <link>https://buyer.example/request</link>
+    <description>Open RFP</description></item></rss>"#;
+    let other=r#"<rss><item><title>Buyer seeks factory automation</title>
+    <link>https://news.example/article</link>
+    <description>Reported RFP</description></item></rss>"#;
+    let mut combined=parse(feed,"Buyer");
+    combined.extend(parse(other,"News"));
+    combined.extend(parse(feed,"Buyer duplicate"));
+    assert_eq!(dedupe_urls(combined).len(),2);
  }
  #[test]fn source_rotation_includes_multiple_languages(){
     for needle in ["Chinese buyer","Japanese buyer","Korea procurement","Global RFQ"]{
