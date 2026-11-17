@@ -444,7 +444,7 @@ mod tests{
                 id:"write".into(),tool:"write_file".into(),
                 arguments:json!({"path":"x.txt","content":"old"}),
                 when:None,on_error:None
-            }],cursor:0,pending_step:None,halt_requested:false,observations:Map::new()
+            }],cursor:0,pending_step:None,halt_requested:false,stop_when:None,observations:Map::new()
         });
         advance(&mut r,&settings).unwrap();
         assert_eq!(r.queued_calls.len(),1);
@@ -467,7 +467,7 @@ mod tests{
                 arguments:json!({"command":"touch bad"}),
                 when:None,on_error:None
             }],cursor:0,pending_step:Some("program:p:shell".into()),
-            halt_requested:false,observations:Map::new()
+            halt_requested:false,stop_when:None,observations:Map::new()
         });
         r.pending_approval=Some(ToolCall{id:"program:p:shell".into(),
             name:"shell".into(),arguments:json!({"command":"touch bad"})});
@@ -492,7 +492,7 @@ mod tests{
                     arguments:json!({"path":"file.txt","content":"obsolete"}),
                     when:None,on_error:None}
             ],cursor:0,pending_step:Some("program:p:write".into()),
-            halt_requested:false,observations:Map::new()
+            halt_requested:false,stop_when:None,observations:Map::new()
         });
         let call=ToolCall{id:"program:p:write".into(),
             name:"write_file".into(),arguments:json!({"path":"file.txt","content":"first"})};
