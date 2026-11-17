@@ -7,7 +7,7 @@
 //! 2026 reference architecture: programmatic tool execution and telemetry-aware
 //! harness control. This is a typed, native partial-order design, not a port of
 //! an external TypeScript executor.
-use crate::{config::Settings,domain::{Run,ToolCall},policy,tool_schema,tools};
+use crate::{config::Settings,domain::{Run,ToolCall},policy,program_ir,tool_schema,tools};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{collections::{HashMap,HashSet},time::Duration};
@@ -26,6 +26,7 @@ struct Guard{
     status:String,
     contains:Option<String>,
     negate:bool,
+    predicate:Option<Value>,
 }
 #[derive(Clone,Debug)]
 struct Step{
@@ -70,15 +71,56 @@ fn field<'a>(v:&'a Value,name:&str)->Result<&'a str,String>{
 fn digest(text:&str)->String{
     format!("{:x}",Sha256::digest(text.as_bytes()))
 }
-fn guard_condition(guard:&Guard,found:&Observation)->bool{
-    // Tool failure is never evidence of success. A caller must explicitly
-    // request status=error before inspecting its diagnostic text.
-    // A negative substring predicate must not turn a failed read into
-    // positive evidence. The status match is mandatory even under negation.
-    if found.status!=guard.status{return false;}
+fn observation_values(observed:&HashMap<String,Observation>)->Value{
+    let mut entries=serde_json::Map::new();
+    for (name,item) in observed {
+        let value=if item.status=="ok"{
+            serde_json::from_str::<Value>(&item.raw)
+                .unwrap_or_else(|_|Value::String(item.raw.clone()))
+        }else{Value::Null};
+        entries.insert(name.clone(),json!({"status":item.status,
+            "value":value,"sha256":digest(&item.raw),
+            "text":item.raw,"full_chars":item.raw.chars().count()}));
+    }
+    Value::Object(entries)
+}
+/// Reuse Main's three-valued evidence predicates. Unknown is not False.
+fn guard_condition(guard:&Guard,found:&Observation,
+    observed:&HashMap<String,Observation>)->Result<bool,String>{
+    if found.status!=guard.status{return Ok(false);}
     let contained=guard.contains.as_ref()
         .map(|needle|found.raw.contains(needle)).unwrap_or(true);
-    if guard.negate{!contained}else{contained}
+    if (if guard.negate{!contained}else{contained})==false{return Ok(false);}
+    match &guard.predicate{
+        Some(predicate)=>Ok(program_ir::predicate_verdict(
+            predicate,&observation_values(observed))?.is_true()),
+        None=>Ok(true)
+    }
+}
+fn predicate_dependencies(predicate:&Value,
+    previous:&HashMap<String,String>,deps:&mut Vec<String>,depth:usize)->Result<(),String>{
+    if depth>8{return Err("predicate nesting exceeds eight".into());}
+    match predicate["type"].as_str().unwrap_or(""){
+        "equals"|"exists"|"compare"=>{
+            let source=field(predicate,"from")?;
+            if !previous.contains_key(source){
+                return Err(format!("predicate references future/unknown observation: {source}"));
+            }
+            if !deps.iter().any(|d|d==source){deps.push(source.into());}
+            Ok(())
+        },
+        "not"=>predicate_dependencies(&predicate["predicate"],previous,deps,depth+1),
+        "all"|"any"=>{
+            let items=predicate["predicates"].as_array()
+                .ok_or("compound predicate must contain array")?;
+            if items.is_empty()||items.len()>12{
+                return Err("predicate must contain 1..12 conditions".into());
+            }
+            for item in items{predicate_dependencies(item,previous,deps,depth+1)?;}
+            Ok(())
+        },
+        _=>Err("unsupported typed predicate".into())
+    }
 }
 fn objective_satisfied(objective:&Objective,observed:&HashMap<String,Observation>)->bool{
     let matches=|assertion:&Assertion|{
@@ -134,16 +176,22 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
             if contains.is_some_and(|s|s.is_empty()||s.len()>256){
                 return Err("when.contains must contain 1..256 chars".into());
             }
-            if contains.is_none()&&when.get("status").is_none(){
-                return Err("when must specify status or contains".into());
+            if contains.is_none()&&when.get("status").is_none()
+                &&when.get("predicate").is_none(){
+                return Err("when must specify status, contains or predicate".into());
             }
             if when.get("not")==Some(&Value::Bool(true))&&contains.is_none(){
                 return Err("negative guard requires a literal contains predicate".into());
             }
             if !deps.iter().any(|d|d==source){deps.push(source.to_owned());}
+            let predicate=when.get("predicate").cloned();
+            if let Some(p)=&predicate{
+                predicate_dependencies(p,&previous,&mut deps,0)?;
+            }
             Some(Guard{source:source.to_owned(),status:status.into(),
                 contains:contains.map(str::to_owned),
-                negate:when.get("not").and_then(Value::as_bool).unwrap_or(false)})
+                negate:when.get("not").and_then(Value::as_bool).unwrap_or(false),
+                predicate})
         }else{None};
         let lines_containing=raw.get("lines_containing").map(|v|
             v.as_str().ok_or("lines_containing must be text")
@@ -183,10 +231,31 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
             if matches!(tool.as_str(),"git_status"|"git_diff") && run.repository.is_none(){
                 return Err("Git inspection requires repository".into());
             }
-            let call=ToolCall{id:format!("read-program-admission-{id}"),
-                name:tool.clone(),arguments:arguments.clone()};
-            tool_schema::admit(&call,&catalog)
-                .map_err(|error|format!("step {id}: {}",error.reason))?;
+            // Main's typed {from,path} inputs are resolved only after the
+            // referenced observation settles. Static arguments retain early
+            // schema checking; all resolved inputs are admitted again at dispatch.
+            let mut has_binding=false;
+            for (name,value) in arguments.as_object()
+                .ok_or("tool arguments must be object")?{
+                if let Some(from)=value.get("from").and_then(Value::as_str){
+                    let props=value.as_object().ok_or("binding must be object")?;
+                    if from.is_empty()||props.keys().any(|key|key!="from"&&key!="path")
+                        ||props.get("path").is_some_and(|v|!v.is_string()){
+                        return Err(format!("invalid from/path binding in argument {name}"));
+                    }
+                    if !previous.contains_key(from){
+                        return Err(format!("argument {name} references future/unknown observation"));
+                    }
+                    if !deps.iter().any(|d|d==from){deps.push(from.to_owned());}
+                    has_binding=true;
+                }
+            }
+            if !has_binding{
+                let call=ToolCall{id:format!("read-program-admission-{id}"),
+                    name:tool.clone(),arguments:arguments.clone()};
+                tool_schema::admit(&call,&catalog)
+                    .map_err(|error|format!("step {id}: {}",error.reason))?;
+            }
         }
         previous.insert(id.clone(),tool.clone());
         parsed.push(Step{id,tool,arguments,guard,deps,from,
@@ -346,6 +415,7 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
             }
         }
         let mut ready=Vec::new();
+        let mut bound_arguments=HashMap::<usize,Value>::new();
         let mut reserved=0usize;
         // A syntactically earlier node does not block unrelated nodes. A
         // dependent node waits for all provenance dependencies to settle.
@@ -364,11 +434,30 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
                 let Some(source)=observed.get(&guard.source) else{
                     return Err("invalid dependency scheduler state".into());
                 };
-                if !guard_condition(guard,source){
+                if !guard_condition(guard,source,&observed)?{
                     observed.insert(step.id.clone(),failed(&step.id,"skipped",
                         "typed observation condition was not satisfied"));
                     continue;
                 }
+            }
+            if !matches!(step.tool.as_str(),"read_listed_files"|"read_matched_files"){
+                let arguments=match program_ir::resolve_inputs(
+                    &step.arguments,&observation_values(&observed)){
+                    Ok(arguments)=>arguments,
+                    Err(error)=>{
+                        observed.insert(step.id.clone(),failed(&step.id,"error",&error));
+                        failures+=1;
+                        continue;
+                    }
+                };
+                let call=ToolCall{id:format!("read-program:{}",step.id),
+                    name:step.tool.clone(),arguments:arguments.clone()};
+                if let Err(error)=tool_schema::admit(&call,&tools::definitions(false)){
+                    observed.insert(step.id.clone(),failed(&step.id,"error",&error.reason));
+                    failures+=1;
+                    continue;
+                }
+                bound_arguments.insert(i,arguments);
             }
             let worst=if matches!(step.tool.as_str(),"read_listed_files"|"read_matched_files"){
                 step.max_files
@@ -398,7 +487,10 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
         wave+=1;
         let mut tasks=JoinSet::new();
         for index in &ready{
-            let step=program.steps[*index].clone();
+            let mut step=program.steps[*index].clone();
+            if let Some(args)=bound_arguments.remove(index){
+                step.arguments=args;
+            }
             let from=step.from.as_ref()
                 .and_then(|ref_id|observed.get(ref_id)).map(|o|o.raw.clone());
             let settings=settings.clone();
@@ -582,8 +674,8 @@ mod tests{
         assert_eq!(receipt.calls,2);
         assert_eq!(receipt.failures,1);
         let condition=Guard{source:"sources".into(),status:"ok".into(),
-            contains:Some("available".into()),negate:false};
-        assert!(!guard_condition(&condition,&receipt),
+            contains:Some("available".into()),negate:false,predicate:None};
+        assert!(!guard_condition(&condition,&receipt,&HashMap::new()).unwrap(),
             "partial failed source inspection cannot become success evidence");
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
@@ -607,11 +699,11 @@ mod tests{
     fn negated_evidence_guard_never_promotes_failed_io_into_success(){
         let observation=failed("x","error","ENOENT");
         let guard=Guard{source:"x".into(),status:"ok".into(),
-            contains:Some("missing-marker".into()),negate:true};
-        assert!(!guard_condition(&guard,&observation),
+            contains:Some("missing-marker".into()),negate:true,predicate:None};
+        assert!(!guard_condition(&guard,&observation,&HashMap::new()).unwrap(),
             "a failed read cannot satisfy a negative success condition");
         let error=Guard{status:"error".into(),negate:false,..guard};
-        assert!(guard_condition(&error,&observation)==false);
+        assert!(!guard_condition(&error,&observation,&HashMap::new()).unwrap());
     }
     #[test]
     fn topological_and_budget_guards_are_checked_before_dispatch(){
