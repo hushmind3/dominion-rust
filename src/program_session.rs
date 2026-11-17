@@ -248,12 +248,23 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
             matches!(ev.kind.as_str(),"tool_result"|"tool_error"|"tool_reconciled"
                 |"tool_admission_rejected"|"tool_policy_denied"|"tool_hook_denied"|"tool_denied")
                 &&ev.detail.as_ref().is_some_and(|v|v["call_id"]==id));
-        let succeeded=evidence.is_some_and(|ev|
+        let journal_succeeded=evidence.is_some_and(|ev|
             matches!(ev.kind.as_str(),"tool_result"|"tool_reconciled")
                 &&ev.detail.as_ref().is_some_and(|d|d["succeeded"]==true));
         let step=state.steps.get(state.cursor).ok_or("program cursor out of bounds")?;
         let body_value:Value=serde_json::from_str(body)
             .unwrap_or_else(|_|Value::String(body.chars().take(MAX_OBSERVED_CHARS).collect()));
+        // The outer read_program tool transport may have succeeded while an
+        // internal inspection failed or its requested literal objective was
+        // not satisfied. Do not turn that into successful provenance for a
+        // subsequent write just because journal::finish returned Ok(JSON).
+        let nested_reads_valid=if step.tool=="read_program"{
+            body_value["kind"]=="evidence_program"
+                &&body_value["failed_steps"].as_u64()==Some(0)
+                &&matches!(body_value["objective_status"].as_str(),
+                    Some("not_requested"|"satisfied"))
+        }else{true};
+        let succeeded=journal_succeeded&&nested_reads_valid;
         let clipped=body.chars().take(MAX_OBSERVED_CHARS).collect::<String>();
         let complete=state.id.clone();
         state.observations.insert(step.id.clone(),json!({
@@ -456,6 +467,43 @@ mod tests{
         assert_eq!(plan.steps.len(),2);
         assert_eq!(plan.steps[0].tool,"read_program");
         assert_eq!(plan.steps[1].tool,"edit_file");
+    }
+    #[test]
+    fn nested_read_program_failure_cannot_unlock_effectful_follow_up(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        let outer=ToolCall{id:"p".into(),name:"run_program".into(),
+            arguments:json!({"steps":[
+                {"id":"inspect","tool":"read_program",
+                    "arguments":{"steps":[
+                        {"id":"scan","tool":"read_file",
+                            "arguments":{"path":"missing.rs"}}
+                    ]}},
+                {"id":"write","tool":"write_file",
+                    "arguments":{"path":"danger.txt","content":"must not happen"},
+                    "when":{"type":"equals","from":"inspect",
+                        "path":"/status","value":"ok"}}
+            ]})};
+        r.queued_calls.push(outer.clone());
+        crate::journal::begin(&mut r,&outer).unwrap();
+        install(&mut r,&outer,&settings).unwrap();
+        crate::journal::finish(&mut r,&outer,&Ok("scheduled".into()),false).unwrap();
+        advance(&mut r,&settings).unwrap();
+        assert_eq!(r.queued_calls.len(),1);
+        let call=r.queued_calls[0].clone();
+        assert_eq!(call.name,"read_program");
+        crate::journal::begin(&mut r,&call).unwrap();
+        crate::journal::finish(&mut r,&call,&Ok(json!({
+            "kind":"evidence_program","failed_steps":1,
+            "objective_status":"not_requested",
+            "steps":[{"id":"scan","status":"error"}]
+        }).to_string()),false).unwrap();
+        advance(&mut r,&settings).unwrap();
+        assert!(r.queued_calls.is_empty());
+        assert!(r.program_session.is_none());
+        assert!(r.events.iter().any(|ev|ev.kind=="program_observed"
+            &&ev.detail.as_ref().is_some_and(|detail|detail["succeeded"]==false)));
+        assert!(r.events.iter().any(|ev|ev.kind=="program_stopped"));
+        assert_eq!(r.events.iter().filter(|ev|ev.kind=="tool_started").count(),2);
     }
     #[test]
     fn objective_stops_unnecessary_native_write_after_real_evidence(){
