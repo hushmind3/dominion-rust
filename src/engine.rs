@@ -401,6 +401,12 @@ impl Engine {
                 continue;
             }
             if let Some(call) = run.queued_calls.first().cloned() {
+                if call.name=="compare_strategies" && !self.settings.strategy_trials_enabled {
+                    self.store.mutate(id,|run|journal::reject_admission(run,&call,
+                        "EXPENSIVE_TRIALS_DISABLED",
+                        "Two-worker strategy comparison is disabled; set DOMINION_ENABLE_STRATEGY_TRIALS=true only for a deliberately budgeted experiment")).await?;
+                    continue;
+                }
                 if let Some(action)=crate::loop_guard::action(&run,&call){
                     // No external action starts: journal a correlated tool
                     // error and give the model a chance to change strategy.
@@ -547,6 +553,10 @@ impl Engine {
             }
             if run.cost_krw > policy::effective_budget_krw(&run) { return Err("hierarchical budget exceeded".into()); }
             let mut available_tools = tools::definitions(self.settings.shell_enabled);
+            if !self.settings.strategy_trials_enabled {
+                available_tools.retain(|tool|
+                    tool.pointer("/function/name").and_then(Value::as_str)!=Some("compare_strategies"));
+            }
             available_tools.extend(self.mcp.definitions().await);
             available_tools.extend(crate::connected_tools::definitions(&self.settings));
             let has_children=self.store.has_children(id).await;
@@ -820,6 +830,18 @@ impl Engine {
                     journal::reject_approved_hook(run,&call,&deny.code,&deny.reason)
                 }else{
                     journal::reject_admission(run,&call,&deny.code,&deny.reason)
+                }
+            }).await?;
+            return Ok(());
+        }
+        if call.name=="compare_strategies" && !self.settings.strategy_trials_enabled {
+            self.store.mutate(id,|run|{
+                if run.pending_approval.is_some(){
+                    journal::reject_approved_hook(run,&call,"EXPENSIVE_TRIALS_DISABLED",
+                        "The operator disabled paid strategy comparison")
+                }else{
+                    journal::reject_admission(run,&call,"EXPENSIVE_TRIALS_DISABLED",
+                        "The operator disabled paid strategy comparison")
                 }
             }).await?;
             return Ok(());
