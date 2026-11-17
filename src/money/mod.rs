@@ -245,6 +245,25 @@ pub fn stats(root:&Path)->Result<Value,String>{
 mod tests{
  use super::*;
  use uuid::Uuid;
+ #[test] fn optional_module_defaults_off_without_db_and_preserves_legacy_data(){
+    let root=std::env::temp_dir().join(format!("dominion-money-module-{}",Uuid::new_v4()));
+    assert!(!module_enabled(&root).unwrap());
+    assert!(!root.join("money.sqlite").exists());
+    assert!(!latest(&root).unwrap()["moduleEnabled"].as_bool().unwrap());
+    assert!(!stats(&root).unwrap()["moduleEnabled"].as_bool().unwrap());
+    assert!(!root.join("money.sqlite").exists());
+    // Pre-toggle data remains visible to existing owners.
+    let row=json!({"id":"lead-legacy","title":"Existing lead","status":"held"});
+    save_report(&root,&[row],&json!({"candidateIds":["lead-legacy"]})).unwrap();
+    assert!(module_enabled(&root).unwrap());
+    set_module_enabled(&root,false).unwrap();
+    assert!(!module_enabled(&root).unwrap());
+    assert_eq!(candidate(&root,"lead-legacy").unwrap().unwrap()["status"],"held");
+    set_module_enabled(&root,true).unwrap();
+    assert!(module_enabled(&root).unwrap());
+    assert_eq!(candidate(&root,"lead-legacy").unwrap().unwrap()["title"],"Existing lead");
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn concurrent_claims_cannot_replace_a_approved_implementation_run(){
     let root=std::env::temp_dir().join(format!("dominion-money-claim-{}",Uuid::new_v4()));
     let saved=json!({"id":"c-1","title":"Business idea","offer":"Prototype","status":"draft"});

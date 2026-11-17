@@ -231,6 +231,8 @@ export class Dominion {
   readonly money = {
     latest:()=>this.request<MoneyReport>('GET','/money/find'),
     stats:()=>this.request<MoneyStats>('GET','/money/stats'),
+    settings:()=>this.request<{enabled:boolean}>('GET','/money/settings'),
+    setEnabled:(enabled:boolean)=>this.request<{enabled:boolean}>('POST','/money/settings',{enabled}),
     search:(query:string)=>this.request<{results:MoneySignal[];count:number;query:string;modelCalls:0}>(
       'GET','/money/search?q='+encodeURIComponent(query)),
     find:(options:{mode?:'db'|'agent';agentId?:string;budgetKrw?:number}={mode:'db'})=>

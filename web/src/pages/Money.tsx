@@ -41,6 +41,8 @@ export function MoneyPage(){
  const [busy,setBusy]=useState<'find'|'infer'|'scan'|'automation'|'cancel'|'implement'|''>('')
  const [loading,setLoading]=useState(true)
  const [error,setError]=useState('')
+ const [moduleEnabled,setModuleEnabled]=useState(false)
+ const [moduleLoading,setModuleLoading]=useState(true)
  const [archiveQuery,setArchiveQuery]=useState('')
  const [archiveResults,setArchiveResults]=useState<ArchivedSource[]>([])
  const [archiveSearched,setArchiveSearched]=useState(false)
@@ -48,18 +50,20 @@ export function MoneyPage(){
  const inferring=report.reasoningStatus==='running'||report.reasoningStatus==='queued'
  const runIds=(report.drafts||[]).map(lead=>lead.implementationRunId).filter(Boolean).join('|')
  const refresh=async()=>{
-  const [latest,summary]=await Promise.all([
-   get<Report>('/api/money/find'),get<Stats>('/api/money/stats')
+  const [latest,summary,config]=await Promise.all([
+   get<Report>('/api/money/find'),get<Stats>('/api/money/stats'),
+   get<{enabled:boolean}>('/api/money/settings')
   ])
-  setReport(latest);setStats(summary)
+  setReport(latest);setStats(summary);setModuleEnabled(config.enabled)
  }
  useEffect(()=>{
   let live=true
   void Promise.all([get<Report>('/api/money/find'),
-   get<Stats>('/api/money/stats'),get<Agent[]>('/api/agents')])
-   .then(([r,s,a])=>{if(live){setReport(r);setStats(s);setAgents(a)}})
+   get<Stats>('/api/money/stats'),get<Agent[]>('/api/agents'),
+   get<{enabled:boolean}>('/api/money/settings')])
+   .then(([r,s,a,c])=>{if(live){setReport(r);setStats(s);setAgents(a);setModuleEnabled(c.enabled)}})
    .catch(e=>{if(live)setError((e as Error).message)})
-   .finally(()=>{if(live)setLoading(false)})
+   .finally(()=>{if(live){setLoading(false);setModuleLoading(false)}})
   return()=>{live=false}
  },[])
  useEffect(()=>{
@@ -93,6 +97,16 @@ export function MoneyPage(){
   void check()
   return()=>{live=false;if(timer)clearInterval(timer)}
  },[runIds])
+ async function configureMoney(enabled:boolean){
+  if(busy||moduleLoading)return
+  setError('');setBusy('automation');setModuleLoading(true)
+  try{
+   const config=await post<{enabled:boolean}>('/api/money/settings',{enabled})
+   setModuleEnabled(config.enabled)
+   await refresh()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy('');setModuleLoading(false)}
+ }
  async function searchArchive(){
   const term=archiveQuery.trim()
   if(term.length<2||term.length>160)return
@@ -173,6 +187,18 @@ export function MoneyPage(){
     </p>
    </div>
   </header>
+  <section className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E4D7C8] bg-[#FFFCF6] px-4 py-3">
+   <div>
+    <p className="text-[12px] font-bold">머니 도구 활성화</p>
+    <p className="mt-1 text-[11px] text-[#817367]">자동 수집과 별개의 설정입니다. 끄더라도 저장 자료와 기존 작업 기록은 유지됩니다.</p>
+   </div>
+   <label className="inline-flex cursor-pointer items-center gap-2 text-[12px] font-semibold">
+    <input type="checkbox" aria-label="머니 도구 활성화" checked={moduleEnabled}
+     disabled={moduleLoading||!!busy}
+     onChange={event=>void configureMoney(event.target.checked)}/>
+    {moduleEnabled?'사용 중':'사용 안 함'}
+   </label>
+  </section>
   <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
    {([
     ['누적 시장 신호',stats?.signals],
@@ -188,12 +214,12 @@ export function MoneyPage(){
   </div>
   <section className="rounded-2xl border border-[#E4D7C8] bg-[#FFFCF6] p-5 shadow-sm">
    <div className="flex flex-wrap items-center gap-3">
-    <button type="button" disabled={!!busy||inferring}
+    <button type="button" disabled={!moduleEnabled||!!busy||inferring}
      onClick={()=>void action('find')}
      className="flex items-center gap-2 rounded-xl bg-[#C96442] px-5 py-3 text-[13px] font-bold text-white disabled:opacity-50">
      {busy==='find'?<LoaderCircle size={17} className="animate-spin"/>:<Search size={17}/>} 돈벌이 찾기
     </button>
-    <button type="button" disabled={!!busy||inferring}
+    <button type="button" disabled={!moduleEnabled||!!busy||inferring}
      onClick={()=>void action('scan')}
      className="flex items-center gap-2 rounded-xl border border-[#E1D3C4] bg-white px-4 py-3 text-[12px] font-semibold disabled:opacity-50">
      {busy==='scan'?<LoaderCircle size={16} className="animate-spin"/>:<RefreshCw size={16}/>}
@@ -201,7 +227,7 @@ export function MoneyPage(){
     </button>
     <label className="flex items-center gap-2 text-[12px] text-[#6B6259]">
      <input type="checkbox" checked={!!stats?.automation?.enabled}
-      disabled={!stats||!!busy} onChange={event=>
+      disabled={!moduleEnabled||!stats||!!busy} onChange={event=>
        void action('automation',{enabled:event.target.checked})}/>
      30분 간격 자동 수집 (모델 호출 없음)
     </label>
@@ -213,7 +239,7 @@ export function MoneyPage(){
      {agents.length?agents.map(a=><option key={a.id} value={a.id}>{a.name||a.id}</option>):
       <option value="general">일반 에이전트</option>}
     </select>
-    <button type="button" disabled={!!busy||inferring||!candidates.length}
+    <button type="button" disabled={!moduleEnabled||!!busy||inferring||!candidates.length}
      onClick={()=>void action('infer')}
      className="rounded-lg border border-[#D6B297] bg-[#F8EFE6] px-4 py-2 text-[12px] font-bold text-[#9B5633] disabled:opacity-50">
      {busy==='infer'?'분석 시작 중…':'선택 모델로 다시 추론'}
@@ -251,7 +277,7 @@ export function MoneyPage(){
      onChange={event=>setArchiveQuery(event.target.value)}
      placeholder="산업·기술·고객 문제를 검색 (한국어·중국어·영어)"
      className="min-w-[180px] flex-1 rounded-lg border border-[#DCCFC1] bg-white px-3 py-2 text-[12px]"/>
-    <button type="submit" disabled={searchingArchive||archiveQuery.trim().length<2}
+    <button type="submit" disabled={!moduleEnabled||searchingArchive||archiveQuery.trim().length<2}
      className="rounded-lg bg-[#6C5B4B] px-4 py-2 text-[12px] font-bold text-white disabled:opacity-50">
      {searchingArchive?'검색 중…':'DB 검색 · 모델 호출 0회'}
     </button>
@@ -314,7 +340,7 @@ export function MoneyPage(){
       {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
        <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}
         className="text-[11px] text-rose-700">작업 취소</button>}
-     </>:<button type="button" disabled={!!busy||inferring||!Number.isFinite(budgetKrw)||budgetKrw<0||budgetKrw>1000000}
+     </>:<button type="button" disabled={!moduleEnabled||!!busy||inferring||!Number.isFinite(budgetKrw)||budgetKrw<0||budgetKrw>1000000}
       onClick={()=>void implement(lead.id)}
       className="rounded-lg border border-[#D6B297] bg-[#F8EFE6] px-3 py-2 text-[11px] font-bold text-[#9B5633] disabled:opacity-50">
       {busy==='implement'&&implementationId===lead.id?'작업 요청 중…':'이 후보 구현 승인'}
@@ -329,7 +355,7 @@ export function MoneyPage(){
      <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-[#948678]">
       <CheckCircle2 size={13}/>자료와 수익 검증 상태 분리
      </span>
-     <button type="button" disabled={!!busy||!!lead.implementationRunId} onClick={()=>void reject(lead.id)}
+     <button type="button" disabled={!moduleEnabled||!!busy||!!lead.implementationRunId} onClick={()=>void reject(lead.id)}
       className="text-[11px] text-[#9B8F86] hover:text-rose-600">후보 제외</button>
     </div>
    </article>)}
