@@ -70,6 +70,9 @@ impl Engine {
         self.spawn_subagent_with_policy(parent,input,false).await
     }
     pub async fn spawn_subagent_with_policy(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool)->Result<Run,String>{
+        self.spawn_subagent_with_capability(parent,input,read_only,false).await
+    }
+    async fn spawn_subagent_with_capability(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool,strategy_candidate:bool)->Result<Run,String>{
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
         if root.terminal(){return Err("parent already terminated".into());}
@@ -91,11 +94,22 @@ impl Engine {
         child.provider_id=root.provider_id.clone();
         child.model_name=root.model_name.clone();
         child.read_only=read_only||root.read_only;
+        child.strategy_candidate=strategy_candidate;
+        if strategy_candidate {
+            if root.parent_run_id.is_some() || root.strategy_candidate {
+                return Err("nested strategy workers are not permitted".into());
+            }
+            child.event("strategy_candidate",
+                "Confined to isolated workspace and normal approval-backed shell only",None);
+        }
         if let Some(repository)=root.repository.as_deref(){
             let commit=crate::workspace::attach_at(
                 &self.settings,child.id,repository,root.base_commit.as_deref()
             ).await?;
             child.repository=Some(repository.to_string());
+            if strategy_candidate && Some(commit.as_str())!=root.base_commit.as_deref(){
+                return Err("trial candidate did not attach the parent's exact base commit".into());
+            }
             child.base_commit=Some(commit);
         }
         // Reserve first under the delegation lock. The parent model loop checks
@@ -229,9 +243,9 @@ impl Engine {
                  Inspect real tool results and verify the requested artifacts. \
                  Do not claim other candidates' outcomes and do not merge to the parent.",
                 root.instruction,label,approach);
-            let attempt=self.spawn_subagent_with_policy(parent,CreateRun{
+            let attempt=self.spawn_subagent_with_capability(parent,CreateRun{
                 instruction,budget_krw:Some(amount),max_steps:Some(steps),
-            },false).await;
+            },false,true).await;
             match attempt {
                 Ok(child)=>launched.push(json!({"run_id":child.id,"label":label,
                     "budget_krw":amount,"max_steps":steps,
