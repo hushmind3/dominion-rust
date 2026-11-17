@@ -213,7 +213,14 @@ test('Money discovery shares the authenticated native Rust API',async()=>{
  await sdk.money.setEnabled(true);
  await sdk.money.candidates({status:'held',q:'supplier',offset:24});
  await sdk.money.decide('lead:a/b','restore','additional evidence');
- assert.equal(calls.length,11);
+ await sdk.money.sourceHistory('signal:a/b');
+ await sdk.money.priceHistory('lead:a/b');
+ await sdk.money.comparePrice('lead:a/b',{
+  buyer:{amount:120000,quantity:10,unit:'unit',spec:'sensor',asOf:'2026-11-18',currency:'KRW',quoteKind:'asking'},
+  supplier:{amount:85000,quantity:10,unit:'unit',spec:'sensor',asOf:'2026-11-18',currency:'KRW',quoteKind:'indicative'},
+  costs:{shippingKrw:5000,feesKrw:2000,taxKrw:0,laborKrw:3000,returnsKrw:1000,otherKrw:0}
+ });
+ assert.equal(calls.length,14);
  assert.ok(calls.every(({options})=>options.headers.Authorization==='Bearer research-token'));
  assert.ok(calls[0].url.endsWith('/api/v1/money/find'));
  assert.equal(JSON.parse(calls[2].options.body).agentId,'research');
@@ -231,4 +238,8 @@ test('Money discovery shares the authenticated native Rust API',async()=>{
  assert.ok(calls[9].url.includes('offset=24'));
  assert.ok(calls[10].url.endsWith('/api/v1/money/candidates/lead%3Aa%2Fb/decision'));
  assert.equal(JSON.parse(calls[10].options.body).action,'restore');
+ assert.ok(calls[11].url.endsWith('/api/v1/money/sources/signal%3Aa%2Fb/history'));
+ assert.ok(calls[12].url.endsWith('/api/v1/money/candidates/lead%3Aa%2Fb/prices'));
+ assert.ok(calls[13].url.endsWith('/api/v1/money/candidates/lead%3Aa%2Fb/price-compare'));
+ assert.equal(JSON.parse(calls[13].options.body).buyer.amount,120000);
 });

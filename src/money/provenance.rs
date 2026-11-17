@@ -123,6 +123,21 @@ mod tests{
     assert_eq!(prepare(&a)["revisionId"],prepare(&b)["revisionId"]);
     assert_ne!(prepare(&a)["revisionId"],prepare(&c)["revisionId"]);
  }
+ #[test] fn legacy_source_shows_one_snapshot_without_fake_history(){
+    let root=std::env::temp_dir().join(format!("dominion-source-legacy-{}",uuid::Uuid::new_v4()));
+    let conn=super::super::open(&root).unwrap();
+    let item=json!({"id":"old","url":"https://archive.example/a",
+        "title":"Historical buyer","description":"old note"});
+    conn.execute("INSERT INTO money_signals
+        (id,captured_ms,publisher,title,url,record)
+        VALUES(?1,1,'old','Historical buyer','https://archive.example/a',?2)",
+        params!["old",item.to_string()]).unwrap();
+    drop(conn);
+    let view=history(&root,"old").unwrap();
+    assert_eq!(view["legacyRevisionUnavailable"],true);
+    assert_eq!(view["revisions"].as_array().unwrap().len(),1);
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn citations_match_saved_text_not_claimed_transactions(){
     let source=json!({"title":"Buyer seeks proposals",
         "description":"Indicative quote 4,000 KRW","contentStatus":"headline_observed"});

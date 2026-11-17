@@ -189,6 +189,36 @@ mod tests{
         "costs":{"shippingKrw":5000,"feesKrw":2000,"taxKrw":0,
             "laborKrw":3000,"returnsKrw":1000,"otherKrw":0}})
  }
+ #[test]fn persistent_candidate_comparisons_retain_citation_states(){
+    let root=std::env::temp_dir().join(format!("dominion-prices-{}",uuid::Uuid::new_v4()));
+    let buyer=json!({"id":"buyer-source","url":"https://buyer.example/request",
+        "title":"Buyer wants 10 sensor units","description":"Budget estimate 120000 won",
+        "sourceName":"Buyer","contentStatus":"headline_observed"});
+    let supplier=json!({"id":"supplier-source","url":"https://supplier.example/quote",
+        "title":"Supplier indicative sensor quote","description":"Estimate 85000 won",
+        "sourceName":"Supplier","contentStatus":"headline_observed"});
+    super::super::save_signals(&root,&[buyer,supplier]).unwrap();
+    let candidate=json!({"id":"lead-1","title":"Sensor supply hypothesis",
+        "status":"draft","sourceIds":["buyer-source","supplier-source"]});
+    super::super::save_report(&root,&[candidate],
+        &json!({"candidateIds":["lead-1"]})).unwrap();
+    let mut input=example();
+    input["buyer"]["sourceId"]=json!("buyer-source");
+    input["buyer"]["quote"]=json!("Budget estimate 120000 won");
+    input["supplier"]["sourceId"]=json!("supplier-source");
+    input["supplier"]["quote"]=json!("Estimate 85000 won");
+    let first=compare_and_store(&root,"lead-1",&input).unwrap();
+    assert_eq!(first["sourceChecks"]["buyer"]["status"],
+        "exact_saved_feed_field_not_primary_document");
+    assert_eq!(first["sourceChecks"]["supplier"]["status"],
+        "exact_saved_feed_field_not_primary_document");
+    assert_eq!(first["tradeVerified"],false);
+    assert_eq!(compare_and_store(&root,"lead-1",&input).unwrap()["id"],first["id"]);
+    assert_eq!(comparisons(&root,"lead-1").unwrap().len(),1);
+    let saved=super::super::candidate(&root,"lead-1").unwrap().unwrap();
+    assert_eq!(saved["lastPriceComparisonId"],first["id"]);
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test]fn comparable_prices_account_for_every_declared_cost(){
     let p=evaluate(&example());
     assert_eq!(p["status"],"comparable_user_input_not_validated_trade");
