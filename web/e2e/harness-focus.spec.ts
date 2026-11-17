@@ -24,7 +24,7 @@ test('native harness retains run and memory APIs and removes embedded RSI/media'
  }
  await page.goto('/#/chat');
  await expect(page.locator('#root')).toBeVisible();
- await expect(page.locator('aside nav')).toBeVisible();
+ await expect(page.locator('.conversation-switch')).toBeVisible();
  await page.goto('/#/memory');
  await expect(page.locator('#root')).toBeVisible();
  const menu=await page.locator('aside nav').innerText();
