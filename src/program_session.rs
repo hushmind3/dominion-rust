@@ -259,9 +259,9 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
         // Extend the frozen accepted schema only for this internally generated
         // exact step, not with a new privilege or the whole tool catalog.
         if !run.advertised_tools.iter().any(|t|
-            t.pointer("/function/name").and_then(Value::as_str)==Some(&call.name)){
+            t.pointer("/function/name").and_then(Value::as_str)==Some(call.name.as_str())){
             if let Some(schema)=catalog.iter().find(|t|
-                t.pointer("/function/name").and_then(Value::as_str)==Some(&call.name)){
+                t.pointer("/function/name").and_then(Value::as_str)==Some(call.name.as_str())){
                 run.advertised_tools.push(schema.clone());
             }
         }
