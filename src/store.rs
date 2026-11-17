@@ -89,9 +89,45 @@ impl RunHeader {
 }
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct RunStats{pub total:usize,pub active:usize,pub awaiting_approval:usize}
+/// The Run map and parent links live behind ONE metadata lock.  A separate
+/// child-index lock would allow budget settlement to see mixed generations.
+struct RunIndex {
+    runs: HashMap<Uuid,Run>,
+    child_ids: HashMap<Uuid,HashSet<Uuid>>,
+}
+impl RunIndex {
+    fn from_runs(runs:HashMap<Uuid,Run>)->Self {
+        let mut child_ids=HashMap::<Uuid,HashSet<Uuid>>::new();
+        for run in runs.values() {
+            if let Some(parent)=run.parent_run_id {
+                child_ids.entry(parent).or_default().insert(run.id);
+            }
+        }
+        Self{runs,child_ids}
+    }
+    fn insert(&mut self,id:Uuid,run:Run)->Option<Run> {
+        // Replacement is used by both put and mutate.  Remove the old link
+        // before publishing the new one; no reader sees a half-updated index.
+        if let Some(parent)=self.runs.get(&id).and_then(|old|old.parent_run_id) {
+            if let Some(children)=self.child_ids.get_mut(&parent) {
+                children.remove(&id);
+                if children.is_empty(){self.child_ids.remove(&parent);}
+            }
+        }
+        if let Some(parent)=run.parent_run_id {
+            self.child_ids.entry(parent).or_default().insert(id);
+        }
+        self.runs.insert(id,run)
+    }
+}
+impl std::ops::Deref for RunIndex {
+    type Target=HashMap<Uuid,Run>;
+    fn deref(&self)->&Self::Target {&self.runs}
+}
+
 pub struct Store {
     root: PathBuf,
-    state: Mutex<HashMap<Uuid, Run>>,
+    state: Mutex<RunIndex>,
     // A run's write-ahead snapshot must commit in order; unrelated run
     // transactions must not hold the global metadata lock during fsync.
     // Weak entries cannot retain completed Run transaction locks indefinitely.
@@ -166,7 +202,7 @@ impl Store {
             persist(&root,run).await?;
         }
         let (updates,_) = broadcast::channel(2048);
-        Ok(Self { root, state: Mutex::new(state), gates:Mutex::new(HashMap::new()), updates })
+        Ok(Self { root, state: Mutex::new(RunIndex::from_runs(state)), gates:Mutex::new(HashMap::new()), updates })
     }
     async fn gate(&self,id:Uuid)->Arc<Mutex<()>>{
         const SWEEP_AT:usize=128;
@@ -215,30 +251,34 @@ impl Store {
         }
     }
     pub async fn get(&self, id: Uuid) -> Option<Run> { self.state.lock().await.get(&id).cloned() }
-    /// Inspect child existence under the store lock without cloning every
-    /// transcript; the planner calls this once per model step.
+    /// O(1) indexed child existence for every model step.  Index and Run
+    /// snapshots are committed together, after the durable write succeeds.
     pub async fn has_children(&self, parent: Uuid) -> bool {
-        self.state.lock().await.values().any(|run|run.parent_run_id==Some(parent))
+        self.state.lock().await.child_ids.get(&parent)
+            .is_some_and(|children|!children.is_empty())
     }
-    /// Only clone direct children when checking delegation and settlement.
-    /// Full history snapshots are reserved for explicit list operations.
+    /// Clone only the parent's actual children, not all historical Runs.
     pub async fn children_of(&self, parent: Uuid) -> Vec<Run> {
-        self.state.lock().await.values()
-            .filter(|run|run.parent_run_id==Some(parent))
-            .cloned().collect()
+        let guard=self.state.lock().await;
+        guard.child_ids.get(&parent).into_iter()
+            .flat_map(|ids|ids.iter().filter_map(|id|guard.runs.get(id).cloned()))
+            .collect()
     }
-    /// Capture a consistent 2-level family snapshot for budget settlement.
-    /// Only direct children and grandchildren are cloned, never unrelated
-    /// runs or their full transcripts. Grandchild settlement is required
-    /// before a child's unused budget can be returned to its parent.
+    /// A single metadata-lock snapshot of the child and grandchild closure
+    /// preserves the original two-level settlement rule without an O(N)
+    /// history scan on each delegated completion.
     pub async fn family_of(&self, parent: Uuid) -> Vec<Run> {
         let guard=self.state.lock().await;
-        let child_ids=guard.values().filter(|run|run.parent_run_id==Some(parent))
-            .map(|run|run.id).collect::<HashSet<_>>();
-        guard.values().filter(|run|
-            run.parent_run_id==Some(parent)
-                || run.parent_run_id.is_some_and(|id|child_ids.contains(&id))
-        ).cloned().collect()
+        let mut ids=HashSet::<Uuid>::new();
+        if let Some(children)=guard.child_ids.get(&parent) {
+            for child in children {
+                ids.insert(*child);
+                if let Some(grandchildren)=guard.child_ids.get(child) {
+                    ids.extend(grandchildren.iter().copied());
+                }
+            }
+        }
+        ids.into_iter().filter_map(|id|guard.runs.get(&id).cloned()).collect()
     }
     /// Small hot-path overview for the /api/status poll. O(n) status
     /// inspection under one short lock; O(1) transcript allocation.
