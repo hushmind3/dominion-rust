@@ -444,6 +444,11 @@ async fn composed_program_mock(
                     "arguments":json!({"steps":[
                         {"id":"write","tool":"write_file",
                             "arguments":{"path":"result.rs","content":"pub fn old()->i32{ 1 }\n"}},
+                        {"id":"parallel_inspection","tool":"read_program",
+                            "arguments":{"steps":[
+                                {"id":"files","tool":"list_files","arguments":{"path":""}},
+                                {"id":"inspect","tool":"read_file","arguments":{"path":"result.rs"}}
+                            ]}},
                         {"id":"locate","tool":"search_files",
                             "arguments":{"query":"pub fn old"}},
                         {"id":"inspect","tool":"read_file",
@@ -469,6 +474,10 @@ async fn composed_program_mock(
             assert!(messages.iter().any(|m|m["role"]=="tool"
                 &&m["tool_call_id"]=="program:integrated-program-1:edit"
                 &&m["content"].as_str().is_some_and(|s|s.contains("edited"))));
+            assert!(messages.iter().any(|m|m["role"]=="tool"
+                &&m["tool_call_id"]=="program:integrated-program-1:parallel_inspection"
+                &&m["content"].as_str().is_some_and(|s|
+                    s.contains("model_calls_inside")&&s.contains("execution_waves"))));
             assert!(messages.iter().any(|m|m["role"]=="tool"
                 &&m["tool_call_id"]=="program:integrated-program-1:verify"
                 &&m["content"].as_str().is_some_and(|s|s.contains("new()->i32{ 42 }"))));
@@ -520,12 +529,12 @@ async fn programmatic_tool_calls_write_edit_search_verify_via_existing_journal()
     let result=finished.expect("native program did not finish");
     assert_eq!(result.status,RunStatus::Completed,"events={:?}",result.events);
     assert_eq!(turns.load(Ordering::SeqCst),2,
-        "five native tool steps must use two total model requests, not seven");
+        "six native program steps plus nested parallel reads must use two model requests");
     assert!(result.program_session.is_none());
     assert_eq!(result.steps,2);
-    assert_eq!(result.events.iter().filter(|e|e.kind=="program_step_ready").count(),5);
-    assert_eq!(result.events.iter().filter(|e|e.kind=="program_observed").count(),5);
-    assert_eq!(result.events.iter().filter(|e|e.kind=="tool_result").count(),6);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="program_step_ready").count(),6);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="program_observed").count(),6);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="tool_result").count(),7);
     assert!(result.events.iter().any(|e|e.kind=="program_completed"));
     assert_eq!(tokio::fs::read_to_string(settings.workspace_dir
         .join(id.to_string()).join("result.rs")).await.unwrap(),
