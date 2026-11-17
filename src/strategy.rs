@@ -140,18 +140,32 @@ pub(crate) fn trial_report(parent:&Run,children:&[Run])->Option<serde_json::Valu
         if !child.terminal()||child.in_flight.is_some()||child.waiting_for_children{
             return None;
         }
+        // The *last* verdict must pass, after the last modified artifact.
+        // A successful read is not evidence that a proposed code fix exists.
+        let verdict=child.events.iter().rev()
+            .find(|e|e.kind=="verification");
+        let last_write=child.events.iter().rev().find(|e|
+            e.kind=="tool_result" &&e.detail.as_ref().is_some_and(|v|
+                matches!(v["name"].as_str(),Some("write_file"|"edit_file"))));
         let verified=child.status==RunStatus::Completed
-            &&child.events.iter().any(|e|e.kind=="verification"
-                &&crate::verification::strict_pass(&e.message));
+            &&verdict.is_some_and(|e|crate::verification::strict_pass(&e.message));
+        let artifact_changed=last_write.is_some_and(|e|verdict.is_some_and(|v|v.seq>e.seq));
         let successful_tools=child.events.iter().filter(|e|e.kind=="tool_result"
             ||(e.kind=="tool_reconciled"
                 &&e.detail.as_ref().is_some_and(|v|v["succeeded"]==true))).count();
+        let independent=child.strategy_candidate
+            &&child.repository==parent.repository
+            &&child.base_commit==parent.base_commit
+            &&child.provider_id==parent.provider_id
+            &&child.model_name==parent.model_name;
         let actual_cost=child.cost_krw+child.delegated_spent_krw;
-        let eligible=verified&&successful_tools>0 &&actual_cost.is_finite()
-            &&actual_cost>=0.0;
+        let eligible=verified&&artifact_changed&&independent&&successful_tools>0
+            &&actual_cost.is_finite()&&actual_cost>=0.0;
         outcomes.push(json!({
             "id":child.id,"label":candidate["label"],"status":child.status,
             "verifiedByModel":verified,
+            "observedArtifactEdit":artifact_changed,
+            "sameBaseModelAndWorkspacePolicy":independent,
             "successfulToolReceipts":successful_tools,
             "eligibleForComparison":eligible,
             "actualCostKrw":actual_cost,"modelSteps":child.steps,
@@ -173,9 +187,9 @@ pub(crate) fn trial_report(parent:&Run,children:&[Run])->Option<serde_json::Valu
     let winner=eligible.first().map(|o|o["id"].clone()).unwrap_or(Value::Null);
     Some(json!({"launch_seq":launch.seq,"candidates":outcomes,
         "provisionalWinner":winner,
-        "decisionBasis":"only independently verified tool-backed outcomes; then measured KRW and model steps",
+        "decisionBasis":"same model/base, real workspace edit before latest PASS; then measured KRW and model steps",
         "adopted":false,"requiresApprovalForPatchAdoption":true,
-        "missingGroundTruth":"Production test acceptance and manual artifact review are independent of model-verifier PASS"}))
+        "missingGroundTruth":"LLM verifier PASS alone is not a held-out test; local build/test and artifact inspection still determine actual adoption"}))
 }
 
 #[cfg(test)]
@@ -189,8 +203,15 @@ mod runtime_trials_tests{
     #[test]
     fn actual_verified_children_compete_by_recorded_cost_not_weighted_labels(){
         let mut parent=sample();
+        parent.repository=Some("repo".into());parent.base_commit=Some("sha".into());
+        parent.provider_id="provider".into();parent.model_name="model".into();
         let mut a=sample();a.parent_run_id=Some(parent.id);
         let mut b=sample();b.parent_run_id=Some(parent.id);
+        for child in [&mut a,&mut b]{
+            child.repository=parent.repository.clone();child.base_commit=parent.base_commit.clone();
+            child.provider_id=parent.provider_id.clone();child.model_name=parent.model_name.clone();
+            child.strategy_candidate=true;
+        }
         a.status=RunStatus::Completed;a.cost_krw=40.0;a.steps=6;
         b.status=RunStatus::Completed;b.cost_krw=90.0;b.steps=3;
         a.event("tool_result","write completed",Some(json!({"name":"write_file"})));
@@ -223,7 +244,7 @@ mod runtime_trials_tests{
         })));
         assert!(trial_report(&parent,&[child.clone(),another]).is_none());
         parent.event("strategy_trials_evaluated","already observed",
-            Some(json!({"launch_seq":parent.events[1].seq})));
+            Some(json!({"launch_seq":parent.events.last().unwrap().seq})));
         assert!(trial_report(&parent,&[child]).is_none());
     }
 }
