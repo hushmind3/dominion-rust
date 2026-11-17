@@ -108,7 +108,7 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
         if previous.contains_key(&id){return Err(format!("duplicate step id {id}"));}
         let tool=field(raw,"tool")?.to_string();
         if !matches!(tool.as_str(),
-            "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_listed_files"){
+            "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"|"read_listed_files"|"read_matched_files"){
             return Err(format!("read_program forbids nested {tool}"));
         }
         let mut deps=Vec::new();
@@ -153,13 +153,14 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
         let mut suffix=String::new();
         let mut needle=String::new();
         let mut max_files=1;
-        if tool=="read_listed_files"{
+        if matches!(tool.as_str(),"read_listed_files"|"read_matched_files"){
             if !policy::admitted_tool(run,"read_file",&settings.denied_tools){
                 return Err("read_listed_files requires allowed read_file".into());
             }
             let reference=field(raw,"from")?;
-            if previous.get(reference).map(String::as_str)!=Some("list_files"){
-                return Err("read_listed_files.from must reference a prior list_files".into());
+            let required_source=if tool=="read_listed_files"{"list_files"}else{"search_files"};
+            if previous.get(reference).map(String::as_str)!=Some(required_source){
+                return Err(format!("{tool}.from must reference a prior {required_source}"));
             }
             if !deps.iter().any(|d|d==reference){deps.push(reference.to_owned());}
             from=Some(reference.to_string());
@@ -170,7 +171,7 @@ fn parse(request:&Value,run:&Run,settings:&Settings)->Result<Program,String>{
                 .unwrap_or(4).try_into().map_err(|_|"invalid iteration count")?;
             if !(1..=MAX_ITERATION).contains(&max_files){return Err("max_files must be 1..8".into());}
             if raw.get("arguments").is_some(){
-                return Err("read_listed_files has no arguments".into());
+                return Err(format!("{tool} has no arguments"));
             }
         }else{
             if !policy::admitted_tool(run,&tool,&settings.denied_tools){
@@ -232,8 +233,17 @@ fn clipped(content:&str,contains:Option<&str>)->String{
 }
 async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
     step:&Step)->(Result<String,String>,usize){
-    let listed:Vec<String>=match serde_json::from_str(list){
-        Ok(paths)=>paths,Err(_)=>return (Err("list_files result was not a JSON string array".into()),0)
+    let listed:Vec<String>=if step.tool=="read_matched_files"{
+        let hits:Vec<Value>=match serde_json::from_str(list){
+            Ok(hits)=>hits,Err(_)=>return (Err("search_files result was not a JSON hit array".into()),0)
+        };
+        let mut seen=HashSet::new();
+        hits.into_iter().filter_map(|hit|hit.get("file").and_then(Value::as_str).map(str::to_owned))
+            .filter(|path|seen.insert(path.clone())).collect()
+    }else{
+        match serde_json::from_str(list){
+            Ok(paths)=>paths,Err(_)=>return (Err("list_files result was not a JSON string array".into()),0)
+        }
     };
     let mut inspected=0usize;
     let mut results=Vec::new();
@@ -258,7 +268,7 @@ async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
 }
 async fn run_step(settings:Settings,run_id:Uuid,step:Step,from:Option<String>)
     ->(Result<String,String>,usize){
-    if step.tool=="read_listed_files"{
+    if matches!(step.tool.as_str(),"read_listed_files"|"read_matched_files"){
         let Some(content)=from else{return (Err("list dependency has no successful result".into()),0)};
         return read_many(&settings,run_id,&content,&step).await;
     }
@@ -341,7 +351,9 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
                     continue;
                 }
             }
-            let worst=if step.tool=="read_listed_files"{step.max_files}else{1};
+            let worst=if matches!(step.tool.as_str(),"read_listed_files"|"read_matched_files"){
+                step.max_files
+            }else{1};
             if reserved.saturating_add(worst)>MAX_NESTED_READS.saturating_sub(calls){
                 // The interpreter is finite even when a model supplies many
                 // list iterations. Do not launch a partial loop silently.
@@ -455,6 +467,31 @@ mod tests{
         assert_eq!(report["steps"][4]["status"],"ok");
         assert_eq!(report["steps"][4]["sha256"],digest("second signal=present\n"));
         assert_eq!(report["steps"][2]["status"],"ok");
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn search_results_drive_unique_file_reads_without_a_second_model_turn(){
+        let mut settings=Settings::from_env().unwrap();
+        let root=std::env::temp_dir().join(format!("dominion-search-dataflow-{}",Uuid::new_v4()));
+        settings.workspace_dir=root.clone();
+        let run=example();
+        let dir=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("first.rs"),"TODO alpha\nTODO beta\n").await.unwrap();
+        tokio::fs::write(dir.join("second.rs"),"TODO gamma\n").await.unwrap();
+        tokio::fs::write(dir.join("ignored.rs"),"not relevant\n").await.unwrap();
+        let result=execute(&settings,&run,&json!({"steps":[
+            {"id":"hits","tool":"search_files","arguments":{"query":"TODO"}},
+            {"id":"sources","tool":"read_matched_files","from":"hits",
+                "suffix":".rs","max_files":3,"contains":"TODO"}
+        ]})).await.unwrap();
+        let r:Value=serde_json::from_str(&result).unwrap();
+        assert_eq!(r["nested_read_calls"],3,
+            "one search and two unique matched source files, not one read per hit");
+        assert_eq!(r["steps"][1]["status"],"ok");
+        let nested=r["steps"][1]["result"].as_str().unwrap();
+        assert!(nested.contains("first.rs")&&nested.contains("second.rs"));
+        assert!(!nested.contains("ignored.rs"));
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
