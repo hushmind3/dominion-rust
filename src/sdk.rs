@@ -283,6 +283,9 @@ impl Dominion {
     /// Indexed archive recall with no model calls; shares the Money domain
     /// database and standard Rust SDK lifecycle.
     pub async fn money_search(&self,query:&str,limit:usize)->Result<Vec<Value>,String>{
+        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
+            return Err("Money tool is disabled".into());
+        }
         let q=query.trim();
         if !(2..=160).contains(&q.chars().count()){
             return Err("money search requires 2..160 characters".into());
@@ -293,11 +296,17 @@ impl Dominion {
             .await.map_err(|e|e.to_string())?
     }
     pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
+        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
+            return Err("Money tool is disabled".into());
+        }
         let root=self.engine.settings.data_dir.clone();
         tokio::task::spawn_blocking(move||crate::money::signals(&root,limit))
             .await.map_err(|e|e.to_string())?
     }
     pub async fn money_collect(&self,force:bool)->Result<Value,String>{
+        if !crate::money::module_enabled(&self.engine.settings.data_dir)?{
+            return Err("Money tool is disabled".into());
+        }
         let root=&self.engine.settings.data_dir;
         let (rss,catalog)=tokio::join!(
             crate::money::sources::collect(root,force),

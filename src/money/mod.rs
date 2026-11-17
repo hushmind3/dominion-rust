@@ -54,6 +54,30 @@ fn set(conn:&Connection,key:&str,record:&Value)->Result<(),String>{
         params![key,record.to_string()]).map_err(err)?;
     Ok(())
 }
+/// The optional Money module does not create its data file merely to check
+/// activation. An existing pre-toggle Money database stays enabled by default
+/// for backward compatibility; a fresh installation starts disabled.
+pub fn module_enabled(root:&Path)->Result<bool,String>{
+    if !root.join("money.sqlite").is_file(){return Ok(false);}
+    let conn=open(root)?;
+    Ok(stored(&conn,"module_enabled")?
+        .map(|record|record["enabled"].as_bool().unwrap_or(true))
+        .unwrap_or(true))
+}
+pub fn set_module_enabled(root:&Path,enabled:bool)->Result<Value,String>{
+    let mut conn=open(root)?;
+    let tx=conn.transaction().map_err(err)?;
+    let record=json!({"enabled":enabled,
+        "updatedAt":crate::frontend_state::timestamp(crate::domain::now_ms())});
+    set(&tx,"module_enabled",&record)?;
+    if !enabled{
+        // An explicitly disabled tool cannot continue periodic collection.
+        set(&tx,"automation",&json!({"enabled":false,"periodMinutes":30,
+            "modelCallsPerCycle":0,"disabledByModule":true}))?;
+    }
+    tx.commit().map_err(err)?;
+    Ok(record)
+}
 pub fn state(root:&Path,key:&str)->Result<Option<Value>,String>{
     stored(&open(root)?,key)
 }
@@ -174,6 +198,11 @@ pub fn replace_candidate(root:&Path,record:&Value)->Result<(),String>{
     Ok(())
 }
 pub fn latest(root:&Path)->Result<Value,String>{
+    if !root.join("money.sqlite").is_file(){
+        return Ok(json!({"candidateIds":[],"shownCandidateIds":[],
+            "drafts":[],"modelCalls":0,"moduleEnabled":false,
+            "message":"머니 도구가 비활성 상태입니다. 먼저 기능을 켜 주세요."}));
+    }
     let conn=open(root)?;
     let mut report=stored(&conn,"find")?.unwrap_or_else(||json!({
         "candidateIds":[],"shownCandidateIds":[],"modelCalls":0,
@@ -191,14 +220,22 @@ pub fn latest(root:&Path)->Result<Value,String>{
         }
     }
     report["drafts"]=json!(drafts);
+    report["moduleEnabled"]=json!(module_enabled(root)?);
     Ok(report)
 }
 pub fn stats(root:&Path)->Result<Value,String>{
+    if !root.join("money.sqlite").is_file(){
+        return Ok(json!({"signals":0,"candidates":0,"metrics":0,
+            "lastIngest":null,"lastCatalog":null,
+            "automation":{"enabled":false},"moduleEnabled":false}));
+    }
+    let enabled=module_enabled(root)?;
     let conn=open(root)?;
     let signals:i64=conn.query_row("SELECT COUNT(*) FROM money_signals",[],|row|row.get(0)).map_err(err)?;
     let candidates:i64=conn.query_row("SELECT COUNT(*) FROM money_candidates",[],|row|row.get(0)).map_err(err)?;
     let metrics:i64=conn.query_row("SELECT COUNT(*) FROM money_metrics",[],|row|row.get(0)).map_err(err)?;
     Ok(json!({"signals":signals,"candidates":candidates,"metrics":metrics,
+        "moduleEnabled":enabled,
         "lastIngest":stored(&conn,"scan")?,
         "lastCatalog":stored(&conn,"catalog")?,
         "automation":stored(&conn,"automation")?.unwrap_or(json!({"enabled":false}))}))

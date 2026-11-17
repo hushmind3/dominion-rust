@@ -13,6 +13,15 @@ static FIND_LOCK:Mutex<()> = Mutex::const_new(());
 fn err(msg:impl Into<String>)->Fault{
     (StatusCode::BAD_REQUEST,Json(json!({"error":msg.into()})))
 }
+async fn require_enabled(engine:&Arc<Engine>)->Result<(),Fault>{
+    let root=engine.settings.data_dir.clone();
+    let enabled=blocking(move||super::module_enabled(&root)).await?;
+    if !enabled{
+        return Err((StatusCode::CONFLICT,Json(json!({
+            "error":"Money is disabled in settings; enable the tool before running it"}))));
+    }
+    Ok(())
+}
 fn internal(msg:String)->Fault{
     (StatusCode::INTERNAL_SERVER_ERROR,Json(json!({"error":msg})))
 }
@@ -221,6 +230,7 @@ fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
 pub fn routes()->Router<Arc<Engine>>{
     Router::new()
         .route("/money/find",get(latest).post(find))
+        .route("/money/settings",get(module_settings).post(configure_module))
         .route("/money/stats",get(stats))
         .route("/money/search",get(search_archive))
         .route("/money/collect",post(collect))
@@ -238,6 +248,24 @@ pub async fn native_latest(engine:&Arc<Engine>)->Result<Value,String>{
     snapshot(engine).await.map_err(|(_,Json(body))|
         body["error"].as_str().unwrap_or("Money report read failed").to_owned())
 }
+pub async fn module_settings(State(engine):State<Arc<Engine>>)
+    ->Result<Json<Value>,Fault>{
+    let root=engine.settings.data_dir.clone();
+    let enabled=blocking(move||super::module_enabled(&root)).await?;
+    Ok(Json(json!({"enabled":enabled,"independentFromAutomation":true})))
+}
+pub async fn configure_module(State(engine):State<Arc<Engine>>,
+    Json(body):Json<Value>)->Result<Json<Value>,Fault>{
+    let enabled=body["enabled"].as_bool()
+        .ok_or_else(||err("module enabled boolean required"))?;
+    let root=engine.settings.data_dir.clone();
+    let saved=blocking(move||super::set_module_enabled(&root,enabled)).await?;
+    if enabled{
+        // An enabled module alone does not start the optional RSS collector.
+        start_scheduler(&engine);
+    }
+    Ok(Json(saved))
+}
 pub async fn stats(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let root=engine.settings.data_dir.clone();
     blocking(move||super::stats(&root)).await.map(Json)
@@ -245,6 +273,7 @@ pub async fn stats(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
 /// A bounded owner-visible archive search, no new model call or Money worker.
 pub async fn search_archive(State(engine):State<Arc<Engine>>,
     Query(input):Query<HashMap<String,String>>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     let q=input.get("q").map(|s|s.trim()).unwrap_or("");
     if !(2..=160).contains(&q.chars().count()){
         return Err(err("money search requires 2..160 characters"));
@@ -258,6 +287,7 @@ pub async fn search_archive(State(engine):State<Arc<Engine>>,
 }
 pub async fn collect(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     let force=body["force"].as_bool().unwrap_or(false);
     let (rss,catalog)=tokio::join!(
         super::sources::collect(&engine.settings.data_dir,force),
@@ -273,6 +303,7 @@ pub async fn collect(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
 }
 pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     let enabled=body["enabled"].as_bool().ok_or_else(||err("enabled boolean required"))?;
     let record=json!({"enabled":enabled,"periodMinutes":30,
         "updatedAt":crate::frontend_state::timestamp(crate::domain::now_ms()),
@@ -296,6 +327,7 @@ pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
 }
 pub async fn reject(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     let _lock=FIND_LOCK.lock().await;
     let root=engine.settings.data_dir.clone();
     blocking(move||{
@@ -346,6 +378,7 @@ Finish with actual artifact paths, validation results, cost and remaining unknow
 /// second side-effecting worker. Research-only operations never call this.
 pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     Json(body):Json<Value>)->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     if body["approved"]!=true{
         return Err(err("explicit approved=true required to implement a candidate"));
     }
@@ -439,6 +472,7 @@ pub async fn cancel(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>
 }
 pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
+    require_enabled(&engine).await?;
     let _lock=FIND_LOCK.lock().await;
     let mode=body["mode"].as_str().unwrap_or("db");
     if !matches!(mode,"db"|"agent"){return Err(err("mode must be db or agent"));}
@@ -549,6 +583,7 @@ pub fn start_scheduler(engine:&Arc<Engine>){
     // No Money DB is created merely because the optional tool is registered.
     // A first explicit scan or enable action creates its domain data file.
     if !root.join("money.sqlite").is_file(){return;}
+    if !super::module_enabled(&root).unwrap_or(false){return;}
     // One synchronous preference read at startup; no background timer if off.
     if !super::state(&root,"automation").ok().flatten()
         .is_some_and(|v|v["enabled"]==true){return;}
@@ -570,7 +605,7 @@ pub fn start_scheduler(engine:&Arc<Engine>){
             let enabled=tokio::task::spawn_blocking(move||
                 super::state(&check,"automation").ok().flatten()
                     .is_some_and(|v|v["enabled"]==true)).await.unwrap_or(false);
-            if !enabled{break;}
+            if !enabled || !super::module_enabled(&root).unwrap_or(false){break;}
             let (rss,catalog)=tokio::join!(
                 super::sources::collect(&root,false),
                 super::catalog::collect(&root,false));
