@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Native SDK UI progress and cost view (dev profile)
+        run: cargo test --lib program_view_tests
       - name: Model-authored program cursor, typed receipts, policy and crash recovery (dev profile)
         run: cargo test --lib program_session::tests
       - name: Programmatic native shell remains approval-gated (dev profile)
