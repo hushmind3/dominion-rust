@@ -29,6 +29,68 @@ fn random()->String{
  let mut bytes=[0u8;32];OsRng.fill_bytes(&mut bytes);URL_SAFE_NO_PAD.encode(bytes)
 }
 fn valid_provider(id:&str)->bool{matches!(id,"github"|"google")}
+const GOOGLE_DRIVE:&str="https://www.googleapis.com/auth/drive";
+const GOOGLE_DOCS:&str="https://www.googleapis.com/auth/documents";
+const GOOGLE_SHEETS:&str="https://www.googleapis.com/auth/spreadsheets";
+fn granted_workspace(scopes:&str)->bool{
+ let list=scopes.split_ascii_whitespace().collect::<Vec<_>>();
+ [GOOGLE_DRIVE,GOOGLE_DOCS,GOOGLE_SHEETS].iter().all(|scope|list.contains(scope))
+}
+pub(crate) fn google_workspace_connected(settings:&Settings)->bool{
+ read(settings).ok().and_then(|s|s.accounts.get("google").cloned())
+    .is_some_and(|account|granted_workspace(&account.scopes)
+        &&(!account.access_token.is_empty()||!account.refresh_token.is_empty()))
+}
+/// Server-only Google credential retrieval with refresh-token rotation.
+/// Tokens never enter the model tool catalog, browser response, or run history.
+pub(crate) async fn google_workspace_access_token(settings:&Settings)->Result<String,String>{
+ let current=read(settings)?;
+ let account=current.accounts.get("google")
+     .ok_or("Connect Google Workspace in Accounts before using Drive, Docs or Sheets")?;
+ if !granted_workspace(&account.scopes){
+     return Err("Google Drive/Docs/Sheets permission missing; connect Workspace access in Accounts".into());
+ }
+ if account.expires_at_ms>now_ms().saturating_add(60_000) && !account.access_token.is_empty(){
+     return Ok(account.access_token.clone());
+ }
+ if account.refresh_token.is_empty(){
+     return Err("Google token expired and no refresh token is stored; reconnect Workspace access".into());
+ }
+ let app=current.apps.get("google").ok_or("Google OAuth client is missing; configure Client ID and Secret")?;
+ let response=client()?.post("https://oauth2.googleapis.com/token")
+  .form(&[("client_id",app.client_id.as_str()),("client_secret",app.client_secret.as_str()),
+   ("refresh_token",account.refresh_token.as_str()),("grant_type","refresh_token")])
+  .send().await.map_err(|e|format!("Google token refresh transport failed: {e}"))?;
+ if !response.status().is_success(){
+     return Err(format!("Google OAuth refresh rejected (HTTP {}); reconnect Workspace access",response.status()));
+ }
+ let token:Value=response.json().await.map_err(|_|"Google OAuth refresh returned invalid JSON")?;
+ let access=token["access_token"].as_str().filter(|s|!s.is_empty())
+     .ok_or("Google OAuth refresh returned no access token")?.to_owned();
+ let expire=token["expires_in"].as_u64().unwrap_or(3600).min(86_400);
+ if let Some(scopes)=token["scope"].as_str(){
+     if !granted_workspace(scopes){return Err("Google refresh dropped requested Workspace scopes; reconnect".into());}
+ }
+ let _guard=lock();
+ let mut state=read(settings)?;
+ let stored=state.accounts.get_mut("google").ok_or("Google account disconnected during refresh")?;
+ if stored.refresh_token!=account.refresh_token || stored.display_name!=account.display_name{
+     return Err("Google account changed during token refresh; retry against current connection".into());
+ }
+ if !granted_workspace(&stored.scopes){
+     return Err("Google Workspace permission was removed during token refresh".into());
+ }
+ if stored.expires_at_ms>now_ms().saturating_add(60_000) && !stored.access_token.is_empty(){
+     return Ok(stored.access_token.clone());
+ }
+ stored.access_token=access.clone();
+ stored.expires_at_ms=now_ms().saturating_add(expire.saturating_mul(1000));
+ if let Some(refresh)=token["refresh_token"].as_str().filter(|s|!s.is_empty()){
+     stored.refresh_token=refresh.to_owned();
+ }
+ write(settings,&state)?;
+ Ok(access)
+}
 fn granted_repository(scopes:&str)->bool{
  scopes.split(|c:char|c==','||c.is_ascii_whitespace())
     .any(|s|matches!(s,"repo"|"public_repo"))
@@ -180,7 +242,9 @@ async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault
  Ok(Json(json!(store.accounts.iter().filter(|(provider,_)|valid_provider(provider)).map(|(provider,account)|json!({
   "id":provider,"provider":provider,"displayName":account.display_name,
   "hasToken":!account.access_token.is_empty()||!account.refresh_token.is_empty(),
-  "scopes":account.scopes,"repositoryAccess":provider.as_str()=="github"&&granted_repository(&account.scopes)
+  "scopes":account.scopes,
+  "repositoryAccess":provider.as_str()=="github"&&granted_repository(&account.scopes),
+  "workspaceAccess":provider.as_str()=="google"&&granted_workspace(&account.scopes)
  })).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -201,7 +265,7 @@ async fn save_app(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
  write(&engine.settings,&state).map_err(bad)?;
  Ok(Json(json!({"id":id,"configured":true,"callback":callback_url(&engine.settings,&id).ok()})))
 }
-fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,repository:bool)->Result<String,String>{
+fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,repository:bool,workspace:bool)->Result<String,String>{
  let target=if id=="github"{"https://github.com/login/oauth/authorize"}
   else{"https://accounts.google.com/o/oauth2/v2/auth"};
  let mut url=reqwest::Url::parse(target).map_err(|e|e.to_string())?;
@@ -214,7 +278,9 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,reposit
   if id=="github"{
    p.append_pair("scope",if repository{"read:user user:email repo"}else{"read:user user:email"});
   }else{
-   p.append_pair("scope","openid email profile")
+   p.append_pair("scope",if workspace{
+      "openid email profile https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/spreadsheets"
+   }else{"openid email profile"})
     .append_pair("access_type","offline")
     .append_pair("prompt","consent")
     .append_pair("code_challenge",&URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
@@ -224,7 +290,7 @@ fn authorize_url(id:&str,app:&App,state:&str,verifier:&str,callback:&str,reposit
  Ok(url.to_string())
 }
 #[derive(Default,Deserialize)]
-struct StartQuery{#[serde(default)]repository:bool}
+struct StartQuery{#[serde(default)]repository:bool,#[serde(default)]workspace:bool}
 async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,Query(q):Query<StartQuery>)
  ->Result<Json<Value>,Fault>{
  if !valid_provider(&id){return Err(bad("unsupported OAuth provider"));}
@@ -233,7 +299,8 @@ async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,Query(q):Q
  let callback=callback_url(&engine.settings,&id).map_err(bad)?;
  let state=random();let verifier=random();
  if q.repository&&id!="github"{return Err(bad("repository permission only applies to GitHub"));}
- let url=authorize_url(&id,&app,&state,&verifier,&callback,q.repository).map_err(bad)?;
+ if q.workspace&&id!="google"{return Err(bad("Workspace permission only applies to Google"));}
+ let url=authorize_url(&id,&app,&state,&verifier,&callback,q.repository,q.workspace).map_err(bad)?;
  {
   let mut guard=pending().lock().unwrap_or_else(|e|e.into_inner());
   guard.retain(|_,entry|now_ms().saturating_sub(entry.at_ms)<600_000);
@@ -308,7 +375,11 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
   // one from a subsequent authorization-code exchange.
   let mut record=record;
   if record.refresh_token.is_empty(){
-   if let Some(old)=store.accounts.get(&id){record.refresh_token=old.refresh_token.clone();}
+   if let Some(old)=store.accounts.get(&id){
+    if old.display_name==record.display_name{
+      record.refresh_token=old.refresh_token.clone();
+    }
+   }
   }
   store.accounts.insert(id.clone(),record);
   write(&engine.settings,&store).map_err(bad)?;
@@ -327,7 +398,7 @@ mod tests{
   let dir=std::env::temp_dir().join(format!("dominion-oauth-{}",Uuid::new_v4()));
   settings.data_dir=dir.clone();
   let app=App{client_id:"public".into(),client_secret:"very-secret".into()};
-  let url=authorize_url("google",&app,"one-time-state","private-verifier","http://localhost/api/oauth/google/callback",false).unwrap();
+  let url=authorize_url("google",&app,"one-time-state","private-verifier","http://localhost/api/oauth/google/callback",false,false).unwrap();
   assert!(url.contains("code_challenge="));
   assert!(!url.contains("private-verifier"));
   let mut state=Snapshot::default();state.apps.insert("google".into(),app);
@@ -340,12 +411,27 @@ mod tests{
  #[test]
  fn github_repository_scopes_are_explicit_and_not_in_identity_login(){
   let app=App{client_id:"public".into(),client_secret:"secret".into()};
-  let identity=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",false).unwrap();
-  let repository=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",true).unwrap();
+  let identity=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",false,false).unwrap();
+  let repository=authorize_url("github",&app,"s","v","http://localhost/api/oauth/github/callback",true,false).unwrap();
   assert!(!identity.contains("repo"));
   assert!(repository.contains("repo"));
   assert!(granted_repository("read:user, repo"));
   assert!(granted_repository("public_repo"));
   assert!(!granted_repository("read:user user:email repo:status"));
+ }
+ #[test]
+ fn workspace_consent_is_separate_from_identity_and_requires_all_google_scopes(){
+  let app=App{client_id:"public".into(),client_secret:"secret".into()};
+  let identity=authorize_url("google",&app,"state","verifier",
+   "http://localhost/api/oauth/google/callback",false,false).unwrap();
+  let extended=authorize_url("google",&app,"state","verifier",
+   "http://localhost/api/oauth/google/callback",false,true).unwrap();
+  assert!(!identity.contains("auth%2Fdrive"));
+  assert!(extended.contains("auth%2Fdrive"));
+  assert!(extended.contains("auth%2Fdocuments"));
+  assert!(extended.contains("auth%2Fspreadsheets"));
+  assert!(!granted_workspace("openid email profile"));
+  assert!(!granted_workspace(GOOGLE_DRIVE));
+  assert!(granted_workspace(&format!("{GOOGLE_DRIVE} {GOOGLE_DOCS} {GOOGLE_SHEETS}")));
  }
 }
