@@ -1,0 +1,23 @@
+{
+  "cases": [
+    {
+      "id": "two-file-correctness",
+      "repository": "bench-projects/two-file",
+      "instruction": "Repair the library's weighted-label parsing and highest-score selection so that cargo test passes. Inspect the code and acceptance tests, modify the necessary source files, preserve their public signatures, and explain what changed. Do not modify acceptance tests. Use approved tools only; if shell commands require approval, wait for it.",
+      "expected_files": [
+        "src/parser.rs",
+        "src/scorer.rs"
+      ],
+      "verify": [
+        [
+          "cargo",
+          "test",
+          "--offline"
+        ]
+      ],
+      "budget_krw": 300,
+      "max_steps": 25,
+      "timeout_seconds": 900
+    }
+  ]
+}

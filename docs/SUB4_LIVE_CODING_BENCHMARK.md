@@ -49,3 +49,19 @@ The fixture-driven `src/engine/benchmark_tests.rs` remains a kernel regression, 
 
 
 The auto-approval command-line option intentionally accepts **only** `write_file` and `edit_file`. Arbitrary shell, MCP, GitHub remote writes and other potentially external effects cannot be auto-approved by this evaluator. If an agent requests these, the run is recorded as blocked until an operator handles it separately.
+
+## Reproducible bundled two-file task
+
+A concrete, intentionally failing Rust fixture is included under `benchmarks/fixtures/two-file`. Run the preparation script **once**, to copy the fixture into its own clean Git repository:
+
+```bash
+bash benchmarks/prepare-fixture.sh
+cargo run --release --bin dominion_coding_eval -- \
+  --manifest benchmarks/manifests/two-file.json \
+  --output benchmark-results/two-file.json \
+  --approve-tool write_file --approve-tool edit_file --interactive
+```
+
+The original fixture remains unchanged. The evaluator starts a new detached worktree, expects real changes in `src/parser.rs` and `src/scorer.rs`, and independently runs the bundled Rust acceptance tests. The starting tests **should fail** until both defects are corrected. `--interactive` prompts the operator to approve or deny non-file tools individually; only file edit tools can be automatically approved by name.
+
+No paid model has been run as part of the ordinary GitHub CI; the fixture and benchmark runner provide a reproducible way to obtain that measurement.

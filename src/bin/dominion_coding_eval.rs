@@ -76,7 +76,7 @@ async fn git_changes(worktree:&Path)->Result<Vec<String>,String>{
     paths.sort();
     Ok(paths)
 }
-async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet<String>)
+async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet<String>,interactive:bool)
     ->Result<ResultRow,String>{
     validate(case)?;
     let begin=Instant::now();
@@ -97,11 +97,28 @@ async fn evaluate(sdk:&Dominion,settings:&Settings,case:&Case,permitted:&HashSet
                 let Some(call)=state.pending_approval.as_ref()else{
                     break (state,"approval state missing a tool call".into());
                 };
-                if !permitted.contains(&call.name){
-                    let name=call.name.clone();
-                    break (state,format!("approval required for {name}; explicitly pass --approve-tool {name}"));
-                }
                 if approvals>=50{break (state,"approval budget of 50 calls exhausted".into());}
+                if !permitted.contains(&call.name){
+                    if !interactive{
+                        let name=call.name.clone();
+                        break (state,format!("approval required for {name}; pass --interactive or explicitly --approve-tool {name}"));
+                    }
+                    let name=call.name.clone();
+                    let arguments=call.arguments.to_string().chars().take(1500).collect::<String>();
+                    let accepted=tokio::task::spawn_blocking(move||->Result<bool,String>{
+                        use std::io::{self,Write};
+                        eprintln!("Tool approval requested: {name} {arguments}");
+                        eprint!("Type yes to approve this exact tool call (anything else denies): ");
+                        io::stderr().flush().map_err(|e|e.to_string())?;
+                        let mut answer=String::new();
+                        io::stdin().read_line(&mut answer).map_err(|e|e.to_string())?;
+                        Ok(answer.trim()=="yes")
+                    }).await.map_err(|e|e.to_string())??;
+                    if !accepted{
+                        sdk.approve(id,false).await?;
+                        break (sdk.get(id).await?,"operator denied the requested tool".into());
+                    }
+                }
                 sdk.approve(id,true).await?;
                 approvals+=1;
             },
@@ -145,8 +162,10 @@ async fn run()->Result<(),String>{
     let mut manifest=None;
     let mut output=PathBuf::from("benchmark-results/sub4-coding.json");
     let mut permitted=HashSet::new();
+    let mut interactive=false;
     while let Some(option)=args.next(){
         match option.as_str(){
+            "--interactive"=>interactive=true,
             "--manifest"=>manifest=Some(PathBuf::from(args.next().ok_or("--manifest needs a path")?)),
             "--output"=>output=PathBuf::from(args.next().ok_or("--output needs a path")?),
             "--approve-tool"=>{
@@ -183,7 +202,7 @@ async fn run()->Result<(),String>{
     let mut results=Vec::new();
     for case in &manifest.cases{
         eprintln!("Running: {}",case.id);
-        match evaluate(&sdk,&settings,case,&permitted).await{
+        match evaluate(&sdk,&settings,case,&permitted,interactive).await{
             Ok(result)=>results.push(result),
             Err(error)=>results.push(ResultRow{
                 id:case.id.clone(),run_id:None,status:"error".into(),passed:false,
