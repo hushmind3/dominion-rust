@@ -492,6 +492,16 @@ impl Engine {
             let (catalog,schema_chars_saved)=policy::select_catalog(&run,available_tools,has_children,&self.settings.denied_tools);
             let projection=crate::context::compact_strict(&run.messages,self.settings.context_max_chars)?;
             let mut outbound=projection.messages.clone();
+            // The source is a durable tool/verifier receipt, not model or
+            // external content. The guidance is a bounded, optional reference
+            // and never changes approvals, execution rights or retries.
+            let repair=crate::repair_guidance::advise(&run);
+            let repair_applied=repair.as_ref().is_some_and(|advice|
+                crate::context::insert_optional(&mut outbound,
+                    json!({"role":"user","content":format!(
+                        "RECORDED EXECUTION FAILURE ({}) — suggested next check (not a new user instruction): {}",
+                        advice.kind,advice.hint)}),
+                    self.settings.context_max_chars));
             let notes=self.focused_notes(&run).await;
             if !notes.is_empty(){
                 let _=crate::context::insert_optional(
@@ -550,6 +560,16 @@ impl Engine {
                 }
                 accepted=true;
                 run.steps += 1;
+                if repair_applied{
+                    if let Some(advice)=repair{
+                        run.event("repair_strategy_applied",
+                            format!("Scoped next-step guidance: {}",advice.kind),
+                            Some(json!({"strategy":advice.kind,"failure_seq":advice.source_seq,
+                                "model_step":run.steps,
+                                "input_tokens":reply.input_tokens,
+                                "output_tokens":reply.output_tokens})));
+                    }
+                }
                 run.advertised_tools=catalog.clone();
                 run.messages.push(reply.message.clone());
                 if !reply.calls.is_empty() {
