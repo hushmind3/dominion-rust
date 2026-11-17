@@ -280,6 +280,18 @@ impl Dominion {
         crate::money::api::native_implement(
             &self.engine,id,agent_id,budget_krw,approved).await
     }
+    /// Indexed archive recall with no model calls; shares the Money domain
+    /// database and standard Rust SDK lifecycle.
+    pub async fn money_search(&self,query:&str,limit:usize)->Result<Vec<Value>,String>{
+        let q=query.trim();
+        if !(2..=160).contains(&q.chars().count()){
+            return Err("money search requires 2..160 characters".into());
+        }
+        let root=self.engine.settings.data_dir.clone();
+        let term=q.to_string();
+        tokio::task::spawn_blocking(move||crate::money::retrieval::search(&root,&term,limit.min(40)))
+            .await.map_err(|e|e.to_string())?
+    }
     pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
         let root=self.engine.settings.data_dir.clone();
         tokio::task::spawn_blocking(move||crate::money::signals(&root,limit))

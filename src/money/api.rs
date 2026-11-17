@@ -1,7 +1,7 @@
 //! Money presentation/API adapter: no second model loop or unapproved
 //! commercial action. Optional inference is a native model-only Run.
 use crate::{domain::{CreateRun,RunStatus},engine::Engine,sdk::{Dominion,RunOptions}};
-use axum::{extract::{Path,State},http::StatusCode,routing::{get,post},Json,Router};
+use axum::{extract::{Path,Query,State},http::StatusCode,routing::{get,post},Json,Router};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
 use std::{collections::{HashMap,HashSet},sync::Arc};
@@ -222,6 +222,7 @@ pub fn routes()->Router<Arc<Engine>>{
     Router::new()
         .route("/money/find",get(latest).post(find))
         .route("/money/stats",get(stats))
+        .route("/money/search",get(search_archive))
         .route("/money/collect",post(collect))
         .route("/money/automation",post(automation))
         .route("/money/inference/cancel",post(cancel))
@@ -240,6 +241,20 @@ pub async fn native_latest(engine:&Arc<Engine>)->Result<Value,String>{
 pub async fn stats(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let root=engine.settings.data_dir.clone();
     blocking(move||super::stats(&root)).await.map(Json)
+}
+/// A bounded owner-visible archive search, no new model call or Money worker.
+pub async fn search_archive(State(engine):State<Arc<Engine>>,
+    Query(input):Query<HashMap<String,String>>)->Result<Json<Value>,Fault>{
+    let q=input.get("q").map(|s|s.trim()).unwrap_or("");
+    if !(2..=160).contains(&q.chars().count()){
+        return Err(err("money search requires 2..160 characters"));
+    }
+    let root=engine.settings.data_dir.clone();
+    let query=q.to_string();
+    let found=blocking(move||super::retrieval::search(&root,&query,20)).await?;
+    Ok(Json(json!({"results":found,"count":found.len(),
+        "query":q,"modelCalls":0,
+        "note":"archived source observations, not verified demand or sales"})))
 }
 pub async fn collect(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{

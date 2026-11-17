@@ -6,6 +6,8 @@ type Evidence={
  sourceId?:string;url?:string;claim?:string;publishedAt?:string;
  sourceName?:string;kind?:string;contentStatus?:string
 }
+type ArchivedSource={id:string;title:string;url:string;sourceName?:string;
+ publishedAt?:string;verification?:string;description?:string;changeTags?:string[]}
 type Lead={
  id:string;title:string;offer?:string;customer?:string;
  whyPay?:string;implementationPlan?:string;firstPaymentStep?:string;
@@ -38,6 +40,10 @@ export function MoneyPage(){
  const [busy,setBusy]=useState<'find'|'infer'|'scan'|'automation'|'cancel'|'implement'|''>('')
  const [loading,setLoading]=useState(true)
  const [error,setError]=useState('')
+ const [archiveQuery,setArchiveQuery]=useState('')
+ const [archiveResults,setArchiveResults]=useState<ArchivedSource[]>([])
+ const [archiveSearched,setArchiveSearched]=useState(false)
+ const [searchingArchive,setSearchingArchive]=useState(false)
  const inferring=report.reasoningStatus==='running'||report.reasoningStatus==='queued'
  const runIds=(report.drafts||[]).map(lead=>lead.implementationRunId).filter(Boolean).join('|')
  const refresh=async()=>{
@@ -86,6 +92,17 @@ export function MoneyPage(){
   void check()
   return()=>{live=false;if(timer)clearInterval(timer)}
  },[runIds])
+ async function searchArchive(){
+  const term=archiveQuery.trim()
+  if(term.length<2||term.length>160)return
+  setError('');setSearchingArchive(true)
+  try{
+   const result=await get<{results:ArchivedSource[]}>(
+    '/api/money/search?q='+encodeURIComponent(term))
+   setArchiveResults(result.results);setArchiveSearched(true)
+  }catch(e){setError((e as Error).message)}
+  finally{setSearchingArchive(false)}
+ }
  async function implement(id:string){
   if(busy)return
   setError('');setBusy('implement');setImplementationId(id)
@@ -224,6 +241,32 @@ export function MoneyPage(){
    {stats?.lastIngest?.capturedAt&&<p className="mt-3 text-[11px] text-[#998A7C]">
     마지막 수집: {stats.lastIngest.capturedAt} · 새 자료 {stats.lastIngest.new??0}건
    </p>}
+  </section>
+  <section className="mt-4 rounded-2xl border border-[#E4D7C8] bg-[#FFFCF6] p-4">
+   <form onSubmit={event=>{event.preventDefault();void searchArchive()}}
+    className="flex flex-wrap items-center gap-2">
+    <label htmlFor="money-archive" className="text-[12px] font-semibold text-[#66594E]">축적 근거 검색</label>
+    <input id="money-archive" value={archiveQuery} maxLength={160}
+     onChange={event=>setArchiveQuery(event.target.value)}
+     placeholder="산업·기술·고객 문제를 검색 (한국어·중국어·영어)"
+     className="min-w-[180px] flex-1 rounded-lg border border-[#DCCFC1] bg-white px-3 py-2 text-[12px]"/>
+    <button type="submit" disabled={searchingArchive||archiveQuery.trim().length<2}
+     className="rounded-lg bg-[#6C5B4B] px-4 py-2 text-[12px] font-bold text-white disabled:opacity-50">
+     {searchingArchive?'검색 중…':'DB 검색 · 모델 호출 0회'}
+    </button>
+   </form>
+   {archiveSearched&&<div className="mt-3 space-y-2" aria-live="polite">
+    <p className="text-[11px] text-[#8B7D70]">누적 근거 {archiveResults.length}건 검색 · 기사 언급은 실제 구매 검증과 별개</p>
+    {archiveResults.map(row=><div key={row.id} className="rounded-lg border border-[#ECE4D9] bg-white px-3 py-2">
+     <a href={row.url} target="_blank" rel="noreferrer"
+      className="text-[12px] font-semibold text-[#A75835] hover:underline">
+      {row.title} <ArrowUpRight size={11} className="inline"/>
+     </a>
+     <p className="mt-1 text-[10px] text-[#8B7D70]">
+      {row.sourceName||'공개 출처'} · {row.publishedAt||'발행일 미상'} · {row.verification||'검증 전'}
+     </p>
+    </div>)}
+   </div>}
   </section>
   {error&&<p role="alert" className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
   {report.inferenceError&&<p role="status" className="mt-4 text-[12px] text-amber-800">{report.inferenceError}</p>}

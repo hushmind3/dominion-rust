@@ -25,6 +25,7 @@ export interface MemoryEntry {
   id: string; scope: string; title: string; content: string; created_at_ms: number; updated_at_ms: number;
 }
 export interface MoneyEvidence { sourceId?:string; url?:string; claim?:string; publishedAt?:string; sourceName?:string; kind?:string; contentStatus?:string; }
+export interface MoneySignal { id:string; title:string; url:string; description?:string; sourceName?:string; publishedAt?:string; verification?:string; topics?:string[];changeTags?:string[]; }
 export interface MoneyDraft { id:string; title:string; customer?:string; offer?:string; whyPay?:string; implementationPlan?:string; firstPaymentStep?:string; counterfactual?:string; evidenceStatus?:string; evidence?:MoneyEvidence[]; origin?:string; status?:string; implementationRunId?:string; }
 export interface MoneyReport {drafts:MoneyDraft[]; sourceCount?:number; modelCalls?:number; reasoningRunId?:string|null; reasoningStatus?:RunStatus; inferenceCostKrw?:number; inferenceError?:string; searchedAt?:string; message?:string;}
 export interface MoneyStats {signals:number; candidates:number; metrics?:number; lastCatalog?:{newMetrics?:number;capturedAt?:string}|null; lastIngest?:{capturedAt?:string;found?:number;new?:number}|null; automation?:{enabled:boolean;periodMinutes?:number};}
@@ -230,6 +231,8 @@ export class Dominion {
   readonly money = {
     latest:()=>this.request<MoneyReport>('GET','/money/find'),
     stats:()=>this.request<MoneyStats>('GET','/money/stats'),
+    search:(query:string)=>this.request<{results:MoneySignal[];count:number;query:string;modelCalls:0}>(
+      'GET','/money/search?q='+encodeURIComponent(query)),
     find:(options:{mode?:'db'|'agent';agentId?:string;budgetKrw?:number}={mode:'db'})=>
       this.request<MoneyReport>('POST','/money/find',options),
     collect:(force=false)=>this.request<{
