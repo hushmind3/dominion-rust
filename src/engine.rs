@@ -479,6 +479,23 @@ impl Engine {
                 self.perform_tool(id,call,cancellation.clone()).await?;
                 continue;
             }
+            if run.plan.is_none() && !self.settings.separate_plan_model_call {
+                // Preserve any already-durable user corrections and avoid a
+                // paid preplanning request. The first normal tool-capable model
+                // call decides both its plan and first actions.
+                self.store.mutate(id, |current| {
+                    if current.status!=RunStatus::Running || current.plan.is_some(){return Ok(());}
+                    current.plan=Some(String::new());
+                    current.messages.insert(0,json!({"role":"system","content":SYSTEM}));
+                    current.messages.insert(1,json!({"role":"user","content":format!(
+                        "Request:\n{}\nPlan briefly within your first execution response and start with concrete tools when appropriate. No separate planning turn is required.",
+                        current.instruction)}));
+                    current.event("planning_fused",
+                        "Initial planning folded into the tool-capable model turn (zero additional model calls)",None);
+                    Ok(())
+                }).await?;
+                continue;
+            }
             if run.plan.is_none() {
                 // The root instruction is already durable in run.instruction.
                 // Never stringify historic tool outputs into an initial plan.
