@@ -19,8 +19,12 @@ async fn repair_model(State(turn):State<Arc<AtomicUsize>>,Json(request):Json<Val
                 messages.iter().any(|m|m["role"]=="tool"
                     &&m["tool_call_id"]=="wrong-path"
                     &&m["content"].as_str().is_some_and(|text|text.starts_with("TOOL ERROR:"))));
-            if !saw_failure{
-                json!({"role":"assistant","content":"FAIL: tool failure not in model context"})
+            let saw_choice=request["messages"].as_array().is_some_and(|messages|
+                messages.iter().any(|m|m["content"].as_str().is_some_and(|text|
+                    text.contains("HARNESS PATH COMPARISON") &&
+                    text.contains("selected=diagnose"))));
+            if !saw_failure || !saw_choice {
+                json!({"role":"assistant","content":"FAIL: durable failure and path comparison must both reach the model"})
             }else{
                 json!({"role":"assistant","content":null,"tool_calls":[
                     {"id":"inspect-alpha","type":"function","function":{"name":"read_file",
@@ -97,6 +101,9 @@ async fn coding_fixture_repairs_two_files_after_missing_path_feedback(){
         "wrong-path","inspect-alpha","inspect-beta","repair-alpha","repair-beta"
     ]);
     assert!(run.events.iter().any(|e|e.kind=="verification"));
+    assert!(run.events.iter().any(|e|e.kind=="strategy_compared" &&
+        e.detail.as_ref().is_some_and(|detail|detail["selected"]=="diagnose")));
+
     assert!(model_turns.load(Ordering::SeqCst)>=6);
     for _ in 0..100{
         if !engine.active.lock().await.contains(&id){break;}
