@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Shared typed IR and strict observation binding semantics (dev profile)
+        run: cargo test --lib program_ir::tests
       - name: Bounded native execution program and read-only policy (dev profile)
         run: cargo test --lib read_program::tests
       - name: Conditional read-program through native model and journal (dev profile)
