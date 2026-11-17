@@ -411,6 +411,79 @@ mod tests{
         assert!(r.queued_calls.is_empty());
         assert!(r.events.iter().any(|e|e.kind=="program_receipt_missing"));
     }
+
+    #[test]
+    fn new_owner_directive_cancels_only_not_started_program_steps(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        r.program_session=Some(ProgramSession{
+            id:"model-program".into(),steps:vec![ProgramStep{
+                id:"write".into(),tool:"write_file".into(),
+                arguments:json!({"path":"x.txt","content":"old"}),
+                when:None,on_error:None
+            }],cursor:0,pending_step:None,halt_requested:false,observations:Map::new()
+        });
+        advance(&mut r,&settings).unwrap();
+        assert_eq!(r.queued_calls.len(),1);
+        assert!(r.in_flight.is_none());
+        supersede(&mut r).unwrap();
+        assert!(r.queued_calls.is_empty());
+        assert!(r.program_session.is_none());
+        assert!(r.messages.iter().any(|m|m["role"]=="tool"
+            &&m["tool_call_id"]=="program:model-program:write"
+            &&m["content"].as_str().unwrap_or("").contains("SUPERSEDED")));
+        assert!(!r.events.iter().any(|e|e.kind=="tool_started"));
+    }
+    #[test]
+    fn new_owner_directive_with_pending_approval_never_adopts_old_decision(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        settings.shell_enabled=true;
+        r.program_session=Some(ProgramSession{
+            id:"p".into(),steps:vec![ProgramStep{
+                id:"shell".into(),tool:"shell".into(),
+                arguments:json!({"command":"touch bad"}),
+                when:None,on_error:None
+            }],cursor:0,pending_step:Some("program:p:shell".into()),
+            halt_requested:false,observations:Map::new()
+        });
+        r.pending_approval=Some(ToolCall{id:"program:p:shell".into(),
+            name:"shell".into(),arguments:json!({"command":"touch bad"})});
+        r.status=RunStatus::AwaitingApproval;
+        supersede(&mut r).unwrap();
+        assert_eq!(r.status,RunStatus::Running);
+        assert!(r.pending_approval.is_none());
+        assert!(r.approval_decision.is_none());
+        assert!(r.program_session.is_none());
+        assert!(r.messages.iter().any(|m|m["role"]=="tool"
+            &&m["tool_call_id"]=="program:p:shell"));
+    }
+    #[test]
+    fn new_owner_directive_waits_for_started_effect_then_stops_program(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        r.program_session=Some(ProgramSession{
+            id:"p".into(),steps:vec![
+                ProgramStep{id:"write".into(),tool:"write_file".into(),
+                    arguments:json!({"path":"file.txt","content":"first"}),
+                    when:None,on_error:None},
+                ProgramStep{id:"overwrite".into(),tool:"write_file".into(),
+                    arguments:json!({"path":"file.txt","content":"obsolete"}),
+                    when:None,on_error:None}
+            ],cursor:0,pending_step:Some("program:p:write".into()),
+            halt_requested:false,observations:Map::new()
+        });
+        let call=ToolCall{id:"program:p:write".into(),
+            name:"write_file".into(),arguments:json!({"path":"file.txt","content":"first"})};
+        r.queued_calls.push(call.clone());
+        crate::journal::begin(&mut r,&call).unwrap();
+        supersede(&mut r).unwrap();
+        assert!(r.program_session.as_ref().unwrap().halt_requested);
+        assert_eq!(r.in_flight.as_ref().unwrap().id,call.id);
+        crate::journal::finish(&mut r,&call,&Ok("wrote 5 bytes".into()),false).unwrap();
+        advance(&mut r,&settings).unwrap();
+        assert!(r.program_session.is_none());
+        assert!(r.queued_calls.is_empty());
+        assert!(r.events.iter().any(|e|e.kind=="program_superseded"));
+        assert_eq!(r.events.iter().filter(|e|e.kind=="tool_started").count(),1);
+    }
     #[test]
     fn recovered_write_receipt_advances_without_replaying_mutation(){
         let mut r=run();let s=Settings::from_env().unwrap();
