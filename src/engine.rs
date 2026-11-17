@@ -20,7 +20,7 @@ mod benchmark_tests;
 #[cfg(test)]
 mod model_only_tests;
 
-const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
+const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If independent workspace inspection is needed, prefer a bounded read_program with conditions over repeated model turns. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
 pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
@@ -801,6 +801,9 @@ impl Engine {
                         Err(reason)
                     }
                 }
+            } else if call.name == "read_program" {
+                let current=self.store.get(id).await.ok_or("read_program run not found")?;
+                crate::read_program::execute(&self.settings,&current,&call.arguments).await
             } else if call.name == "compare_strategies" {
                 self.start_strategy_trials(id,&call.arguments).await
             } else if call.name == "spawn_subagent" {
