@@ -97,7 +97,7 @@ impl Dominion {
     /// Persist a configured execution before binding a chat session or invoking a
     /// model. No external effect occurs until the caller explicitly starts it.
     /// The Run identity, budget, provider and strategy choice survive process restart.
-    pub async fn prepare_run(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
+    fn configured_run(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
         let mut run=Run::new(input,self.engine.settings.max_steps)?;
         if !options.provider_id.is_empty()||!options.model.is_empty(){
             self.engine.model_for_selection(&options.provider_id,&options.model)?;
@@ -110,6 +110,21 @@ impl Dominion {
         }
         run.strategy_learning=options.strategy_learning;
         run.model_only=options.model_only;
+        Ok(run)
+    }
+    pub async fn prepare_run(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
+        let run=self.configured_run(input,options)?;
+        self.engine.store.put(run.clone()).await?;
+        Ok(run)
+    }
+    /// Reserve an inert Run while a domain adapter commits its own approval
+    /// reference. This avoids auto-starting orphaned jobs after a crash.
+    pub(crate) async fn reserve_unlaunched_run(&self,input:CreateRun,
+        options:RunOptions)->Result<Run,String>{
+        if options.model_only{return Err("model-only turn cannot be reserved for implementation".into());}
+        let mut run=self.configured_run(input,options)?;
+        run.status=RunStatus::Paused;
+        run.event("reserved_unlaunched","Run is reserved pending durable domain approval receipt",None);
         self.engine.store.put(run.clone()).await?;
         Ok(run)
     }
@@ -330,6 +345,26 @@ mod tests {
 
 
 
+    #[tokio::test]
+    async fn reserved_unlaunched_run_is_not_auto_resumed_on_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-reserved-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let reserved=sdk.reserve_unlaunched_run(CreateRun{
+            instruction:"Unlaunched approved candidate".into(),
+            budget_krw:Some(25.0),max_steps:Some(5)
+        },RunOptions::default()).await.unwrap();
+        assert_eq!(reserved.status,RunStatus::Paused);
+        assert!(reserved.events.iter().any(|event|event.kind=="reserved_unlaunched"));
+        let reopened=Dominion::open(settings).await.unwrap();
+        let restored=reopened.get(reserved.id).await.unwrap();
+        assert_eq!(restored.status,RunStatus::Paused);
+        assert!(!restored.events.iter().any(|event|event.kind=="recovered_ready"));
+        drop(reopened);drop(sdk);
+        cleanup_test_dir(root).await;
+    }
     #[tokio::test]
     async fn configured_sdk_preparation_freezes_model_budget_and_tool_policy(){
         let root=std::env::temp_dir().join(format!("dominion-sdk-configured-{}",Uuid::new_v4()));

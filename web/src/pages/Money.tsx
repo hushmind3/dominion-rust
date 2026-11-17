@@ -99,6 +99,17 @@ export function MoneyPage(){
   }catch(e){setError((e as Error).message)}
   finally{setBusy('');setImplementationId('')}
  }
+ async function resumeImplementation(id:string){
+  if(busy)return
+  setError('');setBusy('implement')
+  try{
+   await post('/api/money/candidates/'+encodeURIComponent(id)+'/implement',{
+    approved:true,agentId,budgetKrw
+   })
+   await refresh()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy('')}
+ }
  async function cancelImplementation(id:string){
   if(busy)return
   setError('');setBusy('cancel')
@@ -245,6 +256,9 @@ export function MoneyPage(){
       <a href="#/activity" className="text-[11px] font-semibold text-[#A75835] hover:underline">
        실행·승인 상세 보기
       </a>
+      {implementationRuns[lead.implementationRunId]?.status==='paused'&&
+       <button type="button" disabled={!!busy} onClick={()=>void resumeImplementation(lead.id)}
+        className="text-[11px] font-semibold text-[#A75835]">기존 승인 작업 재개</button>}
       {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
        <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}
         className="text-[11px] text-rose-700">작업 취소</button>}

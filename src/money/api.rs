@@ -344,8 +344,19 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     if let Some(previous)=candidate["implementationRunId"].as_str()
         .and_then(|value|Uuid::parse_str(value).ok()){
         if let Some(run)=engine.store.get(previous).await{
-            return Ok(Json(json!({"id":run.id,"status":run.status,
-                "costKrw":run.cost_krw,"reused":true})));
+            // Crash after candidate-link commit but before launch: retry only
+            // the original approved native Run. Any Run that has launched
+            // before keeps its existing state and cannot be duplicated.
+            let reserved=run.status==RunStatus::Paused
+                && run.events.iter().any(|event|event.kind=="reserved_unlaunched")
+                && !run.events.iter().any(|event|event.kind=="resumed");
+            if reserved{
+                engine.launch(previous).await.map_err(|error|
+                    internal(format!("approved native Run could not launch: {error}")))?;
+            }
+            let current=engine.store.get(previous).await.unwrap_or(run);
+            return Ok(Json(json!({"id":current.id,"status":current.status,
+                "costKrw":current.cost_krw,"reused":true})));
         }
         // A missing journal is an uncertain effect, not permission to replay.
         return Err((StatusCode::CONFLICT,Json(json!({
@@ -356,7 +367,7 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
         .ok_or_else(||err("selected agent not found"))?;
     let instruction=implementation_instruction(&candidate).map_err(err)?;
     let sdk=Dominion::from_engine(Arc::clone(&engine));
-    let run=sdk.prepare_run(CreateRun{
+    let run=sdk.reserve_unlaunched_run(CreateRun{
         instruction,budget_krw:Some(budget),max_steps:Some(25)
     },RunOptions{provider_id:agent.provider_id,model:agent.model,
         strategy_learning:false,model_only:false}).await.map_err(err)?;
@@ -367,15 +378,17 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     candidate["status"]=json!("implementation_requested");
     let root=engine.settings.data_dir.clone();
     if let Err(error)=blocking(move||super::replace_candidate(&root,&candidate)).await{
-        // The model has not been launched yet. Never leave an untracked queued
-        // Run that could be resumed at startup without a saved approval link.
+        // Orphaned reservations remain inert at startup. Explicitly cancel
+        // one when the domain record fails to commit.
         let _=engine.cancel(run.id).await;
         return Err(error);
     }
     if let Err(error)=engine.launch(run.id).await{
+        // Do not discard the durable approval or mint a second Run on retry.
         let _=engine.store.mutate(run.id,|saved|{
-            saved.status=RunStatus::Failed;
-            saved.event("money_implementation_launch_failed",error.clone(),None);
+            if saved.status==RunStatus::Paused{
+                saved.event("money_implementation_launch_rejected",error.clone(),None);
+            }
             Ok(())
         }).await;
         return Err(internal(format!("native implementation launch failed: {error}")));

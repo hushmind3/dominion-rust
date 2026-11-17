@@ -131,8 +131,9 @@ pub fn save_report(root:&Path,items:&[Value],report:&Value)->Result<(),String>{
 pub fn replace_candidate(root:&Path,record:&Value)->Result<(),String>{
     let id=record["id"].as_str().filter(|s|!s.is_empty()).ok_or("candidate id missing")?;
     let conn=open(root)?;
-    conn.execute("UPDATE money_candidates SET record=?1,updated_ms=?2 WHERE id=?3",
+    let changed=conn.execute("UPDATE money_candidates SET record=?1,updated_ms=?2 WHERE id=?3",
         params![record.to_string(),crate::domain::now_ms() as i64,id]).map_err(err)?;
+    if changed!=1{return Err("candidate disappeared before durable update".into());}
     Ok(())
 }
 pub fn latest(root:&Path)->Result<Value,String>{
@@ -170,6 +171,11 @@ pub fn stats(root:&Path)->Result<Value,String>{
 mod tests{
  use super::*;
  use uuid::Uuid;
+ #[test] fn candidate_update_must_match_an_existing_row(){
+    let root=std::env::temp_dir().join(format!("dominion-money-update-{}",Uuid::new_v4()));
+    assert!(replace_candidate(&root,&json!({"id":"missing","status":"implementation_requested"})).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+ }
  #[test] fn evidence_deduplicates_and_shortlist_commit_survives_reopen(){
     let root=std::env::temp_dir().join(format!("dominion-money-db-{}",Uuid::new_v4()));
     let row=json!({"id":"one","url":"https://example.org/p","title":"Buyer request",

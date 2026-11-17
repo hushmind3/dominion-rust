@@ -13,8 +13,8 @@ fn git_path_argument(path:&Path)->Result<String,String>{
     let raw=path.to_str().ok_or("workspace path is not UTF-8")?;
     #[cfg(windows)]
     {
-        if let Some(rest)=raw.strip_prefix(r"\\?\\"){
-            if let Some(unc)=rest.strip_prefix("UNC\\"){
+        if let Some(rest)=raw.strip_prefix(r"\\?\"){
+            if let Some(unc)=rest.strip_prefix("UNC\"){
                 return Ok(format!(r"\\{}",unc));
             }
             return Ok(rest.to_owned());
@@ -145,6 +145,12 @@ async fn apply_patch_checked(dir:&Path,patch:&str,check_only:bool)->Result<(),St
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn canonical_verbatim_paths_are_compatible_with_git(){
+        assert_eq!(git_path_argument(Path::new(r"\\?\C:\temp\repo")).unwrap(),r"C:\temp\repo");
+        assert_eq!(git_path_argument(Path::new(r"\\?\UNC\server\share\repo")).unwrap(),r"\\server\share\repo");
+    }
     #[test]
     fn forbids_traversal_and_absolute_repositories(){
         assert!(validate_relative("../other").is_err());
