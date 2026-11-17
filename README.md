@@ -252,3 +252,29 @@ Primary code paths: `src/engine.rs` (single native launch and bounded per-Run me
 The existing native Rust Run loop now adds a **deterministic, evidence-scoped repair suggestion** after a failed real tool receipt or independent verifier correction. `src/repair_guidance.rs` classifies only persisted execution events **since the previous model receipt**: compiler diagnostics, named test/assertion failures, missing paths, invalid arguments, permission denials, ambiguous external tool outcomes and verification rework. The next model request receives a small, optional note pointing it toward a different action; it does not copy untrusted output as instructions, change the user's contract, retry calls or bypass approval. `loop_guard`, the original tool schemas, model routing, cancellation, durable Store and budget policy remain authoritative. No new planner, model invocation or RSI worker was introduced.
 
 When the ordinary model turn accepts a repair hint, its existing Store mutation records `repair_strategy_applied` with the triggering event sequence, strategy ID and provider-reported token counts. `GET /api/v1/runs/{id}/repair-observations` (also `Dominion::repair_observations` and TypeScript `runs.repairObservations`) produces a **read-only 64-entry maximum** summary of later actual tool successes/failures and verified completion. This is **observational chronology only**, not a claim that the strategy caused success. For causal or token-efficiency results, compare identical tasks, model/tool/budget constraints, random seeds where supported, and disjoint holdout cases using the existing optional `dominion_coding_eval` runner; Airbnb's [Agent Harness Optimizer](https://github.com/airbnb/agent-harness-optimizer) provides a practical 2026 reference for held-out scoring and resource-bounded harness selection. Reuse existing Run journals rather than collecting another database or creating a continuous self-improvement loop.
+
+
+## 2026-11-18 Sub4: native read-program, fused planning and external judge separation
+
+**Default model-call path:** New native Runs no longer pay for a separate plan-only request. The first tool-capable model response does both planning and action. A durable `planning_fused` event records this; `plan=""` means no separate model-authored plan was generated. Restore legacy behavior only with `DOMINION_SEPARATE_PLAN_MODEL_CALL=true`.
+
+**Separate judge:** A final response no longer triggers a duplicate model auditor by default (`DOMINION_SEPARATE_MODEL_AUDIT=false`). The Run stores the result and exact tool receipts and labels completion as *unaudited*, not an independent PASS. An operator may explicitly enable `DOMINION_SEPARATE_MODEL_AUDIT=true` to restore the original model correction loop. Isolated strategy-trial workers retain their earlier verifier contract. Expensive two-candidate experimentation is removed from the default model catalog (`DOMINION_ENABLE_STRATEGY_TRIALS=false`); legacy pending comparisons are denied at dispatch if disabled. It remains an opt-in, approval-gated and budgeted research feature.
+
+**Native `read_program`:** A single ordinary model tool call schedules 1–12 ordered read-only steps in the Rust runtime. Steps support `list_files`, `read_file`, `search_files`, `git_status`, `git_diff`, optional conditional branching on the exact previous observation (`when.step`, `when.contains`, `when.not`), and bounded `read_listed_files` iteration over paths from a prior listing with suffix/needle filters. No model invocation occurs during the program. Each iteration is limited to eight files and the program has a total limit of 24 nested reads. Full argument admission, operator disabled tools, read-only policy, workspace boundary checks, cancellation, durable intent and crash-safe read replay use the existing native kernel. Each result retains its step ID, status, and compact evidence. The interpreter **cannot** execute nested writes, shell, remote MCP, account mutations or subagents; known local writes still use the original model multi-tool queue with individual write-ahead journals.
+
+Example tool arguments (passed by the model to `read_program`):
+
+```json
+{
+  "steps": [
+    {"id": "files", "tool": "list_files", "arguments": {"path": "src"}},
+    {"id": "evidence", "tool": "read_listed_files", "from": "files",
+     "suffix": ".rs", "contains": "TODO", "max_files": 4},
+    {"id": "focus", "tool": "search_files",
+     "arguments": {"query": "read_program", "path": "src"},
+     "when": {"step": "files", "contains": "engine.rs"}}
+  ]
+}
+```
+
+Rust SDK, HTTP/GUI and TypeScript SDK keep their existing Run API. Test `read_program_fuses_planning_and_skips_duplicate_model_audit` drives real temporary workspace files and a mock provider and asserts **two model requests** (program request + final answer), zero separate plan/auditor turns and one durable program receipt. Interpreter unit tests verify branching, iteration, policy denial and crash recovery. This is a protocol-level cost improvement, not live provider token/latency benchmarking or proof of frontier parity. The old plan+tool+final+auditor path remains in explicitly opted-in regression tests. Reference pattern: DeepSeek's Programmatic Tool Calling and OpenHands' durable agent event boundaries; this narrower Rust implementation is not a direct source copy. Release Windows/macOS and live-model comparisons remain independent.
