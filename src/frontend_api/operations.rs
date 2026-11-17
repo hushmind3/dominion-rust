@@ -2,18 +2,13 @@
 use super::*;
 
 pub(super) async fn approvals(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let sessions=engine.frontend.sessions().await;
-    let runs=engine.store.list().await;
-    let pending=runs.iter().filter_map(|run|{
-        let call=run.pending_approval.as_ref()?;
-        if run.approval_decision.is_some(){return None;}
-        let session=sessions.iter().find(|s|s.pending_run==Some(run.id));
-        Some(json!({
-            "id":run.id.to_string(),"tool":call.name,"args":call.arguments,
+    let sessions=engine.frontend.pending_run_sessions().await;
+    let pending=engine.store.pending_approvals().await.into_iter()
+        .map(|(id,call)|json!({
+            "id":id.to_string(),"tool":call.name,"args":call.arguments,
             "status":"pending",
-            "sessionId":session.map(|s|s.id.as_str()).unwrap_or("")
-        }))
-    }).collect::<Vec<_>>();
+            "sessionId":sessions.get(&id).map(String::as_str).unwrap_or("")
+        })).collect::<Vec<_>>();
     Json(json!(pending))
 }
 #[derive(Deserialize)]
@@ -51,8 +46,16 @@ pub(super) fn as_job(run:&Run)->Value{
     })
 }
 pub(super) async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let mut all=engine.store.list().await.iter().map(as_job).collect::<Vec<_>>();
-    all.sort_by(|a,b|b.get("createdAt").and_then(Value::as_str).cmp(&a.get("createdAt").and_then(Value::as_str)));
+    let all=engine.store.headers().await.iter().map(|run|json!({
+        "id":run.id.to_string(),"kind":"native_agent","status":run.status,
+        "providerId":run.provider_id,"model":run.model_name,
+        "input":{"goal":run.instruction},
+        "createdAt":timestamp(run.created_at_ms),
+        "updatedAt":timestamp(run.updated_at_ms),
+        "sessionId":Value::Null,
+        "result":if run.terminal(){json!({"answer":run.answer,"costKrw":run.cost_krw})}
+            else{Value::Null}
+    })).collect::<Vec<_>>();
     Json(Value::Array(all))
 }
 #[derive(Deserialize)]
@@ -101,8 +104,7 @@ pub(super) async fn resume_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uu
     Err(unsupported("Resume is only available for interrupted native runs."))
 }
 pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
-    let list=engine.store.list().await.into_iter().map(|run|{
-        let tools=run.events.iter().filter(|event|event.kind=="tool_started").count();
+    let list=engine.store.headers().await.into_iter().map(|run|{
         json!({
             "id":run.id.to_string(),"sessionId":run.id.to_string(),
             "providerId":if run.provider_id.is_empty(){"dominion-native"}else{&run.provider_id},
@@ -110,9 +112,9 @@ pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
             "status":run.status,
             "startedAt":timestamp(run.created_at_ms),
             "finishedAt":if run.terminal(){Some(timestamp(run.updated_at_ms))}else{None},
-            "reason":if run.status==RunStatus::Failed{run.events.last().map(|e|e.message.clone())}else{None},
+            "reason":run.last_error,
             "iterations":run.steps,"modelCalls":run.steps,
-            "toolCalls":tools,"tokens":run.input_tokens+run.output_tokens
+            "toolCalls":run.tool_calls,"tokens":run.input_tokens+run.output_tokens
         })
     }).collect::<Vec<_>>();
     Json(json!(list))
