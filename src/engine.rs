@@ -266,6 +266,7 @@ impl Engine {
             // speculative dispatch of later reads.
             if let Some(index)=parallel.iter().position(|call|
                 chain.before(&run,call).is_err()||
+                !policy::admitted_tool(&run,&call.name,&self.settings.denied_tools)||
                 crate::loop_guard::action(&run,call).is_some()){
                 parallel.truncate(index);
             }
@@ -318,6 +319,12 @@ impl Engine {
                 }
                 if !policy::allowed_tool(&run,&call.name){
                     self.store.mutate(id,|run|journal::reject_policy(run,&call)).await?;
+                    continue;
+                }
+                if !policy::admitted_tool(&run,&call.name,&self.settings.denied_tools){
+                    self.store.mutate(id,|run|journal::reject_admission(
+                        run,&call,"OPERATOR_TOOL_DENIED",
+                        "Tool is disabled by the current operator configuration")).await?;
                     continue;
                 }
                 if let Err(deny)=chain.before(&run,&call){
@@ -603,6 +610,21 @@ impl Engine {
         // Re-apply the current hook immediately before dispatch. This also
         // protects calls approved under an older policy snapshot.
         let snapshot=self.store.get(id).await.ok_or("execution not found")?;
+        // Re-evaluate the *current* policy immediately before a persisted
+        // queued/approved call can create an external effect. The model-facing
+        // schema from an earlier configuration is not sufficient authority.
+        if !policy::admitted_tool(&snapshot,&call.name,&self.settings.denied_tools){
+            self.store.mutate(id,|run|{
+                if run.pending_approval.is_some(){
+                    journal::reject_approved_hook(run,&call,"OPERATOR_TOOL_DENIED",
+                        "Tool disallowed by current operator policy")
+                }else{
+                    journal::reject_admission(run,&call,"OPERATOR_TOOL_DENIED",
+                        "Tool disallowed by current operator policy")
+                }
+            }).await?;
+            return Ok(());
+        }
         let chain=self.hooks.read().await.clone();
         if let Err(deny)=chain.before(&snapshot,&call){
             self.store.mutate(id,|run|{

@@ -17,13 +17,20 @@ pub fn allowed_tool(run:&Run,name:&str)->bool{
         |"check_subagent"|"read_subagent_file"|"spawn_subagent"|"memory_search"|"list_skills"|"load_skill")
 }
 
+/// This same admission check must run before each actual tool dispatch.
+/// A tool hidden from a new model turn must not remain executable through
+/// a persisted queued call, a resumed approval, or a read batch.
+pub fn admitted_tool(run:&Run,name:&str,denied:&[String])->bool{
+    allowed_tool(run,name)&&!denied.iter().any(|blocked|blocked==name)
+}
+
 /// Select only tools that the agent can actually use in this state.
 /// The durable transcript is not changed; this reduces repeated tool-schema tokens.
 pub fn select_catalog(run:&Run,tools:Vec<Value>,has_children:bool,denied:&[String])->(Vec<Value>,usize){
     let original=tools.iter().map(|t|t.to_string().len()).sum::<usize>();
     let selected=tools.into_iter().filter(|tool|{
         let Some(name)=tool.pointer("/function/name").and_then(Value::as_str)else{return false;};
-        if !allowed_tool(run,name)||denied.iter().any(|blocked|blocked==name){return false;}
+        if !admitted_tool(run,name,denied){return false;}
         if name.starts_with("git_") && run.repository.is_none(){return false;}
         if matches!(name,"check_subagent"|"read_subagent_file"|"merge_subagent") && !has_children{return false;}
         if name=="merge_subagent" && run.repository.is_none(){return false;}
@@ -50,6 +57,19 @@ mod tests{
         assert!(run.cost_krw<=effective_budget_krw(&run));
         run.cost_krw=41.0;
         assert!(run.cost_krw>effective_budget_krw(&run));
+    }
+    #[test]
+    fn persisted_tool_calls_must_obey_current_operator_policy(){
+        let mut run=Run::new(CreateRun{instruction:"work".into(),
+            budget_krw:None,max_steps:None},5).unwrap();
+        assert!(admitted_tool(&run,"read_file",&[]));
+        let revoked=vec!["read_file".to_string(),"shell".to_string()];
+        assert!(!admitted_tool(&run,"read_file",&revoked));
+        assert!(!admitted_tool(&run,"shell",&revoked));
+        run.read_only=true;
+        assert!(!admitted_tool(&run,"write_file",&[]));
+        assert!(!admitted_tool(&run,"mcp__unknown__write",&[]));
+        assert!(admitted_tool(&run,"read_file",&[]));
     }
     #[test]
     fn operator_denied_tools_are_absent_from_model_prompt_and_schema_budget(){
