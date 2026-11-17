@@ -4,6 +4,60 @@ use super::*;
 
 
     #[tokio::test]
+    async fn indexed_lineage_tracks_reparent_replace_and_durable_restart(){
+        let root=std::env::temp_dir().join(format!("dominion-lineage-index-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let parent_a=Run::new(CreateRun{instruction:"parent a".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        let parent_b=Run::new(CreateRun{instruction:"parent b".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        let a=parent_a.id;let b=parent_b.id;
+        let mut child=Run::new(CreateRun{instruction:"child".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        child.parent_run_id=Some(a);
+        let child_id=child.id;
+        let mut grandchild=Run::new(CreateRun{instruction:"grandchild".into(),
+            budget_krw:None,max_steps:None},2).unwrap();
+        grandchild.parent_run_id=Some(child_id);
+        let grandchild_id=grandchild.id;
+        store.put(parent_a).await.unwrap();
+        store.put(parent_b).await.unwrap();
+        store.put(child).await.unwrap();
+        store.put(grandchild).await.unwrap();
+
+        assert!(store.has_children(a).await);
+        assert_eq!(store.children_of(a).await.len(),1);
+        assert_eq!(store.family_of(a).await.len(),2);
+        assert!(!store.has_children(b).await);
+
+        // Engine mutations update the index only once the Run is durably written.
+        store.mutate(child_id,|run|{run.parent_run_id=Some(b);Ok(())})
+            .await.unwrap();
+        assert!(!store.has_children(a).await);
+        assert!(store.children_of(a).await.is_empty());
+        let family=store.family_of(b).await;
+        assert_eq!(family.len(),2);
+        assert!(family.iter().any(|r|r.id==grandchild_id));
+
+        // A new put of an existing ID also must unlink the old parent.
+        let mut replaced=store.get(child_id).await.unwrap();
+        replaced.parent_run_id=None;
+        store.put(replaced).await.unwrap();
+        assert!(!store.has_children(b).await);
+        assert!(store.family_of(b).await.is_empty());
+        assert!(store.has_children(child_id).await);
+        drop(store);
+
+        let reopened=Store::open(root.clone()).await.unwrap();
+        assert!(!reopened.has_children(a).await);
+        assert!(!reopened.has_children(b).await);
+        assert_eq!(reopened.children_of(child_id).await.len(),1);
+        assert_eq!(reopened.children_of(child_id).await[0].id,grandchild_id);
+        drop(reopened);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn durable_mutations_emit_exactly_one_event_without_polling_history(){
         use std::time::Duration;
         let root=std::env::temp_dir().join(format!("dominion-broadcast-{}",Uuid::new_v4()));
