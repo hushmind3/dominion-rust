@@ -111,3 +111,7 @@ Native SDK parity: `Dominion::money_implement(candidate_id,agent_id,budget_krw,a
 ### Inert domain-approved Run reservation
 
 `Dominion::reserve_unlaunched_run` is an internal helper shared with the Money adapter, not a new runner. It constructs a configured normal Run under the common SDK but persists it as `Paused` with the `reserved_unlaunched` event. The domain then saves an approval link and calls the existing `Engine::launch`. The ordinary public `prepare_run`, `submit`, `resume`, `cancel` and `reconcile` contracts remain unchanged for other SDK consumers. The Money UI resumes paused tasks via the native `/api/v1/runs/{id}/resume` route; an interrupted mutating operation remains blocked until reconciliation as before.
+
+### Indexed Money evidence read (2026-11-18)
+
+`sdk.money_search(query,limit)` performs a bounded FTS5/Korean-CJK-bigram search of the existing `money.sqlite` source archive. The shared HTTP adapter adds `GET /api/v1/money/search?q=...` and the TypeScript adapter adds `sdk.money.search(query)`; frontend users can search archived materials without invoking a provider model. Returned records remain observations and are not treated as verified contracts. A one-time lazy index backfill supports earlier saved source rows. `money_latest`, `money_signals`, `money_collect` and `money_implement` retain their original contracts. No SDK startup background indexer is added.
