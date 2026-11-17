@@ -17,6 +17,14 @@ pub(super) fn sdk_view(run:&Run)->Value{
         "checkpoint":{
             "state":current,
             "rounds":run.steps,
+            "cost_krw":run.cost_krw,
+            "budget_krw":run.budget_krw,
+            "program":run.program_session.as_ref().map(|p|json!({
+                "id":p.id,"completed":p.cursor,"total":p.steps.len(),
+                "current":p.steps.get(p.cursor).map(|s|json!({"id":s.id,"tool":s.tool})),
+                "pending_step":p.pending_step,
+                "stopping_at_receipt":p.halt_requested
+            })),
             "toolCalls":run.events.iter().filter(|event|event.kind=="tool_started").count(),
             "usage":{
                 "prompt_tokens":run.input_tokens,"completion_tokens":run.output_tokens,
@@ -89,3 +97,31 @@ pub(super) async fn sdk_reconcile(State(engine):State<Arc<Engine>>,Path(id):Path
     Ok(Json(sdk_view(&run)))
 }
 
+
+
+#[cfg(test)]
+mod program_view_tests{
+    use super::*;
+    #[test]
+    fn ui_checkpoint_exposes_durable_program_progress_and_provider_cost_without_hidden_steps(){
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"Inspect and update source".into(),budget_krw:Some(200.0),
+            max_steps:Some(5)},5).unwrap();
+        run.program_session=Some(crate::program_session::ProgramSession{
+            id:"program-test".into(),
+            steps:vec![crate::program_session::ProgramStep{
+                id:"edit".into(),tool:"edit_file".into(),
+                arguments:json!({"path":"a.rs","old_text":"old","new_text":"new"}),
+                when:None,on_error:None
+            }],
+            cursor:0,pending_step:None,
+            halt_requested:false,stop_when:None,observations:Default::default()
+        });
+        run.cost_krw=3.5;
+        let view=sdk_view(&run);
+        assert_eq!(view["checkpoint"]["program"]["total"],1);
+        assert_eq!(view["checkpoint"]["program"]["current"]["tool"],"edit_file");
+        assert_eq!(view["checkpoint"]["cost_krw"],3.5);
+        assert_eq!(view["checkpoint"]["budget_krw"],200.0);
+    }
+}
