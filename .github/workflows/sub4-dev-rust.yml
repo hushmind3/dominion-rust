@@ -21,10 +21,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Money domain and implementation approval regressions (dev profile)
         run: 'cargo test --lib money::'
-      - name: Current-run strategy comparison and read-only probe contracts (dev profile)
-        run: cargo test --lib runtime_path_tests
-      - name: Durable preflight through common tool journal (dev profile)
-        run: cargo test --lib durable_strategy_preflight_uses_existing_read_batch
+      - name: Evidence-only isolated strategy comparison invariants (dev profile)
+        run: cargo test --lib runtime_trials_tests
+      - name: Candidate policy, budget and cancellation regressions (dev profile)
+        run: cargo test --lib strategy_trial_
       - name: Full mock model-path correction integration (dev profile)
         run: cargo test --lib coding_fixture_repairs_two_files_after_missing_path_feedback
       - name: Indexed delegation lineage and durable restart regression (dev profile)
