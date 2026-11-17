@@ -675,7 +675,19 @@ mod tests{
     let parsed=parse_ideas(plausible,&report,run).unwrap();
     assert_eq!(parsed.len(),1);
     assert_eq!(parsed[0]["evidence"][0]["url"],"https://records.example/real");
-    assert_eq!(parsed[0]["evidenceStatus"],"unverified_model_hypothesis");
+    assert_eq!(parsed[0]["evidenceStatus"],"unverified_model_hypothesis_single_origin");
+    let independent=json!({"drafts":[{
+        "evidence":[{"sourceId":"observed-a","url":"https://records.example/real"},
+            {"sourceId":"observed-b","url":"https://supplier.example/real"}]
+    }]});
+    let two_sources=plausible.replace("\"observed-a\"",
+        "\"observed-a\",\"observed-b\"");
+    let corroborated=parse_ideas(&two_sources,&independent,run).unwrap();
+    assert_eq!(corroborated.len(),1);
+    assert_eq!(corroborated[0]["evidenceStatus"],
+        "unverified_model_hypothesis_two_independent_sources");
+    // Even two sources cannot establish a paying customer.
+    assert_ne!(corroborated[0]["evidenceStatus"],"paid_customer_verified");
     let invalid=plausible.replace("observed-a","imaginary-source");
     assert!(parse_ideas(&invalid,&report,run).unwrap().is_empty());
  }
