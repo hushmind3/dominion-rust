@@ -20,7 +20,7 @@ mod benchmark_tests;
 #[cfg(test)]
 mod model_only_tests;
 
-const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If independent workspace inspection is needed, prefer a bounded read_program with conditions over repeated model turns. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests before final verification. Finish only when the request is materially done, explaining remaining limitations.";
+const SYSTEM: &str = "You are Dominion's autonomous execution engine. The user's instruction is authoritative. Work inside your assigned workspace. Use available tools to produce real, reviewable artifacts. Do not claim a file, command or test was executed unless its tool response confirms it. Keep progress concise. Request shell operations through the shell tool; they require approval. If independent workspace inspection is needed, prefer a bounded read_program with conditions over repeated model turns. If a tool fails, inspect the error and correct the approach. For code changes prefer exact edits and inspect Git diff, then run approved tests and examine actual receipts before reporting completion. Finish only when the request is materially done, explaining remaining limitations.";
 pub struct Engine {
     pub settings: Settings,
     pub store: Arc<Store>,
@@ -656,6 +656,36 @@ impl Engine {
                     Ok(())
                 }).await?;
                 return Ok(());
+            }
+            if !self.settings.separate_model_audit_enabled && !run.strategy_candidate {
+                // External judge is distinct from the harness. Do not pay for
+                // another model to rubber-stamp the model's final answer.
+                // Tool outcomes are already durable; do not call this verified.
+                let finished=self.store.mutate(id,|current|{
+                    if current.terminal() || current.status!=RunStatus::Running {
+                        return Ok(false);
+                    }
+                    if current.messages.len()!=expected_history+1 {
+                        return Ok(false);
+                    }
+                    if reply.text.trim().is_empty(){
+                        current.messages.push(json!({"role":"user","content":
+                            "The final answer was empty. Continue with tools or provide a concrete result."}));
+                        current.event("empty_final","Empty final answer rejected without a second model audit",None);
+                        return Ok(false);
+                    }
+                    current.answer=Some(reply.text.clone());
+                    current.status=RunStatus::Completed;
+                    current.event("completed",
+                        "Model final submitted; independent model audit disabled (external judge separate)",
+                        Some(json!({"audit":"external_or_disabled",
+                            "tool_receipts":current.events.iter()
+                                .filter(|e|matches!(e.kind.as_str(),"tool_result"|"tool_error"|"tool_reconciled"))
+                                .count()})));
+                    Ok(true)
+                }).await?;
+                if finished{return Ok(());}
+                continue;
             }
             let latest = self.store.get(id).await.ok_or("execution not found")?;
             if latest.terminal() { return Ok(()); }
