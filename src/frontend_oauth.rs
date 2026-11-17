@@ -9,8 +9,9 @@ use chacha20poly1305::{aead::{Aead,KeyInit,OsRng,rand_core::RngCore},Key,XChaCha
 use serde::{Serialize,Deserialize};
 use serde_json::{json,Value};
 use sha2::{Sha256,Digest};
-use std::{collections::HashMap,fs,io::Write,path::{Path as FilePath,PathBuf},
+use std::{collections::HashMap,env,fs,io::Write,path::{Path as FilePath,PathBuf},
  sync::{Arc,Mutex,OnceLock},time::Duration};
+use tokio::{process::Command,time::timeout};
 use uuid::Uuid;
 type Fault=(StatusCode,Json<Value>);
 fn bad(msg:impl Into<String>)->Fault{(StatusCode::BAD_REQUEST,Json(json!({"error":msg.into()})))}
@@ -56,7 +57,7 @@ pub(crate) async fn google_workspace_access_token(settings:&Settings)->Result<St
  if account.refresh_token.is_empty(){
      return Err("Google token expired and no refresh token is stored; reconnect Workspace access".into());
  }
- let app=current.apps.get("google").ok_or("Google OAuth client is missing; configure Client ID and Secret")?;
+ let app=provider_app(settings,"google")?;
  let response=client()?.post("https://oauth2.googleapis.com/token")
   .form(&[("client_id",app.client_id.as_str()),("client_secret",app.client_secret.as_str()),
    ("refresh_token",account.refresh_token.as_str()),("grant_type","refresh_token")])
@@ -116,6 +117,25 @@ pub(crate) fn github_repository_connected(settings:&Settings)->bool{
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 struct App{client_id:String,client_secret:String}
+/// Product-registered OAuth apps are configured by the service operator, not
+/// individual people logging in. Legacy encrypted app config is fallback only.
+fn env_app_with(id:&str,get:impl Fn(&str)->Option<String>)->Option<App>{
+ let (client,secret)=match id{
+  "github"=>("DOMINION_GITHUB_OAUTH_CLIENT_ID","DOMINION_GITHUB_OAUTH_CLIENT_SECRET"),
+  "google"=>("DOMINION_GOOGLE_OAUTH_CLIENT_ID","DOMINION_GOOGLE_OAUTH_CLIENT_SECRET"),
+  _=>return None
+ };
+ let client_id=get(client).filter(|v|!v.trim().is_empty()&&v.len()<=512)?;
+ let client_secret=get(secret).filter(|v|!v.trim().is_empty()&&v.len()<=2048)?;
+ Some(App{client_id,client_secret})
+}
+fn env_app(id:&str)->Option<App>{env_app_with(id,|name|env::var(name).ok())}
+fn provider_app(settings:&Settings,id:&str)->Result<App,String>{
+ if !valid_provider(id){return Err("unsupported OAuth provider".into());}
+ if let Some(app)=env_app(id){return Ok(app);}
+ read(settings)?.apps.get(id).cloned()
+  .ok_or_else(||format!("{id} OAuth not configured on the Dominion service"))
+}
 #[derive(Clone,Serialize,Deserialize)]
 #[serde(rename_all="camelCase")]
 struct Account{
@@ -129,7 +149,7 @@ struct Snapshot{
  #[serde(default)]apps:HashMap<String,App>,
  #[serde(default)]accounts:HashMap<String,Account>
 }
-struct Pending{provider:String,verifier:String,at_ms:u64,redirect:String}
+struct Pending{provider:String,verifier:String,at_ms:u64,redirect:String,app:App}
 fn base(settings:&Settings)->PathBuf{settings.data_dir.join("oauth-vault")}
 fn atomic(path:&FilePath,bytes:&[u8])->Result<(),String>{
  let dir=path.parent().ok_or("OAuth storage parent missing")?;
@@ -228,11 +248,15 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/oauth/{id}/start",get(start))
   .route("/oauth/{id}/callback",get(callback))
   .route("/oauth/{id}/open",post(open_unavailable))
+  .route("/oauth/github/cli/import",post(import_github_cli))
 }
 async fn providers(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let store=read(&engine.settings).map_err(bad)?;
+ let cli=local_cli_eligible(&engine.settings)&&github_cli_installed().await;
  let rows=["github","google"].iter().map(|id|{
-  json!({"id":id,"configured":store.apps.contains_key(*id),
+  json!({"id":id,"configured":env_app(id).is_some()||store.apps.contains_key(*id),
+   "managed":env_app(id).is_some(),
+   "cliAvailable":*id=="github"&&cli,
    "callback":callback_url(&engine.settings,id).ok()})
  }).collect::<Vec<_>>();
  Ok(Json(json!(rows)))
@@ -295,8 +319,7 @@ struct StartQuery{#[serde(default)]repository:bool,#[serde(default)]workspace:bo
 async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,Query(q):Query<StartQuery>)
  ->Result<Json<Value>,Fault>{
  if !valid_provider(&id){return Err(bad("unsupported OAuth provider"));}
- let app=read(&engine.settings).map_err(bad)?.apps.remove(&id)
-  .ok_or_else(||bad("configure OAuth Client ID and Client Secret first"))?;
+ let app=provider_app(&engine.settings,&id).map_err(bad)?;
  let callback=callback_url(&engine.settings,&id).map_err(bad)?;
  let state=random();let verifier=random();
  if q.repository&&id!="github"{return Err(bad("repository permission only applies to GitHub"));}
@@ -306,7 +329,7 @@ async fn start(State(engine):State<Arc<Engine>>,Path(id):Path<String>,Query(q):Q
   let mut guard=pending().lock().unwrap_or_else(|e|e.into_inner());
   guard.retain(|_,entry|now_ms().saturating_sub(entry.at_ms)<600_000);
   if guard.len()>=64{return Err(conflict("too many concurrent OAuth logins"));}
-  guard.insert(state,Pending{provider:id,verifier,at_ms:now_ms(),redirect:callback});
+  guard.insert(state,Pending{provider:id,verifier,at_ms:now_ms(),redirect:callback,app});
  }
  Ok(Json(json!({"url":url})))
 }
@@ -325,8 +348,7 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
  if saved.provider!=id||now_ms().saturating_sub(saved.at_ms)>600_000{
   return Err(bad("OAuth callback state or lifetime mismatch"));
  }
- let app=read(&engine.settings).map_err(bad)?.apps.remove(&id)
-  .ok_or_else(||bad("OAuth app configuration missing"))?;
+ let app=saved.app;
  let http=client().map_err(bad)?;
  let response=if id=="github"{
   http.post("https://github.com/login/oauth/access_token")
@@ -387,6 +409,56 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
  }
  Ok(html("계정 연결이 완료됐습니다. DOMINION 창으로 돌아가 연결 목록을 새로고침하세요."))
 }
+/// GitHub CLI can supply an already-authenticated local account without
+/// any Dominion OAuth app credentials. This route never opens a shell or
+/// accepts paths/commands/tokens from the browser.
+fn local_cli_eligible(settings:&Settings)->bool{
+ settings.bind.ip().is_loopback() && std::env::var("DOMINION_PUBLIC_URL").ok()
+  .is_none_or(|u|reqwest::Url::parse(&u).ok().is_some_and(|parsed|
+   parsed.scheme()=="http"&&parsed.host_str().is_some_and(|h|
+    h=="localhost"||h.parse::<std::net::IpAddr>().is_ok_and(|ip|ip.is_loopback()))))
+}
+async fn github_cli_installed()->bool{
+ timeout(Duration::from_secs(3),Command::new("gh").arg("--version")
+  .kill_on_drop(true).output()).await.is_ok_and(|v|v.is_ok_and(|o|o.status.success()))
+}
+async fn import_github_cli(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
+ if !local_cli_eligible(&engine.settings){
+  return Err(bad("GitHub CLI import is available only on a local Dominion instance"));
+ }
+ let result=timeout(Duration::from_secs(6),Command::new("gh")
+  .args(["auth","token","--hostname","github.com"])
+  .kill_on_drop(true).output()).await.map_err(|_|bad("GitHub CLI auth lookup timed out"))?
+  .map_err(|_|bad("GitHub CLI not installed; use the product's GitHub login"))?;
+ if !result.status.success(){
+  return Err(bad("GitHub CLI is not logged in; run gh auth login --web once or use Dominion GitHub login"));
+ }
+ if result.stdout.len()>4096{return Err(bad("GitHub CLI returned an invalid credential"));}
+ let token=String::from_utf8(result.stdout).map_err(|_|bad("GitHub CLI token not UTF-8"))?;
+ let token=token.trim();
+ if token.is_empty(){return Err(bad("GitHub CLI returned an empty token"));}
+ let http=client().map_err(bad)?;
+ let response=http.get("https://api.github.com/user")
+  .header("User-Agent","Dominion-Rust-CLI-Import").bearer_auth(token)
+  .send().await.map_err(|e|fail(format!("GitHub identity lookup failed: {e}")))?;
+ if !response.status().is_success(){return Err(bad("GitHub CLI token rejected by GitHub"));}
+ let scopes=response.headers().get("x-oauth-scopes")
+  .and_then(|v|v.to_str().ok()).unwrap_or("").to_owned();
+ if !granted_repository(&scopes){
+  return Err(bad("GitHub CLI token lacks repo permission; run gh auth refresh -s repo and retry"));
+ }
+ let user:Value=response.json().await.map_err(|_|bad("GitHub identity response invalid"))?;
+ let display=user["login"].as_str().filter(|v|!v.is_empty())
+  .ok_or_else(||bad("GitHub identity missing"))?.to_owned();
+ let _guard=lock();
+ let mut state=read(&engine.settings).map_err(bad)?;
+ state.accounts.insert("github".into(),Account{
+  display_name:display.clone(),access_token:token.to_owned(),
+  refresh_token:String::new(),scopes,expires_at_ms:0
+ });
+ write(&engine.settings,&state).map_err(bad)?;
+ Ok(Json(json!({"connected":true,"provider":"github","displayName":display})))
+}
 async fn open_unavailable()->Result<Json<Value>,Fault>{
  Err((StatusCode::NOT_IMPLEMENTED,Json(json!({"error":"Native desktop popup requires an installed desktop bridge. Use browser OAuth login."}))))
 }
@@ -436,6 +508,21 @@ mod tests{
   assert!(granted_workspace(&format!("{GOOGLE_DRIVE} {GOOGLE_DOCS} {GOOGLE_SHEETS}")));
  }
 
+ #[test]
+ fn server_managed_oauth_apps_do_not_require_user_entered_keys(){
+  let f=|n:&str|match n{
+   "DOMINION_GOOGLE_OAUTH_CLIENT_ID"=>Some("registered-google-client".to_owned()),
+   "DOMINION_GOOGLE_OAUTH_CLIENT_SECRET"=>Some("server-owned-google-secret".to_owned()),
+   _=>None
+  };
+  let google=env_app_with("google",f).expect("server app credentials");
+  assert_eq!(google.client_id,"registered-google-client");
+  assert_eq!(google.client_secret,"server-owned-google-secret");
+  assert!(env_app_with("github",f).is_none());
+  assert!(env_app_with("malicious",f).is_none());
+  assert!(!local_cli_eligible(&Settings{bind:"0.0.0.0:4317".parse().unwrap(),
+    ..Settings::from_env().unwrap()}));
+ }
  #[test]
  fn connected_oauth_scopes_advertise_only_authorized_tools_without_leaking_tokens(){
   let mut settings=Settings::from_env().unwrap();
