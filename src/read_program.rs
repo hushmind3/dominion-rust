@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 const MAX_STEPS:usize=12;
 const MAX_ITERATION:usize=8;
+const MAX_NESTED_READS:usize=24;
 const MAX_RECEIPT_CHARS:usize=1500;
 
 #[derive(Debug)]
@@ -142,8 +143,18 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
     let mut receipts=Vec::new();
     let mut calls=0usize;
     let mut failures=0usize;
-    for step in steps {
+    for mut step in steps {
         let id=step.id.to_string();
+        if calls>=MAX_NESTED_READS {
+            failures+=1;
+            receipts.push(json!({"id":id,"status":"error",
+                "error":"read_program nested read limit of 24 reached"}));
+            raw.insert(id,"TOOL ERROR: read limit reached".into());
+            continue;
+        }
+        if step.tool=="read_listed_files" {
+            step.max_files=step.max_files.min(MAX_NESTED_READS-calls);
+        }
         if let Some((previous,needle,negate))=step.condition{
             let previous_text=raw.get(previous).map(String::as_str).unwrap_or("");
             let present=previous_text.contains(needle);
@@ -251,4 +262,20 @@ mod tests {
         {"id":"nested","tool":"read_listed_files","from":"listing","max_files":100000}
     ]}),&run,&settings).is_err());
  }
+ #[test]
+ fn interrupted_program_is_replayed_as_one_safe_read_only_call(){
+    let mut run=Run::new(CreateRun{instruction:"inspect".into(),
+        budget_krw:Some(20.0),max_steps:Some(4)},4).unwrap();
+    run.status=crate::domain::RunStatus::Running;
+    let call=ToolCall{id:"program-1".into(),name:"read_program".into(),
+        arguments:json!({"steps":[{"id":"files","tool":"list_files","arguments":{"path":""}}]})};
+    run.queued_calls.push(call.clone());
+    crate::journal::begin(&mut run,&call).unwrap();
+    assert!(run.in_flight.is_some());
+    assert!(crate::journal::recover(&mut run));
+    assert!(run.in_flight.is_none());
+    assert_eq!(run.queued_calls.len(),1);
+    assert!(run.events.iter().any(|e|e.kind=="tool_retry_safe"));
+ }
+
 }
