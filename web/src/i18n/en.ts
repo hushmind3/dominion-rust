@@ -1060,6 +1060,8 @@ const en: Record<LocaleKey, string> = {
   'conn.dlg.webhookNote': 'Prefix this path with the HTTPS server address reachable by the external platform.',
   'shell.menuClose': 'Close menu',
   'shell.mainNav': 'Main navigation',
+  'shell.hideMenu': 'Collapse menu',
+  'shell.showMenu': 'Expand menu',
   'shell.menuExpand': 'Expand menu',
   'shell.menuCollapse': 'Collapse menu',
   'shell.paletteAria': 'Quick navigation',

@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react'
 import {OwnerProfileEditor} from './OwnerProfile'
-import {Activity,BookOpenText,Bot,ChevronDown,Cpu,House,MessageSquare,RadioTower,Settings2,UsersRound,Plus,X,Settings} from 'lucide-react'
+import {Activity,BookOpenText,Bot,ChevronDown,Cpu,House,MessageSquare,RadioTower,Settings2,UsersRound,Plus,X,Settings,Menu} from 'lucide-react'
 import {Button} from './Primitives'
 import {t,type LocaleKey,useLocale} from '../i18n'
 
@@ -12,7 +12,7 @@ export const navigation:{title:LocaleKey;items:NavItem[];collapsible?:boolean}[]
  {title:'nav.group.operations',items:[{id:'activity',label:'nav.activity',icon:Activity},{id:'settings',label:'nav.settings',icon:Settings2}]}
 ]
 const items=navigation.flatMap(g=>g.items)
-export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onNavigate,onNewChat,onClose,settingsOnly=false}:{settingsOnly?:boolean;page:PageId;open:boolean;collapsed:boolean;online:boolean;running:number;pending:number;onNavigate:(id:PageId)=>void;onNewChat:()=>void;onClose:()=>void}){
+export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onNavigate,onNewChat,onClose,settingsOnly=false,navOpen=true,onToggleNav}:{settingsOnly?:boolean;page:PageId;open:boolean;collapsed:boolean;online:boolean;running:number;pending:number;onNavigate:(id:PageId)=>void;onNewChat:()=>void;onClose:()=>void;navOpen?:boolean;onToggleNav?:()=>void}){
  useLocale()
  const advancedItems=navigation.find(g=>g.collapsible)?.items||[]
  const [advancedOpen,setAdvancedOpen]=useState(()=>{try{return localStorage.getItem('dominion.nav.advanced')==='1'||advancedItems.some(x=>x.id===page)}catch{return advancedItems.some(x=>x.id===page)}})
@@ -20,10 +20,11 @@ export function WorkspaceSidebar({page,open,collapsed,online,running,pending,onN
  useEffect(()=>{try{localStorage.setItem('dominion.nav.advanced',advancedOpen?'1':'0')}catch{}},[advancedOpen])
  return <>
   {!settingsOnly&&open&&<Button variant="bare" type="button" className="fixed inset-0 z-40 bg-slate-900/40 min-[520px]:hidden" aria-label={t('shell.menuClose')} onClick={onClose}/>}
-  <aside aria-label={t('shell.mainNav')} className={(settingsOnly?'absolute inset-y-0 left-0 z-10 flex':'fixed inset-y-0 left-0 z-50 flex')+' w-[216px] flex-col border-r border-[#E0D8CC] bg-[#EFEAE1] text-[#4A443C] transition-transform duration-200 '+(!settingsOnly?'max-[519px]:-translate-x-full ':'')+(collapsed?'min-[520px]:-translate-x-full ':'')+(open?'max-[519px]:translate-x-0':'')}>
+  <aside aria-label={t('shell.mainNav')} className={(settingsOnly?'absolute inset-y-0 left-0 z-10 flex':'fixed inset-y-0 left-0 z-50 flex')+' w-[216px] flex-col border-r border-[#E0D8CC] bg-[#EFEAE1] text-[#4A443C] transition-[width,transform] duration-200 '+(settingsOnly&&!navOpen?'settings-nav-collapsed ':'')+(!settingsOnly?'max-[519px]:-translate-x-full ':'')+(collapsed?'min-[520px]:-translate-x-full ':'')+(open?'max-[519px]:translate-x-0':'')}>
    <div className="flex h-16 shrink-0 items-center gap-3 border-b border-[#E0D8CC] px-5">
-    <div className="grid size-8 place-items-center rounded-xl bg-[#C96442] text-[17px] font-black text-white shadow-[0_4px_12px_rgba(201,100,66,.28)]">D</div>
-    <div className="min-w-0 flex-1 text-[14px] font-extrabold tracking-[.14em] text-[#24211D]">DOMINION</div>
+    <div className="grid size-8 shrink-0 place-items-center rounded-xl bg-[#C96442] text-[17px] font-black text-white shadow-[0_4px_12px_rgba(201,100,66,.28)]">D</div>
+    <div className="min-w-0 flex-1 truncate text-[14px] font-extrabold tracking-[.14em] text-[#24211D]">DOMINION</div>
+    {settingsOnly&&onToggleNav&&<Button variant="ghost" size="icon" aria-label={navOpen?t('shell.hideMenu'):t('shell.showMenu')} aria-expanded={navOpen} onClick={onToggleNav}><Menu size={18}/></Button>}
    </div>
    {!settingsOnly&&<div className="px-3 pt-5"><Button variant="bare" type="button" onClick={onNewChat} className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#C96442] text-[12px] font-semibold text-white shadow-[0_6px_16px_rgba(201,100,66,.22)] transition-colors hover:bg-[#A94E30]"><Plus size={16}/> {t('shell.newChat')}</Button></div>}
    <nav className="mt-4 min-h-0 flex-1 overflow-y-auto px-2.5 pb-4">

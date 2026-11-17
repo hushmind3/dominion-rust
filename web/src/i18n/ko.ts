@@ -1059,6 +1059,8 @@ const ko = {
   'conn.dlg.webhookNote': '외부 플랫폼에서 접근할 수 있는 HTTPS 서버 주소를 이 경로 앞에 붙여 등록하세요.',
   'shell.menuClose': '메뉴 닫기',
   'shell.mainNav': '주 탐색',
+  'shell.hideMenu': '메뉴 접기',
+  'shell.showMenu': '메뉴 펼치기',
   'shell.menuExpand': '메뉴 펼치기',
   'shell.menuCollapse': '메뉴 접기',
   'shell.paletteAria': '빠른 이동',

@@ -73,3 +73,7 @@
 .conversation-composer-send:hover{background:#A94E30!important}.conversation-composer-send:disabled{opacity:.4}
 .conversation-recipients{max-width:140px;min-width:0}
 @media(max-width:767px){.conversation-composer-wrap{padding:6px 10px max(8px,env(safe-area-inset-bottom))}.conversation-composer-options{gap:0}.conversation-recipients{max-width:80px!important}.conversation-composer-controls{gap:4px}}
+.settings-nav-collapsed{width:56px!important}
+.settings-nav-collapsed>div:first-child{gap:0;padding:0;justify-content:center}
+.settings-nav-collapsed>div:first-child>*:not(button){display:none}
+.settings-nav-collapsed>*:not(:first-child){display:none}

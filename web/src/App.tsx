@@ -101,6 +101,8 @@ export default function App(){
  const [mode,setMode]=useState<'chat'|'rooms'>(()=>locationState().page==='rooms'?'rooms':'chat')
  const [visited,setVisited]=useState(()=>({chat:locationState().page!=='rooms',rooms:locationState().page==='rooms'}))
  const [chatDraft,setChatDraft]=useState(0)
+ const [settingsNav,setSettingsNav]=useState(()=>{try{return localStorage.getItem('dominion.settings.nav')!=='0'}catch{return true}})
+ const toggleSettingsNav=useCallback(()=>setSettingsNav(open=>{const next=!open;try{localStorage.setItem('dominion.settings.nav',next?'1':'0')}catch{}return next}),[])
  const settingsOpen=page!=='chat'&&page!=='rooms'
  const [online,setOnline]=useState(false)
  const [running,setRunning]=useState(0)
@@ -219,8 +221,8 @@ export default function App(){
 
   </main>
   {settingsOpen&&<DialogBackdrop onDismiss={closeSettings}><div role="dialog" aria-modal="true" aria-label="설정" className="workspace-settings relative h-[calc(100dvh-40px)] w-full max-w-[1440px] overflow-hidden rounded-2xl border border-[#E7E0D5] bg-[#F6F3EC] shadow-2xl">
-   <WorkspaceSidebar settingsOnly page={page} open collapsed={false} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>navigate('chat')} onClose={closeSettings}/>
-   <div className="workspace-settings-main ml-[216px] flex h-full min-w-0 flex-col">
+   <WorkspaceSidebar settingsOnly page={page} open collapsed={false} online={online} running={running} pending={pending} onNavigate={navigate} onNewChat={()=>navigate('chat')} onClose={closeSettings} navOpen={settingsNav} onToggleNav={toggleSettingsNav}/>
+   <div className={'workspace-settings-main flex h-full min-w-0 flex-col '+(settingsNav?'ml-[216px]':'ml-14')}>
     <SettingsHeader page={page} online={online} build={engineBuild} onClose={closeSettings}/>
     <div className="workspace-settings-content min-h-0 flex-1 overflow-y-auto">
      <PageLoadBoundary key={page}><Suspense fallback={<div role="status" className="p-8 text-sm text-[#7C7469]">화면 불러오는 중…</div>}>
