@@ -463,8 +463,9 @@ mod tests{
   assert!(names.contains(&"google_docs_create"));
   assert!(names.contains(&"google_sheets_append"));
   assert!(names.contains(&"github_create_pull_request"));
-  assert!(!tools.to_string().contains("test-token"));
-  assert!(!tools.to_string().contains("refresh-secret"));
+  let model_catalog=serde_json::to_string(&tools).unwrap();
+  assert!(!model_catalog.contains("test-token"));
+  assert!(!model_catalog.contains("refresh-secret"));
   fs::remove_dir_all(root).unwrap();
  }
 }

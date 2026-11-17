@@ -174,10 +174,11 @@ async fn github_pr_and_google_docs_mutations_require_approval_before_external_ne
   run.plan=Some("Use only the queued account tool".into());
   let id=run.id;
   let call=ToolCall{id:"external-approved-1".into(),name:name.into(),arguments:args};
-  run.advertised_tools=crate::connected_tools::definitions(&engine.settings);
-  // No OAuth account is configured, and the advertised snapshot is empty:
-  // durable approval must be requested before any attempt at dispatch.
-  run.advertised_tools.clear();
+  // The model-turn schema is frozen; provider credentials are not needed
+  // to prove approval happens before any network dispatch.
+  run.advertised_tools=if name.starts_with("google_"){
+   crate::google_workspace::definitions()
+  }else{crate::github_collab::definitions()};
   run.queued_calls.push(call);
   store.put(run).await.unwrap();
   engine.launch(id).await.unwrap();
