@@ -110,7 +110,8 @@ fn parse(feed:&str,source:&str)->Vec<Value>{
         Some(super::intelligence::enrich_signal(json!({"id":digest(&url),"title":title,"url":url,"sourceName":source,
             "description":desc,"publishedAt":published,
             "capturedAt":timestamp,"contentStatus":"headline_observed",
-            "articleExcerpt":"","verification":"unverified_market_observation"})))
+            "articleExcerpt":"","feedOriginal":item.chars().take(2400).collect::<String>(),
+            "verification":"unverified_market_observation"})))
     }).collect()
 }
 
@@ -204,6 +205,8 @@ mod tests{
     let found=parse(feed,"public");
     assert_eq!(found.len(),1);
     assert_eq!(found[0]["url"],"https://example.org/tender");
+    assert!(found[0]["feedOriginal"].as_str().unwrap().contains("<description>Request for proposal</description>"));
+    assert_eq!(found[0]["contentStatus"],"headline_observed");
     assert_eq!(found[0]["changeTags"][0],"buyer_request");
  }
  #[test]fn source_rotation_includes_multiple_languages(){

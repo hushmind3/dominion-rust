@@ -209,7 +209,11 @@ test('Money discovery shares the authenticated native Rust API',async()=>{
  await sdk.money.automation(false);
  await sdk.money.implement('lead:a/b',{approved:true,agentId:'research',budgetKrw:200});
  await sdk.money.search('센서 구매');
- assert.equal(calls.length,7);
+ await sdk.money.settings();
+ await sdk.money.setEnabled(true);
+ await sdk.money.candidates({status:'held',q:'supplier',offset:24});
+ await sdk.money.decide('lead:a/b','restore','additional evidence');
+ assert.equal(calls.length,11);
  assert.ok(calls.every(({options})=>options.headers.Authorization==='Bearer research-token'));
  assert.ok(calls[0].url.endsWith('/api/v1/money/find'));
  assert.equal(JSON.parse(calls[2].options.body).agentId,'research');
@@ -220,4 +224,11 @@ test('Money discovery shares the authenticated native Rust API',async()=>{
  assert.equal(JSON.parse(calls[5].options.body).budgetKrw,200);
  assert.ok(calls[6].url.endsWith('/api/v1/money/search?q='+encodeURIComponent('센서 구매')));
  assert.equal(calls[6].options.method,'GET');
+ assert.ok(calls[7].url.endsWith('/api/v1/money/settings'));
+ assert.deepEqual(JSON.parse(calls[8].options.body),{enabled:true});
+ assert.ok(calls[9].url.includes('/api/v1/money/candidates?'));
+ assert.ok(calls[9].url.includes('status=held'));
+ assert.ok(calls[9].url.includes('offset=24'));
+ assert.ok(calls[10].url.endsWith('/api/v1/money/candidates/lead%3Aa%2Fb/decision'));
+ assert.equal(JSON.parse(calls[10].options.body).action,'restore');
 });

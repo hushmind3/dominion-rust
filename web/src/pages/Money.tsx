@@ -7,7 +7,8 @@ type Evidence={
  sourceName?:string;kind?:string;contentStatus?:string
 }
 type ArchivedSource={id:string;title:string;url:string;sourceName?:string;
- publishedAt?:string;verification?:string;description?:string;changeTags?:string[]}
+ publishedAt?:string;verification?:string;description?:string;changeTags?:string[];
+ feedOriginal?:string}
 type Lead={
  id:string;title:string;offer?:string;customer?:string;
  whyPay?:string;implementationPlan?:string;firstPaymentStep?:string;
@@ -337,6 +338,12 @@ export function MoneyPage(){
      <p className="mt-1 text-[10px] text-[#8B7D70]">
       {row.sourceName||'공개 출처'} · {row.publishedAt||'발행일 미상'} · {row.verification||'검증 전'}
      </p>
+     {row.feedOriginal&&<details className="mt-2">
+      <summary className="cursor-pointer text-[11px] text-[#877567]">수집 당시 RSS 원본 펼치기</summary>
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-[#F8F5EE] p-2 text-[10px]">
+       {row.feedOriginal}
+      </pre>
+     </details>}
     </div>)}
    </div>}
   </section>
