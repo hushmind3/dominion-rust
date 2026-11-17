@@ -754,6 +754,51 @@ mod tests{
             "partial failed source inspection cannot become success evidence");
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
+
+    struct SecretReadVeto;
+    impl crate::hooks::ToolHook for SecretReadVeto{
+        fn before(&self,ctx:&crate::hooks::ToolContext<'_>)
+            ->Result<(),crate::hooks::HookDenial>{
+            if ctx.call.arguments["path"]=="secret.txt"{
+                return Err(crate::hooks::HookDenial::new("PATH_DENIED",
+                    "owner hook forbids reading secret.txt"));
+            }
+            Ok(())
+        }
+        fn after(&self,ctx:&crate::hooks::ToolContext<'_>,
+            result:&mut Result<String,String>){
+            if ctx.call.arguments["path"]=="public.txt"{
+                *result=Ok("public evidence [REDACTED]".into());
+            }
+        }
+    }
+    #[tokio::test]
+    async fn every_nested_program_tool_honors_owner_veto_and_post_dispatch_redaction(){
+        let mut settings=Settings::from_env().unwrap();
+        let root=std::env::temp_dir()
+            .join(format!("dominion-nested-hook-policy-{}",Uuid::new_v4()));
+        settings.workspace_dir=root.clone();
+        let run=example();
+        let dir=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("secret.txt"),"never-expose-this-secret").await.unwrap();
+        tokio::fs::write(dir.join("public.txt"),"private-ish content").await.unwrap();
+        let mut chain=HookChain::from_settings(&settings);
+        chain.add(Arc::new(SecretReadVeto));
+        let output=execute_with_hooks(&settings,&run,&json!({"steps":[
+            {"id":"first","tool":"read_file","arguments":{"path":"public.txt"}},
+            {"id":"second","tool":"read_file","arguments":{"path":"secret.txt"}}
+        ]}),chain).await.unwrap();
+        let result:Value=serde_json::from_str(&output).unwrap();
+        assert_eq!(result["nested_read_calls"],2);
+        assert_eq!(result["failed_steps"],1);
+        assert_eq!(result["steps"][0]["status"],"ok");
+        assert_eq!(result["steps"][1]["status"],"error");
+        assert!(result["steps"][0]["result"].as_str().unwrap().contains("[REDACTED]"));
+        assert!(!output.contains("never-expose-this-secret"));
+        assert!(!output.contains("private-ish content"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
     #[tokio::test]
     async fn prohibited_nested_side_effects_fail_before_any_dispatch(){
         let settings=Settings::from_env().unwrap();
