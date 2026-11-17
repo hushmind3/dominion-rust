@@ -3,6 +3,17 @@ export interface TimelineEvent {
   seq: number; kind: string; message: string; detail: unknown | null; at_ms: number;
 }
 export interface ToolCall { id: string; name: string; arguments: Record<string, unknown> }
+/** One persisted multi-tool program reuses the native Rust Run journal. */
+export interface NativeProgramStep {
+  id: string; tool: string; arguments: Record<string, unknown>;
+  when?: Record<string, unknown> | null; on_error?: 'stop' | 'continue' | null;
+}
+export interface NativeProgramSession {
+  id: string; steps: NativeProgramStep[]; cursor: number;
+  pending_step?: string | null; halt_requested?: boolean;
+  stop_when?: Record<string, unknown> | null;
+  observations: Record<string, unknown>;
+}
 export interface Run {
   id: string; instruction: string; status: RunStatus; plan: string | null; answer: string | null;
   messages: unknown[]; events: TimelineEvent[]; queued_calls: ToolCall[];
@@ -12,6 +23,7 @@ export interface Run {
   repository?: string | null; base_commit?: string | null; parent_run_id?: string | null;
   read_only?: boolean; reserved_budget_krw?: number; delegated_spent_krw?: number;
   settled_child_ids?: string[]; waiting_for_children?: boolean; cancel_after_tool?: boolean; read_batch_in_flight?: ToolCall[];
+  program_session?: NativeProgramSession | null;
   budget_krw: number; max_steps: number; created_at_ms: number; updated_at_ms: number;
 }
 export interface ModelConfig {
