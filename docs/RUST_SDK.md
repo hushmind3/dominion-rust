@@ -115,3 +115,13 @@ Native SDK parity: `Dominion::money_implement(candidate_id,agent_id,budget_krw,a
 ### Indexed Money evidence read (2026-11-18)
 
 `sdk.money_search(query,limit)` performs a bounded FTS5/Korean-CJK-bigram search of the existing `money.sqlite` source archive. The shared HTTP adapter adds `GET /api/v1/money/search?q=...` and the TypeScript adapter adds `sdk.money.search(query)`; frontend users can search archived materials without invoking a provider model. Returned records remain observations and are not treated as verified contracts. A one-time lazy index backfill supports earlier saved source rows. `money_latest`, `money_signals`, `money_collect` and `money_implement` retain their original contracts. No SDK startup background indexer is added.
+
+### Optional Money state and candidate decisions (2026-11-18)
+
+- `Dominion::money_settings()` returns the module's persisted enabled state; `money_set_enabled(bool)` toggles it using the same HTTP handler lock and preserves all native Run records and accumulated Money data.
+- `Dominion::money_candidates(status,query,offset)` returns a bounded page including held, rejected and lower-ranked candidates; `money_decide_candidate(id,action,reason)` records hold/restore/reject without discarding earlier decisions.
+- HTTP: `GET/POST /api/v1/money/settings`, `GET /api/v1/money/candidates?status=held&q=...&offset=0`, `POST /api/v1/money/candidates/{id}/decision` with `{"action":"hold"|"restore"|"reject","reason":"..."}`.
+- TypeScript: `sdk.money.settings()`, `sdk.money.setEnabled(true)`, `sdk.money.candidates({status:"held",q:"...",offset:0})`, `sdk.money.decide(id,"restore","new evidence")`.
+- Fresh installations are disabled until explicitly enabled, with no idle Money SQLite initialization. Pre-existing Money databases stay enabled for backward compatibility. When disabled, the Money scan, find, archive search and implementation endpoints reject new work; previously authorized native Runs stay in the shared Run journal and can be separately cancelled or reconciled.
+
+All entries remain research observations or model hypotheses unless independently confirmed. RSS `feedOriginal` contains the original feed item (up to 2,400 characters), not a live copy of the destination article. Release and frontend validation are outside this development step.
