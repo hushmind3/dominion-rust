@@ -30,5 +30,24 @@ test('new connection hub retains sub4 GitHub repository-grant control',async({pa
  const dialog=page.getByRole('dialog',{name:'설정'});
  await expect(dialog).toBeVisible();
  await page.locator('.connection-tabs button').nth(1).click();
- await expect(page.getByRole('button',{name:'저장소 작업 권한 연결'})).toBeVisible();
+ await expect(page.getByRole('button',{name:'GitHub 작업 권한 연결'})).toBeVisible();
+ await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeVisible();
+});
+
+test('Google OAuth app can be registered in the account UI without exposing its secret',async({page})=>{
+ await page.goto('/#/connections');
+ await page.locator('.connection-tabs button').nth(1).click();
+ await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeVisible();
+ await page.getByRole('button',{name:'OAuth 앱 설정'}).last().click();
+ const modal=page.getByRole('dialog',{name:'OAuth 앱 설정'});
+ await expect(modal).toBeVisible();
+ await modal.locator('input').first().fill('e2e-google-client');
+ await modal.locator('input').nth(1).fill('e2e-secret');
+ await modal.getByRole('button',{name:'앱 설정 저장'}).click();
+ await expect(modal).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Google 문서 작업 권한 연결'})).toBeEnabled();
+ const apps=await (await page.request.get('/api/oauth/providers')).json();
+ expect(apps.find((p:{id:string;configured:boolean})=>p.id==='google')?.configured).toBe(true);
+ const accounts=await (await page.request.get('/api/oauth/connections')).json();
+ expect(JSON.stringify(accounts)).not.toContain('e2e-secret');
 });

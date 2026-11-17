@@ -28,6 +28,14 @@ match outcome.status {
 
 Use `submit_from_repository` to work inside a separate Git worktree. For file results use `artifacts`, `read_artifact` and `read_subagent_file`. The repo and run workspace identity are never inferred from a browser session alone.
 
+## Account-linked external work
+
+The Rust SDK dynamically includes OAuth-backed tools through `connected_tools::definitions`, using the same native approval/recovery kernel as chat. Connected GitHub tools include branch, PR, issue, comment and file actions. Google tools cover Drive, Docs and Sheets.
+
+The TypeScript SDK's `frontend.accounts.list()`, `frontend.accounts.providers()`, and `frontend.accounts.toolNames('google'|'github')` report account grants and tools without exposing credentials. The authorization flow starts at `/api/oauth/{provider}/start?repository=true` or `?workspace=true` and returns through the one-use callback.
+
+Read-only calls are replay-safe. Mutating remote operations are not implicitly replayed after an uncertain receipt. See [Connected Accounts](CONNECTED_ACCOUNTS_2026-11-17.md).
+
 ## Recovery and ownership
 
 - `get`, `list`, `events`, `wait`: durable work status and receipt inspection.
