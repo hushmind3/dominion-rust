@@ -135,6 +135,16 @@ impl FrontendStore {
         result
     }
     pub async fn snapshot(&self)->Snapshot{self.state.lock().await.clone()}
+    /// Metrics and run-binding lookups avoid copying every session transcript.
+    pub async fn counts(&self)->(usize,usize){
+        let guard=self.state.lock().await;
+        (guard.agents.len(),guard.sessions.len())
+    }
+    pub async fn pending_run_sessions(&self)->HashMap<Uuid,String>{
+        self.state.lock().await.sessions.values().filter_map(|session|
+            session.pending_run.map(|run|(run,session.id.clone()))
+        ).collect()
+    }
     pub async fn mutate<T,F>(&self,change:F)->Result<T,String>
     where F:FnOnce(&mut Snapshot)->Result<T,String>{
         // Writes remain serializable; user-visible reads keep seeing the last
