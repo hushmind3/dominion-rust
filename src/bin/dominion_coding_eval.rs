@@ -149,7 +149,16 @@ async fn run()->Result<(),String>{
         match option.as_str(){
             "--manifest"=>manifest=Some(PathBuf::from(args.next().ok_or("--manifest needs a path")?)),
             "--output"=>output=PathBuf::from(args.next().ok_or("--output needs a path")?),
-            "--approve-tool"=>{permitted.insert(args.next().ok_or("--approve-tool needs a name")?);},
+            "--approve-tool"=>{
+                let name=args.next().ok_or("--approve-tool needs a name")?;
+                // The evaluator may only preapprove workspace-constrained
+                // text edits; never automatically authorize arbitrary shell,
+                // MCP, network or remote-repository mutations.
+                if !matches!(name.as_str(),"write_file"|"edit_file"){
+                    return Err("--approve-tool accepts only write_file or edit_file; other effects require manual approval".into());
+                }
+                permitted.insert(name);
+            },
             _=>return Err(format!("unknown argument: {option}")),
         }
     }

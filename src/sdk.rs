@@ -173,8 +173,23 @@ impl Dominion {
                 .ok_or("execution wait timeout")?;
             match tokio::time::timeout(remaining,updates.recv()).await{
                 Ok(Ok(event)) if event.id==id=>{},
-                Ok(Ok(_))=>continue,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))=>continue,
+                Ok(Ok(_))=>{
+                    // Other runs may produce thousands of events. Do not
+                    // clone this run's transcript for unrelated updates.
+                    loop {
+                        let left=timeout.checked_sub(started.elapsed())
+                            .ok_or("execution wait timeout")?;
+                        match tokio::time::timeout(left,updates.recv()).await{
+                            Ok(Ok(event)) if event.id==id=>break,
+                            Ok(Ok(_))=>{},
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))=>break,
+                            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed))=>
+                                return Err("execution update channel closed".into()),
+                            Err(_)=>return Err("execution wait timeout".into()),
+                        }
+                    }
+                },
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))=>{},
                 Ok(Err(tokio::sync::broadcast::error::RecvError::Closed))=>
                     return Err("execution update channel closed".into()),
                 Err(_)=>return Err("execution wait timeout".into()),

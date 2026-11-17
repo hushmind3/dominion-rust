@@ -120,6 +120,17 @@ The main frontend's older research/learning endpoints (e.g. `/api/synergy`, `/ap
 
 The follow-up main UI merge adds scoped SSE event routing, inactive-view request gating, a faster model explorer, and native Rust `job_event` compatibility. The dedicated Node test suite is executed in the web CI job.
 
+## Reproducible coding-task evaluation
+
+The optional `cargo run --bin dominion_coding_eval -- --manifest coding-tasks.json`
+runner measures real-model coding tasks in isolated Git worktrees. It requires
+actual changed source paths and independently executed verifier commands; it
+records real token and KRW estimates (marking unknown tariffs), approval gates,
+timeouts and completion status. Mock-provider regression tests are not counted
+as actual frontier-model performance.
+
+See [Live coding benchmark](docs/SUB4_LIVE_CODING_BENCHMARK.md).
+
 ## Verification
 
 ```bash
