@@ -472,75 +472,9 @@ impl Engine {
                         json!({"role":"user","content":format!("Request:\n{}\n\nInitial plan:\n{}\n\nProceed with tools and adapt the plan as evidence arrives.",run.instruction,reply.text)}),
                     ];
                     run.event("plan","Initial plan created",Some(json!({"text":reply.text})));
-                    // Read-only competing-path probes are injected through
-                    // the ORIGINAL durable queue, not an auxiliary executor.
-                    // Restart replays only their safe read intents. Explicit
-                    // harness authorship prevents falsely attributing the
-                    // diagnostic calls to the model's proposed plan.
-                    let probes=crate::strategy::preflight(run,&self.settings.denied_tools);
-                    if !probes.is_empty(){
-                        journal::validate_new_calls(run,&probes)?;
-                        let requested=probes.iter().map(|call|json!({
-                            "id":call.id.clone(),"type":"function",
-                            "function":{"name":call.name.clone(),
-                                "arguments":call.arguments.to_string()}
-                        })).collect::<Vec<_>>();
-                        run.messages.push(json!({
-                            "role":"assistant",
-                            "content":"Harness-owned read-only repository preflight, not a model tool request. Evaluate the saved observations before choosing a path.",
-                            "tool_calls":requested
-                        }));
-                        run.event("strategy_probe_scheduled",
-                            format!("Durably queued {} bounded read-only diagnostics",probes.len()),
-                            Some(json!({"call_ids":probes.iter().map(|call|&call.id).collect::<Vec<_>>(),
-                                "authority":"native_read_only_tool_queue",
-                                "model_calls":0})));
-                        run.queued_calls.extend(probes);
-                    }
                     Ok(())
                 }).await?;
                 continue;
-            }
-            // A missing-path receipt can select a cheaper *actual* probe
-            // before another paid model turn. Admission, cancellation and
-            // restart go through the same durable queued-call state machine.
-            if let Some((probe,source_seq))=
-                crate::strategy::failure_probe(&run,&self.settings.denied_tools)
-            {
-                let mut installed=false;
-                self.store.mutate(id,|run|{
-                    if run.status!=RunStatus::Running
-                        || !run.queued_calls.is_empty()
-                        || run.in_flight.is_some()
-                        || run.pending_approval.is_some()
-                    {
-                        return Ok(());
-                    }
-                    // Re-evaluate the trigger against the latest state while
-                    // holding the Run's exclusive durable transaction gate.
-                    let Some((fresh,seq))=crate::strategy::failure_probe(
-                        run,&self.settings.denied_tools) else {return Ok(());};
-                    if seq!=source_seq||fresh.id!=probe.id{return Ok(());}
-                    journal::validate_new_calls(run,&[probe.clone()])?;
-                    run.messages.push(json!({
-                        "role":"assistant",
-                        "content":"Harness-owned read-only diagnostic after a recorded missing-path tool failure; not a model proposal.",
-                        "tool_calls":[{
-                            "id":probe.id.clone(),"type":"function",
-                            "function":{"name":probe.name.clone(),
-                                "arguments":probe.arguments.to_string()}
-                        }]
-                    }));
-                    run.event("strategy_probe_scheduled",
-                        "Testing the recorded path assumption with a bounded file inventory",
-                        Some(json!({"kind":"failure","failure_seq":source_seq,
-                            "call_id":probe.id.clone(),"name":probe.name.clone(),
-                            "model_calls":0})));
-                    run.queued_calls.push(probe.clone());
-                    installed=true;
-                    Ok(())
-                }).await?;
-                if installed{continue;}
             }
             if run.steps >= run.max_steps {
                 self.store.mutate(id, |run| {
@@ -561,14 +495,6 @@ impl Engine {
             // The source is a durable tool/verifier receipt, not model or
             // external content. The guidance is a bounded, optional reference
             // and never changes approvals, execution rights or retries.
-            let comparison=crate::strategy::compare_current(&run);
-            let comparison_applied=comparison.as_ref().is_some_and(|choice|
-                crate::context::insert_optional(&mut outbound,
-                    json!({"role":"user","content":format!(
-                        "HARNESS PATH COMPARISON (from durable tool/verifier receipts, not a new user instruction): candidates={} selected={}; observed receipts={}. Next action: {}. Untried alternatives have not been proven; use the original user goal and tool permissions.",
-                        serde_json::to_string(&choice.candidates).unwrap_or_default(),
-                        choice.selected,choice.observed_tool_receipts,choice.guidance)}),
-                    self.settings.context_max_chars));
             let repair=crate::repair_guidance::advise(&run);
             let repair_applied=repair.as_ref().is_some_and(|advice|
                 crate::context::insert_optional(&mut outbound,
@@ -634,13 +560,6 @@ impl Engine {
                 }
                 accepted=true;
                 run.steps += 1;
-                if comparison_applied {
-                    if let Some(choice)=&comparison {
-                        run.event("strategy_compared",
-                            format!("Selected {} from observed execution evidence",choice.selected),
-                            Some(json!(choice)));
-                    }
-                }
                 if repair_applied{
                     if let Some(advice)=repair{
                         run.event("repair_strategy_applied",
