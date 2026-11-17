@@ -266,21 +266,69 @@ export class Dominion {
       }
     } finally { await reader.cancel().catch(()=>undefined); reader.releaseLock(); }
   }
-  /** Polls durable server state, not browser-local state; safe after a tab or process restarts. */
+  /** Event-driven native state waiter; approvals and actionable pauses return to the caller.
+   * intervalMs explicitly enables the legacy polling fallback for non-streaming transports.
+   */
   async wait(id: string, options: {intervalMs?: number; timeoutMs?: number; signal?: AbortSignal} = {}): Promise<Run> {
-    const interval = Math.max(100,options.intervalMs ?? 1000);
-    const timeout = options.timeoutMs ?? 0;
-    const deadline = timeout > 0 ? Date.now()+timeout : Infinity;
-    while (true) {
-      options.signal?.throwIfAborted();
-      const run=await this.runs.get(id);
-      if (['completed','failed','cancelled'].includes(run.status)) return run;
-      if (Date.now() >= deadline) throw new DominionError(408,'execution wait timed out');
-      await new Promise<void>((resolve,reject)=>{
-        const timer = setTimeout(()=>{options.signal?.removeEventListener('abort',abort);resolve();},Math.min(interval,deadline-Date.now()));
-        const abort=()=>{clearTimeout(timer);reject(options.signal?.reason ?? new Error('aborted'));};
-        options.signal?.addEventListener('abort',abort,{once:true});
-      });
+    const controller=new AbortController();
+    let timedOut=false;
+    const onAbort=()=>controller.abort(options.signal?.reason);
+    options.signal?.addEventListener('abort',onAbort,{once:true});
+    if (options.signal?.aborted) onAbort();
+    const timeout=options.timeoutMs ?? 0;
+    const deadline=timeout>0 ? Date.now()+timeout : Infinity;
+    const timer=timeout>0 ? setTimeout(()=>{
+      timedOut=true;
+      controller.abort(new DominionError(408,'execution wait timed out'));
+    },timeout) : undefined;
+    const path='/runs/'+encodeURIComponent(id);
+    const settled=(run:Run)=>['completed','failed','cancelled','awaiting_approval'].includes(run.status)
+      || (run.status==='paused' && !run.waiting_for_children);
+    const read=()=>this.request<Run>('GET',path,undefined,controller.signal);
+    try {
+      controller.signal.throwIfAborted();
+      let run=await read();
+      if(settled(run)) return run;
+      if(options.intervalMs!==undefined){
+        const interval=Math.max(100,options.intervalMs);
+        while(true){
+          controller.signal.throwIfAborted();
+          await new Promise<void>((resolve,reject)=>{
+            const wait=Math.min(interval,Math.max(0,deadline-Date.now()));
+            const alarm=setTimeout(()=>{
+              controller.signal.removeEventListener('abort',abort);
+              resolve();
+            },wait);
+            const abort=()=>{
+              clearTimeout(alarm);
+              reject(controller.signal.reason);
+            };
+            controller.signal.addEventListener('abort',abort,{once:true});
+            if(controller.signal.aborted) abort();
+          });
+          run=await read();
+          if(settled(run)) return run;
+        }
+      }
+      // Replay from the durable sequence observed in the initial snapshot,
+      // closing the GET-to-SSE subscription race without periodic GET polling.
+      const since=run.events.at(-1)?.seq ?? 0;
+      for await(const _update of this.events(id,{since,signal:controller.signal})){
+        controller.signal.throwIfAborted();
+        run=await read();
+        if(settled(run)) return run;
+      }
+      run=await read();
+      if(settled(run)) return run;
+      throw new DominionError(503,'execution event stream ended before an actionable state');
+    }catch(error){
+      if(timedOut) throw new DominionError(408,'execution wait timed out');
+      if(controller.signal.aborted) throw options.signal?.reason ?? new Error('aborted');
+      throw error;
+    }finally{
+      if(timer!==undefined) clearTimeout(timer);
+      options.signal?.removeEventListener('abort',onAbort);
+      controller.abort();
     }
   }
 }

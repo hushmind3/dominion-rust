@@ -238,6 +238,9 @@ struct EventQuery { since: Option<u64> }
 async fn events(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Query(params):Query<EventQuery>) -> Result<Sse<impl Stream<Item=Result<Event,Infallible>>>,ApiError> {
     if engine.store.get(id).await.is_none() {return Err(not_found());}
     let mut seq = params.since.unwrap_or(0);
+    // Subscribe before reading. A commit between initial snapshot and first
+    // receive is buffered and replayed; unrelated Runs never wake this stream.
+    let mut updates=engine.store.subscribe();
     let output = async_stream::stream! {
         loop {
             match engine.store.get(id).await {
@@ -253,7 +256,9 @@ async fn events(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,Query(param
                 }
                 None => break,
             }
-            tokio::time::sleep(Duration::from_millis(750)).await;
+            // The Store publishes only after the Run snapshot is durable.
+            // Receiver lag triggers an authoritative reread, not missed events.
+            if !engine.store.changed(id,&mut updates).await {break;}
         }
     };
     Ok(Sse::new(output).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))

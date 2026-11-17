@@ -80,3 +80,10 @@ The Rust harness owns planning, bounded context projection, permissions, MCP too
 Automatic strategy learning is disabled by default. A user may explicitly save a note or opt into evidence recording, and the existing Run journal remains authoritative. SDK and frontend code do not perform hidden self-modification.
 
 Requires Node 24.12+ or a modern browser with fetch and readable streaming responses.
+
+
+## Event-driven SDK waiting
+
+`await sdk.wait(run.id, {timeoutMs: 120000})` subscribes to the Rust Run event stream instead of polling a complete Run every second. The initial persisted sequence cursor prevents races between the first state read and subscription. The client returns when the run finishes, **requires approval**, or is **paused and no longer waiting for delegated children**; operators can then approve or resume explicitly. Timeouts and AbortSignal cancel the subscription. Existing `intervalMs` callers retain an explicit polling compatibility mode.
+
+The Rust `/api/v1/runs/{id}/events` route now uses the same fsync-backed update notifications as the native SDK and chat stream. It no longer polls a full Run snapshot every 750 ms for each connected browser/client. Reconnect from a prior event sequence is still supported through `since`; a lagged receiver rereads durable state. This changes no wire format, run IDs, token accounting, or permissions.

@@ -142,3 +142,56 @@ test('archived jobs and memories remain inert until the owner explicitly promote
   });
   assert.ok(seen.every(request=>request.options.headers.Authorization==='Bearer operator'));
 });
+
+test('SDK wait uses durable SSE, returns on approval and never polls repeatedly',async()=>{
+ const encoder=new TextEncoder();
+ let reads=0, streams=0;
+ const run=(status)=>({id:'r1',status,waiting_for_children:false,
+   events:[{seq:1,kind:'created',message:'created',detail:null,at_ms:1}]});
+ const sdk=new Dominion({fetch:async(url)=>{
+   if(url.endsWith('/api/v1/runs/r1')){
+     reads++;
+     return new Response(JSON.stringify(run(reads===1?'running':'awaiting_approval')),{status:200});
+   }
+   streams++;
+   assert.ok(url.endsWith('/runs/r1/events?since=1'));
+   const stream=new ReadableStream({start(controller){
+     controller.enqueue(encoder.encode('data: {"seq":2,"kind":"approval_required","message":"review","detail":null,"at_ms":2}\\n\\n'.replaceAll('\\n','\n')));
+     controller.close();
+   }});
+   return new Response(stream,{status:200,headers:{'content-type':'text/event-stream'}});
+ }});
+ const observed=await sdk.wait('r1',{timeoutMs:1000});
+ assert.equal(observed.status,'awaiting_approval');
+ assert.equal(reads,2);
+ assert.equal(streams,1);
+});
+
+test('SDK wait returns actionable paused state without opening an event stream',async()=>{
+ let calls=0;
+ const sdk=new Dominion({fetch:async()=>{
+   calls++;
+   return new Response(JSON.stringify({status:'paused',waiting_for_children:false,events:[]}),{status:200});
+ }});
+ assert.equal((await sdk.wait('paused')).status,'paused');
+ assert.equal(calls,1);
+});
+
+test('SDK wait timeout cancels an idle event subscription',async()=>{
+ let cancellations=0;
+ const sdk=new Dominion({fetch:async(url,options)=>{
+   if(url.endsWith('/runs/r2'))return new Response(JSON.stringify({
+     status:'running',events:[],waiting_for_children:false
+   }),{status:200});
+   return new Promise((_,reject)=>{
+     if(options.signal.aborted){cancellations++;reject(options.signal.reason);return;}
+     options.signal.addEventListener('abort',()=>{
+       cancellations++;
+       reject(options.signal.reason);
+     },{once:true});
+   });
+ }});
+ await assert.rejects(()=>sdk.wait('r2',{timeoutMs:35}),
+   e=>e instanceof DominionError && e.status===408);
+ assert.equal(cancellations,1);
+});
