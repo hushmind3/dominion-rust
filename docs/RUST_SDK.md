@@ -36,6 +36,10 @@ The TypeScript SDK's `frontend.accounts.list()`, `frontend.accounts.providers()`
 
 Read-only calls are replay-safe. Mutating remote operations are not implicitly replayed after an uncertain receipt. See [Connected Accounts](CONNECTED_ACCOUNTS_2026-11-17.md).
 
+## Event-driven execution and resume
+
+The SDK's wait contract and browser chat transports share the Store's post-fsync Run change feed. Read-only status listeners do not repeatedly clone full transcripts while a provider model or an approval is pending. Lagged listeners re-check a durable snapshot. The main-product Jobs resume path now calls Engine::launch under its existing guard: terminal runs, unknown remote side effects, unresolved approvals, and active delegated children remain blocked.
+
 ## Recovery and ownership
 
 - `get`, `list`, `events`, `wait`: durable work status and receipt inspection.

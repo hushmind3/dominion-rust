@@ -126,7 +126,13 @@ The main UI **Connections → Accounts** offers one-click GitHub and Google brow
 
 The native `src/connected_tools.rs` broker advertises tools only when the encrypted vault has the grant. React and TypeScript SDK share the Rust engine. **Every remote mutation requires user approval**, persisted intent and verified remote read-back. Unknown write outcomes enter reconciliation, never blind retry.
 
-A product operator registers OAuth apps once and installs their ID/secret as server deployment variables; end users enter neither. A local GitHub CLI import is also supported for people already signed in to `gh`. Google Drive-wide access may require OAuth app verification. No provider-issued identity tokens or client secrets are bundled. See [Connected Accounts](docs/CONNECTED_ACCOUNTS_2026-11-17.md).
+A product operator registers OAuth apps once and installs their ID/secret as server deployment variables; end users enter neither. A local GitHub CLI import is also supported for people already signed in to `gh`; if no product OAuth app is configured but the CLI is installed, the same GitHub login button launches its official web/device authorization and imports the resulting account. Google Drive-wide access may require OAuth app verification. No provider-issued identity tokens or client secrets are bundled. See [Connected Accounts](docs/CONNECTED_ACCOUNTS_2026-11-17.md).
+
+## Native run change feed and job resume
+
+Native Store fsync receipts emit per-Run update notifications. The chat SSE transport, browser-independent session finalizer, and model-only cancellation monitor subscribe once before inspecting current state. Idle tasks no longer read complete Run/model transcripts every 250–350 ms. Lagged broadcasts trigger authoritative snapshot re-reads. The legacy jobs resume endpoint now invokes the native engine's guarded resume instead of returning HTTP 501.
+
+See [Sub4 Runtime Review](docs/SUB4_RUNTIME_REVIEW_2026-11-17.md).
 
 ## Reproducible coding-task evaluation
 

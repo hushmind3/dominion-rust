@@ -59,3 +59,39 @@ test('account connection uses server-owned GitHub and Google OAuth apps, never u
  expect(githubUrl.searchParams.get('client_id')).toBe('dominion-e2e-github-app');
  expect(githubUrl.searchParams.get('scope')).toContain('repo');
 });
+
+test('GitHub login falls back to official CLI device flow with no app credentials',async({page})=>{
+ await page.route('**/api/oauth/providers',route=>route.fulfill({
+  status:200,contentType:'application/json',
+  body:JSON.stringify([
+   {id:'github',configured:false,managed:false,cliAvailable:true},
+   {id:'google',configured:false,managed:false,cliAvailable:false}
+  ])
+ }));
+ await page.route('**/api/oauth/github/cli/import',route=>route.fulfill({
+  status:400,contentType:'application/json',body:JSON.stringify({error:'not signed in'})
+ }));
+ await page.route('**/api/oauth/github/cli/login',route=>route.fulfill({
+  status:200,contentType:'application/json',
+  body:JSON.stringify({phase:'waiting',userCode:'ABCD-1234',startedAt:100,
+   message:'GitHub device confirmation'})
+ }));
+ await page.route('**/api/oauth/github/cli/login/status',route=>route.fulfill({
+  status:200,contentType:'application/json',
+  body:JSON.stringify({phase:'waiting',userCode:'ABCD-1234',startedAt:100,
+   message:'GitHub device confirmation'})
+ }));
+ await page.route('**/api/oauth/github/cli/login/cancel',route=>route.fulfill({
+  status:200,contentType:'application/json',body:JSON.stringify({ok:true})
+ }));
+ await page.goto('/#/connections');
+ await page.locator('.connection-tabs button').nth(1).click();
+ const button=page.getByRole('button',{name:'GitHub로 로그인'});
+ await expect(button).toBeEnabled();
+ await button.click();
+ await expect(page.getByText('ABCD-1234')).toBeVisible();
+ await expect(page.getByRole('link',{name:'GitHub 인증 페이지 열기'}))
+  .toHaveAttribute('href','https://github.com/login/device');
+ await page.getByRole('button',{name:'인증 취소'}).click();
+ await expect(page.getByText('ABCD-1234')).toHaveCount(0);
+});

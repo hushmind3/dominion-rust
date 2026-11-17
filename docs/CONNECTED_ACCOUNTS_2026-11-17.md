@@ -18,7 +18,7 @@ GitHub: register the application at https://github.com/settings/developers, with
 
 Legacy encrypted local OAuth app configuration remains readable for existing installations, but ordinary users have no Client ID or secret entry screen. The server-provided credentials always take precedence. OAuth login requests freeze the application identity at authorization start so a configuration rotation cannot silently switch the callback's client.
 
-For a **local** installation with the official GitHub CLI already logged in (`gh auth login --web`), **기존 GitHub CLI 계정 연결** imports the authenticated CLI token into the encrypted vault with permission checks. This fallback does not require a separately registered Dominion GitHub app, and is disabled when the product is exposed as a non-loopback server. Google Workspace still requires a registered OAuth application: provider authorization cannot be generated from nothing.
+For a **local** installation with the official GitHub CLI installed, the normal **GitHub로 로그인** button launches an official GitHub CLI browser/device login even when the Dominion service has no registered OAuth app. The page shows the one-time code and the fixed `https://github.com/login/device` verification link. Successful CLI login is imported into the existing encrypted account vault using the verified GitHub identity and repo permissions. If the CLI is already authenticated, the same button directly reuses its account. The flow is loopback-only, runs a fixed CLI command with a 10-minute timeout and supports cancel; it is not an arbitrary shell API. Google Workspace still requires a registered OAuth application owned by the product service.
 
 ## GitHub tools (12)
 

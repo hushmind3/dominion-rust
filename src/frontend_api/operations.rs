@@ -171,3 +171,42 @@ pub(super) async fn global_events(State(engine):State<Arc<Engine>>)
     };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)).text("alive"))
 }
+
+#[cfg(test)]
+mod resume_tests{
+ use super::*;
+ use crate::{group::Groups,store::Store};
+ #[tokio::test]
+ async fn job_resume_reuses_same_run_and_refuses_uncertain_mutation(){
+  let root=std::env::temp_dir().join(format!("dominion-resume-job-{}",Uuid::new_v4()));
+  let mut settings=crate::config::Settings::from_env().unwrap();
+  settings.data_dir=root.join("data");settings.workspace_dir=root.join("workspace");
+  let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+  let groups=Arc::new(Groups::open(settings.data_dir.join("groups")).await.unwrap());
+  let engine=Engine::new(settings,Arc::clone(&store),groups).unwrap();
+  let mut run=Run::new(CreateRun{instruction:"already satisfied".into(),
+    budget_krw:Some(1.0),max_steps:Some(1)},1).unwrap();
+  run.plan=Some("none".into());run.steps=1;run.status=RunStatus::Paused;
+  let id=run.id;
+  store.put(run).await.unwrap();
+  let response=resume_job(State(Arc::clone(&engine)),Path(id)).await.unwrap().0;
+  assert_eq!(response["id"],id.to_string());
+  let persisted=store.get(id).await.unwrap();
+  assert!(persisted.events.iter().any(|e|e.kind=="resumed"));
+  // No new run was allocated by the legacy resume adapter.
+  assert_eq!(store.headers().await.len(),1);
+
+  let mut blocked=Run::new(CreateRun{instruction:"uncertain external write".into(),
+    budget_krw:Some(1.0),max_steps:Some(1)},1).unwrap();
+  blocked.status=RunStatus::Paused;
+  blocked.in_flight=Some(crate::domain::ToolCall{id:"pending".into(),
+    name:"github_commit_file".into(),arguments:json!({})});
+  let blocked_id=blocked.id;
+  store.put(blocked).await.unwrap();
+  let result=resume_job(State(Arc::clone(&engine)),Path(blocked_id)).await;
+  assert_eq!(result.unwrap_err().0,StatusCode::CONFLICT);
+  assert!(store.get(blocked_id).await.unwrap().in_flight.is_some());
+  drop(engine);drop(store);
+  tokio::fs::remove_dir_all(root).await.unwrap();
+ }
+}
