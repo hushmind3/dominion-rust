@@ -158,8 +158,7 @@ async fn forget_memory(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>,
 struct StrategyQuery { repository:String, query:Option<String>, limit:Option<usize> }
 async fn list_strategies(State(engine):State<Arc<Engine>>,Query(q):Query<StrategyQuery>)
     ->Json<Vec<crate::strategy::StrategyEvidence>>{
-    let records=engine.store.list().await.into_iter()
-        .filter_map(|run|crate::strategy::from_run(&run)).collect();
+    let records=engine.store.strategy_evidence(&q.repository).await;
     Json(crate::strategy::rank(records,&q.repository,
         q.query.as_deref().unwrap_or(""),q.limit.unwrap_or(6).min(6)))
 }

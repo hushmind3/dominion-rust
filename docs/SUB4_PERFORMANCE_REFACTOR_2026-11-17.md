@@ -30,3 +30,8 @@ Scope: `dominion-sub4` only. Main and competing branches unchanged.
 - Startup uses the journal's single `needs_recovery` predicate before allocating semantic JSON comparisons. Stable completed/paused/approval-waiting snapshots are still read and parsed, but they are not encoded two extra times merely to detect that they were unchanged. Recoverable records and interrupted model-only runs retain semantic comparison, conservative non-replay and fsync persistence.
 - Regression coverage protects a live per-Run lock across index sweeping, bounds expired entries, and checks the recovery classification of finished, paused, queued and decided-approval executions.
 - **Not measured:** memory usage reduction in bytes and startup wall time across a real historical repository. No claim of incremental journal storage, bounded Run history RAM, or frontier coding success. These changes do not require a UI or DB schema migration.
+
+
+## Strategy lookup: avoid cloning all historical Runs
+
+The Rust SDK and REST `/strategies` endpoint previously called `Store::list()` for every procedure search, cloning all historical model messages, receipts, and events before filtering. They now call `Store::strategy_evidence(repository)`, which selects **completed, opted-in, repository-matched Runs** under the state lock and materializes only compact verified evidence. The ranking and exact-PASS receipt requirement are unchanged. Tests reject unrelated repositories and failed verification. This reduces query-time allocations but does not yet implement an on-disk secondary index or remove the existing full-history in-memory Store.

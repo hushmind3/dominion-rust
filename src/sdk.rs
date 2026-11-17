@@ -239,8 +239,7 @@ impl Dominion {
     /// No recursive self-modification, trial scheduler or background learning.
     pub async fn search_strategies(&self,repository:&str,goal:&str,max:usize)
         ->Vec<crate::strategy::StrategyEvidence>{
-        let records=self.engine.store.list().await.into_iter()
-            .filter_map(|r|crate::strategy::from_run(&r)).collect();
+        let records=self.engine.store.strategy_evidence(repository).await;
         crate::strategy::rank(records,repository,goal,max)
     }
     pub async fn list_skills(&self,run:Uuid)->Result<Vec<crate::skills::SkillInfo>,String>{

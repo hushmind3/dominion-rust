@@ -262,6 +262,17 @@ impl Store {
         rows.sort_by_key(|r|std::cmp::Reverse(r.created_at_ms));
         rows
     }
+    /// Project the verified procedure records under the existing metadata
+    /// lock. A strategy lookup must never clone every historical Run,
+    /// model transcript, tool schema and durable receipt into the SDK/API.
+    pub async fn strategy_evidence(&self,repository:&str)
+        ->Vec<crate::strategy::StrategyEvidence>{
+        if repository.trim().is_empty() || repository=="global"{return Vec::new();}
+        self.state.lock().await.values()
+            .filter(|run|run.repository.as_deref()==Some(repository)
+                && run.strategy_learning && run.status==RunStatus::Completed)
+            .filter_map(crate::strategy::from_run).collect()
+    }
     pub async fn pending_approvals(&self)->Vec<(Uuid,crate::domain::ToolCall)>{
         self.state.lock().await.values().filter_map(|run|{
             run.pending_approval.as_ref()

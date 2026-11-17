@@ -586,3 +586,29 @@ use super::*;
         run.approval_decision=Some(false);
         assert!(journal::needs_recovery(&run));
     }
+
+    #[tokio::test]
+    async fn strategy_lookup_projects_only_verified_same_repository_runs(){
+        let root=std::env::temp_dir().join(format!("dominion-strategy-projection-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        for (repo,verified) in [("project/a",true),("project/b",true),("project/a",false)]{
+            let mut run=Run::new(CreateRun{
+                instruction:"Fix cargo unit test regression".into(),
+                budget_krw:Some(50.0),max_steps:Some(4)
+            },4).unwrap();
+            run.repository=Some(repo.to_owned());
+            run.strategy_learning=true;
+            run.status=RunStatus::Completed;
+            run.plan=Some("Read test errors, patch the correct source, verify cargo test".into());
+            run.event("tool_result","write_file returned confirmation",None);
+            run.event("verification",if verified{"PASS"}else{"REVISE"},None);
+            store.put(run).await.unwrap();
+        }
+        let evidence=store.strategy_evidence("project/a").await;
+        assert_eq!(evidence.len(),1);
+        assert_eq!(evidence[0].repository,"project/a");
+        assert!(store.strategy_evidence("global").await.is_empty());
+        assert_eq!(store.list().await.len(),3,"history and receipts stay preserved");
+        drop(store);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
