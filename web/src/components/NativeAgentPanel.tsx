@@ -8,6 +8,8 @@ type SdkRun = {
  id: string; status: string; instruction: string; answer?: string; error?: string;
  checkpoint?: {
   state?: SdkState; rounds?: number; toolCalls?: number; answer?: string;
+  cost_krw?:number; budget_krw?:number;
+  program?:{id:string;completed:number;total:number;current?:{id:string;tool:string}|null;stopping_at_receipt?:boolean}|null;
   usage?: {prompt_tokens:number; completion_tokens:number; cached_prompt_tokens:number};
   pendingCall?: {id:string; name:string; arguments:unknown} | null;
   events?: {kind:string; detail:unknown}[];
@@ -132,6 +134,15 @@ export function NativeAgentPanel({providers}:{providers:Provider[]}){
      {en?'Provider-reported tokens':'제공자 보고 토큰'}: {run.checkpoint.usage.prompt_tokens.toLocaleString()} {en?'input':'입력'} · {run.checkpoint.usage.completion_tokens.toLocaleString()} {en?'output':'출력'} · {run.checkpoint.usage.cached_prompt_tokens.toLocaleString()} {en?'cached input':'캐시 입력'}
     </p>}
     </div>
+    {run.checkpoint?.program&&<p className="mt-2 text-[11px] text-[#746A5F]" role="status">
+     {en?'Native program':'Rust 실행 프로그램'}: {run.checkpoint.program.completed}/{run.checkpoint.program.total}
+     {run.checkpoint.program.current?.tool?` · ${run.checkpoint.program.current.tool}`:''}
+     {run.checkpoint.program.stopping_at_receipt?(en?' · Stopping after in-flight receipt':' · 진행 중 작업 결과 확인 후 중단'):''}
+    </p>}
+    {typeof run.checkpoint?.cost_krw==='number'&&<p className="mt-1 text-[11px] text-[#746A5F]">
+     {en?'Reported cost':'실제 보고 비용'}: ₩{run.checkpoint.cost_krw.toLocaleString('ko-KR',{maximumFractionDigits:2})}
+     {typeof run.checkpoint?.budget_krw==='number'?` / ₩${run.checkpoint.budget_krw.toLocaleString('ko-KR')}`:''}
+    </p>}
     <p className="mt-2 line-clamp-2 text-[11px] text-[#766F67]">{run.instruction}</p>
     {events.length>0&&<div className="mt-3 space-y-1 border-t border-[#E7E0D5] pt-2">
      {events.map((event,i)=><p key={i} className="text-[11px] text-[#82796D]">
