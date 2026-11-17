@@ -513,7 +513,7 @@ impl Engine {
                         || !run.queued_calls.is_empty()
                         || run.in_flight.is_some()
                         || run.pending_approval.is_some()
-                        {
+                    {
                         return Ok(());
                     }
                     // Re-evaluate the trigger against the latest state while
@@ -534,7 +534,8 @@ impl Engine {
                     run.event("strategy_probe_scheduled",
                         "Testing the recorded path assumption with a bounded file inventory",
                         Some(json!({"kind":"failure","failure_seq":source_seq,
-                            "call_id":probe.id,"name":probe.name,"model_calls":0})));
+                            "call_id":probe.id.clone(),"name":probe.name.clone(),
+                            "model_calls":0})));
                     run.queued_calls.push(probe.clone());
                     installed=true;
                     Ok(())
