@@ -23,6 +23,7 @@ use super::*;
     async fn strategy_trial_requires_owner_approval_before_spending_any_child_budget(){
         let root=std::env::temp_dir().join(format!("dominion-strategy-approval-{}",Uuid::new_v4()));
         let mut settings=Settings::from_env().unwrap();
+        settings.strategy_trials_enabled=true;
         settings.separate_plan_model_call=true;
         settings.separate_model_audit_enabled=true;
         settings.data_dir=root.join("data");
