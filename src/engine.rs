@@ -501,6 +501,46 @@ impl Engine {
                 }).await?;
                 continue;
             }
+            // A missing-path receipt can select a cheaper *actual* probe
+            // before another paid model turn. Admission, cancellation and
+            // restart go through the same durable queued-call state machine.
+            if let Some((probe,source_seq))=
+                crate::strategy::failure_probe(&run,&self.settings.denied_tools)
+            {
+                let mut installed=false;
+                self.store.mutate(id,|run|{
+                    if run.status!=RunStatus::Running
+                        || !run.queued_calls.is_empty()
+                        || run.in_flight.is_some()
+                        || run.pending_approval.is_some()
+                        {
+                        return Ok(());
+                    }
+                    // Re-evaluate the trigger against the latest state while
+                    // holding the Run's exclusive durable transaction gate.
+                    let Some((fresh,seq))=crate::strategy::failure_probe(
+                        run,&self.settings.denied_tools) else {return Ok(());};
+                    if seq!=source_seq||fresh.id!=probe.id{return Ok(());}
+                    journal::validate_new_calls(run,&[probe.clone()])?;
+                    run.messages.push(json!({
+                        "role":"assistant",
+                        "content":"Harness-owned read-only diagnostic after a recorded missing-path tool failure; not a model proposal.",
+                        "tool_calls":[{
+                            "id":probe.id.clone(),"type":"function",
+                            "function":{"name":probe.name.clone(),
+                                "arguments":probe.arguments.to_string()}
+                        }]
+                    }));
+                    run.event("strategy_probe_scheduled",
+                        "Testing the recorded path assumption with a bounded file inventory",
+                        Some(json!({"kind":"failure","failure_seq":source_seq,
+                            "call_id":probe.id,"name":probe.name,"model_calls":0})));
+                    run.queued_calls.push(probe.clone());
+                    installed=true;
+                    Ok(())
+                }).await?;
+                if installed{continue;}
+            }
             if run.steps >= run.max_steps {
                 self.store.mutate(id, |run| {
                     run.status = RunStatus::Failed;
