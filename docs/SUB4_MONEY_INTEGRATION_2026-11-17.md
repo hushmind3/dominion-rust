@@ -23,3 +23,7 @@ All endpoints also available under /api/v1/money/*. TypeScript sdk.money wraps n
 Unlike a literal full-port, this does not yet include Money's buyer-document excerpt crawler, GitHub/Hugging Face metric collector, Korean bigram/FTS5 archive search, long-running paid inference campaign scheduler, actual payment ledger, or full profit/conversion experiment tracking. It records RSS summaries with lower evidence confidence. The observed source and economic inference are never claimed to be a verified sale.
 
 Testing scope: Rust parser/semantic matching and durable SQLite tests; TypeScript authenticated SDK contract tests. Latest-HEAD CI outcome is a separate artifact from this code change, and 27B 24-hour throughput has not been measured.
+
+## Public software metrics added after the initial integration
+
+A six-hour GitHub/Hugging Face collector now saves public repository/model listings to the same source corpus, plus deduplicated daily star/download/like metric snapshots in `money_metrics`. Metrics are **platform attention observations**, not buyer commitments or revenue. The normal scan endpoint runs RSS and these two fixed-origin APIs and reports their failures separately. Each of the two public collectors also has its own durable bucket, so repeated scheduling does not trigger repeat requests. URL redirects are disabled and payload sizes are capped.

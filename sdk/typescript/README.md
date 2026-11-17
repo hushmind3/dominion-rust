@@ -87,3 +87,8 @@ Requires Node 24.12+ or a modern browser with fetch and readable streaming respo
 `await sdk.wait(run.id, {timeoutMs: 120000})` subscribes to the Rust Run event stream instead of polling a complete Run every second. The initial persisted sequence cursor prevents races between the first state read and subscription. The client returns when the run finishes, **requires approval**, or is **paused and no longer waiting for delegated children**; operators can then approve or resume explicitly. Timeouts and AbortSignal cancel the subscription. Existing `intervalMs` callers retain an explicit polling compatibility mode.
 
 The Rust `/api/v1/runs/{id}/events` route now uses the same fsync-backed update notifications as the native SDK and chat stream. It no longer polls a full Run snapshot every 750 ms for each connected browser/client. Reconnect from a prior event sequence is still supported through `since`; a lagged receiver rereads durable state. This changes no wire format, run IDs, token accounting, or permissions.
+
+
+## Money research (Sub4)
+
+The money subsystem is a source-labelled archive, not a second agent loop. Call `sdk.money.collect()` to scan RSS and the bounded public GitHub/Hugging Face catalogs; `sdk.money.find()` produces DB-only business research leads. `sdk.money.find({mode:'agent',agentId:'general',budgetKrw:100})` starts one optional native model-only inference Run and returns its ID/status. Observe `sdk.money.latest()` or the Run journal to inspect completion and cost. Opt-in `sdk.money.automation(true)` scans feeds every 30 minutes and catalogs at most every 6 hours; no paid model work runs automatically.

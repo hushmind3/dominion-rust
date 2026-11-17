@@ -27,7 +27,7 @@ export interface MemoryEntry {
 export interface MoneyEvidence { sourceId?:string; url?:string; claim?:string; publishedAt?:string; sourceName?:string; kind?:string; contentStatus?:string; }
 export interface MoneyDraft { id:string; title:string; customer?:string; offer?:string; whyPay?:string; implementationPlan?:string; firstPaymentStep?:string; counterfactual?:string; evidenceStatus?:string; evidence?:MoneyEvidence[]; origin?:string; status?:string; }
 export interface MoneyReport {drafts:MoneyDraft[]; sourceCount?:number; modelCalls?:number; reasoningRunId?:string|null; reasoningStatus?:RunStatus; inferenceCostKrw?:number; inferenceError?:string; searchedAt?:string; message?:string;}
-export interface MoneyStats {signals:number; candidates:number; metrics?:number; lastIngest?:{capturedAt?:string;found?:number;new?:number}|null; automation?:{enabled:boolean;periodMinutes?:number};}
+export interface MoneyStats {signals:number; candidates:number; metrics?:number; lastCatalog?:{newMetrics?:number;capturedAt?:string}|null; lastIngest?:{capturedAt?:string;found?:number;new?:number}|null; automation?:{enabled:boolean;periodMinutes?:number};}
 export interface OwnerProfile { name: string; avatar: string; updated_at_ms: number }
 /** Exact 2026 main frontend view schemas backed by Rust state. */
 export interface MainAgent {
@@ -232,8 +232,10 @@ export class Dominion {
     stats:()=>this.request<MoneyStats>('GET','/money/stats'),
     find:(options:{mode?:'db'|'agent';agentId?:string;budgetKrw?:number}={mode:'db'})=>
       this.request<MoneyReport>('POST','/money/find',options),
-    collect:(force=false)=>this.request<{found:number;new:number;modelCalls:number}>(
-      'POST','/money/collect',{force}),
+    collect:(force=false)=>this.request<{
+      rss?:{found:number;new:number};catalog?:{newMetrics:number;newSignals:number};
+      rssError?:string;catalogError?:string;modelCalls:number;
+    }>('POST','/money/collect',{force}),
     automation:(enabled:boolean)=>this.request<{enabled:boolean;periodMinutes:number}>(
       'POST','/money/automation',{enabled}),
     reject:(id:string)=>this.request<MoneyDraft>(

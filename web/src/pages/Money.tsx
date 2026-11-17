@@ -155,6 +155,9 @@ export function MoneyPage(){
    {!!report.inferenceCostKrw&&<p className="mt-2 text-[11px] text-[#84766A]">
     이번 분석 기록: {won(report.inferenceCostKrw)} · 입력 {report.inferenceInputTokens||0} / 출력 {report.inferenceOutputTokens||0} 토큰
    </p>}
+   {stats?.lastCatalog?.capturedAt&&<p className="mt-3 text-[11px] text-[#998A7C]">
+    GitHub·Hugging Face 지표 수집: {stats.lastCatalog.capturedAt} · 새 지표 {stats.lastCatalog.newMetrics??0}건
+   </p>}
    {stats?.lastIngest?.capturedAt&&<p className="mt-3 text-[11px] text-[#998A7C]">
     마지막 수집: {stats.lastIngest.capturedAt} · 새 자료 {stats.lastIngest.new??0}건
    </p>}
