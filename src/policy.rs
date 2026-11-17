@@ -75,6 +75,26 @@ mod tests{
         assert!(run.cost_krw>effective_budget_krw(&run));
     }
     #[test]
+    fn strategy_trial_worker_can_edit_own_workspace_but_never_call_remote_tools(){
+        let mut run=Run::new(CreateRun{
+            instruction:"Compare an isolated implementation".into(),
+            budget_krw:Some(100.0),max_steps:Some(5)},5).unwrap();
+        run.strategy_candidate=true;
+        for tool in ["list_files","read_file","search_files",
+                     "write_file","edit_file","git_status","git_diff","shell"]{
+            assert!(allowed_tool(&run,tool),"local operation {tool} should be available");
+        }
+        for tool in ["compare_strategies","spawn_subagent","merge_subagent",
+                     "github_create_file","mcp__example__mutate","memory_store",
+                     "google_docs_create","check_subagent"]{
+            assert!(!allowed_tool(&run,tool),"child escaped worktree through {tool}");
+        }
+        run.read_only=true;
+        assert!(!allowed_tool(&run,"write_file"));
+        assert!(!allowed_tool(&run,"shell"));
+        assert!(allowed_tool(&run,"git_diff"));
+    }
+    #[test]
     fn persisted_tool_calls_must_obey_current_operator_policy(){
         let mut run=Run::new(CreateRun{instruction:"work".into(),
             budget_krw:None,max_steps:None},5).unwrap();
