@@ -437,6 +437,53 @@ mod tests{
     }
 
     #[test]
+    fn native_parallel_inspection_can_be_nested_in_original_journal_program(){
+        let settings=Settings::from_env().unwrap();
+        let r=run();
+        let request=json!({"steps":[
+            {"id":"inspect","tool":"read_program",
+                "arguments":{"steps":[
+                    {"id":"scan","tool":"list_files","arguments":{"path":""}},
+                    {"id":"read","tool":"read_file","arguments":{"path":"source.rs"}}
+                ]}},
+            {"id":"edit","tool":"edit_file",
+                "arguments":{"path":"source.rs","old_text":"before","new_text":"after"},
+                "when":{"type":"equals","from":"inspect","path":"/status",
+                    "value":"ok"}}
+        ]});
+        let plan=validate(&r,&request,&settings).unwrap();
+        assert_eq!(plan.steps.len(),2);
+        assert_eq!(plan.steps[0].tool,"read_program");
+        assert_eq!(plan.steps[1].tool,"edit_file");
+    }
+    #[test]
+    fn objective_stops_unnecessary_native_write_after_real_evidence(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        let outer=ToolCall{id:"p".into(),name:"run_program".into(),
+            arguments:json!({"steps":[
+                {"id":"observe","tool":"read_file",
+                    "arguments":{"path":"existing.txt"}},
+                {"id":"write","tool":"write_file",
+                    "arguments":{"path":"existing.txt","content":"unnecessary"}}
+            ],"stop_when":{"type":"equals","from":"observe",
+                "path":"/value","value":"already-satisfied"}})};
+        r.queued_calls.push(outer.clone());
+        crate::journal::begin(&mut r,&outer).unwrap();
+        install(&mut r,&outer,&settings).unwrap();
+        crate::journal::finish(&mut r,&outer,&Ok("scheduled".into()),false).unwrap();
+        advance(&mut r,&settings).unwrap();
+        assert_eq!(r.queued_calls.len(),1);
+        let read=r.queued_calls[0].clone();
+        crate::journal::begin(&mut r,&read).unwrap();
+        crate::journal::finish(&mut r,&read,&Ok("already-satisfied".into()),false).unwrap();
+        advance(&mut r,&settings).unwrap();
+        assert!(r.program_session.is_none());
+        assert!(r.queued_calls.is_empty());
+        assert!(r.events.iter().any(|e|e.kind=="program_evidence_objective"));
+        assert_eq!(r.events.iter().filter(|e|e.kind=="tool_started").count(),2,
+            "only outer program install and one read may have started");
+    }
+    #[test]
     fn new_owner_directive_cancels_only_not_started_program_steps(){
         let mut r=run();let settings=Settings::from_env().unwrap();
         r.program_session=Some(ProgramSession{
