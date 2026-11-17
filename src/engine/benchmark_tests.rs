@@ -238,7 +238,7 @@ async fn strategy_trial_two_real_workers_share_base_and_settle_before_comparison
     settings.economy=settings.main.clone();
     let source=settings.workspace_dir.join("projects").join("demo");
     tokio::fs::create_dir_all(&source).await.unwrap();
-    let git=|args:Vec<&str>| {
+    let git=|args:Vec<&'static str>| {
         let cwd=source.clone();
         async move{
             let output=tokio::process::Command::new("git").args(args)
