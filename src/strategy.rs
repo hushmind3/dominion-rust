@@ -141,6 +141,7 @@ pub struct PathComparison {
     pub candidates:Vec<PathScore>,
     pub evidence_sequences:Vec<u64>,
     pub observed_tool_receipts:usize,
+    pub active_probe_receipts:usize,
     pub inference_calls:usize,
 }
 
@@ -174,7 +175,7 @@ pub(crate) fn failure_probe(run:&Run,denied:&[String])
     ->Option<(crate::domain::ToolCall,u64)>{
     use crate::{domain::{RunStatus,ToolCall},policy};
     use serde_json::json;
-    if run.repository.is_none() || run.model_only
+    if run.repository.is_none() || run.model_only || run.steps>=run.max_steps
         || run.status!=RunStatus::Running || !run.queued_calls.is_empty()
         || run.in_flight.is_some() || !run.read_batch_in_flight.is_empty()
         || run.pending_approval.is_some()
@@ -222,7 +223,8 @@ pub(crate) fn compare_current(run:&Run)->Option<PathComparison>{
     let revised=evidence.iter().any(|e|e.kind=="replan");
     let probe_count=evidence.iter().filter(|e|e.detail.as_ref()
         .and_then(|d|d["call_id"].as_str())
-        .is_some_and(|id|id.starts_with("harness-preflight-"))).count();
+        .is_some_and(|id|id.starts_with("harness-preflight-")
+            ||id.starts_with("harness-failure-probe-"))).count();
     let dirty=evidence.iter().any(|e|{
         e.kind=="tool_result" &&
         e.detail.as_ref().and_then(|d|d["name"].as_str())==Some("git_status") &&
@@ -265,7 +267,8 @@ pub(crate) fn compare_current(run:&Run)->Option<PathComparison>{
     evidence_sequences.sort_unstable();
     evidence_sequences.dedup();
     Some(PathComparison{selected,guidance,candidates,evidence_sequences,
-        observed_tool_receipts:successes+failures,inference_calls:0})
+        observed_tool_receipts:successes+failures,
+        active_probe_receipts:probe_count,inference_calls:0})
 }
 
 #[cfg(test)]
