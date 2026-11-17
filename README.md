@@ -158,3 +158,8 @@ npm run e2e
 CI separately checks native Rust API, TypeScript, browser E2E, external MCP interoperability, fsync crash-recovery endurance and deterministic benchmark-runner invariants. These tests establish regression safety, **not** a measured victory over frontier models.
 
 See [Architecture](docs/ARCHITECTURE.md) and [Native Rust SDK](docs/RUST_SDK.md). Older 2026 feature studies in `docs/` are historical research notes; the active runtime and API are defined by the current source tree.
+
+
+## Money research (2026 Sub4)
+
+The **돈벌이 찾기** menu uses the existing Rust execution server and TypeScript SDK. An independently persisted SQLite source archive collects bounded multilingual market RSS and public GitHub/Hugging Face metrics (no model tokens), classifies changes, and pairs independent supply/buyer observations into **unverified commercial hypotheses**. A selectable AI agent may perform one extra evidence-bound model-only native Run; provider routing, cancellation, charging, and durable journal are shared with Chat/SDK. Optional half-hour source scans and six-hour catalog scans are off by default. Source mentions and stars/downloads are not proven paying customers. Money never automatically spends business capital or launches implementation. API: `/api/money/*` and `/api/v1/money/*`; details: `docs/SUB4_MONEY_INTEGRATION_2026-11-17.md`.

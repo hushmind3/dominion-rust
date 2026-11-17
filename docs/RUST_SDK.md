@@ -94,3 +94,8 @@ Supported: active private chats, agents and compatible provider configurations. 
 The pre-refactor video/RSI archives are not executed. Historical code remains in Git history, not in live runtime endpoints.
 
 See [Architecture](ARCHITECTURE.md), [project README](../README.md) and [TypeScript SDK](../sdk/typescript/README.md).
+
+
+## Money evidence and commercial research
+
+`Dominion::money_latest()` finalizes and reads the same report as GET /api/v1/money/find; `Dominion::money_signals(limit)` reads a bounded source archive; `Dominion::money_collect(force)` triggers bounded RSS and public GitHub/Hugging Face collection with separate error reporting. The TypeScript `sdk.money` API additionally exposes DB-only three-lead discovery, the optional single native model-only inference, user-rejected leads, and collector opt-in. Cost/abort/Run journals are shared with the native agent engine; the Money SQLite file is only evidence and proposed opportunities, not a second worker scheduler.

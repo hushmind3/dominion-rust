@@ -96,3 +96,8 @@ Source-level changes were verified in the `dominion-sub4` branch, with new start
 Local and CI: `cargo check --all-targets`, `cargo test --all-targets`, TypeScript checks, Vite production bundle, browser Playwright against a real Rust service, external MCP interop, deterministic benchmark fixtures and 256-run crash-recovery/30-second continuous soak. Long-term success rate, cost and model quality need matched real-provider task sets.
 
 The harness is an application runtime, not an OS security boundary. Approved shell tools require a properly configured sandbox. MCP remote side effects and provider spending require operator oversight; transcript evidence is not a substitute for remote reconciliation. Do not infer task success from model claims or omitted receipts.
+
+
+## Money domain (Sub4-only)
+
+The Money feature is a deliberately separate data/evidence module rooted at `src/money/`. Its `mod.rs` owns transactional SQLite source/candidate/metric snapshots. `sources.rs` and `catalog.rs` gather bounded allowlisted feeds and platform metadata. `intelligence.rs` labels lexical sector/change mentions without upgrading them to actual demand. `mechanism.rs` generates source-linked economic tension hypotheses. `api.rs` is a thin HTTP + native Run bridge; the only paid model path is the existing `Engine::launch` model-only worker and its native receipts. The existing main frontend and TypeScript SDK call those HTTP routes, with no alternate LLM service. Opt-in Rust SDK startup scheduler wakes at most every half hour, querying only the Money automation preference and never automatically invoking a model. The evidence DB does not share the Run journal's table or account credentials. See SUB4_MONEY_INTEGRATION_2026-11-17.md.
