@@ -72,6 +72,14 @@ println!("Run ID: {}", run.id);
 
 Public API families: `/api/v1/runs`, `/api/v1/groups`, `/api/v1/memory`, `/api/v1/strategies`; the React UI uses compatible `/api/*` routes backed by the same Rust Store. The retired `/api/v1/videos` and `/api/v1/improvements` return JSON 404; removed studio/RSI routes return JSON errors, never a fake success or the app's HTML.
 
+## November 18, 2026 — evidence-driven task path comparison (Sub4)
+
+When an attached repository begins a root agent Run, the Rust kernel can queue up to two small, read-only diagnostics (bounded `list_files` and `git_status`) **inside the existing durable tool-call journal**. The probes use normal operator-tool denial, cancellation, read-batch receipt, restart replay and transcript contracts; they do not run shell commands, mutate files, delegate, call a model or start a second scheduler.
+
+Before subsequent model turns the same kernel compares **direct edit, diagnosis, decomposition and verification** candidates against current real tool receipts and independent verifier-rejection events, records candidate scores and source event sequence IDs, and supplies one bounded advisory next-action choice. Failure, dirty-worktree and verifier evidence can change that choice. A generated path suggestion is **not permission** to use a tool or claim an alternative worked; the original approval, budgets, system directives and verification remain authoritative. No speculative model branch, automated cross-run promotion, or new research database is added.
+
+This is a limited active read-only probe plus evidence-guided routing, **not** a complete reproduction of Google Research Harness²'s task-level adaptation or PRISM's held-out search, and not DeepSeek's TypeScript program sandbox. Frontier task-completion, cost and throughput gains require same-task/same-model/same-budget comparisons. Related Rust tests are development-profile scoped; full release validation is deferred.
+
 ## November 17, 2026 sub4 maintenance
 
 - Boot-time recovery rewrites only semantically changed Run records, not every historical snapshot. Uncertain write outcomes remain paused until explicitly reconciled.
