@@ -4,7 +4,7 @@ use crate::{domain::{CreateRun,RunStatus},engine::Engine,sdk::{Dominion,RunOptio
 use axum::{extract::{Path,State},http::StatusCode,routing::{get,post},Json,Router};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{collections::{HashMap,HashSet},future::Future,path::PathBuf,sync::Arc};
+use std::{collections::{HashMap,HashSet},sync::Arc};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -176,7 +176,8 @@ async fn snapshot(engine:&Arc<Engine>)->Result<Value,Fault>{
 }
 fn parse_ideas(raw:&str,report:&Value,run:Uuid)->Result<Vec<Value>,String>{
     let raw=raw.trim();
-    let raw=raw.strip_prefix("&#96;&#96;&#96;json").unwrap_or(raw);
+    let raw=raw.strip_prefix("```json").or_else(||raw.strip_prefix("```")).unwrap_or(raw)
+        .trim().trim_end_matches("```").trim();
     let parsed:Value=serde_json::from_str(raw).map_err(|_|"AI 출력이 유효한 JSON 형식이 아닙니다.".to_string())?;
     let ideas=parsed["ideas"].as_array().ok_or("AI 출력에 ideas 배열이 없습니다.")?;
     let allowed=report["drafts"].as_array().into_iter().flatten()
@@ -337,6 +338,7 @@ Return only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\
     }else{
         blocking(move||super::save_report(&root,&drafts,&report)).await?;
     }
+    drop(_lock); // Finalizer may need the same lock if the provider already completed.
     snapshot(&engine).await.map(Json)
 }
 
