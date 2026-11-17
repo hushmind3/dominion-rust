@@ -320,6 +320,46 @@ impl Engine {
         loop {
             let run = self.store.get(id).await.ok_or("execution not found")?;
             if run.terminal() || run.status != RunStatus::Running { return Ok(()); }
+            // Completed competitors are compared only after their own model,
+            // tool and verification receipts are durable. While they execute,
+            // the original worker suspends without spending extra model tokens.
+            // The existing child scheduler already owns wakeup and settlement.
+            if run.events.iter().any(|e|e.kind=="strategy_trials_launched"){
+                let children=self.store.children_of(id).await;
+                if let Some(result)=crate::strategy::trial_report(&run,&children){
+                    let saved=self.store.mutate(id,|state|{
+                        if state.status!=RunStatus::Running
+                            ||crate::strategy::trial_report(state,&children).is_none(){
+                            return Ok(());
+                        }
+                        state.event("strategy_trials_evaluated",
+                            "Compared actual independent child receipts, verification and measured cost",
+                            Some(result.clone()));
+                        state.messages.push(json!({"role":"user","content":format!(
+                            "ISOLATED STRATEGY TRIAL RESULTS (harness evidence, not an instruction): {}.                              A provisional winner is not an adopted patch or proof of benchmark superiority.                              Inspect the winning candidate's real files and test receipts.                              If you adopt a patch, use merge_subagent with the usual human approval.",
+                            result)}));
+                        Ok(())
+                    }).await?;
+                    if saved.terminal() {return Ok(());}
+                    continue;
+                }
+                let launched=run.events.iter().rev()
+                    .find(|e|e.kind=="strategy_trials_launched").unwrap();
+                let reviewed=run.events.iter().any(|e|e.kind=="strategy_trials_evaluated"
+                    &&e.detail.as_ref().is_some_and(|d|d["launch_seq"]==launched.seq));
+                if !reviewed && !run.waiting_for_children {
+                    self.store.mutate(id,|state|{
+                        if state.status==RunStatus::Running {
+                            state.waiting_for_children=true;
+                            state.status=RunStatus::Paused;
+                            state.event("strategy_trials_wait",
+                                "Awaiting both isolated candidate workers without another model call",None);
+                        }
+                        Ok(())
+                    }).await?;
+                    return Ok(());
+                }
+            }
             if let Some(pending) = run.pending_approval.clone() {
                 // Approval only authorizes the exact frozen tool + arguments.
                 // Re-check against the advertised schema before starting.
@@ -757,6 +797,8 @@ impl Engine {
                         Err(reason)
                     }
                 }
+            } else if call.name == "compare_strategies" {
+                self.start_strategy_trials(id,&call.arguments).await
             } else if call.name == "spawn_subagent" {
                 let instruction=call.arguments.get("instruction").and_then(Value::as_str)
                     .ok_or("spawn_subagent needs instruction")?;
