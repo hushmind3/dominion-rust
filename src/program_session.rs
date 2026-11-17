@@ -156,8 +156,15 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
         let receipt=run.messages.iter().rev().find(|m|
             m["role"]=="tool"&&m["tool_call_id"]==id);
         let Some(receipt)=receipt else{
-            state.pending_step=Some(id);
+            // Neither replay the operation nor busy-loop on missing evidence.
+            // A write may already have taken effect; durable reconciliation
+            // must supply the exact tool receipt before resumption.
+            state.pending_step=Some(id.clone());
             run.program_session=Some(state);
+            run.status=crate::domain::RunStatus::Paused;
+            run.event("program_receipt_missing",
+                "Program awaiting a durable tool outcome; manual reconciliation required",
+                Some(json!({"call_id":id,"reconciliation_required":true})));
             return Ok(());
         };
         let body=receipt["content"].as_str().ok_or("program receipt must contain text")?;
@@ -314,6 +321,22 @@ mod tests{
         assert!(r.program_session.is_none());
         assert!(r.queued_calls.is_empty());
         assert!(r.events.iter().any(|e|e.kind=="program_unknown"));
+    }
+    #[test]
+    fn missing_program_step_receipt_pauses_instead_of_replaying_a_write(){
+        let mut r=run();let settings=Settings::from_env().unwrap();
+        r.program_session=Some(ProgramSession{
+            id:"p".into(),steps:vec![ProgramStep{id:"write".into(),
+                tool:"write_file".into(),
+                arguments:json!({"path":"s.txt","content":"effect"}),
+                when:None,on_error:None}],
+            cursor:0,pending_step:Some("program:p:write".into()),
+            observations:Map::new()
+        });
+        advance(&mut r,&settings).unwrap();
+        assert_eq!(r.status,RunStatus::Paused);
+        assert!(r.queued_calls.is_empty());
+        assert!(r.events.iter().any(|e|e.kind=="program_receipt_missing"));
     }
     #[test]
     fn recovered_write_receipt_advances_without_replaying_mutation(){
