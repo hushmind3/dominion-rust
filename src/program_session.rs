@@ -453,6 +453,37 @@ mod tests{
     }
 
     #[test]
+    fn deliberate_error_continuation_is_reported_as_partial_not_full_success(){
+        let mut run=run();let settings=Settings::from_env().unwrap();
+        let outer=ToolCall{id:"partial".into(),name:"run_program".into(),
+            arguments:json!({"steps":[
+                {"id":"miss","tool":"read_file",
+                    "arguments":{"path":"missing.rs"},"on_error":"continue"},
+                {"id":"found","tool":"read_file",
+                    "arguments":{"path":"known.rs"}}
+            ]})};
+        run.queued_calls.push(outer.clone());
+        crate::journal::begin(&mut run,&outer).unwrap();
+        install(&mut run,&outer,&settings).unwrap();
+        crate::journal::finish(&mut run,&outer,&Ok("scheduled".into()),false).unwrap();
+        advance(&mut run,&settings).unwrap();
+        let first=run.queued_calls[0].clone();
+        crate::journal::begin(&mut run,&first).unwrap();
+        crate::journal::finish(&mut run,&first,&Err("missing source".into()),false).unwrap();
+        advance(&mut run,&settings).unwrap();
+        assert_eq!(run.queued_calls.len(),1);
+        let second=run.queued_calls[0].clone();
+        crate::journal::begin(&mut run,&second).unwrap();
+        crate::journal::finish(&mut run,&second,&Ok("valid source".into()),false).unwrap();
+        advance(&mut run,&settings).unwrap();
+        assert!(run.program_session.is_none());
+        assert!(run.events.iter().any(|e|e.kind=="program_completed_with_errors"
+            &&e.detail.as_ref().is_some_and(|d|d["failed"]==1
+                &&d["successful"]==1)));
+        assert!(run.messages.last().unwrap()["content"].as_str()
+            .unwrap().contains("1 failed"));
+    }
+    #[test]
     fn native_parallel_inspection_can_be_nested_in_original_journal_program(){
         let settings=Settings::from_env().unwrap();
         let r=run();
