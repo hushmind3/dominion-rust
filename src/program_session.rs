@@ -386,14 +386,18 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
         run.program_session=Some(state);
         return Ok(());
     }
-    run.event("program_completed",
-        format!("Completed {} native program steps",state.steps.len()),
-        Some(json!({"program_id":state.id,"observations":state.observations.len(),
-            "model_calls_inside":0})));
+    let completed=state.observations.values().filter(|v|v["status"]=="ok").count();
+    let failed=state.observations.values().filter(|v|v["status"]=="error").count();
+    let skipped=state.observations.values().filter(|v|v["status"]=="skipped").count();
+    let event=if failed>0{"program_completed_with_errors"}else{"program_completed"};
+    run.event(event,
+        format!("Native program settled: {completed} successful, {failed} failed, {skipped} skipped"),
+        Some(json!({"program_id":state.id,"successful":completed,
+            "failed":failed,"skipped":skipped,
+            "observations":state.observations.len(),"model_calls_inside":0})));
     run.messages.push(json!({"role":"user","content":format!(
-        "PROGRAM RECEIPTS: Program {} has finished {} native tool operations. \
-         Examine real tool outputs and the artifact state before writing a final answer.",
-        state.id,state.steps.len())}));
+        "PROGRAM RECEIPTS: Program {} settled {} operations: {} succeeded, {} failed, {} skipped.          Read the real tool receipts and verify the final artifacts; failed work is not completed work.",
+        state.id,state.steps.len(),completed,failed,skipped)}));
     Ok(())
 }
 
