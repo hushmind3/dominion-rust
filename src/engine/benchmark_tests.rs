@@ -424,3 +424,118 @@ async fn read_program_fuses_planning_and_skips_duplicate_model_audit(){
     server.abort();
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
+
+
+/// Programmatic Tool Calling integration: ONE model request issues a mixed
+/// read/write program. Subsequent steps are executed by the original Rust
+/// journal without additional model turns. A second model request finishes.
+async fn composed_program_mock(
+    State(counter):State<Arc<AtomicUsize>>,Json(request):Json<Value>
+)->Json<Value>{
+    let round=counter.fetch_add(1,Ordering::SeqCst);
+    let message=match round{
+        0=>{
+            assert!(request["tools"].as_array().is_some_and(|xs|
+                xs.iter().any(|x|x.pointer("/function/name").and_then(Value::as_str)
+                    ==Some("run_program"))));
+            json!({"role":"assistant","content":null,"tool_calls":[{
+                "id":"integrated-program-1","type":"function","function":{
+                    "name":"run_program",
+                    "arguments":json!({"steps":[
+                        {"id":"write","tool":"write_file",
+                            "arguments":{"path":"result.rs","content":"pub fn old()->i32{ 1 }\n"}},
+                        {"id":"locate","tool":"search_files",
+                            "arguments":{"query":"pub fn old"}},
+                        {"id":"inspect","tool":"read_file",
+                            "arguments":{"path":{"from":"locate","path":"/value/0/file"}},
+                            "when":{"type":"equals","from":"locate",
+                                "path":"/status","value":"ok"}},
+                        {"id":"edit","tool":"edit_file",
+                            "arguments":{"path":{"from":"locate","path":"/value/0/file"},
+                                "old_text":"old()->i32{ 1 }",
+                                "new_text":"new()->i32{ 42 }"},
+                            "when":{"type":"all","predicates":[
+                                {"type":"equals","from":"inspect","path":"/status","value":"ok"},
+                                {"type":"equals","from":"locate","path":"/status","value":"ok"}
+                            ]}},
+                        {"id":"verify","tool":"read_file",
+                            "arguments":{"path":{"from":"locate","path":"/value/0/file"}}}
+                    ]}).to_string()
+                }
+            }]})
+        },
+        1=>{
+            let messages=request["messages"].as_array().unwrap();
+            assert!(messages.iter().any(|m|m["role"]=="tool"
+                &&m["tool_call_id"]=="program:integrated-program-1:edit"
+                &&m["content"].as_str().is_some_and(|s|s.contains("edited"))));
+            assert!(messages.iter().any(|m|m["role"]=="tool"
+                &&m["tool_call_id"]=="program:integrated-program-1:verify"
+                &&m["content"].as_str().is_some_and(|s|s.contains("new()->i32{ 42 }"))));
+            json!({"role":"assistant","content":"Updated result.rs and verified new()->i32{ 42 }."})
+        },
+        _=>json!({"role":"assistant","content":"Unexpected extra model call"})
+    };
+    Json(json!({"choices":[{"message":message}],
+        "usage":{"prompt_tokens":30,"completion_tokens":11}}))
+}
+#[tokio::test]
+async fn programmatic_tool_calls_write_edit_search_verify_via_existing_journal(){
+    let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address=listener.local_addr().unwrap();
+    let turns=Arc::new(AtomicUsize::new(0));
+    let server=tokio::spawn({
+        let turns=Arc::clone(&turns);
+        async move{
+            axum::serve(listener,Router::new()
+                .route("/chat/completions",post(composed_program_mock))
+                .with_state(turns)).await.unwrap();
+        }
+    });
+    let root=std::env::temp_dir().join(format!("dominion-integrated-program-{}",Uuid::new_v4()));
+    let mut settings=Settings::from_env().unwrap();
+    settings.data_dir=root.join("data");
+    settings.workspace_dir=root.join("workspace");
+    settings.main.base_url=format!("http://{address}");
+    settings.main.api_key.clear();
+    settings.economy=settings.main.clone();
+    settings.separate_plan_model_call=false;
+    settings.separate_model_audit_enabled=false;
+    let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+    let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+    let engine=Engine::new(settings.clone(),store.clone(),groups).unwrap();
+    let run=Run::new(CreateRun{
+        instruction:"Create, find, inspect, edit and verify result.rs".into(),
+        budget_krw:Some(500.0),max_steps:Some(6)
+    },6).unwrap();
+    let id=run.id;
+    store.put(run).await.unwrap();
+    engine.launch(id).await.unwrap();
+    let mut finished=None;
+    for _ in 0..160{
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        let state=store.get(id).await.unwrap();
+        if state.terminal(){finished=Some(state);break;}
+    }
+    let result=finished.expect("native program did not finish");
+    assert_eq!(result.status,RunStatus::Completed,"events={:?}",result.events);
+    assert_eq!(turns.load(Ordering::SeqCst),2,
+        "five native tool steps must use two total model requests, not seven");
+    assert!(result.program_session.is_none());
+    assert_eq!(result.steps,2);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="program_step_ready").count(),5);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="program_observed").count(),5);
+    assert_eq!(result.events.iter().filter(|e|e.kind=="tool_result").count(),6);
+    assert!(result.events.iter().any(|e|e.kind=="program_completed"));
+    assert_eq!(tokio::fs::read_to_string(settings.workspace_dir
+        .join(id.to_string()).join("result.rs")).await.unwrap(),
+        "pub fn new()->i32{ 42 }\n");
+    let persisted=Store::open(root.join("data/runs")).await.unwrap().get(id).await.unwrap();
+    assert!(persisted.events.iter().any(|e|e.kind=="program_completed"));
+    for _ in 0..100{
+        if !engine.active.lock().await.contains(&id){break;}
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    server.abort();
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
