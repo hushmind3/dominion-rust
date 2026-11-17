@@ -166,6 +166,42 @@ pub(crate) fn preflight(run:&Run,denied:&[String])->Vec<crate::domain::ToolCall>
     }).collect()
 }
 
+/// An observed missing-path failure can trigger one additional bounded,
+/// read-only diagnosis BEFORE asking the model again. The normal Engine
+/// journal dispatches it; the strategy layer never executes tools itself.
+/// Two reactive probes maximum per Run, no duplicate probe for a receipt.
+pub(crate) fn failure_probe(run:&Run,denied:&[String])
+    ->Option<(crate::domain::ToolCall,u64)>{
+    use crate::{domain::{RunStatus,ToolCall},policy};
+    use serde_json::json;
+    if run.repository.is_none() || run.model_only
+        || run.status!=RunStatus::Running || !run.queued_calls.is_empty()
+        || run.in_flight.is_some() || !run.read_batch_in_flight.is_empty()
+        || run.pending_approval.is_some()
+        || !policy::admitted_tool(run,"list_files",denied) {
+        return None;
+    }
+    let advice=crate::repair_guidance::advise(run)?;
+    if advice.kind!="missing_path" {return None;}
+    let already=run.events.iter().filter(|e|e.kind=="strategy_probe_scheduled"
+        && e.detail.as_ref().is_some_and(|d|d["kind"]=="failure"))
+        .collect::<Vec<_>>();
+    if already.len()>=2 || already.iter().any(|e|
+        e.detail.as_ref().is_some_and(|d|d["failure_seq"]==advice.source_seq)){
+        return None;
+    }
+    // Do not repeat a completed file inventory from this failure interval.
+    if run.events.iter().any(|e|e.seq>advice.source_seq
+        && e.kind=="tool_result" && e.detail.as_ref()
+            .and_then(|d|d["name"].as_str())==Some("list_files")){
+        return None;
+    }
+    Some((ToolCall{
+        id:format!("harness-failure-probe-{}-{}",advice.source_seq,run.id),
+        name:"list_files".into(),arguments:json!({"path":"","limit":80}),
+    },advice.source_seq))
+}
+
 /// Re-evaluate on every actual model turn after tool receipts or a verifier
 /// rejection. Only low-trust output *properties* (error, nonempty diff,
 /// successful read) contribute; arbitrary tool text is not executable advice.
