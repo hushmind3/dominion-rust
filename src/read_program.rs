@@ -606,6 +606,57 @@ mod tests{
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
     #[tokio::test]
+    async fn main_program_typed_predicates_combine_with_runtime_tool_dataflow(){
+        let mut settings=Settings::from_env().unwrap();
+        let root=std::env::temp_dir().join(format!("dominion-predicate-ptc-{}",Uuid::new_v4()));
+        settings.workspace_dir=root.clone();
+        let run=example();
+        let dir=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("chosen.rs"),"signal=present\n").await.unwrap();
+        tokio::fs::write(dir.join("ignored.rs"),"irrelevant\n").await.unwrap();
+        let result=execute(&settings,&run,&json!({"steps":[
+            {"id":"scan","tool":"search_files","arguments":{"query":"signal=present"}},
+            {"id":"target","tool":"read_file",
+                "arguments":{"path":{"from":"scan","path":"/value/0/file"}},
+                "when":{"step":"scan","status":"ok",
+                    "predicate":{"type":"all","predicates":[
+                        {"type":"equals","from":"scan","path":"/status","value":"ok"},
+                        {"type":"compare","from":"scan","path":"/value/0/line",
+                            "op":"gte","value":1}
+                    ]}}}
+        ]})).await.unwrap();
+        let value:Value=serde_json::from_str(&result).unwrap();
+        assert_eq!(value["nested_read_calls"],2);
+        assert_eq!(value["model_calls_inside"],0);
+        assert_eq!(value["execution_waves"],2);
+        assert_eq!(value["steps"][1]["status"],"ok");
+        assert!(value["steps"][1]["result"].as_str().unwrap().contains("signal=present"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
+    async fn missing_dynamic_observation_pointer_yields_error_not_path_guess(){
+        let mut settings=Settings::from_env().unwrap();
+        let root=std::env::temp_dir().join(format!("dominion-dataflow-fail-{}",Uuid::new_v4()));
+        settings.workspace_dir=root.clone();
+        let run=example();
+        let dir=root.join(run.id.to_string());
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join("existing.rs"),"exists\n").await.unwrap();
+        let output=execute(&settings,&run,&json!({"steps":[
+            {"id":"files","tool":"list_files","arguments":{"path":""}},
+            {"id":"missing","tool":"read_file",
+                "arguments":{"path":{"from":"files","path":"/value/99"}}}
+        ]})).await.unwrap();
+        let result:Value=serde_json::from_str(&output).unwrap();
+        assert_eq!(result["nested_read_calls"],1);
+        assert_eq!(result["steps"][0]["status"],"ok");
+        assert_eq!(result["steps"][1]["status"],"error");
+        assert!(result["steps"][1]["reason"].as_str().unwrap()
+            .contains("missing observation pointer"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
     async fn objective_short_circuits_only_after_grounded_witness(){
         let mut settings=Settings::from_env().unwrap();
         let root=std::env::temp_dir().join(format!("dominion-evidence-short-{}",Uuid::new_v4()));
