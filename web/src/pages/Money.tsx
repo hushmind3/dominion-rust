@@ -12,6 +12,7 @@ type Lead={
  id:string;title:string;offer?:string;customer?:string;
  whyPay?:string;implementationPlan?:string;firstPaymentStep?:string;
  counterfactual?:string;firstTest?:string;evidenceStatus?:string;
+ causalChain?:string;existingAlternatives?:string;firstBuyerAccess?:string;
  evidence?:Evidence[];origin?:string;status?:string;implementationRunId?:string
 }
 type Report={
@@ -286,6 +287,15 @@ export function MoneyPage(){
      <div><dt className="font-bold text-[#9D735C]">구현 방법</dt><dd className="mt-1 leading-5">{lead.implementationPlan||lead.firstTest||'원문 확인 후 설계'}</dd></div>
      <div><dt className="font-bold text-[#9D735C]">첫 유료 검증</dt><dd className="mt-1 leading-5">{lead.firstPaymentStep||'고객 확인 필요'}</dd></div>
     </dl>
+    {lead.causalChain&&<p className="mt-3 text-[12px] leading-5 text-[#64584A]">
+     <strong className="text-[#9D735C]">돈벌이 연결 논리: </strong>{lead.causalChain}
+    </p>}
+    {lead.existingAlternatives&&<p className="mt-2 text-[12px] leading-5 text-[#64584A]">
+     <strong className="text-[#9D735C]">기존 대체재: </strong>{lead.existingAlternatives}
+    </p>}
+    {lead.firstBuyerAccess&&<p className="mt-2 text-[12px] leading-5 text-[#64584A]">
+     <strong className="text-[#9D735C]">첫 구매자 접근: </strong>{lead.firstBuyerAccess}
+    </p>}
     {lead.counterfactual&&<p className="mt-3 rounded-lg bg-[#F8F5EE] px-3 py-2 text-[11px] leading-5 text-[#776B5E]">
      실패 조건: {lead.counterfactual}
     </p>}
