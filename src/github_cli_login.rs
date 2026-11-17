@@ -61,6 +61,12 @@ async fn phase(login:&Login,status:&'static str,message:&str){
   p.phase=status;p.message=message.to_owned();
  }
 }
+async fn gh_authorized()->bool{
+ tokio::time::timeout(Duration::from_secs(5),Command::new("gh")
+  .args(["auth","status","--hostname","github.com"])
+  .kill_on_drop(true).output()).await
+  .is_ok_and(|v|v.is_ok_and(|output|output.status.success()))
+}
 async fn capture<R:AsyncRead+Unpin>(mut stream:R,login:Arc<Login>){
  let mut buffer=String::new();
  let mut bytes=[0;2048];
@@ -121,8 +127,9 @@ async fn start(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
   }
   let (state,message)=tokio::select!{
    result=child.wait()=>match result{
-    Ok(exit) if exit.success()=>("completed","GitHub 인증을 마쳤습니다."),
-    _=>("failed","GitHub CLI 인증이 종료됐습니다. 다시 로그인하세요.")
+    Ok(exit) if exit.success() && gh_authorized().await=>
+      ("completed","GitHub 인증을 마쳤습니다."),
+    _=>("failed","GitHub CLI 인증이 완료되지 않았습니다. 다시 로그인하세요.")
    },
    _=&mut rx=>{let _=child.kill().await;("cancelled","GitHub 인증이 취소됐습니다.")},
    _=tokio::time::sleep(Duration::from_secs(600))=>{

@@ -249,6 +249,7 @@ pub fn routes()->Router<Arc<Engine>>{
   .route("/oauth/{id}/callback",get(callback))
   .route("/oauth/{id}/open",post(open_unavailable))
   .route("/oauth/github/cli/import",post(import_github_cli))
+  .merge(crate::github_cli_login::routes())
 }
 async fn providers(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
  let store=read(&engine.settings).map_err(bad)?;
@@ -412,13 +413,13 @@ async fn callback(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
 /// GitHub CLI can supply an already-authenticated local account without
 /// any Dominion OAuth app credentials. This route never opens a shell or
 /// accepts paths/commands/tokens from the browser.
-fn local_cli_eligible(settings:&Settings)->bool{
+pub(crate) fn local_cli_eligible(settings:&Settings)->bool{
  settings.bind.ip().is_loopback() && std::env::var("DOMINION_PUBLIC_URL").ok()
   .is_none_or(|u|reqwest::Url::parse(&u).ok().is_some_and(|parsed|
    parsed.scheme()=="http"&&parsed.host_str().is_some_and(|h|
     h=="localhost"||h.parse::<std::net::IpAddr>().is_ok_and(|ip|ip.is_loopback()))))
 }
-async fn github_cli_installed()->bool{
+pub(crate) async fn github_cli_installed()->bool{
  timeout(Duration::from_secs(3),Command::new("gh").arg("--version")
   .kill_on_drop(true).output()).await.is_ok_and(|v|v.is_ok_and(|o|o.status.success()))
 }

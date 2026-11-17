@@ -10,6 +10,7 @@ pub mod knowledge;
 pub mod legacy_import;
 pub mod legacy_archive;
 pub mod github_work;
+pub mod github_cli_login;
 pub mod github_collab;
 pub mod google_workspace;
 pub mod connected_tools;
