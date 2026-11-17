@@ -156,7 +156,12 @@ impl Dominion {
         Ok(self.get(id).await?.events.into_iter().filter(|e|e.seq>since).collect())
     }
     pub async fn approve(&self,id:Uuid,allow:bool)->Result<(),String>{self.engine.approve(id,allow).await}
-    pub async fn resume(&self,id:Uuid)->Result<(),String>{self.engine.launch(id).await}
+    pub async fn resume(&self,id:Uuid)->Result<(),String>{
+        if self.get(id).await?.model_only{
+            return Err("model-only chat cannot be resumed without its bound chat session".into());
+        }
+        self.engine.launch(id).await
+    }
     pub async fn cancel(&self,id:Uuid)->Result<Run,String>{self.engine.cancel(id).await}
     pub async fn instruct(&self,id:Uuid,text:String)->Result<Run,String>{self.engine.directive(id,text).await}
     pub async fn reconcile(&self,id:Uuid,input:ReconcileTool)->Result<Run,String>{self.engine.reconcile(id,input).await}

@@ -17,20 +17,25 @@ pub(super) async fn sync_session(engine:&Arc<Engine>,id:&str)->Result<(),String>
     let answer=if run.status==RunStatus::Completed{
         run.answer.clone().filter(|text|!text.trim().is_empty())
     }else{None};
+    let actual_model=if run.model_name.trim().is_empty(){
+        engine.settings.main.name.clone()
+    }else{run.model_name.clone()};
     let message=answer.map(|text|UiMessage{
         id:Uuid::new_v4().to_string(),session_id:id.into(),
         role:"assistant".into(),content:text,created_at:timestamp(now_ms()),
         agent_id:Some(session.agent_id.clone()),
         metadata:Some(json!({
             "executionId":run.id,
-            "model":engine.settings.main.name,
+            "model":actual_model,
+            "providerId":run.provider_id,
             "status":run.status,
             "costKrw":run.cost_krw,
             "usage":{
                 "promptTokens":run.input_tokens,"cachedPromptTokens":run.cached_input_tokens,
                 "completionTokens":run.output_tokens,
                 "totalTokens":run.input_tokens+run.output_tokens,
-                "model":engine.settings.main.name
+                "model":actual_model,
+                "providerId":run.provider_id
             }
         })),
     });

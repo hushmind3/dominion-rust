@@ -120,7 +120,6 @@ impl Engine {
             if !guard.insert(id) { return Err("execution is already active".into()); }
         }
         let started = self.store.mutate(id, |run| {
-            if run.model_only {return Err("model-only chat cannot be launched as a tool agent".into());}
             if run.terminal() { return Err("cannot restart finished execution".into()); }
             if run.in_flight.is_some() || !run.read_batch_in_flight.is_empty() { return Err("interrupted tool may have side effects; reconcile before resuming".into()); }
             if run.waiting_for_children {return Err("delegated workers are still active; parent resumes automatically after settlement".into());}
@@ -128,7 +127,8 @@ impl Engine {
                 return Err("approval required before resuming".into());
             }
             run.status = RunStatus::Running;
-            run.event("resumed", "Execution worker started", None);
+            run.event(if run.model_only {"model_only"}else{"resumed"},
+                if run.model_only {"Native tool-free chat worker started"}else{"Execution worker started"},None);
             Ok(())
         }).await;
         if let Err(e) = started {
@@ -140,7 +140,13 @@ impl Engine {
         self.cancellation.lock().await.insert(id,cancel_tx);
         let engine = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = engine.drive(id,cancel_rx).await {
+            let model_only=engine.store.get(id).await.is_some_and(|run|run.model_only);
+            let result=if model_only{
+                engine.drive_model_only(id,cancel_rx).await
+            }else{
+                engine.drive(id,cancel_rx).await
+            };
+            if let Err(error) = result {
                 tracing::warn!(%id, "execution error: {error}");
                 let _ = engine.store.mutate(id, |run| {
                     if !run.terminal() {
@@ -164,6 +170,56 @@ impl Engine {
                 }
             }
         });
+        Ok(())
+    }
+    /// Tool-free chat shares the native worker registry, cancellation channel,
+    /// provider routing, budget ledger and crash recovery with agent jobs.
+    /// Exactly one billable model turn runs; no tool schemas are offered.
+    async fn drive_model_only(&self,id:Uuid,mut cancellation:watch::Receiver<bool>)
+        ->Result<(),String>{
+        let run=self.store.get(id).await.ok_or("execution not found")?;
+        if run.status!=RunStatus::Running||!run.model_only{return Ok(());}
+        let selected=self.model_for_run(&run)?;
+        let messages=vec![
+            json!({"role":"system","content":"Respond to the user's chat request accurately and directly. Do not claim to have executed tools or accessed files. No tools are available during this turn."}),
+            json!({"role":"user","content":run.instruction}),
+        ];
+        self.providers.throttle(&run.provider_id).await;
+        let reply=tokio::select!{
+            biased;
+            _=cancellation.changed()=>return Ok(()),
+            answer=selected.complete(&messages,&[],false)=>answer
+        };
+        self.store.mutate(id,|run|{
+            // A concurrent cancellation or restart always wins: no answer
+            // publication or resurrection after an authoritative transition.
+            if run.terminal()||run.status!=RunStatus::Running{return Ok(());}
+            match reply{
+                Ok(ref result)=>{
+                    Self::account(run,result);
+                    if !result.calls.is_empty(){
+                        run.status=RunStatus::Failed;
+                        run.event("model_only_tool_denied",
+                            "Provider returned tool calls despite a tool-free request",None);
+                    }else if run.cost_krw>run.budget_krw{
+                        run.status=RunStatus::Failed;
+                        run.event("budget_exceeded","Tool-free provider response exceeded the configured budget",None);
+                    }else if result.text.trim().is_empty(){
+                        run.status=RunStatus::Failed;
+                        run.event("model_empty","Provider returned no chat response",None);
+                    }else{
+                        run.answer=Some(result.text.clone());
+                        run.status=RunStatus::Completed;
+                        run.event("completed","Tool-free chat completed in native execution kernel",None);
+                    }
+                },
+                Err(ref error)=>{
+                    run.status=RunStatus::Failed;
+                    run.event("provider_error",error.clone(),None);
+                }
+            }
+            Ok(())
+        }).await?;
         Ok(())
     }
     fn account(run: &mut Run, reply: &Reply) {

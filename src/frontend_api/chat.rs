@@ -58,98 +58,16 @@ pub(super) async fn chat(State(engine):State<Arc<Engine>>,Json(input):Json<ChatI
                 strategy_learning:input.auto_learning,model_only
             }).await.map_err(bad)?;
     engine.frontend.begin_turn(&record.id,input.input.trim(),run.id).await.map_err(broken)?;
-    if model_only{
-        let worker=Arc::clone(&engine);
-        let id=run.id;
-        let messages=vec![
-            json!({"role":"system","content":"Respond to the user's chat request accurately and directly. Do not claim to have executed tools or accessed files. No tools are available during this turn."}),
-            json!({"role":"user","content":run.instruction.clone()}),
-        ];
-        worker.store.mutate(id,|item|{
-            item.status=RunStatus::Running;
-            item.event("model_only","Tool-free chat turn requested by the user",None);
-            Ok(())
-        }).await.map_err(broken)?;
-        tokio::spawn(async move {
-            // Drop the HTTP future on cancellation rather than continuing
-            // an expensive provider call in the background.
-            let selected_model=match worker.store.get(id).await{
-                Some(run)=>match worker.model_for_run(&run){
-                    Ok(model)=>model,
-                    Err(error)=>{
-                        let _=worker.store.mutate(id,|item|{
-                            item.status=RunStatus::Failed;
-                            item.event("provider_missing",error,None);Ok(())
-                        }).await;
-                        return;
-                    }
-                },
-                None=>return,
-            };
-            let current=worker.store.get(id).await;
-            if let Some(current)=current{
-                worker.providers.throttle(&current.provider_id).await;
-            }
-            // Subscribe first, then inspect state, then await signals.
-            // Never issue a full-Run read 4 times per second while the
-            // provider is thinking. Cancellation wins simultaneous completion.
-            let mut changes=worker.store.subscribe();
-            let answer=tokio::select!{
-                biased;
-                _=async{
-                    loop{
-                        if worker.store.get(id).await.is_none_or(|item|
-                            item.status!=RunStatus::Running){break;}
-                        if !worker.store.changed(id,&mut changes).await{break;}
-                    }
-                }=>None,
-                result=selected_model.complete(&messages,&[],false)=>Some(result),
-            };
-            let Some(answer)=answer else{return;};
-            let saved=worker.store.mutate(id,|item|{
-                // Cancellation can win while the provider is responding.
-                // Never resurrect a cancelled run or publish its answer.
-                if item.terminal() || item.status!=RunStatus::Running{return Ok(());}
-                match answer {
-                    Ok(ref reply)=>{
-                        item.input_tokens=item.input_tokens.saturating_add(reply.input_tokens);
-                        item.cached_input_tokens=item.cached_input_tokens.saturating_add(reply.cached_input_tokens);
-                        item.cache_write_tokens=item.cache_write_tokens.saturating_add(reply.cache_write_tokens);
-                        item.output_tokens=item.output_tokens.saturating_add(reply.output_tokens);
-                        item.cost_krw+=reply.cost_krw;
-                        item.event("model",
-                            format!("{} · in {} / out {} tokens · {:.4} KRW",
-                                reply.model,reply.input_tokens,reply.output_tokens,reply.cost_krw),
-                            Some(json!({"tool_calls":0})));
-                        if item.cost_krw>item.budget_krw{
-                            item.status=RunStatus::Failed;
-                            item.event("budget_exceeded","Model-only response exceeded the run budget",None);
-                        }else if reply.text.trim().is_empty(){
-                            item.status=RunStatus::Failed;
-                            item.event("model_empty","Provider returned no content",None);
-                        }else{
-                            item.answer=Some(reply.text.clone());
-                            item.status=RunStatus::Completed;
-                            item.event("completed","Model-only chat turn completed without tools",None);
-                        }
-                    },
-                    Err(ref error)=>{
-                        item.status=RunStatus::Failed;
-                        item.event("provider_error",error.clone(),None);
-                    }
-                }
-                Ok(())
-            }).await;
-            if let Err(error)=saved{tracing::error!(%id,%error,"unable to persist model-only chat response");}
-        });
-    }else if let Err(e)=engine.launch(run.id).await{
+    // Both tool agents and tool-free chat now launch through the same native
+    // worker/cancellation lifecycle. No independent model-only executor.
+    if let Err(error)=engine.launch(run.id).await{
         let _=engine.store.mutate(run.id,|item|{
             item.status=RunStatus::Failed;
-            item.event("launch_error",e.clone(),None);
+            item.event("launch_error",error.clone(),None);
             Ok(())
         }).await;
         let _=engine.frontend.finish_turn(&record.id,run.id,None).await;
-        return Err(bad(e));
+        return Err(bad(error));
     }
     let worker=Arc::clone(&engine);
     let session_id=record.id.clone();
