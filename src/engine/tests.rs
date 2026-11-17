@@ -68,6 +68,85 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn strategy_trial_requires_owner_approval_before_spending_any_child_budget(){
+        let root=std::env::temp_dir().join(format!("dominion-strategy-approval-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups).unwrap();
+        let mut run=Run::new(CreateRun{instruction:"Improve two Rust files".into(),
+            budget_krw:Some(400.0),max_steps:Some(8)},8).unwrap();
+        run.repository=Some("example/example".into());
+        run.base_commit=Some("aaa".into());
+        run.plan=Some("Compare two approaches".into());
+        let call=ToolCall{id:"compare-1".into(),name:"compare_strategies".into(),
+            arguments:json!({"approaches":[
+                {"label":"small patch","instruction":"Edit only the observed failure"},
+                {"label":"structural repair","instruction":"Analyze the module boundary and repair"}
+            ],"budget_krw_per_candidate":100.0,"max_steps_per_candidate":6})};
+        run.messages.push(json!({"role":"assistant","content":null,"tool_calls":[{
+            "id":call.id,"type":"function","function":{
+                "name":call.name,"arguments":call.arguments.to_string()
+            }
+        }]}));
+        run.queued_calls.push(call.clone());
+        let id=run.id;
+        store.put(run).await.unwrap();
+        engine.launch(id).await.unwrap();
+        let mut pending=None;
+        for _ in 0..100{
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let current=store.get(id).await.unwrap();
+            if current.status==RunStatus::AwaitingApproval {
+                pending=Some(current);break;
+            }
+        }
+        let waiting=pending.expect("strategy comparison was not sent to human approval");
+        assert_eq!(waiting.pending_approval.as_ref().unwrap().id,call.id);
+        assert_eq!(waiting.reserved_budget_krw,0.0);
+        assert!(store.children_of(id).await.is_empty());
+        engine.cancel(id).await.unwrap();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn strategy_trial_cancel_reaches_all_isolated_candidate_runs(){
+        let root=std::env::temp_dir().join(format!("dominion-strategy-cancel-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Arc::new(Store::open(settings.data_dir.join("runs")).await.unwrap());
+        let groups=Arc::new(crate::group::Groups::open(settings.data_dir.join("groups")).await.unwrap());
+        let engine=Engine::new(settings,store.clone(),groups).unwrap();
+        let mut parent=Run::new(CreateRun{
+            instruction:"Trial two fixes".into(),budget_krw:Some(300.0),max_steps:Some(8)},8).unwrap();
+        parent.status=RunStatus::Paused;
+        parent.waiting_for_children=true;
+        let id=parent.id;
+        store.put(parent).await.unwrap();
+        let mut ids=Vec::new();
+        for _ in 0..2{
+            let mut child=Run::new(CreateRun{
+                instruction:"Isolated repair".into(),budget_krw:Some(100.0),max_steps:Some(5)},5).unwrap();
+            child.parent_run_id=Some(id);
+            child.strategy_candidate=true;
+            child.status=RunStatus::Running;
+            ids.push(child.id);
+            store.put(child).await.unwrap();
+        }
+        engine.cancel(id).await.unwrap();
+        assert_eq!(store.get(id).await.unwrap().status,RunStatus::Cancelled);
+        for child_id in ids{
+            let child=store.get(child_id).await.unwrap();
+            assert_eq!(child.status,RunStatus::Cancelled);
+            assert!(child.events.iter().any(|e|e.kind=="cancelled"));
+        }
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn repetitive_failed_tool_is_rejected_then_paused_without_new_io(){
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
