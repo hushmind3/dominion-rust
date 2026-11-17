@@ -20,6 +20,54 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn durable_strategy_preflight_uses_existing_read_batch(){
+        let root=std::env::temp_dir().join(format!("dominion-path-probes-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let store=Store::open(settings.data_dir.join("runs")).await.unwrap();
+        let mut run=Run::new(CreateRun{
+            instruction:"Inspect several files before deciding how to repair".into(),
+            budget_krw:Some(100.0),max_steps:Some(10),
+        },10).unwrap();
+        run.repository=Some("attached".into());
+        run.plan=Some("Inspect first".into());
+        run.status=RunStatus::Running;
+        let id=run.id;
+        let probes=crate::strategy::preflight(&run,&settings.denied_tools);
+        assert_eq!(probes.len(),2);
+        run.queued_calls=probes.clone();
+        tokio::fs::create_dir_all(settings.workspace_dir.join(id.to_string()))
+            .await.unwrap();
+        tokio::fs::write(settings.workspace_dir.join(id.to_string()).join("sample.rs"),
+            "fn sample(){}\n").await.unwrap();
+        store.put(run).await.unwrap();
+        store.mutate(id,|run|journal::begin_read_batch(run,&probes)).await.unwrap();
+        let outcomes=tool_batch::execute_reads(&settings,id,probes.clone()).await;
+        assert!(outcomes[0].as_ref().is_ok_and(|text|text.contains("sample.rs")));
+        // git_status can fail if the fixture workspace is not a Git worktree.
+        // Such a real failure is evidence, not fabricated "clean" status.
+        store.mutate(id,|run|journal::finish_read_batch(run,&probes,&outcomes))
+            .await.unwrap();
+        let persisted=store.get(id).await.unwrap();
+        assert!(persisted.queued_calls.is_empty());
+        assert!(persisted.read_batch_in_flight.is_empty());
+        assert_eq!(persisted.messages.iter().filter(|m|m["role"]=="tool").count(),2);
+        assert_eq!(persisted.events.iter().filter(|e|
+            e.kind=="tool_result"||e.kind=="tool_error").count(),2);
+        let comparison=crate::strategy::compare_current(&persisted).unwrap();
+        assert_eq!(comparison.observed_tool_receipts,2);
+        assert_eq!(comparison.inference_calls,0);
+        assert!(!comparison.evidence_sequences.is_empty());
+        drop(store);
+        let reopened=Store::open(settings.data_dir.join("runs")).await.unwrap();
+        assert_eq!(reopened.get(id).await.unwrap().events.iter().filter(|e|
+            e.kind=="tool_result"||e.kind=="tool_error").count(),2);
+        drop(reopened);
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn repetitive_failed_tool_is_rejected_then_paused_without_new_io(){
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address=listener.local_addr().unwrap();
