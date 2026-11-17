@@ -75,7 +75,7 @@ Public API families: `/api/v1/runs`, `/api/v1/groups`, `/api/v1/memory`, `/api/v
 ## November 17, 2026 sub4 maintenance
 
 - Boot-time recovery rewrites only semantically changed Run records, not every historical snapshot. Uncertain write outcomes remain paused until explicitly reconciled.
-- Model-step child detection, delegation limits, parent settlement, and SDK restart selection no longer clone unrelated Run transcripts. A consistent two-level family snapshot preserves the existing descendant settlement condition; SDK startup selects resumable Run IDs only.
+- Model-step child detection, delegation limits, parent settlement, and SDK restart selection no longer clone unrelated Run transcripts. Parent→child IDs now share the Run map's metadata lock, so direct-child existence checks avoid scanning historical Runs and two-level family lookups visit only relevant descendants. Index changes publish atomically with the fsync-backed Run snapshot, including reparenting and restart reconstruction; SDK startup selects resumable Run IDs only.
 - The native execution engine keeps one scheduler; delegated work and its tests are isolated in `src/engine/delegation.rs` and `src/engine/tests.rs`.
 - Regression coverage was added for unchanged historical JSON bytes and direct/grandchild lookup isolation. Passing CI and measured latency improvement are **not** claimed until their results are inspected.
 - See [sub4 2026 implementation comparison](docs/SUB4_IMPLEMENTATION_REVIEW_2026.md) for real source-level comparisons and remaining gaps.
