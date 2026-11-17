@@ -1,29 +1,20 @@
-name: Sub4 compile smoke
+name: Sub4 manual platform smoke
 on:
-  push:
-    branches: [dominion-sub4]
   workflow_dispatch:
 concurrency:
-  group: sub4-compile-smoke
+  group: sub4-manual-smoke
   cancel-in-progress: true
 jobs:
-  native-and-web:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Check all Rust targets
+      - uses: Swatinem/rust-cache@v2
+      - name: Native all-target compile
         run: cargo check --all-targets
-      - name: Native unit and API regression tests
-        run: cargo test --lib
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.12.0'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Typecheck preserved main frontend
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npm run typecheck

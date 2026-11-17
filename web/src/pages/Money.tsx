@@ -242,6 +242,9 @@ export function MoneyPage(){
        공통 하네스 작업 · {implementationRuns[lead.implementationRunId]?.status||'상태 확인 중'} ·
        {implementationRuns[lead.implementationRunId]?.steps??0}단계
       </span>
+      <a href="#/activity" className="text-[11px] font-semibold text-[#A75835] hover:underline">
+       실행·승인 상세 보기
+      </a>
       {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
        <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}
         className="text-[11px] text-rose-700">작업 취소</button>}

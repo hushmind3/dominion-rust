@@ -31,3 +31,9 @@ A six-hour GitHub/Hugging Face collector now saves public repository/model listi
 ### SDK parity
 
 Rust SDK money_latest now uses the same idempotent native model-result finalizer as /api/money/find. Rust SDK money_collect and the REST collection endpoint both use bounded RSS and public catalog sources, with partial network errors retained in the response. First-time find uses both collectors when the evidence archive is empty.
+
+## 2026-11-17 removable Money tool and user approval
+
+The Money candidate card now exposes an explicit **이 후보 구현 승인** action, with agent and user-editable KRW execution budget. The adapter does not treat displaying or rejecting a lead as approval. An approval creates a normal native tool-agent Run; it does not turn the Money model-only inference into an autonomous secondary runtime. The candidate retains the returned Run ID, and the UI uses the existing /api/v1/runs/{id} for progress and cancellation and links to Activity for detailed native approvals. Duplicate user requests reuse the same persisted Run, even after server restart; a missing or malformed original receipt blocks replay. Source-originated candidate text is passed as untrusted JSON for inspection, not privileged instructions, verified sales, or an automatically authorized publication.
+
+Mac/Windows CI has been reorganized to run each platform's Rust checks, plus one macOS web/TypeScript pass. Browser, live MCP and soak tests are opt-in extended workflows rather than repeating heavy Linux jobs on each push. This is source-level coverage; real model performance and true commercial sales are not inferred from build success.

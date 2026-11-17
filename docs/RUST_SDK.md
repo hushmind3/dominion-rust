@@ -99,3 +99,9 @@ See [Architecture](ARCHITECTURE.md), [project README](../README.md) and [TypeScr
 ## Money evidence and commercial research
 
 `Dominion::money_latest()` finalizes and reads the same report as GET /api/v1/money/find; `Dominion::money_signals(limit)` reads a bounded source archive; `Dominion::money_collect(force)` triggers bounded RSS and public GitHub/Hugging Face collection with separate error reporting. The TypeScript `sdk.money` API additionally exposes DB-only three-lead discovery, the optional single native model-only inference, user-rejected leads, and collector opt-in. Cost/abort/Run journals are shared with the native agent engine; the Money SQLite file is only evidence and proposed opportunities, not a second worker scheduler.
+
+### Money approval to native work
+
+The Money HTTP adapter exposes `POST /api/money/candidates/{id}/implement` (also `/api/v1/money/...`), accepting an explicit `{approved:true,agentId,budgetKrw}`. It looks up a saved, non-rejected candidate, persists a single native Run ID in the same Money candidate record, and launches that Run via `Dominion::prepare_run` + `Engine::launch`. The request cannot start an independent provider or job runtime; replay returns the recorded Run. Approvals for later shell and connected writes remain owned by the existing native Run workflow.
+
+Use `GET /api/v1/runs/{id}` to read status and cost; `POST /api/v1/runs/{id}/cancel` for cancellation and `POST /api/v1/runs/{id}/approval` for exact-tool confirmation. An absent or corrupt prior Run receipt blocks automatic re-launch. No customers are contacted or payments initiated merely by selecting a research candidate.
