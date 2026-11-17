@@ -110,8 +110,19 @@ pub fn observations(run:&Run)->serde_json::Value{
             "attribution":"temporal_association_not_causal_lift"
         }));
     }
+    // Existing SDK/API repair-observations callers also get the actual
+    // candidate-score history without adding a second telemetry database.
+    // Every entry retains its durable source event sequence IDs.
+    let comparisons=run.events.iter().rev()
+        .filter(|event|event.kind=="strategy_compared")
+        .take(32).map(|event|json!({
+            "eventSeq":event.seq,
+            "atMs":event.at_ms,
+            "selection":event.detail,
+        })).collect::<Vec<_>>();
     json!({"runId":run.id,"status":run.status,"observations":entries,
-        "note":"An observed receipt or completion cannot establish that the chosen strategy caused success. Compare identical tasks, models, tools and budgets on held-out cases."})
+        "pathComparisons":comparisons,
+        "note":"Tool receipts are observed evidence, but an untried alternative has no measured outcome. Attribute lift only after same-case model/tool/budget holdouts."})
 }
 #[cfg(test)]
 mod tests{
