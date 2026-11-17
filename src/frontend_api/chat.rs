@@ -1,6 +1,8 @@
 //! Sub4 main-UI chat adapter; endpoint behavior preserved.
 use super::*;
 
+#[derive(Deserialize)]
+#[serde(rename_all="camelCase")]
 pub(super) struct ChatInput {
     session_id:String,agent_id:String,input:String,
     provider_id:Option<String>,model:Option<String>,

@@ -197,5 +197,3 @@ pub(super) async fn cancel_session(State(engine):State<Arc<Engine>>,Path(id):Pat
     Ok(Json(json!({"cancelled":true})))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all="camelCase")]
