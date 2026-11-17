@@ -75,7 +75,9 @@ impl Engine {
     async fn spawn_subagent_with_capability(self:&Arc<Self>,parent:Uuid,input:CreateRun,read_only:bool,strategy_candidate:bool)->Result<Run,String>{
         let _guard=self.delegate_lock.lock().await;
         let root=self.store.get(parent).await.ok_or("parent execution not found")?;
-        if root.terminal(){return Err("parent already terminated".into());}
+        if root.terminal() || root.status!=RunStatus::Running || root.cancel_after_tool {
+            return Err("parent is not actively running or has pending cancellation".into());
+        }
         let children=self.store.children_of(parent).await;
         if children.len()>=4{return Err("maximum of four direct subagents per run".into());}
         let remaining=(policy::effective_budget_krw(&root)-root.cost_krw).max(0.0);
@@ -115,7 +117,9 @@ impl Engine {
         // Reserve first under the delegation lock. The parent model loop checks
         // this same durable field before and after every charged model request.
         self.store.mutate(parent,|run|{
-            if run.terminal(){return Err("parent already terminated".into());}
+            if run.terminal()||run.status!=RunStatus::Running||run.cancel_after_tool {
+                return Err("parent cancelled or suspended during worker creation".into());
+            }
             if budget>policy::effective_budget_krw(run)-run.cost_krw {
                 return Err("parent budget changed before child reservation".into());
             }
