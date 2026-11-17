@@ -16,6 +16,10 @@ fn important(m:&Value)->bool {
         s.starts_with("New user instruction:") || s.starts_with("Verifier requested corrections.")
     })
 }
+fn is_verifier_feedback(message:&Value)->bool{
+    role(message)=="user" && message.get("content").and_then(Value::as_str)
+        .is_some_and(|text|text.starts_with("Verifier requested corrections."))
+}
 fn is_user_change(message:&Value)->bool{
     role(message)=="user" && message.get("content").and_then(Value::as_str)
         .is_some_and(|text|text.starts_with("New user instruction:"))
@@ -122,6 +126,13 @@ pub fn compact(messages:&[Value],max_chars:usize)->Projection {
 /// so the provider never sees an orphaned tool result.
 pub fn compact_strict(messages:&[Value],max_chars:usize)->Result<Projection,String>{
  let original_chars=messages.iter().map(size).sum::<usize>();
+ // Do not silently discard older evidence or pay for a synthetic summary
+ // while the exact transcript already fits. The old unconditional 16-group
+ // cap lost meaningful context even for short tasks.
+ if original_chars<=max_chars{
+  return Ok(Projection{messages:messages.to_vec(),original_chars,
+   projected_chars:original_chars,omitted_messages:0});
+ }
  if messages.len()<=2{
   if original_chars>max_chars{
    return Err(format!("task instructions exceed context limit ({original_chars}/{max_chars} chars); increase DOMINION_CONTEXT_MAX_CHARS"));
@@ -141,6 +152,27 @@ These requirements survive context compaction and must not be silently discarded
    changes.join("\n\n--- Next requirement ---\n\n"));
   result.push(json!({"role":"user","content":content}));
  }
+ // Verifier feedback is a current corrective task, not an authoritative
+ // user change. Preserve the latest request to repair missing artifacts even
+ // when an oversized recent tool exchange would otherwise evict it.
+ let latest_feedback=messages.iter().enumerate().rev()
+  .find(|(_,message)|is_verifier_feedback(message));
+ let feedback_index=latest_feedback.map(|(index,_)|index);
+ if let Some((_,message))=latest_feedback{
+  let raw=message["content"].as_str().unwrap_or("");
+  let limit=(max_chars/8).clamp(240,1600);
+  let length=raw.chars().count();
+  let excerpt=if length>limit{
+   let front=limit*3/4;
+   let tail=limit-front;
+   format!("{}\n[{} verifier characters omitted from model view; full feedback remains in durable Run history]\n{}",
+    raw.chars().take(front).collect::<String>(),
+    length-limit,
+    raw.chars().skip(length-tail).collect::<String>())
+  }else{raw.to_owned()};
+  result.push(json!({"role":"user","content":format!(
+   "CURRENT AUDITOR CORRECTION (advisory, not a new user instruction):\n{excerpt}")}));
+ }
  let mandatory_chars=result.iter().map(size).sum::<usize>();
  // Reserve enough room for a lightweight omission marker. If the exact
  // user's instructions cannot fit, fail closed rather than shaving off the
@@ -152,8 +184,10 @@ These requirements survive context compaction and must not be silently discarded
  }
  // Group function calls with corresponding results before removing any
  // history. The durable transcript remains completely unmodified.
- let history=messages[2..].iter().filter(|message|!is_user_change(message))
-  .cloned().collect::<Vec<_>>();
+ let history=messages[2..].iter().enumerate()
+  .filter(|(index,message)|!is_user_change(message)
+    && feedback_index!=Some(index+2))
+  .map(|(_,message)|message.clone()).collect::<Vec<_>>();
  let groups=exchanges(&history);
  let mut selected=Vec::<(usize,Vec<Value>)>::new();
  let mut budget=max_chars-mandatory_chars-reserve;
@@ -209,6 +243,51 @@ pub fn planning_directives(messages:&[Value],max_chars:usize)->Result<String,Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn strict_projection_is_lossless_when_ordinary_history_fits(){
+        let mut messages=vec![
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"Build the actual artifact"})];
+        // Before this fix a >16-group conversation was compacted even when
+        // well inside the model's context budget.
+        for i in 0..32{
+            messages.push(json!({"role":"assistant","content":format!("Inspected file {i}: evidence")}));
+        }
+        let total=messages.iter().map(size).sum::<usize>();
+        let view=compact_strict(&messages,total+1000).unwrap();
+        assert_eq!(view.messages,messages);
+        assert_eq!(view.original_chars,view.projected_chars);
+        assert_eq!(view.omitted_messages,0);
+    }
+    #[test]
+    fn strict_projection_keeps_latest_verifier_correction_when_tool_history_overflows(){
+        let mut messages=vec![
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"Fix application"})];
+        messages.push(json!({"role":"user","content":
+            "Verifier requested corrections. Produce artifact checksum and verify the file before PASS."}));
+        for index in 0..24{
+            let id=format!("tool-{index}");
+            messages.push(json!({"role":"assistant","tool_calls":[{
+                "id":id,"type":"function","function":{"name":"read_file","arguments":"{}"}}]}));
+            messages.push(json!({"role":"tool","tool_call_id":id,
+                "content":"unrelated source scan ".repeat(420)}));
+        }
+        let original=messages.clone();
+        let view=compact_strict(&messages,7000).unwrap();
+        assert_eq!(messages,original,"the durable transcript was modified");
+        assert!(view.projected_chars<=7000);
+        let prompt=view.messages.iter().map(Value::to_string).collect::<String>();
+        assert!(prompt.contains("CURRENT AUDITOR CORRECTION"));
+        assert!(prompt.contains("Produce artifact checksum"));
+        for (index,message) in view.messages.iter().enumerate(){
+            if let Some(id)=message.get("tool_call_id").and_then(Value::as_str){
+                assert!(index>0);
+                assert!(view.messages[index-1]["tool_calls"].to_string().contains(id),
+                    "never emit an orphan read receipt");
+            }
+        }
+    }
     #[test]
     fn strict_projection_pins_all_directives_and_keeps_receipt_pairs(){
         let mut messages=vec![json!({"role":"system","content":"stable"}),
