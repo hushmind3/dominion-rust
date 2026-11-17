@@ -137,7 +137,10 @@ pub(crate) fn trial_report(parent:&Run,children:&[Run])->Option<serde_json::Valu
         let run_id=candidate["run_id"].as_str()
             .and_then(|s|Uuid::parse_str(s).ok())?;
         let child=children.iter().find(|r|r.id==run_id&&r.parent_run_id==Some(parent.id))?;
-        if !child.terminal()||child.in_flight.is_some()||child.waiting_for_children{
+        if !child.terminal()||child.in_flight.is_some()||child.waiting_for_children
+            ||!parent.settled_child_ids.contains(&run_id) {
+            // A completed-looking child may still be actively finalizing its
+            // own receipts. Never compare before its reserved bill settles.
             return None;
         }
         // The *last* verdict must pass, after the last modified artifact.
@@ -175,19 +178,31 @@ pub(crate) fn trial_report(parent:&Run,children:&[Run])->Option<serde_json::Valu
             "note":"Verifier PASS and tool receipts are observable; acceptance tests and artifact inspection still govern adoption."
         }));
     }
-    let mut eligible=outcomes.iter().filter(|o|o["eligibleForComparison"]==true)
+    let eligible=outcomes.iter().filter(|o|o["eligibleForComparison"]==true)
         .collect::<Vec<&Value>>();
-    eligible.sort_by(|a,b|{
-        let ac=a["actualCostKrw"].as_f64().unwrap_or(f64::INFINITY);
-        let bc=b["actualCostKrw"].as_f64().unwrap_or(f64::INFINITY);
-        ac.total_cmp(&bc)
-            .then_with(||a["modelSteps"].as_u64().cmp(&b["modelSteps"].as_u64()))
-            .then_with(||a["id"].as_str().cmp(&b["id"].as_str()))
-    });
-    let winner=eligible.first().map(|o|o["id"].clone()).unwrap_or(Value::Null);
+    // Pareto dominance rather than an invented 5-point diagnosis bonus.
+    // When price, model steps and failures trade off, return NO winner.
+    let winner=match eligible.as_slice(){
+        [one]=>one["id"].clone(),
+        [a,b]=>{
+            let dominates=|x:&Value,y:&Value|{
+                let xc=x["actualCostKrw"].as_f64().unwrap_or(f64::INFINITY);
+                let yc=y["actualCostKrw"].as_f64().unwrap_or(f64::INFINITY);
+                let xs=x["modelSteps"].as_u64().unwrap_or(u64::MAX);
+                let ys=y["modelSteps"].as_u64().unwrap_or(u64::MAX);
+                let xf=x["failureCount"].as_u64().unwrap_or(u64::MAX);
+                let yf=y["failureCount"].as_u64().unwrap_or(u64::MAX);
+                xc<=yc && xs<=ys && xf<=yf && (xc<yc || xs<ys || xf<yf)
+            };
+            if dominates(a,b){a["id"].clone()}
+            else if dominates(b,a){b["id"].clone()}
+            else{Value::Null}
+        },
+        _=>Value::Null,
+    };
     Some(json!({"launch_seq":launch.seq,"candidates":outcomes,
         "provisionalWinner":winner,
-        "decisionBasis":"same model/base, real workspace edit before latest PASS; then measured KRW and model steps",
+        "decisionBasis":"verified artifacts plus Pareto dominance on measured KRW, model steps and tool failures; tradeoffs produce no forced winner",
         "adopted":false,"requiresApprovalForPatchAdoption":true,
         "missingGroundTruth":"LLM verifier PASS alone is not a held-out test; local build/test and artifact inspection still determine actual adoption"}))
 }
@@ -213,11 +228,12 @@ mod runtime_trials_tests{
             child.strategy_candidate=true;
         }
         a.status=RunStatus::Completed;a.cost_krw=40.0;a.steps=6;
-        b.status=RunStatus::Completed;b.cost_krw=90.0;b.steps=3;
+        b.status=RunStatus::Completed;b.cost_krw=90.0;b.steps=9;
         a.event("tool_result","write completed",Some(json!({"name":"write_file"})));
         b.event("tool_result","write completed",Some(json!({"name":"write_file"})));
         a.event("verification","PASS",None);
         b.event("verification","PASS",None);
+        parent.settled_child_ids=vec![a.id,b.id];
         parent.event("strategy_trials_launched","Two isolated candidates",Some(json!({
             "candidates":[{"run_id":a.id,"label":"alternative architecture"},
                 {"run_id":b.id,"label":"minimal fix"}]
