@@ -684,14 +684,15 @@ impl Engine {
                         current.event("empty_final","Empty final answer rejected without a second model audit",None);
                         return Ok(false);
                     }
+                    let receipt_count=current.events.iter()
+                        .filter(|e|matches!(e.kind.as_str(),"tool_result"|"tool_error"|"tool_reconciled"))
+                        .count();
                     current.answer=Some(reply.text.clone());
                     current.status=RunStatus::Completed;
                     current.event("completed",
                         "Model final submitted; independent model audit disabled (external judge separate)",
                         Some(json!({"audit":"external_or_disabled",
-                            "tool_receipts":current.events.iter()
-                                .filter(|e|matches!(e.kind.as_str(),"tool_result"|"tool_error"|"tool_reconciled"))
-                                .count()})));
+                            "tool_receipts":receipt_count})));
                     Ok(true)
                 }).await?;
                 if finished{return Ok(());}
