@@ -62,14 +62,11 @@ pub(super) async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
 pub(super) struct NewJob{kind:String,input:Value}
 pub(super) async fn submit_selected(engine:&Arc<Engine>,input:CreateRun,
     selection:(String,String))->Result<Run,String>{
-    let mut run=Run::new(input,engine.settings.max_steps)?;
-    run.provider_id=selection.0;run.model_name=selection.1;
-    if run.provider_id!="dominion-native"{
-        run.event("pricing_unknown","Provider token prices have not been configured; reported 0 KRW is not verified free use",None);
-    }
-    engine.store.put(run.clone()).await?;
-    engine.launch(run.id).await?;
-    engine.store.get(run.id).await.ok_or("created native run missing".into())
+    Dominion::from_engine(Arc::clone(engine))
+        .submit_selected(input,crate::sdk::RunOptions{
+            provider_id:selection.0,model:selection.1,
+            strategy_learning:false,model_only:false
+        }).await
 }
 pub(super) async fn create_job(State(engine):State<Arc<Engine>>,Json(req):Json<NewJob>)
     ->Result<(StatusCode,Json<Value>),Fault>{

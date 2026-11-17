@@ -1,7 +1,7 @@
 use crate::{domain::now_ms, provider::ModelClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json,Value};
-use std::{collections::{HashMap,HashSet}, path::PathBuf};
+use std::{collections::{HashMap,HashSet}, path::PathBuf,sync::Arc};
 use tokio::{fs,io::AsyncWriteExt,sync::Mutex};
 use uuid::Uuid;
 
@@ -53,6 +53,7 @@ pub struct Say { pub content: String }
 pub struct Groups {
     root: PathBuf,
     rooms: Mutex<HashMap<Uuid,Room>>,
+    write_gates: Mutex<HashMap<Uuid,Arc<Mutex<()>>>>,
     active: Mutex<HashSet<Uuid>>,
 }
 impl Groups {
@@ -65,15 +66,24 @@ impl Groups {
             let room:Room=serde_json::from_slice(&fs::read(entry.path()).await.map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
             rooms.insert(room.id,room);
         }
-        Ok(Self{root,rooms:Mutex::new(rooms),active:Mutex::new(HashSet::new())})
+        Ok(Self{root,rooms:Mutex::new(rooms),write_gates:Mutex::new(HashMap::new()),
+            active:Mutex::new(HashSet::new())})
+    }
+    async fn write_gate(&self,id:Uuid)->Arc<Mutex<()>>{
+        let mut gates=self.write_gates.lock().await;
+        Arc::clone(gates.entry(id).or_insert_with(||Arc::new(Mutex::new(()))))
     }
     async fn save(&self,mut room:Room)->Result<Room,String> {
-        let mut guard=self.rooms.lock().await;
-        match guard.get(&room.id){
-            Some(previous) if previous.revision!=room.revision=>
-                return Err("room was changed concurrently; stale result rejected".into()),
-            None if room.revision!=0=>return Err("room was deleted during execution".into()),
-            _=>{}
+        let gate=self.write_gate(room.id).await;
+        let _serial=gate.lock().await;
+        {
+            let guard=self.rooms.lock().await;
+            match guard.get(&room.id){
+                Some(previous) if previous.revision!=room.revision=>
+                    return Err("room was changed concurrently; stale result rejected".into()),
+                None if room.revision!=0=>return Err("room was deleted during execution".into()),
+                _=>{}
+            }
         }
         room.revision=room.revision.saturating_add(1);
         let temp=self.root.join(format!(".room-{}-{}.tmp",room.id,Uuid::new_v4()));
@@ -97,7 +107,7 @@ impl Groups {
         }.await;
         if result.is_err(){let _=fs::remove_file(&temp).await;}
         result?;
-        guard.insert(room.id,room.clone());
+        self.rooms.lock().await.insert(room.id,room.clone());
         Ok(room)
     }
     pub async fn create(&self,req:NewRoom)->Result<Room,String>{
@@ -167,8 +177,9 @@ impl Groups {
     }
     pub async fn remove(&self,id:Uuid)->Result<(),String>{
         if self.active.lock().await.contains(&id){return Err("cannot remove an active room".into());}
-        let mut guard=self.rooms.lock().await;
-        if !guard.contains_key(&id){return Err("room not found".into());}
+        let gate=self.write_gate(id).await;
+        let _serial=gate.lock().await;
+        if !self.rooms.lock().await.contains_key(&id){return Err("room not found".into());}
         fs::remove_file(self.root.join(format!("{id}.json"))).await.map_err(|e|e.to_string())?;
         #[cfg(unix)]
         {
@@ -177,7 +188,7 @@ impl Groups {
                 .and_then(|file|file.sync_all())).await.map_err(|e|e.to_string())?
                 .map_err(|e|e.to_string())?;
         }
-        guard.remove(&id);Ok(())
+        self.rooms.lock().await.remove(&id);Ok(())
     }
     /// Client-generated idempotency keys prevent a retried room send from
     /// creating duplicate user messages or triggering duplicate model turns.

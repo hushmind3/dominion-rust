@@ -5,6 +5,14 @@ use serde_json::{json,Value};
 use std::{sync::Arc,time::{Duration,Instant}};
 use uuid::Uuid;
 
+/// Portable launch options owned by the Rust SDK instead of individual HTTP adapters.
+#[derive(Clone,Debug,Default)]
+pub struct RunOptions {
+    pub provider_id:String,
+    pub model:String,
+    pub strategy_learning:bool,
+    pub model_only:bool,
+}
 #[derive(Clone)]
 pub struct Dominion { engine: Arc<Engine> }
 
@@ -85,11 +93,35 @@ impl Dominion {
     pub async fn register_tool_hook(&self,hook:Arc<dyn ToolHook>){
         self.engine.register_tool_hook(hook).await;
     }
-    pub async fn submit(&self,input:CreateRun)->Result<Run,String>{
-        let run=Run::new(input,self.engine.settings.max_steps)?;
+    /// Persist a configured execution before binding a chat session or invoking a
+    /// model. No external effect occurs until the caller explicitly starts it.
+    /// The Run identity, budget, provider and strategy choice survive process restart.
+    pub async fn prepare_run(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
+        let mut run=Run::new(input,self.engine.settings.max_steps)?;
+        if !options.provider_id.is_empty()||!options.model.is_empty(){
+            self.engine.model_for_selection(&options.provider_id,&options.model)?;
+            run.provider_id=options.provider_id;
+            run.model_name=options.model;
+            if !run.provider_id.is_empty()&&run.provider_id!="dominion-native"{
+                run.event("pricing_unknown",
+                    "Provider tariff has not been verified; zero recorded KRW does not mean free usage",None);
+            }
+        }
+        run.strategy_learning=options.strategy_learning;
+        run.model_only=options.model_only;
         self.engine.store.put(run.clone()).await?;
+        Ok(run)
+    }
+    /// The same SDK launch path is used for direct SDK, browser jobs and
+    /// frontend "SDK Run" jobs. Model-only turns keep their own provider path.
+    pub async fn submit_selected(&self,input:CreateRun,options:RunOptions)->Result<Run,String>{
+        if options.model_only{return Err("model-only turns require chat session binding".into());}
+        let run=self.prepare_run(input,options).await?;
         self.engine.launch(run.id).await?;
         self.get(run.id).await
+    }
+    pub async fn submit(&self,input:CreateRun)->Result<Run,String>{
+        self.submit_selected(input,RunOptions::default()).await
     }
     /// Run a coding task against an isolated Git worktree of an existing project.
     /// The original checkout remains unchanged until the user explicitly adopts edits.
@@ -128,15 +160,25 @@ impl Dominion {
     pub async fn cancel(&self,id:Uuid)->Result<Run,String>{self.engine.cancel(id).await}
     pub async fn instruct(&self,id:Uuid,text:String)->Result<Run,String>{self.engine.directive(id,text).await}
     pub async fn reconcile(&self,id:Uuid,input:ReconcileTool)->Result<Run,String>{self.engine.reconcile(id,input).await}
-    /// Does not hang on awaiting user approval or paused failed calls.
+    /// Wait for a persisted state transition without polling full JSON Runs.
+    /// Subscribe before reading to avoid missing the transition race.
     pub async fn wait(&self,id:Uuid,timeout:Duration)->Result<Run,String>{
         let started=Instant::now();
+        let mut updates=self.engine.store.subscribe();
         loop{
             let run=self.get(id).await?;
             if run.terminal()||run.status==RunStatus::AwaitingApproval ||
                 (run.status==RunStatus::Paused && !run.waiting_for_children){return Ok(run);}
-            if started.elapsed()>=timeout{return Err("execution wait timeout".into());}
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let remaining=timeout.checked_sub(started.elapsed())
+                .ok_or("execution wait timeout")?;
+            match tokio::time::timeout(remaining,updates.recv()).await{
+                Ok(Ok(event)) if event.id==id=>{},
+                Ok(Ok(_))=>continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_)))=>continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed))=>
+                    return Err("execution update channel closed".into()),
+                Err(_)=>return Err("execution wait timeout".into()),
+            }
         }
     }
     pub async fn artifacts(&self,id:Uuid)->Result<Vec<String>,String>{
