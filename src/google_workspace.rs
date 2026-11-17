@@ -225,15 +225,11 @@ async fn execute_with(token:&str,endpoints:&Endpoints,call:&ToolCall)->McpCallOu
     return McpCallOutcome::Settled(Err("Sheets cells changed; re-read and supply exact expected_values".into()));
    }
    let append=call.name=="google_sheets_append";
-   let mut parts=vec!["v4","spreadsheets",spread,"values",range];
-   if append{parts.push(":append");}
-   let endpoint=if append{
-     // Sheets append uses :append on the range itself (not a separate segment).
-     parts.pop();parts.pop();
-     let ranged=format!("{range}:append");parts.push(&ranged);
-     match api_url(&endpoints.sheets,&parts,&[("valueInputOption","RAW")]){Ok(u)=>u,Err(e)=>return McpCallOutcome::Settled(Err(e))}
-   }else{
-     match api_url(&endpoints.sheets,&parts,&[("valueInputOption","RAW")]){Ok(u)=>u,Err(e)=>return McpCallOutcome::Settled(Err(e))}
+   let selected=if append{format!("{range}:append")}else{range.to_owned()};
+   let endpoint=match api_url(&endpoints.sheets,
+     &["v4","spreadsheets",spread,"values",&selected],
+     &[("valueInputOption","RAW")]){
+       Ok(u)=>u,Err(e)=>return McpCallOutcome::Settled(Err(e))
    };
    let payload=json!({"range":range,"majorDimension":"ROWS","values":rows});
    let request=if append{client.post(endpoint)}else{client.put(endpoint)};

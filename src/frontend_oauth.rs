@@ -244,7 +244,8 @@ async fn connections(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault
   "hasToken":!account.access_token.is_empty()||!account.refresh_token.is_empty(),
   "scopes":account.scopes,
   "repositoryAccess":provider.as_str()=="github"&&granted_repository(&account.scopes),
-  "workspaceAccess":provider.as_str()=="google"&&granted_workspace(&account.scopes)
+  "workspaceAccess":provider.as_str()=="google"&&granted_workspace(&account.scopes),
+  "tools":crate::connected_tools::names_for(&engine.settings,provider)
  })).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]

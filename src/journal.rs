@@ -18,6 +18,9 @@ pub fn replay_safe(name:&str)->bool {
     matches!(name,
         "list_files"|"read_file"|"search_files"|"git_status"|"git_diff"
         |"github_list_repositories"|"github_read_file"|"check_subagent"|"read_subagent_file"|"memory_search"
+        |"github_list_branches"|"github_list_issues"|"github_get_issue"|"github_list_pull_requests"
+        |"github_get_pull_request"|"google_drive_search"|"google_drive_read_text"
+        |"google_docs_get"|"google_sheets_get"
         |"list_skills"|"load_skill"
     )
 }
