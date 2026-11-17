@@ -4,6 +4,7 @@ pub mod intelligence;
 pub mod mechanism;
 pub mod operators;
 pub mod sources;
+pub mod catalog;
 pub mod api;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -33,6 +34,10 @@ fn open(root:&Path)->Result<Connection,String>{
         );
         CREATE INDEX IF NOT EXISTS money_candidates_recent ON money_candidates(updated_ms DESC);
         CREATE TABLE IF NOT EXISTS money_state(key TEXT PRIMARY KEY, record TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS money_metrics(
+            id TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL, record TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS money_metrics_recent ON money_metrics(observed_ms DESC);
     ").map_err(err)?;
     Ok(conn)
 }
@@ -76,6 +81,23 @@ pub fn save_signals(root:&Path,items:&[Value])->Result<usize,String>{
     }
     tx.commit().map_err(err)?;
     Ok(added)
+}
+/// One value per platform/entity/metric/day. Attention is not a sale.
+pub fn save_metrics(root:&Path,rows:&[Value])->Result<usize,String>{
+    let mut conn=open(root)?;
+    let tx=conn.transaction().map_err(err)?;
+    let mut count=0;
+    {
+        let mut stmt=tx.prepare("INSERT OR IGNORE INTO money_metrics(id,observed_ms,record)
+            VALUES (?1,?2,?3)").map_err(err)?;
+        for row in rows.iter().take(120){
+            let Some(id)=row["id"].as_str().filter(|s|!s.is_empty())else{continue};
+            count+=stmt.execute(params![id,crate::domain::now_ms() as i64,row.to_string()])
+                .map_err(err)?;
+        }
+    }
+    tx.commit().map_err(err)?;
+    Ok(count)
 }
 pub fn candidates(root:&Path,limit:usize)->Result<Vec<Value>,String>{
     let conn=open(root)?;
@@ -137,8 +159,10 @@ pub fn stats(root:&Path)->Result<Value,String>{
     let conn=open(root)?;
     let signals:i64=conn.query_row("SELECT COUNT(*) FROM money_signals",[],|row|row.get(0)).map_err(err)?;
     let candidates:i64=conn.query_row("SELECT COUNT(*) FROM money_candidates",[],|row|row.get(0)).map_err(err)?;
-    Ok(json!({"signals":signals,"candidates":candidates,
+    let metrics:i64=conn.query_row("SELECT COUNT(*) FROM money_metrics",[],|row|row.get(0)).map_err(err)?;
+    Ok(json!({"signals":signals,"candidates":candidates,"metrics":metrics,
         "lastIngest":stored(&conn,"scan")?,
+        "lastCatalog":stored(&conn,"catalog")?,
         "automation":stored(&conn,"automation")?.unwrap_or(json!({"enabled":false}))}))
 }
 
@@ -156,6 +180,10 @@ mod tests{
     save_report(&root,&[item],&json!({"candidateIds":["lead1"],"modelCalls":0})).unwrap();
     assert_eq!(latest(&root).unwrap()["drafts"][0]["id"],"lead1");
     assert_eq!(stats(&root).unwrap()["signals"],1);
+    let metric=json!({"id":"metric:test","value":12,
+        "metricStatus":"platform_attention_not_customer_sales"});
+    assert_eq!(save_metrics(&root,&[metric.clone(),metric]).unwrap(),1);
+    assert_eq!(stats(&root).unwrap()["metrics"],1);
     std::fs::remove_dir_all(root).unwrap();
  }
 }

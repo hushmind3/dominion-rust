@@ -19,7 +19,7 @@ type Report={
  inferenceInputTokens?:number;inferenceOutputTokens?:number;message?:string
 }
 type Stats={
- signals:number;candidates:number;lastIngest?:{
+ signals:number;candidates:number;metrics?:number;lastCatalog?:{newMetrics?:number;capturedAt?:string}|null;lastIngest?:{
  found?:number;new?:number;capturedAt?:string;sources?:Array<{name:string;found?:number;error?:string}>
  }|null;
  automation?:{enabled?:boolean;periodMinutes?:number}
@@ -98,10 +98,11 @@ export function MoneyPage(){
     </p>
    </div>
   </header>
-  <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+  <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
    {([
     ['누적 시장 신호',stats?.signals],
     ['저장된 사업 후보',stats?.candidates],
+    ['공개 기술 지표',stats?.metrics],
     ['현재 보고 근거',report.sourceCount],
     ['이번 모델 호출',report.modelCalls]
    ] as const).map(([name,value])=><section key={name}
@@ -142,7 +143,7 @@ export function MoneyPage(){
      className="rounded-lg border border-[#D6B297] bg-[#F8EFE6] px-4 py-2 text-[12px] font-bold text-[#9B5633] disabled:opacity-50">
      {busy==='infer'?'분석 시작 중…':'선택 모델로 다시 추론'}
     </button>
-    <span className="text-[11px] text-[#998A7C]">요청 1회 · 최대 100원 API 예산 · 기존 Rust 실행 기록에 과금 기록</span>
+    <span className="text-[11px] text-[#998A7C]">요청 1회 · 실행 예산 100원 (제공자 요금 미등록 시 실제 과금과 차이 가능)</span>
     {inferring&&<>
       <span className="inline-flex items-center gap-1 text-[12px] text-[#B16342]">
        <LoaderCircle size={14} className="animate-spin"/> 모델 분석 중

@@ -225,9 +225,18 @@ pub async fn stats(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
 }
 pub async fn collect(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
-    let report=super::sources::collect(&engine.settings.data_dir,
-        body["force"].as_bool().unwrap_or(false)).await.map_err(internal)?;
-    Ok(Json(report))
+    let force=body["force"].as_bool().unwrap_or(false);
+    let (rss,catalog)=tokio::join!(
+        super::sources::collect(&engine.settings.data_dir,force),
+        super::catalog::collect(&engine.settings.data_dir,force)
+    );
+    if rss.is_err()&&catalog.is_err(){
+        return Err(internal(format!("RSS: {}; catalog: {}",
+            rss.as_ref().err().unwrap(),catalog.as_ref().err().unwrap())));
+    }
+    Ok(Json(json!({"rss":rss.as_ref().ok(),"catalog":catalog.as_ref().ok(),
+        "rssError":rss.as_ref().err(),"catalogError":catalog.as_ref().err(),
+        "modelCalls":0})))
 }
 pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
@@ -241,9 +250,11 @@ pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     if enabled{
         let root=engine.settings.data_dir.clone();
         tokio::spawn(async move{
-            if let Err(error)=super::sources::collect(&root,false).await{
-                tracing::warn!("money public feed collection failed: {error}");
-            }
+            let (rss,catalog)=tokio::join!(
+                super::sources::collect(&root,false),
+                super::catalog::collect(&root,false));
+            if let Err(error)=rss{tracing::warn!("money public feed collection failed: {error}");}
+            if let Err(error)=catalog{tracing::warn!("money catalog collection failed: {error}");}
         });
     }
     Ok(Json(record))
@@ -359,9 +370,11 @@ pub fn start_scheduler(engine:&Arc<Engine>){
                 super::state(&check,"automation").ok().flatten()
                     .is_some_and(|v|v["enabled"]==true)).await.unwrap_or(false);
             if enabled{
-                if let Err(error)=super::sources::collect(&root,false).await{
-                    tracing::warn!("money scheduled collection: {error}");
-                }
+                let (rss,catalog)=tokio::join!(
+                    super::sources::collect(&root,false),
+                    super::catalog::collect(&root,false));
+                if let Err(error)=rss{tracing::warn!("money scheduled feed collection: {error}");}
+                if let Err(error)=catalog{tracing::warn!("money scheduled catalog collection: {error}");}
             }
         }
     });
