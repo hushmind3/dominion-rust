@@ -7,10 +7,10 @@
 //! 2026 reference architecture: programmatic tool execution and telemetry-aware
 //! harness control. This is a typed, native partial-order design, not a port of
 //! an external TypeScript executor.
-use crate::{config::Settings,domain::{Run,ToolCall},policy,program_ir,tool_schema,tools};
+use crate::{config::Settings,domain::{Run,ToolCall},hooks::HookChain,policy,program_ir,tool_schema,tools};
 use serde_json::{json,Value};
 use sha2::{Digest,Sha256};
-use std::{collections::{HashMap,HashSet},time::Duration};
+use std::{collections::{HashMap,HashSet},sync::Arc,time::Duration};
 use tokio::{task::JoinSet,time::timeout};
 use uuid::Uuid;
 
@@ -303,8 +303,21 @@ fn clipped(content:&str,contains:Option<&str>)->String{
     let part=shown.chars().take(MAX_RECEIPT_CHARS).collect::<String>();
     format!("{part}\n[{} chars omitted; exact source hash preserved]",count-MAX_RECEIPT_CHARS)
 }
-async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
-    step:&Step)->(Result<String,String>,usize){
+async fn checked_read(settings:&Settings,run:&Run,
+    call:&ToolCall,hooks:&HookChain)->Result<String,String>{
+    if !policy::admitted_tool(run,&call.name,&settings.denied_tools){
+        return Err(format!("Nested {} forbidden by operator policy",call.name));
+    }
+    if let Err(denial)=hooks.before(run,call){
+        return Err(format!("Nested {} denied by tool hook [{}]: {}",
+            call.name,denial.code,denial.reason));
+    }
+    let mut output=tools::execute(settings,run.id,call).await;
+    hooks.after(run,call,&mut output);
+    output
+}
+async fn read_many(settings:&Settings,run:&Run,list:&str,
+    step:&Step,hooks:&HookChain)->(Result<String,String>,usize){
     let listed:Vec<String>=if step.tool=="read_matched_files"{
         let hits:Vec<Value>=match serde_json::from_str(list){
             Ok(hits)=>hits,Err(_)=>return (Err("search_files result was not a JSON hit array".into()),0)
@@ -324,7 +337,7 @@ async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
         inspected+=1;
         let call=ToolCall{id:format!("read-program:{}:{}",step.id,inspected),
             name:"read_file".into(),arguments:json!({"path":path})};
-        let outcome=timeout(Duration::from_secs(30),tools::execute(settings,run_id,&call)).await;
+        let outcome=timeout(Duration::from_secs(30),checked_read(settings,run,&call,hooks)).await;
         match outcome{
             Ok(Ok(body))=>{
                 if step.needle.is_empty()||body.contains(&step.needle){
@@ -354,15 +367,15 @@ async fn read_many(settings:&Settings,run_id:Uuid,list:&str,
     }
     (Ok(json!({"inspected":inspected,"matches":results}).to_string()),inspected)
 }
-async fn run_step(settings:Settings,run_id:Uuid,step:Step,from:Option<String>)
-    ->(Result<String,String>,usize){
+async fn run_step(settings:Settings,run:Arc<Run>,step:Step,from:Option<String>,
+    hooks:HookChain)->(Result<String,String>,usize){
     if matches!(step.tool.as_str(),"read_listed_files"|"read_matched_files"){
         let Some(content)=from else{return (Err("list dependency has no successful result".into()),0)};
-        return read_many(&settings,run_id,&content,&step).await;
+        return read_many(&settings,&run,&content,&step,&hooks).await;
     }
     let call=ToolCall{id:format!("read-program:{}",step.id),
         name:step.tool,arguments:step.arguments};
-    let result=timeout(Duration::from_secs(30),tools::execute(&settings,run_id,&call)).await;
+    let result=timeout(Duration::from_secs(30),checked_read(&settings,&run,&call,&hooks)).await;
     (match result{
         Ok(output)=>output,
         Err(_)=>Err(format!("nested {} timed out",call.name))
@@ -393,7 +406,15 @@ fn receive(step:&Step,result:Result<String,String>,count:usize,wave:usize)->Obse
 /// in source-program order regardless of completion timing. Conditions and
 /// objective witnesses evaluate only **settled, typed** evidence.
 pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,String>{
+    execute_with_hooks(settings,run,request,HookChain::from_settings(settings)).await
+}
+/// The production entrypoint carries the exact caller-owned hook chain into
+/// nested read operations. Every inner dispatch rechecks the same veto and
+/// applies the same post-execute redaction as an ordinary Run tool.
+pub async fn execute_with_hooks(settings:&Settings,run:&Run,request:&Value,
+    hooks:HookChain)->Result<String,String>{
     let program=parse(request,run,settings)?;
+    let run=Arc::new(run.clone());
     let mut observed=HashMap::<String,Observation>::new();
     let mut calls=0usize;
     let mut failures=0usize;
@@ -495,8 +516,11 @@ pub async fn execute(settings:&Settings,run:&Run,request:&Value)->Result<String,
                 .and_then(|ref_id|observed.get(ref_id)).map(|o|o.raw.clone());
             let settings=settings.clone();
             let index=*index;
-            let id=run.id;
-            tasks.spawn(async move{(index,run_step(settings,id,step,from).await)});
+            let state=Arc::clone(&run);
+            let hook_chain=hooks.clone();
+            tasks.spawn(async move{
+                (index,run_step(settings,state,step,from,hook_chain).await)
+            });
         }
         let mut results=HashMap::new();
         while let Some(joined)=tasks.join_next().await{
@@ -717,8 +741,8 @@ mod tests{
             {"id":"sources","tool":"read_listed_files","from":"files","max_files":2}
         ]}),&run,&settings).unwrap();
         let step=&program.steps[1];
-        let (result,count)=read_many(&settings,run.id,
-            "[\"real.rs\",\"deleted.rs\"]",step).await;
+        let (result,count)=read_many(&settings,&run,
+            "[\"real.rs\",\"deleted.rs\"]",step,&HookChain::from_settings(&settings)).await;
         assert_eq!(count,2);
         let receipt=receive(step,result,count,1);
         assert_eq!(receipt.status,"error");
