@@ -61,7 +61,9 @@ fn set(conn:&Connection,key:&str,record:&Value)->Result<(),String>{
 /// for backward compatibility; a fresh installation starts disabled.
 pub fn module_enabled(root:&Path)->Result<bool,String>{
     if !root.join("money.sqlite").is_file(){return Ok(false);}
-    let conn=open(root)?;
+    // Read-only state checks never repeat CREATE TABLE/FTS schema work.
+    let conn=Connection::open_with_flags(root.join("money.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(err)?;
     Ok(stored(&conn,"module_enabled")?
         .map(|record|record["enabled"].as_bool().unwrap_or(true))
         .unwrap_or(true))

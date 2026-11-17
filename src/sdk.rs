@@ -270,6 +270,22 @@ impl Dominion {
         self.engine.knowledge.remember(scope,title,content).await
     }
     /// Market observations remain separate from native Run receipts.
+    /// Configures the detachable Money tool independently from its optional
+    /// recurring public-feed collection. Disabling it retains all user data.
+    pub async fn money_settings(&self)->Result<Value,String>{
+        crate::money::api::native_module_settings(&self.engine).await
+    }
+    pub async fn money_set_enabled(&self,enabled:bool)->Result<Value,String>{
+        crate::money::api::native_configure_module(&self.engine,enabled).await
+    }
+    pub async fn money_candidates(&self,status:&str,query:&str,
+        offset:usize)->Result<Value,String>{
+        crate::money::api::native_candidates(&self.engine,status,query,offset).await
+    }
+    pub async fn money_decide_candidate(&self,id:&str,action:&str,
+        reason:&str)->Result<Value,String>{
+        crate::money::api::native_decide_candidate(&self.engine,id,action,reason).await
+    }
     pub async fn money_latest(&self)->Result<Value,String>{
         crate::money::api::native_latest(&self.engine).await
     }

@@ -258,6 +258,30 @@ pub async fn latest(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>
 }
 /// Rust SDK and the two HTTP adapters must observe the SAME finalized
 /// model receipt and saved candidate IDs.
+pub async fn native_module_settings(engine:&Arc<Engine>)->Result<Value,String>{
+    module_settings(State(Arc::clone(engine))).await.map(|Json(record)|record)
+        .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("Money settings failed").to_owned())
+}
+pub async fn native_configure_module(engine:&Arc<Engine>,enabled:bool)->Result<Value,String>{
+    configure_module(State(Arc::clone(engine)),Json(json!({"enabled":enabled}))).await
+        .map(|Json(record)|record)
+        .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("Money configuration failed").to_owned())
+}
+pub async fn native_candidates(engine:&Arc<Engine>,status:&str,query:&str,
+    offset:usize)->Result<Value,String>{
+    let mut input=HashMap::new();
+    input.insert("status".to_string(),status.to_string());
+    input.insert("q".to_string(),query.to_string());
+    input.insert("offset".to_string(),offset.to_string());
+    list_candidates(State(Arc::clone(engine)),Query(input)).await.map(|Json(record)|record)
+        .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("Money candidate archive failed").to_owned())
+}
+pub async fn native_decide_candidate(engine:&Arc<Engine>,id:&str,action:&str,
+    reason:&str)->Result<Value,String>{
+    candidate_decision(State(Arc::clone(engine)),Path(id.to_owned()),
+        Json(json!({"action":action,"reason":reason}))).await.map(|Json(record)|record)
+        .map_err(|(_,Json(body))|body["error"].as_str().unwrap_or("Money decision failed").to_owned())
+}
 pub async fn native_latest(engine:&Arc<Engine>)->Result<Value,String>{
     snapshot(engine).await.map_err(|(_,Json(body))|
         body["error"].as_str().unwrap_or("Money report read failed").to_owned())
@@ -272,6 +296,7 @@ pub async fn configure_module(State(engine):State<Arc<Engine>>,
     Json(body):Json<Value>)->Result<Json<Value>,Fault>{
     let enabled=body["enabled"].as_bool()
         .ok_or_else(||err("module enabled boolean required"))?;
+    let _lock=FIND_LOCK.lock().await;
     let root=engine.settings.data_dir.clone();
     let saved=blocking(move||super::set_module_enabled(&root,enabled)).await?;
     if enabled{
@@ -351,21 +376,21 @@ pub async fn list_candidates(State(engine):State<Arc<Engine>>,
 }
 pub async fn candidate_decision(State(engine):State<Arc<Engine>>,
     Path(id):Path<String>,Json(body):Json<Value>)->Result<Json<Value>,Fault>{
-    require_enabled(&engine).await?;
     let action=body["action"].as_str().unwrap_or("");
     let reason=body["reason"].as_str().unwrap_or("");
     if !matches!(action,"hold"|"restore"|"reject")||reason.chars().count()>500{
         return Err(err("invalid candidate decision"));
     }
     let _lock=FIND_LOCK.lock().await;
+    require_enabled(&engine).await?;
     let root=engine.settings.data_dir.clone();
     let (action,reason)=(action.to_owned(),reason.to_owned());
     blocking(move||super::decide_candidate(&root,&id,&action,&reason)).await.map(Json)
 }
 pub async fn reject(State(engine):State<Arc<Engine>>,Path(id):Path<String>)
     ->Result<Json<Value>,Fault>{
-    require_enabled(&engine).await?;
     let _lock=FIND_LOCK.lock().await;
+    require_enabled(&engine).await?;
     let root=engine.settings.data_dir.clone();
     blocking(move||super::decide_candidate(&root,&id,"reject","")).await.map(Json)
 }
@@ -410,7 +435,6 @@ Finish with actual artifact paths, validation results, cost and remaining unknow
 /// second side-effecting worker. Research-only operations never call this.
 pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
     Json(body):Json<Value>)->Result<Json<Value>,Fault>{
-    require_enabled(&engine).await?;
     if body["approved"]!=true{
         return Err(err("explicit approved=true required to implement a candidate"));
     }
@@ -420,6 +444,7 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
         return Err(err("invalid budgetKrw"));
     }
     let _lock=FIND_LOCK.lock().await;
+    require_enabled(&engine).await?;
     let root=engine.settings.data_dir.clone();
     let saved_id=id.clone();
     let Some(mut candidate)=blocking(move||super::candidate(&root,&saved_id)).await?
@@ -504,8 +529,8 @@ pub async fn cancel(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>
 }
 pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     ->Result<Json<Value>,Fault>{
-    require_enabled(&engine).await?;
     let _lock=FIND_LOCK.lock().await;
+    require_enabled(&engine).await?;
     let mode=body["mode"].as_str().unwrap_or("db");
     if !matches!(mode,"db"|"agent"){return Err(err("mode must be db or agent"));}
     let root=engine.settings.data_dir.clone();
