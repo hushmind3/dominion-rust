@@ -1,7 +1,5 @@
 name: Sub4 Windows and macOS checks
 on:
-  push:
-    branches: [dominion-sub4]
   workflow_dispatch:
     inputs:
       extended:
