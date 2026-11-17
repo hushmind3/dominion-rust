@@ -25,6 +25,8 @@ jobs:
         run: cargo test --lib runtime_path_tests
       - name: Durable preflight through common tool journal (dev profile)
         run: cargo test --lib durable_strategy_preflight_uses_existing_read_batch
+      - name: Full mock model-path correction integration (dev profile)
+        run: cargo test --lib coding_fixture_repairs_two_files_after_missing_path_feedback
       - name: Indexed delegation lineage and durable restart regression (dev profile)
         run: cargo test --lib indexed_lineage_tracks_reparent_replace_and_durable_restart
       - name: Native SDK inert reservation and recovery regression (dev profile)
