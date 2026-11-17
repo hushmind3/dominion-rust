@@ -177,12 +177,20 @@ export function MoneyPage(){
   }catch(e){setError((e as Error).message)}
   finally{setBusy('');setImplementationId('')}
  }
- async function resumeImplementation(id:string){
+ async function resumeImplementation(candidateId:string,runId:string){
   if(busy)return
   setError('');setBusy('implement')
   try{
-   // Resume the SAME native Run; native journal rejects unresolved effects.
-   await post('/api/v1/runs/'+encodeURIComponent(id)+'/resume',{})
+   // First reconcile any domain-reserved-but-not-started Run using its
+   // persisted candidate receipt. Do not bypass that link via native resume.
+   const result=await post<{status:string;id:string}>(
+    '/api/money/candidates/'+encodeURIComponent(candidateId)+'/implement',
+    {approved:true,agentId,budgetKrw})
+   // Ordinary paused runs with an already committed receipt still use the
+   // shared native Run resume and unresolved-tool reconciliation policy.
+   if(result.status==='paused'){
+    await post('/api/v1/runs/'+encodeURIComponent(runId)+'/resume',{})
+   }
    await refresh()
   }catch(e){setError((e as Error).message)}
   finally{setBusy('')}
@@ -495,7 +503,7 @@ export function MoneyPage(){
        실행·승인 상세 보기
       </a>
       {implementationRuns[lead.implementationRunId]?.status==='paused'&&
-       <button type="button" disabled={!!busy} onClick={()=>void resumeImplementation(lead.implementationRunId!)}
+       <button type="button" disabled={!!busy} onClick={()=>void resumeImplementation(lead.id,lead.implementationRunId!)}
         className="text-[11px] font-semibold text-[#A75835]">기존 승인 작업 재개</button>}
       {['queued','running','awaiting_approval','paused'].includes(implementationRuns[lead.implementationRunId]?.status||'')&&
        <button type="button" disabled={!!busy} onClick={()=>void cancelImplementation(lead.implementationRunId!)}

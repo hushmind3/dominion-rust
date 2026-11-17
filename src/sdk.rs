@@ -419,7 +419,44 @@ mod tests {
         let restored=reopened.get(reserved.id).await.unwrap();
         assert_eq!(restored.status,RunStatus::Paused);
         assert!(!restored.events.iter().any(|event|event.kind=="recovered_ready"));
+        // No owning-domain receipt: the ordinary SDK resume cannot start a
+        // model request or side effect, even if someone guesses the Run ID.
+        let error=reopened.resume(reserved.id).await.unwrap_err();
+        assert!(error.contains("domain approval receipt not committed"));
+        let still_reserved=reopened.get(reserved.id).await.unwrap();
+        assert_eq!(still_reserved.status,RunStatus::Paused);
+        assert!(!still_reserved.events.iter().any(|event|event.kind=="resumed"));
         drop(reopened);drop(sdk);
+        cleanup_test_dir(root).await;
+    }
+    #[tokio::test]
+    async fn committed_domain_receipt_survives_restart_without_extra_worker(){
+        let root=std::env::temp_dir().join(format!("dominion-domain-receipt-{}",Uuid::new_v4()));
+        let mut settings=Settings::from_env().unwrap();
+        settings.data_dir=root.join("data");
+        settings.workspace_dir=root.join("workspace");
+        let sdk=Dominion::open(settings.clone()).await.unwrap();
+        let run=sdk.reserve_unlaunched_run(CreateRun{
+            instruction:"Prepare a candidate artifact".into(),
+            budget_krw:Some(11.0),max_steps:Some(5)
+        },RunOptions::default()).await.unwrap();
+        sdk.engine.store.mutate(run.id,|saved|{
+            saved.event("domain_receipt_committed",
+                "External domain approval receipt committed",Some(json!({
+                    "domain":"example_extension","receipt":"candidate-1"
+                })));
+            Ok(())
+        }).await.unwrap();
+        drop(sdk);
+        let reopened=Dominion::open(settings).await.unwrap();
+        let restored=reopened.get(run.id).await.unwrap();
+        assert_eq!(restored.status,RunStatus::Paused);
+        assert_eq!(restored.events.iter()
+            .filter(|event|event.kind=="domain_receipt_committed").count(),1);
+        // The engine recognizes the prior committed receipt, but an
+        // untouched reserved Run does not auto-run on process restart.
+        assert!(!restored.events.iter().any(|event|event.kind=="resumed"));
+        drop(reopened);
         cleanup_test_dir(root).await;
     }
     #[tokio::test]

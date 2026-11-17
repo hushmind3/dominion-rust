@@ -552,7 +552,7 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
                 && run.events.iter().any(|event|event.kind=="reserved_unlaunched")
                 && !run.events.iter().any(|event|event.kind=="resumed");
             if reserved{
-                engine.launch(previous).await.map_err(|error|
+                engine.activate_reserved(previous,"money_candidate",&id).await.map_err(|error|
                     internal(format!("approved native Run could not launch: {error}")))?;
             }
             let current=engine.store.get(previous).await.unwrap_or(run);
@@ -583,7 +583,7 @@ pub async fn implement(State(engine):State<Arc<Engine>>,Path(id):Path<String>,
         let _=engine.cancel(run.id).await;
         return Err(error);
     }
-    if let Err(error)=engine.launch(run.id).await{
+    if let Err(error)=engine.activate_reserved(run.id,"money_candidate",&id).await{
         // Do not discard the durable approval or mint a second Run on retry.
         let _=engine.store.mutate(run.id,|saved|{
             if saved.status==RunStatus::Paused{
