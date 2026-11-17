@@ -255,6 +255,8 @@ pub async fn automation(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
     let saved=record.clone();
     blocking(move||super::set_state(&root,"automation",&saved)).await?;
     if enabled{
+        // Reuse the one domain collector only after the operator opts in.
+        start_scheduler(&engine);
         let root=engine.settings.data_dir.clone();
         tokio::spawn(async move{
             let (rss,catalog)=tokio::join!(
@@ -482,7 +484,23 @@ Return only valid JSON: {{\"ideas\":[{{\"title\":\"\",\"customer\":\"\",\"offer\
 
 /// Zero-token source gathering is an operator opt-in background process. It
 /// never starts a provider inference, performs a payment, or changes app code.
+/// Only an enabled Money tool owns a collector timer. Ordinary native SDK
+/// startup never spawns a Money-specific polling task or holds SQLite open.
+/// The registry lives entirely in this optional domain module.
+static MONEY_SCHEDULERS:std::sync::OnceLock<
+    std::sync::Mutex<HashMap<std::path::PathBuf,std::sync::Weak<Engine>>>
+> = std::sync::OnceLock::new();
 pub fn start_scheduler(engine:&Arc<Engine>){
+    let root=engine.settings.data_dir.clone();
+    // One synchronous preference read at startup; no background timer if off.
+    if !super::state(&root,"automation").ok().flatten()
+        .is_some_and(|v|v["enabled"]==true){return;}
+    let registry=MONEY_SCHEDULERS.get_or_init(||std::sync::Mutex::new(HashMap::new()));
+    {
+        let mut active=registry.lock().unwrap_or_else(|poison|poison.into_inner());
+        if active.get(&root).and_then(std::sync::Weak::upgrade).is_some(){return;}
+        active.insert(root.clone(),Arc::downgrade(engine));
+    }
     let weak=Arc::downgrade(engine);
     tokio::spawn(async move {
         let mut ticks=tokio::time::interval(std::time::Duration::from_secs(1800));
@@ -490,19 +508,21 @@ pub fn start_scheduler(engine:&Arc<Engine>){
         loop{
             ticks.tick().await;
             let Some(engine)=weak.upgrade()else{break;};
-            let root=engine.settings.data_dir.clone();
+            let check=engine.settings.data_dir.clone();
             drop(engine);
-            let check=root.clone();
             let enabled=tokio::task::spawn_blocking(move||
                 super::state(&check,"automation").ok().flatten()
                     .is_some_and(|v|v["enabled"]==true)).await.unwrap_or(false);
-            if enabled{
-                let (rss,catalog)=tokio::join!(
-                    super::sources::collect(&root,false),
-                    super::catalog::collect(&root,false));
-                if let Err(error)=rss{tracing::warn!("money scheduled feed collection: {error}");}
-                if let Err(error)=catalog{tracing::warn!("money scheduled catalog collection: {error}");}
-            }
+            if !enabled{break;}
+            let (rss,catalog)=tokio::join!(
+                super::sources::collect(&root,false),
+                super::catalog::collect(&root,false));
+            if let Err(error)=rss{tracing::warn!("money scheduled feed collection: {error}");}
+            if let Err(error)=catalog{tracing::warn!("money scheduled catalog collection: {error}");}
+        }
+        let mut active=registry.lock().unwrap_or_else(|poison|poison.into_inner());
+        if active.get(&root).is_some_and(|existing|existing.ptr_eq(&weak)){
+            active.remove(&root);
         }
     });
 }

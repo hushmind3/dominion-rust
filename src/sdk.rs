@@ -314,6 +314,19 @@ impl Dominion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn cleanup_test_dir(path:std::path::PathBuf){
+        for attempt in 0..20 {
+            match tokio::fs::remove_dir_all(&path).await{
+                Ok(())=>return,
+                Err(error) if error.kind()==std::io::ErrorKind::NotFound=>return,
+                Err(error) if cfg!(windows) && error.raw_os_error()==Some(32)
+                    && attempt<19=>{
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                },
+                Err(error)=>panic!("test directory cleanup failed: {error}")
+            }
+        }
+    }
 
 
 
@@ -352,7 +365,7 @@ mod tests {
         assert_eq!(restored.status,RunStatus::Failed);
         assert!(restored.events.iter().any(|e|e.kind=="model_only_interrupted"));
         drop(reopened);drop(sdk);
-        tokio::fs::remove_dir_all(root).await.unwrap();
+        cleanup_test_dir(root).await;
     }
 
     #[tokio::test]
@@ -385,7 +398,7 @@ mod tests {
         assert_eq!(result.status,RunStatus::AwaitingApproval);
         assert_eq!(result.pending_approval.unwrap().id,"approval-1");
         drop(sdk);
-        tokio::fs::remove_dir_all(root).await.unwrap();
+        cleanup_test_dir(root).await;
     }
 
     #[tokio::test]
@@ -403,7 +416,7 @@ mod tests {
         assert!(!names.contains(&"read_file"));
         assert!(names.contains(&"list_files"));
         drop(sdk);
-        tokio::fs::remove_dir_all(root).await.unwrap();
+        cleanup_test_dir(root).await;
     }
 
     #[tokio::test]
@@ -447,7 +460,7 @@ mod tests {
         assert_eq!(tokio::fs::read_to_string(settings.workspace_dir.join(id.to_string())
             .join("recovered.txt")).await.unwrap(),"written after restart");
         drop(reopened);
-        tokio::fs::remove_dir_all(dir).await.unwrap();
+        cleanup_test_dir(dir).await;
     }
 
     #[tokio::test]
@@ -466,6 +479,7 @@ mod tests {
         assert!(sdk.artifacts(run.id).await.unwrap().is_empty());
         let reopened=Dominion::open(settings).await.unwrap();
         assert_eq!(reopened.get(run.id).await.unwrap().id,run.id);
-        tokio::fs::remove_dir_all(dir).await.unwrap();
+        drop(_router);drop(reopened);drop(sdk);
+        cleanup_test_dir(dir).await;
     }
 }

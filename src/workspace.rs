@@ -6,6 +6,22 @@ use tokio::{fs,io::AsyncWriteExt,process::Command,time::{timeout,Duration}};
 use std::process::Stdio;
 use uuid::Uuid;
 
+/// Git for Windows does not accept Rust's canonical verbatim path prefix
+/// (\\\\?\\C:\\...) as a worktree argument. Validate with canonical paths,
+/// then convert only the process argument to the regular drive/UNC spelling.
+fn git_path_argument(path:&Path)->Result<String,String>{
+    let raw=path.to_str().ok_or("workspace path is not UTF-8")?;
+    #[cfg(windows)]
+    {
+        if let Some(rest)=raw.strip_prefix(r"\\?\\"){
+            if let Some(unc)=rest.strip_prefix("UNC\\"){
+                return Ok(format!(r"\\{}",unc));
+            }
+            return Ok(rest.to_owned());
+        }
+    }
+    Ok(raw.to_owned())
+}
 fn validate_relative(path:&str)->Result<(),String>{
     if path.is_empty()||path.len()>512||Path::new(path).components().any(|c|!matches!(c,Component::Normal(_))){
         return Err("repository must be a relative path inside Dominion's workspace".into());
@@ -49,8 +65,8 @@ pub async fn attach_at(settings:&Settings,id:Uuid,relative:&str,revision:Option<
     if fs::symlink_metadata(&target).await.is_ok(){
         return Err("run workspace already exists; refusing to overwrite".into());
     }
-    let target_string=target.to_str().ok_or("workspace path is not UTF-8")?;
-    git(&["worktree","add","--detach",target_string,&baseline],&source).await?;
+    let target_string=git_path_argument(&target)?;
+    git(&["worktree","add","--detach",&target_string,&baseline],&source).await?;
     let restored=git(&["rev-parse","HEAD"],&target).await?;
     if restored!=baseline {
         return Err("worktree commit differs from selected source".into());
@@ -100,10 +116,19 @@ async fn apply_patch_checked(dir:&Path,patch:&str,check_only:bool)->Result<(),St
     let mut command=Command::new("git");
     command.arg("apply").arg("--binary");
     if check_only{command.arg("--check");}
-    let mut child=command.arg("--").current_dir(dir)
-        .env_clear().env("PATH","/usr/local/bin:/usr/bin:/bin").env("HOME",dir)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .kill_on_drop(true).spawn().map_err(|e|format!("git apply launch: {e}"))?;
+    command.arg("--").current_dir(dir).env_clear().env("HOME",dir);
+    #[cfg(windows)]
+    {
+        // Keep process lookup and Windows DLL resolution while isolating
+        // Git's HOME/config. A Unix-only PATH breaks Git on Windows.
+        command.env("PATH",std::env::var_os("PATH").unwrap_or_default())
+            .env("SystemRoot",std::env::var_os("SystemRoot").unwrap_or_default());
+    }
+    #[cfg(not(windows))]
+    command.env("PATH","/usr/local/bin:/usr/bin:/bin");
+    let mut child=command.stdin(Stdio::piped()).stdout(Stdio::piped())
+        .stderr(Stdio::piped()).kill_on_drop(true).spawn()
+        .map_err(|e|format!("git apply launch: {e}"))?;
     let result=timeout(Duration::from_secs(30),async{
         let mut stdin=child.stdin.take().ok_or("git patch stdin unavailable")?;
         stdin.write_all(patch.as_bytes()).await.map_err(|e|e.to_string())?;
