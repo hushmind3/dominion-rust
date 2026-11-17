@@ -563,6 +563,17 @@ export function MoneyPage(){
      </summary>
      <p className="mt-2 text-[12px] leading-5">{item.offer||'사업 제안 내용 없음'}</p>
      <p className="mt-1 text-[11px] text-[#84766A]">구매자: {item.customer||'추가 조사 필요'}</p>
+     {item.citationStatus&&<p className="mt-2 text-[11px] text-[#A75835]">
+      원문 인용 확인: {item.citationStatus}
+      {!!item.unmatchedSourceIds?.length&&' · DB에 없는 출처: '+item.unmatchedSourceIds.join(', ')}
+     </p>}
+     {!!item.sourceQuoteChecks?.length&&<details className="mt-2">
+      <summary className="cursor-pointer text-[11px] font-semibold">인용 불일치와 기록된 리비전</summary>
+      {item.sourceQuoteChecks.map((check,i)=><p key={i} className="mt-1 text-[11px] text-[#817367]">
+       {check.sourceId} · {check.status} · {check.revisionId?.slice(0,12)||'원문 버전 미확인'}
+       {' — '+check.quote}
+      </p>)}
+     </details>}
      <div className="mt-2 flex flex-wrap gap-2">
       {(item.evidence||[]).filter(e=>e.url?.startsWith('https://')).map((e,i)=>
        <a key={e.sourceId||i} href={e.url} target="_blank" rel="noreferrer"
