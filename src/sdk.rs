@@ -256,9 +256,7 @@ impl Dominion {
     }
     /// Market observations remain separate from native Run receipts.
     pub async fn money_latest(&self)->Result<Value,String>{
-        let root=self.engine.settings.data_dir.clone();
-        tokio::task::spawn_blocking(move||crate::money::latest(&root))
-            .await.map_err(|e|e.to_string())?
+        crate::money::api::native_latest(&self.engine).await
     }
     pub async fn money_signals(&self,limit:usize)->Result<Vec<Value>,String>{
         let root=self.engine.settings.data_dir.clone();
@@ -266,7 +264,17 @@ impl Dominion {
             .await.map_err(|e|e.to_string())?
     }
     pub async fn money_collect(&self,force:bool)->Result<Value,String>{
-        crate::money::sources::collect(&self.engine.settings.data_dir,force).await
+        let root=&self.engine.settings.data_dir;
+        let (rss,catalog)=tokio::join!(
+            crate::money::sources::collect(root,force),
+            crate::money::catalog::collect(root,force));
+        if rss.is_err()&&catalog.is_err(){
+            return Err(format!("RSS: {}; catalog: {}",
+                rss.err().unwrap(),catalog.err().unwrap()));
+        }
+        Ok(json!({"rss":rss.as_ref().ok(),"catalog":catalog.as_ref().ok(),
+            "rssError":rss.as_ref().err(),"catalogError":catalog.as_ref().err(),
+            "modelCalls":0}))
     }
     pub async fn search_memory(&self,scope:&str,query:&str)->Vec<crate::knowledge::MemoryEntry>{
         self.engine.knowledge.search(scope,query,20).await

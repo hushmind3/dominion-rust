@@ -219,6 +219,12 @@ pub fn routes()->Router<Arc<Engine>>{
 pub async fn latest(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     snapshot(&engine).await.map(Json)
 }
+/// Rust SDK and the two HTTP adapters must observe the SAME finalized
+/// model receipt and saved candidate IDs.
+pub async fn native_latest(engine:&Arc<Engine>)->Result<Value,String>{
+    snapshot(engine).await.map_err(|(_,Json(body))|
+        body["error"].as_str().unwrap_or("Money report read failed").to_owned())
+}
 pub async fn stats(State(engine):State<Arc<Engine>>)->Result<Json<Value>,Fault>{
     let root=engine.settings.data_dir.clone();
     blocking(move||super::stats(&root)).await.map(Json)
@@ -295,8 +301,15 @@ pub async fn find(State(engine):State<Arc<Engine>>,Json(body):Json<Value>)
         let root=root.clone();move||super::signals(&root,180)
     }).await?;
     if records.is_empty(){
-        // The first click acquires real evidence rather than inventing leads.
-        super::sources::collect(&root,false).await.map_err(internal)?;
+        // One click can obtain source observations and public technology
+        // listings. Partial network failures do not erase valid evidence.
+        let (rss,catalog)=tokio::join!(
+            super::sources::collect(&root,false),
+            super::catalog::collect(&root,false));
+        if rss.is_err()&&catalog.is_err(){
+            return Err(internal(format!("RSS: {}; catalog: {}",
+                rss.err().unwrap(),catalog.err().unwrap())));
+        }
         records=blocking({
             let root=root.clone();move||super::signals(&root,180)
         }).await?;

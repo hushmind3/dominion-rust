@@ -27,3 +27,7 @@ Testing scope: Rust parser/semantic matching and durable SQLite tests; TypeScrip
 ## Public software metrics added after the initial integration
 
 A six-hour GitHub/Hugging Face collector now saves public repository/model listings to the same source corpus, plus deduplicated daily star/download/like metric snapshots in `money_metrics`. Metrics are **platform attention observations**, not buyer commitments or revenue. The normal scan endpoint runs RSS and these two fixed-origin APIs and reports their failures separately. Each of the two public collectors also has its own durable bucket, so repeated scheduling does not trigger repeat requests. URL redirects are disabled and payload sizes are capped.
+
+### SDK parity
+
+Rust SDK money_latest now uses the same idempotent native model-result finalizer as /api/money/find. Rust SDK money_collect and the REST collection endpoint both use bounded RSS and public catalog sources, with partial network errors retained in the response. First-time find uses both collectors when the evidence archive is empty.
