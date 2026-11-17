@@ -1,0 +1,167 @@
+//! Sub4 main-UI operations adapter; endpoint behavior preserved.
+use super::*;
+
+pub(super) async fn approvals(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let sessions=engine.frontend.sessions().await;
+    let runs=engine.store.list().await;
+    let pending=runs.iter().filter_map(|run|{
+        let call=run.pending_approval.as_ref()?;
+        if run.approval_decision.is_some(){return None;}
+        let session=sessions.iter().find(|s|s.pending_run==Some(run.id));
+        Some(json!({
+            "id":run.id.to_string(),"tool":call.name,"args":call.arguments,
+            "status":"pending",
+            "sessionId":session.map(|s|s.id.as_str()).unwrap_or("")
+        }))
+    }).collect::<Vec<_>>();
+    Json(json!(pending))
+}
+#[derive(Deserialize)]
+pub(super) struct Decide{id:String,allow:bool}
+pub(super) async fn resolve_approval(State(engine):State<Arc<Engine>>,Json(input):Json<Decide>)
+    ->Result<Json<Value>,Fault>{
+    let id=Uuid::parse_str(&input.id).map_err(|_|bad("approval id must be the native execution UUID"))?;
+    let run=engine.store.get(id).await.ok_or_else(||missing("execution not found"))?;
+    if run.pending_approval.is_none()||run.approval_decision.is_some(){
+        return Ok(Json(json!({"ok":false,"resolved":false,"error":"approval already resolved"})));
+    }
+    engine.approve(id,input.allow).await.map_err(bad)?;
+    Ok(Json(json!({"ok":true,"resolved":true,"status":if input.allow{"approved"}else{"denied"}})))
+}
+pub(super) async fn policy()->Json<Value>{
+    // Native engine always requires approval for shell and other sensitive tools.
+    Json(json!({"id":"default","autoApprove":[],"autoApproveMcp":false,"autoApproveAll":false}))
+}
+pub(super) async fn save_policy(Json(input):Json<Value>)->Result<Json<Value>,Fault>{
+    let escalate=input["autoApproveAll"].as_bool().unwrap_or(false)
+        ||input["autoApproveMcp"].as_bool().unwrap_or(false)
+        ||input["autoApprove"].as_array().is_some_and(|v|!v.is_empty());
+    if escalate{return Err(unsupported("Native Rust tool approval policies do not accept blanket permissions via the legacy UI."));}
+    Ok(Json(json!({"id":"default","autoApprove":[],"autoApproveMcp":false,"autoApproveAll":false})))
+}
+pub(super) fn as_job(run:&Run)->Value{
+    json!({
+        "id":run.id.to_string(),"kind":"native_agent","status":run.status,
+        "providerId":run.provider_id,"model":run.model_name,
+        "input":{"goal":run.instruction},
+        "createdAt":timestamp(run.created_at_ms),
+        "updatedAt":timestamp(run.updated_at_ms),
+        "sessionId":Value::Null,
+        "result":if run.terminal(){json!({"answer":run.answer,"costKrw":run.cost_krw})}else{Value::Null}
+    })
+}
+pub(super) async fn jobs(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let mut all=engine.store.list().await.iter().map(as_job).collect::<Vec<_>>();
+    all.sort_by(|a,b|b.get("createdAt").and_then(Value::as_str).cmp(&a.get("createdAt").and_then(Value::as_str)));
+    Json(Value::Array(all))
+}
+#[derive(Deserialize)]
+pub(super) struct NewJob{kind:String,input:Value}
+pub(super) async fn submit_selected(engine:&Arc<Engine>,input:CreateRun,
+    selection:(String,String))->Result<Run,String>{
+    let mut run=Run::new(input,engine.settings.max_steps)?;
+    run.provider_id=selection.0;run.model_name=selection.1;
+    if run.provider_id!="dominion-native"{
+        run.event("pricing_unknown","Provider token prices have not been configured; reported 0 KRW is not verified free use",None);
+    }
+    engine.store.put(run.clone()).await?;
+    engine.launch(run.id).await?;
+    engine.store.get(run.id).await.ok_or("created native run missing".into())
+}
+pub(super) async fn create_job(State(engine):State<Arc<Engine>>,Json(req):Json<NewJob>)
+    ->Result<(StatusCode,Json<Value>),Fault>{
+    if req.kind!="prompt"{return Err(unsupported("This job kind has no native Rust scheduler implementation."));}
+    let text=req.input["prompt"].as_str().ok_or_else(||bad("prompt required"))?;
+    let agent=if let Some(id)=req.input["agentId"].as_str(){
+        Some(engine.frontend.agents().await.into_iter().find(|a|a.id==id)
+            .ok_or_else(||bad("agent not found"))?)
+    }else{None};
+    let instruction=agent.as_ref().map(|agent|format!("User-configured agent instructions:\n{}\n\nCurrent request:\n{}",
+        agent.system_prompt,text)).unwrap_or_else(||text.to_owned());
+    let selection=if let Some(ref agent)=agent{
+        chosen(&engine,Some(&agent.provider_id),Some(&agent.model))?
+    }else{chosen(&engine,None,None)?};
+    let run=submit_selected(&engine,CreateRun{
+        instruction,budget_krw:None,max_steps:None
+    },selection).await.map_err(bad)?;
+    Ok((StatusCode::ACCEPTED,Json(as_job(&run))))
+}
+pub(super) async fn job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Value>,Fault>{
+    engine.store.get(id).await.map(|r|Json(as_job(&r))).ok_or_else(||missing("job not found"))
+}
+pub(super) async fn cancel_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Value>,Fault>{
+    let run=engine.cancel(id).await.map_err(bad)?;
+    Ok(Json(json!({"cancelled":run.status==RunStatus::Cancelled,"status":run.status})))
+}
+pub(super) async fn resume_job(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Value>,Fault>{
+    let _=engine.store.get(id).await.ok_or_else(||missing("job not found"))?;
+    Err(unsupported("Resume is only available for interrupted native runs."))
+}
+pub(super) async fn executions(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let list=engine.store.list().await.into_iter().map(|run|{
+        let tools=run.events.iter().filter(|event|event.kind=="tool_started").count();
+        json!({
+            "id":run.id.to_string(),"sessionId":run.id.to_string(),
+            "providerId":if run.provider_id.is_empty(){"dominion-native"}else{&run.provider_id},
+            "model":if run.model_name.is_empty(){&engine.settings.main.name}else{&run.model_name},
+            "status":run.status,
+            "startedAt":timestamp(run.created_at_ms),
+            "finishedAt":if run.terminal(){Some(timestamp(run.updated_at_ms))}else{None},
+            "reason":if run.status==RunStatus::Failed{run.events.last().map(|e|e.message.clone())}else{None},
+            "iterations":run.steps,"modelCalls":run.steps,
+            "toolCalls":tools,"tokens":run.input_tokens+run.output_tokens
+        })
+    }).collect::<Vec<_>>();
+    Json(json!(list))
+}
+pub(super) async fn execution_operations(State(engine):State<Arc<Engine>>,Path(id):Path<Uuid>)
+    ->Result<Json<Value>,Fault>{
+    let run=engine.store.get(id).await.ok_or_else(||missing("execution not found"))?;
+    let list=run.events.iter().filter(|event|[
+        "tool_started","tool_result","tool_error","tool_reconciled",
+        "tool_denied","tool_policy_denied","tool_hook_denied"
+    ].contains(&event.kind.as_str())).map(|event|json!({
+        "id":format!("{}:{}",id,event.seq),"callId":event.detail.as_ref()
+            .and_then(|v|v.get("call_id")).and_then(Value::as_str).unwrap_or(""),
+        "tool":event.message,"status":event.kind,
+        "startedAt":timestamp(event.at_ms)
+    })).collect::<Vec<_>>();
+    Ok(Json(json!(list)))
+}
+pub(super) async fn tools_catalog(State(engine):State<Arc<Engine>>)->Json<Value>{
+    let list=Dominion::from_engine(engine).tool_catalog().await.into_iter()
+        .map(|tool|json!({"name":tool.pointer("/function/name").and_then(Value::as_str).unwrap_or(""),
+            "description":tool.pointer("/function/description").cloned().unwrap_or(Value::Null)}))
+        .collect::<Vec<_>>();
+    Json(json!(list))
+}
+pub(super) async fn global_events(State(engine):State<Arc<Engine>>)
+    ->Sse<impl Stream<Item=Result<Event,Infallible>>>{
+    // Subscribe to the native Store's post-fsync change feed. No 1.5-second
+    // per-client full-history snapshots or idle CPU scans.
+    let mut updates=engine.store.subscribe();
+    let stream=async_stream::stream!{
+        loop{
+            match updates.recv().await{
+                Ok(change)=>{
+                    let payload=json!({"type":"job_event","id":change.id.to_string(),
+                        "status":change.status,"updatedAt":timestamp(change.updated_at_ms)});
+                    yield Ok::<_,Infallible>(Event::default().json_data(payload)
+                        .unwrap_or_else(|_|Event::default().data("{}")));
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{
+                    // A slow tab must refresh its snapshot rather than treat
+                    // dropped status updates as a durable sequence.
+                    let payload=json!({"type":"job_event","status":"resync"});
+                    yield Ok::<_,Infallible>(Event::default().json_data(payload)
+                        .unwrap_or_else(|_|Event::default().data("{}")));
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Closed)=>break
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)).text("alive"))
+}
