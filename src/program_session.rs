@@ -34,13 +34,16 @@ pub struct ProgramSession{
     /// external effect must reach its exact durable receipt first.
     #[serde(default)]
     pub halt_requested:bool,
+    /// Optional evidence predicate; early stop is not a final task verdict.
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub stop_when:Option<Value>,
     #[serde(default)]
     pub observations:Map<String,Value>,
 }
 fn proof(raw:&str)->String{format!("{:x}",Sha256::digest(raw.as_bytes()))}
 fn native_allowed(name:&str,shell_enabled:bool)->bool{
     matches!(name,"list_files"|"read_file"|"search_files"|"git_status"
-        |"git_diff"|"write_file"|"edit_file")
+        |"git_diff"|"read_program"|"write_file"|"edit_file")
         || (shell_enabled&&name=="shell")
 }
 fn dependencies(predicate:&Value,prior:&HashSet<String>,depth:usize)->Result<(),String>{
@@ -119,8 +122,13 @@ pub fn validate(run:&Run,request:&Value,settings:&Settings)->Result<ProgramSessi
         }
         steps.push(step);
     }
+    let stop_when=request.get("stop_when").cloned();
+    if let Some(predicate)=&stop_when{
+        dependencies(predicate,&seen,0)?;
+    }
     Ok(ProgramSession{
-        id:String::new(),steps,cursor:0,pending_step:None,halt_requested:false,observations:Map::new()
+        id:String::new(),steps,cursor:0,pending_step:None,
+        halt_requested:false,stop_when,observations:Map::new()
     })
 }
 /// Called in one Store mutation while the outer run_program tool intent is
@@ -264,6 +272,22 @@ pub fn advance(run:&mut Run,settings:&Settings)->Result<(),String>{
         }
         let stopping=!succeeded&&step.on_error.as_deref()!=Some("continue");
         state.cursor+=1;
+        if !stopping {
+            if let Some(predicate)=state.stop_when.as_ref(){
+                if program_ir::predicate_verdict(predicate,
+                    &Value::Object(state.observations.clone()))?
+                    ==program_ir::Verdict::True{
+                    let message=format!(
+                        "Program {} stopped after a literal evidence predicate became true at step {}. This is not independent proof that the overall user task is complete.",
+                        state.id,step.id);
+                    run.event("program_evidence_objective",message.clone(),
+                        Some(json!({"program_id":state.id,"step":step.id,
+                            "proof":proof(body),"remaining_steps":state.steps.len()-state.cursor})));
+                    run.messages.push(json!({"role":"user","content":message}));
+                    return Ok(());
+                }
+            }
+        }
         if stopping {
             let message=format!("Program {} stopped after step {} failed. Review the real journal/tool error and replan only the remaining work.",state.id,step.id);
             run.messages.push(json!({"role":"user","content":message}));
@@ -389,7 +413,7 @@ mod tests{
             id:"p".into(),steps:vec![ProgramStep{id:"danger".into(),
                 tool:"write_file".into(),arguments:json!({"path":"x","content":"x"}),
                 when:Some(json!({"type":"equals","from":"missing","value":"ok"})),
-                on_error:None}],cursor:0,pending_step:None,halt_requested:false,observations:Map::new()});
+                on_error:None}],cursor:0,pending_step:None,halt_requested:false,stop_when:None,observations:Map::new()});
         advance(&mut r,&s).unwrap();
         assert!(r.program_session.is_none());
         assert!(r.queued_calls.is_empty());
@@ -404,7 +428,7 @@ mod tests{
                 arguments:json!({"path":"s.txt","content":"effect"}),
                 when:None,on_error:None}],
             cursor:0,pending_step:Some("program:p:write".into()),
-            halt_requested:false,observations:Map::new()
+            halt_requested:false,stop_when:None,observations:Map::new()
         });
         advance(&mut r,&settings).unwrap();
         assert_eq!(r.status,RunStatus::Paused);
