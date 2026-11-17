@@ -43,6 +43,52 @@ impl RunUpdate{
         Self{id:run.id,status:run.status.clone(),updated_at_ms:run.updated_at_ms}
     }
 }
+/// Lightweight status and listing projection: never clone model messages,
+/// tool schemas, read receipts or whole event transcripts for UI polling.
+#[derive(Clone,Debug)]
+pub struct RunHeader {
+    pub id:Uuid,
+    pub instruction:String,
+    pub status:RunStatus,
+    pub provider_id:String,
+    pub model_name:String,
+    pub answer:Option<String>,
+    pub cost_krw:f64,
+    pub created_at_ms:u64,
+    pub updated_at_ms:u64,
+    pub steps:usize,
+    pub input_tokens:u64,
+    pub output_tokens:u64,
+    pub tool_calls:usize,
+    pub last_error:Option<String>,
+}
+impl RunHeader {
+    fn from_run(run:&Run)->Self{
+        Self{
+            id:run.id,
+            instruction:run.instruction.clone(),
+            status:run.status.clone(),
+            provider_id:run.provider_id.clone(),
+            model_name:run.model_name.clone(),
+            answer:if run.terminal(){run.answer.clone()}else{None},
+            cost_krw:run.cost_krw,
+            created_at_ms:run.created_at_ms,
+            updated_at_ms:run.updated_at_ms,
+            steps:run.steps,
+            input_tokens:run.input_tokens,
+            output_tokens:run.output_tokens,
+            tool_calls:run.events.iter().filter(|event|event.kind=="tool_started").count(),
+            last_error:if run.status==RunStatus::Failed{
+                run.events.last().map(|e|e.message.clone())
+            }else{None},
+        }
+    }
+    pub fn terminal(&self)->bool{
+        matches!(self.status,RunStatus::Completed|RunStatus::Failed|RunStatus::Cancelled)
+    }
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct RunStats{pub total:usize,pub active:usize,pub awaiting_approval:usize}
 pub struct Store {
     root: PathBuf,
     state: Mutex<HashMap<Uuid, Run>>,
@@ -158,6 +204,35 @@ impl Store {
             run.parent_run_id==Some(parent)
                 || run.parent_run_id.is_some_and(|id|child_ids.contains(&id))
         ).cloned().collect()
+    }
+    /// Small hot-path overview for the /api/status poll. O(n) status
+    /// inspection under one short lock; O(1) transcript allocation.
+    pub async fn stats(&self)->RunStats{
+        let guard=self.state.lock().await;
+        let mut stats=RunStats{total:guard.len(),..RunStats::default()};
+        for run in guard.values(){
+            if matches!(run.status,RunStatus::Queued|RunStatus::Running){
+                stats.active+=1;
+            }
+            if run.pending_approval.is_some()&&run.approval_decision.is_none(){
+                stats.awaiting_approval+=1;
+            }
+        }
+        stats
+    }
+    /// UI lists materialize only rows, never N complete transcripts.
+    pub async fn headers(&self)->Vec<RunHeader>{
+        let mut rows=self.state.lock().await.values()
+            .map(RunHeader::from_run).collect::<Vec<_>>();
+        rows.sort_by_key(|r|std::cmp::Reverse(r.created_at_ms));
+        rows
+    }
+    pub async fn pending_approvals(&self)->Vec<(Uuid,crate::domain::ToolCall)>{
+        self.state.lock().await.values().filter_map(|run|{
+            run.pending_approval.as_ref()
+                .filter(|_|run.approval_decision.is_none())
+                .map(|call|(run.id,call.clone()))
+        }).collect()
     }
     pub async fn list(&self) -> Vec<Run> {
         let mut runs: Vec<_> = self.state.lock().await.values().cloned().collect();
@@ -288,6 +363,29 @@ mod tests {
             .map(|v|v.kind.as_str()).collect::<Vec<_>>(),
             vec!["second","first"]);
         drop(reopened);
+        drop(store);
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn overview_and_stats_do_not_include_model_transcript_payloads(){
+        let root=std::env::temp_dir().join(format!("dominion-overview-{}",Uuid::new_v4()));
+        let store=Store::open(root.clone()).await.unwrap();
+        let mut run=Run::new(crate::domain::CreateRun{
+            instruction:"Inspect cheap overview".into(),budget_krw:None,max_steps:None
+        },4).unwrap();
+        run.messages.push(serde_json::json!({"role":"tool","content":"x".repeat(200_000)}));
+        run.status=RunStatus::Running;
+        let id=run.id;
+        store.put(run).await.unwrap();
+        let stats=store.stats().await;
+        assert_eq!((stats.total,stats.active,stats.awaiting_approval),(1,1,0));
+        let rows=store.headers().await;
+        assert_eq!(rows.len(),1);
+        assert_eq!(rows[0].id,id);
+        assert_eq!(rows[0].instruction,"Inspect cheap overview");
+        assert!(format!("{:?}",rows[0]).len()<1000,
+            "overview unexpectedly copied historical tool transcripts");
         drop(store);
         fs::remove_dir_all(root).await.unwrap();
     }
