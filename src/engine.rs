@@ -1034,12 +1034,24 @@ impl Engine {
     pub async fn directive(&self,id:Uuid,instruction:String) -> Result<Run,String> {
         let content=instruction.trim();
         if content.is_empty() || content.len()>10_000 {return Err("invalid directive".into());}
-        self.store.mutate(id,|run| {
+        let snapshot=self.store.mutate(id,|run| {
             if run.terminal() {return Err("execution finished".into());}
             run.messages.push(json!({"role":"user","content":format!("New user instruction: {content}")}));
+            // Do not execute queued steps from the old model program after a
+            // higher-priority owner correction. Keep started external effects
+            // intact until a durable observation or manual reconciliation.
+            program_session::supersede(run)?;
             run.event("directive","User updated instructions",Some(json!({"text":content})));
             Ok(())
-        }).await
+        }).await?;
+        if snapshot.status==RunStatus::Running &&
+            !self.active.lock().await.contains(&id) {
+            // Wake the original scheduler rather than creating a second
+            // worker. A queued program step may have been superseded while
+            // the agent was waiting for explicit approval.
+            let _=self.wake_tx.send(id);
+        }
+        Ok(snapshot)
     }
 }
 
